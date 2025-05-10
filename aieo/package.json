@@ -1,6 +1,6 @@
 {
   "name": "aieo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -21,6 +21,9 @@
   "license": "ISC",
   "description": "typescript ai utils",
   "dependencies": {
+    "@ai-sdk/anthropic": "^1.2.11",
+    "@ai-sdk/google": "^1.2.17",
+    "@ai-sdk/openai": "^1.3.22",
     "ai": "^4.3.9"
   },
   "devDependencies": {
