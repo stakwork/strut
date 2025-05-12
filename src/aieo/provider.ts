@@ -1,4 +1,3 @@
-import { CoreMessage, streamText } from "ai";
 import { createAnthropic, AnthropicProviderOptions } from "@ai-sdk/anthropic";
 import {
   createGoogleGenerativeAI,
