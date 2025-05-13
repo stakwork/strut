@@ -1,10 +1,11 @@
-import { CoreMessage, streamText } from "ai";
+import { CoreMessage, streamText, ToolSet } from "ai";
 import { Provider, getModel, getProviderOptions } from "./provider";
 
 export async function callModel(
   provider: Provider,
   apiKey: string,
   messages: CoreMessage[],
+  tools?: ToolSet,
   parser?: (fullResponse: string) => void
 ): Promise<string> {
   const model = await getModel(provider, apiKey);
@@ -12,6 +13,7 @@ export async function callModel(
   console.log(`Calling ${provider} with options:`, providerOptions);
   const result = streamText({
     model,
+    tools,
     messages,
     temperature: 0,
     providerOptions: providerOptions as any,
