@@ -38,20 +38,28 @@ export async function getModel(provider: Provider, apiKey: string) {
   }
 }
 
-export function getProviderOptions(provider: Provider) {
+export type ThinkingSpeed = "thinking" | "fast";
+
+export function getProviderOptions(
+  provider: Provider,
+  thinkingSpeed?: ThinkingSpeed
+) {
+  const fast = thinkingSpeed === "fast";
+  const budget = fast ? 0 : 24000;
   switch (provider) {
     case "anthropic":
+      let thinking = fast
+        ? { type: "disabled" as const }
+        : { type: "enabled" as const, budgetTokens: budget };
       return {
         anthropic: {
-          thinking: { type: "enabled", budgetTokens: 24000 },
+          thinking,
         } satisfies AnthropicProviderOptions,
       };
     case "google":
       return {
         google: {
-          thinkingConfig: {
-            thinkingBudget: 16384,
-          },
+          thinkingConfig: { thinkingBudget: budget },
         } satisfies GoogleGenerativeAIProviderOptions,
       };
     case "openai":
