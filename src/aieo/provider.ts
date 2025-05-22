@@ -10,7 +10,7 @@ export type Provider = "anthropic" | "google" | "openai";
 export const PROVIDERS: Provider[] = ["anthropic", "google", "openai"];
 
 const SOTA = {
-  anthropic: "claude-3-7-sonnet-20250219",
+  anthropic: "claude-4-sonnet-20250514",
   google: "gemini-2.5-pro-preview-05-06",
   openai: "gpt-4.1",
 };
