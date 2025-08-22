@@ -6,15 +6,20 @@ import {
   ThinkingSpeed,
 } from "./provider";
 
-export async function callModel(
-  provider: Provider,
-  apiKey: string,
-  messages: ModelMessage[],
-  tools?: ToolSet,
-  parser?: (fullResponse: string) => void,
-  thinkingSpeed?: ThinkingSpeed
-): Promise<string> {
-  const model = await getModel(provider, apiKey);
+interface CallModelOptions {
+  provider: Provider;
+  apiKey: string;
+  messages: ModelMessage[];
+  tools?: ToolSet;
+  parser?: (fullResponse: string) => void;
+  thinkingSpeed?: ThinkingSpeed;
+  cwd?: string;
+}
+
+export async function callModel(opts: CallModelOptions): Promise<string> {
+  const { provider, apiKey, messages, tools, parser, thinkingSpeed, cwd } =
+    opts;
+  const model = await getModel(provider, apiKey, cwd);
   const providerOptions = getProviderOptions(provider, thinkingSpeed);
   console.log(`Calling ${provider} with options:`, providerOptions);
   const result = streamText({
