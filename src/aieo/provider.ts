@@ -52,6 +52,9 @@ export async function getModel(
           cwd: cwd,
         },
       });
+      if (cwd) {
+        console.log("creating claude code model at", cwd);
+      }
       return customProvider(SOTA[provider]);
     default:
       throw new Error(`Unsupported provider: ${provider}`);

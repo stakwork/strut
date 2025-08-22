@@ -8,10 +8,9 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   noExternal: [
-    "@ai-sdk/anthropic", 
-    "@ai-sdk/google", 
-    "@ai-sdk/openai", 
+    "@ai-sdk/anthropic",
+    "@ai-sdk/google",
+    "@ai-sdk/openai",
     "@ai-sdk/provider-utils",
-    "ai-sdk-provider-claude-code"
   ], // Bundle AI SDK dependencies to avoid version conflicts
 });

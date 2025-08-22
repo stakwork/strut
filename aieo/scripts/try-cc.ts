@@ -25,7 +25,12 @@ async function doTheThing() {
     const messages = [systemMessage, userMessageContent];
 
     const provider: aieo.Provider = "claude_code";
-    const res = await aieo.callModel({ provider, apiKey, messages });
+    const res = await aieo.callModel({
+      provider,
+      apiKey,
+      messages,
+      cwd: "/Users/evanfeenstra/code/sphinx2/stakgraph/mcp/aieo",
+    });
     console.log("Response:", res);
   } catch (error) {
     console.log("Model error:", error);
