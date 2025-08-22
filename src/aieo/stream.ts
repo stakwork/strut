@@ -1,4 +1,4 @@
-import { CoreMessage, streamText, ToolSet } from "ai";
+import { ModelMessage, streamText, ToolSet } from "ai";
 import {
   Provider,
   getModel,
@@ -9,7 +9,7 @@ import {
 export async function callModel(
   provider: Provider,
   apiKey: string,
-  messages: CoreMessage[],
+  messages: ModelMessage[],
   tools?: ToolSet,
   parser?: (fullResponse: string) => void,
   thinkingSpeed?: ThinkingSpeed
@@ -33,7 +33,7 @@ export async function callModel(
         if (parser) {
           parser(fullResponse);
         }
-        fullResponse += part.textDelta;
+        fullResponse += part.text;
         break;
     }
   }
