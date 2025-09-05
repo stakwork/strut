@@ -22,6 +22,24 @@ const SOTA = {
   claude_code: "sonnet",
 };
 
+export function getApiKeyForProvider(provider: Provider | string): string {
+  let apiKey: string | undefined;
+  switch (provider) {
+    case "anthropic":
+      apiKey = process.env.ANTHROPIC_API_KEY;
+    case "google":
+      apiKey = process.env.GOOGLE_API_KEY;
+    case "openai":
+      apiKey = process.env.OPENAI_API_KEY;
+    case "claude_code":
+      apiKey = process.env.CLAUDE_CODE_API_KEY;
+  }
+  if (!apiKey) {
+    throw new Error(`API key not found for provider: ${provider}`);
+  }
+  return apiKey;
+}
+
 export async function getModel(
   provider: Provider,
   apiKey: string,
