@@ -24,15 +24,20 @@ const SOTA = {
 
 export function getApiKeyForProvider(provider: Provider | string): string {
   let apiKey: string | undefined;
+  console.log(process.env.ANTHROPIC_API_KEY);
   switch (provider) {
     case "anthropic":
       apiKey = process.env.ANTHROPIC_API_KEY;
+      break;
     case "google":
       apiKey = process.env.GOOGLE_API_KEY;
+      break;
     case "openai":
       apiKey = process.env.OPENAI_API_KEY;
+      break;
     case "claude_code":
       apiKey = process.env.CLAUDE_CODE_API_KEY;
+      break;
   }
   if (!apiKey) {
     throw new Error(`API key not found for provider: ${provider}`);
