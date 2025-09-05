@@ -24,7 +24,6 @@ const SOTA = {
 
 export function getApiKeyForProvider(provider: Provider | string): string {
   let apiKey: string | undefined;
-  console.log(process.env.ANTHROPIC_API_KEY);
   switch (provider) {
     case "anthropic":
       apiKey = process.env.ANTHROPIC_API_KEY;

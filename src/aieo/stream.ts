@@ -1,10 +1,11 @@
-import { ModelMessage, streamText, ToolSet } from "ai";
+import { ModelMessage, streamText, ToolSet, generateObject } from "ai";
 import {
   Provider,
   getModel,
   getProviderOptions,
   ThinkingSpeed,
 } from "./provider.js";
+import { z } from "zod";
 
 interface CallModelOptions {
   provider: Provider;
@@ -53,4 +54,21 @@ export async function callModel(opts: CallModelOptions): Promise<string> {
     }
   }
   return fullResponse;
+}
+
+interface GenerateObjectArgs {
+  provider: Provider;
+  apiKey: string;
+  prompt: string;
+  schema: z.ZodObject<any>;
+}
+
+export async function callGenerateObject(args: GenerateObjectArgs) {
+  const model = await getModel(args.provider, args.apiKey);
+  const { object } = await generateObject({
+    model,
+    schema: args.schema,
+    prompt: args.prompt,
+  });
+  return object;
 }
