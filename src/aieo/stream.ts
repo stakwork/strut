@@ -60,7 +60,7 @@ interface GenerateObjectArgs {
   provider: Provider;
   apiKey: string;
   prompt: string;
-  schema: z.ZodObject<any>;
+  schema: z.ZodType<any>;
 }
 
 export async function callGenerateObject(args: GenerateObjectArgs) {
