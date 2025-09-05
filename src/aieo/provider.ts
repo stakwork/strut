@@ -18,7 +18,7 @@ export const PROVIDERS: Provider[] = [
 const SOTA = {
   anthropic: "claude-4-sonnet-20250514",
   google: "gemini-2.5-pro-preview-05-06",
-  openai: "gpt-4.1",
+  openai: "gpt-5",
   claude_code: "sonnet",
 };
 
