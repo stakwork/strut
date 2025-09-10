@@ -5,7 +5,6 @@ import {
   getProviderOptions,
   ThinkingSpeed,
 } from "./provider.js";
-import { z } from "zod";
 
 interface CallModelOptions {
   provider: Provider;
@@ -41,7 +40,7 @@ export async function callModel(opts: CallModelOptions): Promise<string> {
   });
   let fullResponse = "";
   for await (const part of result.fullStream) {
-    console.log(part);
+    // console.log(part);
     switch (part.type) {
       case "error":
         throw part.error;
