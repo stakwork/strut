@@ -1,9 +1,9 @@
 /**
  * `Neo4jWorkspaceStore` — the graph-backed `WorkspaceStore`
  * (plans/generic-storage.md §7). Workflows, versions, steps, and step
- * versions are nodes in vein's own Neo4j domain (`VeinWorkflow`,
- * `VeinWorkflowVersion`, `VeinStep`, `VeinStepVersion` — the label registry
- * in `vein-schemas.ts`), linked by `VERSION_OF`, `ACTIVE_VERSION`,
+ * versions are nodes in strut's own Neo4j domain (`StrutWorkflow`,
+ * `StrutWorkflowVersion`, `StrutStep`, `StrutStepVersion` — the label registry
+ * in `strut-schemas.ts`), linked by `VERSION_OF`, `ACTIVE_VERSION`,
  * `USES_STEP`, and `DEPENDS_ON` edges. Every write goes through the
  * jarvis-dialect node/edge writers, so a jarvis mounted on the same database
  * sees native data.
@@ -148,7 +148,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
       opts.materializeDir ??
       join(
         tmpdir(),
-        "vein-graph-steps",
+        "strut-graph-steps",
         createHash("sha256").update(`${backend.cfg.uri}|${backend.cfg.database ?? ""}|${this.ns}`).digest("hex").slice(0, 16),
       );
   }
@@ -157,7 +157,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async workflowRow(name: string): Promise<WorkflowRow | null> {
     const rows = await this.backend.bolt.run(
-      `MATCH (w:VeinWorkflow {namespace: $ns, name: $name}) WHERE ${NOT_DELETED("w")}
+      `MATCH (w:StrutWorkflow {namespace: $ns, name: $name}) WHERE ${NOT_DELETED("w")}
        RETURN properties(w) AS p LIMIT 1`,
       { ns: this.ns, name },
     );
@@ -166,7 +166,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async versionRows(name: string): Promise<VersionRow[]> {
     const rows = await this.backend.bolt.run(
-      `MATCH (v:VeinWorkflowVersion {namespace: $ns, name: $name}) WHERE ${NOT_DELETED("v")}
+      `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $name}) WHERE ${NOT_DELETED("v")}
        RETURN properties(v) AS p ORDER BY v.created_at, v.date_added_to_graph`,
       { ns: this.ns, name },
     );
@@ -175,8 +175,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   async listWorkflows(): Promise<WorkflowListEntry[]> {
     const rows = await this.backend.bolt.run(
-      `MATCH (w:VeinWorkflow {namespace: $ns}) WHERE ${NOT_DELETED("w")}
-       OPTIONAL MATCH (v:VeinWorkflowVersion {namespace: $ns, name: w.name}) WHERE ${NOT_DELETED("v")}
+      `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE ${NOT_DELETED("w")}
+       OPTIONAL MATCH (v:StrutWorkflowVersion {namespace: $ns, name: w.name}) WHERE ${NOT_DELETED("v")}
        WITH w, v ORDER BY v.created_at, v.date_added_to_graph
        RETURN properties(w) AS w, collect(properties(v)) AS versions ORDER BY w.name`,
       { ns: this.ns },
@@ -315,7 +315,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     } else {
       const parsed = (yaml.load(yamlStr) as Record<string, unknown> | null) ?? {};
       const r = await nodes.write({
-        type: "VeinWorkflowVersion",
+        type: "StrutWorkflowVersion",
         data: compact({
           name,
           content_hash: hash,
@@ -347,7 +347,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     let wfRef: string;
     if (!w) {
       const r = await nodes.write({
-        type: "VeinWorkflow",
+        type: "StrutWorkflow",
         data: compact({ name, description: version.description, category, publisher, active_version: version.hash }),
       });
       wfRef = r.ref_id;
@@ -361,7 +361,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     }
     await edges.write({ edge: "VERSION_OF", source_ref_id: version.ref_id, target_ref_id: wfRef });
     await bolt.run(
-      `MATCH (w:VeinWorkflow {ref_id: $w})-[r:ACTIVE_VERSION]->(v) WHERE v.ref_id <> $v DELETE r`,
+      `MATCH (w:StrutWorkflow {ref_id: $w})-[r:ACTIVE_VERSION]->(v) WHERE v.ref_id <> $v DELETE r`,
       { w: wfRef, v: version.ref_id },
     );
     await edges.write({ edge: "ACTIVE_VERSION", source_ref_id: wfRef, target_ref_id: version.ref_id });
@@ -385,14 +385,14 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     const inputs: Array<{ edge: string; source_ref_id: string; target_ref_id: string }> = [];
     if (stepTypes.length) {
       const rows = await this.backend.bolt.run(
-        `MATCH (s:VeinStep {namespace: $ns}) WHERE s.step_type IN $types AND ${NOT_DELETED("s")} RETURN s.ref_id AS ref_id`,
+        `MATCH (s:StrutStep {namespace: $ns}) WHERE s.step_type IN $types AND ${NOT_DELETED("s")} RETURN s.ref_id AS ref_id`,
         { ns: this.ns, types: stepTypes },
       );
       for (const r of rows) inputs.push({ edge: "USES_STEP", source_ref_id: versionRef, target_ref_id: r["ref_id"] as string });
     }
     if (subflows.length) {
       const rows = await this.backend.bolt.run(
-        `MATCH (w:VeinWorkflow {namespace: $ns}) WHERE w.name IN $names AND ${NOT_DELETED("w")} RETURN w.ref_id AS ref_id`,
+        `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE w.name IN $names AND ${NOT_DELETED("w")} RETURN w.ref_id AS ref_id`,
         { ns: this.ns, names: subflows },
       );
       for (const r of rows) inputs.push({ edge: "DEPENDS_ON", source_ref_id: versionRef, target_ref_id: r["ref_id"] as string });
@@ -472,7 +472,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async stepRow(type: string): Promise<StepRow | null> {
     const rows = await this.backend.bolt.run(
-      `MATCH (s:VeinStep {namespace: $ns, step_type: $type}) WHERE ${NOT_DELETED("s")} RETURN properties(s) AS p LIMIT 1`,
+      `MATCH (s:StrutStep {namespace: $ns, step_type: $type}) WHERE ${NOT_DELETED("s")} RETURN properties(s) AS p LIMIT 1`,
       { ns: this.ns, type },
     );
     return rows.length ? (rows[0]!["p"] as StepRow) : null;
@@ -480,7 +480,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async stepVersionRows(type: string): Promise<StepVersionRow[]> {
     const rows = await this.backend.bolt.run(
-      `MATCH (v:VeinStepVersion {namespace: $ns, step_type: $type}) WHERE ${NOT_DELETED("v")}
+      `MATCH (v:StrutStepVersion {namespace: $ns, step_type: $type}) WHERE ${NOT_DELETED("v")}
        RETURN properties(v) AS p ORDER BY v.created_at, v.date_added_to_graph`,
       { ns: this.ns, type },
     );
@@ -491,8 +491,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
    *  pointer dangles). Helpers (`_`-prefixed segments) included. */
   private async stepsWithActive(): Promise<Array<{ step: StepRow; active: StepVersionRow | null }>> {
     const rows = await this.backend.bolt.run(
-      `MATCH (s:VeinStep {namespace: $ns}) WHERE ${NOT_DELETED("s")}
-       OPTIONAL MATCH (v:VeinStepVersion {namespace: $ns, step_type: s.step_type, content_hash: s.active_version})
+      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NOT_DELETED("s")}
+       OPTIONAL MATCH (v:StrutStepVersion {namespace: $ns, step_type: s.step_type, content_hash: s.active_version})
        WHERE ${NOT_DELETED("v")}
        RETURN properties(s) AS s, properties(v) AS v ORDER BY s.step_type`,
       { ns: this.ns },
@@ -572,7 +572,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
     const vid = nextVersionLabel(versions.map((v) => v.version_label));
     const v = await nodes.write({
-      type: "VeinStepVersion",
+      type: "StrutStepVersion",
       data: compact({
         step_type: name,
         content_hash: hash,
@@ -586,7 +586,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     let stepRef: string;
     if (!existing) {
       const s = await nodes.write({
-        type: "VeinStep",
+        type: "StrutStep",
         data: compact({ step_type: name, description, publisher, active_version: hash }),
       });
       stepRef = s.ref_id;
@@ -604,7 +604,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async swapActiveStepEdge(stepRef: string, versionRef: string): Promise<void> {
     await this.backend.bolt.run(
-      `MATCH (s:VeinStep {ref_id: $s})-[r:ACTIVE_VERSION]->(v) WHERE v.ref_id <> $v DELETE r`,
+      `MATCH (s:StrutStep {ref_id: $s})-[r:ACTIVE_VERSION]->(v) WHERE v.ref_id <> $v DELETE r`,
       { s: stepRef, v: versionRef },
     );
     await this.backend.edges.write({ edge: "ACTIVE_VERSION", source_ref_id: stepRef, target_ref_id: versionRef });

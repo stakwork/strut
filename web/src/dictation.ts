@@ -2,7 +2,7 @@
 //
 // Microphone → AudioWorklet (PCM16LE, ~100 ms frames) → `/audio/stream`
 // WebSocket (src/audio/ws.ts). Partials arrive on every change, finals on
-// endpoint detection and on stop. The browser is one of vein's audio
+// endpoint detection and on stop. The browser is one of strut's audio
 // clients (plans/local-desktop-and-stt.md §1); the desktop and mobile hosts
 // capture natively and speak the same protocol.
 
@@ -61,7 +61,7 @@ export async function startDictation(opts: DictationOptions): Promise<Dictation>
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   });
   // Ask for 16 kHz (the engine's rate); a browser that ignores it reports
-  // its own rate and vein resamples. The rate must not change mid-stream.
+  // its own rate and strut resamples. The rate must not change mid-stream.
   const ctx = new AudioContext({ sampleRate: 16000 });
   const sampleRate = ctx.sampleRate;
   let ws: WebSocket | null = null;

@@ -20,7 +20,7 @@ import { Bolt, int, txRows, type Row } from "./bolt.js";
 import { typeLabelOf } from "./edge-writer.js";
 import { renderVectorField, type Embedder } from "./node-writer.js";
 import type { SchemaResolver } from "./schema-resolver.js";
-import { SCHEMA_CORE_PROPERTIES, getVeinSchema, vectorIndexedPairs, vectorStem } from "./vein-schemas.js";
+import { SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
 
 // ── Constants (jarvis) ──────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ export const DEFAULT_NAMESPACE = "default";
 export const BLOCKED_NODE_STATUSES = ["halted", "paused", "stopped", "stopping", "error", "failed", "stuck"];
 
 /** jarvis `GENERIC_NODE_PROPERTIES` — stripped from every response
- *  `properties` map. (Distinct from the write-side set in vein-schemas.) */
+ *  `properties` map. (Distinct from the write-side set in strut-schemas.) */
 export const RESPONSE_STRIPPED_NODE_PROPERTIES = new Set([
   "Data_Bank", "namespace", "spelling_verification", "topic_lower", "ref_id", "node_key",
   "relevancy_score", "date_added_to_graph", "updated_at", "text_embeddings", "input_embeddings",
@@ -88,7 +88,7 @@ export interface SearchParams {
   output_q?: string;
   /** Node type labels (exact Neo4j labels). */
   types?: string[];
-  /** Domain suffixes, e.g. `["vein"]`. Validated against the registry. */
+  /** Domain suffixes, e.g. `["strut"]`. Validated against the registry. */
   domains?: string[];
   namespace?: string;
   limit?: number;
@@ -588,7 +588,7 @@ export class GraphReader {
       // many → per-domain union. When the global index is absent (jarvis
       // never mounted, or Neo4j too old for the multi-label vector index),
       // fall back to the per-domain union over visible domains — jarvis does
-      // this for vectors; we do it for fulltext too so a vein-only DB needs
+      // this for vectors; we do it for fulltext too so a strut-only DB needs
       // no global index. Existence is read once, up front.
       const existing = new Set((await this.rows(tx, `SHOW INDEXES YIELD name RETURN name`)).map((r) => String(r["name"])));
       const route = (suffix: string, global: string) =>
@@ -687,8 +687,8 @@ export class GraphReader {
       const titleKeys = new Map<string, string>();
       const titleKeyFor = (t: string | undefined) => (t ? titleKeys.get(t) ?? "name" : "name");
       for (const t of new Set(ranked.map((e) => typeLabelOf(e.node.labels)).filter((t): t is string => !!t))) {
-        const vein = getVeinSchema(t);
-        if (vein) titleKeys.set(t, vein.title_key);
+        const strut = getStrutSchema(t);
+        if (strut) titleKeys.set(t, strut.title_key);
         else {
           const r = await this.rows(tx, `MATCH (s:Schema) WHERE toLower(s.type) = toLower($t) RETURN s.title_key AS k LIMIT 1`, { t });
           if (typeof r[0]?.["k"] === "string") titleKeys.set(t, r[0]["k"] as string);
@@ -709,8 +709,8 @@ export class GraphReader {
   }
 
   /** `(label, property)` pairs declaring `vector_index`, from live Schema
-   *  nodes (jarvis's discovery) — falls back to the Vein registry so a
-   *  vein-only DB needs no extra read. */
+   *  nodes (jarvis's discovery) — falls back to the Strut registry so a
+   *  strut-only DB needs no extra read. */
   private async vectorIndexedPairsLive(tx?: ManagedTransaction): Promise<Array<{ type: string; prop: string }>> {
     const rows = await this.rows(tx, `MATCH (s:Schema) WHERE s.vector_index IS NOT NULL AND (s.is_deleted IS NULL OR s.is_deleted = false) RETURN s.type AS t, s.vector_index AS v`);
     const out: Array<{ type: string; prop: string }> = [];

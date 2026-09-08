@@ -18,8 +18,8 @@
  *     endpoints carry the same one; NO `namespace` on edges;
  *   - soft delete = `is_muted = true`.
  *
- * Validation: an edge whose SOURCE is a Vein type must be a row of the
- * closed Vein registry (§6 item 6; `ACCESSED` accepts any target). Any
+ * Validation: an edge whose SOURCE is a Strut type must be a row of the
+ * closed Strut registry (§6 item 6; `ACCESSED` accepts any target). Any
  * other source type follows jarvis's own rules — the `EDGE_TYPES`
  * allowlist, else an edge schema must exist between the endpoint types or
  * their ancestors (or the `*` wildcard). Both endpoints must resolve — a
@@ -30,7 +30,7 @@ import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, int, txRows, type Row } from "./bolt.js";
 import { GraphValidationError } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
-import { VEIN_EDGES, WILDCARD_TARGET_EDGES, isVeinType, typeLabelOf } from "./vein-schemas.js";
+import { STRUT_EDGES, WILDCARD_TARGET_EDGES, isStrutType, typeLabelOf } from "./strut-schemas.js";
 
 export { typeLabelOf };
 
@@ -88,7 +88,7 @@ const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
 
 /** Registry check for one (source type, edge, target type) triple. */
 export function isRegisteredEdge(edge: string, sourceType: string, targetType: string): boolean {
-  return VEIN_EDGES.some(
+  return STRUT_EDGES.some(
     (r) => r.edge === edge && r.source === sourceType && (WILDCARD_TARGET_EDGES.has(edge) || r.target === targetType),
   );
 }
@@ -228,8 +228,8 @@ export class EdgeWriter {
     return rows.length > 0;
   }
 
-  /** Resolve every endpoint's type label and check each triple: Vein
-   *  registry for Vein sources, jarvis's allowlist/edge-schema rules for the
+  /** Resolve every endpoint's type label and check each triple: Strut
+   *  registry for Strut sources, jarvis's allowlist/edge-schema rules for the
    *  rest. Throws on a missing endpoint or disallowed triple. */
   private async validateEndpoints(tx: ManagedTransaction, inputs: EdgeInput[]): Promise<ResolvedEdge[]> {
     const ids = [...new Set(inputs.flatMap((i) => [i.source_ref_id, i.target_ref_id]))];
@@ -245,9 +245,9 @@ export class EdgeWriter {
       const tt = typeLabelOf(t.labels);
       if (!st) throw new GraphValidationError("WRONG_TYPE", i.edge, "source node has no type label", "source_ref_id");
       let edge_key = edgeKeyFor(i.edge);
-      if (isVeinType(st)) {
+      if (isStrutType(st)) {
         if (!isRegisteredEdge(i.edge, st, tt ?? "")) {
-          throw new GraphValidationError("WRONG_TYPE", i.edge, `${st}-[${i.edge}]->${tt ?? "?"} is not a registered Vein edge`);
+          throw new GraphValidationError("WRONG_TYPE", i.edge, `${st}-[${i.edge}]->${tt ?? "?"} is not a registered Strut edge`);
         }
       } else {
         const match = await this.resolver.edgeSchema(i.edge, st, tt ?? "", tx);

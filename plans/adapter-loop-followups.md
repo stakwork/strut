@@ -26,7 +26,7 @@ before the adapters that consume it.
 - A UI to manage secrets: list which names exist, set/rotate a value, see which
   steps reference which secret. Per-deployment scope first; per-publisher /
   per-tenant later.
-- Wiring: inject the store-backed `secrets` into `createVein`'s services bag
+- Wiring: inject the store-backed `secrets` into `createStrut`'s services bag
   (replacing/overriding the env default).
 - **Coupling already handled:** the cassette recorder scrubs secret VALUES (read
   through `services.secrets`) to `{{secret:NAME}}`, so a real store doesn't change
@@ -73,7 +73,7 @@ button yet.
 
 **State:** already works — the registry loader does a bare dynamic `import()`,
 so an adapter CAN `import` a vendor SDK *if the host pre-installed it* (pro users
-consume vein as a lib and can add deps). The agent is told to prefer raw REST and
+consume strut as a lib and can add deps). The agent is told to prefer raw REST and
 only import a pre-installed package.
 
 **Optional later:** bake a curated allowlist (e.g. `stripe`, `@octokit/rest`)
@@ -85,12 +85,12 @@ recordable — prefer exposing such an SDK as a *service* if record/replay matte
 
 ## 5. Verify mcp `/lab` with the new default services
 
-**Why:** `createVein` now auto-merges `standardServices()` (`{ http, secrets }`)
+**Why:** `createStrut` now auto-merges `standardServices()` (`{ http, secrets }`)
 into the default services bag (was `{}`). It's additive and consumer-overridable,
 and the one test asserting the old empty default was updated.
 
-**To do:** confirm mcp's `/lab` (which copies vein as a `file:../vein` dep and may
-introspect `vein.services`) still boots and behaves. Check for any code that
+**To do:** confirm mcp's `/lab` (which copies strut as a `file:../strut` dep and may
+introspect `strut.services`) still boots and behaves. Check for any code that
 assumed an empty default services bag.
 
 ---
@@ -110,15 +110,15 @@ end-to-end validation of the feature.
 
 ## 7. Type safety for adapter authoring (the REAL win: typecheck-in-the-loop)
 
-**Rejected:** defaulting `defineStep`'s `TServices` to `VeinCapabilities` (so
+**Rejected:** defaulting `defineStep`'s `TServices` to `StrutCapabilities` (so
 `ctx.services.http`/`secrets` type without annotation). It's a breaking type
 change for consumers — mcp lab steps cast `ctx.services as ConceptServices`, and
-`VeinCapabilities` (disjoint from those bags) makes that a `TS2352` ("convert to
+`StrutCapabilities` (disjoint from those bags) makes that a `TS2352` ("convert to
 unknown first"). Marginal benefit anyway: the runner erases services to
 `unknown` (author-time only), `res.body` stays `unknown`, and custom steps load
 via tsx with NO typecheck — so the LLM gets zero benefit. Kept `unknown` default;
-`VeinCapabilities` is exported for OPT-IN annotation
-(`defineStep<"t", In, Out, VeinCapabilities>(…)`).
+`StrutCapabilities` is exported for OPT-IN annotation
+(`defineStep<"t", In, Out, StrutCapabilities>(…)`).
 
 **The actually-useful version:** add a **typecheck to `create_step` / `edit_step`**
 so the AGENT gets real diagnostics. After writing the source, compile it (e.g.

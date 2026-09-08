@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 export default defineStep({
   type: "graph/create-node",
   description:
-    "Create (or merge) a SINGLE node in the vein knowledge graph as DATA, with no edge " +
+    "Create (or merge) a SINGLE node in the strut knowledge graph as DATA, with no edge " +
     "(to assert a relationship at the same time, use graph_create_triplet instead). Writes live to the graph. " +
     "REUSE existing nodes: graph_graph_search first, and only create when the entity genuinely doesn't exist yet — " +
     "duplicate nodes fragment the graph. The node type must already exist in the ontology " +
@@ -28,7 +28,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const namespace = await b.reader.resolveNamespace(cfg.namespace);
       const r = await b.nodes.write({ type: cfg.node_type, data: cfg.node_data }, "create", { namespace });
       const existed = r.outcome === "existing";

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 
 const MIN_HEIGHT = 80;
 const MAX_HEIGHT_OFFSET = 200; // keep at least this much above for canvas + topbar
-const STORAGE_KEY = "vein.eventsHeight";
+const STORAGE_KEY = "strut.eventsHeight";
 
 function getShell(): HTMLElement | null {
   return document.querySelector(".shell");

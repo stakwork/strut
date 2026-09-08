@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 
 export default defineStep({
   type: "graph/project",
   description:
-    "Project vein's own run and chat history into the knowledge graph (VeinRun / VeinAgentSession / " +
-    "VeinToolCall / VeinChat / VeinTurn nodes with EXECUTED, IN_RUN, IN_SESSION, SPAWNED, IN_CHAT edges, plus " +
+    "Project strut's own run and chat history into the knowledge graph (StrutRun / StrutAgentSession / " +
+    "StrutToolCall / StrutChat / StrutTurn nodes with EXECUTED, IN_RUN, IN_SESSION, SPAWNED, IN_CHAT edges, plus " +
     "ACCESSED edges from each tool call to the graph nodes it reported touching), " +
     "reading the raw logs under the server's data dir. Idempotent — re-run any time; settled runs are " +
     "skipped unless skipSettled is false. This is what makes 'which runs executed this version' and " +
@@ -16,7 +16,7 @@ export default defineStep({
     dataDir: z
       .string()
       .optional()
-      .describe("Local data dir holding workflows/<name>/runs and chats/ (default: VEIN_WORKSPACE, else ./workspace)."),
+      .describe("Local data dir holding workflows/<name>/runs and chats/ (default: STRUT_WORKSPACE, else ./workspace)."),
     workflows: z
       .array(z.string())
       .optional()
@@ -28,8 +28,8 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
-      const dataDir = cfg.dataDir ?? process.env["VEIN_WORKSPACE"] ?? "./workspace";
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
+      const dataDir = cfg.dataDir ?? process.env["STRUT_WORKSPACE"] ?? "./workspace";
       const [{ FileRunStore }, { FileChatStore }, { FileWorkspaceStore }, { Neo4jWorkspaceStore }, { projectAll }, { graphWorkspaceRequested }] =
         await Promise.all([
           import("../../../store.js"),

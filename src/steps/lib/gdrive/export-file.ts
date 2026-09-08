@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { buildDriveClient, statusOf, describeDriveError } from "./_shared.js";
 
 const EXAMPLE = `- id: doc
@@ -46,7 +46,7 @@ export default defineStep({
       webViewLink: z.string().nullable(),
     }),
   }),
-  async run(cfg, ctx: StepContext<VeinCapabilities>) {
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
     const { client, haveAuth } = await buildDriveClient(cfg.accessToken, ctx);
     const resource = `file "${cfg.fileId}"`;
 

@@ -9,7 +9,7 @@ steps:
   - id: greet
     type: log
     config:
-      message: "Hello from vein!"
+      message: "Hello from strut!"
   - id: fetch
     type: http
     config:

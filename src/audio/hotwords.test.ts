@@ -14,11 +14,11 @@ import {
 
 describe("hotwords list format", () => {
   it("parses phrases, per-phrase scores, comments and blanks", () => {
-    const list = parseHotwords("# team lingo\nStakwork\nSphinx :3.5\n\n  vein workflow : 2\n");
+    const list = parseHotwords("# team lingo\nStakwork\nSphinx :3.5\n\n  strut workflow : 2\n");
     assert.deepEqual(list, [
       { phrase: "Stakwork" },
       { phrase: "Sphinx", score: 3.5 },
-      { phrase: "vein workflow", score: 2 },
+      { phrase: "strut workflow", score: 2 },
     ]);
   });
 
@@ -43,7 +43,7 @@ describe("synthesizeBpeVocab", () => {
 describe("compileHotwords", () => {
   let dir: string;
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "vein-hotwords-"));
+    dir = await mkdtemp(join(tmpdir(), "strut-hotwords-"));
     await writeFile(join(dir, "tokens.txt"), "<blk> 0\n▁S 1\np 2\nhi 3\nn 4\nx 5\n");
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
@@ -64,7 +64,7 @@ describe("compileHotwords", () => {
 describe("HotwordsStore", () => {
   let dir: string;
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "vein-hotwords-store-"));
+    dir = await mkdtemp(join(tmpdir(), "strut-hotwords-store-"));
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 

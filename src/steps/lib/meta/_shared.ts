@@ -2,7 +2,7 @@ import type { AuthoringCapability } from "../../../authoring.js";
 
 /**
  * The `meta/*` steps are thin plumbing over the authoring capability
- * (`services.authoring`, auto-provided by `createVein`) — the workspace's
+ * (`services.authoring`, auto-provided by `createStrut`) — the workspace's
  * author/test/inspect operations as REGISTRY STEPS, so an in-workflow agent
  * (`agentTools: ["meta/*"]`) can author, test, and inspect candidate
  * workflows from inside a run. See EVOLVE_SPEC §5.2, and authoring.ts for
@@ -21,8 +21,8 @@ export function requireAuthoring(services: unknown): AuthoringCapability {
   if (!authoring) {
     throw new Error(
       "meta/* steps require the authoring capability (ctx.services.authoring). " +
-        "The standard vein server provides it automatically; embedders can inject one " +
-        "via buildAuthoringCapability (import from 'vein').",
+        "The standard strut server provides it automatically; embedders can inject one " +
+        "via buildAuthoringCapability (import from 'strut').",
     );
   }
   return authoring;

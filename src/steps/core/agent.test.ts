@@ -221,7 +221,7 @@ describe("agentTools (buildRegistryTools — tools are steps)", () => {
       emit: async (e: any) => { events.push(e); }, services: undefined, registry: reg,
     } as unknown as StepContext;
     const tools = buildRegistryTools(["demo/probe"], reg, ctx, (d: any) => d);
-    // Unwrapped (no wrapToolsWithEmit): no veinToolPath → parent path unchanged.
+    // Unwrapped (no wrapToolsWithEmit): no strutToolPath → parent path unchanged.
     assert.equal(await (tools["demo_probe"] as any).execute({}), "wf/agent");
   });
 });
@@ -364,7 +364,7 @@ describe("repo_overview adaptive tree (repoTree)", () => {
 describe("textEdit (str_replace_based_edit_tool handler)", () => {
   let cwd: string;
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "vein-textedit-"));
+    cwd = mkdtempSync(join(tmpdir(), "strut-textedit-"));
   });
   afterEach(() => {
     rmSync(cwd, { recursive: true, force: true });
@@ -447,7 +447,7 @@ describe("textEdit (str_replace_based_edit_tool handler)", () => {
   });
 
   it("accepts absolute path under os.tmpdir() — create then str_replace round-trip", () => {
-    const scratchPath = join(tmpdir(), `vein-scratch-${Date.now()}.py`);
+    const scratchPath = join(tmpdir(), `strut-scratch-${Date.now()}.py`);
     try {
       // Create the scratch file
       const createOut = textEdit(
@@ -657,12 +657,12 @@ describe("isTransientStreamError (resume a severed stream, not a real failure)",
   it("never resumes a cancelled run, by identity not by wording", () => {
     // Run control outranks recovery. Matched on the CancelledError marker so a
     // reworded cancel can't start looking transient.
-    assert.equal(isTransientStreamError(Object.assign(new Error("stopped"), { isVeinCancelled: true })), false);
+    assert.equal(isTransientStreamError(Object.assign(new Error("stopped"), { isStrutCancelled: true })), false);
     assert.equal(isTransientStreamError(Object.assign(new Error("stopped"), { name: "CancelledError" })), false);
     // Even wrapping a genuinely transient cause must not make a cancel resumable.
     assert.equal(
       isTransientStreamError(
-        Object.assign(new Error("stopped"), { isVeinCancelled: true, cause: new TypeError("terminated") }),
+        Object.assign(new Error("stopped"), { isStrutCancelled: true, cause: new TypeError("terminated") }),
       ),
       false,
     );
@@ -729,9 +729,9 @@ describe("mid-stream socket death is resumed, not lost", () => {
 
   let cwd = "";
   let saved: Record<string, string | undefined> = {};
-  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "VEIN_LLM_PROVIDER", "AI_SDK_LOG_WARNINGS"];
+  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_LLM_PROVIDER", "AI_SDK_LOG_WARNINGS"];
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "vein-stream-"));
+    cwd = mkdtempSync(join(tmpdir(), "strut-stream-"));
     saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
     process.env["ANTHROPIC_API_KEY"] = "test-key";
     process.env["AI_SDK_LOG_WARNINGS"] = "false";

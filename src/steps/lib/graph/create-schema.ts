@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 
 const EXAMPLE = `- id: evidence_type
@@ -19,7 +19,7 @@ const EXAMPLE = `- id: evidence_type
 export default defineStep({
   type: "graph/create-schema",
   description:
-    "Register a NODE TYPE in the vein knowledge graph's ontology (a `:Schema` node), or add attributes to an existing one. " +
+    "Register a NODE TYPE in the strut knowledge graph's ontology (a `:Schema` node), or add attributes to an existing one. " +
     "graph/create-node and graph/create-triplet refuse a node whose type has no schema, or whose properties the schema " +
     "does not declare — call this first when the type (or attribute) you need is missing from graph_get_ontology. " +
     "`attributes` maps attribute name → type: string | boolean | int | float | complex | datetime | list, with a `?` prefix " +
@@ -27,8 +27,8 @@ export default defineStep({
     "available. `node_key` is the identity: `-`-joined attribute names (default 'name') — two nodes with the same node_key " +
     "values in a namespace are the same node. `index` (default: the node_key attributes) lists the searchable attributes. " +
     "If the type ALREADY EXISTS this is add-only: attributes it lacks are added, nothing existing changes, and " +
-    "parent/node_key/index are left alone (status 'Warning' with `added_attributes`). Vein's own types (VeinRun, " +
-    "VeinWorkflow, …) are a closed registry and cannot be created or extended. Edge types between node types are NOT " +
+    "parent/node_key/index are left alone (status 'Warning' with `added_attributes`). Strut's own types (StrutRun, " +
+    "StrutWorkflow, …) are a closed registry and cannot be created or extended. Edge types between node types are NOT " +
     "schemas — create them with graph/create-triplet's create_schema_if_missing.\n\n" +
     EXAMPLE,
   input: z.object({
@@ -50,7 +50,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const { createNodeSchema } = await import("../../../graph/schema-crud.js");
       const r = await createNodeSchema(b.bolt, b.schemas, {
         type: cfg.type,

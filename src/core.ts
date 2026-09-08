@@ -10,8 +10,8 @@ import { z } from "zod";
  * (e.g. Neo4j in prod, in-memory in tests). Steps that don't touch
  * services leave it as the default `unknown` and ignore `ctx.services`.
  * An adapter that wants typed `http`/`secrets` can opt in by annotating
- * `defineStep<"t", In, Out, VeinCapabilities>(…)` (import the type from
- * "vein") — kept opt-in so it doesn't collide with consumer `ctx.services`
+ * `defineStep<"t", In, Out, StrutCapabilities>(…)` (import the type from
+ * "strut") — kept opt-in so it doesn't collide with consumer `ctx.services`
  * casts (the standard server always provides `http`/`secrets` regardless).
  */
 export interface StepDef<

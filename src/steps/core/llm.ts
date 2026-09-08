@@ -22,8 +22,8 @@ export default defineStep({
     // Dynamic import to avoid hard dependency if not using LLM steps
     const { generateText, generateObject } = await import("ai");
 
-    const provider = cfg.provider ?? process.env["VEIN_LLM_PROVIDER"] ?? "anthropic";
-    const model = cfg.model ?? process.env["VEIN_LLM_MODEL"];
+    const provider = cfg.provider ?? process.env["STRUT_LLM_PROVIDER"] ?? "anthropic";
+    const model = cfg.model ?? process.env["STRUT_LLM_MODEL"];
 
     // Resolve the AI SDK model
     let aiModel: Parameters<typeof generateText>[0]["model"];

@@ -7,7 +7,7 @@ server and orphaning every in-flight log as "stale".
 
 Status: IMPLEMENTED (all three rungs). The runner/controller live in
 `src/run-control.ts` + `src/runner.ts`, the journal in `src/journal.ts`,
-the endpoints in `src/createVein.ts`
+the endpoints in `src/createStrut.ts`
 (`POST /workflows/:name/runs/:runId/{cancel,pause,resume}`), the UI in
 `web/src/app.tsx`, and the lab linkage (optimizer `parentRunId`,
 evolve-loop `ctx.journal` iteration resume) in `mcp/src/lab`. Tests:
@@ -106,11 +106,11 @@ interface RunController {
 }
 ```
 
-- **Registry.** `createVein` holds `controllers: Map<runId, RunController>`
+- **Registry.** `createStrut` holds `controllers: Map<runId, RunController>`
   (superseding today's `activeRuns: Set<string>` — a controller's presence
   IS "in-flight", so the `"running" | "stale"` listing fallback reads this
   map). Registered/unregistered exactly where `trackRun` is called today:
-  `launchDetached`, `vein.run`, authoring's `runWorkflow`.
+  `launchDetached`, `strut.run`, authoring's `runWorkflow`.
 - **Tree linkage.** Nested launches attach to the launching run's
   controller. The parent runId travels the same paths the services bag
   already does: `RunOptions.parentRunId`, set by `meta/run-workflow` and
@@ -262,8 +262,8 @@ step. Three crash-specific hardenings:
 
 ### 5.3 Boot-time auto-resume
 
-IMPLEMENTED (`autoResumeStaleRuns` in `createVein.ts`; on by default for
-a file-backed store, `VEIN_AUTO_RESUME=0` or `autoResume: false` to
+IMPLEMENTED (`autoResumeStaleRuns` in `createStrut.ts`; on by default for
+a file-backed store, `STRUT_AUTO_RESUME=0` or `autoResume: false` to
 disable; runs a few seconds after construction). The operational goal:
 a long serial workflow must never need to be started over because the
 server restarted.

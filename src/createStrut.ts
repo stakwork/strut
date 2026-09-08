@@ -49,26 +49,26 @@ import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
 // ── Public types ───────────────────────────────────────────────────────────
 
 /**
- * Options for constructing a Vein instance. Everything is optional — pass
+ * Options for constructing a Strut instance. Everything is optional — pass
  * nothing for the default "filesystem-backed server" behavior, or supply
- * any subset to embed vein in your own app.
+ * any subset to embed strut in your own app.
  */
-export interface VeinOptions<TServices = unknown> {
+export interface StrutOptions<TServices = unknown> {
   /** Persistent store for workflows and steps. Defaults to a new
-   *  `FileWorkspaceStore()` (reads `VEIN_WORKSPACE` env, falls back to
+   *  `FileWorkspaceStore()` (reads `STRUT_WORKSPACE` env, falls back to
    *  `./workspace`). Any `WorkspaceStore` implementation works. */
   workspace?: WorkspaceStore;
 
   /** Local directory for the inherently-local things: run artifacts,
    *  step cassettes, the chat builder's shell cwd + scratch/. Defaults to
    *  the file workspace's root (so a file-backed deployment keeps one
-   *  directory), else `VEIN_WORKSPACE` / `./workspace`. A non-file
+   *  directory), else `STRUT_WORKSPACE` / `./workspace`. A non-file
    *  workspace can point this at any scratch volume — losing it loses
    *  blobs and cassettes, never workspace records. */
   dataDir?: string;
 
   /** Step registry. If supplied, used as-is and `rebuildRegistry` becomes
-   *  a no-op (the consumer owns step composition). If omitted, vein
+   *  a no-op (the consumer owns step composition). If omitted, strut
    *  discovers steps via `buildRegistry(await workspace.materializeCustomSteps())`. */
   registry?: StepRegistry;
 
@@ -84,7 +84,7 @@ export interface VeinOptions<TServices = unknown> {
   services?: TServices;
 
   /** When true, mount the static web UI under `/` (SPA fallback) and
-   *  `/assets/*`. Defaults to true. Disable when embedding vein under a
+   *  `/assets/*`. Defaults to true. Disable when embedding strut under a
    *  larger app that owns its own UI routes. */
   serveUi?: boolean;
 
@@ -107,10 +107,10 @@ export interface VeinOptions<TServices = unknown> {
   secretStore?: SecretStore;
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
-   *  autonomous "let it rip" loops. Defaults to `VEIN_CHAT_MAX_STEPS` or 100. */
+   *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
   chatMaxSteps?: number;
 
-  /** Anthropic model id for the chat agent. Defaults to `VEIN_CHAT_MODEL` or
+  /** Anthropic model id for the chat agent. Defaults to `STRUT_CHAT_MODEL` or
    *  `claude-sonnet-5`. */
   chatModel?: string;
 
@@ -119,29 +119,29 @@ export interface VeinOptions<TServices = unknown> {
    *  running workflow converts to a DETACHED run (the tool returns a
    *  `{ status: "running", runId }` stub and the chat is woken with a
    *  `[run-notification]` message when the run settles). Defaults to
-   *  `VEIN_CHAT_RUN_WAIT_MS` or 60000. */
+   *  `STRUT_CHAT_RUN_WAIT_MS` or 60000. */
   chatRunWaitMs?: number;
 
   /** Max consecutive notification-triggered chat turns since the last human
    *  message before the chat PARKS (notifications still append to the
    *  transcript, but no turn launches until a human replies) — the runaway
    *  guard for autonomous launch→wake→relaunch loops. Defaults to
-   *  `VEIN_CHAT_MAX_AUTO_TURNS` or 10. */
+   *  `STRUT_CHAT_MAX_AUTO_TURNS` or 10. */
   chatMaxAutoTurns?: number;
 
   /** Boot-time auto-resume of runs cut off by a crash/restart
    *  (RUN_CONTROL_SPEC §5.3). Defaults to ON for a file-backed store unless
-   *  `VEIN_AUTO_RESUME=0`; pass `false` to disable, or an object to tune
+   *  `STRUT_AUTO_RESUME=0`; pass `false` to disable, or an object to tune
    *  the guards. Only the NEWEST root run per workflow is considered. */
   autoResume?: boolean | AutoResumeOptions;
 
-  /** The vein graph backend, when the deployment has one (server.ts passes
+  /** The strut graph backend, when the deployment has one (server.ts passes
    *  the one behind its graph-backed workspace). Enables the chat builder's
    *  read-only `graph_query` tool. Omit and the tool isn't offered. */
   graph?: GraphBackend;
 
   /** Directory containing the built web UI (the `dist` folder). Defaults
-   *  to vein's own bundled UI resolved relative to this module, so it
+   *  to strut's own bundled UI resolved relative to this module, so it
    *  works regardless of the host process's CWD. The built UI uses
    *  relative asset paths, so it can be mounted at any sub-path (e.g.
    *  `/lab`) as long as the host serves it with a trailing slash. */
@@ -149,7 +149,7 @@ export interface VeinOptions<TServices = unknown> {
 
   /** Speech-to-text (src/audio): the `/audio/*` routes, the `/audio/stream`
    *  WebSocket (attached by `listen()`), and `ctx.services.stt`. Defaults
-   *  to a service rooted at `dataDir` with models under `VEIN_MODEL_DIR`;
+   *  to a service rooted at `dataDir` with models under `STRUT_MODEL_DIR`;
    *  pass your own, or `false` to mount nothing. The sherpa addon is an
    *  optionalDependency loaded on first use, so the default costs nothing
    *  at boot and the routes answer 501 without it. */
@@ -176,17 +176,17 @@ export interface AutoResumeOutcome {
 }
 
 /**
- * A configured vein instance. Carries the Hono `app` (mount it under your
+ * A configured strut instance. Carries the Hono `app` (mount it under your
  * own router, or call `listen()`), the underlying workspace / store /
  * services bag, and a typed `run()` helper that automatically threads
  * `services` into every workflow execution.
  */
-export interface Vein<TServices = unknown> {
-  /** Hono app with all vein routes mounted. Mount under your own router
-   *  with `parent.route("/vein", vein.app)`, or call `vein.listen(port)`. */
+export interface Strut<TServices = unknown> {
+  /** Hono app with all strut routes mounted. Mount under your own router
+   *  with `parent.route("/strut", strut.app)`, or call `strut.listen(port)`. */
   app: Hono;
   workspace: WorkspaceStore;
-  /** Resolved local data directory (see `VeinOptions.dataDir`). */
+  /** Resolved local data directory (see `StrutOptions.dataDir`). */
   dataDir: string;
   store: RunStore;
   /** Deployment-scoped secret store backing `ctx.services.secrets` + the
@@ -215,20 +215,20 @@ export interface Vein<TServices = unknown> {
   run: (
     workflow: string | Flow,
     input?: unknown,
-    opts?: VeinRunOptions<TServices>,
+    opts?: StrutRunOptions<TServices>,
   ) => Promise<RunResult>;
 
   /** The speech-to-text service behind `/audio/*` (null when disabled). A
    *  host that mounts `app` itself must call `attachAudioWebSocket(server,
-   *  vein.stt)` to get the dictation socket; `listen()` does it. */
+   *  strut.stt)` to get the dictation socket; `listen()` does it. */
   stt: SttService | null;
 
   /** Boot the Hono server with `@hono/node-server`. Resolves once the
    *  socket is listening, to the *bound* port — so `listen(0)` (or
-   *  `VEIN_PORT=0`) lets the OS pick one, which a desktop host that spawns
-   *  vein as a child process relies on. `host` (or `VEIN_HOST`) sets the
+   *  `STRUT_PORT=0`) lets the OS pick one, which a desktop host that spawns
+   *  strut as a child process relies on. `host` (or `STRUT_HOST`) sets the
    *  bind address; unset binds every interface, `127.0.0.1` keeps a local
-   *  vein off the LAN. Prints one JSON line on stdout when ready,
+   *  strut off the LAN. Prints one JSON line on stdout when ready,
    *  `{"event":"ready","port":N,"host":"…"}`, for hosts to parse.
    *  Convenience wrapper — feel free to mount `app` yourself. */
   listen: (port?: number, host?: string) => Promise<number>;
@@ -237,7 +237,7 @@ export interface Vein<TServices = unknown> {
   close: () => Promise<void>;
 }
 
-export interface VeinRunOptions<TServices = unknown> {
+export interface StrutRunOptions<TServices = unknown> {
   runId?: string;
   /** Workflow version (only meaningful when `workflow` is a string). */
   version?: string;
@@ -342,31 +342,31 @@ function describeField(name: string, s: z.ZodTypeAny): FieldDesc {
 // ── Factory ────────────────────────────────────────────────────────────────
 
 /**
- * Build a configured Vein instance. This is the primary entry point for
- * using vein as a library: pass your registry (or let it be discovered
+ * Build a configured Strut instance. This is the primary entry point for
+ * using strut as a library: pass your registry (or let it be discovered
  * from disk), your services bag, and mount the returned Hono `app`
  * wherever you like.
  *
  * ```ts
- * import { createVein, createRegistry, defineStep } from "vein";
+ * import { createStrut, createRegistry, defineStep } from "strut";
  *
  * interface MyServices { graph: GraphStore; llm: LLMClient }
  *
- * const vein = await createVein<MyServices>({
+ * const strut = await createStrut<MyServices>({
  *   registry: await createRegistry([myStep, anotherStep]),
  *   services: { graph: new Neo4jGraph(), llm: new Anthropic() },
  * });
  *
- * await vein.listen(3000);
+ * await strut.listen(3000);
  * ```
  *
  * The returned `app` can also be mounted under a parent Hono / Express
- * app — vein owns its routes (`/workflows`, `/steps`, `/chat`, `/health`)
+ * app — strut owns its routes (`/workflows`, `/steps`, `/chat`, `/health`)
  * but nothing else.
  */
-export async function createVein<TServices = unknown>(
-  opts: VeinOptions<TServices> = {},
-): Promise<Vein<TServices>> {
+export async function createStrut<TServices = unknown>(
+  opts: StrutOptions<TServices> = {},
+): Promise<Strut<TServices>> {
   const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // Backend mode, used ONLY to pick unspecified defaults: the run/chat/secret
   // stores follow the workspace's kind (file-backed → file stores under
@@ -375,7 +375,7 @@ export async function createVein<TServices = unknown>(
   const fileBacked = workspace instanceof FileWorkspaceStore;
   const dataDir =
     opts.dataDir ??
-    (fileBacked ? workspace.path : (process.env["VEIN_WORKSPACE"] ?? "./workspace"));
+    (fileBacked ? workspace.path : (process.env["STRUT_WORKSPACE"] ?? "./workspace"));
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
   // Controllers for runs currently executing **in this process** (keyed
   // `${workflow}/${runId}`) — RUN_CONTROL_SPEC §2.2. A controller's presence
@@ -390,7 +390,7 @@ export async function createVein<TServices = unknown>(
   /** Register a run as in-flight, creating its controller (attached to the
    *  launching run's controller when `parentRunId` resolves — controls apply
    *  to whole subtrees). Every launch path must register: HTTP
-   *  (launchDetached), programmatic (vein.run), in-process nested runs
+   *  (launchDetached), programmatic (strut.run), in-process nested runs
    *  (authoring's meta/run-workflow), and chat-detached runs. The returned
    *  untrack fn belongs in the launcher's finally. */
   const trackRun = (workflow: string, runId: string, parentRunId?: string) => {
@@ -444,7 +444,7 @@ export async function createVein<TServices = unknown>(
   // LLM-authored adapter rely on `ctx.services.http` / `ctx.services.secrets`
   // existing out of the box.
   // Speech-to-text: sessions + hotword lists live under dataDir; models under
-  // VEIN_MODEL_DIR. Nothing loads until a stream or transcribe call.
+  // STRUT_MODEL_DIR. Nothing loads until a stream or transcribe call.
   const stt: SttService | null = opts.stt === false ? null : (opts.stt ?? createStt({ dataDir }));
   const services = {
     ...(standardServices({ secretStore }) as unknown as Record<string, unknown>),
@@ -462,21 +462,21 @@ export async function createVein<TServices = unknown>(
   const chatStore: ChatStore =
     opts.chatStore ?? (fileBacked ? new FileChatStore(dataDir) : new MemoryChatStore());
   const chatMaxSteps =
-    opts.chatMaxSteps ?? Number(process.env["VEIN_CHAT_MAX_STEPS"] ?? 100);
+    opts.chatMaxSteps ?? Number(process.env["STRUT_CHAT_MAX_STEPS"] ?? 100);
   const chatModel =
-    opts.chatModel ?? process.env["VEIN_CHAT_MODEL"] ?? "claude-sonnet-5";
+    opts.chatModel ?? process.env["STRUT_CHAT_MODEL"] ?? "claude-sonnet-5";
   const chatRunWaitMs =
-    opts.chatRunWaitMs ?? Number(process.env["VEIN_CHAT_RUN_WAIT_MS"] ?? 60_000);
+    opts.chatRunWaitMs ?? Number(process.env["STRUT_CHAT_RUN_WAIT_MS"] ?? 60_000);
   // Provider-derived infra constant (see pricing.ts — NOT an option: a wrong
   // value is only ever a bug). Without it the AI SDK defaults max_tokens to
   // 4096, which truncates a create_step tool call MID-JSON (it carries a
   // whole TS file in its `code` arg) — the turn dies with finish=length.
   const chatMaxOutputTokens = maxOutputTokensFor("anthropic");
   const chatMaxAutoTurns =
-    opts.chatMaxAutoTurns ?? Number(process.env["VEIN_CHAT_MAX_AUTO_TURNS"] ?? 10);
+    opts.chatMaxAutoTurns ?? Number(process.env["STRUT_CHAT_MAX_AUTO_TURNS"] ?? 10);
   const webDist =
     opts.webDist ??
-    process.env["VEIN_WEB_DIST"] ??
+    process.env["STRUT_WEB_DIST"] ??
     resolve(dirname(fileURLToPath(import.meta.url)), "../web/dist");
   const registryWasInjected = opts.registry !== undefined;
 
@@ -1221,7 +1221,7 @@ export async function createVein<TServices = unknown>(
   // ── Secrets ──────────────────────────────────────────────────────────────
   // Deployment-scoped credential store behind `ctx.services.secrets`. Values
   // are write-only over the API: GET returns NAMES + metadata only, never the
-  // value. All routes are gated by `VEIN_API_KEY` (permissive in dev mode).
+  // value. All routes are gated by `STRUT_API_KEY` (permissive in dev mode).
   // 501 when the consumer injected their own `secrets` capability (we don't
   // own that store).
 
@@ -1653,7 +1653,7 @@ export async function createVein<TServices = unknown>(
               // never executes and the turn dies silently. Say why, loudly.
               if (step.finishReason === "length") {
                 console.warn(
-                  `[chat ${chatId}] turn ${turn} step ${step.stepNumber} TRUNCATED at maxOutputTokens=${chatMaxOutputTokens} — a cut-off tool call never executed; the turn likely ended incomplete. Raise VEIN_MAX_OUTPUT_TOKENS if this recurs.`,
+                  `[chat ${chatId}] turn ${turn} step ${step.stepNumber} TRUNCATED at maxOutputTokens=${chatMaxOutputTokens} — a cut-off tool call never executed; the turn likely ended incomplete. Raise STRUT_MAX_OUTPUT_TOKENS if this recurs.`,
                 );
               }
             },
@@ -1884,7 +1884,7 @@ export async function createVein<TServices = unknown>(
   async function run(
     workflow: string | Flow,
     input: unknown = {},
-    runOpts?: VeinRunOptions<TServices>,
+    runOpts?: StrutRunOptions<TServices>,
   ): Promise<RunResult> {
     const flow =
       typeof workflow === "string"
@@ -1928,14 +1928,14 @@ export async function createVein<TServices = unknown>(
 
   async function listen(port?: number, host?: string): Promise<number> {
     warnIfUnconfigured();
-    const requested = port ?? parseInt(process.env["VEIN_PORT"] ?? "3000", 10);
-    const hostname = host ?? process.env["VEIN_HOST"] ?? undefined;
+    const requested = port ?? parseInt(process.env["STRUT_PORT"] ?? "3000", 10);
+    const hostname = host ?? process.env["STRUT_HOST"] ?? undefined;
     console.log(
       fileBacked
-        ? `vein workspace: ${dataDir}`
-        : `vein workspace: ${workspace.constructor.name} (data dir: ${dataDir})`,
+        ? `strut workspace: ${dataDir}`
+        : `strut workspace: ${workspace.constructor.name} (data dir: ${dataDir})`,
     );
-    console.log(`vein steps: ${Object.keys(registry).length} registered`);
+    console.log(`strut steps: ${Object.keys(registry).length} registered`);
     const server = serve({ fetch: app.fetch, port: requested, ...(hostname ? { hostname } : {}) }) as unknown as import("node:http").Server;
     httpServer = server;
     // The dictation socket upgrades on the Node server, not inside Hono.
@@ -1953,7 +1953,7 @@ export async function createVein<TServices = unknown>(
       if (server.listening) done();
       else server.once("listening", done);
     });
-    console.log(`vein server: http://${hostname ?? "localhost"}:${bound}`);
+    console.log(`strut server: http://${hostname ?? "localhost"}:${bound}`);
     // Structured ready line for a host that spawned us (desktop app): one
     // JSON object on its own stdout line, after the human ones.
     console.log(JSON.stringify({ event: "ready", port: bound, host: hostname ?? "0.0.0.0" }));
@@ -1973,11 +1973,11 @@ export async function createVein<TServices = unknown>(
 
   // Boot-time auto-resume (§5.3): on by default for a file-backed store
   // (an in-memory store cannot hold a cut-off run), off with
-  // `VEIN_AUTO_RESUME=0` or `autoResume: false`. Deferred and unref'd so a
-  // host that constructs vein and exits (tests, CLIs) is never held open.
+  // `STRUT_AUTO_RESUME=0` or `autoResume: false`. Deferred and unref'd so a
+  // host that constructs strut and exits (tests, CLIs) is never held open.
   const autoResumeEnabled =
     opts.autoResume === undefined
-      ? fileBacked && process.env["VEIN_AUTO_RESUME"] !== "0"
+      ? fileBacked && process.env["STRUT_AUTO_RESUME"] !== "0"
       : opts.autoResume !== false;
   if (autoResumeEnabled) {
     const o = typeof opts.autoResume === "object" ? opts.autoResume : {};

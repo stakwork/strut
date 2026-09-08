@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 const LABEL_MAX = 160;
 const NEIGHBOR_CAP = 50;
@@ -29,7 +29,7 @@ function deriveNodeName(node: any, p: Record<string, any>): string {
 export default defineStep({
   type: "graph/graph-neighbors",
   description:
-    "Return all nodes adjacent (one hop) to a node in the vein knowledge graph, " +
+    "Return all nodes adjacent (one hop) to a node in the strut knowledge graph, " +
     "with edge_type and direction. Use the ref_id from graph_graph_search or graph_graph_get. " +
     "Each neighbor also includes an `edges` map ({EDGE_TYPE: count}) showing how " +
     "connected that neighbor is and which relationship types you can hop along next. " +
@@ -44,7 +44,7 @@ export default defineStep({
     node_type: z
       .array(z.string())
       .optional()
-      .describe('Filter neighbor nodes by type, e.g. ["VeinStep", "Concept"].'),
+      .describe('Filter neighbor nodes by type, e.g. ["StrutStep", "Concept"].'),
     namespace: z
       .string()
       .optional()
@@ -53,7 +53,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       // `limit` bounds the traversal so a hub node doesn't OOM Neo4j;
       // edges are importance-sorted before the cap keeps the top ones.
       const data = await b.reader.neighbors(cfg.ref_id, {

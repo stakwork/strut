@@ -541,7 +541,7 @@ export function buildRegistryTools(
     out[toolNameFor(stepType)] = toolFactory({
       description: def.description ?? `Run the "${stepType}" step.`,
       inputSchema: def.input,
-      execute: async (input: unknown, options?: { veinToolPath?: string }) => {
+      execute: async (input: unknown, options?: { strutToolPath?: string }) => {
         let parsed: unknown;
         try {
           parsed = def.input.parse(input ?? {});
@@ -550,14 +550,14 @@ export function buildRegistryTools(
         }
         // Run the step with the agent's ctx (leaf tool-steps reach
         // ctx.services etc.). The nesting/emit is added by wrapToolsWithEmit,
-        // which also threads this call's event path in via `veinToolPath` —
+        // which also threads this call's event path in via `strutToolPath` —
         // adopting it as the child ctx path makes any events the step itself
         // emits (e.g. a nested `agent` step's own tool calls) nest UNDER this
         // call's span instead of appearing as flat siblings of it.
         const base: StepContext = ctx ??
           ({ runId: "", path: "", scope: {}, input: undefined, emit: (async () => {}) as any, services: undefined });
-        const childCtx: StepContext = options?.veinToolPath
-          ? { ...base, path: options.veinToolPath }
+        const childCtx: StepContext = options?.strutToolPath
+          ? { ...base, path: options.strutToolPath }
           : base;
         return def.run(parsed, childCtx);
       },
@@ -649,8 +649,8 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
         // as their child ctx path, so nested emits land under this span).
         const optsWithPath =
           typeof opts === "object" && opts !== null
-            ? { ...(opts as Record<string, unknown>), veinToolPath: path }
-            : { veinToolPath: path };
+            ? { ...(opts as Record<string, unknown>), strutToolPath: path }
+            : { strutToolPath: path };
         const out = await (orig as (i: unknown, o: unknown) => Promise<unknown>)(input, optsWithPath);
         const nodes = accessedNodesOf(out);
         await emit({
@@ -732,9 +732,9 @@ export default defineStep({
     // default to anthropic), so `model: "openrouter/deepseek/deepseek-v3"`
     // alone is enough to switch providers.
     const { getModel, getProviderForModel, PROVIDERS } = await import("aieo");
-    const modelName = cfg.model ?? process.env["VEIN_LLM_MODEL"];
+    const modelName = cfg.model ?? process.env["STRUT_LLM_MODEL"];
     const provider =
-      cfg.provider ?? process.env["VEIN_LLM_PROVIDER"] ?? getProviderForModel(modelName);
+      cfg.provider ?? process.env["STRUT_LLM_PROVIDER"] ?? getProviderForModel(modelName);
     if (!PROVIDERS.includes(provider as AieoProvider)) {
       throw new Error(
         `Unknown LLM provider: "${provider}". Supported: ${PROVIDERS.join(", ")}`,
@@ -949,7 +949,7 @@ export default defineStep({
       // error. Make the cause loud instead of silent.
       if (sf.finishReason === "length") {
         console.warn(
-          `[agent] TRUNCATED: generation hit maxOutputTokens=${maxOutputTokens} (finish=length, out:${sf.usage?.outputTokens ?? "?"}). A cut-off tool call never executed. Raise VEIN_MAX_OUTPUT_TOKENS or split the write.`,
+          `[agent] TRUNCATED: generation hit maxOutputTokens=${maxOutputTokens} (finish=length, out:${sf.usage?.outputTokens ?? "?"}). A cut-off tool call never executed. Raise STRUT_MAX_OUTPUT_TOKENS or split the write.`,
         );
       }
       if (!Array.isArray(sf.content)) return;

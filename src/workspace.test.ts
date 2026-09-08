@@ -29,7 +29,7 @@ describe("WorkspaceManager", () => {
   let ws: WorkspaceManager;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-ws-test-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-ws-test-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
     ws = new WorkspaceManager(tempDir);
   });
@@ -763,15 +763,15 @@ params:
       assert.equal(ws.path, tempDir);
     });
 
-    it("uses VEIN_WORKSPACE env var as default", () => {
-      const original = process.env["VEIN_WORKSPACE"];
-      process.env["VEIN_WORKSPACE"] = "/custom/path";
+    it("uses STRUT_WORKSPACE env var as default", () => {
+      const original = process.env["STRUT_WORKSPACE"];
+      process.env["STRUT_WORKSPACE"] = "/custom/path";
       const ws2 = new WorkspaceManager();
       assert.equal(ws2.path, "/custom/path");
       if (original !== undefined) {
-        process.env["VEIN_WORKSPACE"] = original;
+        process.env["STRUT_WORKSPACE"] = original;
       } else {
-        delete process.env["VEIN_WORKSPACE"];
+        delete process.env["STRUT_WORKSPACE"];
       }
     });
   });

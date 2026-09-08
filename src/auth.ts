@@ -3,17 +3,17 @@ import type { Context, Next } from "hono";
 /**
  * Deployment-scoped shared-secret auth for step-registration mutations.
  *
- * If `VEIN_API_KEY` is set in the environment, every gated request must
+ * If `STRUT_API_KEY` is set in the environment, every gated request must
  * present `Authorization: Bearer <key>` matching that value. If unset, the
  * middleware is permissive (dev mode) — it logs a one-time warning at boot
  * so the lax posture is visible.
  *
  * The same secret authenticates first-party services in both directions
- * within a deployment: mcp uses it to register steps with vein, and vein's
+ * within a deployment: mcp uses it to register steps with strut, and strut's
  * uploaded step files use it to call back to mcp. See AGENTS.md.
  */
 
-const ENV_VAR = "VEIN_API_KEY";
+const ENV_VAR = "STRUT_API_KEY";
 
 let warned = false;
 
@@ -29,19 +29,19 @@ export function warnIfUnconfigured(): void {
   warned = true;
   if (!configuredKey()) {
     console.warn(
-      `[vein] ${ENV_VAR} is not set — step registration is unauthenticated (dev mode).`,
+      `[strut] ${ENV_VAR} is not set — step registration is unauthenticated (dev mode).`,
     );
   }
 }
 
 /**
  * Hono middleware that gates step-registration mutations on a bearer
- * token matching `VEIN_API_KEY`. Permissive when the env var is unset.
+ * token matching `STRUT_API_KEY`. Permissive when the env var is unset.
  */
 export async function requireApiKey(c: Context, next: Next) {
   if (!apiKeyMatches(c.req.header("authorization"))) {
     return c.json(
-      { error: "unauthorized: valid Authorization: Bearer <VEIN_API_KEY> required" },
+      { error: "unauthorized: valid Authorization: Bearer <STRUT_API_KEY> required" },
       401,
     );
   }
@@ -53,7 +53,7 @@ export async function requireApiKey(c: Context, next: Next) {
  * Does a request carry the deployment key? Accepts `Authorization: Bearer`
  * and, when the caller passes it, a `?key=` query value — the WebSocket
  * dictation route needs the latter because a browser's WebSocket cannot set
- * headers. Permissive (true) when `VEIN_API_KEY` is unset.
+ * headers. Permissive (true) when `STRUT_API_KEY` is unset.
  */
 export function apiKeyMatches(authorization: string | undefined, queryKey?: string | null): boolean {
   const expected = configuredKey();

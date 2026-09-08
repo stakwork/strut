@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, type GraphBackend } from "./_shared.js";
 const LABEL_MAX = 160;
 const BATCH_MAX = 50;
@@ -62,7 +62,7 @@ export default defineStep({
   async run(cfg, ctx) {
     let b: GraphBackend;
     try {
-      b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      b = await graphCtx(ctx as StepContext<StrutCapabilities>);
     } catch (e) {
       return errText("graph/graph-get-batched", e);
     }

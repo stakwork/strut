@@ -1,28 +1,28 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
-import { getVeinSchema } from "../../../graph/vein-schemas.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
+import { getStrutSchema } from "../../../graph/strut-schemas.js";
 import { graphCtx, errText } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
-/** A node's human label: the Vein schema's title_key when it is a Vein type,
+/** A node's human label: the Strut schema's title_key when it is a Strut type,
  *  else the same candidate chain the jarvis/* step uses. */
 function nameOf(nodeType: string | undefined, p: Record<string, any>): string | undefined {
-  const vein = nodeType ? getVeinSchema(nodeType) : undefined;
-  if (vein && typeof p[vein.title_key] === "string") return p[vein.title_key];
+  const strut = nodeType ? getStrutSchema(nodeType) : undefined;
+  if (strut && typeof p[strut.title_key] === "string") return p[strut.title_key];
   return p.name ?? p.workflow_name ?? p.episode_title ?? p.entity;
 }
 
 function descriptionOf(nodeType: string | undefined, p: Record<string, any>): string {
-  const vein = nodeType ? getVeinSchema(nodeType) : undefined;
-  if (vein && typeof p[vein.description_key] === "string" && vein.description_key !== vein.title_key) return p[vein.description_key];
+  const strut = nodeType ? getStrutSchema(nodeType) : undefined;
+  if (strut && typeof p[strut.description_key] === "string" && strut.description_key !== strut.title_key) return p[strut.description_key];
   return p.description ?? p.summary ?? p.text ?? "";
 }
 
 export default defineStep({
   type: "graph/graph-search",
   description:
-    "Search the vein knowledge graph for nodes — workflows, workflow versions, steps, runs, agent sessions, tool calls, chats, turns, and any jarvis-owned types sharing the database. " +
+    "Search the strut knowledge graph for nodes — workflows, workflow versions, steps, runs, agent sessions, tool calls, chats, turns, and any jarvis-owned types sharing the database. " +
     "Provide at least one of `q`, `input_q`, `output_q` — they can be combined, each acting as its own " +
     "retriever fused into one ranked result set. " +
     "Each result includes an `edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
@@ -38,24 +38,24 @@ export default defineStep({
       .optional()
       .describe(
         "Semantic search scoped to node INPUT schemas — find nodes by what they take as input, " +
-        "e.g. 'a video file url'. Applies to node types with input embeddings (VeinWorkflowVersion, VeinStep).",
+        "e.g. 'a video file url'. Applies to node types with input embeddings (StrutWorkflowVersion, StrutStep).",
       ),
     output_q: z
       .string()
       .optional()
       .describe(
         "Semantic search scoped to node OUTPUT schemas — find nodes by what they produce, " +
-        "e.g. 'transcript with word-level timestamps'. Applies to node types with output embeddings (VeinWorkflowVersion, VeinStep).",
+        "e.g. 'transcript with word-level timestamps'. Applies to node types with output embeddings (StrutWorkflowVersion, StrutStep).",
       ),
     type: z
       .string()
       .optional()
-      .describe("Comma-separated node type filter, e.g. 'VeinWorkflow' or 'VeinRun,VeinChat'. Call graph_get_ontology to see all valid values."),
+      .describe("Comma-separated node type filter, e.g. 'StrutWorkflow' or 'StrutRun,StrutChat'. Call graph_get_ontology to see all valid values."),
     limit: z.number().optional().default(10).describe("Maximum number of results to return"),
     domains: z
       .string()
       .optional()
-      .describe("Comma-separated domain filter, e.g. 'vein' or 'vein,entity'. Not required. Call graph_get_ontology to see valid domains."),
+      .describe("Comma-separated domain filter, e.g. 'strut' or 'strut,entity'. Not required. Call graph_get_ontology to see valid domains."),
     namespace: z
       .string()
       .optional()
@@ -67,7 +67,7 @@ export default defineStep({
       return "graph/graph-search requires at least one of: q, input_q, output_q";
     }
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const res = await b.reader.search({
         q: cfg.q,
         input_q: cfg.input_q,

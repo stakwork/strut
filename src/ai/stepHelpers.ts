@@ -17,7 +17,7 @@ export interface StepExplorerDeps {
 /**
  * Registry entries that don't come from any of the discoverable tiers
  * (core, on-disk lib, on-disk workspace custom). These are steps a
- * consumer passed via `createRegistry([...])` when embedding vein as a
+ * consumer passed via `createRegistry([...])` when embedding strut as a
  * library. We surface them under the `custom/` bucket so the AI's
  * existing `list_steps` / pre-seeded prompt tree just sees them.
  */

@@ -11,7 +11,7 @@ import { tags as t } from "@lezer/highlight";
 // chunk of YAML (or plain text) in a syntax-highlighted, resizable pane. Used
 // by the Params flyout to edit structured params (datasets, gold configs) as
 // readable YAML instead of escaped JSON, and reusable as a standalone document
-// editor (e.g. a future dataset entity). Themed entirely with vein's CSS vars.
+// editor (e.g. a future dataset entity). Themed entirely with strut's CSS vars.
 
 // Editor chrome themed to the palette (base.css :root vars).
 const cmTheme = EditorView.theme(

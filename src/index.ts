@@ -137,7 +137,7 @@ export {
   secretsCapability,
   fileArtifactsCapability,
   type ArtifactsCapability,
-  type VeinCapabilities,
+  type StrutCapabilities,
   type HttpCapability,
   type HttpRequestOptions,
   type HttpResponse,
@@ -202,7 +202,7 @@ export {
 
 // Authoring — the workspace's author/test/inspect operations as one
 // injectable service: what the meta/* steps are plumbing over. Auto-provided
-// by createVein as `services.authoring`; embedders can build their own.
+// by createStrut as `services.authoring`; embedders can build their own.
 export {
   buildAuthoringCapability,
   AI_PUBLISHER,
@@ -213,15 +213,15 @@ export {
   type RunStepArgs,
 } from "./authoring.js";
 
-// Vein factory — the primary entry point for library usage.
+// Strut factory — the primary entry point for library usage.
 export {
-  createVein,
-  type Vein,
-  type VeinOptions,
-  type VeinRunOptions,
-} from "./createVein.js";
+  createStrut,
+  type Strut,
+  type StrutOptions,
+  type StrutRunOptions,
+} from "./createStrut.js";
 
-// Default filesystem-backed server (a thin wrapper over createVein).
+// Default filesystem-backed server (a thin wrapper over createStrut).
 export { getApp, startServer } from "./server.js";
 
 // Graph backend — jarvis-compatible Neo4j writes/reads over bolt, no jarvis
@@ -234,19 +234,20 @@ export {
   type GraphConfig,
 } from "./graph/bolt.js";
 export {
-  VEIN_SCHEMAS,
-  VEIN_EDGES,
-  VEIN_DOMAIN,
-  VEIN_DOMAIN_LABEL,
-  getVeinSchema,
-  isVeinType,
+  STRUT_SCHEMAS,
+  STRUT_EDGES,
+  STRUT_DOMAIN,
+  STRUT_DOMAIN_LABEL,
+  getStrutSchema,
+  isStrutType,
   effectiveAttributes,
   typeLabelOf,
-  type VeinSchema,
-  type VeinEdgeDef,
+  type StrutSchema,
+  type StrutEdgeDef,
   type AttrType,
-} from "./graph/vein-schemas.js";
-export { seedVeinDomain, type SeedReport } from "./graph/schema-seed.js";
+} from "./graph/strut-schemas.js";
+export { seedStrutDomain, type SeedReport } from "./graph/schema-seed.js";
+export { migrateVeinToStrut, VeinMigrationCollision, type VeinMigrationReport } from "./graph/vein-migration.js";
 export {
   NodeWriter,
   GraphValidationError,

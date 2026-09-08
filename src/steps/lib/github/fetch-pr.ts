@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 
 const EXAMPLE = `- id: pr
   type: github/fetch-pr
@@ -48,7 +48,7 @@ export default defineStep({
       changedFiles: z.number(),
     }),
   }),
-  async run(cfg, ctx: StepContext<VeinCapabilities>) {
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
     // Lazy-load the SDK inside run() so the heavy dep is only pulled into
     // memory when this step actually executes — not at registry-build time.
     // See AGENTS.md "Lib step dependency convention".

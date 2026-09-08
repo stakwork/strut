@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { int, type Bolt } from "./bolt.js";
 import type { Embedder } from "./node-writer.js";
 import { renderVectorField } from "./node-writer.js";
-import { VEIN_DOMAIN_LABEL, embeddingColumn, vectorIndexedPairs } from "./vein-schemas.js";
+import { STRUT_DOMAIN_LABEL, embeddingColumn, vectorIndexedPairs } from "./strut-schemas.js";
 
 export const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBEDDING_DIM = 384;
@@ -30,7 +30,7 @@ export interface MiniLMOptions {
   /** HF repo id of an ONNX export of all-MiniLM-L6-v2. */
   model?: string;
   /** Where model files are cached. See src/model-dir.ts for the default
-   *  (`VEIN_MODEL_DIR`, `VEIN_MODEL_CACHE`, or `<cache root>/vein/models`). */
+   *  (`STRUT_MODEL_DIR`, `STRUT_MODEL_CACHE`, or `<cache root>/strut/models`). */
   cacheDir?: string;
   /** Texts per forward pass. */
   batchSize?: number;
@@ -60,7 +60,7 @@ export class MiniLMEmbedder implements Embedder {
       // Neo4j the desktop build doesn't ship. Say so instead of ENOENT.
       if ((e as { code?: string }).code === "ERR_MODULE_NOT_FOUND") {
         throw new Error(
-          "embeddings are not available in this vein build (@huggingface/transformers is not installed); " +
+          "embeddings are not available in this strut build (@huggingface/transformers is not installed); " +
             "graph search needs a server build or `package:desktop --embeddings`",
         );
       }
@@ -183,7 +183,7 @@ export interface BackfillReport {
 }
 
 /**
- * Crash-safe sweep: embed every Vein node whose search text exists but
+ * Crash-safe sweep: embed every Strut node whose search text exists but
  * whose vector is NULL, in batches, until none remain. Idempotent and cheap
  * when clean. Run at every boot of the graph backend. Also covers the
  * per-property `{stem}_embeddings` of the `vector_index` types.
@@ -193,7 +193,7 @@ export async function backfillEmbeddings(bolt: Bolt, embedder: Embedder, batchSi
 
   for (;;) {
     const rows = await bolt.run(
-      `MATCH (n:\`${VEIN_DOMAIN_LABEL}\`)
+      `MATCH (n:\`${STRUT_DOMAIN_LABEL}\`)
        WHERE n.Data_Bank IS NOT NULL AND n.text_embeddings IS NULL
        RETURN n.ref_id AS ref_id, n.Data_Bank AS text LIMIT $limit`,
       { limit: int(batchSize) },

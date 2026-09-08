@@ -1,12 +1,12 @@
-# Native dictation client (macOS / iOS / Kotlin) → vein `/audio/stream`
+# Native dictation client (macOS / iOS / Kotlin) → strut `/audio/stream`
 
 Scope: a native app that captures the microphone itself and streams audio to
-a running vein for speech-to-text. Nothing here involves vein's web UI; the
+a running strut for speech-to-text. Nothing here involves strut's web UI; the
 app owns capture, the UI for the transcript, and what it does with the text.
 The server side is complete on `main`. This is the contract to build against.
 
-Source of truth for the protocol: `vein/src/audio/ws.ts` (socket),
-`vein/src/audio/stt.ts` (`SttStreamOptions`, events), `vein/src/audio/routes.ts`
+Source of truth for the protocol: `strut/src/audio/ws.ts` (socket),
+`strut/src/audio/stt.ts` (`SttStreamOptions`, events), `strut/src/audio/routes.ts`
 (HTTP). Design background: `local-desktop-and-stt.md` §4.
 
 ---
@@ -15,7 +15,7 @@ Source of truth for the protocol: `vein/src/audio/ws.ts` (socket),
 
 | Piece | Where | Notes |
 |---|---|---|
-| Recognizer | inside vein (sherpa-onnx, CPU) | Models download once into `VEIN_MODEL_DIR` / `<VEIN_CACHE_DIR>/vein/models` |
+| Recognizer | inside strut (sherpa-onnx, CPU) | Models download once into `STRUT_MODEL_DIR` / `<STRUT_CACHE_DIR>/strut/models` |
 | Audio capture | the app | AVAudioEngine / AudioRecord, any sample rate, mono |
 | Transport | one WebSocket per dictation | `GET /audio/stream`, JSON control frames + binary PCM |
 | Push-to-talk alternative | one HTTP request | `POST /audio/transcribe` with a WAV body |
@@ -23,18 +23,18 @@ Source of truth for the protocol: `vein/src/audio/ws.ts` (socket),
 | Learning loop | HTTP | sessions, corrections, named hotword lists |
 
 Base URL is whatever the app spawned or was configured with, e.g.
-`http://127.0.0.1:<port>` for a local child process (the port comes from vein's
+`http://127.0.0.1:<port>` for a local child process (the port comes from strut's
 `{"event":"ready","port":N}` stdout line) or `https://host/lab` behind mcp.
 Every `/audio/*` route and the socket sit under that base.
 
 ## 2. Auth
 
-If vein runs with `VEIN_API_KEY` set (a desktop host should generate one per
+If strut runs with `STRUT_API_KEY` set (a desktop host should generate one per
 launch), every `/audio/*` request and the socket upgrade must carry it:
 
-- HTTP and WebSocket: `Authorization: Bearer <VEIN_API_KEY>` — a
+- HTTP and WebSocket: `Authorization: Bearer <STRUT_API_KEY>` — a
   `URLSessionWebSocketTask` / OkHttp socket can set request headers, so use the
-  header; `?key=<VEIN_API_KEY>` on the socket URL is the fallback for clients
+  header; `?key=<STRUT_API_KEY>` on the socket URL is the fallback for clients
   that can't.
 - Behind mcp's `/lab` mount the credential is mcp's instead: HTTP Basic
   `admin:<API_TOKEN>` or `x-api-token: <API_TOKEN>`, on both HTTP and the
@@ -50,7 +50,7 @@ before the WebSocket handshake completes.
 ```json
 {
   "available": true,
-  "modelDir": "/Users/me/.cache/vein/models",
+  "modelDir": "/Users/me/.cache/strut/models",
   "models": [
     { "id": "zipformer-en-kroko", "bytes": 57000000, "chunkMs": 1280, "hotwords": true,
       "cased": true, "installed": true, "default": "model", "description": "…" },
@@ -61,7 +61,7 @@ before the WebSocket handshake completes.
 }
 ```
 
-`available: false` means the sherpa addon didn't load in that vein; every
+`available: false` means the sherpa addon didn't load in that strut; every
 audio call will answer `501 { "error": "stt not available" }`.
 
 Install the pair marked `default` (`model` = finals, `partialModel` = fast
@@ -107,9 +107,9 @@ Open `ws(s)://<base>/audio/stream` with the auth header, then:
 
    | Field | Default | Meaning |
    |---|---|---|
-   | `sampleRate` | 16000 | Rate of the PCM you will send. Declare your capture rate; vein resamples. **It must not change for the life of the stream** (see §5). |
-   | `model` | `VEIN_STT_MODEL` / catalog default (`zipformer-en-kroko`) | Finals model. Hotword-capable Zipformer by default. |
-   | `partialModel` | `VEIN_STT_PARTIAL_MODEL` / catalog default (`nemo-fast-conformer-en-80ms`) | Fast greedy model that produces partials. `null` = single recognizer: finals model does both, partials every ~1.3 s. |
+   | `sampleRate` | 16000 | Rate of the PCM you will send. Declare your capture rate; strut resamples. **It must not change for the life of the stream** (see §5). |
+   | `model` | `STRUT_STT_MODEL` / catalog default (`zipformer-en-kroko`) | Finals model. Hotword-capable Zipformer by default. |
+   | `partialModel` | `STRUT_STT_PARTIAL_MODEL` / catalog default (`nemo-fast-conformer-en-80ms`) | Fast greedy model that produces partials. `null` = single recognizer: finals model does both, partials every ~1.3 s. |
    | `hotwords` | none | Either a stored list name (string) or inline phrases. A phrase may carry its own boost as ` :score`; objects `{ "phrase": "…", "score": 2 }` also work. |
    | `hotwordsScore` | 2 | Boost for phrases without their own score. 1.5–3 is the useful range; 5 over-biases. |
    | `session` | none | Log every final under `<dataDir>/audio/sessions/<id>.jsonl` for the learning loop (§7). |
@@ -120,7 +120,7 @@ Open `ws(s)://<base>/audio/stream` with the auth header, then:
    48 kHz) is the sweet spot; any size works. Frames sent before `ready` are
    buffered and fed once the recognizer is up.
 
-3. One text frame `{"type":"end"}` when the user stops. Vein pads ~2 s of
+3. One text frame `{"type":"end"}` when the user stops. Strut pads ~2 s of
    silence so the last words decode, emits the trailing `final`, waits for
    the session log to land, then closes with code `1000`.
 
@@ -150,17 +150,17 @@ Two things the app should do with these:
   deinterleaved stereo. Take channel 0, scale by 32768, clamp, write Int16
   little-endian. Compressed formats are not accepted.
 - **Declare your real rate and never change it.** sherpa `exit(-1)`s the whole
-  vein process on a mid-stream rate change. Vein rejects a rate change before
+  strut process on a mid-stream rate change. Strut rejects a rate change before
   it reaches the addon, but only if the client declares the rate it actually
   sends: if the input device changes (AirPods connect, mic switches) and the
   rate changes, **end the stream and start a new one**.
-- **Do not resample in the app.** 48 kHz in is fine; vein resamples to the
+- **Do not resample in the app.** 48 kHz in is fine; strut resamples to the
   engine's 16 kHz. Resampling yourself only adds a place to get it wrong.
 - **Frame cadence.** ~100 ms frames. Bigger frames raise partial latency; much
   smaller ones just add socket overhead.
 - **Echo cancellation / noise suppression** are the app's job if wanted
   (`AVAudioSession` voice-processing mode on iOS, `kAUVoiceIOProperty` /
-  `setVoiceProcessingEnabled` on macOS). Vein does nothing to the audio.
+  `setVoiceProcessingEnabled` on macOS). Strut does nothing to the audio.
 
 ## 6. Push-to-talk: `POST /audio/transcribe`
 
@@ -194,7 +194,7 @@ Only if the app wants recognition to improve for its user. All optional.
   `GET /audio/hotwords` lists names; `GET /audio/hotwords/<name>` returns the
   text; `DELETE` removes it. A stream names one with `"hotwords": "<name>"`.
   The app can seed a list from the user's contacts, projects, or vocabulary;
-  a scheduled vein workflow can maintain it from sessions and corrections.
+  a scheduled strut workflow can maintain it from sessions and corrections.
 
 Hotword rules worth knowing: only the finals model honors them (the partials
 model is greedy), the boost only helps a spelling the model could already
@@ -206,15 +206,15 @@ nouns both ways.
 
 | Situation | What you see | Do |
 |---|---|---|
-| vein not up yet | connection refused | wait for the `ready` stdout line / `GET /health` |
-| sherpa addon missing on that vein | `501 {"error":"stt not available"}`; socket `error` then close `1011` | tell the user; it's an install problem |
+| strut not up yet | connection refused | wait for the `ready` stdout line / `GET /health` |
+| sherpa addon missing on that strut | `501 {"error":"stt not available"}`; socket `error` then close `1011` | tell the user; it's an install problem |
 | bad credential | HTTP `401`; upgrade refused | fix the key |
 | unknown model / list | socket `error` (`unknown stt model "x"` / `unknown hotwords list "x"`), close `1011` | check `GET /audio/models`, `GET /audio/hotwords` |
 | audio before `start` | socket `error`, close `1011` | send the start frame first |
 | network drop mid-stream | socket closes without a trailing `final` | reconnect and start a new stream (same `session` is fine; `index` continues) |
-| app killed | nothing; vein reaps the stream on close | — |
+| app killed | nothing; strut reaps the stream on close | — |
 
-vein handles `SIGTERM` cleanly; a host that kills the child on quit loses
+strut handles `SIGTERM` cleanly; a host that kills the child on quit loses
 only the un-`end`ed utterance.
 
 ## 9. Swift sketch (macOS, AVAudioEngine → URLSessionWebSocketTask)
@@ -227,7 +227,7 @@ from that same format, so the two can't disagree.
 import AVFoundation
 import Foundation
 
-final class VeinDictation {
+final class StrutDictation {
     private let engine = AVAudioEngine()
     private var task: URLSessionWebSocketTask?
     var onPartial: ((String) -> Void)?
@@ -275,7 +275,7 @@ final class VeinDictation {
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        task?.send(.string(#"{"type":"end"}"#)) { _ in }   // vein sends the trailing final, then closes 1000
+        task?.send(.string(#"{"type":"end"}"#)) { _ in }   // strut sends the trailing final, then closes 1000
     }
 
     private func receiveLoop(_ t: URLSessionWebSocketTask) {

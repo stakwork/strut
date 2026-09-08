@@ -38,7 +38,7 @@ promotes the hack into the engine and deletes it.
 
 ## Design overview
 
-Two pieces, both inside vein core:
+Two pieces, both inside strut core:
 
 1. A **`files/` area in the workspace** — versioned text assets, sibling to
    `workflows/` and `steps/`, with the same content-hash publish semantics.
@@ -118,7 +118,7 @@ deliberate:
 
 - Editing a prompt file does **not** silently change what any pinned or
   active workflow version runs. Workflows pick up the new prompt on their
-  next publish — explicit, diffable, consistent with vein's whole
+  next publish — explicit, diffable, consistent with strut's whole
   content-hash model. (The alternative — load-time expansion — makes "which
   prompt did this run actually use?" unanswerable from the version id.)
 - Boot seeding keeps working unchanged: seeder publishes raw-with-markers →
@@ -218,5 +218,5 @@ visible as exactly that).
 4. Migrate harvey seeding off `expandIncludes`; deliver-smoke keeps its
    "prompts spliced, no unexpanded markers" assertions (they should pass
    unmodified — same observable behavior, different owner).
-5. Docs: vein AGENTS.md + authoring/builder docs; note in lab AGENTS.md
+5. Docs: strut AGENTS.md + authoring/builder docs; note in lab AGENTS.md
    that the harvey prompts are now workspace files.

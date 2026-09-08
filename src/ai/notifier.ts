@@ -11,7 +11,7 @@ import { truncateToolMessages } from "../chat-store.js";
  * process, notifications queue and are drained into ONE wake-up turn when it
  * ends (two runs finishing close together → one turn that sees both).
  *
- * Liveness is an in-process set (mirroring `createVein`'s `activeRuns`), NOT
+ * Liveness is an in-process set (mirroring `createStrut`'s `activeRuns`), NOT
  * `meta.status` — a crashed process leaves `status: "live"` stale, and
  * pending notifications die with the process anyway (same crash posture as
  * detached runs; no durable delivery).
@@ -87,7 +87,7 @@ export interface ChatNotifier {
   deliver(chatId: string, text: string): Promise<void>;
   /** Is a turn for this chat running in THIS process? The authoritative
    *  liveness check — `meta.status === "live"` on disk can be stale after a
-   *  crash/restart (see `createVein`'s `reconcileStaleChat`). */
+   *  crash/restart (see `createStrut`'s `reconcileStaleChat`). */
   isLive(chatId: string): boolean;
 }
 
@@ -96,7 +96,7 @@ export function createChatNotifier(opts: {
   /** Max consecutive notification-triggered turns since the last human
    *  message before the chat parks (notifications append, turns stop). */
   maxAutoTurns: number;
-  /** Launch an agent turn — `createVein` passes `launchChatTurn`. Receives
+  /** Launch an agent turn — `createStrut` passes `launchChatTurn`. Receives
    *  the truncated model-message copy, exactly like a human-triggered turn. */
   startTurn: (chatId: string, turn: number, modelMessages: StoredMessage[]) => void;
 }): ChatNotifier {

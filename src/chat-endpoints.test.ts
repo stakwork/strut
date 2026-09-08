@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { createVein } from "./createVein.js";
+import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import { MemoryChatStore, type ChatEvent } from "./chat-store.js";
@@ -22,8 +22,8 @@ describe("chat endpoints", () => {
   let tempDir: string;
   let chatStore: MemoryChatStore;
 
-  async function makeVein() {
-    return createVein({
+  async function makeStrut() {
+    return createStrut({
       workspace: new WorkspaceManager(tempDir),
       store: new MemoryRunStore(),
       chatStore,
@@ -32,7 +32,7 @@ describe("chat endpoints", () => {
   }
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-chat-ep-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-chat-ep-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
     chatStore = new MemoryChatStore();
   });
@@ -42,8 +42,8 @@ describe("chat endpoints", () => {
   });
 
   it("POST /chat rejects a missing message", async () => {
-    const vein = await makeVein();
-    const res = await vein.app.request("/chat", {
+    const strut = await makeStrut();
+    const res = await strut.app.request("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -52,8 +52,8 @@ describe("chat endpoints", () => {
   });
 
   it("POST /chat with an unknown chatId is a 404", async () => {
-    const vein = await makeVein();
-    const res = await vein.app.request("/chat", {
+    const strut = await makeStrut();
+    const res = await strut.app.request("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId: "nope", message: "hi" }),
@@ -62,8 +62,8 @@ describe("chat endpoints", () => {
   });
 
   it("POST /chat creates a session + persists the user message synchronously", async () => {
-    const vein = await makeVein();
-    const res = await vein.app.request("/chat", {
+    const strut = await makeStrut();
+    const res = await strut.app.request("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: "build me a workflow" }),
@@ -84,31 +84,31 @@ describe("chat endpoints", () => {
   });
 
   it("GET /chat/:id returns the transcript + meta; 404 when missing", async () => {
-    const vein = await makeVein();
+    const strut = await makeStrut();
     await chatStore.createChat({ id: "c1", title: "t" });
     await chatStore.appendMessages("c1", [{ role: "user", content: "x" }]);
 
-    const ok = await vein.app.request("/chat/c1");
+    const ok = await strut.app.request("/chat/c1");
     assert.equal(ok.status, 200);
     const body = (await ok.json()) as { meta: any; messages: any[] };
     assert.equal(body.meta.id, "c1");
     assert.equal(body.messages.length, 1);
 
-    const missing = await vein.app.request("/chat/missing");
+    const missing = await strut.app.request("/chat/missing");
     assert.equal(missing.status, 404);
   });
 
   it("GET /chats lists sessions", async () => {
-    const vein = await makeVein();
+    const strut = await makeStrut();
     await chatStore.createChat({ id: "a" });
     await chatStore.createChat({ id: "b" });
-    const res = await vein.app.request("/chats");
+    const res = await strut.app.request("/chats");
     const list = (await res.json()) as { id: string }[];
     assert.equal(list.length, 2);
   });
 
   it("GET /chat/:id/stream replays a completed turn then sends done", async () => {
-    const vein = await makeVein();
+    const strut = await makeStrut();
     await chatStore.createChat({ id: "c1" });
     await chatStore.setMeta("c1", { status: "done", currentTurn: 0 });
     const ev = (type: ChatEvent["type"], extra: Partial<ChatEvent> = {}): ChatEvent => ({
@@ -121,7 +121,7 @@ describe("chat endpoints", () => {
     await chatStore.appendEvent("c1", ev("text-delta", { delta: "hello" }));
     await chatStore.appendEvent("c1", ev("chat.end"));
 
-    const res = await vein.app.request("/chat/c1/stream?turn=0");
+    const res = await strut.app.request("/chat/c1/stream?turn=0");
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.ok(text.includes("hello"), text);
@@ -129,9 +129,9 @@ describe("chat endpoints", () => {
   });
 
   it("POST /chat is a 409 while that chat has a turn in progress", async () => {
-    const vein = await makeVein();
+    const strut = await makeStrut();
     const post = (body: object) =>
-      vein.app.request("/chat", {
+      strut.app.request("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -153,7 +153,7 @@ describe("chat endpoints", () => {
   it("a chat left live by a dead process is reconciled to error on read", async () => {
     // Simulate a crash mid-turn: meta says live, events.jsonl has no
     // terminal for the turn, and nothing is running in this process.
-    const vein = await makeVein();
+    const strut = await makeStrut();
     await chatStore.createChat({ id: "c1" });
     await chatStore.setMeta("c1", { status: "live", currentTurn: 0 });
     await chatStore.appendEvent("c1", {
@@ -164,33 +164,33 @@ describe("chat endpoints", () => {
       delta: "partial",
     });
 
-    const get = await vein.app.request("/chat/c1");
+    const get = await strut.app.request("/chat/c1");
     const { meta } = (await get.json()) as { meta: { status: string } };
     assert.equal(meta.status, "error");
 
     // The tail now terminates (would hang forever without the synthesized
     // chat.error) and reports the reconciled status.
-    const res = await vein.app.request("/chat/c1/stream?turn=0");
+    const res = await strut.app.request("/chat/c1/stream?turn=0");
     const text = await res.text();
     assert.ok(text.includes("chat.error"), text);
     assert.ok(text.includes('"status":"error"'), text);
 
-    const list = (await (await vein.app.request("/chats")).json()) as { status: string }[];
+    const list = (await (await strut.app.request("/chats")).json()) as { status: string }[];
     assert.equal(list[0]!.status, "error");
   });
 
   it("GET /chat/:id/stream for a not-yet-started turn sends done immediately", async () => {
-    const vein = await makeVein();
+    const strut = await makeStrut();
     await chatStore.createChat({ id: "c1" }); // currentTurn -1
-    const res = await vein.app.request("/chat/c1/stream?turn=3");
+    const res = await strut.app.request("/chat/c1/stream?turn=3");
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.ok(text.includes("event: done"), text);
   });
 
   it("GET /chat/:id/stream is a 404 for an unknown chat", async () => {
-    const vein = await makeVein();
-    const res = await vein.app.request("/chat/missing/stream");
+    const strut = await makeStrut();
+    const res = await strut.app.request("/chat/missing/stream");
     assert.equal(res.status, 404);
   });
 });

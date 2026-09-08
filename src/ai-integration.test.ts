@@ -27,7 +27,7 @@ describe("AI tools see in-code registered steps", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-ai-integration-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-ai-integration-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 
@@ -157,7 +157,7 @@ describe("AI tools see in-code registered steps", () => {
     await ws.publishStep(
       "shared",
       `import { z } from "zod";
-       import { defineStep } from "vein";
+       import { defineStep } from "strut";
        export default defineStep({
          type: "shared",
          input: z.object({}),
@@ -200,7 +200,7 @@ describe("AI create_step / edit_step tools", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-ai-steps-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-ai-steps-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 
@@ -215,7 +215,7 @@ describe("AI create_step / edit_step tools", () => {
       registry: {} as any,
       store: new MemoryRunStore(),
       // Static getRegistry — the temp workspace lives outside the project tree
-      // so a published .ts can't resolve `vein` to actually load. These tests
+      // so a published .ts can't resolve `strut` to actually load. These tests
       // verify publish/version semantics, not registry loading.
       getRegistry: async () => ({} as any),
       ...opts,
@@ -223,7 +223,7 @@ describe("AI create_step / edit_step tools", () => {
   }
 
   const code = (n: number) =>
-    `import { z, defineStep } from "vein";\nexport default defineStep({ type: "my/step", input: z.object({}), output: z.any(), async run(){ return ${n}; } });\n`;
+    `import { z, defineStep } from "strut";\nexport default defineStep({ type: "my/step", input: z.object({}), output: z.any(), async run(){ return ${n}; } });\n`;
 
   it("create_step publishes a new step at v1; edit_step bumps to v2", async () => {
     const deps = makeDeps();
@@ -307,7 +307,7 @@ describe("AI list_workflows / get_workflow tools", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-ai-wf-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-ai-wf-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 
@@ -442,7 +442,7 @@ describe("AI list_runs / get_run tools", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-ai-runs-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-ai-runs-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 
@@ -537,7 +537,7 @@ describe("AI list_runs / get_run tools", () => {
 describe("AI run_workflow tool: stringified input coercion", () => {
   let tempDir: string;
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-ai-runwf-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-ai-runwf-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
   afterEach(async () => {
@@ -626,7 +626,7 @@ describe("run_workflow dispatch mode (auto-detach)", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-ai-detach-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-ai-detach-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 

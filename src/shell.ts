@@ -1,13 +1,13 @@
 /**
- * Shared child-process helpers for every place vein shells out (the agent
+ * Shared child-process helpers for every place strut shells out (the agent
  * step's repo tools + bash, the chat builder's bash). One implementation so
  * timeout semantics, output capping, and — critically — env scrubbing are
  * identical everywhere.
  *
  * **Env scrubbing.** Children get a MINIMAL environment (`minimalEnv`), not
- * `process.env`: the vein server's env holds exactly the credentials the
+ * `process.env`: the strut server's env holds exactly the credentials the
  * secrets boundary exists to keep away from models (ANTHROPIC_API_KEY,
- * VEIN_SECRET_KEY, provider keys, …) — a naive spawn would hand them to any
+ * STRUT_SECRET_KEY, provider keys, …) — a naive spawn would hand them to any
  * model-authored `env`/`printenv` one-liner. Steps get credentials via
  * `ctx.services.secrets`, never ambient env, so scrubbing costs adapters
  * nothing.

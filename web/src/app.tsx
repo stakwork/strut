@@ -4,7 +4,7 @@ import type { CanvasData, CanvasNode, CanvasEdge } from "system-canvas";
 import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
-import { flowToCanvas, stepWorkflow, veinTheme } from "./flow-to-canvas";
+import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
 import "./styles/base.css";
 import "./styles/components.css";
@@ -730,7 +730,7 @@ export function App() {
     <div class="shell">
       {/* Sidebar */}
       <div class="shell-sidebar">
-        <div class="sidebar-brand"><span class="brand-dot" /> vein</div>
+        <div class="sidebar-brand"><span class="brand-dot" /> strut</div>
 
         <div class="sidebar-section">
           <div class="section-title">
@@ -950,7 +950,7 @@ export function App() {
                   ? <button class="add-step-fab" onClick={() => setShowAddStep(true)}>+</button>
                   : null
               )}
-              themes={{ vein: veinTheme }}
+              themes={{ strut: strutTheme }}
             />
           : <div class="empty">{workflows.length === 0 ? "Create a workflow to get started" : "Select a workflow to view its flow graph"}</div>}
       </div>

@@ -6,7 +6,7 @@
  * `transcribe` that runs the same streaming path over a WAV. Routes
  * (`routes.ts`) and the WebSocket (`ws.ts`) are thin over this.
  *
- * `sherpa-onnx-node` is an optionalDependency, imported lazily: a vein without
+ * `sherpa-onnx-node` is an optionalDependency, imported lazily: a strut without
  * the addon boots, and `available()` says so. Tests inject a fake `engine`.
  *
  * Two-recognizer streams: when `partialModel` is set, a fast greedy model
@@ -97,10 +97,10 @@ export interface EndpointRules {
 }
 
 export interface SttStreamOptions {
-  /** Finals model (hotword-capable). Default `VEIN_STT_MODEL` / catalog default. */
+  /** Finals model (hotword-capable). Default `STRUT_STT_MODEL` / catalog default. */
   model?: string;
   /** Fast model for partials; `null` for single-recognizer mode. Default
-   *  `VEIN_STT_PARTIAL_MODEL` / catalog default. */
+   *  `STRUT_STT_PARTIAL_MODEL` / catalog default. */
   partialModel?: string | null;
   /** A stored list name, or phrases inline. */
   hotwords?: string | readonly string[] | readonly Hotword[];
@@ -204,9 +204,9 @@ export function createStt(opts: SttServiceOptions): SttService {
   const downloads = new Map<string, Promise<string>>();
   const recognizers = new Map<string, Promise<EngineRecognizer>>();
 
-  const defaultModelId = () => env["VEIN_STT_MODEL"] ?? DEFAULT_MODEL;
+  const defaultModelId = () => env["STRUT_STT_MODEL"] ?? DEFAULT_MODEL;
   const defaultPartialId = (): string | null => {
-    const v = env["VEIN_STT_PARTIAL_MODEL"];
+    const v = env["STRUT_STT_PARTIAL_MODEL"];
     if (v === "" || v === "none" || v === "off") return null;
     return v ?? DEFAULT_PARTIAL_MODEL;
   };

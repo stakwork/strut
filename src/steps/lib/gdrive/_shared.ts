@@ -7,7 +7,7 @@
 // dependency convention".
 import type { drive_v3 } from "@googleapis/drive";
 import type { StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 
 export const DRIVE_READONLY_SCOPE =
   "https://www.googleapis.com/auth/drive.readonly";
@@ -18,7 +18,7 @@ export const DRIVE_READONLY_SCOPE =
  *  "creds present but rejected". See AGENTS.md "Lib step credentials". */
 export async function buildDriveClient(
   accessToken: string | undefined,
-  ctx: StepContext<VeinCapabilities>,
+  ctx: StepContext<StrutCapabilities>,
 ): Promise<{ client: drive_v3.Drive; haveAuth: boolean }> {
   const { drive, auth } = await import("@googleapis/drive");
 

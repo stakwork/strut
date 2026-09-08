@@ -1,12 +1,12 @@
 // ── localStorage helpers ───────────────────────────────────────────────────
 //
 // Small, typed wrapper over window.localStorage for UI preferences and
-// session state. All keys are namespaced under `vein/` so they don't
+// session state. All keys are namespaced under `strut/` so they don't
 // collide with anything else served on the same origin. All operations
 // are crash-safe: a thrown error (quota, privacy mode, JSON parse) is
 // swallowed and the fallback is returned.
 
-const PREFIX = "vein/";
+const PREFIX = "strut/";
 
 export function load<T>(key: string, fallback: T): T {
   try {

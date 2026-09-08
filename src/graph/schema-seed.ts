@@ -1,5 +1,5 @@
 /**
- * Vein domain registration — the schema meta-graph, constraints, and
+ * Strut domain registration — the schema meta-graph, constraints, and
  * indexes jarvis would have created for a domain of its own
  * (`plans/jarvis-graph-compat.md` §4).
  *
@@ -19,20 +19,20 @@ import { Bolt } from "./bolt.js";
 import {
   THING_SCHEMA,
   THING_TYPE,
-  VEIN_DOMAIN_LABEL,
-  VEIN_EDGES,
-  VEIN_SCHEMAS,
+  STRUT_DOMAIN_LABEL,
+  STRUT_EDGES,
+  STRUT_SCHEMAS,
   embeddingColumn,
   searchableAttributes,
   vectorIndexName,
   vectorIndexedPairs,
-  type VeinEdgeDef,
-  type VeinSchema,
-} from "./vein-schemas.js";
+  type StrutEdgeDef,
+  type StrutSchema,
+} from "./strut-schemas.js";
 
-export const VEIN_MIGRATION_ID = "vein_domain_seed_v1";
-export const DOMAIN_VECTOR_INDEX = `${VEIN_DOMAIN_LABEL.toLowerCase()}_vector_index`; // domain_vein_vector_index
-export const DOMAIN_FULLTEXT_INDEX_V2 = `${VEIN_DOMAIN_LABEL.toLowerCase()}_attribute_index_v2`;
+export const STRUT_MIGRATION_ID = "strut_domain_seed_v1";
+export const DOMAIN_VECTOR_INDEX = `${STRUT_DOMAIN_LABEL.toLowerCase()}_vector_index`; // domain_strut_vector_index
+export const DOMAIN_FULLTEXT_INDEX_V2 = `${STRUT_DOMAIN_LABEL.toLowerCase()}_attribute_index_v2`;
 export const GLOBAL_VECTOR_INDEX = "text_embeddings_vector_index";
 
 const VECTOR_OPTIONS =
@@ -78,13 +78,13 @@ export interface SeedReport {
  * top-level properties, no `attributes` blob (`schema_crud.py:932,989`).
  * `Thing`'s `name` sits at its top level and flattens the same way.
  */
-export function flattenSchema(schema: VeinSchema | typeof THING_SCHEMA): Record<string, unknown> {
+export function flattenSchema(schema: StrutSchema | typeof THING_SCHEMA): Record<string, unknown> {
   const { attributes, ...core } = schema;
   return { ...core, ...attributes };
 }
 
-/** Seed the Vein domain. Safe to call on every boot. */
-export async function seedVeinDomain(bolt: Bolt): Promise<SeedReport> {
+/** Seed the Strut domain. Safe to call on every boot. */
+export async function seedStrutDomain(bolt: Bolt): Promise<SeedReport> {
   const report: SeedReport = {
     mode: "shared",
     createdSchemas: [],
@@ -109,10 +109,10 @@ export async function seedVeinDomain(bolt: Bolt): Promise<SeedReport> {
     );
   }
 
-  // 2. Each Vein schema: guard (case-insensitive, no is_deleted filter — a
+  // 2. Each Strut schema: guard (case-insensitive, no is_deleted filter — a
   //    soft-deleted schema blocks re-create, same as jarvis's seeder), create
   //    on miss, add-only reconcile on hit.
-  for (const schema of VEIN_SCHEMAS) {
+  for (const schema of STRUT_SCHEMAS) {
     const flat = flattenSchema(schema);
     const hit = await bolt.run(
       `MATCH (n:Schema) WHERE toLower(n.type) = toLower($t) RETURN keys(n) AS ks LIMIT 1`,
@@ -162,7 +162,7 @@ export async function seedVeinDomain(bolt: Bolt): Promise<SeedReport> {
   await ddl(`CREATE CONSTRAINT IF NOT EXISTS FOR (n:Data_Bank) REQUIRE n.ref_id IS UNIQUE`);
 
   // 6. Edge schemas — one relationship per registry row between Schema nodes.
-  for (const e of VEIN_EDGES) {
+  for (const e of STRUT_EDGES) {
     const r = await seedEdgeSchema(bolt, e);
     if (r === "created") report.createdEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
     else if (r === "skipped") report.skippedEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
@@ -172,7 +172,7 @@ export async function seedVeinDomain(bolt: Bolt): Promise<SeedReport> {
   //    domain at startup. Domain, global (standalone), and per-stem.
   await ddl(
     `CREATE VECTOR INDEX \`${DOMAIN_VECTOR_INDEX}\` IF NOT EXISTS
-     FOR (n:\`${VEIN_DOMAIN_LABEL}\`) ON n.text_embeddings ${VECTOR_OPTIONS}`,
+     FOR (n:\`${STRUT_DOMAIN_LABEL}\`) ON n.text_embeddings ${VECTOR_OPTIONS}`,
   );
   await ddl(
     `CREATE VECTOR INDEX \`${GLOBAL_VECTOR_INDEX}\` IF NOT EXISTS
@@ -191,7 +191,7 @@ export async function seedVeinDomain(bolt: Bolt): Promise<SeedReport> {
   const props = [...searchableAttributes(), "node_key"].map((p) => `n.\`${p}\``).join(", ");
   await ddl(
     `CREATE FULLTEXT INDEX \`${DOMAIN_FULLTEXT_INDEX_V2}\` IF NOT EXISTS
-     FOR (n:\`${VEIN_DOMAIN_LABEL}\`) ON EACH [${props}]
+     FOR (n:\`${STRUT_DOMAIN_LABEL}\`) ON EACH [${props}]
      OPTIONS { indexConfig: { \`fulltext.analyzer\`: 'english' } }`,
   );
 
@@ -202,7 +202,7 @@ export async function seedVeinDomain(bolt: Bolt): Promise<SeedReport> {
   );
   await bolt.run(
     `MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = timestamp()`,
-    { id: VEIN_MIGRATION_ID },
+    { id: STRUT_MIGRATION_ID },
   );
 
   return report;
@@ -211,12 +211,12 @@ export async function seedVeinDomain(bolt: Bolt): Promise<SeedReport> {
 /**
  * `MERGE (source)-[r:EDGE]->(target)` between two `:Schema` nodes, stamping
  * `ref_id` on create only. A missing endpoint would make MERGE a silent
- * zero-row no-op, so the existence check is explicit: Vein endpoints must
+ * zero-row no-op, so the existence check is explicit: Strut endpoints must
  * exist (bug otherwise); a jarvis-owned endpoint (`Person`) may legitimately
  * be absent in standalone mode → skipped, and `PUBLISHED_BY` stays a
  * property until shared mode.
  */
-async function seedEdgeSchema(bolt: Bolt, e: VeinEdgeDef): Promise<"created" | "existing" | "skipped"> {
+async function seedEdgeSchema(bolt: Bolt, e: StrutEdgeDef): Promise<"created" | "existing" | "skipped"> {
   const rows = await bolt.run(
     `MATCH (s:Schema {type: $src}), (t:Schema {type: $tgt})
      MERGE (s)-[r:\`${e.edge}\`]->(t)

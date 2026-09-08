@@ -74,13 +74,13 @@ describe("html/extract", () => {
     const out = await extract.run(
       cfg({
         url: "https://www.sec.gov/some/filing.htm",
-        headers: { "User-Agent": "vein test test@example.com" },
+        headers: { "User-Agent": "strut test test@example.com" },
       }),
       ctx,
     );
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "https://www.sec.gov/some/filing.htm");
-    assert.equal(calls[0].headers?.["User-Agent"], "vein test test@example.com");
+    assert.equal(calls[0].headers?.["User-Agent"], "strut test test@example.com");
     assert.match(out.text, /Hello SEC/);
     assert.equal(out.status, 200);
   });

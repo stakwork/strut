@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { registerVeinResolver } from "../vein-resolver.js";
+import { registerStrutResolver } from "../strut-resolver.js";
 import type { AnyStepDef, StepRegistry } from "../core.js";
 
 /** Where a registered step type came from. */
@@ -54,7 +54,7 @@ export const CORE_DIR = join(dirname(fileURLToPath(import.meta.url)), "core");
 /**
  * Read a step's source code from disk. Resolves core, built-in lib, and
  * workspace custom steps (trying both `.ts` and `.js` so it works whether
- * vein runs from source via tsx or from a compiled build). Returns the
+ * strut runs from source via tsx or from a compiled build). Returns the
  * code plus which tier it came from, or `null` when no file is found.
  *
  * In-code steps injected via `createRegistry([...])` have no on-disk file —
@@ -218,8 +218,8 @@ export async function stepLoadError(filePath: string): Promise<string | null> {
  * report which tier each step came from without guessing from the name.
  */
 export async function buildRegistry(customDir?: string): Promise<RegistryBundle> {
-  // Custom steps `import "vein"`; make that resolve to this vein wherever the workspace lives.
-  registerVeinResolver();
+  // Custom steps `import "strut"`; make that resolve to this strut wherever the workspace lives.
+  registerStrutResolver();
   const registry: StepRegistry = { ...CORE_STEPS };
   const sources: StepSources = {};
 
@@ -272,7 +272,7 @@ export function coreRegistry(): StepRegistry {
 
 /**
  * Build a registry from in-code step definitions, layered on top of the
- * engine-shipped **core** and **lib** steps. For consumers using vein
+ * engine-shipped **core** and **lib** steps. For consumers using strut
  * as a library who prefer registering steps in code rather than via
  * filesystem discovery.
  *
@@ -324,7 +324,7 @@ export async function createRegistry(
     if (def.type in registry) {
       const tier = def.type in CORE_STEPS ? "core" : "lib";
       console.warn(
-        `[vein] createRegistry: user step "${def.type}" shadows built-in ${tier} step`,
+        `[strut] createRegistry: user step "${def.type}" shadows built-in ${tier} step`,
       );
     }
     registry[def.type] = def;

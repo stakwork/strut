@@ -2,13 +2,13 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Bolt } from "./bolt.js";
-import { seedVeinDomain } from "./schema-seed.js";
+import { seedStrutDomain } from "./schema-seed.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { EMBEDDING_DIM, MiniLMEmbedder, backfillEmbeddings, cosine, meanPoolNormalize } from "./embeddings.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 
 const cfg = testGraphConfig();
-const runModel = process.env["VEIN_TEST_EMBEDDINGS"] === "1";
+const runModel = process.env["STRUT_TEST_EMBEDDINGS"] === "1";
 
 interface Golden {
   model: string;
@@ -33,7 +33,7 @@ describe("meanPoolNormalize (pure)", () => {
   });
 });
 
-describe("MiniLMEmbedder parity vs sentence-transformers", { skip: runModel ? false : "VEIN_TEST_EMBEDDINGS=1 not set (downloads the model)" }, () => {
+describe("MiniLMEmbedder parity vs sentence-transformers", { skip: runModel ? false : "STRUT_TEST_EMBEDDINGS=1 not set (downloads the model)" }, () => {
   let embedder: MiniLMEmbedder;
   before(async () => {
     embedder = await MiniLMEmbedder.load();
@@ -63,7 +63,7 @@ describe("MiniLMEmbedder parity vs sentence-transformers", { skip: runModel ? fa
   });
 });
 
-describe("backfillEmbeddings (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("backfillEmbeddings (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let bolt: Bolt;
   before(async () => {
     bolt = new Bolt(cfg!);
@@ -74,7 +74,7 @@ describe("backfillEmbeddings (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO
   });
   beforeEach(async () => {
     await wipeGraph(bolt);
-    await seedVeinDomain(bolt);
+    await seedStrutDomain(bolt);
   });
 
   const fake: Embedder = {
@@ -87,22 +87,22 @@ describe("backfillEmbeddings (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO
     // Written WITHOUT an embedder → vectors NULL (the crash case).
     const w = new NodeWriter(bolt);
     await w.writeMany([
-      { type: "VeinRun", data: { run_id: "1", workflow_name: "wf", status: "ok", started_at: 1 } },
-      { type: "VeinRun", data: { run_id: "2", workflow_name: "wf", status: "ok", started_at: 1 } },
-      { type: "VeinStep", data: { step_type: "s", input_schema: "{in}", output_schema: "   " } },
-      { type: "VeinTurn", data: { chat_id: "c", turn: 0 } }, // no index text → kitchen-sink Data_Bank "c\n0"
+      { type: "StrutRun", data: { run_id: "1", workflow_name: "wf", status: "ok", started_at: 1 } },
+      { type: "StrutRun", data: { run_id: "2", workflow_name: "wf", status: "ok", started_at: 1 } },
+      { type: "StrutStep", data: { step_type: "s", input_schema: "{in}", output_schema: "   " } },
+      { type: "StrutTurn", data: { chat_id: "c", turn: 0 } }, // no index text → kitchen-sink Data_Bank "c\n0"
     ]);
     const r1 = await backfillEmbeddings(bolt, fake, 1);
     assert.equal(r1.text_embeddings, 4);
     assert.deepEqual(r1.vector_fields, { input_embeddings: 1 });
     const rows = await bolt.run(
-      `MATCH (n:Domain_vein) RETURN n.node_key AS k, n.text_embeddings[0] AS t0, n.input_embeddings[0] AS i0, n.output_embeddings AS o ORDER BY k`,
+      `MATCH (n:Domain_strut) RETURN n.node_key AS k, n.text_embeddings[0] AS t0, n.input_embeddings[0] AS i0, n.output_embeddings AS o ORDER BY k`,
     );
     assert.deepEqual(rows, [
-      { k: "veinrun-1", t0: "wf\nok".length, i0: null, o: null },
-      { k: "veinrun-2", t0: "wf\nok".length, i0: null, o: null },
-      { k: "veinstep-s", t0: "s".length, i0: "Input:\n{in}".length, o: null },
-      { k: "veinturn-c-0", t0: "c\n0".length, i0: null, o: null },
+      { k: "strutrun-1", t0: "wf\nok".length, i0: null, o: null },
+      { k: "strutrun-2", t0: "wf\nok".length, i0: null, o: null },
+      { k: "strutstep-s", t0: "s".length, i0: "Input:\n{in}".length, o: null },
+      { k: "strutturn-c-0", t0: "c\n0".length, i0: null, o: null },
     ]);
     const r2 = await backfillEmbeddings(bolt, fake);
     assert.deepEqual(r2, { text_embeddings: 0, vector_fields: {} });

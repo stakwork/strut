@@ -17,15 +17,15 @@ extension point for tools** (its toolset is hardcoded; `toolFilter` only
 For eval we want to tune **#5 alone** while holding 1–4 fixed — and we want to
 **see each iteration in the UI**. Today the whole loop is one opaque node.
 
-The plan: make **tools** and the **loop** first-class vein constructs so the
+The plan: make **tools** and the **loop** first-class strut constructs so the
 monolith dissolves into small, versioned, individually-evaluable pieces, and the
 run becomes visible on the canvas. Every design question below has a **firm
-decision** — there are no open wrinkles. Two small, generic vein-core changes are
+decision** — there are no open wrinkles. Two small, generic strut-core changes are
 required (see "Core changes" at the end); everything else is additive.
 
 ## Implementation status
 
-- **DONE — vein-core foundation** (420 tests green, tsc clean): `StepContext.registry`
+- **DONE — strut-core foundation** (420 tests green, tsc clean): `StepContext.registry`
   (populated in `dispatchStep`), the generic `services.onRunEnd(runId)` `finally`
   hook in `runWorkflow`, and the `agent` step's `agentTools` (registry step-types
   as LLM tools via the exported, unit-tested `buildRegistryTools`, with nested
@@ -33,18 +33,18 @@ required (see "Core changes" at the end); everything else is additive.
 - **DONE — visualization MVP (layer 1)**: `boot-and-exercise.ts` now wraps every
   tool's `execute` to emit a nested run event (`<stepPath>/NNN-<tool>`), so each
   iteration's tool calls show in the UI events panel / drill-down. Uses only
-  pre-existing `ctx.emit`/`ctx.path` → runs against the current copied vein dep,
-  **no `refresh-vein` required**. This satisfies the headline ask ("see each
+  pre-existing `ctx.emit`/`ctx.path` → runs against the current copied strut dep,
+  **no `refresh-strut` required**. This satisfies the headline ask ("see each
   iteration in the UI") without touching the loop's behavior.
 - **DONE — Step A (core agent tool visibility)**: the core `agent` step now emits
   a nested run event for EVERY tool call (built-ins + `agentTools`) via the
   unified `wrapToolsWithEmit` (single shared counter, skips `final_answer` +
   provider-executed tools). So `produce/explore` and any agent step is observable,
-  not just `boot-and-exercise`. 424 vein tests green; tsc clean.
+  not just `boot-and-exercise`. 424 strut tests green; tsc clean.
 - **DONE — Step B (services as per-run factories + teardown)**: `mcp/src/lab/
   gitsee/services/` — `BrowserManager`/`StackManager` (per-run sessions keyed by
   runId) + a stateless vision judge, lifted from the monolith. `LabServices.gitsee`
-  + a generic `LabServices.onRunEnd(runId)` (wired into vein's runner `finally`)
+  + a generic `LabServices.onRunEnd(runId)` (wired into strut's runner `finally`)
   dispose a run's browser + booted stack on success AND error. mcp tsc clean;
   lifecycle smoke (`services/smoke-services.ts`) verifies per-run keying +
   idempotent disposal. (Not yet consumed — the tool-steps in Step C will reach it
@@ -64,7 +64,7 @@ required (see "Core changes" at the end); everything else is additive.
   `onRunEnd`. Seeds + lints cleanly. **The monolith `boot-and-exercise.ts` is now
   unused by the workflow but still seeded — the A/B reference for Step E.**
   - **DESIGN CHANGE from §3 (agent-orchestrated, NOT a deterministic `loop`).**
-    vein's `loop` step THROWS when it exhausts `maxIterations` without `until`
+    strut's `loop` step THROWS when it exhausts `maxIterations` without `until`
     becoming true (`runner.ts:580`) — so an app that can't be fixed would error
     the run and yield NO deliverable (the monolith always returns report+diff even
     when not working). Plus the QA control flow is inherently dynamic (the model
@@ -128,7 +128,7 @@ workflow) events is unnecessary and is explicitly cut, not deferred.
 exercise stops forking the loop — it *configures* the core agent. Kills ~600
 lines of duplication. **Fully self-contained in `agent.ts`** (no core change).
 
-### 1b. Tools ARE steps (the "vein" version)
+### 1b. Tools ARE steps (the "strut" version)
 A tool call and a step call are the same shape: named unit, Zod input, output.
 `agent` takes `agentTools: ["browser/click", "gitsee/boot", ...]` — registry
 step-types whose `input` schema becomes the LLM tool schema and whose `run` is
@@ -178,8 +178,8 @@ model).
   judge, evaluable against a labeled (screenshot+logs → verdict) dataset.
 
 **DECISION — sessions are factories keyed by `runId`, NOT singletons.**
-`createLabVein` builds the services bag once, shared across all runs
-(`createLabVein.ts:70`); a live page / booted stack is per-run mutable state, and
+`createLabStrut` builds the services bag once, shared across all runs
+(`createLabStrut.ts:70`); a live page / booted stack is per-run mutable state, and
 the optimize loop runs many evals concurrently. Each service holds a
 `Map<runId, session>`; tool-steps get `runId` from `ctx.runId`. This makes
 concurrent runs collision-free by construction.
@@ -194,7 +194,7 @@ disposes that run's browser + stack sessions. This **exactly preserves today's
 `try/finally` guarantee** (`boot-and-exercise.ts:1032-1049`) while staying generic
 (the runner never names "stack"/"browser").
 
-*Rejected:* a new vein-level guaranteed-`finally` *step*. It's a bigger, more
+*Rejected:* a new strut-level guaranteed-`finally` *step*. It's a bigger, more
 general core change than needed; `onRunEnd` is ~3 lines and sufficient. (A
 finally-step can be proposed independently later if other workflows want it.)
 
@@ -220,10 +220,10 @@ loop  until: "{{ $current.working }}"   maxIterations: {{ params.maxIters }}
 
 Every phase is a canvas node, separately inspectable and **evaluable**.
 
-**DECISION — the iteration is a `subflow` used as the `loop` body.** vein's `loop`
+**DECISION — the iteration is a `subflow` used as the `loop` body.** strut's `loop`
 body is a single `Step` (`loop.ts:23`), so the multi-step iteration is its own
 workflow (`gitsee-qa-iteration`), and `until` reads `$current.working` (the
-subflow's output). This uses only existing vein features — no code change, just
+subflow's output). This uses only existing strut features — no code change, just
 the committed structure.
 
 **DECISION — keep the inner agent autonomous within each iteration.** C2 fixes

@@ -4,7 +4,7 @@ import type { RunEvent } from "../core.js";
 import { MemoryRunStore } from "../store.js";
 import { MemoryChatStore } from "../chat-store.js";
 import { openGraphBackend, type GraphBackend } from "./backend.js";
-import { seedVeinDomain } from "./schema-seed.js";
+import { seedStrutDomain } from "./schema-seed.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
 import { messageText, preview, projectAll, projectChats, projectRunEvents, projectRuns, spawnedRunIds } from "./projector.js";
@@ -52,7 +52,7 @@ function sampleEvents(workflowHash: string): RunEvent[] {
 describe("projectRunEvents (pure)", () => {
   it("derives run, session, and tool-call nodes with previews and log refs", () => {
     const p = projectRunEvents(WF, RUN, sampleEvents("abc123def456"), null)!;
-    assert.equal(p.run.type, "VeinRun");
+    assert.equal(p.run.type, "StrutRun");
     assert.equal(p.run.data["status"], "success");
     assert.equal(p.run.data["workflow_hash"], "abc123def456");
     assert.equal(p.run.data["params_json"], '{"model":"m"}');
@@ -117,7 +117,7 @@ describe("projectRunEvents (pure)", () => {
   });
 });
 
-describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let store: MemoryRunStore;
   let ws: Neo4jWorkspaceStore;
 
@@ -129,7 +129,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
   });
   beforeEach(async () => {
     await wipeGraph(backend.bolt);
-    await seedVeinDomain(backend.bolt);
+    await seedStrutDomain(backend.bolt);
     store = new MemoryRunStore();
     ws = new Neo4jWorkspaceStore(backend);
     await ws.publishWorkflow(WF, "v1", { steps: [{ id: "plan", type: "agent", config: {} }] });
@@ -140,14 +140,14 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
   const edges = async (edge: string) =>
     Number((await backend.bolt.run(`MATCH (:Data_Bank)-[r:\`${edge}\`]->(:Data_Bank) RETURN count(r) AS c`))[0]!["c"]);
 
-  it("projects runs into VeinRun / VeinAgentSession / VeinToolCall with IN_RUN, IN_SESSION, EXECUTED edges", async () => {
+  it("projects runs into StrutRun / StrutAgentSession / StrutToolCall with IN_RUN, IN_SESSION, EXECUTED edges", async () => {
     const hash = (await ws.getWorkflowHash(WF))!;
     for (const e of sampleEvents(hash)) await store.append(WF, RUN, e);
     await store.finalize(WF, RUN, {
       runId: RUN, workflow: WF, startedAt: ts(0), finishedAt: ts(9), durationMs: 9000, status: "success", input: { q: "deliver" }, output: { delivered: 60 },
     });
 
-    // Two jarvis-style Concept nodes (no Vein label) the search step reported touching.
+    // Two jarvis-style Concept nodes (no Strut label) the search step reported touching.
     for (const [r, name] of [[CONCEPT_A, "a"], [CONCEPT_B, "b"]]) {
       await backend.bolt.run(`CREATE (:Concept:Node:Data_Bank:Domain_general {ref_id: $r, node_key: $k, namespace: "default", name: $n})`, { r, k: `concept-${name}`, n: name });
     }
@@ -157,23 +157,23 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
       [report.runs, report.sessions, report.toolCalls, report.edges, report.accessed, report.unresolved, report.skipped],
       [1, 1, 2, 6, 2, 1, 0],
     );
-    assert.equal(await count("VeinRun"), 1);
-    assert.equal(await count("VeinAgentSession"), 1);
-    assert.equal(await count("VeinToolCall"), 2);
+    assert.equal(await count("StrutRun"), 1);
+    assert.equal(await count("StrutAgentSession"), 1);
+    assert.equal(await count("StrutToolCall"), 2);
     assert.equal(await edges("IN_RUN"), 1);
     assert.equal(await edges("IN_SESSION"), 2);
     assert.equal(await edges("EXECUTED"), 1);
 
-    const run = (await backend.bolt.run(`MATCH (r:VeinRun) RETURN properties(r) AS p`))[0]!["p"] as Record<string, unknown>;
+    const run = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN properties(r) AS p`))[0]!["p"] as Record<string, unknown>;
     assert.equal(run["status"], "success");
     assert.equal(run["output_preview"], '{"delivered":60}');
-    assert.equal(run["unique_source_id"], `veinrun:${RUN}`);
+    assert.equal(run["unique_source_id"], `strutrun:${RUN}`);
     assert.equal(run["started_at"], Math.floor(T0 / 1000));
     assert.equal(run["duration_ms"], 9000);
 
     // "which runs executed this version" is one hop.
     const rows = await backend.bolt.run(
-      `MATCH (r:VeinRun)-[:EXECUTED]->(v:VeinWorkflowVersion)<-[:ACTIVE_VERSION]-(w:VeinWorkflow) RETURN w.name AS wf, r.run_id AS run`,
+      `MATCH (r:StrutRun)-[:EXECUTED]->(v:StrutWorkflowVersion)<-[:ACTIVE_VERSION]-(w:StrutWorkflow) RETURN w.name AS wf, r.run_id AS run`,
     );
     assert.deepEqual(rows, [{ wf: WF, run: RUN }]);
 
@@ -181,7 +181,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
     // is skipped, never an error); the full provenance chain is queryable.
     assert.equal(await edges("ACCESSED"), 2);
     const touched = await backend.bolt.run(
-      `MATCH (r:VeinRun)<-[:IN_RUN]-(:VeinAgentSession)<-[:IN_SESSION]-(t:VeinToolCall)-[:ACCESSED]->(c:Concept) RETURN r.run_id AS run, t.tool_name AS tool, c.name AS concept ORDER BY concept`,
+      `MATCH (r:StrutRun)<-[:IN_RUN]-(:StrutAgentSession)<-[:IN_SESSION]-(t:StrutToolCall)-[:ACCESSED]->(c:Concept) RETURN r.run_id AS run, t.tool_name AS tool, c.name AS concept ORDER BY concept`,
     );
     assert.deepEqual(touched, [
       { run: RUN, tool: "graph/graph-search", concept: "a" },
@@ -197,14 +197,14 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
     for (const e of events.slice(0, 7)) await store.append(WF, RUN, e); // no terminal event yet
     let report = await projectRuns(backend, store, { workflows: [WF] });
     assert.equal(report.runs, 1);
-    let run = (await backend.bolt.run(`MATCH (r:VeinRun) RETURN r.status AS s, r.ref_id AS id`))[0]!;
+    let run = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.status AS s, r.ref_id AS id`))[0]!;
     assert.equal(run["s"], "stale");
 
     // Re-run with nothing new: the stale run is re-read (not settled), same nodes.
     report = await projectRuns(backend, store, { workflows: [WF] });
     assert.equal(report.runs, 1);
-    assert.equal(await count("VeinRun"), 1);
-    assert.equal(await count("VeinToolCall"), 2);
+    assert.equal(await count("StrutRun"), 1);
+    assert.equal(await count("StrutToolCall"), 2);
     assert.equal(await edges("IN_SESSION"), 2);
 
     for (const e of events.slice(7)) await store.append(WF, RUN, e);
@@ -212,7 +212,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
       runId: RUN, workflow: WF, startedAt: ts(0), finishedAt: ts(9), durationMs: 9000, status: "success", input: {},
     });
     report = await projectRuns(backend, store, { workflows: [WF] });
-    const after = (await backend.bolt.run(`MATCH (r:VeinRun) RETURN r.status AS s, r.ref_id AS id`))[0]!;
+    const after = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.status AS s, r.ref_id AS id`))[0]!;
     assert.equal(after["s"], "success");
     assert.equal(after["id"], run["id"], "upsert keeps the node identity");
 
@@ -220,7 +220,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
     assert.deepEqual([report.runs, report.skipped], [0, 1], "settled runs are skipped");
     report = await projectRuns(backend, store, { workflows: [WF], skipSettled: false });
     assert.deepEqual([report.runs, report.skipped], [1, 0]);
-    assert.equal(await count("VeinRun"), 1);
+    assert.equal(await count("StrutRun"), 1);
   });
 
   it("projects chats and turns with IN_CHAT edges and SPAWNED edges to runs the chat launched", async () => {
@@ -240,18 +240,18 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI no
     assert.deepEqual([report.runs, report.chats, report.turns], [1, 1, 2]);
     assert.equal(await edges("IN_CHAT"), 2);
     assert.equal(await edges("SPAWNED"), 1);
-    const turns = await backend.bolt.run(`MATCH (t:VeinTurn) RETURN t.turn AS n, t.user_text_preview AS u, t.assistant_text_preview AS a ORDER BY n`);
+    const turns = await backend.bolt.run(`MATCH (t:StrutTurn) RETURN t.turn AS n, t.user_text_preview AS u, t.assistant_text_preview AS a ORDER BY n`);
     assert.deepEqual(turns, [
       { n: 0, u: "run the delivery", a: "Done — 60 delivered." },
       { n: 1, u: "thanks", a: "Any time." },
     ]);
-    const chain = await backend.bolt.run(`MATCH (c:VeinChat)-[:SPAWNED]->(r:VeinRun)<-[:IN_RUN]-(s:VeinAgentSession)<-[:IN_SESSION]-(t:VeinToolCall) RETURN count(t) AS c`);
+    const chain = await backend.bolt.run(`MATCH (c:StrutChat)-[:SPAWNED]->(r:StrutRun)<-[:IN_RUN]-(s:StrutAgentSession)<-[:IN_SESSION]-(t:StrutToolCall) RETURN count(t) AS c`);
     assert.equal(chain[0]!["c"], 2, "chat → run → session → tool call provenance chain");
 
     // Idempotent.
     await projectChats(backend, chats);
-    assert.equal(await count("VeinChat"), 1);
-    assert.equal(await count("VeinTurn"), 2);
+    assert.equal(await count("StrutChat"), 1);
+    assert.equal(await count("StrutTurn"), 2);
     assert.equal(await edges("IN_CHAT"), 2);
   });
 });

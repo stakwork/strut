@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, graphErrorCode, writeEdge, type GraphBackend } from "./_shared.js";
 /** Validate one side of a triplet: either ref_id XOR (type + data). */
 function validateTripletSide(
@@ -45,7 +45,7 @@ const TripletSchema = z.object({
 export default defineStep({
   type: "graph/create-batch-triplet",
   description:
-    "Assert MANY facts into the vein knowledge graph in a single call. " +
+    "Assert MANY facts into the strut knowledge graph in a single call. " +
     "Each item in `triplets` has the same shape as graph_create_triplet (source/target as ref_id or inline " +
     "node_type+node_data, plus edge_type and optional edge_data/weight). " +
     "A single top-level `namespace` applies to all inline node creation. " +
@@ -62,14 +62,14 @@ export default defineStep({
     allow_scratchpad: z
       .boolean()
       .optional()
-      .describe("Accepted for input parity with jarvis/create-batch-triplet; the vein graph has no scratchpad, so this has no effect."),
+      .describe("Accepted for input parity with jarvis/create-batch-triplet; the strut graph has no scratchpad, so this has no effect."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
     let b: GraphBackend;
     let namespace: string;
     try {
-      b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       namespace = await b.reader.resolveNamespace(cfg.namespace);
     } catch (e) {
       return errText("graph/create-batch-triplet", e);

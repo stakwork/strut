@@ -1,7 +1,7 @@
 /**
  * Node-schema registration: pure planning rules, and (live) the write —
  * a new type becomes writable through the NodeWriter, an existing jarvis
- * type can be extended add-only, and Vein's closed registry is refused.
+ * type can be extended add-only, and Strut's closed registry is refused.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -11,7 +11,7 @@ import { GraphValidationError, NodeWriter } from "./node-writer.js";
 import { seedJarvisOntology } from "./ontology-seed.js";
 import { createNodeSchema, planNodeSchema } from "./schema-crud.js";
 import { SchemaResolver } from "./schema-resolver.js";
-import { seedVeinDomain } from "./schema-seed.js";
+import { seedStrutDomain } from "./schema-seed.js";
 import { GraphReader } from "./search.js";
 import { schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
 
@@ -44,7 +44,7 @@ describe("planNodeSchema (pure)", () => {
   it("rejects bad types, reserved/unknown attribute names, bad type strings, undeclared key tokens", () => {
     assert.equal(code(() => planNodeSchema({ type: "9x", attributes: {} })), "UNKNOWN_TYPE");
     assert.equal(code(() => planNodeSchema({ type: "Thing", attributes: {} })), "UNKNOWN_TYPE");
-    assert.equal(code(() => planNodeSchema({ type: "VeinRun", attributes: {} })), "UNKNOWN_TYPE");
+    assert.equal(code(() => planNodeSchema({ type: "StrutRun", attributes: {} })), "UNKNOWN_TYPE");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { "bad-name": "string" } })), "UNKNOWN_ATTRIBUTE:bad-name");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { ref_id: "string" } })), "UNKNOWN_ATTRIBUTE:ref_id");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { node_key: "string" } })), "UNKNOWN_ATTRIBUTE:node_key");
@@ -57,7 +57,7 @@ describe("planNodeSchema (pure)", () => {
   });
 });
 
-describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let bolt: Bolt;
   let resolver: SchemaResolver;
   let nodes: NodeWriter;
@@ -68,7 +68,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J
     await bolt.verify();
     await wipeGraph(bolt);
     await seedJarvisOntology(bolt);
-    await seedVeinDomain(bolt);
+    await seedStrutDomain(bolt);
     resolver = new SchemaResolver(bolt);
     nodes = new NodeWriter(bolt, { resolver });
     edges = new EdgeWriter(bolt, { resolver });
@@ -129,7 +129,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J
     assert.equal(e.created, true);
   });
 
-  it("extends an existing jarvis type add-only, with cache invalidation, and refuses Vein types", async () => {
+  it("extends an existing jarvis type add-only, with cache invalidation, and refuses Strut types", async () => {
     // Claim (from the seeded ontology) has no verdict.
     await assert.rejects(nodes.write({ type: "Claim", data: { name: "c2", claim_text: "t", speaker_name: "s", verdict: "unknown" } }, "create"), (e: any) => e.code === "UNKNOWN_ATTRIBUTE");
     const before = await bolt.run(`MATCH (s:Schema {type: "Claim"}) RETURN s.ref_id AS r, s.node_key AS k, s.claim_text AS ct`);
@@ -152,8 +152,8 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J
     const again = await createNodeSchema(bolt, resolver, { type: "Claim", attributes: { verdict: "?string" } });
     assert.deepEqual([again.created, again.added], [false, []]);
 
-    await assert.rejects(createNodeSchema(bolt, resolver, { type: "VeinRun", attributes: { x: "string" } }), (e: any) => e.code === "UNKNOWN_TYPE");
-    await assert.rejects(createNodeSchema(bolt, resolver, { type: "SubRun", parent: "VeinRun", attributes: {} }), (e: any) => e.code === "UNKNOWN_TYPE" && e.attribute === "parent");
+    await assert.rejects(createNodeSchema(bolt, resolver, { type: "StrutRun", attributes: { x: "string" } }), (e: any) => e.code === "UNKNOWN_TYPE");
+    await assert.rejects(createNodeSchema(bolt, resolver, { type: "SubRun", parent: "StrutRun", attributes: {} }), (e: any) => e.code === "UNKNOWN_TYPE" && e.attribute === "parent");
     await assert.rejects(createNodeSchema(bolt, resolver, { type: "Orphan", parent: "NoSuchParent", attributes: {} }), (e: any) => e.code === "UNKNOWN_TYPE" && e.attribute === "parent");
   });
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 
 const EXAMPLE = `- id: set_strength
@@ -15,7 +15,7 @@ const EXAMPLE = `- id: set_strength
 export default defineStep({
   type: "graph/edit-edge",
   description:
-    "Update the properties of an EXISTING edge in the vein knowledge graph (writes live to the graph). " +
+    "Update the properties of an EXISTING edge in the strut knowledge graph (writes live to the graph). " +
     "Edges are create-only in graph/create-triplet: writing the same source-[EDGE]->target again returns the " +
     "existing edge unchanged ('Warning'), so this is the one way to change an edge's data afterwards. " +
     "Locate the edge by `edge_ref_id` (from create-triplet's output) OR by the triple `source_ref_id` + `edge_type` + " +
@@ -48,7 +48,7 @@ export default defineStep({
     const hasDelete = cfg.properties_to_be_deleted && cfg.properties_to_be_deleted.length > 0;
     if (!hasSet && !hasDelete) return "graph/edit-edge invalid input — pass at least one change: edge_data (properties to set) or properties_to_be_deleted";
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const r = await b.edges.update(
         byRef ? { ref_id: cfg.edge_ref_id! } : { edge: cfg.edge_type!, source_ref_id: cfg.source_ref_id!, target_ref_id: cfg.target_ref_id! },
         { set: cfg.edge_data ?? {}, remove: cfg.properties_to_be_deleted ?? [] },

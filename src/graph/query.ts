@@ -1,5 +1,5 @@
 /**
- * Read-only raw Cypher against the vein graph backend — the chat builder's
+ * Read-only raw Cypher against the strut graph backend — the chat builder's
  * `graph_query` tool (see ai/tools.ts). It exists so the assistant can
  * VERIFY what a workflow's `graph/*` steps actually wrote (counts by type,
  * exact properties, edge fan-out) — questions the typed read steps can't

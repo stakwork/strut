@@ -8,7 +8,7 @@ optimize) that's the wrong shape:
 
 - The agent can do nothing else while it waits, and one severed connection
   wastes the whole wait.
-- `VEIN_CHAT_MAX_STEPS` bounds the *turn*, so babysitting a run by polling
+- `STRUT_CHAT_MAX_STEPS` bounds the *turn*, so babysitting a run by polling
   burns tool-call iterations to repeatedly learn "still running".
 - The autonomous improve-and-iterate loop (launch → inspect score → revise →
   relaunch) needs the agent to *come back* when a run finishes, without a
@@ -24,7 +24,7 @@ existing mechanism.
 
 ### 1. `run_workflow` auto-upgrades to detached
 
-The tool races the run against a wait window (`VEIN_CHAT_RUN_WAIT_MS`,
+The tool races the run against a wait window (`STRUT_CHAT_RUN_WAIT_MS`,
 default 60s):
 
 - Run finishes in time → return the result exactly as today (the quick
@@ -47,7 +47,7 @@ behavior is unchanged: fully synchronous.
 ### 2. Completion wakes the chat: the notifier
 
 `src/ai/notifier.ts` — `createChatNotifier({ chatStore, maxAutoTurns,
-startTurn })`, owned by `createVein`'s chat block:
+startTurn })`, owned by `createStrut`'s chat block:
 
 - `deliver(chatId, text)` — called when a detached run settles. If the chat
   has a live turn **in this process**, queue; else launch a notification
@@ -71,7 +71,7 @@ via the same `launchChatTurn`.
 
 `ChatMeta.autoTurns` counts notification-triggered turns since the last
 human message; `POST /chat` resets it to 0. When a notification arrives and
-`autoTurns >= maxAutoTurns` (`VEIN_CHAT_MAX_AUTO_TURNS`, default 10), the
+`autoTurns >= maxAutoTurns` (`STRUT_CHAT_MAX_AUTO_TURNS`, default 10), the
 notification message is still appended to the transcript (the next human
 turn sees it) but NO turn is launched — a runaway loop parks instead of
 burning tokens all night past its budget.
@@ -108,7 +108,7 @@ mean new turns can appear while the flyout is open (or closed). Add:
 - `src/ai/tools.ts`: `run_workflow` race + detached stub.
 - `src/ai/prompts.ts`: `AiDeps.detach` type; prompt updates.
 - `src/chat-store.ts`: `ChatMeta.autoTurns`.
-- `src/createVein.ts`: `chatRunWaitMs` / `chatMaxAutoTurns` options + env,
+- `src/createStrut.ts`: `chatRunWaitMs` / `chatMaxAutoTurns` options + env,
   notifier wiring into `launchChatTurn` + `POST /chat`, `onDetach` →
   `activeRuns` + `deliver`.
 - `web/src/components/ChatFlyout.tsx` + `styles/components.css`: follow

@@ -92,7 +92,7 @@ describe("FileChatStore", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-chat-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-chat-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 
@@ -207,18 +207,18 @@ describe("truncateToolMessages", () => {
     assert.deepEqual(truncateToolMessages(msgs, 0), msgs);
   });
 
-  it("reads the cap from VEIN_CHAT_TOOL_RESULT_MAX_CHARS", () => {
-    const prev = process.env["VEIN_CHAT_TOOL_RESULT_MAX_CHARS"];
+  it("reads the cap from STRUT_CHAT_TOOL_RESULT_MAX_CHARS", () => {
+    const prev = process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
     try {
-      process.env["VEIN_CHAT_TOOL_RESULT_MAX_CHARS"] = "10";
+      process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"] = "10";
       assert.equal(toolResultMaxCharsFromEnv(), 10);
-      process.env["VEIN_CHAT_TOOL_RESULT_MAX_CHARS"] = "garbage";
+      process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"] = "garbage";
       assert.equal(toolResultMaxCharsFromEnv(), DEFAULT_TOOL_RESULT_MAX_CHARS);
-      delete process.env["VEIN_CHAT_TOOL_RESULT_MAX_CHARS"];
+      delete process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
       assert.equal(toolResultMaxCharsFromEnv(), DEFAULT_TOOL_RESULT_MAX_CHARS);
     } finally {
-      if (prev === undefined) delete process.env["VEIN_CHAT_TOOL_RESULT_MAX_CHARS"];
-      else process.env["VEIN_CHAT_TOOL_RESULT_MAX_CHARS"] = prev;
+      if (prev === undefined) delete process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
+      else process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"] = prev;
     }
   });
 });

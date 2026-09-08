@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { createVein, type Vein } from "./createVein.js";
+import { createStrut, type Strut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import type { AuthoringCapability } from "./authoring.js";
 
@@ -15,7 +15,7 @@ import type { AuthoringCapability } from "./authoring.js";
  * EVOLVE_SPEC §5.2/§6: an in-workflow agent's author/test/inspect surface,
  * closed over the artifacts it publishes (publisher "ai").
  *
- * Authored step sources deliberately avoid `import "vein"`: the temp
+ * Authored step sources deliberately avoid `import "strut"`: the temp
  * workspace lives outside the package tree, where that specifier can't
  * resolve at dynamic-import time. A duck-typed `{ parse }` schema exercises
  * the same registry/load/run paths.
@@ -36,26 +36,26 @@ const logFlow = (name: string, msg: string) =>
 
 describe("authoring capability (the meta surface)", () => {
   let tempDir: string;
-  let vein: Vein<Record<string, unknown>>;
+  let strut: Strut<Record<string, unknown>>;
   let authoring: AuthoringCapability;
 
   before(async () => {
-    tempDir = join(tmpdir(), `vein-authoring-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-authoring-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
-    vein = await createVein({
+    strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),
       serveUi: false,
     });
-    authoring = (vein.services as { authoring?: AuthoringCapability }).authoring!;
+    authoring = (strut.services as { authoring?: AuthoringCapability }).authoring!;
   });
 
   after(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("createVein auto-provides services.authoring and registers the meta/* lib steps", async () => {
+  it("createStrut auto-provides services.authoring and registers the meta/* lib steps", async () => {
     assert.ok(authoring, "services.authoring should be auto-provided");
-    const registry = vein.getRegistry();
+    const registry = strut.getRegistry();
     for (const type of [
       "meta/list-steps",
       "meta/search-steps",
@@ -107,7 +107,7 @@ describe("authoring capability (the meta surface)", () => {
   });
 
   it("editStep refuses steps the agent surface did not author", async () => {
-    await vein.workspace.publishStep(
+    await strut.workspace.publishStep(
       "seeded/tool",
       echoStep("seeded/tool", 1),
       undefined,
@@ -135,7 +135,7 @@ describe("authoring capability (the meta surface)", () => {
     assert.equal(bumped.version, "v2");
 
     // Harness: created outside the meta surface → unstamped.
-    await vein.workspace.createWorkflow("harness-flow", logFlow("harness-flow", "gold"));
+    await strut.workspace.createWorkflow("harness-flow", logFlow("harness-flow", "gold"));
 
     const overwrite = (await authoring.publishWorkflow(
       "harness-flow",
@@ -228,7 +228,7 @@ describe("authoring capability (the meta surface)", () => {
   });
 
   it("meta/* steps reach the capability through ctx.services inside a real run", async () => {
-    const result = await vein.run({
+    const result = await strut.run({
       name: "meta-wiring-test",
       input: z.any(),
       steps: [
@@ -270,7 +270,7 @@ describe("authoring capability (the meta surface)", () => {
     assert.ok(!listed.workflows.some((w: any) => w.name === "cand-valid" || w.name === "cand-invalid"));
 
     // ...and the step form reaches it inside a run.
-    const result = await vein.run({
+    const result = await strut.run({
       name: "meta-validate-test",
       input: z.any(),
       steps: [
@@ -285,7 +285,7 @@ describe("authoring capability (the meta surface)", () => {
   });
 
   it("listSecrets returns names only", async () => {
-    await vein.secretStore.set("MY_TOKEN", "shh");
+    await strut.secretStore.set("MY_TOKEN", "shh");
     const res = (await authoring.listSecrets()) as any;
     const names = res.secrets.map((s: any) => s.name);
     assert.ok(names.includes("MY_TOKEN"));

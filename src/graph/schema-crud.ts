@@ -1,6 +1,6 @@
 /**
  * Node-schema registration — the write side of the `:Schema` meta-graph for
- * types that are NOT Vein's own, mirroring jarvis's `POST /v2/schema`
+ * types that are NOT Strut's own, mirroring jarvis's `POST /v2/schema`
  * (`schema_service.create_schema` + `schema_crud.create_schema`):
  *
  *   - the parent must already be a Schema (default `Thing`); the type must
@@ -20,13 +20,13 @@
  *     node_key index. The domain's search indexes are created when absent
  *     (`ensure_indexes_for_schema`).
  *
- * `createNodeSchema` also EXTENDS an existing non-Vein schema — add-only,
- * the way `seedVeinDomain` reconciles: attributes the schema lacks are
+ * `createNodeSchema` also EXTENDS an existing non-Strut schema — add-only,
+ * the way `seedStrutDomain` reconciles: attributes the schema lacks are
  * added, nothing existing is changed, identity keys (`type`, `parent`,
  * `node_key`, `index`) are never touched. That is what lets a workflow add
  * `verdict` to a jarvis-seeded `Claim` without editing the ontology by hand.
  *
- * Vein's own types are a closed in-code registry (`vein-schemas.ts`) and
+ * Strut's own types are a closed in-code registry (`strut-schemas.ts`) and
  * are refused here.
  */
 import { randomUUID } from "node:crypto";
@@ -36,7 +36,7 @@ import { GraphValidationError } from "./node-writer.js";
 import { searchableAttributesOf } from "./ontology-seed.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { schemaStatement } from "./schema-seed.js";
-import { GENERIC_NODE_PROPERTIES, RESERVED_ATTRIBUTE_NAMES, THING_TYPE, isVeinType } from "./vein-schemas.js";
+import { GENERIC_NODE_PROPERTIES, RESERVED_ATTRIBUTE_NAMES, THING_TYPE, isStrutType } from "./strut-schemas.js";
 
 export interface NodeSchemaInput {
   /** New type label, e.g. `Evidence`. */
@@ -115,7 +115,7 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
   const type = String(input.type ?? "").trim();
   if (!TYPE_LABEL.test(type)) throw new GraphValidationError("UNKNOWN_TYPE", type || "?", "type must match ^[A-Za-z][A-Za-z0-9_]*$");
   if (type === "*" || type === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", type, "cannot create the root or wildcard schema");
-  if (isVeinType(type)) throw new GraphValidationError("UNKNOWN_TYPE", type, "Vein's own types are a closed in-code registry");
+  if (isStrutType(type)) throw new GraphValidationError("UNKNOWN_TYPE", type, "Strut's own types are a closed in-code registry");
   const parent = String(input.parent ?? THING_TYPE).trim() || THING_TYPE;
   if (!TYPE_LABEL.test(parent)) throw new GraphValidationError("UNKNOWN_TYPE", type, `parent must match ^[A-Za-z][A-Za-z0-9_]*$, got ${JSON.stringify(input.parent)}`, "parent");
 
@@ -161,7 +161,7 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
 }
 
 /**
- * Create the schema (or add-only extend an existing non-Vein one). The
+ * Create the schema (or add-only extend an existing non-Strut one). The
  * resolver's caches are invalidated so the next write sees the new type.
  */
 export async function createNodeSchema(bolt: Bolt, resolver: SchemaResolver, input: NodeSchemaInput): Promise<NodeSchemaResult> {
@@ -172,11 +172,11 @@ export async function createNodeSchema(bolt: Bolt, resolver: SchemaResolver, inp
   const existingType = await resolver.resolveType(plan.type);
   const parent = (await resolver.resolveType(plan.parent)) ?? null;
   if (!parent) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, `parent schema ${plan.parent} does not exist`, "parent");
-  if (isVeinType(parent)) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, "Vein's own types cannot be extended (closed registry)", "parent");
+  if (isStrutType(parent)) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, "Strut's own types cannot be extended (closed registry)", "parent");
 
   const result = await bolt.write(async (tx) => {
     if (existingType) {
-      if (isVeinType(existingType)) throw new GraphValidationError("UNKNOWN_TYPE", existingType, "Vein's own types are a closed in-code registry");
+      if (isStrutType(existingType)) throw new GraphValidationError("UNKNOWN_TYPE", existingType, "Strut's own types are a closed in-code registry");
       const live = await txRows(tx, `MATCH (s:Schema {type: $t}) WHERE s.is_deleted IS NULL OR s.is_deleted = false RETURN s.ref_id AS ref_id, keys(s) AS ks LIMIT 1`, {
         t: existingType,
       });

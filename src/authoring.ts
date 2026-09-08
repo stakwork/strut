@@ -253,7 +253,7 @@ async function verifyLoaded(
     loaded: false,
     loadError:
       err ??
-      "step did not appear in the registry — check the source imports only 'vein' and has a valid defineStep default export",
+      "step did not appear in the registry — check the source imports only 'strut' and has a valid defineStep default export",
   };
 }
 
@@ -343,7 +343,7 @@ export interface RunStepArgs {
 
 /**
  * The authoring capability injected as `services.authoring` — what the
- * `meta/*` lib steps are thin plumbing over. Auto-provided by `createVein`
+ * `meta/*` lib steps are thin plumbing over. Auto-provided by `createStrut`
  * (like `http` / `secrets` / `artifacts`); embedders can inject their own.
  */
 export interface AuthoringCapability {

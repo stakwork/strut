@@ -270,9 +270,9 @@ function buildCategories(): Record<string, any> {
 
 // ── Build theme ────────────────────────────────────────────────────────────
 
-const veinTheme: CanvasTheme = resolveTheme(
+const strutTheme: CanvasTheme = resolveTheme(
   {
-    name: "vein",
+    name: "strut",
     categories: buildCategories(),
     // Override midnight's neon-green breadcrumbs to match the app palette.
     breadcrumbs: {
@@ -382,7 +382,7 @@ export function flowToCanvas(
   const edges: CanvasEdge[] = [];
 
   if (steps.length === 0) {
-    return { nodes, edges, theme: { base: "vein" } };
+    return { nodes, edges, theme: { base: "strut" } };
   }
 
   // Build a quick lookup of step ids → step (for finding gates)
@@ -483,10 +483,10 @@ export function flowToCanvas(
   return {
     nodes,
     edges,
-    theme: { base: "vein" },
+    theme: { base: "strut" },
   };
 }
 
-// ── Register the vein theme so system-canvas can resolve `base: "vein"` ────
+// ── Register the strut theme so system-canvas can resolve `base: "strut"` ────
 
-export { veinTheme };
+export { strutTheme };

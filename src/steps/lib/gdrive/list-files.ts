@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { buildDriveClient, describeDriveError } from "./_shared.js";
 
 const EXAMPLE = `- id: list
@@ -49,7 +49,7 @@ export default defineStep({
      *  run's `modifiedAfter`. Null when no files matched. */
     newestModifiedTime: z.string().nullable(),
   }),
-  async run(cfg, ctx: StepContext<VeinCapabilities>) {
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
     const { client, haveAuth } = await buildDriveClient(cfg.accessToken, ctx);
     const q = cfg.query ?? buildQuery(cfg);
 

@@ -22,22 +22,22 @@ function buildApp(): Hono {
 }
 
 describe("requireApiKey middleware", () => {
-  const originalKey = process.env["VEIN_API_KEY"];
+  const originalKey = process.env["STRUT_API_KEY"];
 
   beforeEach(() => {
     _resetAuthState();
-    delete process.env["VEIN_API_KEY"];
+    delete process.env["STRUT_API_KEY"];
   });
 
   afterEach(() => {
-    if (originalKey === undefined) delete process.env["VEIN_API_KEY"];
-    else process.env["VEIN_API_KEY"] = originalKey;
+    if (originalKey === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = originalKey;
     _resetAuthState();
   });
 
   // ── Permissive / dev mode ────────────────────────────────────────────────
 
-  describe("when VEIN_API_KEY is unset", () => {
+  describe("when STRUT_API_KEY is unset", () => {
     it("allows POST /steps without any auth header", async () => {
       const app = buildApp();
       const res = await app.request("/steps", { method: "POST" });
@@ -60,8 +60,8 @@ describe("requireApiKey middleware", () => {
       assert.equal(body.name, "gitree/save-pr");
     });
 
-    it("treats empty-string VEIN_API_KEY the same as unset", async () => {
-      process.env["VEIN_API_KEY"] = "";
+    it("treats empty-string STRUT_API_KEY the same as unset", async () => {
+      process.env["STRUT_API_KEY"] = "";
       const app = buildApp();
       const res = await app.request("/steps", { method: "POST" });
       assert.equal(res.status, 200);
@@ -70,11 +70,11 @@ describe("requireApiKey middleware", () => {
 
   // ── Enforced ─────────────────────────────────────────────────────────────
 
-  describe("when VEIN_API_KEY is set", () => {
+  describe("when STRUT_API_KEY is set", () => {
     const KEY = "k_test_abc_123";
 
     beforeEach(() => {
-      process.env["VEIN_API_KEY"] = KEY;
+      process.env["STRUT_API_KEY"] = KEY;
     });
 
     it("accepts a request with the matching bearer token", async () => {

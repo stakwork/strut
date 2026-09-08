@@ -1,5 +1,5 @@
 // ── Settings Dialog ─────────────────────────────────────────────────────────
-// Browser-local preferences (storage.ts). Today: dictation — which vein STT
+// Browser-local preferences (storage.ts). Today: dictation — which strut STT
 // models the mic in the AI chat streams to, plus an inline hotwords list to
 // experiment with contextual biasing (plans/local-desktop-and-stt.md §4.2).
 // Model *installation* is a server fact (`/audio/models`); "enabled" is this
@@ -107,7 +107,7 @@ export function SettingsDialog(props: {
 
         <div class="settings-section-title">Connection</div>
         <div class="dialog-hint">
-          Only needed when the server sets <code>VEIN_API_KEY</code>. Sent as a bearer
+          Only needed when the server sets <code>STRUT_API_KEY</code>. Sent as a bearer
           token on every request (and as <code>?key=</code> on the dictation socket).
           {keySource === "url" && " This session's key came from the launch URL."}
         </div>
@@ -116,7 +116,7 @@ export function SettingsDialog(props: {
           <input
             type="password"
             value={apiKey}
-            placeholder="VEIN_API_KEY (blank in dev)"
+            placeholder="STRUT_API_KEY (blank in dev)"
             autocomplete="off"
             onInput={(e) => setApiKeyState((e.target as HTMLInputElement).value)}
             onBlur={(e) => saveApiKey((e.target as HTMLInputElement).value)}
@@ -125,7 +125,7 @@ export function SettingsDialog(props: {
 
         <div class="settings-section-title">Dictation</div>
         <div class="dialog-hint">
-          Speak into the AI chat. Recognition runs inside vein (sherpa-onnx, on the
+          Speak into the AI chat. Recognition runs inside strut (sherpa-onnx, on the
           server's CPU); nothing leaves the deployment. Models download once into{" "}
           <code>{catalog?.modelDir ?? "the model dir"}</code>.
         </div>

@@ -1,5 +1,5 @@
 // Mount-path-agnostic API base. Derived at runtime from the app's own
-// script URL so the UI works whether vein is served at the root (`/`) or
+// script URL so the UI works whether strut is served at the root (`/`) or
 // under any sub-path (`/lab`, `/foo/bar`, …) — no build-time base needed.
 // In a production build the bundle loads from `<mount>/assets/...`, so the
 // prefix is everything before `/assets/`. In dev (vite) there is no
@@ -17,12 +17,12 @@ function deriveBase(): string {
 const BASE = deriveBase();
 
 // ── API key ────────────────────────────────────────────────────────────────
-// When the server sets VEIN_API_KEY, gated routes need `Authorization:
-// Bearer`. A host that spawns vein (desktop app) hands the per-launch key to
+// When the server sets STRUT_API_KEY, gated routes need `Authorization:
+// Bearer`. A host that spawns strut (desktop app) hands the per-launch key to
 // the UI as `?key=` on first load; we stash it in sessionStorage and strip
 // it from the URL. A user can also paste one in Settings (localStorage),
 // for a server deployment. sessionStorage (this launch) wins.
-const KEY_STORAGE = "vein/apiKey";
+const KEY_STORAGE = "strut/apiKey";
 
 function captureKeyFromUrl(): void {
   try {

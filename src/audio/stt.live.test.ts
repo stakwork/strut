@@ -1,8 +1,8 @@
 /**
  * LIVE speech-to-text test — needs the sherpa addon and downloads the small
- * kroko model (57 MB) into VEIN_TEST_STT_MODEL_DIR (default: a temp dir, so
+ * kroko model (57 MB) into STRUT_TEST_STT_MODEL_DIR (default: a temp dir, so
  * point it at a persistent dir to avoid re-downloading). Opt in with
- * VEIN_TEST_STT=1. Skipped otherwise, like the graph tests.
+ * STRUT_TEST_STT=1. Skipped otherwise, like the graph tests.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -12,19 +12,19 @@ import { join } from "node:path";
 import { createStt, loadSherpaEngine, pcm16ToFloat32, type SttEvent, type SttService } from "./stt.js";
 import { sttModelPath } from "./models.js";
 
-const enabled = process.env["VEIN_TEST_STT"] === "1";
+const enabled = process.env["STRUT_TEST_STT"] === "1";
 
-describe("stt live (VEIN_TEST_STT=1)", { skip: !enabled }, () => {
+describe("stt live (STRUT_TEST_STT=1)", { skip: !enabled }, () => {
   let dataDir: string;
   let stt: SttService;
   let wavPath: string;
-  const modelDir = process.env["VEIN_TEST_STT_MODEL_DIR"];
+  const modelDir = process.env["STRUT_TEST_STT_MODEL_DIR"];
   let tmpModelDir: string | undefined;
 
   before(async () => {
     assert.ok(await loadSherpaEngine(), "sherpa-onnx-node must be installed for the live test");
-    dataDir = await mkdtemp(join(tmpdir(), "vein-stt-live-"));
-    if (!modelDir) tmpModelDir = await mkdtemp(join(tmpdir(), "vein-stt-models-"));
+    dataDir = await mkdtemp(join(tmpdir(), "strut-stt-live-"));
+    if (!modelDir) tmpModelDir = await mkdtemp(join(tmpdir(), "strut-stt-models-"));
     stt = createStt({ dataDir, modelDir: modelDir ?? tmpModelDir!, env: {} });
     const dir = await stt.ensureModel("zipformer-en-kroko");
     assert.equal(dir, sttModelPath(modelDir ?? tmpModelDir!, "zipformer-en-kroko"));

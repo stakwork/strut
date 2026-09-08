@@ -2,7 +2,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Bolt } from "./bolt.js";
-import { seedVeinDomain } from "./schema-seed.js";
+import { seedStrutDomain } from "./schema-seed.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { EdgeWriter } from "./edge-writer.js";
 import {
@@ -45,7 +45,7 @@ const bow: Embedder = {
 };
 
 const hit = (ref_id: string, raw_score: number, extra: Record<string, unknown> = {}): Hit => ({
-  node: { labels: ["VeinWorkflow", "Node", "Data_Bank", "Domain_vein"], properties: { ref_id, ...extra } },
+  node: { labels: ["StrutWorkflow", "Node", "Data_Bank", "Domain_strut"], properties: { ref_id, ...extra } },
   raw_score,
 });
 
@@ -101,15 +101,15 @@ describe("search helpers (pure)", () => {
   });
   it("serializeNode strips generic props and keeps the envelope", () => {
     const env = serializeNode(
-      { labels: ["Data_Bank", "VeinRun", "Node", "Domain_vein"], properties: { ref_id: "r", node_key: "k", namespace: "default", Data_Bank: "x", text_embeddings: [1], date_added_to_graph: 5, weight: 2, run_id: "1", image_url: 3 } },
+      { labels: ["Data_Bank", "StrutRun", "Node", "Domain_strut"], properties: { ref_id: "r", node_key: "k", namespace: "default", Data_Bank: "x", text_embeddings: [1], date_added_to_graph: 5, weight: 2, run_id: "1", image_url: 3 } },
       { score: 1 },
     );
-    assert.deepEqual(env, { ref_id: "r", node_type: "VeinRun", date_added_to_graph: 5, weight: 2, properties: { run_id: "1", image_url: "" }, score: 1 });
+    assert.deepEqual(env, { ref_id: "r", node_type: "StrutRun", date_added_to_graph: 5, weight: 2, properties: { run_id: "1", image_url: "" }, score: 1 });
   });
   it("schema split + inherited attributes", () => {
     const thing = splitSchema({ type: "Thing", ref_id: "t", index: ["name"], name: "string", description: "?string" });
     assert.deepEqual(thing.attributes, { name: "string" }, "description is a core key");
-    const run = splitSchema({ type: "VeinRun", parent: "Thing", domain: "Vein", ref_id: "r", run_id: "string", name: "string", description: "?string" });
+    const run = splitSchema({ type: "StrutRun", parent: "Thing", domain: "Strut", ref_id: "r", run_id: "string", name: "string", description: "?string" });
     const [, runOut] = inheritedAttributes([thing, run]);
     assert.deepEqual(runOut!.attributes, { run_id: "string" });
     // `description` is a jarvis SCHEMA_CORE_PROPERTY, so Thing's
@@ -120,7 +120,7 @@ describe("search helpers (pure)", () => {
   });
 });
 
-describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("GraphReader (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let bolt: Bolt;
   let reader: GraphReader;
   const ids: Record<string, string> = {};
@@ -128,19 +128,19 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
     bolt = new Bolt(cfg!);
     await bolt.verify();
     await wipeGraph(bolt);
-    await seedVeinDomain(bolt);
+    await seedStrutDomain(bolt);
     const nodes = new NodeWriter(bolt, { embedder: bow });
     const edges = new EdgeWriter(bolt);
     const rs = await nodes.writeMany([
-      { type: "VeinWorkflow", data: { name: "harvey-deliver", description: "Deliver legal memos to the client portal", usage_count_30d: 5 } },
-      { type: "VeinWorkflow", data: { name: "harvey", description: "Legal research assistant" } },
-      { type: "VeinWorkflow", data: { name: "gaia-eval", description: "Benchmark runs against GAIA questions", usage_count_30d: 50 } },
-      { type: "VeinWorkflow", data: { name: "hidden-one", description: "Deliver memos" } },
-      { type: "VeinRun", data: { run_id: "r1", workflow_name: "harvey-deliver", status: "success", summary: "Delivered 60 of 60 memos", started_at: 1 } },
-      { type: "VeinStep", data: { step_type: "video/transcribe", description: "Transcribe audio", input_schema: "{ video_url: string }", output_schema: "{ transcript: string, words: [] }" } },
-      { type: "VeinStep", data: { step_type: "email/send", description: "Send an email", input_schema: "{ to: string, body: string }", output_schema: "{ message_id: string }" } },
-      { type: "VeinWorkflowVersion", data: { name: "harvey-deliver", content_hash: "c-1", created_at: 1, input_schema: "{ matterId: string }" } },
-      { type: "VeinAgentSession", data: { run_id: "r1", path: "harvey-deliver/agent", prompt_preview: "Draft the memo" } },
+      { type: "StrutWorkflow", data: { name: "harvey-deliver", description: "Deliver legal memos to the client portal", usage_count_30d: 5 } },
+      { type: "StrutWorkflow", data: { name: "harvey", description: "Legal research assistant" } },
+      { type: "StrutWorkflow", data: { name: "gaia-eval", description: "Benchmark runs against GAIA questions", usage_count_30d: 50 } },
+      { type: "StrutWorkflow", data: { name: "hidden-one", description: "Deliver memos" } },
+      { type: "StrutRun", data: { run_id: "r1", workflow_name: "harvey-deliver", status: "success", summary: "Delivered 60 of 60 memos", started_at: 1 } },
+      { type: "StrutStep", data: { step_type: "video/transcribe", description: "Transcribe audio", input_schema: "{ video_url: string }", output_schema: "{ transcript: string, words: [] }" } },
+      { type: "StrutStep", data: { step_type: "email/send", description: "Send an email", input_schema: "{ to: string, body: string }", output_schema: "{ message_id: string }" } },
+      { type: "StrutWorkflowVersion", data: { name: "harvey-deliver", content_hash: "c-1", created_at: 1, input_schema: "{ matterId: string }" } },
+      { type: "StrutAgentSession", data: { run_id: "r1", path: "harvey-deliver/agent", prompt_preview: "Draft the memo" } },
     ]);
     ["wf1", "wf2", "wf3", "wfHidden", "run", "stepVideo", "stepEmail", "wfv", "session"].forEach((k, i) => (ids[k] = rs[i]!.ref_id));
     await nodes.softDelete(ids["wfHidden"]!);
@@ -162,7 +162,7 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
   it("getNode: jarvis envelope, hidden for soft-deleted", async () => {
     const n = await reader.getNode(ids["wf1"]!);
     assert.ok(n);
-    assert.equal(n.node_type, "VeinWorkflow");
+    assert.equal(n.node_type, "StrutWorkflow");
     assert.equal(n.name, "harvey-deliver");
     assert.equal(n.ref_id, ids["wf1"]);
     assert.equal(n.properties["description"], "Deliver legal memos to the client portal");
@@ -173,10 +173,10 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
 
   it("connectionCounts + edgeCounts", async () => {
     assert.deepEqual(await reader.connectionCounts(ids["wfv"]!), [
-      { edge_type: "ACTIVE_VERSION", target_type: "VeinWorkflow", count: 1 },
-      { edge_type: "EXECUTED", target_type: "VeinRun", count: 1 },
-      { edge_type: "USES_STEP", target_type: "VeinStep", count: 1 },
-      { edge_type: "VERSION_OF", target_type: "VeinWorkflow", count: 1 },
+      { edge_type: "ACTIVE_VERSION", target_type: "StrutWorkflow", count: 1 },
+      { edge_type: "EXECUTED", target_type: "StrutRun", count: 1 },
+      { edge_type: "USES_STEP", target_type: "StrutStep", count: 1 },
+      { edge_type: "VERSION_OF", target_type: "StrutWorkflow", count: 1 },
     ]);
     assert.deepEqual(await reader.edgeCounts([ids["run"]!, ids["wf3"]!], "default"), {
       [ids["run"]!]: { EXECUTED: 1, IN_RUN: 1 },
@@ -201,9 +201,9 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
     assert.equal(limited.edges.length, 1);
     assert.equal(limited.edges[0]!.edge_type, "USES_STEP", "importance-sorted before LIMIT");
 
-    const filtered = await reader.neighbors(ids["wfv"]!, { edge_types: ["VERSION_OF", "EXECUTED"], node_types: ["VeinRun"] });
+    const filtered = await reader.neighbors(ids["wfv"]!, { edge_types: ["VERSION_OF", "EXECUTED"], node_types: ["StrutRun"] });
     assert.deepEqual(filtered.edges.map((e) => e.edge_type), ["EXECUTED"]);
-    const excluded = await reader.neighbors(ids["wfv"]!, { exclude_node_types: ["veinrun", "VEINSTEP"] });
+    const excluded = await reader.neighbors(ids["wfv"]!, { exclude_node_types: ["strutrun", "STRUTSTEP"] });
     assert.deepEqual(excluded.edges.map((e) => e.edge_type).sort(), ["ACTIVE_VERSION", "VERSION_OF"]);
     assert.deepEqual(await reader.neighbors("nope"), { nodes: [], edges: [] });
   });
@@ -213,7 +213,7 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
     assert.ok(r.total >= 2);
     assert.equal(r.nodes[0]!.ref_id, ids["wf2"], "exact title match boosted to the top");
     assert.equal(r.nodes[0]!.score, 1);
-    assert.equal(r.nodes[0]!.node_type, "VeinWorkflow");
+    assert.equal(r.nodes[0]!.node_type, "StrutWorkflow");
     assert.ok(["fulltext", "semantic", "hybrid"].includes(r.nodes[0]!.match_type!));
     assert.ok(!("Data_Bank" in r.nodes[0]!.properties));
     assert.ok(r.nodes.every((n) => n.ref_id !== ids["wfHidden"]), "soft-deleted excluded");
@@ -227,8 +227,8 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
     assert.deepEqual(multi.nodes.map((n) => n.ref_id).slice(0, 1), [ids["wf1"]]);
     const fuzzy = await reader.search({ q: "benchmrk" });
     assert.ok(fuzzy.nodes.some((n) => n.ref_id === ids["wf3"]), "fuzzy ~ fallback finds gaia-eval");
-    const typed = await reader.search({ q: "harvey", types: ["VeinRun"] });
-    assert.deepEqual(typed.nodes.map((n) => n.node_type), ["VeinRun"]);
+    const typed = await reader.search({ q: "harvey", types: ["StrutRun"] });
+    assert.deepEqual(typed.nodes.map((n) => n.node_type), ["StrutRun"]);
     const page1 = await reader.search({ q: "harvey", limit: 1 });
     const page2 = await reader.search({ q: "harvey", limit: 1, skip: 1 });
     assert.equal(page1.nodes.length, 1);
@@ -238,7 +238,7 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
   });
 
   it("search: a retriever layer failing (Lucene clause explosion) degrades to the other layers, like jarvis", async () => {
-    // 15-property Vein fulltext index × 150 required terms > Lucene's 1024
+    // 15-property Strut fulltext index × 150 required terms > Lucene's 1024
     // clause ceiling → TooManyNestedClauses. The semantic layer still finds
     // the workflow; the failure is reported, not thrown.
     const words = Array.from({ length: 150 }, (_, i) => `harvey${i}`).join(" ") + " harvey";
@@ -254,7 +254,7 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
     const byInput = await reader.search({ input_q: "a video url" });
     assert.equal(byInput.nodes[0]!.ref_id, ids["stepVideo"]);
     assert.equal(byInput.nodes[0]!.match_type, "input");
-    assert.ok(byInput.nodes.every((n) => ["VeinStep", "VeinWorkflowVersion"].includes(n.node_type!)));
+    assert.ok(byInput.nodes.every((n) => ["StrutStep", "StrutWorkflowVersion"].includes(n.node_type!)));
     const byOutput = await reader.search({ output_q: "message id" });
     assert.equal(byOutput.nodes[0]!.ref_id, ids["stepEmail"]);
     const combined = await reader.search({ q: "transcribe", input_q: "video" });
@@ -264,8 +264,8 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
   });
 
   it("search: domains validated against the registry; namespaces must be registered", async () => {
-    const vein = await reader.search({ q: "harvey", domains: ["vein"] });
-    assert.ok(vein.nodes.length >= 2);
+    const strut = await reader.search({ q: "harvey", domains: ["strut"] });
+    assert.ok(strut.nodes.length >= 2);
     await assert.rejects(reader.search({ q: "harvey", domains: ["legal"] }), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_DOMAIN");
     await assert.rejects(reader.search({ q: "harvey", namespace: "tenant-x" }), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_NAMESPACE");
     assert.deepEqual(await reader.registerNamespace("Tenant-X"), { namespace: "tenant-x", created: true });
@@ -280,28 +280,28 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI 
   it("ontology: listSchemas and getSchema mirror jarvis's shapes", async () => {
     const { schemas, edges } = await reader.listSchemas();
     assert.equal(schemas.length, 10);
-    const run = schemas.find((s) => s.type === "VeinRun")!;
-    assert.equal(run["domain"], "Vein");
+    const run = schemas.find((s) => s.type === "StrutRun")!;
+    assert.equal(run["domain"], "Strut");
     assert.equal(run["parent"], "Thing");
     assert.deepEqual(run["index"], ["workflow_name", "status", "summary"]);
     assert.equal(run.attributes["run_id"], "string");
     assert.ok(!("name" in run.attributes), "parent attrs moved out");
     assert.equal(run.inherited_attributes["name"], "string");
     assert.equal(run["description"], "?string", "description is a core key in jarvis, not an attribute");
-    assert.equal(run["type_description"], "One vein workflow run — status, timings, params, and a pointer to its log");
-    assert.ok(edges.some((e) => e.edge_type === "CHILD_OF" && e.source_type === "VeinRun" && e.target_type === "Thing"));
-    assert.ok(edges.some((e) => e.edge_type === "IN_RUN" && e.source_type === "VeinAgentSession" && e.target_type === "VeinRun"));
+    assert.equal(run["type_description"], "One strut workflow run — status, timings, params, and a pointer to its log");
+    assert.ok(edges.some((e) => e.edge_type === "CHILD_OF" && e.source_type === "StrutRun" && e.target_type === "Thing"));
+    assert.ok(edges.some((e) => e.edge_type === "IN_RUN" && e.source_type === "StrutAgentSession" && e.target_type === "StrutRun"));
     assert.ok(edges.some((e) => e.edge_type === "ACCESSED" && e.target_type === "Thing"));
 
-    const only = await reader.listSchemas({ domains: ["VEIN"] });
+    const only = await reader.listSchemas({ domains: ["STRUT"] });
     assert.equal(only.schemas.length, 9);
     assert.ok(only.edges.every((e) => e.source_type !== "Thing" && e.target_type !== "Thing"), "Thing is outside the domain and not a wildcard");
     assert.ok(!only.edges.some((e) => e.edge_type === "ACCESSED" || e.edge_type === "CHILD_OF"));
     assert.ok(only.edges.some((e) => e.edge_type === "IN_RUN"));
 
-    const single = await reader.getSchema("veinrun");
+    const single = await reader.getSchema("strutrun");
     assert.ok(single);
-    assert.equal(single.type, "VeinRun");
+    assert.equal(single.type, "StrutRun");
     assert.equal(single.attributes["run_id"], "string");
     assert.equal(single.attributes["name"], "string", "single form keeps inherited in attributes");
     assert.deepEqual(Object.keys(single.inherited_attributes).sort(), ["image_url", "is_muted", "name", "unique_source_id", "weight"]);

@@ -34,7 +34,7 @@ export interface AiDeps {
    *  env (see shell.ts — server API keys never reach model-authored
    *  commands). Optional: without it the bash tool isn't offered. */
   shell?: { cwd: string };
-  /** The vein graph backend, when the deployment has one (the graph-backed
+  /** The strut graph backend, when the deployment has one (the graph-backed
    *  workspace, or any wired Neo4j). Offers the read-only `graph_query`
    *  tool so the builder can verify what its `graph/*` steps wrote. Optional:
    *  without it the tool isn't offered. */
@@ -46,7 +46,7 @@ export interface AiDeps {
   /** Dispatch-mode `run_workflow` (see `plans/dispatch-run-notifications.md`).
    *  When present, a run still executing after `waitMs` converts to detached:
    *  the tool returns a `{ status: "running", runId }` stub immediately and
-   *  hands the pending promise to `onDetach` — the host (createVein's chat
+   *  hands the pending promise to `onDetach` — the host (createStrut's chat
    *  block) tracks it and wakes the chat with a `[run-notification]` message
    *  when it settles. Absent (tests / non-chat embedders) → the tool awaits
    *  the run to completion, exactly as before. */
@@ -160,7 +160,7 @@ Error handling:
 Authoring custom steps (create_step / edit_step):
 - If no existing step does what you need, you can write one. create_step makes a NEW step type; edit_step publishes a new version of an existing custom step (v1 → v2 …, with rollback). Built-in core/lib steps can't be edited.
 - A step MUST be self-contained TypeScript:
-    import { z, defineStep } from "vein";   // the ONLY runtime import
+    import { z, defineStep } from "strut";   // the ONLY runtime import
     export default defineStep({
       type: "my/step",
       description: "what it does + output shape",
@@ -177,7 +177,7 @@ Authoring custom steps (create_step / edit_step):
     - ctx.services.artifacts — per-run file storage, keyed by ctx.runId (retained after the run; one run cannot reach another's files). dir(runId) → absolute path of the run's dir, created on demand; write(runId, relPath, content) → absolute path written (subdirs created); read(runId, relPath) → Uint8Array (Buffer.from(bytes).toString() for text); list(runId) → sorted relative paths. Use it for scratchpad/store-retrieve patterns and files later steps or humans need; put RELATIVE paths in step output. An agent step with cwd at dir(runId) sees the same files.
   So a typical REST adapter is: const key = await ctx.services.secrets.get("STRIPE_KEY"); const res = await ctx.services.http("https://api.stripe.com/v1/charges", { query: { customer: cfg.customer }, headers: { authorization: \`Bearer \${key}\` } }); return { charges: res.body.data };
   The built-in "http" step is the canonical example — call get_step("http") to read its source and mirror how it uses ctx.services.http.
-- Prefer raw REST via ctx.services.http — you rarely need a vendor SDK (it's just a wrapper over REST, and an SDK does its own networking so it can't be recorded/replayed). Only import a package other than "vein" if the deployment has pre-installed it (a vendor SDK with gnarly auth); otherwise the step will fail to load. If you're unsure what else is on ctx.services, call get_step on an existing custom step and mirror how it uses ctx.services.
+- Prefer raw REST via ctx.services.http — you rarely need a vendor SDK (it's just a wrapper over REST, and an SDK does its own networking so it can't be recorded/replayed). Only import a package other than "strut" if the deployment has pre-installed it (a vendor SDK with gnarly auth); otherwise the step will fail to load. If you're unsure what else is on ctx.services, call get_step on an existing custom step and mirror how it uses ctx.services.
 - Keep the step's algorithm inline (that's the editable part). To change a prompt or heuristic in an existing step, call get_step to read it, then edit_step with the full updated source.
 - Fail with ACTIONABLE errors. API calls return opaque statuses (a GitHub/Drive 404 means "wrong id, private, OR it's actually a different resource type" — not just "not found"). Catch the common failures and throw an Error whose message names the resource and the likely fix (bad/expired token, missing scope, wrong id, resource is private). Let unexpected errors propagate as-is. The lib steps github/fetch-pr and gdrive/export-file are the reference examples — call get_step to mirror their handling.
 
@@ -188,7 +188,7 @@ Tools:
 - list_secrets(): NAMES of credentials in the deployment's secret store (never values). Call before authoring a step that needs auth — reference an existing name in ctx.services.secrets.get("NAME"), or tell the user to add a missing one.
 - create_step / edit_step: author or revise a custom step (see above).
 - bash(command, timeoutMs?): BUILD-TIME shell in the workspace dir (when offered) — probe an API's real response shape with curl before authoring a step, clone a repo into scratch/ to study a format, check a CLI exists, inspect a run's file outputs under artifacts/<runId>/. Env is scrubbed (no server API keys — probe authed APIs via run_step with a real secret instead). NEVER a substitute for ctx.services.http/secrets inside a step: a step that shells out with curl or child_process is wrong — it breaks cassette record/replay and secret scrubbing.
-- graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the vein graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. Nodes carry their type as a label plus :Node:Data_Bank and {ref_id, node_key, namespace} — filter on namespace. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
+- graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the strut graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. Nodes carry their type as a label plus :Node:Data_Bank and {ref_id, node_key, namespace} — filter on namespace. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
 - web_search (when offered): search the web — for API documentation while authoring (endpoint shapes, auth schemes, rate limits), not something workflows can call (give a workflow agent web access via the agent step's built-in web_search instead).
 - run_step("<type>", config?, input?, params?, cassette?, cassetteName?): run ONE step in isolation and get its output — the inner loop for authoring an adapter, no workflow needed. After create_step, call run_step to test it. Use cassette:"record" for the first live run (captures external calls to a fixture, secrets scrubbed), then cassette:"replay" to iterate offline (deterministic, no rate limits, no side effects) while you edit_step.
 - list_workflows(): list existing workflows (name, active version, versions, description). Check this before creating a new workflow or referencing one in a subflow.

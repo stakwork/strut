@@ -345,7 +345,7 @@ describe("integration: FileRunStore with runner", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-int-test-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-int-test-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 

@@ -79,20 +79,20 @@ describe("/audio/stream websocket", () => {
   let port: number;
   let detach: () => void;
   let dir: string;
-  const originalKey = process.env["VEIN_API_KEY"];
+  const originalKey = process.env["STRUT_API_KEY"];
 
   beforeEach(async () => {
     _resetAuthState();
-    delete process.env["VEIN_API_KEY"];
-    dir = await mkdtemp(join(tmpdir(), "vein-ws-"));
+    delete process.env["STRUT_API_KEY"];
+    dir = await mkdtemp(join(tmpdir(), "strut-ws-"));
     server = createServer((_req, res) => res.writeHead(404).end());
   });
   afterEach(async () => {
     detach?.();
     await new Promise<void>((r) => server.close(() => r()));
     await rm(dir, { recursive: true, force: true });
-    if (originalKey === undefined) delete process.env["VEIN_API_KEY"];
-    else process.env["VEIN_API_KEY"] = originalKey;
+    if (originalKey === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = originalKey;
     _resetAuthState();
   });
 
@@ -147,8 +147,8 @@ describe("/audio/stream websocket", () => {
     await assert.rejects(() => connect(`ws://127.0.0.1:${port}/other`));
   });
 
-  it("with VEIN_API_KEY set: rejects without a key, accepts Bearer or ?key=", async () => {
-    process.env["VEIN_API_KEY"] = "sekret";
+  it("with STRUT_API_KEY set: rejects without a key, accepts Bearer or ?key=", async () => {
+    process.env["STRUT_API_KEY"] = "sekret";
     detach = attachAudioWebSocket(server, fakeService());
     port = await listen(server);
     await assert.rejects(() => connect(`ws://127.0.0.1:${port}/audio/stream`), /HTTP 401/);

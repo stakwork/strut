@@ -1,17 +1,17 @@
 import type { StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
 
 export type { GraphBackend };
 
 /**
- * The `graph/*` steps are thin plumbing over vein's own Neo4j graph backend
- * (`src/graph/*`, plans/jarvis-graph-compat.md) — the vein-native twins of
+ * The `graph/*` steps are thin plumbing over strut's own Neo4j graph backend
+ * (`src/graph/*`, plans/jarvis-graph-compat.md) — the strut-native twins of
  * the lab's `jarvis/*` steps: same step names, input schemas, and output
  * shapes, so a workflow swaps backends by step type
  * (`jarvis/graph-search` ↔ `graph/graph-search`). No jarvis in the loop;
  * everything written follows jarvis's conventions so a jarvis mounted on
- * the same database later treats the `Vein` domain as native.
+ * the same database later treats the `Strut` domain as native.
  *
  * Config (all via `ctx.services.secrets`, secret store → env fallback; the
  * same names + defaults as the mcp host's own Neo4j client, so a local
@@ -20,10 +20,10 @@ export type { GraphBackend };
  *     (`NEO4J_HOST` default `localhost:7687`).
  *   - `NEO4J_USER` / `NEO4J_PASSWORD` — credentials (default neo4j / testtest).
  *   - `NEO4J_DATABASE`        — optional database name.
- *   - `VEIN_GRAPH_NAMESPACE`  — default jarvis namespace (default "default").
- *   - `VEIN_GRAPH_EMBEDDINGS` — "off" disables the local MiniLM embedder
+ *   - `STRUT_GRAPH_NAMESPACE`  — default jarvis namespace (default "default").
+ *   - `STRUT_GRAPH_EMBEDDINGS` — "off" disables the local MiniLM embedder
  *     (writes leave vectors NULL; search is fulltext-only).
- *   - `VEIN_GRAPH_SEED_ONTOLOGY` — "1" also seeds the bundled jarvis
+ *   - `STRUT_GRAPH_SEED_ONTOLOGY` — "1" also seeds the bundled jarvis
  *     ontology on first open (add-only), so a STANDALONE Neo4j can host
  *     jarvis-typed data (Document, EvalSet, …) with no jarvis process.
  *
@@ -33,7 +33,7 @@ export type { GraphBackend };
  * neo4j-driver) is imported lazily here, inside `run()`, never at module
  * top level.
  */
-export async function graphCtx(ctx?: StepContext<VeinCapabilities>): Promise<GraphBackend> {
+export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
   const secrets = ctx?.services?.secrets;
   // Same resolution as the mcp host's own Neo4j client: `NEO4J_URI`, else
   // `bolt://<NEO4J_HOST>` (default localhost:7687), user/password defaulting
@@ -41,15 +41,15 @@ export async function graphCtx(ctx?: StepContext<VeinCapabilities>): Promise<Gra
   // deployment that already carries NEO4J_HOST/USER/PASSWORD is picked up
   // as-is (secret store → env, per the secrets capability).
   const uri = (await secrets?.get("NEO4J_URI")) || `bolt://${(await secrets?.get("NEO4J_HOST")) || "localhost:7687"}`;
-  const emb = ((await secrets?.get("VEIN_GRAPH_EMBEDDINGS")) ?? "").toLowerCase();
-  const ont = ((await secrets?.get("VEIN_GRAPH_SEED_ONTOLOGY")) ?? "").toLowerCase();
+  const emb = ((await secrets?.get("STRUT_GRAPH_EMBEDDINGS")) ?? "").toLowerCase();
+  const ont = ((await secrets?.get("STRUT_GRAPH_SEED_ONTOLOGY")) ?? "").toLowerCase();
   const { openGraphBackend } = await import("../../../graph/backend.js");
   return openGraphBackend(
     {
       uri,
       user: (await secrets?.get("NEO4J_USER")) || "neo4j",
       password: (await secrets?.get("NEO4J_PASSWORD")) || "testtest",
-      namespace: (await secrets?.get("VEIN_GRAPH_NAMESPACE")) || "default",
+      namespace: (await secrets?.get("STRUT_GRAPH_NAMESPACE")) || "default",
       database: (await secrets?.get("NEO4J_DATABASE")) || undefined,
     },
     { embeddings: !["off", "0", "false"].includes(emb), seedOntology: ["1", "true", "on"].includes(ont) },

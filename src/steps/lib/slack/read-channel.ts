@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { slackToken, slackCall } from "./_shared.js";
 
 const EXAMPLE = `- id: history
@@ -47,7 +47,7 @@ export default defineStep({
       }),
     ),
   }),
-  async run(cfg, ctx: StepContext<VeinCapabilities>) {
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
     const token = await slackToken(cfg.token, ctx);
 
     const data = await slackCall(ctx, "conversations.history", token, {
@@ -99,7 +99,7 @@ function authorOf(
  *  parallel); a failure (e.g. missing users:read scope) falls back to the id
  *  so reading never breaks on name resolution. */
 async function resolveUserNames(
-  ctx: StepContext<VeinCapabilities>,
+  ctx: StepContext<StrutCapabilities>,
   token: string,
   messages: Record<string, unknown>[],
 ): Promise<Record<string, string>> {

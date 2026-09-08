@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, graphErrorCode, writeEdge } from "./_shared.js";
 /** Validate one side of a triplet: either ref_id XOR (type + data). */
 function validateTripletSide(
@@ -20,7 +20,7 @@ function validateTripletSide(
 export default defineStep({
   type: "graph/create-triplet",
   description:
-    "Assert a fact into the vein knowledge graph as DATA: a triplet of source node -[edge]-> target node " +
+    "Assert a fact into the strut knowledge graph as DATA: a triplet of source node -[edge]-> target node " +
     "(instances, not schema). Writes live to the graph. " +
     "For each side pass EITHER the ref_id of an existing node (preferred — find it with graph_graph_search) " +
     "OR a node type + data object to create/merge the node inline. " +
@@ -31,7 +31,7 @@ export default defineStep({
     "WILDCARD EDGE MATCHING: when checking source_type/target_type against graph_get_ontology's edges for validity, " +
     'an edge entry with "*" on either side matches any concrete type on that side. ' +
     '"*" is NEVER a valid value to SUPPLY as source_type or target_type — it is a backend sentinel, not a real node type. ' +
-    "Edges whose source is a Vein-owned type (VeinRun, VeinWorkflow, …) follow vein's closed registry instead. " +
+    "Edges whose source is a Strut-owned type (StrutRun, StrutWorkflow, …) follow strut's closed registry instead. " +
     "allow_scratchpad is accepted for input parity but has no effect (rejected writes return an error instead of a ScratchpadEntry).",
   input: z.object({
     source_ref_id: z
@@ -81,7 +81,7 @@ export default defineStep({
     allow_scratchpad: z
       .boolean()
       .optional()
-      .describe("Accepted for input parity with jarvis/create-triplet; the vein graph has no scratchpad, so this has no effect."),
+      .describe("Accepted for input parity with jarvis/create-triplet; the strut graph has no scratchpad, so this has no effect."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -93,7 +93,7 @@ export default defineStep({
     }
 
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const namespace = await b.reader.resolveNamespace(cfg.namespace);
 
       // Resolve one side to a concrete ref_id, creating/merging an inline

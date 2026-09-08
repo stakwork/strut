@@ -13,7 +13,7 @@ import { tailJsonl } from "./store.js";
  * Chat persistence — the server-side store that makes the AI builder a
  * detached "background job" (EVAL_SPEC §8) instead of a connection-bound
  * stream. A chat session is an append-only run with the SAME launch-detached
- * + tail-the-file lifecycle vein uses for workflow runs, PLUS a resumable
+ * + tail-the-file lifecycle strut uses for workflow runs, PLUS a resumable
  * conversation log so a turn keeps running (and can be re-driven) after the
  * browser closes.
  *
@@ -49,7 +49,7 @@ export interface ChatMeta {
   currentTurn: number;
   /** Consecutive notification-triggered (non-human) turns since the last
    *  human message. Incremented by the run notifier, reset to 0 by
-   *  `POST /chat`; at `VEIN_CHAT_MAX_AUTO_TURNS` the chat parks (see
+   *  `POST /chat`; at `STRUT_CHAT_MAX_AUTO_TURNS` the chat parks (see
    *  `ai/notifier.ts`). */
   autoTurns?: number;
 }
@@ -116,12 +116,12 @@ export interface ChatStore {
 // ── Tool-result truncation (token hygiene for long autonomous loops) ────────
 
 /** Default per-string cap for `truncateToolMessages`. Env
- *  `VEIN_CHAT_TOOL_RESULT_MAX_CHARS` overrides it; `0` disables truncation. */
+ *  `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` overrides it; `0` disables truncation. */
 export const DEFAULT_TOOL_RESULT_MAX_CHARS = 50_000;
 
 /** Resolve the tool-result cap from the environment (see above). */
 export function toolResultMaxCharsFromEnv(): number {
-  const raw = process.env["VEIN_CHAT_TOOL_RESULT_MAX_CHARS"];
+  const raw = process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
   if (raw === undefined || raw === "") return DEFAULT_TOOL_RESULT_MAX_CHARS;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_TOOL_RESULT_MAX_CHARS;

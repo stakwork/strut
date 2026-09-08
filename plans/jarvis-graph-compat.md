@@ -2,10 +2,10 @@
 
 ## Goal
 
-Vein's `Neo4jWorkspaceStore` + run/chat projector (generic-storage.md §7)
+Strut's `Neo4jWorkspaceStore` + run/chat projector (generic-storage.md §7)
 talk to Neo4j **directly over bolt from TypeScript**. Jarvis is not a
 dependency — but every byte we write follows jarvis's conventions, so a
-jarvis instance pointed at the same database later treats the `Vein`
+jarvis instance pointed at the same database later treats the `Strut`
 domain as native: its search finds our nodes, its UI renders them, its
 seeder and migrations don't fight ours.
 
@@ -21,18 +21,18 @@ file:line references; treat those as the authority when implementing.
 
 ## Implementation status
 
-Build-order steps 1–6 are implemented on branch `vein-jarvis-graph-compat`
-(`vein/src/graph/*` + the `graph/*` step twins as vein LIB steps in
-`vein/src/steps/lib/graph/` — not lab steps: they wrap vein's own module,
+Build-order steps 1–6 are implemented on branch `strut-jarvis-graph-compat`
+(`strut/src/graph/*` + the `graph/*` step twins as strut LIB steps in
+`strut/src/steps/lib/graph/` — not lab steps: they wrap strut's own module,
 so they ship with the engine and are auto-discovered by the registry).
-Tests: `npm run test:graph` in `vein/` (live, against a throwaway Neo4j —
-see `src/graph/test-util.ts`; add `VEIN_TEST_EMBEDDINGS=1` for the
+Tests: `npm run test:graph` in `strut/` (live, against a throwaway Neo4j —
+see `src/graph/test-util.ts`; add `STRUT_TEST_EMBEDDINGS=1` for the
 real-model parity case; includes the end-to-end step test).
-Also on branch `vein-generic-storage`: the vein-native storage boundary
+Also on branch `strut-generic-storage`: the strut-native storage boundary
 (generic-storage §1–5) and, on top of it, `Neo4jWorkspaceStore`
 (`src/graph/workspace-store.ts`) + the run/chat projector
 (`src/graph/projector.ts`, `graph/project` step) + env wiring
-(`src/graph/wiring.ts`; graph by default, `VEIN_WORKSPACE_BACKEND=fs` to
+(`src/graph/wiring.ts`; graph by default, `STRUT_WORKSPACE_BACKEND=fs` to
 opt out). Their live tests
 run under `npm run test:graph`.
 
@@ -40,16 +40,16 @@ run under `npm run test:graph`.
 writes jarvis's own types (Document, EvalSet, EvalRequirement, EvalTrigger,
 EvalTriggerOutput, CriterionResult, extraction entities) and reads
 jarvis-seeded Concepts. To run it on this backend with no jarvis process,
-the writers resolve NON-Vein types the way jarvis does — from the live
+the writers resolve NON-Strut types the way jarvis does — from the live
 `:Schema` meta-graph (`src/graph/schema-resolver.ts`: case-insensitive
 type canonicalization, CHILD_OF-merged attributes, `Domain_*` labels
 honouring `About.hidden_domains`/`hidden_types`, edge-schema lookup with
 ancestor walks + `*` wildcard, the `EDGE_TYPES` allowlist,
-`create_schema_if_missing`). The §6 closed registry still governs Vein
-types and Vein-sourced edges. For a STANDALONE Neo4j, the bundled
+`create_schema_if_missing`). The §6 closed registry still governs Strut
+types and Strut-sourced edges. For a STANDALONE Neo4j, the bundled
 `fixtures/jarvis-ontology.ts` (a read-only dump of jarvis's default
 library: 151 schemas, 309 edge schemas) is seeded add-only by
-`seedJarvisOntology` (`VEIN_GRAPH_SEED_ONTOLOGY=1`), including the
+`seedJarvisOntology` (`STRUT_GRAPH_SEED_ONTOLOGY=1`), including the
 per-domain fulltext/vector indexes. jarvis's kitchen-sink `Data_Bank`
 fallback (priority fields + every non-excluded property) IS ported after
 all — jarvis types like EvalTriggerOutput depend on it.
@@ -70,13 +70,13 @@ over this doc where they disagree):
 - Fulltext/vector index routing without a `domains` filter uses the global
   `data_bank_attribute_index_v2` / `domain_all_vector_index` when they
   exist and otherwise unions the per-domain indexes over visible domains
-  (jarvis does this for vectors only) — so a standalone vein DB needs no
+  (jarvis does this for vectors only) — so a standalone strut DB needs no
   global fulltext index and we never create one (add-only in shared mode).
 - `description` is a jarvis `SCHEMA_CORE_PROPERTY`, so `Thing`'s
   `description: "?string"` never surfaces as an *attribute* in ontology
   output (it lands on the schema as a core key). Node writes still accept
   it. Mirrored, not fixed.
-- `updated_at` is a jarvis generic node property, so `VeinChat` uses
+- `updated_at` is a jarvis generic node property, so `StrutChat` uses
   `last_active_at` instead.
 - Namespace registry (§7 open question): a single `(:NameSpace {ref_id,
   data: [lowercased names]})` node; `default` is implicit. Ported.
@@ -110,33 +110,33 @@ over this doc where they disagree):
 - **Deps**: `neo4j-driver` (bolt) and
   `npm install @huggingface/transformers@4.1.1` (chosen for ARM+Intel
   Mac cross-compat). Config via env/secret store: `NEO4J_URI`,
-  `NEO4J_USER`, `NEO4J_PASSWORD`, optional `VEIN_GRAPH_NAMESPACE`
+  `NEO4J_USER`, `NEO4J_PASSWORD`, optional `STRUT_GRAPH_NAMESPACE`
   (default `"default"`).
 - **Build order** (each step testable before the next):
-  1. `bolt.ts` + `vein-schemas.ts` + `schema-seed.ts` — then assert
+  1. `bolt.ts` + `strut-schemas.ts` + `schema-seed.ts` — then assert
      seeding idempotence (run twice, graph diff empty).
   2. `node-writer.ts` + the §6 validation gate.
   3. `embeddings.ts` — golden-vector parity FIRST, then the boot sweep.
   4. `edge-writer.ts`.
   5. `search.ts` (§7 hybrid search + get/neighbors).
   6. `graph/*` step twins of the `jarvis/*` steps.
-  The vein-native boundary work (generic-storage §1–5) is a parallel,
+  The strut-native boundary work (generic-storage §1–5) is a parallel,
   independent track; the two meet only in `Neo4jWorkspaceStore` + the
   projector, which come after both.
 - **Parity fixtures** (check into the test tree, produced once):
   - Embedding golden vector: with jarvis's Python env
     (`sentence-transformers`), encode a fixed string —
-    `SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2").encode("vein golden parity fixture").tolist()`
+    `SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2").encode("strut golden parity fixture").tolist()`
     → JSON fixture; TS side must reach cosine ≥ 0.999 against it.
   - Node-write + search-response snapshots: run jarvis-backend locally
     (or hit the swarm deployment), perform one `POST /v2/nodes` and one
     `GET /v2/nodes?q=...`, dump the resulting node's full property map
     (via bolt) and the HTTP response as fixtures.
-- **Vein schema attributes** (§5 lists only node_key/index): derive
-  each type's full attribute map from vein's existing core types —
+- **Strut schema attributes** (§5 lists only node_key/index): derive
+  each type's full attribute map from strut's existing core types —
   `RunSummary`/`RunEvent` (`src/core.ts`, `src/store.ts`) for
-  `VeinRun`/`VeinAgentSession`/`VeinToolCall`, `ChatMeta`/chat events
-  (`src/chat-store.ts`) for `VeinChat`/`VeinTurn`, the workspace
+  `StrutRun`/`StrutAgentSession`/`StrutToolCall`, `ChatMeta`/chat events
+  (`src/chat-store.ts`) for `StrutChat`/`StrutTurn`, the workspace
   types (`src/workspace.ts`) for the workflow/step schemas. Every
   node_key token must be a required (non-`?`) attribute; previews
   capped ~500 chars; full payloads by `log_ref` pointer only.
@@ -146,7 +146,7 @@ over this doc where they disagree):
 
 ## Deployment modes
 
-- **Standalone**: a fresh Neo4j only vein writes to. Our bootstrap must
+- **Standalone**: a fresh Neo4j only strut writes to. Our bootstrap must
   create everything jarvis would have (Thing schema, constraints,
   indexes), so jarvis can mount later with zero surprises.
 - **Shared**: jarvis already runs on the DB. Everything global exists;
@@ -154,19 +154,19 @@ over this doc where they disagree):
   add-only, exactly like jarvis's own seeder. One caveat: jarvis holds
   in-process caches (node-type cache, 600s `/schema` HTTP cache, 60s
   domain-visibility cache) — external bolt writes don't invalidate
-  them; new Vein types appear to a running jarvis after restart or a
+  them; new Strut types appear to a running jarvis after restart or a
   `/schema` POST/PUT.
 
-## Module plan (all in `vein/src/graph/`)
+## Module plan (all in `strut/src/graph/`)
 
 | Module            | Responsibility                                          |
 | ----------------- | ------------------------------------------------------- |
 | `bolt.ts`         | neo4j-driver session/tx helpers                         |
-| `schema-seed.ts`  | Vein domain registration (schema meta-graph + indexes)  |
+| `schema-seed.ts`  | Strut domain registration (schema meta-graph + indexes)  |
 | `node-writer.ts`  | jarvis-dialect node MERGE (labels, stamps, node_key)    |
 | `edge-writer.ts`  | jarvis-dialect edge MERGE (edge_key, alias rewrite)     |
 | `embeddings.ts`   | local MiniLM vectors via `@huggingface/transformers`    |
-| `vein-schemas.ts` | the Vein schema library (TS mirror of a jarvis library) |
+| `strut-schemas.ts` | the Strut schema library (TS mirror of a jarvis library) |
 | `search.ts`       | hybrid search + get/neighbors reads (§7)                |
 
 ## 1. Node writes (`node-writer.ts`)
@@ -174,14 +174,14 @@ over this doc where they disagree):
 The one Cypher template (jarvis: `schema_node_helper.py:238-268,610`):
 
 ```cypher
-MERGE (node:`<Type>`:Node:Data_Bank:Domain_vein {node_key: $node_key, namespace: $namespace})
+MERGE (node:`<Type>`:Node:Data_Bank:Domain_strut {node_key: $node_key, namespace: $namespace})
  ON CREATE SET  node.p1=$p1, node.p2=$p2, ...
  ON MATCH SET node.p1=$p1, ...
  RETURN node
 ```
 
 Label set = `` `Type` `` + `:Node` + `:Data_Bank` + `:Domain_<domain.lower()>`
-(so ours is always `:Domain_vein`). Type label backticked, others not.
+(so ours is always `:Domain_strut`). Type label backticked, others not.
 
 Generic stamps (exact formats matter):
 
@@ -202,9 +202,9 @@ normalized to epoch **seconds** (int) before write
 **node_key composition** (`schema_validation.py:350-399`) — implement
 verbatim:
 
-1. Split the schema's `node_key` spec on `-` (e.g. `veinrun-run_id`).
+1. Split the schema's `node_key` spec on `-` (e.g. `strutrun-run_id`).
 2. Token 0 = the type name: `.toLowerCase()` then strip
-   `[^a-zA-Z0-9\s]` (so `VeinRun` → `veinrun`).
+   `[^a-zA-Z0-9\s]` (so `StrutRun` → `strutrun`).
 3. Each later token = the named property's value:
    `String(v).trim()` → remove spaces (`replace(/ /g,"")`) →
    `.toLowerCase()` → strip `[^a-zA-Z0-9\s]`. Property lookup is
@@ -240,7 +240,7 @@ hits a soft-deleted node with the same node_key restores it —
 `node_key`, `namespace`, `date_added_to_graph`.
 
 **Idempotent projector writes**: stamp `unique_source_id` on projected
-nodes (e.g. `"veinrun:<runId>"`, `"veintoolcall:<runId>:<path>:<seq>"`)
+nodes (e.g. `"strutrun:<runId>"`, `"struttoolcall:<runId>:<path>:<seq>"`)
 — jarvis already indexes it (`node_unique_source_id_index`) and stamps
 it onto edges when both endpoints share the value, so re-projection
 and cross-store reconciliation get a cheap identity probe for free.
@@ -256,7 +256,7 @@ schema's `index` field list **in declared order**, keep values that are
 present and non-blank after `String(v).trim()`, and join with `"\n"` —
 no field-name prefixes. Store as the `Data_Bank` property; store the
 used field names as `_search_fields_used`. (We always declare a real
-`index` list on every Vein schema, so the priority-list fallback path
+`index` list on every Strut schema, so the priority-list fallback path
 never applies to us — don't implement it.)
 
 **Model** — jarvis uses `sentence-transformers/all-MiniLM-L6-v2` with
@@ -292,7 +292,7 @@ jarvis): a crash between the node MERGE and the vector write leaves
 backend, sweep and heal:
 
 ```cypher
-MATCH (n:Domain_vein)
+MATCH (n:Domain_strut)
 WHERE n.Data_Bank IS NOT NULL AND n.text_embeddings IS NULL
 RETURN n.ref_id, n.Data_Bank
 ```
@@ -326,7 +326,7 @@ RETURN r.ref_id = $on_create.ref_id AS created
   ref_id constraint), never node_key.
 - The `IS_ALIAS` COALESCE rewrite is mandatory in shared mode (jarvis
   node-merge parks aliases); harmless in standalone.
-- `edge_key = edgeType.toLowerCase()` (no Vein edge schema declares an
+- `edge_key = edgeType.toLowerCase()` (no Strut edge schema declares an
   `edge_key` pattern — matching jarvis, where effectively none do).
 - Invariant: **one edge per (src, type, tgt)**. On-match is a no-op —
   existing edges are never mutated.
@@ -341,7 +341,7 @@ Do not implement: temporal/bitemporal edges (`valid_at` etc. — note
 those are epoch *seconds as floats* if we ever do), `SCRATCHPAD_EDGE`,
 `edge_text` backfills, GDS `SIMILAR`.
 
-## 4. Vein domain registration (`schema-seed.ts`)
+## 4. Strut domain registration (`schema-seed.ts`)
 
 Schemas ARE graph nodes: `(:Schema {type})`, global (no namespace),
 never labeled `:Node`/`:Data_Bank`, with **attributes flattened as
@@ -355,17 +355,17 @@ with optional `?` prefix. Attribute names must not be `type`, `parent`,
 
 **A domain is registered by existing**: jarvis derives the domain list
 from `MATCH (s:Schema) WHERE s.domain IS NOT NULL RETURN DISTINCT
-toLower(s.domain)`. Writing one Vein schema node with `domain: "Vein"`
-registers the domain. No root schema type named "Vein" is needed
+toLower(s.domain)`. Writing one Strut schema node with `domain: "Strut"`
+registers the domain. No root schema type named "Strut" is needed
 (precedent: General, Hive, Scratchpad).
 
-Idempotent bootstrap, per boot of the vein graph backend:
+Idempotent bootstrap, per boot of the strut graph backend:
 
 1. **`Thing` root** (standalone mode): mirror jarvis's `thing_schema`
    (`default_schemas.py:11-33`) exactly —
    `MERGE (s:Schema {type:"Thing"}) ON CREATE SET s = $thing, s.ref_id = $uuid`.
    MERGE means a jarvis-seeded Thing is left untouched.
-2. **Each Vein schema**: guard
+2. **Each Strut schema**: guard
    `MATCH (n:Schema) WHERE toLower(n.type) = toLower($t) RETURN n`
    (no `is_deleted` filter — soft-deleted blocks re-create, same as
    jarvis's seeder); on miss
@@ -393,57 +393,57 @@ Idempotent bootstrap, per boot of the vein graph backend:
    endpoints must exist first (a miss silently no-ops — assert the
    MERGE returned a row). For `ACCESSED`, the declared target is
    `Thing` (provenance can point at any node; the ancestor walk makes
-   a Thing→Thing or VeinToolCall→Thing declaration cover all types).
+   a Thing→Thing or StrutToolCall→Thing declaration cover all types).
    `PUBLISHED_BY` targets `Person` — in standalone mode seed jarvis's
    `Person` schema too, or (simpler) drop the edge and keep publisher
    as a property until shared mode.
 7. **Vector index** (NOT auto-created by jarvis at startup — the one
    piece a new domain must create itself):
    ```cypher
-   CREATE VECTOR INDEX `domain_vein_vector_index` IF NOT EXISTS
-   FOR (n:`Domain_vein`) ON n.text_embeddings
+   CREATE VECTOR INDEX `domain_strut_vector_index` IF NOT EXISTS
+   FOR (n:`Domain_strut`) ON n.text_embeddings
    OPTIONS { indexConfig: { `vector.dimensions`: 384,
                             `vector.similarity_function`: 'cosine' } }
    ```
    Also `text_embeddings_vector_index` on `:Data_Bank` (same options)
    in standalone mode.
-8. **Fulltext**: jarvis (re)builds `domain_vein_attribute_index` (+
+8. **Fulltext**: jarvis (re)builds `domain_strut_attribute_index` (+
    `_v2` english-analyzer sibling, which its queries actually use) on
    its next boot from the schema `index` fields. For standalone search
    parity, create the `_v2` form ourselves:
-   `CREATE FULLTEXT INDEX domain_vein_attribute_index_v2 IF NOT EXISTS
-   FOR (n:`Domain_vein`) ON EACH [<sorted searchable attrs> + node_key]
+   `CREATE FULLTEXT INDEX domain_strut_attribute_index_v2 IF NOT EXISTS
+   FOR (n:`Domain_strut`) ON EACH [<sorted searchable attrs> + node_key]
    OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}`.
 9. **Migration ledger stamp** so jarvis's runner sees our seeding as
    done work, not conflict:
-   `MERGE (m:Migration {migration_id:"vein_domain_seed_v1"}) SET m.executed_at = timestamp()`
+   `MERGE (m:Migration {migration_id:"strut_domain_seed_v1"}) SET m.executed_at = timestamp()`
    (plus `CREATE CONSTRAINT migration_id_unique IF NOT EXISTS ...` in
    standalone).
 
 Footguns (both learned from jarvis's own migration 115):
-- Never let "Vein" land in `About.hidden_domains`, and never parent a
-  Vein type under a hidden type — either silently withholds the
-  `Domain_vein` label and drops every node out of all domain indexes.
+- Never let "Strut" land in `About.hidden_domains`, and never parent a
+  Strut type under a hidden type — either silently withholds the
+  `Domain_strut` label and drops every node out of all domain indexes.
 - The `index` list on each schema directly controls what enters
   `Data_Bank` + `text_embeddings`. Keep large payloads (event-log
   pointers, raw output snapshots) OUT of `index`.
 
-## 5. Vein schema `index`/`node_key` choices (`vein-schemas.ts`)
+## 5. Strut schema `index`/`node_key` choices (`strut-schemas.ts`)
 
-All `parent: "Thing"`, `domain: "Vein"`. Node types and edges per the
+All `parent: "Thing"`, `domain: "Strut"`. Node types and edges per the
 label registry in generic-storage.md. Keys:
 
 | Type                  | node_key spec                                   | index (→ search + embedding text)        |
 | --------------------- | ----------------------------------------------- | ---------------------------------------- |
-| `VeinWorkflow`        | `veinworkflow-name`                             | `[name, description]`                    |
-| `VeinWorkflowVersion` | `veinworkflowversion-name-content_hash`         | `[name, description]`                    |
-| `VeinStep`            | `veinstep-step_type`                            | `[step_type, description]`               |
-| `VeinStepVersion`     | `veinstepversion-step_type-content_hash`        | `[step_type, description]`               |
-| `VeinRun`             | `veinrun-run_id`                                | `[workflow_name, status, summary]`       |
-| `VeinAgentSession`    | `veinagentsession-run_id-path`                  | `[prompt_preview, result_preview]`       |
-| `VeinToolCall`        | `veintoolcall-run_id-path-seq`                  | `[tool_name, input_preview]`             |
-| `VeinChat`            | `veinchat-chat_id`                              | `[title, summary]`                       |
-| `VeinTurn`            | `veinturn-chat_id-turn`                         | `[user_text_preview]`                    |
+| `StrutWorkflow`        | `strutworkflow-name`                             | `[name, description]`                    |
+| `StrutWorkflowVersion` | `strutworkflowversion-name-content_hash`         | `[name, description]`                    |
+| `StrutStep`            | `strutstep-step_type`                            | `[step_type, description]`               |
+| `StrutStepVersion`     | `strutstepversion-step_type-content_hash`        | `[step_type, description]`               |
+| `StrutRun`             | `strutrun-run_id`                                | `[workflow_name, status, summary]`       |
+| `StrutAgentSession`    | `strutagentsession-run_id-path`                  | `[prompt_preview, result_preview]`       |
+| `StrutToolCall`        | `struttoolcall-run_id-path-seq`                  | `[tool_name, input_preview]`             |
+| `StrutChat`            | `strutchat-chat_id`                              | `[title, summary]`                       |
+| `StrutTurn`            | `strutturn-chat_id-turn`                         | `[user_text_preview]`                    |
 
 Rules baked in: every node_key token is a required (non-`?`) attribute;
 `*_preview` fields are truncated (~500 chars) copies specifically so
@@ -454,8 +454,8 @@ non-indexed node property (like Concept's `docs` predecessor
 `documentation` — deliberately invisible to retrieval).
 
 Optionally spread jarvis's `USAGE_ATTRIBUTES` shape
-(`usage_count: "?int"`, `usage_count_30d: "?int"`) onto `VeinWorkflow`/
-`VeinStep` — jarvis never writes these, external writers do, so vein
+(`usage_count: "?int"`, `usage_count_30d: "?int"`) onto `StrutWorkflow`/
+`StrutStep` — jarvis never writes these, external writers do, so strut
 owns updating them; jarvis's `?sort=usage` and search tiebreak read
 them for free.
 
@@ -465,13 +465,13 @@ Every write goes through the writer; the writer validates BEFORE
 building any Cypher. Mirror of jarvis's two-stage gate
 (`assert_is_valid_schema_of_type` `schema_validation.py:58-180` +
 `validate_by_schema` `:184-278`), tightened where jarvis is loose —
-strictness is safe in one direction only: anything vein accepts must
+strictness is safe in one direction only: anything strut accepts must
 also pass jarvis's validators, never the reverse.
 
 Write-time gate (reject with a typed error, nothing written):
 
 1. **Closed type set** — `type` must be one of the nine registered
-   Vein schemas. No dynamic types, no scratchpad fallback, no
+   Strut schemas. No dynamic types, no scratchpad fallback, no
    `create_schema_if_missing`. (Jarvis resolves types case-
    insensitively against `db.labels()`; we don't — exact match on our
    registry.)
@@ -504,27 +504,27 @@ global `:Node` key constraint, and `:Data_Bank` ref_id constraint from
 §4. Honest limit: Neo4j property *type/existence* constraints are
 Enterprise-only, so attribute-level enforcement lives in the app layer
 — same as jarvis. Anyone with raw bolt credentials can bypass both
-vein's and jarvis's validation equally; the guarantee is "nothing
-invalid gets in **through vein**", and the conformance suite's
+strut's and jarvis's validation equally; the guarantee is "nothing
+invalid gets in **through strut**", and the conformance suite's
 graph-lint case (§8) exists to detect out-of-band junk: scan
-`Domain_vein` nodes and re-run the validator against stored state,
+`Domain_strut` nodes and re-run the validator against stored state,
 assert zero violations.
 
 ## 7. Read surface — scoped by the lab step tools
 
-The functional contract for "vein without jarvis" is NOT jarvis's whole
+The functional contract for "strut without jarvis" is NOT jarvis's whole
 API — it is exactly what the `jarvis/*` steps in
 `mcp/src/lab/jarvis/steps/` touch. Those steps keep their input/output
 shapes; their backing moves from HTTP calls to the TS graph layer
-(vein-native `graph/*` step twins, so workflows swap by step type).
+(strut-native `graph/*` step twins, so workflows swap by step type).
 Everything in jarvis NOT reached by these tools stays out of scope.
 
 | Step(s)                                          | jarvis endpoint                          | TS implementation needed |
 | ------------------------------------------------ | ---------------------------------------- | ------------------------ |
 | `create-node`, `create-triplet`, `create-batch-triplet` | `POST /v2/nodes`, `POST /v2/edges` | already §1/§3            |
 | `edit-node`                                      | `POST /v2/nodes/:ref_id`                 | §1 upsert (reprocess semantics) |
-| `create-schema` (vein-only, no jarvis/* twin)    | `POST /v2/schema`                        | `schema-crud.ts`: register a non-Vein node type (parent must exist, jarvis attribute grammar, node_key tokens, CHILD_OF, per-type constraint), or add-only extend an existing one — the ontology CRUD the mcp lab deliberately left to humans, exposed because a workflow may need a type (e.g. `Evidence`) the seed lacks |
-| `edit-edge` (vein-only, no jarvis/* twin)        | `PATCH /v2/edges/:ref_id`                | `EdgeWriter.update()`: patch an edge's properties by ref_id or by (source, EDGE, target); identity stamps protected. The only way to change an edge after the ON-CREATE-only MERGE |
+| `create-schema` (strut-only, no jarvis/* twin)    | `POST /v2/schema`                        | `schema-crud.ts`: register a non-Strut node type (parent must exist, jarvis attribute grammar, node_key tokens, CHILD_OF, per-type constraint), or add-only extend an existing one — the ontology CRUD the mcp lab deliberately left to humans, exposed because a workflow may need a type (e.g. `Evidence`) the seed lacks |
+| `edit-edge` (strut-only, no jarvis/* twin)        | `PATCH /v2/edges/:ref_id`                | `EdgeWriter.update()`: patch an edge's properties by ref_id or by (source, EDGE, target); identity stamps protected. The only way to change an edge after the ON-CREATE-only MERGE |
 | `register-namespace`                             | `POST/GET /namespace`                    | trivial: idempotent namespace registry (mirror jarvis's storage — verify whether it's a node or derived from distinct `n.namespace` before building) |
 | `get-ontology`, `get-ontology-type`              | `GET /v2/schema[/{type}]`                | list `:Schema` nodes + inherited attrs via `CHILD_OF` walk (read side of §4) |
 | `graph-get`, `graph-get-batched`                 | `GET /v2/nodes/:ref_id` + `/connection-counts` | fetch by ref_id; response envelope = properties minus `GENERIC_NODE_PROPERTIES`; `{EDGE_TYPE: count}` map |
@@ -556,12 +556,12 @@ Everything in jarvis NOT reached by these tools stays out of scope.
 
 Consequence for §2/§5 (supersedes §2's "do not implement
 `vector_index`"): `input_q`/`output_q` only work on types whose schema
-declares `vector_index` — so `VeinWorkflowVersion` and `VeinStep`
+declares `vector_index` — so `StrutWorkflowVersion` and `StrutStep`
 declare `vector_index: ["input_schema", "output_schema"]`, we write
 `input_embeddings`/`output_embeddings` (embedding the rendered form
 `"Input:\n{text}"` / `"Output:\n{text}"`, per `schema_embedding.py:30-41`),
 and create the per-label vector indexes
-(`veinworkflowversion_input_vector_index`, …, 384/cosine) at seed time.
+(`strutworkflowversion_input_vector_index`, …, 384/cosine) at seed time.
 
 ### What this scoping proves unnecessary
 
@@ -603,7 +603,7 @@ jarvis-dialect suite run against a Neo4j test container:
   attr type, unregistered node/edge type, edge with unresolvable
   endpoint — each rejected with nothing written (assert graph
   unchanged). Plus the graph-lint case: re-validate all stored
-  `Domain_vein` nodes against the schemas, zero violations.
+  `Domain_strut` nodes against the schemas, zero violations.
 - search parity (§7): seed a small corpus, run each lab step's
   scenario against the TS layer, and assert result-set/rank agreement
   with jarvis on the same dump (fixture-based — record jarvis's

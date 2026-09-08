@@ -230,21 +230,21 @@ workflow to author one **from inside a run**.
 
 `agentTools` grants **registry step types** as LLM tools. The authoring
 tools — `create_step`, `edit_step`, `create_workflow`, `edit_workflow`,
-`run_workflow` — were bespoke AI SDK tools in `vein/src/ai/tools.ts`, bound to
+`run_workflow` — were bespoke AI SDK tools in `strut/src/ai/tools.ts`, bound to
 the workspace. They are not registry steps, so an in-workflow agent could not
 reach them. That's why EVAL_SPEC §7 says structural evolution "stays
 agent-interactive for now." §5.2 closes this.
 
 ### 5.2 The fix: `meta/*` steps — **built**
 
-Implemented in vein core, benchmark-agnostic: `vein/src/authoring.ts` is the
+Implemented in strut core, benchmark-agnostic: `strut/src/authoring.ts` is the
 shared authoring core (the chat tools now sit on the same helpers), the steps
-live in `vein/src/steps/lib/meta/`, and `createVein` auto-provides
+live in `strut/src/steps/lib/meta/`, and `createStrut` auto-provides
 `services.authoring` the way it already provides `http`/`secrets`/
-`artifacts` — so every vein deployment gets the surface, not just the lab.
+`artifacts` — so every strut deployment gets the surface, not just the lab.
 
 The roster mirrors the chat assistant's real authoring surface
-(`vein/src/ai/tools.ts`). The loop the assistant actually runs is
+(`strut/src/ai/tools.ts`). The loop the assistant actually runs is
 create → test → edit → test; a roster missing the edit/test half strands an
 in-workflow author on iteration one:
 
@@ -427,7 +427,7 @@ possible version of "capture."
    proposable artifact.
 4. ~~**`meta/*` steps + `services.authoring`** (§5.2) — closes layer 3.~~
    **Done** — `authoring.ts` + `steps/lib/meta/*`, auto-wired by
-   `createVein`. ~~Next is a first authoring-harness workflow that uses
+   `createStrut`. ~~Next is a first authoring-harness workflow that uses
    them.~~ **Done** — `harvey-evolve` in the lab
    (`mcp/src/lab/harvey/workflows/`), built on the Harvey produce/grade
    split: `harvey-produce` is the swappable candidate unit (per-task

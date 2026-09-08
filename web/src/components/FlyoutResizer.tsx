@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 const MIN_WIDTH = 320;
 const MIN_CANVAS = 360; // keep at least this much room to the left
 const DEFAULT_WIDTH = 420;
-const STORAGE_KEY = "vein.flyoutWidth";
+const STORAGE_KEY = "strut.flyoutWidth";
 
 function getShell(): HTMLElement | null {
   return document.querySelector(".shell");

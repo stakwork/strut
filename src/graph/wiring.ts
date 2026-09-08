@@ -2,10 +2,10 @@
  * Env-driven wiring for the graph-backed workspace. Graph is the DEFAULT:
  * the default server keeps workflows/steps in Neo4j (connection from the
  * `NEO4J_*` vars, defaulting to localhost:7687) unless
- * `VEIN_WORKSPACE_BACKEND=fs` opts back into the filesystem workspace.
+ * `STRUT_WORKSPACE_BACKEND=fs` opts back into the filesystem workspace.
  * Neo4j is therefore a boot dependency by default — `bolt.verify()` fails
  * loudly when nothing is listening. Runs, chats, secrets, artifacts, and cassettes stay local
- * under `dataDir` (`VEIN_WORKSPACE`) — the run/chat projector
+ * under `dataDir` (`STRUT_WORKSPACE`) — the run/chat projector
  * (`projector.ts`, or the `graph/project` step) builds their graph view.
  */
 import { join } from "node:path";
@@ -13,11 +13,11 @@ import type { GraphBackend, GraphBackendOptions } from "./backend.js";
 import { openGraphBackendFromEnv } from "./backend.js";
 import { Neo4jWorkspaceStore, type Neo4jWorkspaceStoreOptions } from "./workspace-store.js";
 
-/** Graph unless `VEIN_WORKSPACE_BACKEND=fs` (case-insensitive; `file` /
+/** Graph unless `STRUT_WORKSPACE_BACKEND=fs` (case-insensitive; `file` /
  *  `filesystem` accepted too). Any other value — including unset or the
  *  legacy `graph` — means graph. */
 export function graphWorkspaceRequested(env: Record<string, string | undefined> = process.env): boolean {
-  const v = (env["VEIN_WORKSPACE_BACKEND"] ?? "").toLowerCase();
+  const v = (env["STRUT_WORKSPACE_BACKEND"] ?? "").toLowerCase();
   return !(v === "fs" || v === "file" || v === "filesystem");
 }
 
@@ -28,7 +28,7 @@ export const DEFAULT_NEO4J_HOST = "localhost:7687";
 /**
  * Where the graph store materializes active custom steps for the module
  * loader: INSIDE the data dir, beside where a file workspace would keep
- * `steps/custom`. Custom steps `import "vein"` (and "zod"), and Node resolves
+ * `steps/custom`. Custom steps `import "strut"` (and "zod"), and Node resolves
  * that by walking up from the FILE's directory — so the dir must sit in the
  * same tree as the file store's, never under the OS temp dir. Distinct from
  * `steps/custom` so switching backends on one dir can't prune the other's
@@ -44,14 +44,14 @@ export function graphMaterializeDir(dataDir: string): string {
  * `localhost:7687`); `NEO4J_USER` / `NEO4J_PASSWORD` default to
  * neo4j / testtest — the same resolution as the mcp host, so a deployment's
  * existing vars just work and a local Neo4j needs none. `dataDir` (default
- * `VEIN_WORKSPACE` / `./workspace`) is where custom steps are materialized.
+ * `STRUT_WORKSPACE` / `./workspace`) is where custom steps are materialized.
  */
 export async function graphWorkspaceFromEnv(
   env: Record<string, string | undefined> = process.env,
   opts: { dataDir?: string; backend?: GraphBackendOptions; store?: Neo4jWorkspaceStoreOptions } = {},
 ): Promise<{ backend: GraphBackend; workspace: Neo4jWorkspaceStore }> {
   const backend = await openGraphBackendFromEnv({ NEO4J_HOST: DEFAULT_NEO4J_HOST, ...env }, opts.backend)!;
-  const dataDir = opts.dataDir ?? env["VEIN_WORKSPACE"] ?? "./workspace";
+  const dataDir = opts.dataDir ?? env["STRUT_WORKSPACE"] ?? "./workspace";
   const store = { materializeDir: graphMaterializeDir(dataDir), ...opts.store };
   return { backend, workspace: new Neo4jWorkspaceStore(backend, store) };
 }

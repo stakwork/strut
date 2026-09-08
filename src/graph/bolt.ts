@@ -1,7 +1,7 @@
 /**
- * Thin neo4j-driver wrapper for the vein graph backend.
+ * Thin neo4j-driver wrapper for the strut graph backend.
  *
- * Vein talks to Neo4j **directly over bolt** — jarvis is not in the loop —
+ * Strut talks to Neo4j **directly over bolt** — jarvis is not in the loop —
  * but every byte written follows jarvis's conventions (see
  * `plans/jarvis-graph-compat.md`). This module owns the driver lifecycle and
  * the two integer conventions the rest of `graph/*` relies on:
@@ -11,7 +11,7 @@
  *     every `int`/`datetime` attribute) MUST be wrapped with `int()` before it
  *     goes into a parameter map.
  *   - **Reads**: the driver is configured with `disableLosslessIntegers`, so
- *     integers come back as ordinary JS numbers. No Vein value approaches
+ *     integers come back as ordinary JS numbers. No Strut value approaches
  *     2^53 (epoch ms is ~2^41).
  */
 import neo4j, {
@@ -26,7 +26,7 @@ export interface GraphConfig {
   uri: string;
   user: string;
   password: string;
-  /** jarvis data partition every Vein node is written into. */
+  /** jarvis data partition every Strut node is written into. */
   namespace: string;
   /** Neo4j database name (omit for the server default). */
   database?: string;
@@ -50,7 +50,7 @@ export function graphConfigFromEnv(
     uri,
     user: env["NEO4J_USER"] || "neo4j",
     password: env["NEO4J_PASSWORD"] || "testtest",
-    namespace: env["VEIN_GRAPH_NAMESPACE"] || DEFAULT_NAMESPACE,
+    namespace: env["STRUT_GRAPH_NAMESPACE"] || DEFAULT_NAMESPACE,
     database: env["NEO4J_DATABASE"] || undefined,
   };
 }

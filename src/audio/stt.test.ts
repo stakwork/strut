@@ -103,10 +103,10 @@ describe("stt service", () => {
   let root: string;
   let dataDir: string;
   let modelDir: string;
-  const env = { VEIN_STT_MODEL: undefined, VEIN_STT_PARTIAL_MODEL: undefined } as Record<string, string | undefined>;
+  const env = { STRUT_STT_MODEL: undefined, STRUT_STT_PARTIAL_MODEL: undefined } as Record<string, string | undefined>;
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "vein-stt-"));
+    root = await mkdtemp(join(tmpdir(), "strut-stt-"));
     dataDir = join(root, "data");
     modelDir = join(root, "models");
     await installFake(modelDir, "zipformer-en-kroko");

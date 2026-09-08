@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Bolt } from "./bolt.js";
-import { seedVeinDomain } from "./schema-seed.js";
+import { seedStrutDomain } from "./schema-seed.js";
 import {
   GraphValidationError,
   NodeWriter,
@@ -13,8 +13,8 @@ import {
   validateNode,
   type Embedder,
 } from "./node-writer.js";
-import { getVeinSchema } from "./vein-schemas.js";
-import { fromVein } from "./schema-resolver.js";
+import { getStrutSchema } from "./strut-schemas.js";
+import { fromStrut } from "./schema-resolver.js";
 import { graphSnapshot, testGraphConfig, wipeGraph } from "./test-util.js";
 
 const cfg = testGraphConfig();
@@ -43,7 +43,7 @@ const RUN = {
 
 describe("validateNode (§6 gate)", () => {
   it("accepts a valid payload and normalizes datetime to epoch seconds", () => {
-    const v = validateNode("VeinRun", RUN);
+    const v = validateNode("StrutRun", RUN);
     assert.equal(v.values["started_at"], 1788292800);
     assert.equal(v.values["duration_ms"], 1234);
     assert.equal(v.values["summary"], "Delivered 60 of 60");
@@ -53,40 +53,40 @@ describe("validateNode (§6 gate)", () => {
   });
   it("rejects unknown types (exact match only)", () => {
     rejects(() => validateNode("Run", RUN), "UNKNOWN_TYPE");
-    rejects(() => validateNode("veinrun", RUN), "UNKNOWN_TYPE");
+    rejects(() => validateNode("strutrun", RUN), "UNKNOWN_TYPE");
   });
   it("rejects unknown and generic attributes", () => {
-    rejects(() => validateNode("VeinRun", { ...RUN, colour: "red" }), "UNKNOWN_ATTRIBUTE", "colour");
-    rejects(() => validateNode("VeinRun", { ...RUN, ref_id: "x" }), "UNKNOWN_ATTRIBUTE", "ref_id");
-    rejects(() => validateNode("VeinRun", { ...RUN, Data_Bank: "x" }), "UNKNOWN_ATTRIBUTE", "Data_Bank");
-    rejects(() => validateNode("VeinRun", { ...RUN, node_key: "x" }), "UNKNOWN_ATTRIBUTE", "node_key");
+    rejects(() => validateNode("StrutRun", { ...RUN, colour: "red" }), "UNKNOWN_ATTRIBUTE", "colour");
+    rejects(() => validateNode("StrutRun", { ...RUN, ref_id: "x" }), "UNKNOWN_ATTRIBUTE", "ref_id");
+    rejects(() => validateNode("StrutRun", { ...RUN, Data_Bank: "x" }), "UNKNOWN_ATTRIBUTE", "Data_Bank");
+    rejects(() => validateNode("StrutRun", { ...RUN, node_key: "x" }), "UNKNOWN_ATTRIBUTE", "node_key");
   });
   it("accepts Thing-inherited attributes", () => {
-    const v = validateNode("VeinRun", { ...RUN, unique_source_id: "veinrun:1", is_muted: false, weight: 2 });
-    assert.equal(v.values["unique_source_id"], "veinrun:1");
+    const v = validateNode("StrutRun", { ...RUN, unique_source_id: "strutrun:1", is_muted: false, weight: 2 });
+    assert.equal(v.values["unique_source_id"], "strutrun:1");
     assert.equal(v.values["weight"], 2);
   });
   it("rejects missing / null / empty required attributes", () => {
     const { status: _s, ...noStatus } = RUN;
-    rejects(() => validateNode("VeinRun", noStatus), "MISSING_REQUIRED", "status");
-    rejects(() => validateNode("VeinRun", { ...RUN, status: null }), "MISSING_REQUIRED", "status");
-    rejects(() => validateNode("VeinRun", { ...RUN, status: "" }), "MISSING_REQUIRED", "status");
+    rejects(() => validateNode("StrutRun", noStatus), "MISSING_REQUIRED", "status");
+    rejects(() => validateNode("StrutRun", { ...RUN, status: null }), "MISSING_REQUIRED", "status");
+    rejects(() => validateNode("StrutRun", { ...RUN, status: "" }), "MISSING_REQUIRED", "status");
   });
   it("drops optional null/undefined/empty values instead of writing them", () => {
-    const v = validateNode("VeinRun", { ...RUN, summary: "", log_ref: null, error_message: undefined });
+    const v = validateNode("StrutRun", { ...RUN, summary: "", log_ref: null, error_message: undefined });
     assert.ok(!("summary" in v.values));
     assert.ok(!("log_ref" in v.values));
     assert.ok(!("error_message" in v.values));
   });
   it("type-checks per the grammar, stricter than Python", () => {
-    rejects(() => validateNode("VeinRun", { ...RUN, duration_ms: true }), "WRONG_TYPE", "duration_ms");
-    rejects(() => validateNode("VeinRun", { ...RUN, duration_ms: 1.5 }), "WRONG_TYPE", "duration_ms");
-    rejects(() => validateNode("VeinRun", { ...RUN, duration_ms: "12" }), "WRONG_TYPE", "duration_ms");
-    rejects(() => validateNode("VeinRun", { ...RUN, status: 1 }), "WRONG_TYPE", "status");
-    rejects(() => validateNode("VeinRun", { ...RUN, is_muted: "no" }), "WRONG_TYPE", "is_muted");
-    rejects(() => validateNode("VeinRun", { ...RUN, started_at: "yesterday" }), "INVALID_DATETIME", "started_at");
+    rejects(() => validateNode("StrutRun", { ...RUN, duration_ms: true }), "WRONG_TYPE", "duration_ms");
+    rejects(() => validateNode("StrutRun", { ...RUN, duration_ms: 1.5 }), "WRONG_TYPE", "duration_ms");
+    rejects(() => validateNode("StrutRun", { ...RUN, duration_ms: "12" }), "WRONG_TYPE", "duration_ms");
+    rejects(() => validateNode("StrutRun", { ...RUN, status: 1 }), "WRONG_TYPE", "status");
+    rejects(() => validateNode("StrutRun", { ...RUN, is_muted: "no" }), "WRONG_TYPE", "is_muted");
+    rejects(() => validateNode("StrutRun", { ...RUN, started_at: "yesterday" }), "INVALID_DATETIME", "started_at");
     // int-where-float is fine.
-    assert.equal(validateNode("VeinRun", { ...RUN, weight: 3 }).values["weight"], 3);
+    assert.equal(validateNode("StrutRun", { ...RUN, weight: 3 }).values["weight"], 3);
   });
   it("datetime accepts ISO, epoch seconds, epoch ms, numeric strings", () => {
     assert.equal(toEpochSeconds("2026-09-01T20:00:00Z"), 1788292800);
@@ -99,7 +99,7 @@ describe("validateNode (§6 gate)", () => {
     assert.equal(toEpochSeconds({}), null);
   });
   it("rejects node_key attributes that sanitize to nothing", () => {
-    rejects(() => validateNode("VeinRun", { ...RUN, run_id: "---" }), "EMPTY_NODE_KEY_TOKEN", "run_id");
+    rejects(() => validateNode("StrutRun", { ...RUN, run_id: "---" }), "EMPTY_NODE_KEY_TOKEN", "run_id");
   });
 });
 
@@ -111,17 +111,17 @@ describe("composeNodeKey (parity with jarvis sanitize_node_key)", () => {
   }>;
   for (const c of cases) {
     it(`${c.type} ${JSON.stringify(c.props).slice(0, 60)}`, () => {
-      assert.equal(composeNodeKey(getVeinSchema(c.type)!, c.props), c.expected);
+      assert.equal(composeNodeKey(getStrutSchema(c.type)!, c.props), c.expected);
     });
   }
   it("property lookup is case-insensitive", () => {
-    assert.equal(composeNodeKey(getVeinSchema("VeinRun")!, { RUN_ID: "Abc" }), "veinrun-abc");
+    assert.equal(composeNodeKey(getStrutSchema("StrutRun")!, { RUN_ID: "Abc" }), "strutrun-abc");
   });
 });
 
 describe("buildSearchText (Data_Bank)", () => {
   it("joins index fields in declared order with newlines, skipping blanks", () => {
-    const s = fromVein(getVeinSchema("VeinRun")!);
+    const s = fromStrut(getStrutSchema("StrutRun")!);
     assert.deepEqual(buildSearchText(s, { summary: " sum ", workflow_name: "wf", status: "  " }), {
       text: "wf\nsum",
       fields: ["workflow_name", "summary"],
@@ -132,8 +132,8 @@ describe("buildSearchText (Data_Bank)", () => {
     assert.deepEqual(buildSearchText(s, { log_ref: "" }), { text: null, fields: [] });
   });
   it("kitchen-sink fallback: priority order, exclusions, non-string values", () => {
-    const s = fromVein(getVeinSchema("VeinChat")!);
-    // VeinChat index [title, summary] both absent → fallback over the rest.
+    const s = fromStrut(getStrutSchema("StrutChat")!);
+    // StrutChat index [title, summary] both absent → fallback over the rest.
     assert.deepEqual(buildSearchText(s, { chat_id: "c1", model: "m", status: "live", turn_count: 3, name: "n" }), {
       text: "n\nc1\nm\n3",
       fields: ["name", "chat_id", "model", "turn_count"],
@@ -147,7 +147,7 @@ describe("buildSearchText (Data_Bank)", () => {
   });
 });
 
-describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let bolt: Bolt;
   let writer: NodeWriter;
   before(async () => {
@@ -159,7 +159,7 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
   });
   beforeEach(async () => {
     await wipeGraph(bolt);
-    await seedVeinDomain(bolt);
+    await seedStrutDomain(bolt);
     writer = new NodeWriter(bolt);
   });
 
@@ -176,16 +176,16 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
 
   it("create: jarvis label set, stamps, node_key, Data_Bank, typed ints", async () => {
     const t0 = Date.now();
-    const r = await writer.write({ type: "VeinRun", data: { ...RUN, weight: 1, log_ref: "" } });
+    const r = await writer.write({ type: "StrutRun", data: { ...RUN, weight: 1, log_ref: "" } });
     assert.equal(r.outcome, "created");
-    assert.equal(r.node_key, "veinrun-1725220000123");
+    assert.equal(r.node_key, "strutrun-1725220000123");
     assert.match(r.ref_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
     const n = await node(r.ref_id);
-    assert.deepEqual([...(n["labels"] as string[])].sort(), ["Data_Bank", "Domain_vein", "Node", "VeinRun"]);
+    assert.deepEqual([...(n["labels"] as string[])].sort(), ["Data_Bank", "Domain_strut", "Node", "StrutRun"]);
     const p = n["props"] as Record<string, unknown>;
     assert.equal(p["namespace"], "default");
-    assert.equal(p["node_key"], "veinrun-1725220000123");
+    assert.equal(p["node_key"], "strutrun-1725220000123");
     assert.ok((p["date_added_to_graph"] as number) >= t0 && (p["date_added_to_graph"] as number) <= Date.now() + 1);
     assert.equal(n["dateType"], "INTEGER NOT NULL", "date_added_to_graph is a Neo4j Integer (ms)");
     assert.equal(p["started_at"], 1788292800);
@@ -204,18 +204,18 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
   });
 
   it("create on an existing key is a no-op returning the existing ref_id", async () => {
-    const a = await writer.write({ type: "VeinRun", data: RUN });
+    const a = await writer.write({ type: "StrutRun", data: RUN });
     const snap = await graphSnapshot(bolt);
-    const b = await writer.write({ type: "VeinRun", data: { ...RUN, summary: "CHANGED" } });
+    const b = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "CHANGED" } });
     assert.equal(b.outcome, "existing");
     assert.equal(b.ref_id, a.ref_id);
     assert.deepEqual(await graphSnapshot(bolt), snap);
   });
 
   it("upsert updates everything except the preserved identity and rebuilds Data_Bank", async () => {
-    const a = await writer.write({ type: "VeinRun", data: RUN });
+    const a = await writer.write({ type: "StrutRun", data: RUN });
     const before = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    const b = await writer.write({ type: "VeinRun", data: { ...RUN, status: "error", summary: "boom", error_message: "x" } }, "upsert");
+    const b = await writer.write({ type: "StrutRun", data: { ...RUN, status: "error", summary: "boom", error_message: "x" } }, "upsert");
     assert.equal(b.outcome, "updated");
     assert.equal(b.ref_id, a.ref_id);
     const after = (await node(a.ref_id))["props"] as Record<string, unknown>;
@@ -228,10 +228,10 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
   });
 
   it("soft delete + create restores in place; muted+deleted stays put", async () => {
-    const a = await writer.write({ type: "VeinRun", data: RUN });
+    const a = await writer.write({ type: "StrutRun", data: RUN });
     assert.equal(await writer.softDelete(a.ref_id), true);
     assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["is_deleted"], true);
-    const r = await writer.write({ type: "VeinRun", data: { ...RUN, summary: "back" } });
+    const r = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "back" } });
     assert.equal(r.outcome, "restored");
     assert.equal(r.ref_id, a.ref_id);
     const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
@@ -239,7 +239,7 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
     assert.equal(p["summary"], "back");
 
     await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.is_deleted = true, n.is_muted = true`, { r: a.ref_id });
-    const r2 = await writer.write({ type: "VeinRun", data: { ...RUN, summary: "nope" } });
+    const r2 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "nope" } });
     assert.equal(r2.outcome, "existing");
     const p2 = (await node(a.ref_id))["props"] as Record<string, unknown>;
     assert.equal(p2["is_deleted"], true);
@@ -249,21 +249,21 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
 
   it("writeMany: mixed types in one tx, input-order results, per-type UNWIND", async () => {
     const rs = await writer.writeMany([
-      { type: "VeinChat", data: { chat_id: "c1", title: "Hello", created_at: 1788292800 } },
-      { type: "VeinRun", data: RUN },
-      { type: "VeinTurn", data: { chat_id: "c1", turn: 0, user_text_preview: "hi" } },
-      { type: "VeinRun", data: { ...RUN, run_id: "2" } },
+      { type: "StrutChat", data: { chat_id: "c1", title: "Hello", created_at: 1788292800 } },
+      { type: "StrutRun", data: RUN },
+      { type: "StrutTurn", data: { chat_id: "c1", turn: 0, user_text_preview: "hi" } },
+      { type: "StrutRun", data: { ...RUN, run_id: "2" } },
     ]);
     assert.deepEqual(rs.map((r) => r.outcome), ["created", "created", "created", "created"]);
-    assert.deepEqual(rs.map((r) => r.node_key), ["veinchat-c1", "veinrun-1725220000123", "veinturn-c1-0", "veinrun-2"]);
-    const count = await bolt.run(`MATCH (n:Domain_vein) RETURN count(n) AS c`);
+    assert.deepEqual(rs.map((r) => r.node_key), ["strutchat-c1", "strutrun-1725220000123", "strutturn-c1-0", "strutrun-2"]);
+    const count = await bolt.run(`MATCH (n:Domain_strut) RETURN count(n) AS c`);
     assert.equal(count[0]!["c"], 4);
     // Turn with no index text → no Data_Bank, no _search_fields_used.
     const turn = (await node(rs[2]!.ref_id))["props"] as Record<string, unknown>;
     assert.equal(turn["Data_Bank"], "hi");
     const rs2 = await writer.writeMany([
-      { type: "VeinRun", data: { ...RUN, summary: "again" } },
-      { type: "VeinRun", data: { ...RUN, run_id: "3" } },
+      { type: "StrutRun", data: { ...RUN, summary: "again" } },
+      { type: "StrutRun", data: { ...RUN, run_id: "3" } },
     ]);
     assert.deepEqual(rs2.map((r) => r.outcome), ["existing", "created"]);
     assert.equal(rs2[0]!.ref_id, rs[1]!.ref_id);
@@ -273,8 +273,8 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
     const snap = await graphSnapshot(bolt);
     await assert.rejects(
       writer.writeMany([
-        { type: "VeinRun", data: RUN },
-        { type: "VeinRun", data: { ...RUN, run_id: "2", bogus: 1 } },
+        { type: "StrutRun", data: RUN },
+        { type: "StrutRun", data: { ...RUN, run_id: "2", bogus: 1 } },
       ]),
       GraphValidationError,
     );
@@ -290,7 +290,7 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
       },
     };
     const w = new NodeWriter(bolt, { embedder: fake });
-    const r = await w.write({ type: "VeinStep", data: { step_type: "x/y", description: "d", input_schema: "{a}", output_schema: "" } });
+    const r = await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "d", input_schema: "{a}", output_schema: "" } });
     assert.deepEqual(seen, ["x/y\nd", "Input:\n{a}"]);
     const p = (await node(r.ref_id))["props"] as Record<string, unknown>;
     assert.equal((p["text_embeddings"] as number[]).length, 384);
@@ -300,7 +300,7 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
     const vt = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN valueType(n.text_embeddings) AS t`, { r: r.ref_id });
     assert.equal(vt[0]!["t"], "LIST<FLOAT NOT NULL> NOT NULL");
 
-    await w.write({ type: "VeinStep", data: { step_type: "x/y", description: "dd", input_schema: "{ab}" } }, "upsert");
+    await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "dd", input_schema: "{ab}" } }, "upsert");
     const p2 = (await node(r.ref_id))["props"] as Record<string, unknown>;
     assert.equal((p2["text_embeddings"] as number[])[0], "x/y\ndd".length);
     assert.equal((p2["input_embeddings"] as number[])[0], "Input:\n{ab}".length);
@@ -310,10 +310,10 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
     const seen: string[] = [];
     const fake: Embedder = { async embed(texts) { seen.push(...texts); return texts.map((t) => Array.from({ length: 384 }, (_, i) => (i === 0 ? t.length : 0))); } };
     const w = new NodeWriter(bolt, { embedder: fake });
-    const a = await w.write({ type: "VeinRun", data: { ...RUN, log_ref: "runs/1" } });
+    const a = await w.write({ type: "StrutRun", data: { ...RUN, log_ref: "runs/1" } });
     const before = (await node(a.ref_id))["props"] as Record<string, unknown>;
     const u = await w.update(a.ref_id, { set: { status: "error", error_message: "boom" }, remove: ["log_ref"] });
-    assert.deepEqual(u, { ref_id: a.ref_id, node_key: "veinrun-1725220000123", rekeyed: false });
+    assert.deepEqual(u, { ref_id: a.ref_id, node_key: "strutrun-1725220000123", rekeyed: false });
     const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
     assert.equal(p["status"], "error");
     assert.equal(p["error_message"], "boom");
@@ -331,11 +331,11 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
     await assert.rejects(w.update(a.ref_id, { set: { duration_ms: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE");
     await assert.rejects(w.update("nope", { set: { status: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "NOT_FOUND");
     // Re-key: editing an identity attr recomposes node_key; colliding fails.
-    const b = await w.write({ type: "VeinRun", data: { ...RUN, run_id: "other" } });
+    const b = await w.write({ type: "StrutRun", data: { ...RUN, run_id: "other" } });
     await assert.rejects(w.update(b.ref_id, { set: { run_id: "1725220000123" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "DUPLICATE_KEY");
     const rk = await w.update(b.ref_id, { set: { run_id: "renamed" } });
-    assert.deepEqual(rk, { ref_id: b.ref_id, node_key: "veinrun-renamed", rekeyed: true });
-    assert.equal(((await node(b.ref_id))["props"] as Record<string, unknown>)["node_key"], "veinrun-renamed");
+    assert.deepEqual(rk, { ref_id: b.ref_id, node_key: "strutrun-renamed", rekeyed: true });
+    assert.equal(((await node(b.ref_id))["props"] as Record<string, unknown>)["node_key"], "strutrun-renamed");
     // Without an embedder, a changed text drops the stale vector so backfill heals it.
     const plain = new NodeWriter(bolt);
     await plain.update(a.ref_id, { set: { status: "success" } });
@@ -343,22 +343,22 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
   });
 
   it("per-write namespace overrides the backend default", async () => {
-    const r = await writer.write({ type: "VeinRun", data: RUN }, "create", { namespace: "tenant-z" });
+    const r = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
     assert.equal(((await node(r.ref_id))["props"] as Record<string, unknown>)["namespace"], "tenant-z");
-    const again = await writer.write({ type: "VeinRun", data: RUN }, "create", { namespace: "tenant-z" });
+    const again = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
     assert.equal(again.outcome, "existing");
-    const dflt = await writer.write({ type: "VeinRun", data: RUN });
+    const dflt = await writer.write({ type: "StrutRun", data: RUN });
     assert.equal(dflt.outcome, "created");
   });
 
   it("namespace scopes identity", async () => {
     const other = new Bolt({ ...cfg!, namespace: "tenant-b" });
     try {
-      const a = await writer.write({ type: "VeinRun", data: RUN });
-      const b = await new NodeWriter(other).write({ type: "VeinRun", data: RUN });
+      const a = await writer.write({ type: "StrutRun", data: RUN });
+      const b = await new NodeWriter(other).write({ type: "StrutRun", data: RUN });
       assert.equal(b.outcome, "created");
       assert.notEqual(a.ref_id, b.ref_id);
-      const ns = await bolt.run(`MATCH (n:VeinRun) RETURN n.namespace AS ns ORDER BY ns`);
+      const ns = await bolt.run(`MATCH (n:StrutRun) RETURN n.namespace AS ns ORDER BY ns`);
       assert.deepEqual(ns.map((r) => r["ns"]), ["default", "tenant-b"]);
     } finally {
       await other.close();

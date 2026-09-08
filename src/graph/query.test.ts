@@ -79,10 +79,10 @@ describe("graph_query tool gating", () => {
   });
 });
 
-// ── Live (opt-in: VEIN_TEST_NEO4J_URI) ─────────────────────────────────────
+// ── Live (opt-in: STRUT_TEST_NEO4J_URI) ─────────────────────────────────────
 
 const cfg = testGraphConfig();
-describe("readQuery (live)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("readQuery (live)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let backend: GraphBackend;
   before(async () => {
     backend = await openGraphBackend(cfg!, { embeddings: false, skipBoot: true });

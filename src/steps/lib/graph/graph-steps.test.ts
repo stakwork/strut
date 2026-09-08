@@ -1,7 +1,7 @@
 /**
  * LIVE end-to-end test for the graph/* lib steps against a throwaway Neo4j
- * (it wipes the database, seeds the Vein domain, and writes nodes). Skipped
- * unless VEIN_TEST_NEO4J_URI is set — see src/graph/test-util.ts. Runs with
+ * (it wipes the database, seeds the Strut domain, and writes nodes). Skipped
+ * unless STRUT_TEST_NEO4J_URI is set — see src/graph/test-util.ts. Runs with
  * embeddings off so no model download is needed (search is fulltext-only).
  */
 import { describe, it, before, after } from "node:test";
@@ -29,13 +29,13 @@ describe("graph/* lib steps are discovered by the registry", () => {
   });
 });
 
-describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   const secrets: Record<string, string> = {
     NEO4J_URI: cfg?.uri ?? "",
     NEO4J_USER: cfg?.user ?? "neo4j",
     NEO4J_PASSWORD: cfg?.password ?? "",
-    VEIN_GRAPH_NAMESPACE: cfg?.namespace ?? "default",
-    VEIN_GRAPH_EMBEDDINGS: "off",
+    STRUT_GRAPH_NAMESPACE: cfg?.namespace ?? "default",
+    STRUT_GRAPH_EMBEDDINGS: "off",
   };
   const ctx = {
     runId: "test",
@@ -68,19 +68,19 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     assert.deepEqual(await run("graph/register-namespace", { namespace: NS }), { namespace: NS, registered: true, alreadyExisted: true });
   });
 
-  it("get-ontology / get-ontology-type expose the seeded Vein domain", async () => {
+  it("get-ontology / get-ontology-type expose the seeded Strut domain", async () => {
     const out = await run("graph/get-ontology", { include_edges: true, include_attributes: true });
     assert.ok(typeof out !== "string", out);
-    assert.ok(out.domains.includes("vein"));
+    assert.ok(out.domains.includes("strut"));
     assert.deepEqual(
-      out.node_types.vein.map((n: any) => n.type).sort(),
-      ["VeinAgentSession", "VeinChat", "VeinRun", "VeinStep", "VeinStepVersion", "VeinToolCall", "VeinTurn", "VeinWorkflow", "VeinWorkflowVersion"],
+      out.node_types.strut.map((n: any) => n.type).sort(),
+      ["StrutAgentSession", "StrutChat", "StrutRun", "StrutStep", "StrutStepVersion", "StrutToolCall", "StrutTurn", "StrutWorkflow", "StrutWorkflowVersion"],
     );
-    assert.ok(out.edges.some((e: any) => e.edge_type === "VERSION_OF" && e.source_type === "VeinWorkflowVersion" && e.target_type === "VeinWorkflow"));
-    const runType = out.node_types.vein.find((n: any) => n.type === "VeinRun");
+    assert.ok(out.edges.some((e: any) => e.edge_type === "VERSION_OF" && e.source_type === "StrutWorkflowVersion" && e.target_type === "StrutWorkflow"));
+    const runType = out.node_types.strut.find((n: any) => n.type === "StrutRun");
     assert.equal(runType.attributes.run_id, "string");
     assert.equal(runType.inherited_attributes.name, "string");
-    const single = await run("graph/get-ontology-type", { type: "veinworkflow" });
+    const single = await run("graph/get-ontology-type", { type: "strutworkflow" });
     assert.deepEqual(Object.keys(single), ["attributes"]);
     assert.equal(single.attributes.name, "string");
     assert.equal(single.attributes.category, "?string");
@@ -91,23 +91,23 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
   let wfvRef: string;
 
   it("create-node: merge, validation, closed type set, namespace gate", async () => {
-    let out = await run("graph/create-node", { node_type: "VeinWorkflow", namespace: NS, node_data: { name: "harvey-deliver", description: "Delivers legal memos" } });
+    let out = await run("graph/create-node", { node_type: "StrutWorkflow", namespace: NS, node_data: { name: "harvey-deliver", description: "Delivers legal memos" } });
     assert.equal(out.status, "Success");
     wfRef = out.ref_id;
-    out = await run("graph/create-node", { node_type: "VeinWorkflow", namespace: NS, node_data: { name: "harvey-deliver" } });
+    out = await run("graph/create-node", { node_type: "StrutWorkflow", namespace: NS, node_data: { name: "harvey-deliver" } });
     assert.equal(out.status, "Warning");
     assert.equal(out.ref_id, wfRef);
     assert.match(out.messages[0], /already exists/);
-    assert.match(await run("graph/create-node", { node_type: "VeinWorkflow", namespace: NS, node_data: { name: "x", bogus: 1 } }), /UNKNOWN_ATTRIBUTE/);
+    assert.match(await run("graph/create-node", { node_type: "StrutWorkflow", namespace: NS, node_data: { name: "x", bogus: 1 } }), /UNKNOWN_ATTRIBUTE/);
     assert.match(await run("graph/create-node", { node_type: "Workflow", namespace: NS, node_data: { name: "x" } }), /UNKNOWN_TYPE/);
-    assert.match(await run("graph/create-node", { node_type: "VeinWorkflow", namespace: "never-registered", node_data: { name: "x" } }), /INVALID_NAMESPACE/);
+    assert.match(await run("graph/create-node", { node_type: "StrutWorkflow", namespace: "never-registered", node_data: { name: "x" } }), /INVALID_NAMESPACE/);
   });
 
   it("graph-get returns the jarvis envelope", async () => {
     const out = await run("graph/graph-get", { ref_id: wfRef, namespace: NS });
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "VeinWorkflow" }], "provenance marker");
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }], "provenance marker");
     assert.equal(out.ref_id, wfRef);
-    assert.equal(out.node_type, "VeinWorkflow");
+    assert.equal(out.node_type, "StrutWorkflow");
     assert.equal(out.name, "harvey-deliver");
     assert.equal(out.properties.description, "Delivers legal memos");
     assert.ok(!("Data_Bank" in out.properties) && !("node_key" in out.properties));
@@ -122,17 +122,17 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     const out = await run("graph/graph-get", { ref_id: wfRef });
     assert.equal(out.properties.category, "smoke");
     assert.ok(!("description" in out.properties));
-    assert.match(await run("graph/edit-node", { ref_id: wfRef, node_type: "VeinStep" }), /not supported/);
+    assert.match(await run("graph/edit-node", { ref_id: wfRef, node_type: "StrutStep" }), /not supported/);
     assert.match(await run("graph/edit-node", { ref_id: wfRef, properties_to_be_deleted: ["name"] }), /MISSING_REQUIRED/);
     assert.match(await run("graph/edit-node", { ref_id: wfRef }), /invalid input/);
   });
 
   it("graph-search finds the workflow (fulltext, title boost, type filter)", async () => {
-    const out = await run("graph/graph-search", { q: "harvey-deliver", namespace: NS, type: "VeinWorkflow" });
+    const out = await run("graph/graph-search", { q: "harvey-deliver", namespace: NS, type: "StrutWorkflow" });
     assert.ok(Array.isArray(out) && out[0].ref_id === wfRef, JSON.stringify(out));
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "VeinWorkflow" }], "provenance marker on an array output");
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }], "provenance marker on an array output");
     assert.equal(out[0].name, "harvey-deliver");
-    assert.equal(out[0].node_type, "VeinWorkflow");
+    assert.equal(out[0].node_type, "StrutWorkflow");
     assert.deepEqual(out[0].edges, {});
     assert.match(await run("graph/graph-search", {}), /requires at least one/);
     assert.match(await run("graph/graph-search", { q: "x", domains: "legal" }), /INVALID_DOMAIN/);
@@ -140,7 +140,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
 
   it("create-triplet: inline side, idempotent edge, registry gate", async () => {
     let out = await run("graph/create-triplet", {
-      source_type: "VeinWorkflowVersion",
+      source_type: "StrutWorkflowVersion",
       source_data: { name: "harvey-deliver", content_hash: "c-1", created_at: "2026-09-01T00:00:00Z" },
       target_ref_id: wfRef,
       edge_type: "version of",
@@ -151,7 +151,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     assert.equal(out.edge_type, "VERSION_OF");
     assert.equal(out.target_ref_id, wfRef);
     wfvRef = out.source_ref_id;
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfvRef, node_type: "VeinWorkflowVersion" }, { ref_id: wfRef }], "both endpoints");
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfvRef, node_type: "StrutWorkflowVersion" }, { ref_id: wfRef }], "both endpoints");
     out = await run("graph/create-triplet", { source_ref_id: wfvRef, target_ref_id: wfRef, edge_type: "VERSION_OF" });
     assert.equal(out.status, "Warning");
     assert.match(await run("graph/create-triplet", { source_ref_id: wfRef, target_ref_id: wfvRef, edge_type: "VERSION_OF" }), /WRONG_TYPE/);
@@ -161,8 +161,8 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
   it("graph-neighbors: direction, importance, edge filter, per-neighbor counts", async () => {
     const out = await run("graph/graph-neighbors", { ref_id: wfRef, namespace: NS });
     assert.equal(out.length, 1);
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef }, { ref_id: wfvRef, node_type: "VeinWorkflowVersion" }], "expanded node + neighbors");
-    assert.deepEqual(out[0], { ref_id: wfvRef, node_type: "VeinWorkflowVersion", name: "harvey-deliver", edge_type: "VERSION_OF", direction: "reverse", edges: { VERSION_OF: 1 }, importance: 0.5 });
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "expanded node + neighbors");
+    assert.deepEqual(out[0], { ref_id: wfvRef, node_type: "StrutWorkflowVersion", name: "harvey-deliver", edge_type: "VERSION_OF", direction: "reverse", edges: { VERSION_OF: 1 }, importance: 0.5 });
     assert.deepEqual(await run("graph/graph-neighbors", { ref_id: wfRef, edge_type: ["USES_STEP"] }), []);
   });
 
@@ -173,9 +173,9 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     assert.equal(out.nodes[0].ref_id, wfRef);
     assert.deepEqual(out.nodes[0].edges, { VERSION_OF: 1 });
     assert.match(out.nodes[1].error, /not found/);
-    assert.equal(out.nodes[2].node_type, "VeinWorkflowVersion");
+    assert.equal(out.nodes[2].node_type, "StrutWorkflowVersion");
     assert.equal(out.truncated, false);
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "VeinWorkflow" }, { ref_id: wfvRef, node_type: "VeinWorkflowVersion" }], "resolved nodes only");
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "resolved nodes only");
   });
 
   it("create-batch-triplet: per-item outcomes, inline dedupe", async () => {
@@ -183,8 +183,8 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
       namespace: NS,
       triplets: [
         { source_ref_id: wfRef, target_ref_id: wfvRef, edge_type: "ACTIVE_VERSION" },
-        { source_type: "VeinStep", source_data: { step_type: "smoke/step" }, target_ref_id: wfRef, edge_type: "USES_STEP" },
-        { source_ref_id: wfvRef, target_type: "VeinStep", target_data: { step_type: "smoke/step" }, edge_type: "USES_STEP" },
+        { source_type: "StrutStep", source_data: { step_type: "smoke/step" }, target_ref_id: wfRef, edge_type: "USES_STEP" },
+        { source_ref_id: wfvRef, target_type: "StrutStep", target_data: { step_type: "smoke/step" }, edge_type: "USES_STEP" },
         { source_ref_id: "nope", target_ref_id: wfRef, edge_type: "EXECUTED" },
       ],
     });
@@ -195,8 +195,8 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     assert.equal(out.results[2].status, "Success");
     assert.match(out.results[3].error, /does not resolve/);
     assert.deepEqual(accessedNodesOf(out)!.map((n) => n.ref_id).sort(), [...new Set([wfRef, wfvRef, out.results[2].target_ref_id])].sort(), "endpoints of written edges");
-    const steps = await run("graph/graph-search", { q: "smoke/step", type: "VeinStep", namespace: NS });
-    assert.equal(steps.length, 1, "inline VeinStep created once");
+    const steps = await run("graph/graph-search", { q: "smoke/step", type: "StrutStep", namespace: NS });
+    assert.equal(steps.length, 1, "inline StrutStep created once");
   });
 
   it("edit-edge: by ref_id and by triple, deletes, refuses stamps / bad locators / missing edges", async () => {
@@ -227,7 +227,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     assert.match(await run("graph/edit-edge", { edge_ref_id: edgeRef, source_ref_id: wfRef, edge_type: "X", target_ref_id: wfvRef, edge_data: { x: 1 } }), /invalid input/);
   });
 
-  it("create-schema: registers a type create-node can then write, extends it add-only, refuses Vein types and bad input", async () => {
+  it("create-schema: registers a type create-node can then write, extends it add-only, refuses Strut types and bad input", async () => {
     assert.match(await run("graph/create-node", { node_type: "Evidence", namespace: NS, node_data: { description: "d" } }), /UNKNOWN_TYPE/);
     let out = await run("graph/create-schema", {
       type: "Evidence",
@@ -259,7 +259,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     const single = await run("graph/get-ontology-type", { type: "Evidence" });
     assert.equal(single.attributes.strength, "?float");
 
-    // Edge between the new type and a Vein type is still gated by the closed Vein registry (source is Vein)…
+    // Edge between the new type and a Strut type is still gated by the closed Strut registry (source is Strut)…
     assert.match(await run("graph/create-triplet", { source_ref_id: wfRef, target_ref_id: node.ref_id, edge_type: "EVIDENCED_BY", create_schema_if_missing: true }), /WRONG_TYPE/);
     // …but between two ontology types create_schema_if_missing registers the edge schema.
     const doc = await run("graph/create-schema", { type: "SourceDoc", attributes: { title: "string", url: "?string" }, node_key: "title" });
@@ -275,8 +275,8 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4
     });
     assert.equal(trip.status, "Success", JSON.stringify(trip));
 
-    assert.match(await run("graph/create-schema", { type: "VeinRun", attributes: {} }), /UNKNOWN_TYPE/);
-    assert.match(await run("graph/create-schema", { type: "Sub", parent: "VeinRun", attributes: {} }), /closed registry/);
+    assert.match(await run("graph/create-schema", { type: "StrutRun", attributes: {} }), /UNKNOWN_TYPE/);
+    assert.match(await run("graph/create-schema", { type: "Sub", parent: "StrutRun", attributes: {} }), /closed registry/);
     assert.match(await run("graph/create-schema", { type: "Orphan", parent: "Nope", attributes: {} }), /does not exist/);
     assert.match(await run("graph/create-schema", { type: "Bad", attributes: { score: "number" } }), /WRONG_TYPE/);
     assert.match(await run("graph/create-schema", { type: "Bad", attributes: { a: "string" }, node_key: "b" }), /UNKNOWN_ATTRIBUTE/);
@@ -292,7 +292,7 @@ describe("graph/project step", () => {
     assert.equal(sources["graph/project"], "lib");
   });
 
-  it("projects a file workspace's runs into the graph (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, async () => {
+  it("projects a file workspace's runs into the graph (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, async () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
@@ -300,11 +300,11 @@ describe("graph/project step", () => {
     const { FileRunStore } = await import("../../../store.js");
     const { openGraphBackend } = await import("../../../graph/backend.js");
 
-    const dataDir = await mkdtemp(join(tmpdir(), "vein-project-step-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-project-step-"));
     // The step lists workflows from the DEFAULT workspace (the graph since
     // PR #1632); this case seeds a FILE workspace at dataDir, so pin fs.
-    const prevBackend = process.env["VEIN_WORKSPACE_BACKEND"];
-    process.env["VEIN_WORKSPACE_BACKEND"] = "fs";
+    const prevBackend = process.env["STRUT_WORKSPACE_BACKEND"];
+    process.env["STRUT_WORKSPACE_BACKEND"] = "fs";
     try {
       const ws = new FileWorkspaceStore(dataDir);
       await ws.publishWorkflow("wf", "v1", { steps: [{ id: "a", type: "log", config: { message: "x" } }] });
@@ -318,7 +318,7 @@ describe("graph/project step", () => {
       await bolt.close();
       const secrets: Record<string, string> = {
         NEO4J_URI: cfg!.uri, NEO4J_USER: cfg!.user, NEO4J_PASSWORD: cfg!.password,
-        VEIN_GRAPH_NAMESPACE: cfg!.namespace, VEIN_GRAPH_EMBEDDINGS: "off",
+        STRUT_GRAPH_NAMESPACE: cfg!.namespace, STRUT_GRAPH_EMBEDDINGS: "off",
       };
       const ctx = {
         runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {},
@@ -334,11 +334,11 @@ describe("graph/project step", () => {
       assert.deepEqual([again.runs, again.skipped], [0, 1], "settled run skipped on re-run");
 
       const b = await openGraphBackend({ ...cfg!, namespace: cfg!.namespace }, { embeddings: false, skipBoot: true });
-      const rows = await b.bolt.run(`MATCH (r:VeinRun) RETURN r.run_id AS id, r.status AS s`);
+      const rows = await b.bolt.run(`MATCH (r:StrutRun) RETURN r.run_id AS id, r.status AS s`);
       assert.deepEqual(rows, [{ id: base.runId, s: "success" }]);
     } finally {
-      if (prevBackend === undefined) delete process.env["VEIN_WORKSPACE_BACKEND"];
-      else process.env["VEIN_WORKSPACE_BACKEND"] = prevBackend;
+      if (prevBackend === undefined) delete process.env["STRUT_WORKSPACE_BACKEND"];
+      else process.env["STRUT_WORKSPACE_BACKEND"] = prevBackend;
       await closeGraphBackends();
       await rm(dataDir, { recursive: true, force: true });
     }

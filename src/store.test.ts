@@ -91,7 +91,7 @@ describe("FileRunStore", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-test-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-test-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
 

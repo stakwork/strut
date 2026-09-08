@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 export default defineStep({
   type: "graph/register-namespace",
@@ -17,7 +17,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const r = await b.reader.registerNamespace(cfg.namespace);
       return { namespace: r.namespace, registered: true, ...(r.created ? {} : { alreadyExisted: true }) };
     } catch (e) {

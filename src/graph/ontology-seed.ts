@@ -1,8 +1,8 @@
 /**
  * Seed the bundled jarvis ontology (`fixtures/jarvis-ontology.ts`) into a
- * database — so a STANDALONE vein Neo4j can host the jarvis-typed data the
+ * database — so a STANDALONE strut Neo4j can host the jarvis-typed data the
  * lab pipelines write (Document, EvalSet, Concept, …) without a jarvis
- * process. Same add-only discipline as `seedVeinDomain`: guarded creates,
+ * process. Same add-only discipline as `seedStrutDomain`: guarded creates,
  * `IF NOT EXISTS` schema objects, zero diff on re-run, and a jarvis-seeded
  * database is left untouched (every schema already exists → nothing
  * written).
@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { Bolt } from "./bolt.js";
 import { JARVIS_ONTOLOGY, type OntologyFixture } from "./fixtures/jarvis-ontology.js";
 import { schemaStatement } from "./schema-seed.js";
-import { SCHEMA_CORE_PROPERTIES } from "./vein-schemas.js";
+import { SCHEMA_CORE_PROPERTIES } from "./strut-schemas.js";
 
 export interface OntologySeedReport {
   createdSchemas: string[];

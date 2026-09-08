@@ -301,7 +301,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   private root: string;
 
   constructor(root?: string) {
-    this.root = root ?? process.env["VEIN_WORKSPACE"] ?? "./workspace";
+    this.root = root ?? process.env["STRUT_WORKSPACE"] ?? "./workspace";
   }
 
   /** The filesystem root — an implementation detail of THIS store, not part
@@ -997,11 +997,11 @@ async function pruneEmptyDirs(startDir: string, stopDir: string): Promise<void> 
 }
 
 /**
- * Custom step files are ESM (`import { defineStep } from "vein"`). Node and
+ * Custom step files are ESM (`import { defineStep } from "strut"`). Node and
  * tsx decide a `.ts` file's format from the nearest package.json, and a
- * workspace outside the vein package tree has none — tsx then falls back to
- * CommonJS and `require("vein")` bypasses the ESM resolve hook that makes
- * the bare specifier work (vein-resolve-hook.ts). A one-line package.json
+ * workspace outside the strut package tree has none — tsx then falls back to
+ * CommonJS and `require("strut")` bypasses the ESM resolve hook that makes
+ * the bare specifier work (strut-resolve-hook.ts). A one-line package.json
  * beside the steps pins the format wherever the workspace lives.
  */
 export async function ensureEsmScope(dir: string): Promise<void> {

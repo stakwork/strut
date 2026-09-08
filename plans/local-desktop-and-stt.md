@@ -1,11 +1,11 @@
 # Local desktop setup + speech-to-text (sherpa-onnx)
 
-Context: we want vein to run as a **child process of a native desktop app**
+Context: we want strut to run as a **child process of a native desktop app**
 (Swift on macOS, Kotlin on the JVM/Windows/Linux) with the existing web UI
 shown in a webview, and we want **speech-to-text** that works the same way
-whether vein is that local child process or a server that a mobile app talks
-to. This doc covers both: what it takes to package vein for local use, and how
-STT lands in vein via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+whether strut is that local child process or a server that a mobile app talks
+to. This doc covers both: what it takes to package strut for local use, and how
+STT lands in strut via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
 
 Status: nothing below is built. Findings are from reading the tree as of
 2026-09-04.
@@ -14,7 +14,7 @@ Status: nothing below is built. Findings are from reading the tree as of
 
 ## 0. Decisions up front
 
-- **STT runs inside vein, not in the host app.** Vein is the process we
+- **STT runs inside strut, not in the host app.** Strut is the process we
   package on every platform, so the recognizer lives there and native clients
   only capture audio and send it. The Swift/Kotlin sherpa bindings are
   reserved for a future offline-only mobile mode.
@@ -29,7 +29,7 @@ Status: nothing below is built. Findings are from reading the tree as of
   single-file executable, for the first cut. Single-file (SEA / Bun / Deno
   compile) is a later optimization once the step loader no longer scans
   directories next to the running module (§2.2).
-- **Desktop defaults to the filesystem workspace** (`VEIN_WORKSPACE_BACKEND=fs`).
+- **Desktop defaults to the filesystem workspace** (`STRUT_WORKSPACE_BACKEND=fs`).
   Graph features need a Neo4j the app doesn't ship (§3).
 - **Native addons ship beside the binary, one platform each**, never
   embedded. This applies to `sherpa-onnx-node` and, if we keep it, to
@@ -39,7 +39,7 @@ Status: nothing below is built. Findings are from reading the tree as of
 
 ## 1. Topologies we must support
 
-| Topology | Who runs vein | Audio path | Notes |
+| Topology | Who runs strut | Audio path | Notes |
 |---|---|---|---|
 | Desktop app | child process, `127.0.0.1:<port>` | host captures mic → local HTTP/WS | webview loads `web/dist` from the same origin |
 | Mobile app | remote server | app captures mic → HTTPS/WSS | same routes, different base URL |
@@ -56,18 +56,18 @@ the API key is obtained.
 ### 2.1 What already works
 
 - Server is Hono on `@hono/node-server`; `listen()` takes a port
-  (`createVein.ts` ~L1892).
+  (`createStrut.ts` ~L1892).
 - `web/dist` is a static Vite bundle. The frontend calls the API through a
   relative `BASE`, so a webview pointed at `http://127.0.0.1:<port>` needs no
   frontend change.
-- `VEIN_API_KEY` gating exists (`auth.ts`).
+- `STRUT_API_KEY` gating exists (`auth.ts`).
 - Heavy deps (AI SDK providers, `@huggingface/transformers`, gdrive/octokit)
   are already `await import()`-ed lazily.
 
 ### 2.2 Blockers, in order of importance
 
 1. **Neo4j is a boot dependency by default.** `graph/wiring.ts` verifies bolt
-   at startup. Desktop launches with `VEIN_WORKSPACE_BACKEND=fs`. Consequence:
+   at startup. Desktop launches with `STRUT_WORKSPACE_BACKEND=fs`. Consequence:
    `graph/*` steps and embeddings are unavailable locally unless the user
    points `NEO4J_*` at a reachable instance (allowed, just not default).
 2. **Step discovery scans directories relative to `import.meta.url`**
@@ -76,19 +76,19 @@ the API key is obtained.
    step files ship as real files. It breaks any single-file build. Fix when we
    go single-file: a build-time generated step manifest (static imports) with
    `readdir` only for custom steps.
-3. ~~**Custom steps are materialized to disk and `import "vein"`.**~~ Done:
-   a module resolve hook (`src/vein-resolve-hook.ts`, registered by the
-   step registry) maps the bare specifier to the running vein's own entry,
+3. ~~**Custom steps are materialized to disk and `import "strut"`.**~~ Done:
+   a module resolve hook (`src/strut-resolve-hook.ts`, registered by the
+   step registry) maps the bare specifier to the running strut's own entry,
    so the workspace can live anywhere (Application Support on desktop) and
    steps get the same module instance the server runs. A one-line
    `package.json` (`"type": "module"`) is written beside the custom steps so
    tsx in dev treats them as ESM out of tree, as Node already does.
-4. ~~**`web/dist` is resolved relative to the module.**~~ Done: `VEIN_WEB_DIST`
+4. ~~**`web/dist` is resolved relative to the module.**~~ Done: `STRUT_WEB_DIST`
    (or the `webDist` option) overrides it.
-5. ~~**Bind address.**~~ Done: `VEIN_HOST` (default unchanged for servers;
-   desktop passes `127.0.0.1`), and `VEIN_PORT=0` resolves to the bound port.
+5. ~~**Bind address.**~~ Done: `STRUT_HOST` (default unchanged for servers;
+   desktop passes `127.0.0.1`), and `STRUT_PORT=0` resolves to the bound port.
 6. **Shell steps spawn `bash`** (`shell.ts`). macOS/Linux fine; Windows needs
-   either Git-Bash detection or a `VEIN_SHELL` override. Not blocking for a
+   either Git-Bash detection or a `STRUT_SHELL` override. Not blocking for a
    macOS-first release.
 7. ~~**Native addons** (`onnxruntime-node`, `sharp` via transformers).~~
    Done: `package:desktop` uninstalls the whole embeddings stack by default
@@ -96,10 +96,10 @@ the API key is obtained.
 
 ### 2.3 Packaging: phase A (ship this first)
 
-Inside the app bundle (macOS `Contents/Resources/vein/`, similar on others):
+Inside the app bundle (macOS `Contents/Resources/strut/`, similar on others):
 
 ```
-vein/
+strut/
   node                     # official Node binary for the platform (~110 MB)
   server.cjs               # esbuild bundle of build/server.js + deps
   steps/                   # build/steps/** as files (registry scans these)
@@ -121,7 +121,7 @@ vein/
   platform's `onnxruntime-node` binaries, list the `.node` files the host
   must code-sign, then (`--smoke`) boot the copy from a temp dir with the
   §2.5 env and a workspace outside the tree holding a step that
-  `import "vein"`, and check `/health`, `/steps`, `/audio/models`
+  `import "strut"`, and check `/health`, `/steps`, `/audio/models`
   (`available: true`) and the UI. `--platform` cross-stages.
 - Measured (darwin-arm64, 2026-09-07): **99 MB** before the Node binary and
   models, with the defaults: the embeddings stack uninstalled
@@ -141,32 +141,32 @@ Only after §2.2 items 2–4 are done. Candidates: Node SEA (requires CJS entry 
 dev machines). All three still need native addons beside the binary. Do not
 start this until phase A is in users' hands.
 
-### 2.5 Host ↔ vein contract
+### 2.5 Host ↔ strut contract
 
 Host spawns `node server.cjs` with env:
 
 | Var | Desktop value |
 |---|---|
-| `VEIN_HOST` | `127.0.0.1` |
-| `VEIN_PORT` | `0` (let the OS pick) |
-| `VEIN_WORKSPACE` | app-support dir, e.g. `~/Library/Application Support/<App>/vein` |
-| `VEIN_WORKSPACE_BACKEND` | `fs` |
-| `VEIN_WEB_DIST` | absolute path to bundled `web/dist` |
-| `VEIN_API_KEY` | random per launch, generated by the host |
-| `VEIN_SECRET_KEY` | stable per install, stored in the OS keychain by the host |
-| `VEIN_MODEL_DIR` | app-support `models/` (shared by MiniLM and sherpa, §4.5) |
+| `STRUT_HOST` | `127.0.0.1` |
+| `STRUT_PORT` | `0` (let the OS pick) |
+| `STRUT_WORKSPACE` | app-support dir, e.g. `~/Library/Application Support/<App>/strut` |
+| `STRUT_WORKSPACE_BACKEND` | `fs` |
+| `STRUT_WEB_DIST` | absolute path to bundled `web/dist` |
+| `STRUT_API_KEY` | random per launch, generated by the host |
+| `STRUT_SECRET_KEY` | stable per install, stored in the OS keychain by the host |
+| `STRUT_MODEL_DIR` | app-support `models/` (shared by MiniLM and sherpa, §4.5) |
 | `ANTHROPIC_API_KEY` etc. | from the host's settings UI |
 
 Protocol:
 
-- vein prints one JSON line on stdout when ready (done):
+- strut prints one JSON line on stdout when ready (done):
   `{"event":"ready","port":51234,"host":"127.0.0.1"}`, after the human lines.
   `listen()` also rejects on a bind failure instead of crashing.
-- Host loads the webview at `http://127.0.0.1:<port>/?key=<VEIN_API_KEY>`
+- Host loads the webview at `http://127.0.0.1:<port>/?key=<STRUT_API_KEY>`
   (done): the UI stores the key in `sessionStorage`, strips it from the URL,
   and sends it as a bearer on every request and as `?key=` on the dictation
   socket. Settings → Connection also accepts a pasted key (`localStorage`).
-- Host kills the child on quit. vein already handles `SIGTERM` via the run
+- Host kills the child on quit. strut already handles `SIGTERM` via the run
   store's durable resume, so a hard kill is recoverable.
 - Health: `GET /health` (add if missing) so the host can detect a crashed
   child and restart it.
@@ -183,7 +183,7 @@ WebView). Microphone capture stays in the host, not the webview (§4.6).
   the WASM backend (`onnxruntime-web`, already a dep) with identical vectors.
   Force `device: "wasm"` in `graph/embeddings.ts` when `onnxruntime-node`
   isn't present. Also make `allowLocalModels` configurable so a bundled model
-  under `VEIN_MODEL_DIR` is used offline.
+  under `STRUT_MODEL_DIR` is used offline.
 - **Storage is the open decision.** Vectors live in Neo4j vector indexes. With
   the fs backend there is nowhere to write them. Options, cheapest first:
   1. Desktop connects to a remote/Docker Neo4j (zero code).
@@ -212,7 +212,7 @@ Idea, not decided. Needs team discussion.
   `GraphBackend` interface + storage conformance tests already exist. But
   the Cypher is Neo4j-shaped:
   - Ladybug is schema-first (`CREATE NODE TABLE`, typed columns, primary
-    key). Vein does schema-less multi-label `MERGE` with labels computed at
+    key). Strut does schema-less multi-label `MERGE` with labels computed at
     runtime (`node-writer.ts` ~L568: type + `Node` + `Data_Bank` +
     `Domain_*`). Ladybug's multi-label patterns are query-side, not a node
     carrying N labels.
@@ -237,7 +237,7 @@ Idea, not decided. Needs team discussion.
     maintain and no cheap sync path.
   - Lean: undecided. Decide with the team before any code.
 - **Suggested order.** Ship phase A on the fs workspace first (graph steps on
-  desktop say "connect a swarm"). Then a one-day spike: run vein's Cypher
+  desktop say "connect a swarm"). Then a one-day spike: run strut's Cypher
   strings against Ladybug and count what breaks, which also informs the
   conform-or-not question. Only then a `LadybugBackend` behind
   `GraphBackend`, gated on a desktop feature that actually needs search or
@@ -332,7 +332,7 @@ Idea, not decided. Needs team discussion.
 Everything lives in `src/audio/` and is exposed as `ctx.services.stt?`
 (optional, like `artifacts`) so future steps can transcribe without
 importing sherpa. All `sherpa-onnx-node` imports are lazy; without the
-addon the routes return `501 { error: "stt not available" }` and vein boots
+addon the routes return `501 { error: "stt not available" }` and strut boots
 and passes every other test.
 
 **`GET /audio/stream`** (WebSocket, `@hono/node-ws`) — live dictation:
@@ -355,8 +355,8 @@ and passes every other test.
   shows it.
 - Auth: `Authorization: Bearer` **or** `?key=` (a webview's WebSocket
   cannot set headers). HTTP routes below use the normal bearer middleware.
-- The upgrade happens on the Node server, not inside Hono. Vein's own
-  `listen()` attaches it; a host that mounts `vein.app` itself (mcp's
+- The upgrade happens on the Node server, not inside Hono. Strut's own
+  `listen()` attaches it; a host that mounts `strut.app` itself (mcp's
   Express bridge under `/lab`) hooks the server's `upgrade` event and hands
   matching requests to `createAudioUpgradeHandler(stt, { basePath,
   authorize })` — `authorize` because an upgrade bypasses the host's HTTP
@@ -400,12 +400,12 @@ id → GitHub release URL, sha256, size, file layout, chunk latency, casing.
 | `nemotron-speech-en-80ms` | 463 MB | ~0.15 s | no (greedy-only) | accuracy ceiling; RTF ≈ 0.55 on 2 threads, cased + punctuated |
 
 Defaults: `model` = `zipformer-en-kroko`, `partialModel` =
-`nemo-fast-conformer-en-80ms`. Env `VEIN_STT_MODEL` / `VEIN_STT_PARTIAL_MODEL`
+`nemo-fast-conformer-en-80ms`. Env `STRUT_STT_MODEL` / `STRUT_STT_PARTIAL_MODEL`
 and per-call overrides. Dropped: the 2023-02 20M Zipformer (fast but weak).
-`VEIN_MODEL_DIR` (alias of the existing `VEIN_MODEL_CACHE`; default
-`<cache root>/vein/models` where the root is `VEIN_CACHE_DIR`, else
+`STRUT_MODEL_DIR` (alias of the existing `STRUT_MODEL_CACHE`; default
+`<cache root>/strut/models` where the root is `STRUT_CACHE_DIR`, else
 `XDG_CACHE_HOME`, else `~/.cache` — the same root mcp's GAIA checkout uses,
-so a server's `~/.cache/vein` volume persists both) holds `stt/<id>/`. Downloads happen on first use or via
+so a server's `~/.cache/strut` volume persists both) holds `stt/<id>/`. Downloads happen on first use or via
 the route, never at boot; server images pre-bake.
 
 ### 4.6 Client responsibilities (Swift / Kotlin)
@@ -422,7 +422,7 @@ Full client contract, with a Swift sketch: `native-dictation-client.md`.
 
 - Unit: catalog resolution, hotwords compile (bpe.vocab synthesis +
   file layout), the WebSocket protocol over a fake engine. No addon needed.
-- Live (opt-in, `VEIN_TEST_STT=1`, like `VEIN_TEST_NEO4J_URI`): download
+- Live (opt-in, `STRUT_TEST_STT=1`, like `STRUT_TEST_NEO4J_URI`): download
   kroko once into a temp model dir, stream its bundled `test_wavs/0.wav`
   as PCM frames, assert the final; then the same with a hotwords list.
   Skipped when the addon is missing.
@@ -456,20 +456,20 @@ artifact per user/company) or beside it. Lean: same artifact, two sections.
 
 ## 5. Order of work
 
-1. **STT core** (in progress on `vein-stt`): `src/audio/` service, catalog,
+1. **STT core** (in progress on `strut-stt`): `src/audio/` service, catalog,
    hotwords compiler, `/audio/stream` WebSocket, `POST /audio/transcribe`,
    `/audio/models` + download, sessions + hotword lists. Testable on a
    server with no desktop work at all.
 2. **Model bake-off**: measure the NeMo / Nemotron streaming variants for
    partial latency and accuracy on the same clips; pick the default.
-3. ~~**Server prerequisites for desktop**~~: done — `VEIN_HOST`,
-   `VEIN_WEB_DIST`, `VEIN_PORT=0`, structured `ready` line, `vein.close()`,
-   `?key=` handoff in the UI, `VEIN_MODEL_DIR` / `VEIN_CACHE_DIR` fallback.
+3. ~~**Server prerequisites for desktop**~~: done — `STRUT_HOST`,
+   `STRUT_WEB_DIST`, `STRUT_PORT=0`, structured `ready` line, `strut.close()`,
+   `?key=` handoff in the UI, `STRUT_MODEL_DIR` / `STRUT_CACHE_DIR` fallback.
 4. **First dream cycle**: a sessions → llm → `PUT /audio/hotwords` workflow
    plus the corrections UI. Proves the loop before packaging.
-5. **Phase A packaging**: vein side done (`package:desktop` + smoke test);
+5. **Phase A packaging**: strut side done (`package:desktop` + smoke test);
    remaining is the macOS host: embed Node + the staged dir, code-sign the
-   listed addons, spawn vein and stream the mic.
+   listed addons, spawn strut and stream the mic.
 6. **Kotlin host**, Windows shell override.
 7. Later: single-binary (phase B), local vector store or LadybugDB backend
    (§3, §3.1), batch `audio/transcribe` step, offline-mobile bindings.
@@ -494,8 +494,8 @@ artifact per user/company) or beside it. Lean: same artifact, two sections.
 - Transcription logic lives in `src/audio/`, exposed as a service; routes
   are thin. No STT step in v1; workflows learn around the recognizer.
 - Hotwords need `modelingUnit: "bpe"` + a synthesized `bpe.vocab`. Always.
-- Everything sherpa is lazy-imported and optional. A vein without the addon
+- Everything sherpa is lazy-imported and optional. A strut without the addon
   must boot and run every non-audio test.
 - Native addons are never embedded; ship one platform dir beside the binary.
-- Clients capture audio, vein recognizes it. No second STT implementation in
+- Clients capture audio, strut recognizes it. No second STT implementation in
   the host apps until offline mobile is actually scheduled.

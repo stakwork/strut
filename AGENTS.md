@@ -1,6 +1,6 @@
 GOAL: AS SIMPLE AS POSSIBLE!
 
-# vein
+# strut
 
 Minimal workflow engine with HTTP API and web UI. See `SPEC.md` for
 the full design spec (sections 1-15). This file covers how to work
@@ -26,7 +26,7 @@ versioned artifact, and what must never evolve.
 ## Layout
 
 ```
-vein/
+strut/
 ├── SPEC.md                # full design spec — read this first
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
@@ -40,15 +40,15 @@ vein/
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + messages.jsonl + events.jsonl) + truncateToolMessages
 │   ├── workspace.ts       # WorkspaceStore interface + FileWorkspaceStore (alias WorkspaceManager): versioning, _metadata.json, YAML loading
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
-│   ├── createVein.ts      # createVein() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
-│   ├── server.ts          # thin wrapper over createVein() (getApp/startServer) — default filesystem-backed server
-│   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (VEIN_API_KEY shared secret)
-│   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, VEIN_SECRET_KEY) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
-│   ├── index.ts           # barrel export — createVein (primary entry), createRegistry, coreRegistry, all types
+│   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
+│   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server
+│   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret)
+│   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+│   ├── index.ts           # barrel export — createStrut (primary entry), createRegistry, coreRegistry, all types
 │   ├── steps/
 │   │   ├── core/          # 10 built-in steps: http, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
-│   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the vein-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus two vein-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
+│   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus two strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
 │   ├── ai/                # AI workflow-builder backend (used by POST /chat)
 │   │   ├── index.ts       # barrel export
@@ -63,18 +63,18 @@ vein/
 │   │   └── schemaHelpers.ts # Zod → FieldDesc[] (for get_step schema rendering)
 │   ├── audio/             # speech-to-text over sherpa-onnx (plans/local-desktop-and-stt.md §4). Streaming dictation is the product surface; workflows learn AROUND it (hotword lists, "dream cycles" §4.8), no STT step in v1
 │   │   ├── stt.ts         # createStt(): model download+verify, recognizer cache, streams (PCM in → partial/final out), two-recognizer mode (fast greedy partials + hotword-capable finals), batch transcribe; sherpa is an optionalDependency, lazy-imported, fakeable via `engine`
-│   │   ├── models.ts      # catalog: id → release URL + sha256 + chunk latency + hotwords?; VEIN_MODEL_DIR/stt/<id>
+│   │   ├── models.ts      # catalog: id → release URL + sha256 + chunk latency + hotwords?; STRUT_MODEL_DIR/stt/<id>
 │   │   ├── hotwords.ts    # contextual biasing: list format, synthesized bpe.vocab from tokens.txt (REQUIRED with modelingUnit "bpe" — unset = cjkchar = silent no-op), named lists under <dataDir>/audio/hotwords
 │   │   ├── sessions.ts    # <dataDir>/audio/sessions/<id>.jsonl: finals + user corrections (the dream cycle's training data)
 │   │   ├── ws.ts          # GET /audio/stream WebSocket (raw `ws` on the Node server — @hono/node-ws doesn't support node-server 2.x); Bearer or ?key=
 │   │   └── routes.ts      # /audio/models (+ SSE download), /audio/transcribe (WAV body), /audio/hotwords/:name, /audio/sessions/:id (+ corrections)
 │   ├── graph/             # jarvis-compatible Neo4j graph backend over bolt, no jarvis in the loop (plans/jarvis-graph-compat.md). Opt-in via openGraphBackend
 │   │   ├── bolt.ts        # neo4j-driver wrapper; int() for Integer writes (plain JS numbers write as FLOAT)
-│   │   ├── vein-schemas.ts# the 9 Vein node types + 14-row edge registry (label registry in plans/generic-storage.md); author-time checks
+│   │   ├── strut-schemas.ts# the 9 Strut node types + 14-row edge registry (label registry in plans/generic-storage.md); author-time checks
 │   │   ├── schema-seed.ts # idempotent domain registration: Thing root, Schema nodes, CHILD_OF, constraints, vector/fulltext indexes, migration stamp
 │   │   ├── node-writer.ts # §6 validation gate + node_key composition + Data_Bank + MERGE (create/upsert/restore/update), UNWIND batches
 │   │   ├── edge-writer.ts # edge MERGE by ref_id with IS_ALIAS rewrite (ON CREATE only); closed (source, edge, target) registry; update() = jarvis PATCH /v2/edges/:ref_id (stamps protected)
-│   │   ├── schema-crud.ts # createNodeSchema(): register a non-Vein node type like jarvis POST /v2/schema (parent, attribute grammar, node_key, CHILD_OF, constraint) or add-only extend an existing one
+│   │   ├── schema-crud.ts # createNodeSchema(): register a non-Strut node type like jarvis POST /v2/schema (parent, attribute grammar, node_key, CHILD_OF, constraint) or add-only extend an existing one
 │   │   ├── embeddings.ts  # local all-MiniLM-L6-v2 via transformers.js, tokenized like sentence-transformers (256 incl. specials); NULL-scan backfill
 │   │   ├── search.ts      # the read surface: hybrid search (RRF + title boost + usage tiebreak), get/neighbors/counts, ontology, namespaces
 │   │   ├── backend.ts     # openGraphBackend(): cached per config; runs seed + backfill on first open
@@ -116,86 +116,86 @@ vein/
 
 ```bash
 # Engine
-cd vein
+cd strut
 npm install
 npm test                    # 622 tests, ~1s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
-# Skipped entirely when VEIN_TEST_NEO4J_URI is unset. Add
-# VEIN_TEST_EMBEDDINGS=1 to also run the real-model parity case (downloads
-# ~90MB of ONNX weights into ~/.cache/vein-models on first run).
-docker run -d --name vein-neo4j-test -p 7688:7687 -e NEO4J_AUTH=neo4j/veintest neo4j:5
-VEIN_TEST_NEO4J_URI=bolt://localhost:7688 VEIN_TEST_NEO4J_PASSWORD=veintest npm run test:graph
+# Skipped entirely when STRUT_TEST_NEO4J_URI is unset. Add
+# STRUT_TEST_EMBEDDINGS=1 to also run the real-model parity case (downloads
+# ~90MB of ONNX weights into ~/.cache/strut-models on first run).
+docker run -d --name strut-neo4j-test -p 7688:7687 -e NEO4J_AUTH=neo4j/struttest neo4j:5
+STRUT_TEST_NEO4J_URI=bolt://localhost:7688 STRUT_TEST_NEO4J_PASSWORD=struttest npm run test:graph
 
 # Speech-to-text live test — needs the sherpa addon (optionalDependency,
 # installed by `npm install` on supported platforms) and downloads the 57 MB
-# kroko model into VEIN_TEST_STT_MODEL_DIR (temp dir when unset).
-VEIN_TEST_STT=1 npm run test:stt
+# kroko model into STRUT_TEST_STT_MODEL_DIR (temp dir when unset).
+STRUT_TEST_STT=1 npm run test:stt
 
 # Web UI (dev mode with HMR)
-cd vein/web
+cd strut/web
 npm install
 npm run dev                 # Vite on :5173, proxies API to :3000
 
 # Web UI (production build, served by engine)
-cd vein/web && npm run build  # outputs web/dist/
-cd vein && npm run dev        # serves API + UI on :3000
+cd strut/web && npm run build  # outputs web/dist/
+cd strut && npm run dev        # serves API + UI on :3000
 ```
 
 ## Environment
 
 | Variable            | Default        | Description                          |
 | ------------------- | -------------- | ------------------------------------ |
-| `VEIN_WORKSPACE`    | `./workspace`  | Persistent volume for workflows/runs |
-| `VEIN_PORT`         | `3000`         | HTTP server port. `0` lets the OS pick; `listen()` resolves to the bound port and prints `{"event":"ready","port":N,"host":…}` on stdout for a host process to parse. |
-| `VEIN_HOST`         | (all interfaces) | Bind address. A desktop host passes `127.0.0.1` to keep a local vein off the LAN. |
-| `VEIN_WEB_DIST`     | `<module>/../web/dist` | Where the built UI is served from, for packagers that relocate it. |
-| `VEIN_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
-| `VEIN_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
-| `VEIN_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
-| `VEIN_LLM_MODEL`    | (per-provider) | Override model name                  |
-| `VEIN_CHAT_MODEL`   | `claude-sonnet-5` | Anthropic model for the AI-builder chat agent |
-| `VEIN_CHAT_MAX_STEPS` | `30`         | Max agent tool-call iterations per chat turn |
-| `VEIN_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
-| `VEIN_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |
-| `VEIN_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
-| `VEIN_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
+| `STRUT_WORKSPACE`    | `./workspace`  | Persistent volume for workflows/runs |
+| `STRUT_PORT`         | `3000`         | HTTP server port. `0` lets the OS pick; `listen()` resolves to the bound port and prints `{"event":"ready","port":N,"host":…}` on stdout for a host process to parse. |
+| `STRUT_HOST`         | (all interfaces) | Bind address. A desktop host passes `127.0.0.1` to keep a local strut off the LAN. |
+| `STRUT_WEB_DIST`     | `<module>/../web/dist` | Where the built UI is served from, for packagers that relocate it. |
+| `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
+| `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
+| `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
+| `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
+| `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Anthropic model for the AI-builder chat agent |
+| `STRUT_CHAT_MAX_STEPS` | `30`         | Max agent tool-call iterations per chat turn |
+| `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
+| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |
+| `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
+| `STRUT_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
-| `VEIN_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Vein node is written into |
-| `VEIN_GRAPH_EMBEDDINGS` | (on)       | `off` disables the local MiniLM embedder (vectors stay NULL; search is fulltext-only) |
-| `VEIN_GRAPH_SEED_ONTOLOGY` | (off)   | `1` seeds the bundled jarvis ontology (151 schemas + edge schemas + indexes, add-only) on first open, so a standalone Neo4j can host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis process. No-op on a jarvis-seeded DB. |
-| `VEIN_MODEL_DIR`    | `~/.cache/vein-models` | Local model files: MiniLM's ONNX cache and STT models under `stt/<id>/`. `VEIN_MODEL_CACHE` is the older alias. |
-| `VEIN_STT_MODEL`    | `zipformer-en-kroko` | Finals recognizer for `/audio/stream` + `/audio/transcribe` (hotword-capable) |
-| `VEIN_STT_PARTIAL_MODEL` | `nemo-fast-conformer-en-80ms` | Fast greedy recognizer whose output is shown as live partials; `off` for single-recognizer streams |
+| `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
+| `STRUT_GRAPH_EMBEDDINGS` | (on)       | `off` disables the local MiniLM embedder (vectors stay NULL; search is fulltext-only) |
+| `STRUT_GRAPH_SEED_ONTOLOGY` | (off)   | `1` seeds the bundled jarvis ontology (151 schemas + edge schemas + indexes, add-only) on first open, so a standalone Neo4j can host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis process. No-op on a jarvis-seeded DB. |
+| `STRUT_MODEL_DIR`    | `~/.cache/strut-models` | Local model files: MiniLM's ONNX cache and STT models under `stt/<id>/`. `STRUT_MODEL_CACHE` is the older alias. |
+| `STRUT_STT_MODEL`    | `zipformer-en-kroko` | Finals recognizer for `/audio/stream` + `/audio/transcribe` (hotword-capable) |
+| `STRUT_STT_PARTIAL_MODEL` | `nemo-fast-conformer-en-80ms` | Fast greedy recognizer whose output is shown as live partials; `off` for single-recognizer streams |
 
 ## Auth
 
-`VEIN_API_KEY` is a **deployment-scoped shared secret**. Set it on every
-container in the compose (vein and any service that registers steps).
+`STRUT_API_KEY` is a **deployment-scoped shared secret**. Set it on every
+container in the compose (strut and any service that registers steps).
 
 - **Unset (dev mode):** registration mutations (`POST /steps`,
   `DELETE /steps/:name`, `DELETE /steps?publisher=X`) are unauthenticated.
-  Vein logs a one-time warning at boot so the lax posture is visible.
+  Strut logs a one-time warning at boot so the lax posture is visible.
   `GET /steps` and workflow execution are always public.
 - **Set (production):** the gated endpoints require
-  `Authorization: Bearer <VEIN_API_KEY>`. Anything else returns `401`.
+  `Authorization: Bearer <STRUT_API_KEY>`. Anything else returns `401`.
   The web UI attaches the key to every request once it has one: a host
-  that spawns vein hands it over as `?key=` on the first page load (stored
+  that spawns strut hands it over as `?key=` on the first page load (stored
   in `sessionStorage`, stripped from the URL), or a user pastes it under
   Settings → Connection (`localStorage`). The dictation WebSocket sends it
   as `?key=`, since browsers can't set headers on an upgrade.
 
 The same secret authenticates **both directions** within a deployment:
 
-1. Mcp → vein: registers steps with `Authorization: Bearer $VEIN_API_KEY`.
-2. Step files inside vein → mcp: read `process.env.VEIN_API_KEY` and send
+1. Mcp → strut: registers steps with `Authorization: Bearer $STRUT_API_KEY`.
+2. Step files inside strut → mcp: read `process.env.STRUT_API_KEY` and send
    it on callbacks to `mcp/gitree/cmd` (mcp validates the same value).
 
 This is sufficient when both services live in the same trust domain
 (same compose, same private network). Per-publisher keys can be added
 later without breaking this contract — they'd be additive env vars
-(`VEIN_API_KEY_<NAMESPACE>`) checked in addition to the shared key.
+(`STRUT_API_KEY_<NAMESPACE>`) checked in addition to the shared key.
 
 ## Secrets
 
@@ -206,20 +206,20 @@ instead of baked into env at deploy time.
 
 - **Store:** `SecretStore` interface (parallel to `RunStore`/`ChatStore`).
   Default `FileSecretStore` persists `<workspace>/secrets.json`, **encrypted at
-  rest** (AES-256-GCM, key derived from `VEIN_SECRET_KEY`). `MemorySecretStore`
+  rest** (AES-256-GCM, key derived from `STRUT_SECRET_KEY`). `MemorySecretStore`
   for tests / in-memory deployments. The default `secrets` capability reads the
   store first, then falls back to `process.env` (so existing env-provided keys
-  keep working). Injectable via `createVein({ secretStore })`.
+  keep working). Injectable via `createStrut({ secretStore })`.
 
-- **Scope is deployment-global**, NOT per-user — matching the `VEIN_API_KEY`
-  single-trust-domain model. (Per-user secrets would need an identity model vein
+- **Scope is deployment-global**, NOT per-user — matching the `STRUT_API_KEY`
+  single-trust-domain model. (Per-user secrets would need an identity model strut
   doesn't have.)
 
-- **Endpoints** (gated by `VEIN_API_KEY`, permissive in dev): `GET /secrets`
+- **Endpoints** (gated by `STRUT_API_KEY`, permissive in dev): `GET /secrets`
   returns **names + metadata only — never values** (write-only credentials);
   `PUT /secrets/:name { value }` creates/overwrites; `DELETE /secrets/:name`.
   If the consumer injects their own `services.secrets`, these return **501**
-  (vein doesn't own that store).
+  (strut doesn't own that store).
 
 - **UI:** the topbar **Secrets** button opens `SecretsDialog` — list (names +
   "updated" date), add (name + value, value can be multi-line e.g. a
@@ -227,7 +227,7 @@ instead of baked into env at deploy time.
   browser. The UI assumes dev / same-trust-domain (no `Authorization` header),
   exactly like the existing `/steps` mutations.
 
-- **`VEIN_SECRET_KEY`:** set it in production. Unset → values are encrypted with
+- **`STRUT_SECRET_KEY`:** set it in production. Unset → values are encrypted with
   a fixed dev key and a one-time warning logs (obfuscation, not real security).
 
 - **AI builder access:** the chat agent has a read-only `list_secrets` tool
@@ -240,7 +240,7 @@ instead of baked into env at deploy time.
   (no expiry, no refresh) — far simpler than an OAuth flow for a server-side
   engine. If interactive per-end-user OAuth is ever needed, the **host app**
   (mcp) should own the OAuth dance and deposit/refresh tokens *into* this store;
-  vein's `secrets` capability stays generic and provider-agnostic.
+  strut's `secrets` capability stays generic and provider-agnostic.
 
 ## Lib step credentials
 
@@ -253,7 +253,7 @@ const token = cfg.token ?? (await ctx?.services?.secrets?.get("GITHUB_TOKEN"));
 
 - **`cfg.<field>` wins** (a workflow can pass a token via `{{ input.x }}`),
   otherwise fall through to the managed secret store / env.
-- Type `ctx` as `StepContext<VeinCapabilities>` (import both from the relative
+- Type `ctx` as `StepContext<StrutCapabilities>` (import both from the relative
   `core.js` / `capabilities.js`) so `ctx.services.secrets` is typed. Use
   optional chaining — a bare `runWorkflow` without a services bag has no
   `secrets`.
@@ -268,7 +268,7 @@ const token = cfg.token ?? (await ctx?.services?.secrets?.get("GITHUB_TOKEN"));
 `ctx.services.artifacts` (`ArtifactsCapability`, `capabilities.ts`) is per-run
 file storage for the files a run produces that later steps — and humans —
 reference. Backed by `fileArtifactsCapability` rooted at
-`<workspace>/artifacts/<runId>/`, auto-injected by `createVein` (a consumer
+`<workspace>/artifacts/<runId>/`, auto-injected by `createStrut` (a consumer
 services bag can override it, same as `http`/`secrets`).
 
 - **Convention:** a step writes a file (`write(ctx.runId, relPath, content)`)
@@ -287,12 +287,12 @@ services bag can override it, same as `http`/`secrets`).
 
 ## Key concepts
 
-- **`createVein()` is the primary entry point** (`src/createVein.ts`).
+- **`createStrut()` is the primary entry point** (`src/createStrut.ts`).
   It builds a configured instance — Hono `app`, `workspace`, `store`,
   `services`, plus `run()`/`listen()`/`rebuildRegistry()` helpers — and
   mounts every route (`/workflows`, `/steps`, `/secrets`, `/chat` +
   `/chats`, `/health`, static UI). Everything is injectable via
-  `VeinOptions`: pass your own `workspace` (any `WorkspaceStore`),
+  `StrutOptions`: pass your own `workspace` (any `WorkspaceStore`),
   `registry` (disables step discovery + publishing), `store` (e.g.
   `MemoryRunStore`), `chatStore`, `secretStore`, `services` bag,
   `dataDir`, or toggle `serveUi`/`enableChat`.
@@ -308,34 +308,34 @@ services bag can override it, same as `http`/`secrets`).
   capability is gated on a concrete class. `storage-conformance.test.ts`
   is the boundary's spec — a new backend passes by running it.
   **Graph backend:** `Neo4jWorkspaceStore` (`src/graph/workspace-store.ts`)
-  keeps workflows/steps as `VeinWorkflow`/`VeinWorkflowVersion`/`VeinStep`/
-  `VeinStepVersion` nodes (content-addressed versions; soft deletes;
+  keeps workflows/steps as `StrutWorkflow`/`StrutWorkflowVersion`/`StrutStep`/
+  `StrutStepVersion` nodes (content-addressed versions; soft deletes;
   `USES_STEP`/`DEPENDS_ON` edges) and passes the same conformance suite
   (`npm run test:graph`, live). It is the default server's workspace
   (`src/graph/wiring.ts`; connection from `NEO4J_URI` / `NEO4J_HOST` /
   `NEO4J_USER` / `NEO4J_PASSWORD`, defaulting to localhost:7687 / neo4j /
   testtest like the mcp host — so Neo4j is a boot dependency);
-  `VEIN_WORKSPACE_BACKEND=fs` opts back into the file workspace. Runs/chats stay in
+  `STRUT_WORKSPACE_BACKEND=fs` opts back into the file workspace. Runs/chats stay in
   their stores; `src/graph/projector.ts` (or the `graph/project` step)
-  projects them into `VeinRun`/`VeinAgentSession`/`VeinToolCall`/
-  `VeinChat`/`VeinTurn` with `EXECUTED`/`IN_RUN`/`IN_SESSION`/`SPAWNED`/
+  projects them into `StrutRun`/`StrutAgentSession`/`StrutToolCall`/
+  `StrutChat`/`StrutTurn` with `EXECUTED`/`IN_RUN`/`IN_SESSION`/`SPAWNED`/
   `IN_CHAT` edges — summaries + `log_ref` pointers, never payloads,
   idempotent upserts. **Provenance convention:** a graph-touching step
   marks its output with `withAccessedNodes(output, [{ ref_id, node_type? }])`
   (`core.ts`; a non-enumerable marker — invisible to the model, `{{ }}`
   expressions, and JSON). `wrapToolsWithEmit` lifts it onto the tool call's
   `step.end` event as `nodes`, untruncated, and the projector writes one
-  `ACCESSED` edge per ref the graph holds (`VeinToolCall → any node`). Every
+  `ACCESSED` edge per ref the graph holds (`StrutToolCall → any node`). Every
   `graph/*` (and mcp `jarvis/*`) node-touching step does this; a step that
   reports nothing gets no edges — never inferred from prose.
   `server.ts` is a thin wrapper (`getApp`/`startServer`) over
-  `createVein()` — graph workspace by default, file stores for the rest.
+  `createStrut()` — graph workspace by default, file stores for the rest.
 
 - **`services` bag** is a consumer-defined capabilities object exposed to
   every step via `ctx.services` (typed by `defineStep`, untyped at
   runtime). Inject env-specific implementations (Neo4j vs in-memory,
   real vs fake LLM) without touching workflows or the registry. Threaded
-  through `createVein({ services })` / `vein.run(wf, input, { services })`
+  through `createStrut({ services })` / `strut.run(wf, input, { services })`
   / `runWorkflow(flow, input, registry, { services })`.
   - **`services.onRunEnd(runId)`** — an OPTIONAL generic per-run teardown
     hook the runner calls in a `finally` around `executeFlow` in
@@ -481,7 +481,7 @@ services bag can override it, same as `http`/`secrets`).
   background-job model, `EVAL_SPEC.md` §8). `POST /workflows/:name/run`
   (and `/:version/run`) does **not** stream — it kicks off
   `runWorkflow` **without awaiting it in the request** (`launchDetached`
-  in `createVein.ts`) and returns `{ runId }` (202) immediately. The
+  in `createStrut.ts`) and returns `{ runId }` (202) immediately. The
   run executes server-side and persists every event to the
   append-only `events.jsonl`; its liveness is decoupled from any
   connection (closing the client, proxy timeouts, etc. can't kill it).
@@ -500,7 +500,7 @@ services bag can override it, same as `http`/`secrets`).
   getRunSummary/getRunEvents/tailEvents/lastRunAt): no endpoint
   capability-gates on the concrete class. A backend without a native
   tail delegates `tailEvents` to `tailFromPolling` (re-read + index
-  cursor) — `MemoryRunStore` does, so memory-mode vein has run history,
+  cursor) — `MemoryRunStore` does, so memory-mode strut has run history,
   SSE reattach, durable resume, and promotions. **Crash caveat:** in-flight *execution* is in-memory, so a
   crash mid-run loses the remaining work (the log up to the crash
   survives); true resume is a later add. The web UI's
@@ -510,7 +510,7 @@ services bag can override it, same as `http`/`secrets`).
 
 - **Run control** (`RUN_CONTROL_SPEC.md`, `src/run-control.ts` +
   `src/journal.ts`). Every launch site registers a `RunController`
-  (createVein's `trackRun` — superseding the old `activeRuns` set); nested
+  (createStrut's `trackRun` — superseding the old `activeRuns` set); nested
   launches attach to the parent's controller via `parentRunId` (set by
   meta/run-workflow + the lab's optimizer from `ctx.runId`), so
   cancel/pause apply to WHOLE SUBTREES. All control is cooperative: the
@@ -599,7 +599,7 @@ services bag can override it, same as `http`/`secrets`).
   is missing. Deliberately **read-only**: the agent has no
   set/delete — writing a value through the model would defeat the
   write-only design, and adding a secret is a human action. Wired only
-  when vein owns the secret store (absent when the consumer injected
+  when strut owns the secret store (absent when the consumer injected
   their own `services.secrets`; the tool then returns an error).
 
 - **Chat is a detached background job** (`src/chat-store.ts`), NOT a
@@ -627,9 +627,9 @@ services bag can override it, same as `http`/`secrets`).
   and `FileChatStore`). `messages.jsonl` stays lossless on disk;
   `truncateToolMessages` trims long `role:"tool"` results only in the
   copy re-fed to the model on LATER turns (token hygiene for long
-  autonomous loops; env `VEIN_CHAT_TOOL_RESULT_MAX_CHARS`, default 50000,
+  autonomous loops; env `STRUT_CHAT_TOOL_RESULT_MAX_CHARS`, default 50000,
   `0` disables).
-  `chatMaxSteps` (env `VEIN_CHAT_MAX_STEPS`, default 30) bounds the
+  `chatMaxSteps` (env `STRUT_CHAT_MAX_STEPS`, default 30) bounds the
   per-turn agent loop. The browser (`web/src/api.ts`: `sendChat` +
   `streamChat` + `getChat`) persists the active `chatId` in
   localStorage and reattaches to a still-live turn on reopen.
@@ -637,7 +637,7 @@ services bag can override it, same as `http`/`secrets`).
 - **Dispatch-mode `run_workflow` + run notifications**
   (`src/ai/notifier.ts`, `plans/dispatch-run-notifications.md`). The chat
   agent's `run_workflow` tool races the run against a wait window
-  (`chatRunWaitMs`, env `VEIN_CHAT_RUN_WAIT_MS`, default 60s): a fast run
+  (`chatRunWaitMs`, env `STRUT_CHAT_RUN_WAIT_MS`, default 60s): a fast run
   returns synchronously as before; a run that outlives the window converts
   to DETACHED — the tool returns a `{ status: "running", detached: true,
   runId }` stub (a well-formed tool RESULT, so `messages.jsonl` never has a
@@ -652,7 +652,7 @@ services bag can override it, same as `http`/`secrets`).
   notifications die with the process, same crash posture as runs). Runaway
   guard: `ChatMeta.autoTurns` counts consecutive machine-triggered turns
   since the last human message (`POST /chat` resets it); at
-  `chatMaxAutoTurns` (env `VEIN_CHAT_MAX_AUTO_TURNS`, default 10) the chat
+  `chatMaxAutoTurns` (env `STRUT_CHAT_MAX_AUTO_TURNS`, default 10) the chat
   PARKS — notifications still append to the transcript but no turn
   launches until a human replies. The seam is `AiDeps.detach` (absent →
   the tool awaits to completion, unchanged for tests/embedders). The
@@ -737,8 +737,8 @@ services bag can override it, same as `http`/`secrets`).
 - **`system-canvas` is a sibling library** at
   `/Users/evanfeenstra/code/sphinx2/system-canvas` (its own repo,
   published to npm in lockstep as `system-canvas` +
-  `system-canvas-react`). vein consumes the **published** version
-  (`web/package.json`). Features vein relies on: `node.ref` +
+  `system-canvas-react`). strut consumes the **published** version
+  (`web/package.json`). Features strut relies on: `node.ref` +
   `externalNavigation` (ref click fires `onNavigate` only, no
   internal drill), per-node/category `refCorner`, category `slots`.
   To land a lib change: edit the lib, `npm run build`, push to
@@ -806,16 +806,16 @@ export default defineStep({
 ```
 
 **Why.** `loadStepsFrom(LIB_DIR)` does `await import()` on *every* lib
-file at registry-build time (which `createVein()` does eagerly at
+file at registry-build time (which `createStrut()` does eagerly at
 construction). A **top-level** `import` of an SDK therefore loads that
 SDK at startup for **every** consumer — even ones that never use the
 step. Moving the SDK import into `run()` keeps registry-build cheap (only
 schema + metadata execute), so the SDK only loads the first time its step
 actually runs. This is the "monolith, lazy-loaded" model (same shape as
-n8n's node catalog): all adapter code ships in vein, but unused SDKs are
+n8n's node catalog): all adapter code ships in strut, but unused SDKs are
 never *loaded* — though they are still *installed* in `node_modules`
 (an in-tree integration's deps are unavoidably listed in
-`vein/package.json`). If install footprint ever becomes the problem,
+`strut/package.json`). If install footprint ever becomes the problem,
 split heavy adapters into companion packages registered via
 `createRegistry([...])`; the lazy-in-`run()` pattern is forward-compatible
 with that move.
@@ -825,9 +825,9 @@ with that move.
    default export. Use a `<namespace>/<name>` type (e.g. `slack/post-message`).
 2. Keep ALL `import`s at the top light (zod, core, sibling `_helpers`).
    `await import()` every third-party SDK inside `run()`.
-3. Add the SDK to `vein/package.json` dependencies.
+3. Add the SDK to `strut/package.json` dependencies.
 4. Read credentials via `cfg.<field> ?? await ctx?.services?.secrets?.get("NAME")`
-   (type `ctx` as `StepContext<VeinCapabilities>`) — never `process.env`
+   (type `ctx` as `StepContext<StrutCapabilities>`) — never `process.env`
    directly. See "Lib step credentials".
 5. Shared helpers go in a leading-underscore file (`lib/<ns>/_shared.ts`) —
    imported by siblings, skipped by registry discovery.
@@ -838,7 +838,7 @@ with that move.
 
 ## When adding an API endpoint
 
-1. Add the route in `src/createVein.ts` (inside the `createVein()`
+1. Add the route in `src/createStrut.ts` (inside the `createStrut()`
    factory, where all routes are mounted). Watch route ordering —
    specific paths like `/workflows/:name/flow` must come BEFORE
    catch-all params like `/workflows/:name/:version`.
@@ -862,10 +862,10 @@ with that move.
   canvas clicks pass through for node-to-node transitions).
 - Rebuild with `cd web && npm run build` before testing against the
   engine server.
-- vein is also embedded by **mcp** under `/lab` (it consumes vein as a
-  copied `file:../vein` dep, UI bundled into `web/dist`). After a web
-  change, `mcp`'s `yarn dev` runs `refresh-vein` (rebuild vein + web,
+- strut is also embedded by **mcp** under `/lab` (it consumes strut as a
+  copied `file:../strut` dep, UI bundled into `web/dist`). After a web
+  change, `mcp`'s `yarn dev` runs `refresh-strut` (rebuild strut + web,
   reinstall into mcp) before starting on `:3355` — so changes only reach
   `/lab` after that, not on a bare vite rebuild. (The refresh is **skipped
-  when `$CI` is set** — CI installs/builds vein separately and doesn't have
+  when `$CI` is set** — CI installs/builds strut separately and doesn't have
   `web/` deps, so running `vite` there would fail.)

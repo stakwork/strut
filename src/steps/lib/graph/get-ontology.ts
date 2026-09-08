@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 /** Same reduction as jarvis/get-ontology: filter "*"/deleted schemas, group
  *  node types by (lowercased) domain ("ungrouped" for null), derive the
@@ -53,11 +53,11 @@ function buildOntologyPayload(schemaData: any, includeEdges: boolean, includeAtt
 export default defineStep({
   type: "graph/get-ontology",
   description:
-    "Fetch the ontology of the vein knowledge graph: node types grouped by domain " +
+    "Fetch the ontology of the strut knowledge graph: node types grouped by domain " +
     "and the canonical list of valid `domains`. " +
     "Call this once before graph_graph_search to discover valid values for both the `type` and `domains` parameters. " +
     "Node types are grouped by domain key in `node_types[<domain>]`; types with no domain land in the `ungrouped` bucket. " +
-    "Pass `domains` to filter results (comma-separated, e.g. 'Vein,Entity'); omit to receive all domains. " +
+    "Pass `domains` to filter results (comma-separated, e.g. 'Strut,Entity'); omit to receive all domains. " +
     "Relationship edges are omitted by default — graph_graph_neighbors returns edge types live as you traverse. " +
     "Set `include_edges` to also get the full relationship map (source_type -> target_type triples). " +
     "Set `include_attributes` to also get each node type's attribute schema (field names, types, required/optional status). " +
@@ -69,7 +69,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        "Comma-separated list of domains to filter results to (e.g. 'Vein,Entity'). " +
+        "Comma-separated list of domains to filter results to (e.g. 'Strut,Entity'). " +
         "Omit to receive node types from all domains. Matched case-insensitively.",
       ),
     include_edges: z
@@ -92,7 +92,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const domains = cfg.domains?.split(",").map((d) => d.trim()).filter(Boolean);
       const data = await b.reader.listSchemas(domains && domains.length ? { domains } : {});
       return buildOntologyPayload(data, cfg.include_edges ?? false, cfg.include_attributes ?? false);

@@ -1,25 +1,25 @@
 /**
  * Helpers for graph tests that need a live Neo4j.
  *
- * Tests are opt-in: they run only when `VEIN_TEST_NEO4J_URI` is set, and
+ * Tests are opt-in: they run only when `STRUT_TEST_NEO4J_URI` is set, and
  * they WIPE that database between cases — point it at a throwaway
  * container, never at a jarvis instance. Example:
  *
- *   docker run -d --name vein-neo4j-test -p 7688:7687 \
- *     -e NEO4J_AUTH=neo4j/veintest neo4j:5
- *   VEIN_TEST_NEO4J_URI=bolt://localhost:7688 VEIN_TEST_NEO4J_PASSWORD=veintest \
+ *   docker run -d --name strut-neo4j-test -p 7688:7687 \
+ *     -e NEO4J_AUTH=neo4j/struttest neo4j:5
+ *   STRUT_TEST_NEO4J_URI=bolt://localhost:7688 STRUT_TEST_NEO4J_PASSWORD=struttest \
  *     npm run test:graph
  */
 import { Bolt, type GraphConfig } from "./bolt.js";
 
 export function testGraphConfig(): GraphConfig | null {
-  const uri = process.env["VEIN_TEST_NEO4J_URI"];
+  const uri = process.env["STRUT_TEST_NEO4J_URI"];
   if (!uri) return null;
   return {
     uri,
-    user: process.env["VEIN_TEST_NEO4J_USER"] ?? "neo4j",
-    password: process.env["VEIN_TEST_NEO4J_PASSWORD"] ?? "",
-    namespace: process.env["VEIN_TEST_NEO4J_NAMESPACE"] ?? "default",
+    user: process.env["STRUT_TEST_NEO4J_USER"] ?? "neo4j",
+    password: process.env["STRUT_TEST_NEO4J_PASSWORD"] ?? "",
+    namespace: process.env["STRUT_TEST_NEO4J_NAMESPACE"] ?? "default",
   };
 }
 

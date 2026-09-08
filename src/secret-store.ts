@@ -6,14 +6,14 @@
  * UI / API create, list, and delete the values that boundary serves.
  *
  * Scope is deployment-global (one store per workspace), matching the
- * `VEIN_API_KEY` single-trust-domain model — NOT per-user. The mutating
- * endpoints are gated by `VEIN_API_KEY` (see `createVein.ts`).
+ * `STRUT_API_KEY` single-trust-domain model — NOT per-user. The mutating
+ * endpoints are gated by `STRUT_API_KEY` (see `createStrut.ts`).
  *
  * **At-rest encryption.** Values are encrypted with AES-256-GCM using a key
- * derived (scrypt) from `VEIN_SECRET_KEY`. A random per-file salt is stored
- * in the header. Without `VEIN_SECRET_KEY` set, a fixed dev passphrase is
+ * derived (scrypt) from `STRUT_SECRET_KEY`. A random per-file salt is stored
+ * in the header. Without `STRUT_SECRET_KEY` set, a fixed dev passphrase is
  * used and a one-time warning is logged — the on-disk file is then only
- * obfuscated, not meaningfully protected. Set `VEIN_SECRET_KEY` in any real
+ * obfuscated, not meaningfully protected. Set `STRUT_SECRET_KEY` in any real
  * deployment.
  */
 
@@ -71,8 +71,8 @@ export function assertValidSecretName(name: string): void {
 
 // ── encryption helpers ───────────────────────────────────────────────────
 
-const ENV_KEY = "VEIN_SECRET_KEY";
-const DEV_PASSPHRASE = "vein-insecure-dev-key";
+const ENV_KEY = "STRUT_SECRET_KEY";
+const DEV_PASSPHRASE = "strut-insecure-dev-key";
 let warnedNoKey = false;
 
 function passphrase(): string {
@@ -81,7 +81,7 @@ function passphrase(): string {
   if (!warnedNoKey) {
     warnedNoKey = true;
     console.warn(
-      `[vein] ${ENV_KEY} is not set — secrets are stored with a default key (obfuscated, NOT securely encrypted). Set ${ENV_KEY} in production.`,
+      `[strut] ${ENV_KEY} is not set — secrets are stored with a default key (obfuscated, NOT securely encrypted). Set ${ENV_KEY} in production.`,
     );
   }
   return DEV_PASSPHRASE;

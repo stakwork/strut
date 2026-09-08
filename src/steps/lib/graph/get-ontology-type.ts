@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 export default defineStep({
   type: "graph/get-ontology-type",
@@ -14,12 +14,12 @@ export default defineStep({
     "Lookup is case-insensitive. NODE types only — edge type names (e.g. 'IN_RUN') are not " +
     "schema nodes. Call graph_get_ontology first if you don't already know the exact type name.",
   input: z.object({
-    type: z.string().describe("The node type name, e.g. 'VeinRun' (case-insensitive)."),
+    type: z.string().describe("The node type name, e.g. 'StrutRun' (case-insensitive)."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const schema = await b.reader.getSchema(cfg.type);
       if (!schema) return `graph/get-ontology-type: unknown type ${cfg.type}`;
       return { attributes: schema.attributes };

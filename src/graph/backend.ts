@@ -1,10 +1,11 @@
 /**
- * The vein graph backend as one object: a bolt connection plus the writers,
+ * The strut graph backend as one object: a bolt connection plus the writers,
  * the reader, and (optionally) the local embedder — opened once per
  * config and cached, with the boot-time obligations run on open:
  *
- *   1. `seedVeinDomain` — schema meta-graph, constraints, indexes (§4);
- *   2. `backfillEmbeddings` — heal any NULL vectors left by a crash (§2).
+ *   1. `migrateVeinToStrut` — one-shot rename of pre-#1664 `Vein*` names;
+ *   2. `seedStrutDomain` — schema meta-graph, constraints, indexes (§4);
+ *   3. `backfillEmbeddings` — heal any NULL vectors left by a crash (§2).
  *
  * Consumers (the `graph/*` lab steps, a future `Neo4jWorkspaceStore` and
  * run projector) call `openGraphBackend(cfg)` and share the instance.
@@ -15,8 +16,9 @@ import { MiniLMEmbedder, backfillEmbeddings, type BackfillReport } from "./embed
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
-import { seedVeinDomain, type SeedReport } from "./schema-seed.js";
+import { seedStrutDomain, type SeedReport } from "./schema-seed.js";
 import { GraphReader } from "./search.js";
+import { migrateVeinToStrut, type VeinMigrationReport } from "./vein-migration.js";
 
 export interface GraphBackendOptions {
   /** `false` disables embeddings entirely (vectors stay NULL, search is
@@ -28,7 +30,7 @@ export interface GraphBackendOptions {
   /** Also seed the bundled jarvis ontology (`fixtures/jarvis-ontology.ts`)
    *  — add-only, a no-op on a jarvis-seeded DB — so a standalone Neo4j can
    *  host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis
-   *  process. Env: `VEIN_GRAPH_SEED_ONTOLOGY=1`. */
+   *  process. Env: `STRUT_GRAPH_SEED_ONTOLOGY=1`. */
   seedOntology?: boolean;
 }
 
@@ -43,6 +45,7 @@ export interface GraphBackend {
   readonly embedder: Embedder | undefined;
   /** What the boot-time seed did (undefined when skipped). */
   readonly seed: SeedReport | undefined;
+  readonly veinMigration: VeinMigrationReport | undefined;
   readonly ontologySeed: OntologySeedReport | undefined;
   readonly backfill: BackfillReport | undefined;
   close(): Promise<void>;
@@ -74,15 +77,15 @@ export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {
 }
 
 /** `openGraphBackend` from `NEO4J_URI`/`NEO4J_USER`/`NEO4J_PASSWORD`/
- *  `VEIN_GRAPH_NAMESPACE`; null when `NEO4J_URI` is unset. */
+ *  `STRUT_GRAPH_NAMESPACE`; null when `NEO4J_URI` is unset. */
 export function openGraphBackendFromEnv(
   env: Record<string, string | undefined> = process.env,
   opts: GraphBackendOptions = {},
 ): Promise<GraphBackend> | null {
   const cfg = graphConfigFromEnv(env);
   if (!cfg) return null;
-  const emb = env["VEIN_GRAPH_EMBEDDINGS"];
-  const ont = env["VEIN_GRAPH_SEED_ONTOLOGY"];
+  const emb = env["STRUT_GRAPH_EMBEDDINGS"];
+  const ont = env["STRUT_GRAPH_SEED_ONTOLOGY"];
   return openGraphBackend(cfg, {
     ...opts,
     embeddings: opts.embeddings ?? (emb === "off" || emb === "0" || emb === "false" ? false : true),
@@ -104,13 +107,22 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
     const embedder: Embedder | undefined =
       opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await MiniLMEmbedder.load();
     let seed: SeedReport | undefined;
+    let veinMigration: VeinMigrationReport | undefined;
     let ontologySeed: OntologySeedReport | undefined;
     let backfill: BackfillReport | undefined;
     if (!opts.skipBoot) {
+      // Legacy names first, so the seed below extends the renamed Schema
+      // nodes instead of creating twins beside them.
+      veinMigration = await migrateVeinToStrut(bolt);
+      if (veinMigration.status === "migrated") {
+        console.warn(`[graph] renamed legacy Vein* graph data to Strut*: ${JSON.stringify(veinMigration)}`);
+      } else if (veinMigration.strays > 0) {
+        console.warn(`[graph] ${veinMigration.strays} Domain_vein node(s) carry no Vein type label and were left alone`);
+      }
       // Ontology first so a standalone DB gets jarvis's own Thing (with its
-      // ref_id) before the Vein domain hangs off it.
+      // ref_id) before the Strut domain hangs off it.
       if (opts.seedOntology) ontologySeed = await seedJarvisOntology(bolt);
-      seed = await seedVeinDomain(bolt);
+      seed = await seedStrutDomain(bolt);
       if (embedder) backfill = await backfillEmbeddings(bolt, embedder);
     }
     const schemas = new SchemaResolver(bolt);
@@ -123,6 +135,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       schemas,
       embedder,
       seed,
+      veinMigration,
       ontologySeed,
       backfill,
       async close() {

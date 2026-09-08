@@ -9,7 +9,7 @@ import type { AiDeps } from "./ai/prompts.js";
 
 let dir: string;
 before(async () => {
-  dir = await mkdtemp(join(tmpdir(), "vein-shell-"));
+  dir = await mkdtemp(join(tmpdir(), "strut-shell-"));
 });
 after(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -25,26 +25,26 @@ describe("shell helpers", () => {
   });
 
   it("scrubs the env: allowlisted vars pass, secrets don't", async () => {
-    process.env.VEIN_TEST_FAKE_KEY = "sk-super-secret";
+    process.env.STRUT_TEST_FAKE_KEY = "sk-super-secret";
     try {
       const out = await runShell("env", dir);
-      assert.doesNotMatch(out, /VEIN_TEST_FAKE_KEY|sk-super-secret/);
+      assert.doesNotMatch(out, /STRUT_TEST_FAKE_KEY|sk-super-secret/);
       assert.match(out, /(^|\n)PATH=/);
     } finally {
-      delete process.env.VEIN_TEST_FAKE_KEY;
+      delete process.env.STRUT_TEST_FAKE_KEY;
     }
   });
 
   it("extraEnv widens the scrubbed env without unscrubbing it", async () => {
-    process.env.VEIN_TEST_FAKE_KEY = "sk-super-secret";
+    process.env.STRUT_TEST_FAKE_KEY = "sk-super-secret";
     try {
       const out = await runShell('echo "got:$INJECTED_TOKEN"; env', dir, 15000, 10000, {
         INJECTED_TOKEN: "tok-abc123",
       });
       assert.match(out, /got:tok-abc123/); // injected value expands in the shell
-      assert.doesNotMatch(out, /VEIN_TEST_FAKE_KEY/); // scrubbing still applies
+      assert.doesNotMatch(out, /STRUT_TEST_FAKE_KEY/); // scrubbing still applies
     } finally {
-      delete process.env.VEIN_TEST_FAKE_KEY;
+      delete process.env.STRUT_TEST_FAKE_KEY;
     }
   });
 
@@ -54,13 +54,13 @@ describe("shell helpers", () => {
   });
 
   it("minimalEnv contains only allowlisted keys", () => {
-    process.env.VEIN_TEST_FAKE_KEY = "x";
+    process.env.STRUT_TEST_FAKE_KEY = "x";
     try {
       const env = minimalEnv();
-      assert.equal(env.VEIN_TEST_FAKE_KEY, undefined);
+      assert.equal(env.STRUT_TEST_FAKE_KEY, undefined);
       assert.ok(env.PATH);
     } finally {
-      delete process.env.VEIN_TEST_FAKE_KEY;
+      delete process.env.STRUT_TEST_FAKE_KEY;
     }
   });
 
@@ -128,7 +128,7 @@ describe("chat bash tool", () => {
   });
 
   it("does not leak server env to commands", async () => {
-    process.env.VEIN_TEST_FAKE_KEY = "sk-super-secret";
+    process.env.STRUT_TEST_FAKE_KEY = "sk-super-secret";
     try {
       const tools = buildTools(stubDeps({ shell: { cwd: dir } })) as Record<
         string,
@@ -137,7 +137,7 @@ describe("chat bash tool", () => {
       const res = await tools.bash.execute({ command: "env", timeoutMs: 10_000 });
       assert.doesNotMatch(res.output ?? "", /sk-super-secret/);
     } finally {
-      delete process.env.VEIN_TEST_FAKE_KEY;
+      delete process.env.STRUT_TEST_FAKE_KEY;
     }
   });
 });

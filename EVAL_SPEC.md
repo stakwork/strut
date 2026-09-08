@@ -1,6 +1,6 @@
 # Evals & Self-Improving Workflows — Spec
 
-How vein supports **evals** and **self-improving loops**: define a goal, run a
+How strut supports **evals** and **self-improving loops**: define a goal, run a
 workflow, score its output against an expected gold standard, and iterate on
 the workflow until the output is good.
 
@@ -8,7 +8,7 @@ Builds on `SPEC.md` (the engine). The guiding idea:
 
 > **Everything is a workflow + its `params`.** The target pipeline, the
 > scorer, and the eval harness are all workflows; the dataset (expected gold),
-> the rubric, and the tunable prompts are all `params` — which vein already
+> the rubric, and the tunable prompts are all `params` — which strut already
 > stores, versions, and edits in the UI. There are **no** new
 > `Dataset`/`Rubric`/`Experiment` resource types. The eval is just a
 > **measurement substrate**: `run target → collect → score → a number`.
@@ -209,7 +209,7 @@ the existing run model, not a rewrite. **Shipped** as a clean cutover (the old
 streaming `POST /run` is gone):
 
 1. **Launch detached** — `POST /run` starts `runWorkflow` **without awaiting it
-   in the request** (`launchDetached` in `createVein.ts`) and returns
+   in the request** (`launchDetached` in `createStrut.ts`) and returns
    `{ runId }` (202) immediately. The run's liveness is decoupled from any
    connection; there is no `onEvent` on the launch (all viewing is read back
    from the persisted log).
@@ -225,7 +225,7 @@ sequence numbers, no dedupe. One code path serves completed *and* in-flight runs
 it survives restarts, and it's process-agnostic. The only "polling" is the
 server noticing appends (`fs.watch` / a tiny interval) — invisible to the client.
 (An in-memory pub/sub is lower-latency but single-process and loses the live tail
-on restart; not worth it for vein's filesystem-first model.)
+on restart; not worth it for strut's filesystem-first model.)
 
 **Restart-resume:** in-flight *execution* is in-memory, so a crash mid-run loses
 the remaining work; the persisted log up to the crash survives. True resume

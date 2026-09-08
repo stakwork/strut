@@ -1,6 +1,6 @@
 # Generic storage — one boundary per layer, filesystem as one implementation
 
-> **Status (2026-09-01):** §1–§6 implemented on branch `vein-generic-storage`
+> **Status (2026-09-01):** §1–§6 implemented on branch `strut-generic-storage`
 > (two commits: step 1, then steps 2–5). `RunStore` is the full contract;
 > `WorkspaceStore` + `FileWorkspaceStore` (alias `WorkspaceManager`);
 > `getStepSource` / `materializeCustomSteps`; `dataDir`; one resolved
@@ -9,7 +9,7 @@
 > workspace conformance suite live — `npm run test:graph`),
 > `src/graph/projector.ts` (post-hoc run/chat projector, idempotent
 > upserts) + the `graph/project` lib step, and `src/graph/wiring.ts`
-> (graph is the default server's workspace; `VEIN_WORKSPACE_BACKEND=fs`
+> (graph is the default server's workspace; `STRUT_WORKSPACE_BACKEND=fs`
 opts out). The v2 provenance convention below landed 2026-09-02
 > (`withAccessedNodes` in `core.ts`, `nodes` on `step.end`, `ACCESSED`
 > in the projector; every `graph/*` + mcp `jarvis/*` node-touching step
@@ -38,16 +38,16 @@ The three specific failures:
 
 1. **`RunStore` is write-only.** The interface is `append` + `finalize`;
    every read (`listRuns`, `getRunSummary`, `getRunEvents`, `tailEvents`)
-   lives on the concrete `FileRunStore`. `createVein.ts` has eight
+   lives on the concrete `FileRunStore`. `createStrut.ts` has eight
    `store instanceof FileRunStore` guards that return `501` for any other
    store — run listing, run lookup, event lookup, SSE streaming, durable
    resume, and both promotion endpoints all capability-gate on the concrete
    class. `authoring.ts` papers over the same gap with its own
    `RunReadStore` + `asReadStore` feature-detection. A custom store today
-   gets a vein that can launch runs but never read them back.
+   gets a strut that can launch runs but never read them back.
 
 2. **`WorkspaceManager` has no interface.** It's injectable into
-   `createVein` but *typed as the class*, so "swap it" means structurally
+   `createStrut` but *typed as the class*, so "swap it" means structurally
    cloning ~25 methods with no compiler-checked contract. (The repo already
    knows the right shape: `runner.ts`'s `SubflowResolver` is a 2-method
    interface the manager happens to satisfy.)
@@ -108,20 +108,20 @@ export interface RunStore {
   byte-offset `tailJsonl` (cheaper — no full re-read per poll).
 - `MemoryRunStore` implements the full interface (it already holds the
   arrays; the reads are ~15 lines). It stops being a write-only test stub
-  and becomes a complete ephemeral backend — memory-mode vein gets run
+  and becomes a complete ephemeral backend — memory-mode strut gets run
   history, SSE reattach, resume, and promotions for free.
-- Delete all eight `instanceof FileRunStore` guards in `createVein.ts` and
+- Delete all eight `instanceof FileRunStore` guards in `createStrut.ts` and
   the 501 branches. Delete `authoring.ts`'s `RunReadStore` / `asReadStore`
   / `NO_RUN_HISTORY_ERROR` — it takes `RunStore`.
 - `lastRunAt` moves from `WorkspaceManager` to the store; `listWorkflows`
   gains access via a store handed to it (§2 — the workspace iface method
-  takes the value, or `createVein` composes the two; pick composition:
-  `listWorkflows` returns entries without `lastRunAt`, `createVein`'s
+  takes the value, or `createStrut` composes the two; pick composition:
+  `listWorkflows` returns entries without `lastRunAt`, `createStrut`'s
   `GET /workflows` decorates from `store.lastRunAt`). Keeps the layers
   ignorant of each other.
 
 This step is standalone-valuable (memory-mode becomes fully functional;
-`createVein.ts` shrinks) and everything later depends on it.
+`createStrut.ts` shrinks) and everything later depends on it.
 
 ## 2. Extract `WorkspaceStore` from `WorkspaceManager`
 
@@ -160,9 +160,9 @@ export interface WorkspaceStore {
 
 - `WorkspaceManager` is renamed `FileWorkspaceStore`; keep
   `export { FileWorkspaceStore as WorkspaceManager }` so embedders don't
-  break. `VeinOptions.workspace`, `Vein.workspace`, `AiDeps.workspace`,
+  break. `StrutOptions.workspace`, `Strut.workspace`, `AiDeps.workspace`,
   `stepHelpers`, `prompts.ts`, `authoring.ts` all retype to the interface.
-- `getWorkflowMetadata` replaces `createVein.ts`'s raw `_metadata.json`
+- `getWorkflowMetadata` replaces `createStrut.ts`'s raw `_metadata.json`
   `readFile` in `GET /workflows/:name` (the one route that bypasses the
   manager entirely today).
 - `SubflowResolver` in `runner.ts` stays as-is (it's the narrow view the
@@ -177,7 +177,7 @@ files. The boundary that works for every backend:
 
 - **`getStepSource(type)`** — read a step's source text (core / lib /
   custom tiers). File impl wraps today's `readStepSourceFromDisk`; a graph
-  impl serves custom from the graph and still reads core/lib from vein's
+  impl serves custom from the graph and still reads core/lib from strut's
   own install dir (those ship with the engine and are backend-independent).
 - **`materializeCustomSteps()`** — ensure every *active* custom step exists
   as an importable file and return the directory root. File impl returns
@@ -196,8 +196,8 @@ files. The boundary that works for every backend:
 ## 4. Local dirs: stop overloading `workspace.path`
 
 The remaining `.path` consumers don't want the *workspace* — they want *a
-local directory*. Give them one explicitly. `createVein` grows a resolved
-`dataDir` (default: the same `VEIN_WORKSPACE` root, so file-backed
+local directory*. Give them one explicitly. `createStrut` grows a resolved
+`dataDir` (default: the same `STRUT_WORKSPACE` root, so file-backed
 deployments see zero change):
 
 | Consumer                              | Today                                  | After                          |
@@ -207,16 +207,16 @@ deployments see zero change):
 | agent step / chat shell cwd + scratch | `workspace.path`                       | `dataDir`                      |
 | authoring cassette + custom-step peek | `deps.workspace.path`                  | `deps.dataDir` / iface methods |
 
-- `VeinOptions.dataDir?: string` overrides. A graph-backed deployment
+- `StrutOptions.dataDir?: string` overrides. A graph-backed deployment
   points it at any scratch volume; losing it loses blobs/cassettes/scratch
   but no workspace records — that's the explicit contract.
 - After this step `WorkspaceStore` needs no `path` getter. Keep `path` on
-  `FileWorkspaceStore` only (impl detail); nothing in `createVein`,
+  `FileWorkspaceStore` only (impl detail); nothing in `createStrut`,
   `authoring`, or `ai/` touches it.
 
 ## 5. Defaults and wiring
 
-`createVein` default selection today keys off `store instanceof
+`createStrut` default selection today keys off `store instanceof
 MemoryRunStore` to pick memory chat/secret stores. Replace the scattered
 instanceof checks with one resolved mode at the top:
 
@@ -250,8 +250,8 @@ knowledge, the workflow/step logic, AND the usage of both — with heavy
 payloads hanging off it by reference. The split that serves that:
 
 - **Graph-backed:** `Neo4jWorkspaceStore` — workflows, versions, steps,
-  metadata as nodes (`VeinWorkflow`, `VeinWorkflowVersion`, `VeinStep`,
-  `VeinStepVersion` — see the label registry below); `ACTIVE_VERSION`,
+  metadata as nodes (`StrutWorkflow`, `StrutWorkflowVersion`, `StrutStep`,
+  `StrutStepVersion` — see the label registry below); `ACTIVE_VERSION`,
   `VERSION_OF`, `USES_STEP`, `DEPENDS_ON`, `PUBLISHED_BY` edges. This is
   where the graph pays: "which workflows use step X", version lineage,
   promotion ancestry (EVOLVE_SPEC) become one-hop queries.
@@ -267,11 +267,11 @@ payloads hanging off it by reference. The split that serves that:
     Neo4j node properties; stuffing full tool I/O and transcripts into the
     graph makes it slow without adding a queryable edge. The raw store
     remains the store of record for SSE tailing, resume, and replay.
-  - *A graph projection is built on top:* `VeinRun`, `VeinTurn`,
-    `VeinAgentSession`, `VeinToolCall` nodes;
-    `EXECUTED (VeinRun→VeinWorkflowVersion)`,
-    `ACCESSED (VeinToolCall→Concept | any node)`, `PROMOTED_FROM` edges;
-    the run's `params` snapshot lives as properties on `VeinRun` (it's a
+  - *A graph projection is built on top:* `StrutRun`, `StrutTurn`,
+    `StrutAgentSession`, `StrutToolCall` nodes;
+    `EXECUTED (StrutRun→StrutWorkflowVersion)`,
+    `ACCESSED (StrutToolCall→Concept | any node)`, `PROMOTED_FROM` edges;
+    the run's `params` snapshot lives as properties on `StrutRun` (it's a
     value bag, not a relationship). Nodes carry summaries + a pointer
     back to the raw log, never full payloads.
     The raw materials already exist: `run.start` records `workflowHash`
@@ -279,14 +279,14 @@ payloads hanging off it by reference. The split that serves that:
     mapping — Run→version→prompt-knob linkage is derivable today.
   - *Recommended shape: a post-hoc projector*, i.e. a consumer of any
     `RunStore` — §1's widened read interface (`listRuns`/`getRunEvents`)
-    is precisely what an ingester needs. It can run as a vein workflow
+    is precisely what an ingester needs. It can run as a strut workflow
     itself, batch or streaming, and can be re-run to rebuild/enrich the
     projection as the edge vocabulary evolves. Zero coupling to the hot
     path. (Alternative: a `Neo4jRunStore` that dual-writes — file append,
     projection on `finalize` — if projection lag ever matters.)
 - **Chats: projected (or fully graph-backed), not "low value."** A chat
   turn is where a human's intent enters the system;
-  `VeinChat→SPAWNED→VeinRun→…→ACCESSED→Concept` is the provenance chain
+  `StrutChat→SPAWNED→StrutRun→…→ACCESSED→Concept` is the provenance chain
   a reflection loop reads. Volume is low enough that chats could live
   entirely in the graph; at minimum they get projected alongside runs
   with the spawn edge.
@@ -300,8 +300,8 @@ The target graph is jarvis's Neo4j, whose schema library already defines
 `Prompt`) that belongs to a **different workflow engine**. We do NOT
 reuse those labels: same-name nodes with different semantics and
 node_keys would corrupt both engines' queries. Rule, following the
-existing `Hive*` precedent for a separate product family: **every vein
-node label is `Vein`-prefixed, domain `Vein`**, and every edge label is
+existing `Hive*` precedent for a separate product family: **every strut
+node label is `Strut`-prefixed, domain `Strut`**, and every edge label is
 verified absent from the library before use. `Concept` (and other
 domain-knowledge nodes) are jarvis's — we point edges AT them, never
 redefine them.
@@ -310,32 +310,32 @@ Node labels (all verified unused in the library):
 
 | Label                 | What it is                                              |
 | --------------------- | ------------------------------------------------------- |
-| `VeinWorkflow`        | A workflow by name (the stable identity)                |
-| `VeinWorkflowVersion` | One content-hashed version of a workflow                |
-| `VeinStep`            | A published step type (custom tier)                     |
-| `VeinStepVersion`     | One version of a step's source                          |
-| `VeinRun`             | One run (projected: status, timings, params, log ref)   |
-| `VeinAgentSession`    | One agent-step execution inside a run                   |
-| `VeinToolCall`        | One tool call inside an agent session                   |
-| `VeinChat`            | A long-lived chat                                       |
-| `VeinTurn`            | One turn of a chat                                      |
+| `StrutWorkflow`        | A workflow by name (the stable identity)                |
+| `StrutWorkflowVersion` | One content-hashed version of a workflow                |
+| `StrutStep`            | A published step type (custom tier)                     |
+| `StrutStepVersion`     | One version of a step's source                          |
+| `StrutRun`             | One run (projected: status, timings, params, log ref)   |
+| `StrutAgentSession`    | One agent-step execution inside a run                   |
+| `StrutToolCall`        | One tool call inside an agent session                   |
+| `StrutChat`            | A long-lived chat                                       |
+| `StrutTurn`            | One turn of a chat                                      |
 
 Edge labels (all verified absent; child→parent direction for `IN_*`):
 
 | Edge             | From → To                                   |
 | ---------------- | ------------------------------------------- |
-| `VERSION_OF`     | `VeinWorkflowVersion`/`VeinStepVersion` → parent |
-| `ACTIVE_VERSION` | `VeinWorkflow`/`VeinStep` → its active version |
-| `USES_STEP`      | `VeinWorkflowVersion` → `VeinStep`          |
-| `DEPENDS_ON`     | `VeinWorkflowVersion` → `VeinWorkflow` (subflow) |
-| `PUBLISHED_BY`   | `VeinStepVersion` → `Person` (optional)     |
-| `EXECUTED`       | `VeinRun` → `VeinWorkflowVersion`           |
-| `PROMOTED_FROM`  | `VeinWorkflowVersion` → `VeinRun` (param promotion lineage) |
-| `IN_RUN`         | `VeinAgentSession` → `VeinRun`              |
-| `IN_SESSION`     | `VeinToolCall` → `VeinAgentSession`         |
-| `SPAWNED`        | `VeinChat` → `VeinRun`                      |
-| `IN_CHAT`        | `VeinTurn` → `VeinChat`                     |
-| `ACCESSED`       | `VeinToolCall` → `Concept` (or any graph node) — provenance |
+| `VERSION_OF`     | `StrutWorkflowVersion`/`StrutStepVersion` → parent |
+| `ACTIVE_VERSION` | `StrutWorkflow`/`StrutStep` → its active version |
+| `USES_STEP`      | `StrutWorkflowVersion` → `StrutStep`          |
+| `DEPENDS_ON`     | `StrutWorkflowVersion` → `StrutWorkflow` (subflow) |
+| `PUBLISHED_BY`   | `StrutStepVersion` → `Person` (optional)     |
+| `EXECUTED`       | `StrutRun` → `StrutWorkflowVersion`           |
+| `PROMOTED_FROM`  | `StrutWorkflowVersion` → `StrutRun` (param promotion lineage) |
+| `IN_RUN`         | `StrutAgentSession` → `StrutRun`              |
+| `IN_SESSION`     | `StrutToolCall` → `StrutAgentSession`         |
+| `SPAWNED`        | `StrutChat` → `StrutRun`                      |
+| `IN_CHAT`        | `StrutTurn` → `StrutChat`                     |
+| `ACCESSED`       | `StrutToolCall` → `Concept` (or any graph node) — provenance |
 
 Near-collision notes (why some obvious names were rejected): the library
 already uses `TOUCHES`, `DERIVED_FROM`, `USES`, `HAS_TURN`,
@@ -407,9 +407,9 @@ The convention (small, additive — v2 work, after the boundary lands):
   of tool output that must survive into the log verbatim, because it's
   data for the projector, not a preview for humans.
 - **The projector turns `_nodes` into `ACCESSED` edges**
-  (`VeinToolCall→Concept`), completing the chain:
-  `VeinChat→SPAWNED→VeinRun→EXECUTED→VeinWorkflowVersion` and
-  `VeinRun←IN_RUN←VeinAgentSession←IN_SESSION←VeinToolCall→ACCESSED→Concept`.
+  (`StrutToolCall→Concept`), completing the chain:
+  `StrutChat→SPAWNED→StrutRun→EXECUTED→StrutWorkflowVersion` and
+  `StrutRun←IN_RUN←StrutAgentSession←IN_SESSION←StrutToolCall→ACCESSED→Concept`.
   That chain is what makes
   self-evolution queryable: evaluate trace cohorts against the subgraph
   they touched, and trace a prompt/param version's blast radius through

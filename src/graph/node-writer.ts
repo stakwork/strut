@@ -1,15 +1,15 @@
 /**
  * jarvis-dialect node writes (`plans/jarvis-graph-compat.md` §1, §2, §6).
  *
- * Every node vein puts in the graph goes through `NodeWriter`. The writer
+ * Every node strut puts in the graph goes through `NodeWriter`. The writer
  * validates BEFORE building any Cypher (§6 — nothing invalid or unexpected
- * reaches the graph through vein), composes `node_key` exactly like jarvis
+ * reaches the graph through strut), composes `node_key` exactly like jarvis
  * (`schema_validation.py:350-399`), builds the `Data_Bank` search text
  * (`schema_node_helper.py:141-234`, including jarvis's kitchen-sink fallback
  * for schemas without a usable explicit index), and MERGEs with jarvis's
  * label set and generic stamps (`schema_node_helper.py:238-268`).
  *
- * Types: Vein's own come from the in-code registry; any other type
+ * Types: Strut's own come from the in-code registry; any other type
  * (Document, EvalSet, Concept, …) is resolved from the live `:Schema`
  * meta-graph by `SchemaResolver` — the same source jarvis validates against
  * — so the writer is a drop-in for jarvis on jarvis-typed data too.
@@ -32,8 +32,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, int, txRows } from "./bolt.js";
-import { SchemaResolver, fromVein, type NodeSchema } from "./schema-resolver.js";
-import { GENERIC_NODE_PROPERTIES, VEIN_DOMAIN_LABEL, embeddingColumn, getVeinSchema, typeLabelOf, vectorStem } from "./vein-schemas.js";
+import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
+import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, typeLabelOf, vectorStem } from "./strut-schemas.js";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -79,15 +79,15 @@ const baseOf = (t: string) => (isOptionalType(t) ? t.slice(1) : t);
 /**
  * The write-time gate. Throws `GraphValidationError` on the first violation
  * and writes nothing. Stricter than jarvis in the safe direction: anything
- * accepted here also passes jarvis's validators. Pass a Vein type name or
+ * accepted here also passes jarvis's validators. Pass a Strut type name or
  * a resolved `NodeSchema` (from `SchemaResolver`) for any type.
  */
 export function validateNode(typeOrSchema: string | NodeSchema, data: Record<string, unknown>): ValidatedNode {
   let schema: NodeSchema;
   if (typeof typeOrSchema === "string") {
-    const vein = getVeinSchema(typeOrSchema);
-    if (!vein) throw new GraphValidationError("UNKNOWN_TYPE", typeOrSchema, "not a registered Vein type (resolve other types via SchemaResolver)");
-    schema = fromVein(vein);
+    const strut = getStrutSchema(typeOrSchema);
+    if (!strut) throw new GraphValidationError("UNKNOWN_TYPE", typeOrSchema, "not a registered Strut type (resolve other types via SchemaResolver)");
+    schema = fromStrut(strut);
   } else schema = typeOrSchema;
   const type = schema.type;
   const attrs = schema.attributes;
@@ -168,7 +168,7 @@ function normalizeValue(type: string, name: string, base: string, raw: unknown):
       return { value: raw, param: raw };
     }
     default:
-      // `complex` (jarvis grammar, never used by Vein): passthrough.
+      // `complex` (jarvis grammar, never used by Strut): passthrough.
       return { value: raw, param: raw };
   }
 }
@@ -321,7 +321,7 @@ export type WriteMode = "create" | "upsert";
 export type WriteOutcome = "created" | "existing" | "restored" | "updated";
 
 export interface NodeInput {
-  /** Node type — a Vein type (exact) or any jarvis type (resolved
+  /** Node type — a Strut type (exact) or any jarvis type (resolved
    *  case-insensitively against the live schema). */
   type: string;
   data: Record<string, unknown>;
@@ -395,7 +395,7 @@ export class NodeWriter {
     const validated: ValidatedNode[] = [];
     for (const i of inputs) {
       const schema = await this.resolver.schema(i.type);
-      if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", i.type, "unknown node type (not a Vein type and no such Schema in the graph)");
+      if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", i.type, "unknown node type (not a Strut type and no such Schema in the graph)");
       validated.push(validateNode(schema, i.data));
     }
     // Gather every text to embed across the batch → one encoder call.
@@ -535,10 +535,10 @@ export class NodeWriter {
     });
   }
 
-  /** Soft delete (`is_deleted = true`). Scoped to Vein's own nodes. */
+  /** Soft delete (`is_deleted = true`). Scoped to Strut's own nodes. */
   async softDelete(ref_id: string): Promise<boolean> {
     const rows = await this.bolt.run(
-      `MATCH (n:\`${VEIN_DOMAIN_LABEL}\` {ref_id: $ref_id}) SET n.is_deleted = true RETURN n.ref_id AS ref_id`,
+      `MATCH (n:\`${STRUT_DOMAIN_LABEL}\` {ref_id: $ref_id}) SET n.is_deleted = true RETURN n.ref_id AS ref_id`,
       { ref_id },
     );
     return rows.length > 0;

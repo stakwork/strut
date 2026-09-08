@@ -76,7 +76,7 @@ describe("runSingleStep", () => {
   });
 
   it("records a fixture (secret scrubbed), then replays offline", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "vein-cassette-"));
+    const dir = await mkdtemp(join(tmpdir(), "strut-cassette-"));
     const path = cassettePath(dir, "stripe/list-charges");
 
     // RECORD — live fetch hit once, fixture written.
@@ -113,7 +113,7 @@ describe("runSingleStep", () => {
   });
 
   it("the built-in http step routes through services.http (so it's recordable)", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "vein-http-"));
+    const dir = await mkdtemp(join(tmpdir(), "strut-http-"));
     const path = cassettePath(dir, "http");
 
     // RECORD — fake fetch behind services.http; the core http step uses it.

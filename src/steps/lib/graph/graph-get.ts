@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 const LABEL_MAX = 160;
 
@@ -39,7 +39,7 @@ function collapseConnectionCounts(
 export default defineStep({
   type: "graph/graph-get",
   description:
-    "Resolve a single node in the vein knowledge graph to its full content by ref_id. " +
+    "Resolve a single node in the strut knowledge graph to its full content by ref_id. " +
     "Use the ref_id from graph_graph_search or graph_graph_neighbors results. " +
     "Returns the node's ref_id, node_type, derived name, properties, and an " +
     "`edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
@@ -55,7 +55,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<VeinCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const raw = await b.reader.getNode(cfg.ref_id);
       if (!raw) return `node not found: ${cfg.ref_id}`;
       const properties = (raw.properties ?? {}) as Record<string, any>;

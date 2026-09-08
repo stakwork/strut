@@ -12,7 +12,7 @@ describe("buildRegistry", () => {
   let ws: WorkspaceManager;
 
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-reg-test-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-reg-test-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
     ws = new WorkspaceManager(tempDir);
   });

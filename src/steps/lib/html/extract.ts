@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 
 const EXAMPLE = `- id: page
   type: html/extract
   config:
     url: "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/aapl-20230930.htm"
     headers:
-      User-Agent: "vein research-agent contact@example.com"
+      User-Agent: "strut research-agent contact@example.com"
     maxChars: 120000`;
 
 /**
@@ -66,7 +66,7 @@ export default defineStep({
     /** HTTP status when fetched; null when extracting from raw html. */
     status: z.number().nullable(),
   }),
-  async run(cfg, ctx: StepContext<VeinCapabilities>) {
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
     let html = cfg.html;
     let status: number | null = null;
 

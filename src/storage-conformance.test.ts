@@ -53,7 +53,7 @@ for (const impl of runImpls) {
     let dir: string;
     let store: RunStore;
     beforeEach(async () => {
-      dir = join(tmpdir(), `vein-conf-run-${randomUUID()}`);
+      dir = join(tmpdir(), `strut-conf-run-${randomUUID()}`);
       await mkdir(dir, { recursive: true });
       store = impl.make(dir);
     });
@@ -166,7 +166,7 @@ for (const impl of chatImpls) {
     let dir: string;
     let store: ChatStore;
     beforeEach(async () => {
-      dir = join(tmpdir(), `vein-conf-chat-${randomUUID()}`);
+      dir = join(tmpdir(), `strut-conf-chat-${randomUUID()}`);
       await mkdir(dir, { recursive: true });
       store = impl.make(dir);
     });
@@ -215,7 +215,7 @@ for (const impl of secretImpls) {
     let dir: string;
     let store: SecretStore;
     beforeEach(async () => {
-      dir = join(tmpdir(), `vein-conf-secret-${randomUUID()}`);
+      dir = join(tmpdir(), `strut-conf-secret-${randomUUID()}`);
       await mkdir(dir, { recursive: true });
       store = impl.make(dir);
     });

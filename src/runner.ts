@@ -69,7 +69,7 @@ export interface RunOptions<TServices = unknown> {
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
-const SKIP = Symbol("vein.skip");
+const SKIP = Symbol("strut.skip");
 
 function isSkipped(v: unknown): boolean {
   return v === SKIP;

@@ -1,7 +1,7 @@
 /**
  * Run + chat PROJECTOR (plans/generic-storage.md §7): a post-hoc consumer of
  * any `RunStore` / `ChatStore` that builds the graph's picture of usage —
- * `VeinRun`, `VeinAgentSession`, `VeinToolCall`, `VeinChat`, `VeinTurn`
+ * `StrutRun`, `StrutAgentSession`, `StrutToolCall`, `StrutChat`, `StrutTurn`
  * nodes and the `EXECUTED` / `IN_RUN` / `IN_SESSION` / `SPAWNED` /
  * `IN_CHAT` edges — with summaries and a `log_ref` pointer back to the raw
  * log, never full payloads.
@@ -28,7 +28,7 @@ import type { ChatStore, StoredMessage } from "../chat-store.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
-import { PREVIEW_MAX_CHARS } from "./vein-schemas.js";
+import { PREVIEW_MAX_CHARS } from "./strut-schemas.js";
 
 export interface ProjectRunsOptions {
   /** Workflows to project. Default: every workflow with runs is unknown to a
@@ -115,7 +115,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   const logRef = `${workflow}/${runId}`;
 
   const run: NodeInput = {
-    type: "VeinRun",
+    type: "StrutRun",
     data: compact({
       run_id: runId,
       workflow_name: workflow,
@@ -130,7 +130,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
       output_preview: preview(summary?.output),
       error_message: errorMessage,
       log_ref: logRef,
-      unique_source_id: `veinrun:${runId}`,
+      unique_source_id: `strutrun:${runId}`,
     }),
   };
 
@@ -147,7 +147,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     const input = (e.input ?? {}) as Record<string, unknown>;
     sessionPaths.push(e.path);
     sessions.push({
-      type: "VeinAgentSession",
+      type: "StrutAgentSession",
       data: compact({
         run_id: runId,
         path: keyOf(e),
@@ -160,7 +160,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
         duration_ms: end?.durationMs,
         error_message: end?.error?.message,
         log_ref: logRef,
-        unique_source_id: `veinagentsession:${runId}:${keyOf(e)}`,
+        unique_source_id: `strutagentsession:${runId}:${keyOf(e)}`,
       }),
     });
   }
@@ -190,7 +190,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
       sessionPath: session,
       accessed,
       node: {
-        type: "VeinToolCall",
+        type: "StrutToolCall",
         data: compact({
           run_id: runId,
           path: keyOf(e),
@@ -202,7 +202,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
           duration_ms: end?.durationMs,
           error_message: end?.error?.message,
           log_ref: logRef,
-          unique_source_id: `veintoolcall:${runId}:${keyOf(e)}:${seq}`,
+          unique_source_id: `struttoolcall:${runId}:${keyOf(e)}:${seq}`,
         }),
       },
     });
@@ -224,7 +224,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
     let settled = new Set<string>();
     if (opts.skipSettled !== false) {
       const rows = await backend.bolt.run(
-        `MATCH (r:VeinRun {namespace: $ns, workflow_name: $wf}) WHERE r.run_id IN $ids RETURN r.run_id AS id, r.status AS status`,
+        `MATCH (r:StrutRun {namespace: $ns, workflow_name: $wf}) WHERE r.run_id IN $ids RETURN r.run_id AS id, r.status AS status`,
         { ns, wf: workflow, ids: runIds },
       );
       settled = new Set(rows.filter((r) => isTerminalStatus(r["status"])).map((r) => r["id"] as string));
@@ -275,7 +275,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
       }
       if (p.workflowHash) {
         const rows = await backend.bolt.run(
-          `MATCH (v:VeinWorkflowVersion {namespace: $ns, name: $wf, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
+          `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $wf, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
           { ns, wf: workflow, h: p.workflowHash },
         );
         if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
@@ -345,19 +345,19 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
       turn++;
       const assistant = messages.slice(i + 1).find((x) => x.role === "assistant" && messageText(x.content));
       turns.push({
-        type: "VeinTurn",
+        type: "StrutTurn",
         data: compact({
           chat_id: meta.id,
           turn,
           user_text_preview: preview(messageText(m.content)),
           assistant_text_preview: preview(assistant ? messageText(assistant.content) : undefined),
           log_ref: `${meta.id}/${turn}`,
-          unique_source_id: `veinturn:${meta.id}:${turn}`,
+          unique_source_id: `strutturn:${meta.id}:${turn}`,
         }),
       });
     }
     const chat: NodeInput = {
-      type: "VeinChat",
+      type: "StrutChat",
       data: compact({
         chat_id: meta.id,
         title: meta.title,
@@ -368,7 +368,7 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
         last_active_at: meta.updatedAt,
         turn_count: turns.length,
         log_ref: meta.id,
-        unique_source_id: `veinchat:${meta.id}`,
+        unique_source_id: `strutchat:${meta.id}`,
       }),
     };
     const written = await backend.nodes.writeMany([chat, ...turns], "upsert");
@@ -380,7 +380,7 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
     const runIds = spawnedRunIds(messages);
     if (runIds.length) {
       const rows = await backend.bolt.run(
-        `MATCH (r:VeinRun {namespace: $ns}) WHERE r.run_id IN $ids RETURN r.ref_id AS ref_id`,
+        `MATCH (r:StrutRun {namespace: $ns}) WHERE r.run_id IN $ids RETURN r.ref_id AS ref_id`,
         { ns, ids: runIds },
       );
       for (const r of rows) edges.push({ edge: "SPAWNED", source_ref_id: chatRef, target_ref_id: r["ref_id"] as string });

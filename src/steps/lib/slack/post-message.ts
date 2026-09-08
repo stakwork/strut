@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { slackToken, slackCall } from "./_shared.js";
 
 const EXAMPLE = `- id: notify
@@ -28,7 +28,7 @@ export default defineStep({
     ts: z.string(),
     channel: z.string(),
   }),
-  async run(cfg, ctx: StepContext<VeinCapabilities>) {
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
     if (!cfg.text && !cfg.blocks) {
       throw new Error("slack/post-message needs `text` or `blocks`.");
     }

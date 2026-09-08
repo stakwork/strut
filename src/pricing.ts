@@ -134,10 +134,10 @@ export function computeCost(provider: string, usage: TokenUsage): number {
  * long draft or a large tool call MID-JSON (finish=length) and kills the
  * loop. Anthropic models take 128k; other providers reject max_tokens above
  * the model limit rather than clamping, so they keep a conservative 64k.
- * `VEIN_MAX_OUTPUT_TOKENS` overrides for all providers.
+ * `STRUT_MAX_OUTPUT_TOKENS` overrides for all providers.
  */
 export function maxOutputTokensFor(provider?: string): number {
-  const env = Number(process.env["VEIN_MAX_OUTPUT_TOKENS"]);
+  const env = Number(process.env["STRUT_MAX_OUTPUT_TOKENS"]);
   if (env > 0) return env;
   return provider === "anthropic" ? 128_000 : 64_000;
 }

@@ -58,10 +58,10 @@ web/                    # Preact + system-canvas UI (built to web/dist/)
 
 ### 2.2 Workspace (mutable, persistent volume)
 
-Set via `VEIN_WORKSPACE` env var (default: `./workspace`). This is a mounted volume in Docker.
+Set via `STRUT_WORKSPACE` env var (default: `./workspace`). This is a mounted volume in Docker.
 
 ```
-$VEIN_WORKSPACE/
+$STRUT_WORKSPACE/
   workflows/
     deploy/
       _metadata.json    # { "active": "v2", "versions": { ... } }
@@ -282,7 +282,7 @@ shape instead of killing the run.
 
 ### 4.2 Lib Steps
 
-Lib steps live in `src/steps/lib/<namespace>/` inside the engine itself. They are reusable domain-specific integrations (GitHub, Neo4j, Slack, …) that ship with vein but are kept out of the static dependency graph. Each file is a `defineStep(...)` export, same as core steps.
+Lib steps live in `src/steps/lib/<namespace>/` inside the engine itself. They are reusable domain-specific integrations (GitHub, Neo4j, Slack, …) that ship with strut but are kept out of the static dependency graph. Each file is a `defineStep(...)` export, same as core steps.
 
 Lib steps are loaded with **dynamic `import()`** at registry build time. The practical consequence: a workflow that doesn't use the `github/*` steps never resolves `@octokit/rest`. This keeps the cold-start surface small even as the lib catalog grows to many integrations.
 
@@ -560,7 +560,7 @@ Scope rules:
 The engine discovers user content from a single workspace root, configured via:
 
 ```
-VEIN_WORKSPACE=/data/vein
+STRUT_WORKSPACE=/data/strut
 ```
 
 Default: `./workspace` relative to the engine's working directory. In Docker, this is a mounted persistent volume.
@@ -573,8 +573,8 @@ The engine's built-in `steps/core/` and `steps/lib/` both live inside the engine
 # Engine image — immutable
 COPY src/ /app/src/
 # Workspace — mounted at runtime
-VOLUME /data/vein
-ENV VEIN_WORKSPACE=/data/vein
+VOLUME /data/strut
+ENV STRUT_WORKSPACE=/data/strut
 ```
 
 Users never modify the engine image. They publish workflows and steps by writing files to the workspace volume.
@@ -725,7 +725,7 @@ The engine can function without this file — it discovers steps by scanning `.t
 
 ### 11.3 WorkspaceStore API
 
-Workflows and steps persist behind the `WorkspaceStore` interface (`src/workspace.ts`); `FileWorkspaceStore` (alias `WorkspaceManager`) is the default implementation and any backend implementing the same surface can be passed as `VeinOptions.workspace`. The HTTP server, the authoring capability, and the chat builder only ever see the interface — nothing outside `workspace.ts` reads a workspace directory. Sketch (see the source for the full signatures):
+Workflows and steps persist behind the `WorkspaceStore` interface (`src/workspace.ts`); `FileWorkspaceStore` (alias `WorkspaceManager`) is the default implementation and any backend implementing the same surface can be passed as `StrutOptions.workspace`. The HTTP server, the authoring capability, and the chat builder only ever see the interface — nothing outside `workspace.ts` reads a workspace directory. Sketch (see the source for the full signatures):
 
 ```ts
 interface WorkspaceStore {
@@ -752,13 +752,13 @@ interface WorkspaceStore {
 }
 ```
 
-Runs are the `RunStore`'s records (full read/write/tail contract, `src/store.ts`), and the inherently-local things — run artifacts, step cassettes, the chat builder's shell cwd — live under the server's `dataDir` (`VeinOptions.dataDir`, default: the file workspace's root). `src/storage-conformance.test.ts` is the behavioral spec every implementation of each layer must pass.
+Runs are the `RunStore`'s records (full read/write/tail contract, `src/store.ts`), and the inherently-local things — run artifacts, step cassettes, the chat builder's shell cwd — live under the server's `dataDir` (`StrutOptions.dataDir`, default: the file workspace's root). `src/storage-conformance.test.ts` is the behavioral spec every implementation of each layer must pass.
 
 ---
 
 ## 12. HTTP API
 
-The engine ships with an HTTP server (Hono) that exposes all operations. Set `VEIN_PORT` (default: `3000`).
+The engine ships with an HTTP server (Hono) that exposes all operations. Set `STRUT_PORT` (default: `3000`).
 
 ### 12.1 Workflows
 
@@ -789,7 +789,7 @@ The engine ships with an HTTP server (Hono) that exposes all operations. Set `VE
 | DELETE | `/steps/:name`                  | Delete a single custom step (auth)                                   |
 | DELETE | `/steps?publisher=X`            | Bulk-delete all steps owned by a publisher (auth)                    |
 
-Publishing is content-hash idempotent and returns `{ version, changed }`. The auth-gated mutations require `Authorization: Bearer <VEIN_API_KEY>` when that env var is set (see "Auth" in AGENTS.md).
+Publishing is content-hash idempotent and returns `{ version, changed }`. The auth-gated mutations require `Authorization: Bearer <STRUT_API_KEY>` when that env var is set (see "Auth" in AGENTS.md).
 
 ### 12.3 Runs & Logs
 
@@ -828,12 +828,12 @@ The engine serves a built-in web UI at the root path (`/`). Stack: Preact + syst
 
 ```bash
 # Dev mode (vite + API proxy)
-cd vein && npm run dev        # API on :3000
-cd vein/web && npm run dev    # UI on :5173 (proxies API to :3000)
+cd strut && npm run dev        # API on :3000
+cd strut/web && npm run dev    # UI on :5173 (proxies API to :3000)
 
 # Production (single server)
-cd vein/web && npm run build  # build to web/dist/
-cd vein && npm run dev        # serves API + UI on :3000
+cd strut/web && npm run build  # build to web/dist/
+cd strut && npm run dev        # serves API + UI on :3000
 ```
 
 ### 13.3 Flow visualization & editing

@@ -7,7 +7,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Bolt } from "./bolt.js";
-import { seedVeinDomain } from "./schema-seed.js";
+import { seedStrutDomain } from "./schema-seed.js";
 import { seedJarvisOntology, searchableAttributesOf } from "./ontology-seed.js";
 import { JARVIS_ONTOLOGY } from "./fixtures/jarvis-ontology.js";
 import { EDGE_TYPES_ALLOWLIST, SchemaResolver } from "./schema-resolver.js";
@@ -36,7 +36,7 @@ describe("ontology fixture (pure)", () => {
   });
 });
 
-describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let bolt: Bolt;
   let resolver: SchemaResolver;
   let nodes: NodeWriter;
@@ -49,7 +49,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     assert.equal(r.createdSchemas.length, 151);
     assert.ok(r.createdEdgeSchemas >= 300, `edge schemas ${r.createdEdgeSchemas}`);
     assert.ok(r.domains.includes("content") && r.domains.includes("legal"));
-    await seedVeinDomain(bolt);
+    await seedStrutDomain(bolt);
     // jarvis's About node hides the Scratchpad domain by default.
     await bolt.run(`CREATE (:About {hidden_domains: ["Scratchpad"]})`);
     resolver = new SchemaResolver(bolt);
@@ -60,29 +60,29 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     await bolt?.close();
   });
 
-  it("re-seeding is a graph no-op, and a Thing seeded by the ontology is reused by the Vein domain", async () => {
+  it("re-seeding is a graph no-op, and a Thing seeded by the ontology is reused by the Strut domain", async () => {
     const snap = await graphSnapshot(bolt);
     const r = await seedJarvisOntology(bolt);
     assert.deepEqual(r.createdSchemas, []);
     assert.equal(r.createdEdgeSchemas, 0);
-    const v = await seedVeinDomain(bolt);
+    const v = await seedStrutDomain(bolt);
     assert.equal(v.mode, "shared");
     assert.deepEqual(await graphSnapshot(bolt), snap);
     const things = await bolt.run(`MATCH (s:Schema {type: "Thing"}) RETURN s.ref_id AS r`);
     assert.equal(things.length, 1);
     assert.equal(things[0]!["r"], JARVIS_ONTOLOGY.schemas.find((s) => s["type"] === "Thing")!["ref_id"]);
     const names = await schemaObjectNames(bolt);
-    for (const i of ["data_bank_attribute_index_v2", "domain_content_attribute_index_v2", "domain_legal_vector_index", "domain_vein_vector_index", "text_embeddings_vector_index"]) {
+    for (const i of ["data_bank_attribute_index_v2", "domain_content_attribute_index_v2", "domain_legal_vector_index", "domain_strut_vector_index", "text_embeddings_vector_index"]) {
       assert.ok(names.indexes.includes(i), i);
     }
     assert.ok(names.constraints.includes("unique_document_node_key"));
   });
 
-  it("resolves types case-insensitively (Schema.type → labels), Vein types exactly", async () => {
+  it("resolves types case-insensitively (Schema.type → labels), Strut types exactly", async () => {
     assert.equal(await resolver.resolveType("evalset"), "EvalSet");
     assert.equal(await resolver.resolveType(" document "), "Document");
-    assert.equal(await resolver.resolveType("VeinRun"), "VeinRun");
-    assert.equal(await resolver.resolveType("veinrun"), "VeinRun", "falls through to Schema.type like jarvis");
+    assert.equal(await resolver.resolveType("StrutRun"), "StrutRun");
+    assert.equal(await resolver.resolveType("strutrun"), "StrutRun", "falls through to Schema.type like jarvis");
     assert.equal(await resolver.resolveType("Nope"), null);
     assert.equal(await resolver.resolveType("*"), null);
   });
@@ -124,12 +124,12 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     assert.equal(doc.attributes["weight"], "?float");
     assert.ok(!("index" in doc.attributes) && !("icon" in doc.attributes));
     assert.deepEqual(doc.domainLabels, ["Domain_content"]);
-    assert.equal(doc.isVein, false);
+    assert.equal(doc.isStrut, false);
     const eto = (await resolver.schema("EvalTriggerOutput"))!;
     assert.deepEqual(eto.index, ["evaltriggeroutput-id"], "string index kept verbatim (jarvis get_index_fields)");
-    const vein = (await resolver.schema("VeinRun"))!;
-    assert.equal(vein.isVein, true);
-    assert.deepEqual(vein.domainLabels, ["Domain_vein"]);
+    const strut = (await resolver.schema("StrutRun"))!;
+    assert.equal(strut.isStrut, true);
+    assert.deepEqual(strut.domainLabels, ["Domain_strut"]);
     assert.equal(await resolver.schema("Nope"), null);
   });
 
@@ -209,7 +209,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
       [
         { type: "EvalSet", data: { id: ns, name: "Task", description: "desc", recursion: true } },
         { type: "EvalRequirement", data: { id: `${ns}-c1`, name: "Crit 1", description: "must", contested: false } },
-        { type: "EvalTrigger", data: { id: "trigger-1", agent: "harvey-deliver", environment: "vein-lab", source: "vein", workflow_id: "harvey-deliver", workflow_input: "{}", run_count: 1 } },
+        { type: "EvalTrigger", data: { id: "trigger-1", agent: "harvey-deliver", environment: "strut-lab", source: "strut", workflow_id: "harvey-deliver", workflow_input: "{}", run_count: 1 } },
         { type: "EvalTriggerOutput", data: { id: "output-1", result: "pass", verdict: "pass", score: 1, max_score: 1, n_total: 1, n_passed: 1 } },
         { type: "CriterionResult", data: { id: "crit-1", criterion_id: "c1", title: "Crit 1", verdict: "pass", reasoning: "ok" } },
       ],

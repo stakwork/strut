@@ -9,7 +9,7 @@ describe("fileArtifactsCapability (per-run artifact files)", () => {
   let root: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "vein-artifacts-"));
+    root = mkdtempSync(join(tmpdir(), "strut-artifacts-"));
   });
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });

@@ -3,7 +3,7 @@
 // through ctx.services.http (raw REST — no SDK needed, fully recordable) rather
 // than @slack/web-api, per the "prefer raw REST" authoring convention.
 import type { StepContext } from "../../../core.js";
-import type { VeinCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 
 const SLACK_API = "https://slack.com/api";
 
@@ -11,7 +11,7 @@ const SLACK_API = "https://slack.com/api";
  *  secret (UI-managed store → env). Throws an actionable error if neither. */
 export async function slackToken(
   explicit: string | undefined,
-  ctx: StepContext<VeinCapabilities>,
+  ctx: StepContext<StrutCapabilities>,
 ): Promise<string> {
   const token =
     explicit ?? (await ctx?.services?.secrets?.get("SLACK_BOT_TOKEN"));
@@ -30,7 +30,7 @@ export async function slackToken(
  *  So we check `body.ok`, NOT the HTTP status, and map the common `error`
  *  codes to actionable messages. */
 export async function slackCall(
-  ctx: StepContext<VeinCapabilities>,
+  ctx: StepContext<StrutCapabilities>,
   method: string,
   token: string,
   opts: {

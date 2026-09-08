@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Stage a self-contained vein directory for embedding in a native desktop
+ * Stage a self-contained strut directory for embedding in a native desktop
  * app (plans/local-desktop-and-stt.md §2.3, "phase A").
  *
  *   npm run package:desktop -- [--platform darwin-arm64] [--out dist-desktop] [--smoke] [--skip-build] [--embeddings]
  *
- * Output: <out>/vein/ containing package.json, build/ (server + steps as
+ * Output: <out>/strut/ containing package.json, build/ (server + steps as
  * loose files — the registry scans them), web/dist/, and a production-only
  * node_modules/ with exactly one sherpa-onnx platform package and only this
  * platform's onnxruntime-node binaries. The host adds an official Node
@@ -20,7 +20,7 @@
  *
  * --smoke boots the staged copy from a temp directory (so nothing can leak
  * in from this checkout), with a workspace outside the package tree that
- * holds a custom step importing "vein", and checks /health, /audio/models
+ * holds a custom step importing "strut", and checks /health, /audio/models
  * (`available: true` = the sherpa addon loaded) and that the step registered.
  *
  * Not a single-file build on purpose: the step loader scans directories and
@@ -44,7 +44,7 @@ const out = resolve(ROOT, String(flag("out", "dist-desktop")));
 const smoke = flag("smoke", false) === true;
 const skipBuild = flag("skip-build", false) === true;
 const embeddings = flag("embeddings", false) === true;
-const stage = join(out, "vein");
+const stage = join(out, "strut");
 
 const SHERPA_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win-x64", "win-ia32"];
 if (!SHERPA_PLATFORMS.includes(platform)) {
@@ -136,7 +136,7 @@ async function installDeps() {
 }
 
 // Sourcemaps, typings, and docs are dead weight in a shipped app. Licenses
-// stay. Only node_modules is touched (vein's own build/ keeps its .d.ts).
+// stay. Only node_modules is touched (strut's own build/ keeps its .d.ts).
 const STRIP_EXT = [".map", ".d.ts", ".d.mts", ".d.cts", ".md", ".markdown"];
 const STRIP_NAMES = new Set(["CHANGELOG", "CHANGES", "HISTORY", ".github", ".vscode", ".idea"]);
 async function strip(dir) {
@@ -206,8 +206,8 @@ const freePort = () =>
 
 async function smokeTest() {
   // Run from a temp copy so resolution can't fall back into this checkout.
-  const tmp = await mkdtemp(join(tmpdir(), "vein-desktop-"));
-  const app = join(tmp, "vein");
+  const tmp = await mkdtemp(join(tmpdir(), "strut-desktop-"));
+  const app = join(tmp, "strut");
   const workspace = join(tmp, "Application Support", "workspace");
   const cache = join(tmp, "cache");
   log(`smoke: copying stage → ${app}`);
@@ -215,7 +215,7 @@ async function smokeTest() {
   await mkdir(join(workspace, "steps", "custom"), { recursive: true });
   await writeFile(
     join(workspace, "steps", "custom", "smoke-step.ts"),
-    `import { z, defineStep } from "vein";
+    `import { z, defineStep } from "strut";
 export default defineStep({
   type: "smoke-step",
   input: z.object({ name: z.string() }),
@@ -228,12 +228,12 @@ export default defineStep({
   const key = "smoke-key";
   const env = {
     ...process.env,
-    VEIN_HOST: "127.0.0.1",
-    VEIN_PORT: String(port),
-    VEIN_WORKSPACE: workspace,
-    VEIN_WORKSPACE_BACKEND: "fs",
-    VEIN_API_KEY: key,
-    VEIN_CACHE_DIR: cache,
+    STRUT_HOST: "127.0.0.1",
+    STRUT_PORT: String(port),
+    STRUT_WORKSPACE: workspace,
+    STRUT_WORKSPACE_BACKEND: "fs",
+    STRUT_API_KEY: key,
+    STRUT_CACHE_DIR: cache,
   };
   log(`smoke: node build/server.js on 127.0.0.1:${port} (workspace + cache under ${tmp})`);
   const child = spawn(process.execPath, ["build/server.js"], { cwd: app, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -260,13 +260,13 @@ export default defineStep({
     if (health.dataDir !== workspace) failures.push(`dataDir ${health.dataDir} != ${workspace}`);
 
     const steps = await (await fetch(`${base}/steps`)).text();
-    if (!steps.includes("smoke-step")) failures.push('custom step importing "vein" from an out-of-tree workspace did not register');
+    if (!steps.includes("smoke-step")) failures.push('custom step importing "strut" from an out-of-tree workspace did not register');
 
     const unauth = await fetch(`${base}/audio/models`);
     if (unauth.status !== 401) failures.push(`/audio/models without key: ${unauth.status}, expected 401`);
     const models = await (await fetch(`${base}/audio/models`, { headers })).json();
     if (!models.available) failures.push("sherpa addon did not load in the staged copy (available: false)");
-    if (!models.modelDir.startsWith(cache)) failures.push(`modelDir ${models.modelDir} not under VEIN_CACHE_DIR`);
+    if (!models.modelDir.startsWith(cache)) failures.push(`modelDir ${models.modelDir} not under STRUT_CACHE_DIR`);
 
     const ui = await fetch(`${base}/`);
     if (!ui.ok || !(await ui.text()).includes("<div id=\"app\"")) failures.push("web UI index did not serve");

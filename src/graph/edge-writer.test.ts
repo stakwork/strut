@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Bolt, int } from "./bolt.js";
-import { seedVeinDomain } from "./schema-seed.js";
+import { seedStrutDomain } from "./schema-seed.js";
 import { GraphValidationError, NodeWriter } from "./node-writer.js";
 import { EdgeWriter, edgeKeyFor, isRegisteredEdge, typeLabelOf } from "./edge-writer.js";
 import { graphSnapshot, testGraphConfig, wipeGraph } from "./test-util.js";
@@ -11,26 +11,26 @@ const cfg = testGraphConfig();
 
 describe("edge registry checks (pure)", () => {
   it("resolves the type label from jarvis's label set", () => {
-    assert.equal(typeLabelOf(["Data_Bank", "Domain_vein", "Node", "VeinRun"]), "VeinRun");
+    assert.equal(typeLabelOf(["Data_Bank", "Domain_strut", "Node", "StrutRun"]), "StrutRun");
     assert.equal(typeLabelOf(["Node", "Data_Bank", "Concept", "Domain_general"]), "Concept");
     assert.equal(typeLabelOf(["Node", "Data_Bank"]), undefined);
   });
   it("matches registry rows; ACCESSED accepts any target", () => {
-    assert.equal(isRegisteredEdge("IN_RUN", "VeinAgentSession", "VeinRun"), true);
-    assert.equal(isRegisteredEdge("IN_RUN", "VeinRun", "VeinAgentSession"), false);
-    assert.equal(isRegisteredEdge("VERSION_OF", "VeinStepVersion", "VeinStep"), true);
-    assert.equal(isRegisteredEdge("VERSION_OF", "VeinStepVersion", "VeinWorkflow"), false);
-    assert.equal(isRegisteredEdge("ACCESSED", "VeinToolCall", "Concept"), true);
-    assert.equal(isRegisteredEdge("ACCESSED", "VeinToolCall", ""), true);
-    assert.equal(isRegisteredEdge("ACCESSED", "VeinRun", "Concept"), false);
-    assert.equal(isRegisteredEdge("HAS_TURN", "VeinChat", "VeinTurn"), false);
+    assert.equal(isRegisteredEdge("IN_RUN", "StrutAgentSession", "StrutRun"), true);
+    assert.equal(isRegisteredEdge("IN_RUN", "StrutRun", "StrutAgentSession"), false);
+    assert.equal(isRegisteredEdge("VERSION_OF", "StrutStepVersion", "StrutStep"), true);
+    assert.equal(isRegisteredEdge("VERSION_OF", "StrutStepVersion", "StrutWorkflow"), false);
+    assert.equal(isRegisteredEdge("ACCESSED", "StrutToolCall", "Concept"), true);
+    assert.equal(isRegisteredEdge("ACCESSED", "StrutToolCall", ""), true);
+    assert.equal(isRegisteredEdge("ACCESSED", "StrutRun", "Concept"), false);
+    assert.equal(isRegisteredEdge("HAS_TURN", "StrutChat", "StrutTurn"), false);
   });
   it("edge_key is the lowercased type", () => {
     assert.equal(edgeKeyFor("IN_RUN"), "in_run");
   });
 });
 
-describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI not set" }, () => {
+describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let bolt: Bolt;
   let nodes: NodeWriter;
   let edges: EdgeWriter;
@@ -46,13 +46,13 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
   });
   beforeEach(async () => {
     await wipeGraph(bolt);
-    await seedVeinDomain(bolt);
+    await seedStrutDomain(bolt);
     nodes = new NodeWriter(bolt);
     edges = new EdgeWriter(bolt);
     const rs = await nodes.writeMany([
-      { type: "VeinRun", data: { run_id: "r1", workflow_name: "wf", status: "ok", started_at: 1 } },
-      { type: "VeinAgentSession", data: { run_id: "r1", path: "wf/agent" } },
-      { type: "VeinToolCall", data: { run_id: "r1", path: "wf/agent", seq: 0, tool_name: "search" } },
+      { type: "StrutRun", data: { run_id: "r1", workflow_name: "wf", status: "ok", started_at: 1 } },
+      { type: "StrutAgentSession", data: { run_id: "r1", path: "wf/agent" } },
+      { type: "StrutToolCall", data: { run_id: "r1", path: "wf/agent", seq: 0, tool_name: "search" } },
     ]);
     [run, session, call] = rs.map((r) => r.ref_id) as [string, string, string];
   });
@@ -89,7 +89,7 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
     assert.equal(b.created, false);
     assert.equal(b.ref_id, a.ref_id);
     assert.deepEqual(await graphSnapshot(bolt), snap);
-    const count = await bolt.run(`MATCH (:VeinAgentSession)-[r:IN_RUN]->(:VeinRun) RETURN count(r) AS c`);
+    const count = await bolt.run(`MATCH (:StrutAgentSession)-[r:IN_RUN]->(:StrutRun) RETURN count(r) AS c`);
     assert.equal(count[0]!["c"], 1);
   });
 
@@ -159,8 +159,8 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
     await assert.rejects(edges.update({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run }, { set: { x: 1 } }), (e: any) => e.code === "NOT_FOUND");
   });
 
-  it("ACCESSED may point at any node, including a jarvis-owned one; source must still be a Vein node", async () => {
-    // A jarvis-style Concept node: no Vein label, plain Data_Bank ref_id.
+  it("ACCESSED may point at any node, including a jarvis-owned one; source must still be a Strut node", async () => {
+    // A jarvis-style Concept node: no Strut label, plain Data_Bank ref_id.
     const concept = randomUUID();
     await bolt.run(`CREATE (:Concept:Node:Data_Bank:Domain_general {ref_id: $r, node_key: "concept-x", namespace: "default", name: "x"})`, { r: concept });
     const a = await edges.write({ edge: "ACCESSED", source_ref_id: call, target_ref_id: concept });
@@ -170,13 +170,13 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "VEIN_TEST_NEO4J_URI n
   });
 
   it("IS_ALIAS rewrite lands the edge on the canonical node", async () => {
-    const canonical = (await nodes.write({ type: "VeinRun", data: { run_id: "canon", workflow_name: "wf", status: "ok", started_at: 1 } })).ref_id;
+    const canonical = (await nodes.write({ type: "StrutRun", data: { run_id: "canon", workflow_name: "wf", status: "ok", started_at: 1 } })).ref_id;
     // Park `run` as an alias of `canonical` (what jarvis node-merge does).
     await bolt.run(`MATCH (a:Data_Bank {ref_id: $a}), (c:Data_Bank {ref_id: $c}) CREATE (a)-[:IS_ALIAS {ref_id: $e}]->(c)`, { a: run, c: canonical, e: randomUUID() });
     const r = await edges.write({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run });
     assert.equal(r.target_ref_id, canonical);
     assert.equal((await rel(r.ref_id))["tgt"], canonical);
-    const direct = await bolt.run(`MATCH (:VeinAgentSession)-[r:IN_RUN]->(t:VeinRun {ref_id: $t}) RETURN count(r) AS c`, { t: run });
+    const direct = await bolt.run(`MATCH (:StrutAgentSession)-[r:IN_RUN]->(t:StrutRun {ref_id: $t}) RETURN count(r) AS c`, { t: run });
     assert.equal(direct[0]!["c"], 0);
   });
 

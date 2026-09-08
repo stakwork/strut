@@ -14,7 +14,7 @@ import type { SttService } from "./audio/stt.js";
  *     exactly which values to scrub out of the cassette.
  *
  * These are the DEFAULT implementations the standard server injects. Consumers
- * using vein as a library can spread them into — or override them within —
+ * using strut as a library can spread them into — or override them within —
  * their own typed services bag.
  */
 
@@ -276,7 +276,7 @@ export function fileArtifactsCapability(root: string): ArtifactsCapability {
 
 /** The standard capability shape adapters rely on. Consumers extend this with
  *  their own typed services (graph store, llm client, …). */
-export interface VeinCapabilities {
+export interface StrutCapabilities {
   http: HttpCapability;
   secrets: SecretsCapability;
   /** Per-run artifact files. Present on the standard server (rooted in the
@@ -298,7 +298,7 @@ export function standardServices(
     secretsSource?: Record<string, string | undefined>;
     secretStore?: SecretReadable;
   } = {},
-): VeinCapabilities {
+): StrutCapabilities {
   const secrets = opts.secretStore
     ? secretsCapability(opts.secretStore, { envFallback: process.env })
     : secretsCapability(opts.secretsSource);

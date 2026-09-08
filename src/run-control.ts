@@ -23,7 +23,7 @@ export type ControlState = "running" | "pausing" | "paused" | "cancelling";
  *  the generic error path. Detected structurally (`isCancelledError`) rather
  *  than by `instanceof` because SDK stream plumbing may re-wrap errors. */
 export class CancelledError extends Error {
-  readonly isVeinCancelled = true;
+  readonly isStrutCancelled = true;
   constructor(runId: string) {
     super(`Run ${runId} was cancelled`);
     this.name = "CancelledError";
@@ -34,8 +34,8 @@ export class CancelledError extends Error {
 export function isCancelledError(err: unknown): boolean {
   let e: unknown = err;
   for (let depth = 0; depth < 10 && e != null && typeof e === "object"; depth++) {
-    const o = e as { isVeinCancelled?: unknown; name?: unknown; cause?: unknown };
-    if (o.isVeinCancelled === true || o.name === "CancelledError") return true;
+    const o = e as { isStrutCancelled?: unknown; name?: unknown; cause?: unknown };
+    if (o.isStrutCancelled === true || o.name === "CancelledError") return true;
     e = o.cause;
   }
   return false;

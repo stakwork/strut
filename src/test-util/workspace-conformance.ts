@@ -13,7 +13,7 @@ import type { WorkspaceStore } from "../workspace.js";
  */
 
 const STEP_SRC = (type: string, desc: string) => `import { z } from "zod";
-import { defineStep } from "vein";
+import { defineStep } from "strut";
 export default defineStep({
   type: ${JSON.stringify(type)},
   description: ${JSON.stringify(desc)},
@@ -40,7 +40,7 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
     let dir: string;
     let ws: WorkspaceStore;
     beforeEach(async () => {
-      dir = join(tmpdir(), `vein-conf-ws-${randomUUID()}`);
+      dir = join(tmpdir(), `strut-conf-ws-${randomUUID()}`);
       await mkdir(dir, { recursive: true });
       await impl.reset?.();
       ws = await impl.make(dir);

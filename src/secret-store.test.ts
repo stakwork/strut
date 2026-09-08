@@ -11,7 +11,7 @@ import {
   isValidSecretName,
 } from "./secret-store.js";
 import { secretsCapability } from "./capabilities.js";
-import { createVein } from "./createVein.js";
+import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 
@@ -79,7 +79,7 @@ describe("MemorySecretStore", () => {
 describe("FileSecretStore", () => {
   let tempDir: string;
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-secrets-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-secrets-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
   afterEach(async () => {
@@ -136,15 +136,15 @@ describe("secretsCapability (store-backed)", () => {
 describe("/secrets endpoints", () => {
   let tempDir: string;
   beforeEach(async () => {
-    tempDir = join(tmpdir(), `vein-secrets-api-${randomUUID()}`);
+    tempDir = join(tmpdir(), `strut-secrets-api-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  async function makeVein() {
-    return createVein({
+  async function makeStrut() {
+    return createStrut({
       workspace: new WorkspaceManager(tempDir),
       store: new MemoryRunStore(),
       secretStore: new MemorySecretStore(),
@@ -154,16 +154,16 @@ describe("/secrets endpoints", () => {
   }
 
   it("PUT then GET returns names only (never the value)", async () => {
-    const vein = await makeVein();
+    const strut = await makeStrut();
 
-    const put = await vein.app.request("/secrets/GITHUB_TOKEN", {
+    const put = await strut.app.request("/secrets/GITHUB_TOKEN", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ value: "ghp_topsecret" }),
     });
     assert.equal(put.status, 200);
 
-    const get = await vein.app.request("/secrets");
+    const get = await strut.app.request("/secrets");
     assert.equal(get.status, 200);
     const body = (await get.json()) as { secrets: { name: string }[] };
     assert.deepEqual(
@@ -174,27 +174,27 @@ describe("/secrets endpoints", () => {
   });
 
   it("the stored value is readable by the secrets capability", async () => {
-    const vein = await makeVein();
-    await vein.app.request("/secrets/MY_KEY", {
+    const strut = await makeStrut();
+    await strut.app.request("/secrets/MY_KEY", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ value: "v-123" }),
     });
-    const svc = vein.services as { secrets: { get(n: string): Promise<string | undefined> } };
+    const svc = strut.services as { secrets: { get(n: string): Promise<string | undefined> } };
     assert.equal(await svc.secrets.get("MY_KEY"), "v-123");
   });
 
   it("rejects an invalid name (400) and a missing value (400)", async () => {
-    const vein = await makeVein();
+    const strut = await makeStrut();
 
-    const badName = await vein.app.request("/secrets/bad-name", {
+    const badName = await strut.app.request("/secrets/bad-name", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ value: "x" }),
     });
     assert.equal(badName.status, 400);
 
-    const noValue = await vein.app.request("/secrets/GOOD", {
+    const noValue = await strut.app.request("/secrets/GOOD", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -203,29 +203,29 @@ describe("/secrets endpoints", () => {
   });
 
   it("DELETE removes a secret; deleting a missing one is 404", async () => {
-    const vein = await makeVein();
-    await vein.app.request("/secrets/TMP", {
+    const strut = await makeStrut();
+    await strut.app.request("/secrets/TMP", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ value: "x" }),
     });
 
-    const del = await vein.app.request("/secrets/TMP", { method: "DELETE" });
+    const del = await strut.app.request("/secrets/TMP", { method: "DELETE" });
     assert.equal(del.status, 200);
 
-    const again = await vein.app.request("/secrets/TMP", { method: "DELETE" });
+    const again = await strut.app.request("/secrets/TMP", { method: "DELETE" });
     assert.equal(again.status, 404);
   });
 
   it("returns 501 when the consumer injected their own secrets capability", async () => {
-    const vein = await createVein({
+    const strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),
       store: new MemoryRunStore(),
       services: { secrets: { async get() { return "injected"; } } },
       serveUi: false,
       enableChat: false,
     });
-    const get = await vein.app.request("/secrets");
+    const get = await strut.app.request("/secrets");
     assert.equal(get.status, 501);
   });
 });

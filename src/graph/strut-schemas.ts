@@ -1,9 +1,9 @@
 /**
- * The Vein schema library — a TypeScript mirror of one jarvis schema library
- * (`schema_library.py` in jarvis-backend). Every node type vein writes to the
+ * The Strut schema library — a TypeScript mirror of one jarvis schema library
+ * (`schema_library.py` in jarvis-backend). Every node type strut writes to the
  * graph is declared here, and ONLY here: the node writer rejects any type not
- * in `VEIN_SCHEMAS`, any attribute not declared on its schema, and any edge
- * not in `VEIN_EDGES` (plan §6).
+ * in `STRUT_SCHEMAS`, any attribute not declared on its schema, and any edge
+ * not in `STRUT_EDGES` (plan §6).
  *
  * Vocabulary (labels + edges) comes from the label registry in
  * `plans/generic-storage.md`; key/index choices from `jarvis-graph-compat.md`
@@ -13,16 +13,16 @@
  * Attribute grammar (jarvis `_assert_is_valid_schema`):
  *   string | boolean | int | float | datetime | list, optionally `?`-prefixed
  *   for optional. `datetime` values are normalized to epoch SECONDS (int)
- *   before write. jarvis also knows `complex`; vein never uses it.
+ *   before write. jarvis also knows `complex`; strut never uses it.
  */
 
 export type AttrBase = "string" | "boolean" | "int" | "float" | "datetime" | "list";
 export type AttrType = AttrBase | `?${AttrBase}`;
 
-export interface VeinSchema {
+export interface StrutSchema {
   type: string;
   parent: "Thing";
-  domain: "Vein";
+  domain: "Strut";
   /** `-`-joined spec: token 0 = type.lower(), then attribute names. */
   node_key: string;
   /** Fields that build `Data_Bank` (search text + `text_embeddings`), in
@@ -43,11 +43,11 @@ export interface VeinSchema {
 }
 
 /** One row of the edge registry: (source label, edge type, target label). */
-export interface VeinEdgeDef {
+export interface StrutEdgeDef {
   edge: string;
   source: string;
   target: string;
-  /** Jarvis schema types outside the Vein domain that this edge points at
+  /** Jarvis schema types outside the Strut domain that this edge points at
    *  (e.g. `Person`, `Thing`). Seeding skips the edge-schema row when the
    *  target Schema node is absent (standalone mode without that type). */
   note?: string;
@@ -55,11 +55,11 @@ export interface VeinEdgeDef {
 
 // ── Constants shared with jarvis ────────────────────────────────────────────
 
-export const VEIN_DOMAIN = "Vein";
-export const VEIN_DOMAIN_LABEL = "Domain_vein";
+export const STRUT_DOMAIN = "Strut";
+export const STRUT_DOMAIN_LABEL = "Domain_strut";
 export const THING_TYPE = "Thing";
 
-/** Colour pair for every Vein type (one of jarvis's `get_color_pairs()`). */
+/** Colour pair for every Strut type (one of jarvis's `get_color_pairs()`). */
 const COLORS = { primary_color: "#1D3140", secondary_color: "#4FA7D9" };
 
 /**
@@ -98,7 +98,7 @@ export const THING_INHERITED_ATTRIBUTES: Record<string, AttrType> = {
 };
 
 /** jarvis `USAGE_ATTRIBUTES` — never written by jarvis, read by its
- *  `?sort=usage` and search tiebreak. Vein owns updating them. */
+ *  `?sort=usage` and search tiebreak. Strut owns updating them. */
 export const USAGE_ATTRIBUTES: Record<string, AttrType> = {
   usage_count: "?int",
   usage_count_30d: "?int",
@@ -145,25 +145,25 @@ export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "
  *  payloads stay in the run/chat log behind `log_ref`. */
 export const PREVIEW_MAX_CHARS = 500;
 
-// ── The nine Vein node types ────────────────────────────────────────────────
+// ── The nine Strut node types ────────────────────────────────────────────────
 
 const base = {
   parent: "Thing",
-  domain: "Vein",
+  domain: "Strut",
   icon: "NodesIcon",
   shape: "sphere",
   ...COLORS,
 } as const;
 
-export const VEIN_SCHEMAS: readonly VeinSchema[] = [
+export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
-    type: "VeinWorkflow",
-    node_key: "veinworkflow-name",
+    type: "StrutWorkflow",
+    node_key: "strutworkflow-name",
     index: ["name", "description"],
     title_key: "name",
     description_key: "description",
-    type_description: "A vein workflow by name — the stable identity across versions",
+    type_description: "A strut workflow by name — the stable identity across versions",
     attributes: {
       name: "string",
       description: "?string",
@@ -176,13 +176,13 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinWorkflowVersion",
-    node_key: "veinworkflowversion-name-content_hash",
+    type: "StrutWorkflowVersion",
+    node_key: "strutworkflowversion-name-content_hash",
     index: ["name", "description"],
     vector_index: ["input_schema", "output_schema"],
     title_key: "name",
     description_key: "description",
-    type_description: "One content-hashed version of a vein workflow",
+    type_description: "One content-hashed version of a strut workflow",
     attributes: {
       name: "string",
       content_hash: "string",
@@ -199,13 +199,13 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinStep",
-    node_key: "veinstep-step_type",
+    type: "StrutStep",
+    node_key: "strutstep-step_type",
     index: ["step_type", "description"],
     vector_index: ["input_schema", "output_schema"],
     title_key: "step_type",
     description_key: "description",
-    type_description: "A published vein step type (custom tier)",
+    type_description: "A published strut step type (custom tier)",
     attributes: {
       step_type: "string",
       description: "?string",
@@ -218,12 +218,12 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinStepVersion",
-    node_key: "veinstepversion-step_type-content_hash",
+    type: "StrutStepVersion",
+    node_key: "strutstepversion-step_type-content_hash",
     index: ["step_type", "description"],
     title_key: "step_type",
     description_key: "description",
-    type_description: "One version of a vein step's source",
+    type_description: "One version of a strut step's source",
     attributes: {
       step_type: "string",
       content_hash: "string",
@@ -237,12 +237,12 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinRun",
-    node_key: "veinrun-run_id",
+    type: "StrutRun",
+    node_key: "strutrun-run_id",
     index: ["workflow_name", "status", "summary"],
     title_key: "workflow_name",
     description_key: "summary",
-    type_description: "One vein workflow run — status, timings, params, and a pointer to its log",
+    type_description: "One strut workflow run — status, timings, params, and a pointer to its log",
     attributes: {
       run_id: "string",
       workflow_name: "string",
@@ -262,12 +262,12 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinAgentSession",
-    node_key: "veinagentsession-run_id-path",
+    type: "StrutAgentSession",
+    node_key: "strutagentsession-run_id-path",
     index: ["prompt_preview", "result_preview"],
     title_key: "path",
     description_key: "prompt_preview",
-    type_description: "One agent-step execution inside a vein run",
+    type_description: "One agent-step execution inside a strut run",
     attributes: {
       run_id: "string",
       path: "string",
@@ -284,12 +284,12 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinToolCall",
-    node_key: "veintoolcall-run_id-path-seq",
+    type: "StrutToolCall",
+    node_key: "struttoolcall-run_id-path-seq",
     index: ["tool_name", "input_preview"],
     title_key: "tool_name",
     description_key: "input_preview",
-    type_description: "One tool call inside a vein agent session",
+    type_description: "One tool call inside a strut agent session",
     attributes: {
       run_id: "string",
       path: "string",
@@ -305,12 +305,12 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinChat",
-    node_key: "veinchat-chat_id",
+    type: "StrutChat",
+    node_key: "strutchat-chat_id",
     index: ["title", "summary"],
     title_key: "title",
     description_key: "summary",
-    type_description: "A long-lived vein chat",
+    type_description: "A long-lived strut chat",
     attributes: {
       chat_id: "string",
       title: "?string",
@@ -325,12 +325,12 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
   },
   {
     ...base,
-    type: "VeinTurn",
-    node_key: "veinturn-chat_id-turn",
+    type: "StrutTurn",
+    node_key: "strutturn-chat_id-turn",
     index: ["user_text_preview"],
     title_key: "user_text_preview",
     description_key: "assistant_text_preview",
-    type_description: "One turn of a vein chat",
+    type_description: "One turn of a strut chat",
     attributes: {
       chat_id: "string",
       turn: "int",
@@ -344,24 +344,24 @@ export const VEIN_SCHEMAS: readonly VeinSchema[] = [
 
 // ── Edge registry ───────────────────────────────────────────────────────────
 
-/** Every (source, edge, target) vein may write. `ACCESSED` is declared
+/** Every (source, edge, target) strut may write. `ACCESSED` is declared
  *  against `Thing` — provenance may point at ANY node — and the writer
  *  accepts any target label for it (plan §6 item 6). */
-export const VEIN_EDGES: readonly VeinEdgeDef[] = [
-  { edge: "VERSION_OF", source: "VeinWorkflowVersion", target: "VeinWorkflow" },
-  { edge: "VERSION_OF", source: "VeinStepVersion", target: "VeinStep" },
-  { edge: "ACTIVE_VERSION", source: "VeinWorkflow", target: "VeinWorkflowVersion" },
-  { edge: "ACTIVE_VERSION", source: "VeinStep", target: "VeinStepVersion" },
-  { edge: "USES_STEP", source: "VeinWorkflowVersion", target: "VeinStep" },
-  { edge: "DEPENDS_ON", source: "VeinWorkflowVersion", target: "VeinWorkflow" },
-  { edge: "PUBLISHED_BY", source: "VeinStepVersion", target: "Person", note: "jarvis type; seeded only when Person exists" },
-  { edge: "EXECUTED", source: "VeinRun", target: "VeinWorkflowVersion" },
-  { edge: "PROMOTED_FROM", source: "VeinWorkflowVersion", target: "VeinRun" },
-  { edge: "IN_RUN", source: "VeinAgentSession", target: "VeinRun" },
-  { edge: "IN_SESSION", source: "VeinToolCall", target: "VeinAgentSession" },
-  { edge: "SPAWNED", source: "VeinChat", target: "VeinRun" },
-  { edge: "IN_CHAT", source: "VeinTurn", target: "VeinChat" },
-  { edge: "ACCESSED", source: "VeinToolCall", target: "Thing", note: "any node" },
+export const STRUT_EDGES: readonly StrutEdgeDef[] = [
+  { edge: "VERSION_OF", source: "StrutWorkflowVersion", target: "StrutWorkflow" },
+  { edge: "VERSION_OF", source: "StrutStepVersion", target: "StrutStep" },
+  { edge: "ACTIVE_VERSION", source: "StrutWorkflow", target: "StrutWorkflowVersion" },
+  { edge: "ACTIVE_VERSION", source: "StrutStep", target: "StrutStepVersion" },
+  { edge: "USES_STEP", source: "StrutWorkflowVersion", target: "StrutStep" },
+  { edge: "DEPENDS_ON", source: "StrutWorkflowVersion", target: "StrutWorkflow" },
+  { edge: "PUBLISHED_BY", source: "StrutStepVersion", target: "Person", note: "jarvis type; seeded only when Person exists" },
+  { edge: "EXECUTED", source: "StrutRun", target: "StrutWorkflowVersion" },
+  { edge: "PROMOTED_FROM", source: "StrutWorkflowVersion", target: "StrutRun" },
+  { edge: "IN_RUN", source: "StrutAgentSession", target: "StrutRun" },
+  { edge: "IN_SESSION", source: "StrutToolCall", target: "StrutAgentSession" },
+  { edge: "SPAWNED", source: "StrutChat", target: "StrutRun" },
+  { edge: "IN_CHAT", source: "StrutTurn", target: "StrutChat" },
+  { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
 ];
 
 /** Edge types whose declared target is a wildcard (any node label). */
@@ -378,21 +378,21 @@ export function typeLabelOf(labels: string[]): string | undefined {
   return labels.find((l) => !STRUCTURAL_LABEL.test(l));
 }
 
-const BY_TYPE = new Map(VEIN_SCHEMAS.map((s) => [s.type, s]));
+const BY_TYPE = new Map(STRUT_SCHEMAS.map((s) => [s.type, s]));
 
 /** Exact-match lookup (jarvis resolves case-insensitively; we don't). */
-export function getVeinSchema(type: string): VeinSchema | undefined {
+export function getStrutSchema(type: string): StrutSchema | undefined {
   return BY_TYPE.get(type);
 }
 
-export function isVeinType(type: string): boolean {
+export function isStrutType(type: string): boolean {
   return BY_TYPE.has(type);
 }
 
 /** A schema's full attribute map: its own attributes + `Thing`'s. This is
  *  what jarvis's `get_schema` returns (minus the core keys), so it is what
  *  the validator checks payloads against. */
-export function effectiveAttributes(schema: VeinSchema): Record<string, AttrType> {
+export function effectiveAttributes(schema: StrutSchema): Record<string, AttrType> {
   return { ...THING_INHERITED_ATTRIBUTES, ...schema.attributes };
 }
 
@@ -420,17 +420,17 @@ export function vectorIndexName(type: string, prop: string): string {
 }
 
 /** Node-key tokens after the type token. */
-export function nodeKeyFields(schema: VeinSchema): string[] {
+export function nodeKeyFields(schema: StrutSchema): string[] {
   return schema.node_key.split("-").slice(1);
 }
 
 /**
- * Searchable attributes across the Vein library, per jarvis's tier-1 rule
+ * Searchable attributes across the Strut library, per jarvis's tier-1 rule
  * for schemas with an explicit `index` (`get_searchable_attributes_from_schema`):
  * index fields + title_key + description_key. Used to build the domain
  * fulltext index (sorted, plus `node_key` appended by the seeder).
  */
-export function searchableAttributes(schemas: readonly VeinSchema[] = VEIN_SCHEMAS): string[] {
+export function searchableAttributes(schemas: readonly StrutSchema[] = STRUT_SCHEMAS): string[] {
   const out = new Set<string>();
   for (const s of schemas) {
     for (const f of s.index) out.add(f);
@@ -442,7 +442,7 @@ export function searchableAttributes(schemas: readonly VeinSchema[] = VEIN_SCHEM
 
 /** (type, property) pairs that declare a per-property vector index. */
 export function vectorIndexedPairs(
-  schemas: readonly VeinSchema[] = VEIN_SCHEMAS,
+  schemas: readonly StrutSchema[] = STRUT_SCHEMAS,
 ): Array<{ type: string; prop: string }> {
   const out: Array<{ type: string; prop: string }> = [];
   for (const s of schemas) for (const p of s.vector_index ?? []) out.push({ type: s.type, prop: p });
@@ -464,8 +464,8 @@ const ATTR_TYPES = new Set<string>(["string", "boolean", "int", "float", "dateti
  * violation. Runs once at module load so a bad edit fails fast.
  */
 export function assertLibraryWellFormed(
-  schemas: readonly VeinSchema[] = VEIN_SCHEMAS,
-  edges: readonly VeinEdgeDef[] = VEIN_EDGES,
+  schemas: readonly StrutSchema[] = STRUT_SCHEMAS,
+  edges: readonly StrutEdgeDef[] = STRUT_EDGES,
 ): void {
   const types = new Set<string>();
   for (const s of schemas) {
@@ -473,7 +473,7 @@ export function assertLibraryWellFormed(
     if (types.has(s.type)) throw new Error(`schema ${s.type}: duplicate type`);
     types.add(s.type);
     if (s.parent !== THING_TYPE) throw new Error(`schema ${s.type}: parent must be Thing`);
-    if (s.domain !== VEIN_DOMAIN) throw new Error(`schema ${s.type}: domain must be Vein`);
+    if (s.domain !== STRUT_DOMAIN) throw new Error(`schema ${s.type}: domain must be Strut`);
 
     for (const [name, t] of Object.entries(s.attributes)) {
       if (!IDENT.test(name)) throw new Error(`schema ${s.type}: attribute "${name}" is not a bare identifier`);
@@ -507,9 +507,9 @@ export function assertLibraryWellFormed(
 
   for (const e of edges) {
     if (!EDGE_TYPE.test(e.edge)) throw new Error(`edge ${e.edge}: type must match ^[A-Z][A-Z0-9_]*$`);
-    if (!types.has(e.source)) throw new Error(`edge ${e.edge}: source "${e.source}" is not a Vein type`);
+    if (!types.has(e.source)) throw new Error(`edge ${e.edge}: source "${e.source}" is not a Strut type`);
     if (!types.has(e.target) && !e.note) {
-      throw new Error(`edge ${e.edge}: target "${e.target}" is not a Vein type (add a note if it is a jarvis type)`);
+      throw new Error(`edge ${e.edge}: target "${e.target}" is not a Strut type (add a note if it is a jarvis type)`);
     }
   }
 }

@@ -137,7 +137,7 @@ export function buildTools(deps: AiDeps) {
 
     create_step: tool({
       description:
-        "Author a NEW custom step type from TypeScript source. The code is a self-contained vein step: `import { z, defineStep } from \"vein\"` and `export default defineStep({ type, input, output, async run(cfg, ctx) {...} })`. Reach external capabilities through `ctx.services` — for network calls use `ctx.services.http(url, opts)` and for credentials `ctx.services.secrets.get(name)` (NOT the global fetch / process.env), so the step is recordable/replayable by run_step's cassette and secrets are scrubbed from fixtures. Call get_step(\"http\") to read the canonical ctx.services.http example. Prefer raw REST over vendor SDKs; only import a package other than \"vein\" if the deployment has pre-installed it. Use this only for step types that don't exist yet; use edit_step to change an existing one. Publishing as a new step creates version v1.",
+        "Author a NEW custom step type from TypeScript source. The code is a self-contained strut step: `import { z, defineStep } from \"strut\"` and `export default defineStep({ type, input, output, async run(cfg, ctx) {...} })`. Reach external capabilities through `ctx.services` — for network calls use `ctx.services.http(url, opts)` and for credentials `ctx.services.secrets.get(name)` (NOT the global fetch / process.env), so the step is recordable/replayable by run_step's cassette and secrets are scrubbed from fixtures. Call get_step(\"http\") to read the canonical ctx.services.http example. Prefer raw REST over vendor SDKs; only import a package other than \"strut\" if the deployment has pre-installed it. Use this only for step types that don't exist yet; use edit_step to change an existing one. Publishing as a new step creates version v1.",
       inputSchema: z.object({
         name: z
           .string()
@@ -147,7 +147,7 @@ export function buildTools(deps: AiDeps) {
         code: z
           .string()
           .describe(
-            "Full TypeScript source. Shape: import { z, defineStep } from \"vein\"; export default defineStep({ type: \"<name>\", input: z.object({...}), output: z.any(), async run(cfg, ctx) { /* use ctx.services for capabilities */ } });",
+            "Full TypeScript source. Shape: import { z, defineStep } from \"strut\"; export default defineStep({ type: \"<name>\", input: z.object({...}), output: z.any(), async run(cfg, ctx) { /* use ctx.services for capabilities */ } });",
           ),
         description: z.string().optional(),
       }),
@@ -651,7 +651,7 @@ export function buildTools(deps: AiDeps) {
       ? {
           graph_query: tool({
             description:
-              "Run a READ-ONLY Cypher query against the vein graph (Neo4j) and get rows back. Use it to VERIFY what a workflow's graph/* steps actually wrote — count nodes/edges by type, read back exact properties, check edge fan-out — or to inspect graph-backed workspace state. " +
+              "Run a READ-ONLY Cypher query against the strut graph (Neo4j) and get rows back. Use it to VERIFY what a workflow's graph/* steps actually wrote — count nodes/edges by type, read back exact properties, check edge fan-out — or to inspect graph-backed workspace state. " +
               "Writes (CREATE/MERGE/SET/DELETE/…, apoc.*) are rejected; write through the graph/* steps. " +
               `Conventions: every node has its type as a label plus :Node:Data_Bank and the properties {ref_id, node_key, namespace}; the deployment's default namespace is "${deps.graph.cfg.namespace}" — filter on it (n.namespace = $ns) so you don't read across partitions. Edge types are UPPER_SNAKE. ` +
               "Output is capped: rows (default 100), long strings truncated, embedding vectors collapsed. Prefer aggregates (count, collect(DISTINCT …)) and LIMIT over dumping nodes. " +

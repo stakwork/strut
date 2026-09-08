@@ -1,10 +1,10 @@
 /**
  * Live schema resolution — how the backend knows about node types that are
- * NOT Vein's own (Document, EvalSet, Concept, …): exactly the way jarvis
+ * NOT Strut's own (Document, EvalSet, Concept, …): exactly the way jarvis
  * does, from the `:Schema` meta-graph in the database.
  *
  *   - type canonicalization (`node_type_helper.resolve_canonical_node_type`):
- *     Vein registry exact match → live label catalog, case-insensitive →
+ *     Strut registry exact match → live label catalog, case-insensitive →
  *     `Schema.type`, case-insensitive;
  *   - the merged schema (`schema_crud.get_schema`): the node's own props plus
  *     every CHILD_OF ancestor's, child wins, ancestors' `type_description`
@@ -18,7 +18,7 @@
  *     allowlist;
  *   - `create_schema_if_missing` (`schema_crud.create_edge_schema`).
  *
- * Vein's own types resolve from the in-code registry (`vein-schemas.ts`)
+ * Strut's own types resolve from the in-code registry (`strut-schemas.ts`)
  * without touching the DB. Everything is cached per resolver with a short
  * TTL, like jarvis's in-process caches.
  */
@@ -27,12 +27,12 @@ import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, txRows, type Row } from "./bolt.js";
 import {
   SCHEMA_CORE_PROPERTIES,
-  VEIN_DOMAIN,
-  VEIN_SCHEMAS,
+  STRUT_DOMAIN,
+  STRUT_SCHEMAS,
   effectiveAttributes,
-  getVeinSchema,
-  type VeinSchema,
-} from "./vein-schemas.js";
+  getStrutSchema,
+  type StrutSchema,
+} from "./strut-schemas.js";
 
 /** jarvis `ApplicationConstant.EDGE_TYPES` — edge types accepted WITHOUT an
  *  edge schema. */
@@ -51,7 +51,7 @@ export const EDGE_TYPES_ALLOWLIST = new Set([
 const MAX_ANCESTOR_WALK_DEPTH = 10;
 const TYPE_GRAMMAR = /^\??(string|boolean|int|float|complex|datetime|list)$/;
 
-/** The schema shape the writers validate against — Vein registry entries
+/** The schema shape the writers validate against — Strut registry entries
  *  and DB-resolved jarvis schemas both reduce to this. */
 export interface NodeSchema {
   /** Canonical type label. */
@@ -70,8 +70,8 @@ export interface NodeSchema {
   /** `Domain_<x>` labels to stamp on nodes of this type (already filtered
    *  by hidden types/domains). */
   domainLabels: string[];
-  /** True for Vein's own types (closed registry rules apply). */
-  isVein: boolean;
+  /** True for Strut's own types (closed registry rules apply). */
+  isStrut: boolean;
 }
 
 export interface EdgeSchemaMatch {
@@ -111,7 +111,7 @@ export class SchemaResolver {
   }
 
   /**
-   * Canonical type for a user-supplied string, or null. Vein types must
+   * Canonical type for a user-supplied string, or null. Strut types must
    * match exactly (registry); everything else resolves case-insensitively
    * against `Schema.type` first, then live labels — exact case preferred in
    * both. Schema first, because a long-lived jarvis graph carries LEGACY
@@ -124,7 +124,7 @@ export class SchemaResolver {
   async resolveType(raw: string, tx?: ManagedTransaction): Promise<string | null> {
     const key = raw.trim();
     if (!key) return null;
-    if (getVeinSchema(key)) return key;
+    if (getStrutSchema(key)) return key;
     const c = this.types.get(key.toLowerCase());
     if (this.fresh(c)) return c.value;
     let out: string | null = null;
@@ -144,7 +144,7 @@ export class SchemaResolver {
       );
       if (labels.length) out = String(labels[0]!["label"]);
     }
-    if (out && getVeinSchema(out)) out = getVeinSchema(out)!.type;
+    if (out && getStrutSchema(out)) out = getStrutSchema(out)!.type;
     this.types.set(key.toLowerCase(), { at: Date.now(), value: out });
     return out;
   }
@@ -157,8 +157,8 @@ export class SchemaResolver {
     if (this.fresh(c)) return c.value;
     const hidden = await this.hiddenSets(tx);
     let out: NodeSchema | null;
-    const vein = getVeinSchema(type);
-    if (vein) out = fromVein(vein, hidden);
+    const strut = getStrutSchema(type);
+    if (strut) out = fromStrut(strut, hidden);
     else out = await this.fromDb(type, hidden, tx);
     this.schemas.set(type, { at: Date.now(), value: out });
     return out;
@@ -211,7 +211,7 @@ export class SchemaResolver {
       title_key: typeof merged["title_key"] === "string" ? (merged["title_key"] as string) : undefined,
       description_key: typeof merged["description_key"] === "string" ? (merged["description_key"] as string) : undefined,
       domainLabels,
-      isVein: false,
+      isStrut: false,
     };
   }
 
@@ -343,25 +343,25 @@ export class SchemaResolver {
   }
 }
 
-/** A Vein registry schema as a `NodeSchema` (Thing's attributes inherited,
- *  `Domain_vein` unless hidden). */
-export function fromVein(vein: VeinSchema, hidden?: { domains: Set<string>; types: Set<string> }): NodeSchema {
-  const hide = hidden ? hidden.types.has(vein.type) || hidden.types.has("Thing") || hidden.domains.has(VEIN_DOMAIN.toLowerCase()) : false;
+/** A Strut registry schema as a `NodeSchema` (Thing's attributes inherited,
+ *  `Domain_strut` unless hidden). */
+export function fromStrut(strut: StrutSchema, hidden?: { domains: Set<string>; types: Set<string> }): NodeSchema {
+  const hide = hidden ? hidden.types.has(strut.type) || hidden.types.has("Thing") || hidden.domains.has(STRUT_DOMAIN.toLowerCase()) : false;
   return {
-    type: vein.type,
-    parent: vein.parent,
-    node_key: vein.node_key,
-    index: [...vein.index],
-    vector_index: [...(vein.vector_index ?? [])],
-    attributes: { ...effectiveAttributes(vein) },
-    title_key: vein.title_key,
-    description_key: vein.description_key,
-    domainLabels: hide ? [] : [`Domain_${VEIN_DOMAIN.toLowerCase()}`],
-    isVein: true,
+    type: strut.type,
+    parent: strut.parent,
+    node_key: strut.node_key,
+    index: [...strut.index],
+    vector_index: [...(strut.vector_index ?? [])],
+    attributes: { ...effectiveAttributes(strut) },
+    title_key: strut.title_key,
+    description_key: strut.description_key,
+    domainLabels: hide ? [] : [`Domain_${STRUT_DOMAIN.toLowerCase()}`],
+    isStrut: true,
   };
 }
 
-/** Every Vein registry schema as `NodeSchema` (no DB, no hidden filtering). */
-export function veinNodeSchemas(): NodeSchema[] {
-  return VEIN_SCHEMAS.map((s) => fromVein(s));
+/** Every Strut registry schema as `NodeSchema` (no DB, no hidden filtering). */
+export function strutNodeSchemas(): NodeSchema[] {
+  return STRUT_SCHEMAS.map((s) => fromStrut(s));
 }

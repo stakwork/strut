@@ -15,10 +15,10 @@
  *
  * Hono's node-ws adapter doesn't support @hono/node-server 2.x yet, and the
  * upgrade has to happen on the Node server anyway, so this hooks `ws`
- * straight onto the http.Server that `listen()` creates. Vein's first
+ * straight onto the http.Server that `listen()` creates. Strut's first
  * client-to-server streaming route; the SSE-based rest is untouched.
  *
- * Auth: `Authorization: Bearer <VEIN_API_KEY>` or `?key=` — a browser's
+ * Auth: `Authorization: Bearer <STRUT_API_KEY>` or `?key=` — a browser's
  * WebSocket cannot set headers.
  */
 import type { IncomingMessage, Server } from "node:http";
@@ -30,11 +30,11 @@ import type { SttService, SttStream, SttStreamOptions } from "./stt.js";
 export const AUDIO_STREAM_PATH = "/audio/stream";
 
 export interface AttachOptions {
-  /** Mount prefix when vein sits under a parent router (e.g. `/lab`). */
+  /** Mount prefix when strut sits under a parent router (e.g. `/lab`). */
   basePath?: string;
   path?: string;
-  /** Replace the default `VEIN_API_KEY` check (Bearer or `?key=`) — a host
-   *  that gates vein behind its own credential applies it here, since an
+  /** Replace the default `STRUT_API_KEY` check (Bearer or `?key=`) — a host
+   *  that gates strut behind its own credential applies it here, since an
    *  upgrade bypasses its HTTP middleware. */
   authorize?: (req: IncomingMessage, url: URL) => boolean;
 }
@@ -49,7 +49,7 @@ export interface AudioUpgradeHandler {
 }
 
 /** The dictation socket's upgrade handler, for hosts that own the Node
- *  server themselves (e.g. an Express app that bridges `vein.app`). */
+ *  server themselves (e.g. an Express app that bridges `strut.app`). */
 export function createAudioUpgradeHandler(stt: SttService, opts: AttachOptions = {}): AudioUpgradeHandler {
   const path = (opts.basePath ?? "") + (opts.path ?? AUDIO_STREAM_PATH);
   const wss = new WebSocketServer({ noServer: true });
