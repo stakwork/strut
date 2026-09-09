@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build && npm --prefix web install && npm --prefix web run build",
     "build:web": "npm --prefix web run build",
     "package:desktop": "node scripts/package-desktop.mjs",
     "dev": "npm run build:web && tsx --env-file=.env src/server.ts",
