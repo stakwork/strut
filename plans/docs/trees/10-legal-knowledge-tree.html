@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Code: one concept, all the way down</title>
+    <title>Legal: the same tree, a different domain</title>
     <style>
       html, body { margin: 0; height: 100%; background: #0a0a0a; }
       #app { width: 100vw; height: 100vh; }
@@ -12,7 +12,7 @@
     <div id="app"></div>
     <script src="https://unpkg.com/system-canvas-standalone@latest/dist/system-canvas.min.js"></script>
     <script>
-      // Concept → File → Function/Class/Endpoint → Datamodel. 8 nodes.
+      // Law → practice area and drafting guidance → regulations, doctrine, matters, playbook entries, clauses. Same scores, same edges. 17 nodes.
 
       const HUE = {
         repository: '#f59e0b', concept: '#34d399', file: '#38bdf8', function: '#a78bfa',
@@ -90,27 +90,48 @@
       const canvas = {
         theme: { base: 'midnight' },
         nodes: [
-          N("ws", "concept", "Workspaces", -100, -200, {"freshness": "fresh", "clues": 23, "footer": "touched 2d ago"}),
-          N("f1", "file", "src/services/workspace.ts", -360, -20, {"inDocs": true, "importance": 0.92, "freshness": "fresh"}),
-          N("f2", "file", "src/app/api/workspaces/\nroute.ts", 140, -20, {"inDocs": true, "importance": 0.81, "freshness": "fresh"}, {"height": 88}),
-          N("fn", "function", "createWorkspace()", -460, 150, {"callers": 6}),
-          N("cls", "class", "WorkspaceService", -720, 150, {}),
-          N("ep", "endpoint", "POST /api/workspaces", 150, 150, {}),
-          N("dm", "datamodel", "Workspace", -460, 320, {}),
-          N("fn2", "function", "validateSlug()", -220, 320, {"callers": 2}),
+          N("law", "law", "Law", -120, -560, {"footer": "12 practice areas · 4 jurisdictions"}),
+          N("anti", "concept", "Practice Area:\nAntitrust", -560, -380, {"freshness": "fresh", "clues": 31, "footer": "touched 3d ago"}, {"height": 100}),
+          N("tips", "concept", "Document Drafting Tips", 320, -380, {"freshness": "aging", "clues": 12, "footer": "touched 5w ago"}),
+          N("sherman", "regulation", "Sherman Act § 1\nrestraint of trade", -900, -180, {"freshness": "fresh", "footer": "15 U.S.C. § 1"}),
+          N("clayton", "regulation", "Clayton Act § 7\nmergers · HSR", -600, -180, {"freshness": "fresh", "footer": "15 U.S.C. § 18"}),
+          N("matter", "matter", "Acme / Globex\nmerger review", -300, -180, {"status": "OPEN", "footer": "filed 2026-08-02"}),
+          N("hsr", "regitem", "HSR filing threshold\n$126.4M (2025)", -600, 10, {"footer": "revised annually"}),
+          N("ror", "doctrine", "Rule of reason", -900, 10, {"freshness": "aging", "footer": "Standard Oil (1911)"}),
+          N("arg", "argument", "No substantial lessening\nof competition", -300, 10, {"footer": "HHI delta 140 · unconcentrated"}),
+          N("fed", "jurisdiction", "US Federal", -900, 200, {}),
+          N("pb", "playbook", "Non-compete: 12 mo firm\n18 mo fallback", 60, -180, {"freshness": "fresh", "footer": "position · fallback · walk-away"}),
+          N("cl", "clause", "Antitrust cooperation\ncovenant", 380, -180, {"risk": "MED"}),
+          N("dt", "definedterm", "“Antitrust Law”", 700, -180, {"footer": "define once, cite everywhere"}),
+          N("ct", "clausetype", "regulatory efforts", 380, 10, {}),
+          N("ex", "excerpt", "“…shall use reasonable best\nefforts to obtain clearance…”", 380, 190, {"footer": "Merger Agreement § 6.4"}),
+          N("ex2", "excerpt", "“Antitrust Law means the\nSherman Act, the Clayton Act…”", 700, 10, {"footer": "Merger Agreement § 1.1"}),
+          N("exhsr", "excerpt", "“…exceeding $126.4 million…”", -600, 190, {"footer": "90 Fed. Reg. 6106"}),
         ],
         edges: [
-          E("ws", "f1", "MODIFIES 0.92", {"color": "#2fa57c", "strokeWidth": 7.5, "fromSide": "bottom", "toSide": "top"}),
-          E("ws", "f2", "MODIFIES 0.81", {"color": "#2fa57c", "strokeWidth": 6.8, "fromSide": "bottom", "toSide": "top"}),
-          E("f1", "fn", "CONTAINS", {"color": "#a78bfa", "strokeWidth": 2.5, "fromSide": "bottom", "toSide": "top"}),
-          E("f1", "cls", "CONTAINS", {"color": "#e879f9", "strokeWidth": 2.5, "fromSide": "bottom", "toSide": "top"}),
-          E("f2", "ep", "CONTAINS", {"color": "#22d3ee", "strokeWidth": 2.5, "fromSide": "bottom", "toSide": "top"}),
-          E("fn", "dm", "CALLS", {"color": "#a78bfa", "strokeWidth": 2, "fromSide": "bottom", "toSide": "top"}),
-          E("fn", "fn2", "CALLS", {"color": "#a78bfa", "strokeWidth": 2}),
-          E("ep", "fn", "CALLS", {"color": "#22d3ee", "strokeWidth": 1.5, "fromSide": "left", "toSide": "right"}),
+          E("law", "anti", "importance 0.93", {"color": "#2fa57c", "strokeWidth": 7.5, "fromSide": "bottom", "toSide": "top"}),
+          E("law", "tips", "importance 0.61", {"color": "#fbbf24", "strokeWidth": 5.5, "fromSide": "bottom", "toSide": "top"}),
+          E("anti", "sherman", "RELEVANT_TO 0.95", {"color": "#2fa57c", "strokeWidth": 7.7, "fromSide": "bottom", "toSide": "top"}),
+          E("anti", "clayton", "RELEVANT_TO 0.88", {"color": "#2fa57c", "strokeWidth": 7.2, "fromSide": "bottom", "toSide": "top"}),
+          E("anti", "matter", "RELEVANT_TO 0.72", {"color": "#2fa57c", "strokeWidth": 6.2, "fromSide": "bottom", "toSide": "top"}),
+          E("clayton", "hsr", "ISSUED_UNDER", {"color": "#60a5fa", "strokeWidth": 2.5, "fromSide": "bottom", "toSide": "top"}),
+          E("sherman", "ror", "INTERPRETED_BY", {"color": "#c084fc", "strokeWidth": 2.5, "fromSide": "bottom", "toSide": "top"}),
+          E("ror", "fed", "APPLIES_IN", {"color": "#94a3b8", "strokeWidth": 2, "fromSide": "bottom", "toSide": "top"}),
+          E("matter", "arg", "HAS_ARGUMENT", {"color": "#fb7185", "strokeWidth": 2.5, "fromSide": "bottom", "toSide": "top"}),
+          E("arg", "ror", "GROUNDED_IN", {"color": "#c084fc", "strokeWidth": 2, "fromSide": "left", "toSide": "right"}),
+          E("hsr", "exhsr", "EVIDENCED_BY", {"color": "#cbd5e1", "strokeWidth": 1.5, "fromSide": "bottom", "toSide": "top"}),
+          E("tips", "pb", "RELEVANT_TO 0.84", {"color": "#2fa57c", "strokeWidth": 7.0, "fromSide": "bottom", "toSide": "top"}),
+          E("tips", "cl", "RELEVANT_TO 0.66", {"color": "#fbbf24", "strokeWidth": 5.8, "fromSide": "bottom", "toSide": "top"}),
+          E("tips", "dt", "RELEVANT_TO 0.41", {"color": "#fbbf24", "strokeWidth": 4.2, "fromSide": "bottom", "toSide": "top"}),
+          E("pb", "sherman", "GOVERNED_BY", {"fromSide": "bottom", "toSide": "right", "color": "#60a5fa", "strokeWidth": 2}),
+          E("cl", "ct", "HAS_TYPE", {"color": "#2dd4bf", "strokeWidth": 2, "fromSide": "bottom", "toSide": "top"}),
+          E("cl", "ex", "HAS_EXCERPT", {"fromSide": "bottom", "toSide": "left", "color": "#cbd5e1", "strokeWidth": 1.5}),
+          E("dt", "ex2", "DEFINED_IN", {"color": "#cbd5e1", "strokeWidth": 1.5, "fromSide": "bottom", "toSide": "top"}),
+          E("cl", "dt", "USES", {"color": "#2dd4bf", "strokeWidth": 1.5, "fromSide": "right", "toSide": "left"}),
+          E("ror", "ct", "GOVERNS", {"fromSide": "bottom", "toSide": "bottom", "color": "#c084fc", "strokeWidth": 1.5}),
         ],
       };
-      SystemCanvas.render(document.getElementById('app'), { canvas, theme, edgeStyle: 'bezier', rootLabel: "Code: one concept, all the way down" });
+      SystemCanvas.render(document.getElementById('app'), { canvas, theme, edgeStyle: 'bezier', rootLabel: "Legal: the same tree, a different domain" });
     </script>
   </body>
 </html>

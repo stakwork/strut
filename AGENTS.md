@@ -2,12 +2,12 @@ GOAL: AS SIMPLE AS POSSIBLE!
 
 # strut
 
-Minimal workflow engine with HTTP API and web UI. See `SPEC.md` for
+Minimal workflow engine with HTTP API and web UI. See `specs/SPEC.md` for
 the full design spec (sections 1-15). This file covers how to work
 on the codebase.
 
-Companion specs: `EVAL_SPEC.md` — how a run gets scored (the measurement
-substrate). `EVOLVE_SPEC.md` — what varies between measured runs: the three
+Companion specs: `specs/EVAL_SPEC.md` — how a run gets scored (the measurement
+substrate). `specs/EVOLVE_SPEC.md` — what varies between measured runs: the three
 self-evolution layers (prompts / environment / structure), what promotes to a
 versioned artifact, and what must never evolve.
 
@@ -27,7 +27,7 @@ versioned artifact, and what must never evolve.
 
 ```
 strut/
-├── SPEC.md                # full design spec — read this first
+├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
