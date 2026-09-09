@@ -862,10 +862,10 @@ with that move.
   canvas clicks pass through for node-to-node transitions).
 - Rebuild with `cd web && npm run build` before testing against the
   engine server.
-- strut is also embedded by **mcp** under `/lab` (it consumes strut as a
-  copied `file:../strut` dep, UI bundled into `web/dist`). After a web
-  change, `mcp`'s `yarn dev` runs `refresh-strut` (rebuild strut + web,
-  reinstall into mcp) before starting on `:3355` — so changes only reach
-  `/lab` after that, not on a bare vite rebuild. (The refresh is **skipped
-  when `$CI` is set** — CI installs/builds strut separately and doesn't have
-  `web/` deps, so running `vite` there would fail.)
+- strut is also embedded by **mcp** (stakwork/stakgraph) under `/lab`. mcp
+  pins this repo as a git dependency
+  (`git+https://github.com/stakwork/strut.git#<commit>`); its `yarn install`
+  runs the `prepare` script here (engine `tsc` + `web/` vite build), so a
+  change only reaches `/lab` once mcp bumps the pinned commit. To develop
+  both at once: `yarn link` here, `yarn link strut` in `mcp/`, then rebuild
+  (`npm run build`, `npm run build:web`) and restart mcp after each change.
