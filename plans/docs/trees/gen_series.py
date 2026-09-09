@@ -59,26 +59,26 @@ PRELUDE = r"""
         workflow: cat('workflow', ':StrutWorkflow', 200, 72, { slots: { topRight: { kind: 'pill', value: (c) => cd(c).version || '', color: HUE.workflow } } }),
         // Legal domain (Jarvis ontology, domain: Legal)
         law: cat('law', ':Legal · domain', 240, 96, { cornerRadius: 14, slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
-        regulation: cat('regulation', ':Regulation', 230, 84, { slots: {
+        regulation: cat('regulation', ':Regulation', 230, 100, { slots: {
           topRight: { kind: 'pill', value: (c) => LABEL[cd(c).freshness] || '', color: statusColor },
           footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
-        regitem: cat('regitem', ':RegulatoryItem', 230, 84, { slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
-        doctrine: cat('doctrine', ':Doctrine', 230, 84, { slots: {
+        regitem: cat('regitem', ':RegulatoryItem', 230, 100, { slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
+        doctrine: cat('doctrine', ':Doctrine', 230, 100, { slots: {
           topRight: { kind: 'pill', value: (c) => LABEL[cd(c).freshness] || '', color: statusColor },
           footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
         jurisdiction: cat('jurisdiction', ':Jurisdiction', 200, 64),
-        matter: cat('matter', ':Matter', 230, 84, { slots: {
+        matter: cat('matter', ':Matter', 230, 100, { slots: {
           topRight: { kind: 'pill', value: (c) => cd(c).status || '', color: HUE.matter },
           footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
-        argument: cat('argument', ':LegalArgument', 230, 84, { slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
-        playbook: cat('playbook', ':PlaybookEntry', 240, 96, { slots: {
+        argument: cat('argument', ':LegalArgument', 250, 100, { slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
+        playbook: cat('playbook', ':PlaybookEntry', 250, 108, { slots: {
           topRight: { kind: 'pill', value: (c) => LABEL[cd(c).freshness] || '', color: statusColor },
           footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
         clause: cat('clause', ':ContractClause', 240, 84, { slots: {
           topRight: { kind: 'pill', value: (c) => cd(c).risk || '', color: (c) => ({ LOW: FRESH.fresh, MED: FRESH.aging, HIGH: HUE.matter })[cd(c).risk] || HUE.clause } } }),
         clausetype: cat('clausetype', ':ClauseType', 200, 64),
         definedterm: cat('definedterm', ':DefinedTerm', 220, 84, { slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
-        excerpt: cat('excerpt', ':Excerpt', 260, 84, { slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
+        excerpt: cat('excerpt', ':Excerpt', 280, 100, { slots: { footer: { kind: 'text', value: (c) => cd(c).footer || '' } } }),
         note: { defaultWidth: 260, defaultHeight: 56, cornerRadius: 8, fill: 'rgba(15,23,42,0.55)', stroke: HUE.note },
       };
       const N = (id, category, text, x, y, customData, extra = {}) => ({ id, type: 'text', text, x, y, category, customData, ...extra });
@@ -321,41 +321,40 @@ B, P, T = "#60a5fa", "#c084fc", "#2dd4bf"  # regulation / doctrine / clause edge
 add("10-legal-knowledge-tree", "Legal: the same tree, a different domain", "Law → practice area and drafting guidance → regulations, doctrine, matters, playbook entries, clauses. Same scores, same edges. 17 nodes.",
     [node("law", "law", "Law", -120, -560, {"footer": "12 practice areas · 4 jurisdictions"}),
      node("anti", "concept", "Practice Area:\nAntitrust", -560, -380, {"freshness": "fresh", "clues": 31, "footer": "touched 3d ago"}, height=100),
-     node("tips", "concept", "Document Drafting Tips", 320, -380, {"freshness": "aging", "clues": 12, "footer": "touched 5w ago"}),
-     node("sherman", "regulation", "Sherman Act § 1\nrestraint of trade", -900, -180, {"freshness": "fresh", "footer": "15 U.S.C. § 1"}),
+     node("tips", "concept", "Document Drafting Tips", 320, -380, {"freshness": "aging", "clues": 12, "footer": "touched 5w ago"}, width=250),
+     node("matter", "matter", "Acme / Globex\nmerger review", -900, -180, {"status": "OPEN", "footer": "filed 2026-08-02"}),
      node("clayton", "regulation", "Clayton Act § 7\nmergers · HSR", -600, -180, {"freshness": "fresh", "footer": "15 U.S.C. § 18"}),
-     node("matter", "matter", "Acme / Globex\nmerger review", -300, -180, {"status": "OPEN", "footer": "filed 2026-08-02"}),
-     node("hsr", "regitem", "HSR filing threshold\n$126.4M (2025)", -600, 10, {"footer": "revised annually"}),
-     node("ror", "doctrine", "Rule of reason", -900, 10, {"freshness": "aging", "footer": "Standard Oil (1911)"}),
-     node("arg", "argument", "No substantial lessening\nof competition", -300, 10, {"footer": "HHI delta 140 · unconcentrated"}),
-     node("fed", "jurisdiction", "US Federal", -900, 200, {}),
+     node("sherman", "regulation", "Sherman Act § 1\nrestraint of trade", -300, -180, {"freshness": "fresh", "footer": "15 U.S.C. § 1"}),
+     node("ror", "doctrine", "Rule of reason", -300, 10, {"freshness": "aging", "footer": "Standard Oil (1911)"}),
+     node("arg", "argument", "No substantial lessening\nof competition", -910, 200, {"footer": "HHI delta 140 · unconcentrated"}),
+     node("hsr", "regitem", "HSR filing threshold\n$126.4M (2025)", -600, 200, {"footer": "revised annually"}),
+     node("fed", "jurisdiction", "US Federal", -285, 200, {}),
+     node("exhsr", "excerpt", "\u201c\u2026exceeding $126.4 million\u2026\u201d", -625, 390, {"footer": "90 Fed. Reg. 6106"}),
      node("pb", "playbook", "Non-compete: 12 mo firm\n18 mo fallback", 60, -180, {"freshness": "fresh", "footer": "position · fallback · walk-away"}),
      node("cl", "clause", "Antitrust cooperation\ncovenant", 380, -180, {"risk": "MED"}),
      node("dt", "definedterm", "\u201cAntitrust Law\u201d", 700, -180, {"footer": "define once, cite everywhere"}),
-     node("ct", "clausetype", "regulatory efforts", 380, 10, {}),
-     node("ex", "excerpt", "\u201c\u2026shall use reasonable best\nefforts to obtain clearance\u2026\u201d", 380, 190, {"footer": "Merger Agreement § 6.4"}),
-     node("ex2", "excerpt", "\u201cAntitrust Law means the\nSherman Act, the Clayton Act\u2026\u201d", 700, 10, {"footer": "Merger Agreement § 1.1"}),
-     node("exhsr", "excerpt", "\u201c\u2026exceeding $126.4 million\u2026\u201d", -600, 190, {"footer": "90 Fed. Reg. 6106"})],
+     node("ct", "clausetype", "regulatory efforts", 60, 10, {}),
+     node("ex", "excerpt", "\u201c\u2026shall use reasonable best\nefforts to obtain clearance\u2026\u201d", 360, 10, {"footer": "Merger Agreement § 6.4"}),
+     node("ex2", "excerpt", "\u201cAntitrust Law means the\nSherman Act, the Clayton Act\u2026\u201d", 690, 10, {"footer": "Merger Agreement § 1.1"})],
     [edge("law", "anti", "importance 0.93", color=G, strokeWidth=w(0.93)),
      edge("law", "tips", "importance 0.61", color=A, strokeWidth=w(0.61)),
-     edge("anti", "sherman", "RELEVANT_TO 0.95", color=G, strokeWidth=w(0.95)),
-     edge("anti", "clayton", "RELEVANT_TO 0.88", color=G, strokeWidth=w(0.88)),
      edge("anti", "matter", "RELEVANT_TO 0.72", color=G, strokeWidth=w(0.72)),
+     edge("anti", "clayton", "RELEVANT_TO 0.88", color=G, strokeWidth=w(0.88)),
+     edge("anti", "sherman", "RELEVANT_TO 0.95", color=G, strokeWidth=w(0.95)),
+     edge("matter", "arg", "HAS_ARGUMENT", color="#fb7185", strokeWidth=2.5),
      edge("clayton", "hsr", "ISSUED_UNDER", color=B, strokeWidth=2.5),
      edge("sherman", "ror", "INTERPRETED_BY", color=P, strokeWidth=2.5),
      edge("ror", "fed", "APPLIES_IN", color="#94a3b8", strokeWidth=2),
-     edge("matter", "arg", "HAS_ARGUMENT", color="#fb7185", strokeWidth=2.5),
-     edge("arg", "ror", "GROUNDED_IN", sides="left", color=P, strokeWidth=2),
      edge("hsr", "exhsr", "EVIDENCED_BY", color="#cbd5e1", strokeWidth=1.5),
+     edge("arg", "ror", "GROUNDED_IN", sides="auto", fromSide="top", toSide="left", color=P, strokeWidth=2),
      edge("tips", "pb", "RELEVANT_TO 0.84", color=G, strokeWidth=w(0.84)),
      edge("tips", "cl", "RELEVANT_TO 0.66", color=A, strokeWidth=w(0.66)),
      edge("tips", "dt", "RELEVANT_TO 0.41", color=A, strokeWidth=w(0.41)),
-     edge("pb", "sherman", "GOVERNED_BY", sides="auto", fromSide="bottom", toSide="right", color=B, strokeWidth=2),
+     edge("pb", "sherman", "GOVERNED_BY", sides="left", color=B, strokeWidth=2),
      edge("cl", "ct", "HAS_TYPE", color=T, strokeWidth=2),
-     edge("cl", "ex", "HAS_EXCERPT", sides="auto", fromSide="bottom", toSide="left", color="#cbd5e1", strokeWidth=1.5),
-     edge("dt", "ex2", "DEFINED_IN", color="#cbd5e1", strokeWidth=1.5),
+     edge("cl", "ex", "HAS_EXCERPT", color="#cbd5e1", strokeWidth=1.5),
      edge("cl", "dt", "USES", sides="right", color=T, strokeWidth=1.5),
-     edge("ror", "ct", "GOVERNS", sides="auto", fromSide="bottom", toSide="bottom", color=P, strokeWidth=1.5)])
+     edge("dt", "ex2", "DEFINED_IN", color="#cbd5e1", strokeWidth=1.5)])
 
 # ---------------------------------------------------------------- write
 os.makedirs(OUT, exist_ok=True)
