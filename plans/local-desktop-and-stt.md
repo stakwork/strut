@@ -127,7 +127,7 @@ be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
   `/health`, `/steps` (a workspace step that `import "strut"`),
   `/audio/models` (`available: true`) and the UI. `--tar` writes
   `strut-<platform>.tar.gz`; `--platform` cross-stages.
-- **Released by `.github/workflows/strut-desktop.yml`** on a `strut-v*` tag:
+- **Released by `.github/workflows/strut-desktop.yml`** on a `v*` tag:
   darwin-arm64 (smoke-tested on the runner) and darwin-x64 (cross-staged)
   tarballs as release assets.
 - Measured (darwin-arm64, 2026-09-07): **99 MB** before the Node binary and
