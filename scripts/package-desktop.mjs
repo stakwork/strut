@@ -7,8 +7,10 @@
  *
  * Output: <out>/strut/ containing package.json, build/ (server + steps as
  * loose files — the registry scans them), web/dist/, a production-only
- * node_modules/ with exactly one sherpa-onnx platform package and only this
- * platform's onnxruntime-node binaries, and two entry points: `desktop.js`
+ * node_modules/ with exactly one sherpa-onnx platform package (it and
+ * sherpa-onnx-node pinned to the version installed at the repo root, i.e. the
+ * lockfile's — see `sherpaVersion`) and only this platform's onnxruntime-node
+ * binaries, and two entry points: `desktop.js`
  * (what a host spawns: fs workspace, 127.0.0.1:0, app-support dirs, a
  * generated API key on the ready line — every default an env override) and
  * `strut` (shell wrapper over it for people who downloaded the tarball).
@@ -60,6 +62,26 @@ if (!SHERPA_PLATFORMS.includes(platform)) {
 // onnxruntime-node lays its binaries out as bin/napi-v6/<os>/<arch>.
 const [ortOs, ortArch] = platform.replace(/^win-/, "win32-").split("-");
 
+const installedVersion = async (dir) => {
+  try {
+    return JSON.parse(await readFile(join(dir, "package.json"), "utf-8")).version;
+  } catch {
+    return null;
+  }
+};
+// The stage's `npm install` runs in a fresh directory with no lockfile, so left
+// to itself it resolves sherpa-onnx-node to whatever is newest on npm — not what
+// the root lockfile pins and the tests ran against. Worse, upstream publishes
+// the six platform addons from separate jobs, sometimes hours after the wrapper
+// (1.13.8: wrapper 13:58 UTC, darwin-arm64 18:07 UTC), so "newest" can be a
+// version whose addon for this platform doesn't exist yet. Pin the wrapper and
+// the addon to the version installed at the root instead.
+const sherpaVersion = await installedVersion(join(ROOT, "node_modules", "sherpa-onnx-node"));
+if (!sherpaVersion) {
+  console.error("sherpa-onnx-node isn't installed at the repo root (node_modules/sherpa-onnx-node); run `yarn install` first");
+  process.exit(2);
+}
+
 const log = (m) => console.log(`[package-desktop] ${m}`);
 const run = (cmd, cmdArgs, cwd = ROOT, env = process.env) => {
   const r = spawnSync(cmd, cmdArgs, { cwd, stdio: "inherit", env });
@@ -94,6 +116,10 @@ async function stageFiles() {
   delete pkg.devDependencies;
   delete pkg.scripts;
   pkg.private = true;
+  // Exact pins (see sherpaVersion). Listing the platform addon directly makes
+  // `npm install` fetch it at this version and dedupe sherpa-onnx-node's own
+  // `^` range onto it, instead of floating that range to npm's newest.
+  pkg.optionalDependencies = { ...pkg.optionalDependencies, "sherpa-onnx-node": sherpaVersion, [`sherpa-onnx-${platform}`]: sherpaVersion };
   await writeFile(join(stage, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
   await cp(join(ROOT, "build"), join(stage, "build"), { recursive: true });
   await cp(join(ROOT, "web", "dist"), join(stage, "web", "dist"), { recursive: true });
@@ -105,9 +131,9 @@ async function stageFiles() {
 }
 
 async function installDeps() {
-  log("installing production dependencies (npm install --omit=dev)");
-  // optionalDependencies (sherpa-onnx-node + its platform packages) come along;
-  // the other platforms are removed below.
+  log(`installing production dependencies (npm install --omit=dev); sherpa-onnx-node + sherpa-onnx-${platform} pinned at ${sherpaVersion}`);
+  // optionalDependencies (sherpa-onnx-node + the pinned platform package) come
+  // along; anything else sherpa's own ranges pull in is removed below.
   npmStage(["install", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock", "--ignore-scripts"]);
   const nm = join(stage, "node_modules");
 
@@ -117,13 +143,21 @@ async function installDeps() {
     await rm(join(nm, `sherpa-onnx-${p}`), { recursive: true, force: true });
   }
   const keep = join(nm, `sherpa-onnx-${platform}`);
-  try {
-    await stat(keep);
-  } catch {
-    log(`sherpa-onnx-${platform} isn't installed on this machine's npm view; fetching it explicitly`);
-    const ver = JSON.parse(await readFile(join(nm, "sherpa-onnx-node", "package.json"), "utf-8")).version;
-    npmStage(["install", "--no-save", "--no-audit", "--no-fund", "--no-package-lock", "--ignore-scripts", "--force", `sherpa-onnx-${platform}@${ver}`]);
+  if (!(await installedVersion(keep))) {
+    // npm < 9.6.3 ignores npm_config_os/cpu and skips an addon that doesn't
+    // match the host; --force gets it in anyway.
+    log(`npm install skipped sherpa-onnx-${platform}; fetching it explicitly`);
+    try {
+      npmStage(["install", "--no-save", "--no-audit", "--no-fund", "--no-package-lock", "--ignore-scripts", "--force", `sherpa-onnx-${platform}@${sherpaVersion}`]);
+    } catch (e) {
+      throw new Error(
+        `${e.message}\nsherpa-onnx-${platform}@${sherpaVersion} may not be on npm: upstream publishes each platform addon from its own job, ` +
+          `sometimes hours after sherpa-onnx-node itself. Check \`npm view sherpa-onnx-${platform} versions\` and keep the root lockfile on a version whose addon has landed.`,
+      );
+    }
   }
+  const got = await installedVersion(keep);
+  if (got !== sherpaVersion) throw new Error(`sherpa-onnx-${platform} is ${got ?? "missing"} in the stage, expected ${sherpaVersion} (the version installed at the repo root)`);
 
   // Only this platform's onnxruntime binaries (the package ships all of them).
   const ortBin = join(nm, "onnxruntime-node", "bin", "napi-v6");
