@@ -43,7 +43,9 @@ Create a `.env` in the repo root:
 
 ```ini
 STRUT_WORKSPACE_BACKEND=fs      # keep workflows on disk, no Neo4j needed
-ANTHROPIC_API_KEY=sk-ant-...    # for llm/agent steps and the AI builder
+ANTHROPIC_API_KEY=sk-ant-...    # for llm/agent steps and the AI builder — or OPENAI_API_KEY,
+                                # GOOGLE_API_KEY, OPENROUTER_API_KEY, XAI_API_KEY; pick the model in
+                                # the AI chat. Keys can also be pasted under Secrets in the UI.
 ```
 
 Then:

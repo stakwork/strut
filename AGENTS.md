@@ -21,7 +21,7 @@ versioned artifact, and what must never evolve.
 | Web UI      | Preact + Vite + system-canvas-react. Vanilla CSS, no Tailwind              |
 | Tests       | Node native test runner (`node:test`) via tsx                              |
 | LLM step    | Vercel AI SDK (ai + @ai-sdk/anthropic + @ai-sdk/openai) — lazy-loaded      |
-| AI builder  | Vercel AI SDK `ToolLoopAgent` + Anthropic; detached + persisted, reattach via `/chat/:id/stream` SSE |
+| AI builder  | Vercel AI SDK `ToolLoopAgent` over any aieo provider (model picker in the flyout, per-chat `ChatMeta.model`); detached + persisted, reattach via `/chat/:id/stream` SSE |
 
 ## Layout
 
@@ -44,6 +44,7 @@ strut/
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server
 │   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+│   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models
 │   ├── index.ts           # barrel export — createStrut (primary entry), createRegistry, coreRegistry, all types
 │   ├── steps/
 │   │   ├── core/          # 10 built-in steps: http, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
@@ -84,7 +85,7 @@ strut/
 │   └── *.test.ts          # 622 unit tests across 25 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
-    ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /health)
+    ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
     ├── index.html
     └── src/
         ├── main.tsx       # entry: renders <App/>
@@ -155,11 +156,12 @@ cd strut && npm run dev        # serves API + UI on :3000
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
-| `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Anthropic model for the AI-builder chat agent |
+| `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
 | `STRUT_CHAT_MAX_STEPS` | `30`         | Max agent tool-call iterations per chat turn |
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
 | `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
+| `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder); anthropic uses its native tool. Store or env, like provider keys |
 | `STRUT_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
@@ -581,7 +583,8 @@ services bag can override it, same as `http`/`secrets`).
   streamed run (events are still empty at run start).
 
 - **AI workflow builder** (`src/ai/` + `POST /chat`). A
-  `ToolLoopAgent` (Vercel AI SDK + Anthropic) that can browse step
+  `ToolLoopAgent` (Vercel AI SDK, any aieo provider — see "Model picker"
+  below) that can browse step
   types (`list_steps`, `search_steps`, `get_step`), author/revise
   custom steps (`create_step`, `edit_step`), publish workflows
   (`create_workflow`), and test them (`run_workflow`). `run_workflow`
@@ -602,9 +605,34 @@ services bag can override it, same as `http`/`secrets`).
   when strut owns the secret store (absent when the consumer injected
   their own `services.secrets`; the tool then returns an error).
 
+- **Model picker** (`src/llm.ts` + `GET /llm/models`). The chat runs on
+  any aieo provider. `POST /chat { model }` (the flyout's picker, or any
+  aieo name typed as "Custom…") is validated — provider known, key
+  configured — BEFORE anything is persisted (400 otherwise, so a bad
+  pick never creates a dead chat) and recorded on `ChatMeta.model` in
+  canonical `provider/id` form (three segments for OpenRouter:
+  `openrouter/moonshotai/kimi-k2.6`). Every later turn — including
+  notification-triggered ones — resolves that; no pick means the chat's
+  recorded model, else `STRUT_CHAT_MODEL`. Keys come through
+  `ctx.services.secrets` (secret store → env) handed to aieo's
+  `resolveModel` as `getSecret`, so a key pasted under **Secrets** works
+  for the chat and the `agent`/`llm` steps alike (a store key shadows
+  the env var of the same name). Everything provider-shaped keys off the
+  RESOLVED provider: the web tools (`web_search` + `web_fetch` via aieo's
+  `createWebSearch`/`createWebFetch` — native on anthropic, an Exa-backed
+  search (`EXA_API_KEY`, store or env) and a guarded HTTP fetch elsewhere;
+  `createWebTools` in `src/llm.ts`, shared with the agent step) and the
+  output-token cap.
+  `GET /llm/models` lists aieo's aliases with per-provider availability
+  (never values) plus the default; the step editor offers the same
+  catalog as a datalist on `model` fields whose Zod schema carries
+  `.meta({ suggest: "llm-models" })` (`FieldDesc.suggest`), and the
+  system prompt names the configured providers so the builder only
+  authors runnable `model:` values.
+
 - **Chat is a detached background job** (`src/chat-store.ts`), NOT a
   connection-bound stream — the same launch+reattach model as runs
-  (§8). `POST /chat { chatId?, message }` appends the user message,
+  (§8). `POST /chat { chatId?, message, model? }` appends the user message,
   launches the turn server-side **without awaiting it** (a
   `launchChatTurn` mirroring `launchDetached`), and returns
   `{ chatId, turn }` (202). The turn consumes the agent's `fullStream`
@@ -668,7 +696,9 @@ services bag can override it, same as `http`/`secrets`).
   `bash`; `str_replace_based_edit_tool` — view/create/str_replace/insert
   files, sandboxed to `cwd` (the anthropic provider-defined text-editor
   tool, with a generic-`tool()` fallback for other providers; pure handler
-  `textEdit()` is unit-tested offline); + anthropic `web_search`; +
+  `textEdit()` is unit-tested offline); + `web_search` + `web_fetch` on
+  every provider (aieo: native on anthropic; elsewhere an Exa-backed search
+  that needs `EXA_API_KEY` and a guarded HTTP fetch — no key); +
   `file_summary`, an AST structural summary that's only registered when the
   `stakgraph` CLI is on PATH), filterable via `toolFilter`, and returns one
   of three shapes: a
@@ -845,7 +875,7 @@ with that move.
 2. Add the typed function in `web/src/api.ts`.
 3. Wire it into `web/src/app.tsx`.
 4. The Vite dev proxy in `web/vite.config.ts` only proxies known
-   prefixes (`/workflows`, `/steps`, `/secrets`, `/chat`, `/health`). Runs are
+   prefixes (`/workflows`, `/steps`, `/secrets`, `/chat`, `/llm`, `/health`). Runs are
    under `/workflows/` and chat reattach under `/chat/` so they're
    already proxied. SSE responses get `cache-control: no-cache` +
    `x-accel-buffering: no` injected by the shared `sseConfigure` —

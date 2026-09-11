@@ -703,19 +703,20 @@ describe("mid-stream socket death is resumed, not lost", () => {
     sse({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } }) +
     sse({ type: "message_stop" });
 
-  type Server = { port: number; bodies: string[]; calls: () => number; close: () => void };
+  type Server = { port: number; bodies: string[]; heads: http.IncomingHttpHeaders[]; calls: () => number; close: () => void };
   async function serve(handler: (call: number, res: http.ServerResponse) => void): Promise<Server> {
     const bodies: string[] = [];
+    const heads: http.IncomingHttpHeaders[] = [];
     let call = 0;
     const server = http.createServer((req, res) => {
       let raw = "";
       req.on("data", (c) => (raw += c));
-      req.on("end", () => { bodies.push(raw); handler(++call, res); });
+      req.on("end", () => { bodies.push(raw); heads.push(req.headers); handler(++call, res); });
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     return {
       port: (server.address() as any).port,
-      bodies, calls: () => call,
+      bodies, heads, calls: () => call,
       close: () => server.close(),
     };
   }
@@ -753,6 +754,41 @@ describe("mid-stream socket death is resumed, not lost", () => {
       }),
       { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any,
     ) as Promise<any>;
+
+  it("takes the provider key from ctx.services.secrets when env has none", async () => {
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(toolUse("toolu_1", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    delete process.env["ANTHROPIC_API_KEY"];
+    const asked: string[] = [];
+    const secrets = {
+      get: async (name: string) => {
+        asked.push(name);
+        return name === "ANTHROPIC_API_KEY" ? "from-store" : undefined;
+      },
+    };
+    try {
+      const out = await agent.run(
+        (agent.input as any).parse({
+          cwd, system: "sys", prompt: "go", model: "sonnet",
+          finalAnswer: "Report.", toolFilter: ["bash"],
+        }),
+        { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: { secrets }, registry: {} } as any,
+      ) as any;
+      assert.equal(out.result, "done");
+      // Asked by the provider's env-var NAME, and the value reached the wire.
+      assert.deepEqual(asked, ["ANTHROPIC_API_KEY"]);
+      assert.equal(s.heads[0]?.["x-api-key"], "from-store");
+      // The alias resolved to the concrete id on the request.
+      assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-5"'), s.bodies[0]);
+    } finally {
+      s.close();
+    }
+  });
 
   it("resumes a severed stream and keeps the work done before it died", async () => {
     const s = await serve((call, res) => {

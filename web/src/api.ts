@@ -389,6 +389,8 @@ export interface FieldDesc {
   required: boolean;
   default?: unknown;
   enumValues?: string[];
+  /** Free-text field with a suggestion catalog ("llm-models" → listLlmModels). */
+  suggest?: "llm-models";
 }
 
 export interface StepSchemaResponse {
@@ -507,6 +509,29 @@ export const promote = (workflow: string, runId: string, to: string) =>
     body: JSON.stringify({ to }),
   });
 
+// ── LLM models (chat picker + step editor `model` suggestions) ─────────────
+
+export interface LlmModelOption {
+  provider: string;
+  alias: string;
+  modelId: string;
+  /** Canonical "provider/modelId" — the value to submit. */
+  name: string;
+  default: boolean;
+  /** The provider has a key configured (secret store or env). */
+  available: boolean;
+}
+
+export interface LlmModelsResponse {
+  /** The deployment's default chat model, canonical. */
+  default: string;
+  models: LlmModelOption[];
+  /** provider → the env var / secret name that holds its key. */
+  keyNames: Record<string, string>;
+}
+
+export const listLlmModels = () => fetchJSON<LlmModelsResponse>("/llm/models");
+
 // ── Chat (AI workflow builder) ─────────────────────────────────────────────
 //
 // A chat is a DETACHED background job: `POST /chat` launches a turn
@@ -578,19 +603,29 @@ export interface ChatTranscript {
 }
 
 /** Launch a chat turn (detached). Pass `chatId` to continue an existing
- *  session, or omit it to start a new one. Returns the ids to reattach with. */
+ *  session, or omit it to start a new one. `model` (canonical name from
+ *  listLlmModels, or any aieo name) is validated server-side and recorded
+ *  on the chat; omit it to keep the chat's model. Returns the ids to
+ *  reattach with. */
 export async function sendChat(
   message: string,
   chatId?: string,
+  model?: string,
 ): Promise<{ chatId: string; turn: number }> {
   const res = await apiFetch(`/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, ...(chatId ? { chatId } : {}) }),
+    body: JSON.stringify({ message, ...(chatId ? { chatId } : {}), ...(model ? { model } : {}) }),
   });
   if (!res.ok) {
     // 409 = the chat already has a turn in progress (reattach instead).
-    throw Object.assign(new Error(`chat: ${res.status} ${res.statusText}`), { status: res.status });
+    // 400 = the message or model pick was rejected; `error` says why.
+    let msg = `chat: ${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.error) msg = body.error;
+    } catch {}
+    throw Object.assign(new Error(msg), { status: res.status });
   }
   return (await res.json()) as { chatId: string; turn: number };
 }

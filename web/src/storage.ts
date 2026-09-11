@@ -52,6 +52,13 @@ export const sttSettings = {
   set: (s: SttSettings) => save("stt", s),
 };
 
+/** The chat flyout's model pick (canonical "provider/modelId" or any aieo
+ *  name), sticky across chats and reloads. null = the server default. */
+export const chatModel = {
+  get: (): string | null => load<string | null>("chatModel", null),
+  set: (name: string | null) => (name ? save("chatModel", name) : remove("chatModel")),
+};
+
 /** Most recent run-input form values, keyed by workflow name. */
 export const recentRunInput = {
   get: (workflow: string) =>

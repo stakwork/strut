@@ -1,13 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  usageFromResult,
-  coerceUsage,
-  addUsage,
-  computeCost,
-  emptyUsage,
-  TOKEN_PRICING,
-} from "./pricing.js";
+import { usageFromResult, coerceUsage, addUsage, emptyUsage, usageForCost } from "./pricing.js";
 
 test("usageFromResult prefers the v6 inputTokenDetails breakdown", () => {
   const u = usageFromResult({
@@ -41,23 +34,6 @@ test("usageFromResult is safe on null / garbage", () => {
   assert.deepEqual(usageFromResult(42 as unknown), emptyUsage());
 });
 
-test("computeCost applies anthropic per-1M rates across all token classes", () => {
-  const cost = computeCost("anthropic", {
-    inputTokens: 1_000_000,
-    cacheReadTokens: 1_000_000,
-    cacheWriteTokens: 1_000_000,
-    outputTokens: 1_000_000,
-    totalTokens: 4_000_000,
-  });
-  const p = TOKEN_PRICING.anthropic;
-  assert.equal(cost, p.inputTokenPrice + p.cacheReadPrice! + p.cacheWritePrice! + p.outputTokenPrice);
-});
-
-test("computeCost defaults unknown providers to anthropic pricing", () => {
-  const usage = { inputTokens: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, totalTokens: 1_000_000 };
-  assert.equal(computeCost("nope", usage), TOKEN_PRICING.anthropic.inputTokenPrice);
-});
-
 test("addUsage / coerceUsage sum token classes for cross-call totals", () => {
   const a = coerceUsage({ inputTokens: 10, cacheReadTokens: 5, outputTokens: 2 });
   const b = usageFromResult({ inputTokens: 20, outputTokens: 3, inputTokenDetails: { noCacheTokens: 20 } });
@@ -65,4 +41,13 @@ test("addUsage / coerceUsage sum token classes for cross-call totals", () => {
   assert.equal(sum.inputTokens, 30);
   assert.equal(sum.cacheReadTokens, 5);
   assert.equal(sum.outputTokens, 5);
+});
+
+test("usageForCost is the exact shape aieo's computeSessionCost prices", async () => {
+  const u = { inputTokens: 120_000, cacheReadTokens: 800_000, cacheWriteTokens: 50_000, outputTokens: 30_000, totalTokens: 1_000_000 };
+  assert.deepEqual(usageForCost(u), { input: 120_000, cache_read: 800_000, cache_write: 50_000, output: 30_000 });
+  // Pricing itself is aieo's — pin the anthropic figure so a table change
+  // there is noticed here: 0.12*3 + 0.8*0.3 + 0.05*3.75 + 0.03*15 = 1.2375.
+  const { computeSessionCost } = await import("aieo");
+  assert.ok(Math.abs(computeSessionCost("anthropic", usageForCost(u)) - 1.2375) < 1e-9);
 });

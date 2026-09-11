@@ -39,10 +39,16 @@ export interface AiDeps {
    *  tool so the builder can verify what its `graph/*` steps wrote. Optional:
    *  without it the tool isn't offered. */
   graph?: GraphBackend;
-  /** Offer the anthropic provider-executed web_search tool (same tool the
-   *  agent step ships). Chat is anthropic-only, so the standard server sets
-   *  this; leave unset for tests / non-anthropic embedders. */
-  webSearch?: boolean;
+  /** Web tools for the builder — `web_search` + `web_fetch` (the same pair
+   *  the agent step ships): built per turn by createStrut for the chat's
+   *  resolved provider via `createWebTools` (src/llm.ts; native on
+   *  anthropic, Exa search + guarded HTTP fetch elsewhere). Optional:
+   *  absent → not offered (tests, embedders). */
+  webTools?: Record<string, unknown>;
+  /** Which LLM providers have a key configured (secret store or env), for
+   *  the system prompt — so the builder only writes `model:` values a run
+   *  can actually use. Optional: without it the prompt says nothing. */
+  models?: { default: string; available: string[]; keyNames: Record<string, string> };
   /** Dispatch-mode `run_workflow` (see `plans/dispatch-run-notifications.md`).
    *  When present, a run still executing after `waitMs` converts to detached:
    *  the tool returns a `{ status: "running", runId }` stub immediately and
@@ -189,7 +195,7 @@ Tools:
 - create_step / edit_step: author or revise a custom step (see above).
 - bash(command, timeoutMs?): BUILD-TIME shell in the workspace dir (when offered) — probe an API's real response shape with curl before authoring a step, clone a repo into scratch/ to study a format, check a CLI exists, inspect a run's file outputs under artifacts/<runId>/. Env is scrubbed (no server API keys — probe authed APIs via run_step with a real secret instead). NEVER a substitute for ctx.services.http/secrets inside a step: a step that shells out with curl or child_process is wrong — it breaks cassette record/replay and secret scrubbing.
 - graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the strut graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. Nodes carry their type as a label plus :Node:Data_Bank and {ref_id, node_key, namespace} — filter on namespace. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
-- web_search (when offered): search the web — for API documentation while authoring (endpoint shapes, auth schemes, rate limits), not something workflows can call (give a workflow agent web access via the agent step's built-in web_search instead).
+- web_search / web_fetch (when offered): search the web / read a page by URL — for API documentation while authoring (endpoint shapes, auth schemes, rate limits; fetch the docs page a search turned up), not something workflows can call (a workflow agent gets the same web_search + web_fetch built into the agent step).
 - run_step("<type>", config?, input?, params?, cassette?, cassetteName?): run ONE step in isolation and get its output — the inner loop for authoring an adapter, no workflow needed. After create_step, call run_step to test it. Use cassette:"record" for the first live run (captures external calls to a fixture, secrets scrubbed), then cassette:"replay" to iterate offline (deterministic, no rate limits, no side effects) while you edit_step.
 - list_workflows(): list existing workflows (name, active version, versions, description). Check this before creating a new workflow or referencing one in a subflow.
 - get_workflow("<name>", version?): read an existing workflow's full YAML + version metadata. Call before editing, referencing, or reusing a workflow you didn't just write.
@@ -236,11 +242,22 @@ async function renderStepsTree(deps: AiDeps): Promise<string> {
   return lines.join("\n");
 }
 
+/** One paragraph on which providers a run can actually use, from the
+ *  deployment's key configuration (see createStrut / GET /llm/models). */
+function renderModels(m: AiDeps["models"]): string {
+  if (!m) return "";
+  const configured = m.available.length ? m.available.join(", ") : "none";
+  const keys = Object.entries(m.keyNames)
+    .map(([p, k]) => `${p}: ${k}`)
+    .join(", ");
+  return `LLM providers with a key configured on this deployment: ${configured} (default model: ${m.default}). In agent/llm steps only use \`model:\` values from these providers — an alias (sonnet, opus, haiku, gemini, gpt, kimi, glm, grok), a full id, or "provider/id" (OpenRouter models as "openrouter/org/model"). For any other provider, tell the user to add its key under Secrets (${keys}).\n\n`;
+}
+
 export async function buildSystem(deps: AiDeps): Promise<string> {
   const tree = await renderStepsTree(deps);
   return `${BASE_SYSTEM}
 
-Available steps:
+${renderModels(deps.models)}Available steps:
 ${tree}
 `;
 }

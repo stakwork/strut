@@ -2085,6 +2085,33 @@ body.is-resizing-flyout * {
   0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.45); }
   50% { box-shadow: 0 0 0 5px rgba(248, 113, 113, 0); }
 }
+.chat-model {
+  font: inherit;
+  font-size: 12px;
+  max-width: 150px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+}
+.chat-model-custom {
+  width: 150px;
+}
+.chat-notice {
+  padding: var(--sp-1) var(--sp-4);
+  color: var(--warning);
+  font-size: 12px;
+}
+.chat-history-model {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text-dim);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chat-mic-error {
   padding: var(--sp-1) var(--sp-4);
   color: var(--danger);
