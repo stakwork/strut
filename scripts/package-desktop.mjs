@@ -7,10 +7,12 @@
  *
  * Output: <out>/strut/ containing package.json, build/ (server + steps as
  * loose files — the registry scans them), web/dist/, a production-only
- * node_modules/ with exactly one sherpa-onnx platform package (it and
- * sherpa-onnx-node pinned to the version installed at the repo root, i.e. the
- * lockfile's — see `sherpaVersion`) and only this platform's onnxruntime-node
- * binaries, and two entry points: `desktop.js`
+ * node_modules/ (sherpa-onnx-node pinned to the version installed at the repo
+ * root, i.e. the lockfile's — see `sherpaVersion` — and only this platform's
+ * onnxruntime-node binaries), native/ — the sherpa addon and the shared
+ * libraries it links, moved out of the sherpa-onnx-<platform> package so the
+ * host has one directory of binaries to code-sign and nothing to sign
+ * anywhere else (see `relocateNative`) — and two entry points: `desktop.js`
  * (what a host spawns: fs workspace, 127.0.0.1:0, app-support dirs, a
  * generated API key on the ready line — every default an env override) and
  * `strut` (shell wrapper over it for people who downloaded the tarball).
@@ -34,7 +36,7 @@
  * Not a single-file build on purpose: the step loader scans directories and
  * the sherpa addon must be a real file beside the binary either way (§2.4).
  */
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -53,12 +55,14 @@ const tar = flag("tar", false) === true;
 const skipBuild = flag("skip-build", false) === true;
 const embeddings = flag("embeddings", false) === true;
 const stage = join(out, "strut");
+const native = join(stage, "native");
 
 const SHERPA_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win-x64", "win-ia32"];
 if (!SHERPA_PLATFORMS.includes(platform)) {
   console.error(`unknown platform ${platform}; one of ${SHERPA_PLATFORMS.join(", ")}`);
   process.exit(2);
 }
+const NATIVE_EXT = /\.(node|dylib|so|dll)$/;
 // onnxruntime-node lays its binaries out as bin/napi-v6/<os>/<arch>.
 const [ortOs, ortArch] = platform.replace(/^win-/, "win32-").split("-");
 
@@ -190,6 +194,61 @@ async function installDeps() {
   await strip(nm);
 }
 
+// The addon finds its shared libraries relative to its own location (on
+// macOS via @rpath with @loader_path as its only usable rpath — `otool -l`;
+// $ORIGIN on Linux; the loading module's directory on Windows), so they must
+// stay beside it — but nothing says beside it inside node_modules. Move the
+// set into <stage>/native/, one directory holding every binary in the package
+// and nothing else, so the host signs that directory and never has to pick
+// Mach-O files out of a package folder. sherpa-onnx-node's
+// `addon-static-import.js` is the first thing its addon.js tries and the one
+// file that hard-codes `../sherpa-onnx-<platform>/sherpa-onnx.node`; it
+// becomes the redirect. The emptied platform package (index.js, package.json,
+// README — nothing loads them) goes away, and so does its manifest pin.
+async function relocateNative() {
+  const nm = join(stage, "node_modules");
+  const pkgDir = join(nm, `sherpa-onnx-${platform}`);
+  const wrapper = join(nm, "sherpa-onnx-node");
+  const addonJs = await readFile(join(wrapper, "addon.js"), "utf-8").catch(() => "");
+  if (!addonJs.includes("require('./addon-static-import')")) {
+    throw new Error(`sherpa-onnx-node@${sherpaVersion}: addon.js no longer starts from ./addon-static-import; its addon lookup changed — update relocateNative`);
+  }
+  await mkdir(native, { recursive: true });
+  const moved = [];
+  let dropped = null;
+  for (const f of await readdir(pkgDir)) {
+    if (!NATIVE_EXT.test(f)) continue;
+    // The C++ API wrapper library. Nothing in the package links it (the addon
+    // links the C API and onnxruntime; the C API links onnxruntime): one less
+    // binary to sign.
+    if (/sherpa-onnx-cxx-api\./.test(f)) {
+      dropped = f;
+      continue;
+    }
+    await rename(join(pkgDir, f), join(native, f));
+    moved.push(f);
+  }
+  if (!moved.includes("sherpa-onnx.node")) throw new Error(`no sherpa-onnx.node in ${pkgDir}; moved ${moved.join(", ") || "nothing"}`);
+  await rm(pkgDir, { recursive: true, force: true });
+  await writeFile(
+    join(wrapper, "addon-static-import.js"),
+    `// Written by strut's scripts/package-desktop.mjs (relocateNative). The addon
+// and the shared libraries it links live in ../../native — one directory
+// holding every binary the host code-signs — instead of a
+// sherpa-onnx-<platform> package. The libraries must stay beside the addon:
+// it finds them relative to its own location.
+module.exports = require('../../native/sherpa-onnx.node');
+`,
+  );
+  // stageFiles listed the platform package to pin the install; it is not in
+  // the tree any more, so it leaves the manifest too.
+  const pkgPath = join(stage, "package.json");
+  const pkg = JSON.parse(await readFile(pkgPath, "utf-8"));
+  if (pkg.optionalDependencies) delete pkg.optionalDependencies[`sherpa-onnx-${platform}`];
+  await writeFile(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+  log(`moved ${moved.join(", ")} → native/${dropped ? `; dropped ${dropped} (nothing links it)` : ""}; sherpa-onnx-node now loads ../../native/sherpa-onnx.node`);
+}
+
 // Sourcemaps, typings, and docs are dead weight in a shipped app. Licenses
 // stay. Only node_modules is touched (strut's own build/ keeps its .d.ts).
 const STRIP_EXT = [".map", ".d.ts", ".d.mts", ".d.cts", ".md", ".markdown"];
@@ -233,23 +292,33 @@ async function report() {
       for (const s of await readdir(join(nm, e))) rows.push([`${e}/${s}`, await sizeOf(join(nm, e, s))]);
     } else rows.push([e, await sizeOf(join(nm, e))]);
   }
+  rows.push(["native/ (outside node_modules)", await sizeOf(native)]);
   rows.sort((a, b) => b[1] - a[1]);
-  log(`staged ${stage}: ${mb(total)} total, ${rows.length} packages; largest:`);
+  log(`staged ${stage}: ${mb(total)} total, ${rows.length - 1} packages; largest:`);
   for (const [name, size] of rows.slice(0, 8)) console.log(`    ${mb(size).padStart(7)}  ${name}`);
-  const addons = [];
+  // Everything the host must code-sign, in one place: the addon plus the
+  // shared libraries it links (relocateNative), all of which must be signed
+  // and notarized inside the app bundle, not just the .node. Nothing else in
+  // the package is a binary — enforced here, because the host's signing step
+  // is "sign native/". --embeddings is the one exception: onnxruntime-node
+  // and sharp keep their addons in node_modules, where their loaders look.
+  const inNative = (await readdir(native)).filter((f) => NATIVE_EXT.test(f));
+  const stray = [];
   const walk = async (d) => {
     for (const e of await readdir(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory()) await walk(p);
-      else if (/\.(node|dylib|so|dll)$/.test(e.name)) addons.push(p.slice(nm.length + 1));
+      else if (NATIVE_EXT.test(e.name)) stray.push(p.slice(nm.length + 1));
     }
   };
   await walk(nm);
-  // The addon plus the shared libraries it links (sherpa ships libonnxruntime
-  // and its C/C++ API dylibs beside sherpa-onnx.node). All of them must be
-  // signed and notarized inside the app bundle, not just the .node.
-  log(`native binaries the host must code-sign (${addons.length}):`);
-  for (const a of addons) console.log(`    ${a}`);
+  log(`native binaries the host must code-sign (${inNative.length}, all in native/):`);
+  for (const f of inNative) console.log(`    native/${f}`);
+  if (stray.length) {
+    if (!embeddings) throw new Error(`binaries outside native/, which the host would not sign: ${stray.join(", ")}`);
+    log(`plus ${stray.length} kept in node_modules by --embeddings (their loaders look there):`);
+    for (const a of stray) console.log(`    node_modules/${a}`);
+  }
 }
 
 async function smokeTest() {
@@ -342,6 +411,7 @@ async function tarball() {
 await build();
 await stageFiles();
 await installDeps();
+await relocateNative();
 await report();
 if (smoke) await smokeTest();
 if (tar) await tarball();

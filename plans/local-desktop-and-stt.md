@@ -109,7 +109,8 @@ strut/
   package.json
   build/                   # tsc output; steps as loose files (registry scans them)
   web/dist/                # Vite output
-  node_modules/            # --omit=dev; one sherpa-onnx-<platform> package
+  node_modules/            # --omit=dev; sherpa-onnx-node's loader pointed at native/
+  native/                  # sherpa-onnx.node + the dylibs it links: all the host signs
 ```
 
 plus a Node binary the host provides (not staged; 20 or newer). No esbuild
@@ -120,8 +121,10 @@ be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
   tsc + vite, stage `package.json` + `build/` + `web/dist/` + the two entry
   points, `npm install --omit=dev` in the stage, keep one
   `sherpa-onnx-<platform>` and only this platform's `onnxruntime-node`
-  binaries, list the native binaries (`.node` + dylibs) the host must
-  code-sign, then (`--smoke`)
+  binaries, move that package's addon + the dylibs it links into `native/`
+  (the one directory the host code-signs; the unlinked C++ API dylib is
+  dropped, and a binary anywhere else fails the build) and point
+  `sherpa-onnx-node`'s loader at it, then (`--smoke`)
   spawn `desktop.js` from a temp dir with only `STRUT_WORKSPACE` and
   `STRUT_CACHE_DIR` set, parse the ready line for port + key, and check
   `/health`, `/steps` (a workspace step that `import "strut"`),
@@ -137,8 +140,9 @@ be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
   keeps it and `graph/embeddings.ts` fails with a clear message without it)
   and sourcemaps/typings/docs stripped (~70 MB). Largest pieces left: sherpa
   34 MB, `aieo` 15 MB (its nested `ai`/`@ai-sdk`/`zod` copies — align
-  versions to dedupe), `react-dom` 7 MB. Four Mach-O binaries to sign (the
-  sherpa addon and its three dylibs; all ad-hoc signed as shipped). The
+  versions to dedupe), `react-dom` 7 MB. Three Mach-O binaries to sign, all in
+  `native/` (the sherpa addon and the two dylibs it links; all ad-hoc signed
+  as shipped). The
   earlier ~150 MB estimate assumed an esbuild bundle, which the step loader
   rules out for now (§2.4).
 
@@ -480,7 +484,7 @@ artifact per user/company) or beside it. Lean: same artifact, two sections.
    plus the corrections UI. Proves the loop before packaging.
 5. **Phase A packaging**: strut side done (`package:desktop` + `desktop.js`
    launcher + smoke test + release tarballs); remaining is the macOS host:
-   embed Node + the staged dir, code-sign the listed binaries, spawn
+   embed Node + the staged dir, code-sign `native/`, spawn
    `desktop.js` and stream the mic (`native-dictation-client.md`).
 6. **Kotlin host**, Windows shell override.
 7. Later: single-binary (phase B), local vector store or LadybugDB backend

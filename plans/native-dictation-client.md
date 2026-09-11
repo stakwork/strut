@@ -35,14 +35,16 @@ machine; the package does not include Node.
   install`, then `npm run package:desktop -- --smoke --tar`. Same layout at
   `dist-desktop/strut/`, and the tarball beside it.
 
-The directory is `package.json`, `build/`, `web/dist/`, `node_modules/`
-(one `sherpa-onnx-<platform>` package), plus two entry points: `desktop.js`,
-which a host spawns, and `strut`, a shell wrapper over it. The packaging
-script prints the native binaries the app must code-sign and notarize: the
-`sherpa-onnx.node` addon and the three dylibs beside it (`libonnxruntime`,
-`libsherpa-onnx-c-api`, `libsherpa-onnx-cxx-api`). They ship ad-hoc signed,
-which is why an unsigned download trips Gatekeeper; inside a signed,
-notarized app bundle there is no prompt.
+The directory is `package.json`, `build/`, `web/dist/`, `node_modules/`,
+`native/`, plus two entry points: `desktop.js`, which a host spawns, and
+`strut`, a shell wrapper over it. `native/` holds every binary in the package
+and nothing else: the `sherpa-onnx.node` addon and the two dylibs it links
+(`libonnxruntime`, `libsherpa-onnx-c-api`), moved out of the sherpa platform
+package by the packaging script, which points `sherpa-onnx-node`'s loader at
+them and fails the build if a binary turns up anywhere else. The app
+code-signs and notarizes that one directory. They ship ad-hoc signed, which
+is why an unsigned download trips Gatekeeper; inside a signed, notarized app
+bundle there is no prompt.
 
 A host runs `node <dir>/desktop.js` from any cwd with **no required env**.
 The launcher defaults to the filesystem workspace (no Neo4j), binds
