@@ -1,8 +1,9 @@
 // ── Public API ─────────────────────────────────────────────────────────────
 
-// Re-export the engine's own zod so consumers define step schemas against
-// the exact version `defineStep` and the schema-introspection helpers expect
-// (avoids dual zod-version type/runtime mismatches in host apps).
+// Re-export zod so consumers can define step schemas without declaring it
+// themselves. zod is a peerDependency (AGENTS.md "One copy per process"),
+// so this IS the host's zod — the same copy the host's `ai` converts tool
+// schemas with, never a second one nested under strut.
 export { z } from "zod";
 
 // Core types and builders

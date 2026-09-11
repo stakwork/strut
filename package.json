@@ -29,13 +29,10 @@
     "test:graph": "tsx --test --test-concurrency=1 \"src/graph/*.test.ts\" \"src/steps/lib/graph/*.test.ts\""
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "3.0.92",
-    "@ai-sdk/openai": "^3.0.67",
     "@googleapis/drive": "^20.2.0",
     "@hono/node-server": "^2.0.4",
     "@huggingface/transformers": "^4.1.0",
     "@octokit/rest": "^22.0.1",
-    "ai": "^6.0.196",
     "aieo": "^0.1.41",
     "hono": "^4.12.23",
     "html-to-text": "^10.0.1",
@@ -44,17 +41,24 @@
     "system-canvas": "^0.2.22",
     "system-canvas-react": "^0.2.22",
     "uuid": "^11.1.0",
-    "ws": "^8.21.3",
-    "zod": "^4.3.6"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@ai-sdk/anthropic": "^3.0.92",
     "@types/html-to-text": "^9.0.4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",
+    "ai": "^6.0.196",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "@ai-sdk/anthropic": "^3.0.92",
+    "ai": "^6.0.175",
+    "zod": "^4.3.6"
   },
   "optionalDependencies": {
     "sherpa-onnx-node": "^1.13.7"

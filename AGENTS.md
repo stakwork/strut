@@ -20,7 +20,7 @@ versioned artifact, and what must never evolve.
 | Persistence | One interface per layer — `WorkspaceStore` (workflows/steps), `RunStore` (runs), `ChatStore`, `SecretStore` — with File + Memory impls; local blobs (artifacts/cassettes/shell scratch) live under an explicit `dataDir` |
 | Web UI      | Preact + Vite + system-canvas-react. Vanilla CSS, no Tailwind              |
 | Tests       | Node native test runner (`node:test`) via tsx                              |
-| LLM step    | Vercel AI SDK (ai + @ai-sdk/anthropic + @ai-sdk/openai) — lazy-loaded      |
+| LLM step    | Vercel AI SDK (`ai`) over an aieo-resolved model — lazy-loaded. `ai`, `zod`, `@ai-sdk/anthropic` are **peerDependencies** (see "One copy per process" below); provider SDKs are aieo's |
 | AI builder  | Vercel AI SDK `ToolLoopAgent` over any aieo provider (model picker in the flyout, per-chat `ChatMeta.model`); detached + persisted, reattach via `/chat/:id/stream` SSE |
 
 ## Layout
@@ -899,3 +899,18 @@ with that move.
   change only reaches `/lab` once mcp bumps the pinned commit. To develop
   both at once: `yarn link` here, `yarn link strut` in `mcp/`, then rebuild
   (`npm run build`, `npm run build:web`) and restart mcp after each change.
+- **One copy per process.** `zod`, `ai` and `@ai-sdk/anthropic` are
+  `peerDependencies` (+ `devDependencies` for this checkout) — never
+  `dependencies`. Their objects cross the strut↔host boundary: a tool
+  `inputSchema` built here is converted by the HOST's `ai` with the HOST's
+  zod, and zod's JSON-schema internals only work within one copy. A caret
+  `dependencies` entry once resolved to a newer zod nested under
+  `node_modules/strut/` in mcp, and every chat turn died with `Cannot read
+  properties of undefined (reading 'push')` from zod's `recordProcessor`.
+  As peers they resolve to the host's single copy (npm installs peers
+  itself — the desktop stage; a yarn v1 host lists them — mcp does) and
+  the host bumps versions in one place. Provider SDKs (google, openai,
+  openrouter, xai) are aieo's own dependencies — strut never imports them;
+  the one direct provider import is the anthropic text-editor tool in
+  `steps/core/agent.ts`. Same rule for anything new that hands zod schemas
+  or AI SDK objects across the boundary.
