@@ -1,5 +1,40 @@
+import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { humanize } from "../helpers";
+
+// Suggestion catalogs for free-text fields (`FieldDesc.suggest`) — fetched
+// once per page and shared by every field that asks. The field stays free
+// text: the datalist is a hint, not a constraint.
+type Suggestion = { value: string; label: string };
+const catalogs: Partial<Record<NonNullable<api.FieldDesc["suggest"]>, Promise<Suggestion[]>>> = {};
+function loadSuggestions(kind: NonNullable<api.FieldDesc["suggest"]>): Promise<Suggestion[]> {
+  return (catalogs[kind] ??= api
+    .listLlmModels()
+    .then((r) =>
+      r.models.map((m) => ({
+        value: m.name,
+        label: `${m.alias} · ${m.provider}${m.available ? "" : ` (no ${r.keyNames[m.provider] ?? "key"})`}`,
+      })),
+    )
+    .catch(() => []));
+}
+function useSuggestions(kind: api.FieldDesc["suggest"]): Suggestion[] | null {
+  const [items, setItems] = useState<Suggestion[] | null>(null);
+  useEffect(() => {
+    if (!kind) {
+      setItems(null);
+      return;
+    }
+    let cancelled = false;
+    loadSuggestions(kind).then((r) => {
+      if (!cancelled) setItems(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [kind]);
+  return items;
+}
 // ── Config Field Renderer ──────────────────────────────────────────────────
 
 export function ConfigField(props: {
@@ -9,6 +44,8 @@ export function ConfigField(props: {
 }) {
   const { field, value, onChange } = props;
   const label = `${humanize(field.name)}${field.required ? "" : " (optional)"}`;
+  // Hooks run unconditionally; only string fields carry a `suggest`.
+  const suggestions = useSuggestions(field.kind === "string" ? field.suggest : undefined);
 
   if (field.kind === "enum" && field.enumValues) {
     return (
@@ -81,16 +118,25 @@ export function ConfigField(props: {
     );
   }
 
-  // Default: string
+  // Default: string (with a datalist when the field names a suggestion catalog)
+  const listId = suggestions ? `suggest-${field.name}` : undefined;
   return (
     <div class="flyout-field">
       <label>{label}</label>
       <input
         type="text"
+        list={listId}
         value={value != null ? String(value) : ""}
         placeholder={field.default != null ? `default: ${field.default}` : undefined}
         onInput={(e) => onChange((e.target as HTMLInputElement).value)}
       />
+      {suggestions && suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((s) => (
+            <option key={s.value} value={s.value}>{s.label}</option>
+          ))}
+        </datalist>
+      )}
     </div>
   );
 }

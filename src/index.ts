@@ -117,18 +117,27 @@ export {
 // Content-hash versioning (internal dedup) + sequential version labels
 export { contentHash, nextVersionLabel } from "./version.js";
 
-// LLM token usage + cost (shared by the agent + lab eval/score steps)
+// LLM token usage (shared by the agent + lab eval/score steps). Pricing and
+// cost live in aieo (`computeSessionCost`); `usageForCost` adapts the shape.
 export {
-  TOKEN_PRICING,
-  type LLMProvider,
-  type TokenPricing,
   type TokenUsage,
   emptyUsage,
   addUsage,
   coerceUsage,
   usageFromResult,
-  computeCost,
+  usageForCost,
 } from "./pricing.js";
+
+// LLM model resolution — strut's glue over aieo (the chat, agent + llm steps).
+export {
+  resolveModel,
+  listModelOptions,
+  canonicalModelName,
+  type ResolveModelOptions,
+  type ResolvedModel,
+  type ModelOption,
+  type ModelCatalog,
+} from "./llm.js";
 
 // Standard capabilities — the http + secrets + artifacts services adapter steps build on.
 export {

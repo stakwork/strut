@@ -44,6 +44,14 @@
     "@ai-sdk/provider" "3.0.10"
     "@ai-sdk/provider-utils" "4.0.26"
 
+"@ai-sdk/openai-compatible@2.0.46":
+  version "2.0.46"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/openai-compatible/-/openai-compatible-2.0.46.tgz#85639c593f4ab9cd2df498e336acf4eda4cf8e83"
+  integrity sha512-23ExGdy3p0Grfz3BAjCbIOc74TjQc5nHu72e0+kx3hshvScp32a4nnQlzzG4VT1bDZxa9yPNNUNyb5nN6vJHcQ==
+  dependencies:
+    "@ai-sdk/provider" "3.0.10"
+    "@ai-sdk/provider-utils" "4.0.26"
+
 "@ai-sdk/openai@3.0.61":
   version "3.0.61"
   resolved "https://registry.npmjs.org/@ai-sdk/openai/-/openai-3.0.61.tgz"
@@ -117,6 +125,15 @@
   integrity sha512-5X1k57JBJ4H7H1QjX7CnJYAB1I19r/trVZTMcSms7/kLNZ8RaU4Nt2agcwZzv82Hfx6Q7/TOLU7agAKeFfc8cA==
   dependencies:
     json-schema "^0.4.0"
+
+"@ai-sdk/xai@3.0.88":
+  version "3.0.88"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/xai/-/xai-3.0.88.tgz#3a7334f370ec977a955625348fcf34769f6b0c9c"
+  integrity sha512-9jc7CT+6YxdPnkMF66jX/LmFoEcRI2Cjr5CTxZcrCA8f764NPF0mGtaNRv3M0OzYwBIppgZ3F0TNhADguHWLrg==
+  dependencies:
+    "@ai-sdk/openai-compatible" "2.0.46"
+    "@ai-sdk/provider" "3.0.10"
+    "@ai-sdk/provider-utils" "4.0.26"
 
 "@emnapi/runtime@^1.7.0":
   version "1.11.3"
@@ -698,14 +715,15 @@ ai@^6.0.196:
     "@ai-sdk/provider-utils" "4.0.40"
     "@opentelemetry/api" "^1.9.0"
 
-aieo@^0.1.34:
-  version "0.1.34"
-  resolved "https://registry.npmjs.org/aieo/-/aieo-0.1.34.tgz"
-  integrity sha512-0ZV2LvbBd5N1pc69EYzrnSF5dfX517n4CFITOM08K/+QkpWNBquGnJIpGTz7SN1Xa2CdQ/YPNs94rRTyF4q7qw==
+aieo@^0.1.41:
+  version "0.1.41"
+  resolved "https://registry.yarnpkg.com/aieo/-/aieo-0.1.41.tgz#97c873dd4ef9294c422044aeecfa8bbaeb3d389c"
+  integrity sha512-95Kh+H5qXHKr+jpuIXGgDQSBoZw+L/banxN8ZZN0Gcdi/fO9IWywgq7rvCkYYslnInry5rSIrGmu53lT0d5FOA==
   dependencies:
     "@ai-sdk/anthropic" "3.0.105"
     "@ai-sdk/google" "3.0.67"
     "@ai-sdk/openai" "3.0.61"
+    "@ai-sdk/xai" "3.0.88"
     "@openrouter/ai-sdk-provider" "2.10.0"
     ai "6.0.175"
     zod "4.3.6"

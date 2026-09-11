@@ -103,9 +103,13 @@ describe("chat bash tool", () => {
     assert.equal("bash" in buildTools(stubDeps({ shell: { cwd: dir } })), true);
   });
 
-  it("web_search is gated on deps.webSearch", () => {
-    assert.equal("web_search" in buildTools(stubDeps()), false);
-    assert.equal("web_search" in buildTools(stubDeps({ webSearch: true })), true);
+  it("web tools are only what the host built (deps.webTools)", () => {
+    const none = buildTools(stubDeps());
+    assert.equal("web_search" in none, false);
+    assert.equal("web_fetch" in none, false);
+    const both = buildTools(stubDeps({ webTools: { web_search: { x: 1 }, web_fetch: { y: 2 } } }));
+    assert.deepEqual(both["web_search"], { x: 1 });
+    assert.deepEqual(both["web_fetch"], { y: 2 });
   });
 
   it("executes in the workspace dir and creates scratch/", async () => {

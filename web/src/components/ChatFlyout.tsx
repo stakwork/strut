@@ -40,6 +40,9 @@ function setChatUrlParam(id: string | null) {
 // user-role messages with this prefix; render them as a notice, not a bubble.
 const NOTIFICATION_PREFIX = "[run-notification]";
 
+// The picker's "type any model name" option.
+const CUSTOM_MODEL = "__custom__";
+
 // While the flyout is open and idle, poll for server-initiated turns (a
 // detached run finishing starts a turn no client action triggered).
 const TURN_POLL_MS = 4000;
@@ -295,6 +298,40 @@ export function ChatFlyout(props: {
   const [chats, setChats] = useState<api.ChatMeta[]>([]);
   const [copied, setCopied] = useState(false);
 
+  // ── Model picker ─────────────────────────────────────────────────────
+  // The catalog is the server's (aieo's aliases + which providers have a
+  // key). The pick is browser-local and sticky (storage), sent with each
+  // message and recorded on the chat by the server. null = server default.
+  const [catalog, setCatalog] = useState<api.LlmModelsResponse | null>(null);
+  const [model, setModel] = useState<string | null>(() => storage.chatModel.get());
+  const [customModel, setCustomModel] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.listLlmModels().then((r) => {
+      if (cancelled) return;
+      setCatalog(r);
+      // No pick yet and the default's provider has no key: start on the
+      // first provider that does, so the first message can't fail on a
+      // choice the user never made.
+      setModel((cur) => {
+        if (cur) return cur;
+        const defProvider = r.default.split("/")[0];
+        if (r.models.some((m) => m.provider === defProvider && m.available)) return cur;
+        return r.models.find((m) => m.available)?.name ?? cur;
+      });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => { storage.chatModel.set(model); }, [model]);
+  const noKeys = !!catalog && !catalog.models.some((m) => m.available);
+  const providerGroups: [string, api.LlmModelOption[]][] = [];
+  for (const m of catalog?.models ?? []) {
+    const g = providerGroups.find(([p]) => p === m.provider);
+    if (g) g[1].push(m);
+    else providerGroups.push([m.provider, [m]]);
+  }
+  const modelIsCustom = !!model && !!catalog && !catalog.models.some((m) => m.name === model);
+
   const copyTranscript = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(transcriptText(entries));
@@ -524,7 +561,7 @@ export function ChatFlyout(props: {
     setLoading(true);
 
     try {
-      const { chatId: id, turn } = await api.sendChat(text, chatId ?? undefined);
+      const { chatId: id, turn } = await api.sendChat(text, chatId ?? undefined, model ?? undefined);
       if (!chatId) {
         setChatId(id);
         storage.save(CHAT_ID_KEY, id);
@@ -539,10 +576,14 @@ export function ChatFlyout(props: {
         await loadChat(chatId);
         return;
       }
-      setEntries((prev) => [...prev, { kind: "text", content: "Error connecting to AI." }]);
+      // Rejected before anything was persisted (e.g. a model pick whose
+      // provider has no key): drop the optimistic bubble, keep the draft.
+      const message = err instanceof Error ? err.message : String(err);
+      setEntries((prev) => [...prev.slice(0, -1), { kind: "text", content: `Error: ${message}` }]);
+      setInput(text);
       setLoading(false);
     }
-  }, [input, loading, chatId, attach, loadChat, stopDictation]);
+  }, [input, loading, chatId, model, attach, loadChat, stopDictation]);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -598,6 +639,11 @@ export function ChatFlyout(props: {
                   <span class="chat-history-live" title="Working" aria-label="Working" />
                 )}
                 <span class="chat-history-title">{ch.title || "Untitled chat"}</span>
+                {ch.model && (
+                  <span class="chat-history-model" title={ch.model}>
+                    {ch.model.split("/").slice(1).join("/") || ch.model}
+                  </span>
+                )}
                 <span class="chat-history-time">{relativeTime(ch.updatedAt)}</span>
               </button>
             ))
@@ -687,6 +733,12 @@ export function ChatFlyout(props: {
         )}
       </div>
       )}
+      {noKeys && (
+        <div class="chat-notice">
+          No LLM API key is configured, so messages will fail. Add one under Secrets
+          (e.g. ANTHROPIC_API_KEY) or set it in the server environment.
+        </div>
+      )}
       {micError && <div class="chat-mic-error">{micError}</div>}
       <div class="chat-input-row">
         <textarea
@@ -702,6 +754,50 @@ export function ChatFlyout(props: {
           placeholder={listening === "on" ? "Listening…" : "Describe your workflow..."}
           disabled={loading}
         />
+        {catalog && (
+          customModel ? (
+            <input
+              class="chat-model chat-model-custom"
+              type="text"
+              placeholder="provider/model"
+              title="Any aieo model name — OpenRouter models as openrouter/org/model"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
+                if (e.key === "Escape") setCustomModel(false);
+              }}
+              onBlur={(e) => {
+                const v = (e.target as HTMLInputElement).value.trim();
+                if (v) setModel(v);
+                setCustomModel(false);
+              }}
+            />
+          ) : (
+            <select
+              class="chat-model"
+              aria-label="Model"
+              title="Model for the next message"
+              value={model ?? catalog.default}
+              onChange={(e) => {
+                const v = (e.target as HTMLSelectElement).value;
+                if (v === CUSTOM_MODEL) setCustomModel(true);
+                else setModel(v);
+              }}
+            >
+              {providerGroups.map(([provider, models]) => (
+                <optgroup key={provider} label={provider}>
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name} disabled={!m.available}>
+                      {m.modelId}{m.available ? "" : ` (no ${catalog.keyNames[provider] ?? "key"})`}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+              {modelIsCustom && <option value={model!}>{model}</option>}
+              <option value={CUSTOM_MODEL}>Custom…</option>
+            </select>
+          )
+        )}
         {micReady && (
           <button
             class={`btn chat-mic${listening ? " is-listening" : ""}`}

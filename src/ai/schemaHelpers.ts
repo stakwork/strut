@@ -8,6 +8,10 @@ export interface FieldDesc {
   required: boolean;
   default?: unknown;
   enumValues?: string[];
+  /** UI hint for a free-text field: a catalog to offer as suggestions
+   *  ("llm-models" → GET /llm/models). Set on the Zod schema via
+   *  `.meta({ suggest: "llm-models" })`; the value stays free text. */
+  suggest?: "llm-models";
 }
 
 export function zodToFields(schema: z.ZodTypeAny): FieldDesc[] {
@@ -51,7 +55,12 @@ function describeField(name: string, s: z.ZodTypeAny): FieldDesc {
   const kind = (inner._def as any).type as string;
   if (kind === "enum")
     return { name, kind: "enum", required, default: defaultVal, enumValues: (inner as any).options };
-  if (kind === "string") return { name, kind: "string", required, default: defaultVal };
+  if (kind === "string") {
+    // `.meta()` registers on the schema it's called on — the outer wrapper
+    // (`z.string().optional().meta(…)`) or the inner (`z.string().meta(…).optional()`).
+    const suggest = (s as any).meta?.()?.suggest ?? (inner as any).meta?.()?.suggest;
+    return { name, kind: "string", required, default: defaultVal, ...(suggest ? { suggest } : {}) };
+  }
   if (kind === "number") return { name, kind: "number", required, default: defaultVal };
   if (kind === "boolean") return { name, kind: "boolean", required, default: defaultVal };
   return { name, kind: "json", required, default: defaultVal };

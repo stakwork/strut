@@ -6,7 +6,6 @@ import { serve } from "@hono/node-server";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { z } from "zod";
 
 import type { Flow, StepRegistry, RunEvent, RunResult } from "./core.js";
 import type { RunStore } from "./store.js";
@@ -20,14 +19,15 @@ import {
 } from "./chat-store.js";
 import { FileWorkspaceStore, type WorkspaceStore } from "./workspace.js";
 import { buildRegistry } from "./steps/registry.js";
-import { maxOutputTokensFor } from "./pricing.js";
+import { zodToFields } from "./ai/schemaHelpers.js";
+import { resolveModel, listModelOptions, createWebTools } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
 import { requireApiKey, warnIfUnconfigured } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
-import type { ArtifactsCapability } from "./capabilities.js";
+import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSecretStore,
@@ -110,7 +110,10 @@ export interface StrutOptions<TServices = unknown> {
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
   chatMaxSteps?: number;
 
-  /** Anthropic model id for the chat agent. Defaults to `STRUT_CHAT_MODEL` or
+  /** Default model for the chat agent — any aieo model name: an alias
+   *  (`sonnet`, `gpt`, `kimi`), a full id, or `provider/id` (OpenRouter as
+   *  `openrouter/org/model`). A per-chat pick (`POST /chat { model }`, the
+   *  flyout's picker) overrides it. Defaults to `STRUT_CHAT_MODEL` or
    *  `claude-sonnet-5`. */
   chatModel?: string;
 
@@ -259,22 +262,7 @@ export interface StrutRunOptions<TServices = unknown> {
   paramOverrides?: Record<string, Record<string, unknown>>;
 }
 
-// ── Zod → field descriptors (UI helper, used by /steps/:type/schema) ──────
-
-interface FieldDesc {
-  name: string;
-  kind: "string" | "number" | "boolean" | "enum" | "json";
-  required: boolean;
-  default?: unknown;
-  enumValues?: string[];
-  description?: string;
-}
-
-function zodToFields(schema: z.ZodTypeAny): FieldDesc[] {
-  const shape = getObjectShape(schema);
-  if (!shape) return [];
-  return Object.entries(shape).map(([name, s]) => describeField(name, s as z.ZodTypeAny));
-}
+// ── Run-output helpers ─────────────────────────────────────────────────────
 
 /** Resolve a dotted/bracketed path (`a.b`, `a[0].b`) into a nested value.
  *  Used to pull a promote spec's `from` value out of a run's output. */
@@ -294,51 +282,6 @@ function parsePromoteTarget(to: string): { workflow: string; param: string } | n
   const dot = to.indexOf(".");
   if (dot <= 0 || dot >= to.length - 1) return null;
   return { workflow: to.slice(0, dot), param: to.slice(dot + 1) };
-}
-
-// zod v4 def layout: `_def.type` is a lowercase kind string ("object",
-// "optional", "default", ...), an object's `_def.shape` is a plain record,
-// a default's `_def.defaultValue` is the VALUE (not a thunk), and `.refine`
-// no longer wraps the schema (transforms become a "pipe" whose input is
-// `_def.in`).
-function getObjectShape(s: z.ZodTypeAny): Record<string, z.ZodTypeAny> | null {
-  const def = s._def as any;
-  if (def.type === "object") return def.shape;
-  if (def.type === "pipe") return getObjectShape(def.in);
-  return null;
-}
-
-function describeField(name: string, s: z.ZodTypeAny): FieldDesc {
-  let required = true;
-  let defaultVal: unknown = undefined;
-  let inner = s;
-
-  for (;;) {
-    const def = inner._def as any;
-    if (def.type === "optional") {
-      required = false;
-      inner = def.innerType;
-    } else if (def.type === "default" || def.type === "prefault") {
-      required = false;
-      defaultVal = def.defaultValue;
-      inner = def.innerType;
-    } else if (def.type === "nullable") {
-      required = false;
-      inner = def.innerType;
-    } else {
-      break;
-    }
-  }
-
-  const kind = (inner._def as any).type as string;
-
-  if (kind === "enum") {
-    return { name, kind: "enum", required, default: defaultVal, enumValues: (inner as any).options };
-  }
-  if (kind === "string") return { name, kind: "string", required, default: defaultVal };
-  if (kind === "number") return { name, kind: "number", required, default: defaultVal };
-  if (kind === "boolean") return { name, kind: "boolean", required, default: defaultVal };
-  return { name, kind: "json", required, default: defaultVal };
 }
 
 // ── Factory ────────────────────────────────────────────────────────────────
@@ -459,6 +402,11 @@ export async function createStrut<TServices = unknown>(
   const artifacts = (services as Record<string, unknown>)["artifacts"] as
     | ArtifactsCapability
     | undefined;
+  // The secrets boundary (store → env) that the chat's model resolution and
+  // the /llm/models availability check read provider keys through.
+  const secretsCap = (services as Record<string, unknown>)["secrets"] as
+    | SecretsCapability
+    | undefined;
   const serveUi = opts.serveUi ?? true;
   const enableChat = opts.enableChat ?? true;
   const chatStore: ChatStore =
@@ -469,11 +417,6 @@ export async function createStrut<TServices = unknown>(
     opts.chatModel ?? process.env["STRUT_CHAT_MODEL"] ?? "claude-sonnet-5";
   const chatRunWaitMs =
     opts.chatRunWaitMs ?? Number(process.env["STRUT_CHAT_RUN_WAIT_MS"] ?? 60_000);
-  // Provider-derived infra constant (see pricing.ts — NOT an option: a wrong
-  // value is only ever a bug). Without it the AI SDK defaults max_tokens to
-  // 4096, which truncates a create_step tool call MID-JSON (it carries a
-  // whole TS file in its `code` arg) — the turn dies with finish=length.
-  const chatMaxOutputTokens = maxOutputTokensFor("anthropic");
   const chatMaxAutoTurns =
     opts.chatMaxAutoTurns ?? Number(process.env["STRUT_CHAT_MAX_AUTO_TURNS"] ?? 10);
   const webDist =
@@ -1547,8 +1490,24 @@ export async function createStrut<TServices = unknown>(
 
         try {
           const { ToolLoopAgent, stepCountIs } = await import("ai");
-          const { anthropic } = await import("@ai-sdk/anthropic");
           const { buildTools, buildSystem } = await import("./ai/index.js");
+
+          // The chat's model (`ChatMeta.model`, set by POST /chat) or the
+          // deployment default, key via the secrets boundary. Everything
+          // provider-shaped keys off the RESOLVED provider: the web tools
+          // (web_search + web_fetch — native on anthropic, Exa/HTTP shims
+          // elsewhere) and the output cap (without which the SDK's 4096
+          // default truncates a create_step call MID-JSON). A missing key
+          // throws here and lands in the stream as chat.error, naming it.
+          const meta = await chatStore.getMeta(chatId);
+          const llm = await resolveModel({ model: meta?.model ?? chatModel, secrets: secretsCap });
+          const catalog = await listModelOptions({ default: chatModel, secrets: secretsCap });
+          const web = await createWebTools({
+            provider: llm.provider,
+            apiKey: llm.apiKey,
+            secrets: secretsCap,
+            searchMaxUses: 5,
+          });
 
           const deps = {
             workspace,
@@ -1560,7 +1519,13 @@ export async function createStrut<TServices = unknown>(
             // Build-time bash for the chat builder, cwd'd at the local data
             // dir (scrubbed env — see shell.ts).
             shell: { cwd: dataDir },
-            webSearch: true,
+            webTools: web.tools,
+            // So the builder only authors `model:` values this deployment can run.
+            models: {
+              default: catalog.default,
+              available: [...new Set(catalog.models.filter((m) => m.available).map((m) => m.provider))],
+              keyNames: catalog.keyNames,
+            },
             // Read-only graph_query, when the host wired a graph backend.
             graph: opts.graph,
             // cancel_run / pause_run / resume_run over the live controllers.
@@ -1632,17 +1597,17 @@ export async function createStrut<TServices = unknown>(
           };
 
           const agent = new ToolLoopAgent({
-            model: anthropic(chatModel),
+            model: llm.model,
             instructions: await buildSystem(deps),
             tools: buildTools(deps),
-            maxOutputTokens: chatMaxOutputTokens,
+            maxOutputTokens: llm.maxOutputTokens,
             stopWhen: stepCountIs(chatMaxSteps),
             onFinish: () => {
               registry = deps.registry;
             },
           });
 
-          console.log(`[chat ${chatId}] turn ${turn} start (${modelMessages.length} msgs)`);
+          console.log(`[chat ${chatId}] turn ${turn} start (${modelMessages.length} msgs, model ${llm.name})`);
 
           const result = await agent.stream({
             messages: modelMessages,
@@ -1655,7 +1620,7 @@ export async function createStrut<TServices = unknown>(
               // never executes and the turn dies silently. Say why, loudly.
               if (step.finishReason === "length") {
                 console.warn(
-                  `[chat ${chatId}] turn ${turn} step ${step.stepNumber} TRUNCATED at maxOutputTokens=${chatMaxOutputTokens} — a cut-off tool call never executed; the turn likely ended incomplete. Raise STRUT_MAX_OUTPUT_TOKENS if this recurs.`,
+                  `[chat ${chatId}] turn ${turn} step ${step.stepNumber} TRUNCATED at maxOutputTokens=${llm.maxOutputTokens} — a cut-off tool call never executed; the turn likely ended incomplete. Raise STRUT_MAX_OUTPUT_TOKENS if this recurs.`,
                 );
               }
             },
@@ -1748,7 +1713,7 @@ export async function createStrut<TServices = unknown>(
 
     // Send a message: append it, launch the turn detached, return ids (202).
     app.post("/chat", async (c) => {
-      const body = await c.req.json<{ chatId?: string; message?: string; title?: string }>();
+      const body = await c.req.json<{ chatId?: string; message?: string; title?: string; model?: string }>();
       if (!body.message || typeof body.message !== "string") {
         return c.json({ error: "message (string) is required" }, 400);
       }
@@ -1766,12 +1731,28 @@ export async function createStrut<TServices = unknown>(
         }
         meta = await reconcileStaleChat(meta);
       }
+      // An explicit model pick is validated (provider known, key configured)
+      // BEFORE anything is persisted — a bad pick is a 400 here, not a dead
+      // chat — and recorded on the chat in canonical "provider/id" form.
+      // Without one the chat keeps its recorded model (else the default);
+      // launchChatTurn resolves that per turn.
+      let pickedModel: string | undefined;
+      if (body.model !== undefined) {
+        if (typeof body.model !== "string" || !body.model.trim()) {
+          return c.json({ error: "model must be a non-empty string" }, 400);
+        }
+        try {
+          pickedModel = (await resolveModel({ model: body.model.trim(), secrets: secretsCap })).name;
+        } catch (err) {
+          return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+        }
+      }
       if (!chatId) {
         chatId = generateChatId();
         meta = await chatStore.createChat({
           id: chatId,
           title: body.title ?? body.message.slice(0, 80),
-          model: chatModel,
+          model: pickedModel ?? chatModel,
         });
       }
 
@@ -1782,7 +1763,12 @@ export async function createStrut<TServices = unknown>(
       const turn = (meta!.currentTurn ?? -1) + 1;
       // A human message resets the consecutive-auto-turn counter (the
       // notification runaway guard) — see `ai/notifier.ts`.
-      await chatStore.setMeta(chatId, { status: "live", currentTurn: turn, autoTurns: 0 });
+      await chatStore.setMeta(chatId, {
+        status: "live",
+        currentTurn: turn,
+        autoTurns: 0,
+        ...(pickedModel ? { model: pickedModel } : {}),
+      });
 
       // Lossless on disk (transcript); truncated copy re-fed to the model.
       const modelMessages = truncateToolMessages([...prior, userMsg]);
@@ -1842,6 +1828,21 @@ export async function createStrut<TServices = unknown>(
     });
   }
 
+  // ── LLM model catalog ────────────────────────────────────────────────────
+  //
+  // Feeds the chat flyout's model picker and the step editor's `model`
+  // suggestions: aieo's aliases with per-provider availability (a key in the
+  // secret store or env — never the values) and the deployment's default
+  // chat model in canonical "provider/id" form.
+
+  app.get("/llm/models", async (c) => {
+    try {
+      return c.json(await listModelOptions({ default: chatModel, secrets: secretsCap }));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
   // ── Health ───────────────────────────────────────────────────────────────
 
   app.get("/health", (c) => {
@@ -1868,6 +1869,7 @@ export async function createStrut<TServices = unknown>(
         path.startsWith("/steps") ||
         path.startsWith("/chat") ||
         path.startsWith("/health") ||
+        path.startsWith("/llm") ||
         path.startsWith("/audio")
       ) {
         return c.notFound();
