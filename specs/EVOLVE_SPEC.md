@@ -176,6 +176,14 @@ CI rebuilds. The manifest becomes the same class of object as a workflow
 version: agent-authored, human-reviewed, diffable, pinned — and the mutation
 happens at **build** time, where it can be attributed.
 
+> **Superseded by `specs/ENV_SPEC.md`.** Build time turned out too rigid: the
+> builder on a production server must be able to add a binary for the
+> workflow it is authoring without a rebuild. ENV_SPEC keeps everything this
+> paragraph wanted — versioned, pinned, reviewed, attributable — but applies
+> the manifest at runtime into a user-space prefix on the persistent volume
+> (pixi over conda-forge), synced at startup and after each change. Python
+> libraries left the manifest entirely: PEP 723 + `uv run` (SPEC §4.1.8).
+
 ### 4.3 Credentials — `secretsEnv` (built)
 
 How an in-workflow agent uses an authenticated API without ever seeing a

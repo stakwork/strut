@@ -367,6 +367,7 @@ Available bindings inside a step config:
 - `params` — the workflow's tunable *knobs* (prompts, thresholds, sample sizes). Defaults live in the workflow's `params:` block and are shallow-merged with per-run overrides. Always present (`{}` if the workflow declares none).
 - `<stepId>` — output of any previously completed step at the same level.
 - `$current` — only inside a `loop` body; previous iteration's output (undefined on iteration 0).
+- `$runId` — the id of the current run. Lets a workflow return where its files are: a run's artifact dir is served at `/artifacts/<runId>/<path>` (§4.1.8, AGENTS.md "Artifacts").
 
 `input` vs `params` is a deliberate split: `input` is *what* a run is about (no defaults, validated), `params` is *how* it's processed (all defaults, sparsely overridden per run). The experiment surface is `params` — an agent or human sweeps it without touching `input` or step code. See §11.1.
 

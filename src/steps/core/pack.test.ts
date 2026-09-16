@@ -33,3 +33,24 @@ describe("pack (core)", () => {
     });
   });
 });
+
+describe("$runId in template scope", () => {
+  it("resolves to the run's id at the top level and inside a foreach body", async () => {
+    const wf = flow("runid-test", {
+      input: z.object({}),
+      steps: [
+        step("each", "foreach", { items: [1, 2], body: { id: "inner", type: "pack", config: { r: "{{ $runId }}", i: "{{ $index }}" } } }),
+        step("result", "pack", { link: "/artifacts/{{ $runId }}/clip.mp4", inner: "{{ each }}" }, { depends: ["each"] }),
+      ],
+    });
+    const result = await runWorkflow(wf, {}, coreRegistry(), { store: new MemoryRunStore() });
+    assert.equal(result.status, "success", JSON.stringify(result.error));
+    assert.deepEqual(result.output, {
+      link: `/artifacts/${result.runId}/clip.mp4`,
+      inner: [
+        { r: result.runId, i: 0 },
+        { r: result.runId, i: 1 },
+      ],
+    });
+  });
+});

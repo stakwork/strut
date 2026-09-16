@@ -282,7 +282,9 @@ async function executeFlow(
     ...(exec.paramOverrides?.[workflow.name] ?? {}),
     ...(paramsOverride ?? {}),
   };
-  const scope: Record<string, unknown> = { input, params };
+  // `$runId` lets a workflow name its own run — e.g. a final pack step
+  // returning the artifact path of a file it produced (/artifacts/<runId>/…).
+  const scope: Record<string, unknown> = { input, params, $runId: exec.runId };
   const steps = workflow.steps;
 
   if (steps.length === 0) return undefined;

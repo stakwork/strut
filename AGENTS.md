@@ -9,7 +9,10 @@ on the codebase.
 Companion specs: `specs/EVAL_SPEC.md` — how a run gets scored (the measurement
 substrate). `specs/EVOLVE_SPEC.md` — what varies between measured runs: the three
 self-evolution layers (prompts / environment / structure), what promotes to a
-versioned artifact, and what must never evolve.
+versioned artifact, and what must never evolve. `specs/ENV_SPEC.md` — the
+tools a workflow can call: a versioned manifest, the user-space prefix it is
+synced into under `dataDir`, and how the builder adds a binary on a running
+server without a rebuild (proposed).
 
 ## Stack
 

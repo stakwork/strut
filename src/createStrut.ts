@@ -2024,7 +2024,17 @@ function contentTypeFor(path: string): string {
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
     svg: "image/svg+xml",
+    gif: "image/gif",
+    webp: "image/webp",
     pdf: "application/pdf",
+    mp4: "video/mp4",
+    webm: "video/webm",
+    mov: "video/quicktime",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    m4a: "audio/mp4",
+    ogg: "audio/ogg",
+    vtt: "text/vtt; charset=utf-8",
   };
   return map[ext] ?? "application/octet-stream";
 }

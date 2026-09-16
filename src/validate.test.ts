@@ -161,6 +161,19 @@ steps:
     assert.ok(!has(errors, /unknown root "c"/));
   });
 
+  it("accepts $runId as a global root (a workflow naming its own run's artifacts)", async () => {
+    const r = await v(`
+name: runid
+steps:
+  - id: a
+    type: echo
+    config: { message: "/artifacts/{{ $runId }}/clip.mp4" }
+`);
+    const { errors } = msgs(r);
+    assert.ok(!has(errors, /unknown root/), errors.join("\n"));
+    assert.equal(r.ok, true);
+  });
+
   it("loop/error variables are only valid in their nested context", async () => {
     const r = await v(`
 name: vars

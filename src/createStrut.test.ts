@@ -118,6 +118,29 @@ describe("createStrut", () => {
     assert.ok("http" in reg);
   });
 
+  it("serves run artifacts with media content-types (video plays inline, unknown types download)", async () => {
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      store: new MemoryRunStore(),
+      serveUi: false,
+      enableChat: false,
+    });
+    const artifacts = (strut.services as { artifacts: { write(r: string, p: string, c: Uint8Array): Promise<string> } }).artifacts;
+    await artifacts.write("run-1", "clip.mp4", new Uint8Array([0, 0, 0, 24]));
+    await artifacts.write("run-1", "audio/track.wav", new Uint8Array([82, 73, 70, 70]));
+    await artifacts.write("run-1", "blob.bin", new Uint8Array([1]));
+
+    const mp4 = await strut.app.request("/artifacts/run-1/clip.mp4");
+    assert.equal(mp4.status, 200);
+    assert.equal(mp4.headers.get("content-type"), "video/mp4");
+    const wav = await strut.app.request("/artifacts/run-1/audio/track.wav");
+    assert.equal(wav.headers.get("content-type"), "audio/wav");
+    const bin = await strut.app.request("/artifacts/run-1/blob.bin");
+    assert.equal(bin.headers.get("content-type"), "application/octet-stream");
+    const list = (await (await strut.app.request("/artifacts/run-1")).json()) as unknown;
+    assert.deepEqual(list, { runId: "run-1", files: ["audio/track.wav", "blob.bin", "clip.mp4"] });
+  });
+
   it("uses an injected registry as-is", async () => {
     const myStep = defineStep({
       type: "ping",
