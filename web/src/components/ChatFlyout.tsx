@@ -364,12 +364,29 @@ export function ChatFlyout(props: {
 
   // Auto-grow the input with its content (CSS max-height caps it); shrinks
   // back when cleared on send.
-  useEffect(() => {
+  const fitInput = useCallback(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [input]);
+  }, []);
+  useEffect(fitInput, [input, fitInput]);
+  // The flyout is drag-resizable, and the wrapped line count changes with
+  // its width, so refit on width changes too. Gating on width (not any
+  // size change) keeps our own height writes from re-triggering the
+  // observer.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fitInput();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fitInput]);
 
   // Mirror the active chat into the URL; clear the param when the flyout
   // closes so a reload doesn't unexpectedly reopen the panel.
@@ -741,75 +758,83 @@ export function ChatFlyout(props: {
       )}
       {micError && <div class="chat-mic-error">{micError}</div>}
       <div class="chat-input-row">
-        <textarea
-          ref={inputRef}
-          rows={1}
-          value={input}
-          onInput={(e) => {
-            const v = (e.target as HTMLTextAreaElement).value;
-            if (listening) dictBase.current = v.trim() ? v.replace(/\s*$/, " ") : "";
-            setInput(v);
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={listening === "on" ? "Listening…" : "Describe your workflow..."}
-          disabled={loading}
-        />
-        {catalog && (
-          customModel ? (
-            <input
-              class="chat-model chat-model-custom"
-              type="text"
-              placeholder="provider/model"
-              title="Any aieo model name — OpenRouter models as openrouter/org/model"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
-                if (e.key === "Escape") setCustomModel(false);
-              }}
-              onBlur={(e) => {
-                const v = (e.target as HTMLInputElement).value.trim();
-                if (v) setModel(v);
-                setCustomModel(false);
-              }}
-            />
-          ) : (
-            <select
-              class="chat-model"
-              aria-label="Model"
-              title="Model for the next message"
-              value={model ?? catalog.default}
-              onChange={(e) => {
-                const v = (e.target as HTMLSelectElement).value;
-                if (v === CUSTOM_MODEL) setCustomModel(true);
-                else setModel(v);
-              }}
-            >
-              {providerGroups.map(([provider, models]) => (
-                <optgroup key={provider} label={provider}>
-                  {models.map((m) => (
-                    <option key={m.name} value={m.name} disabled={!m.available}>
-                      {m.modelId}{m.available ? "" : ` (no ${catalog.keyNames[provider] ?? "key"})`}
-                    </option>
+        {/* One bordered box: the textarea over a footer toolbar with the
+            model picker on the left and mic + Send on the right. */}
+        <div class="chat-composer">
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={input}
+            onInput={(e) => {
+              const v = (e.target as HTMLTextAreaElement).value;
+              if (listening) dictBase.current = v.trim() ? v.replace(/\s*$/, " ") : "";
+              setInput(v);
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder={listening === "on" ? "Listening…" : "Describe your workflow..."}
+            disabled={loading}
+          />
+          <div class="chat-composer-footer">
+            {catalog && (
+              customModel ? (
+                <input
+                  class="chat-model chat-model-custom"
+                  type="text"
+                  placeholder="provider/model"
+                  title="Any aieo model name — OpenRouter models as openrouter/org/model"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
+                    if (e.key === "Escape") setCustomModel(false);
+                  }}
+                  onBlur={(e) => {
+                    const v = (e.target as HTMLInputElement).value.trim();
+                    if (v) setModel(v);
+                    setCustomModel(false);
+                  }}
+                />
+              ) : (
+                <select
+                  class="chat-model"
+                  aria-label="Model"
+                  title="Model for the next message"
+                  value={model ?? catalog.default}
+                  onChange={(e) => {
+                    const v = (e.target as HTMLSelectElement).value;
+                    if (v === CUSTOM_MODEL) setCustomModel(true);
+                    else setModel(v);
+                  }}
+                >
+                  {providerGroups.map(([provider, models]) => (
+                    <optgroup key={provider} label={provider}>
+                      {models.map((m) => (
+                        <option key={m.name} value={m.name} disabled={!m.available}>
+                          {m.modelId}{m.available ? "" : ` (no ${catalog.keyNames[provider] ?? "key"})`}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
-                </optgroup>
-              ))}
-              {modelIsCustom && <option value={model!}>{model}</option>}
-              <option value={CUSTOM_MODEL}>Custom…</option>
-            </select>
-          )
-        )}
-        {micReady && (
-          <button
-            class={`btn chat-mic${listening ? " is-listening" : ""}`}
-            onClick={toggleDictation}
-            disabled={loading || listening === "starting" || listening === "stopping"}
-            aria-label={listening ? "Stop dictation" : "Start dictation"}
-            title={listening ? "Stop dictation" : "Dictate"}
-          >
-            <MicIcon />
-          </button>
-        )}
-        <button class="btn btn-primary" onClick={send} disabled={loading}>Send</button>
+                  {modelIsCustom && <option value={model!}>{model}</option>}
+                  <option value={CUSTOM_MODEL}>Custom…</option>
+                </select>
+              )
+            )}
+            <div class="chat-composer-actions">
+              {micReady && (
+                <button
+                  class={`btn chat-mic${listening ? " is-listening" : ""}`}
+                  onClick={toggleDictation}
+                  disabled={loading || listening === "starting" || listening === "stopping"}
+                  aria-label={listening ? "Stop dictation" : "Start dictation"}
+                  title={listening ? "Stop dictation" : "Dictate"}
+                >
+                  <MicIcon />
+                </button>
+              )}
+              <button class="btn btn-primary chat-send" onClick={send} disabled={loading}>Send</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
