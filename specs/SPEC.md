@@ -280,6 +280,28 @@ shape instead of killing the run.
     verdict: "{{ score.all_pass ? 'pass' : 'fail' }}"
 ```
 
+#### 4.1.8 `exec`
+
+Config: `{ cmd, args?, script?, scriptFile?, cwd?, stdin?, env?, secretsEnv?,
+timeoutMs?, maxOutputChars?, parseJson?, allowFailure? }`.
+Output: `{ code, stdout, stderr, json?, cwd, durationMs, truncated }`.
+
+Runs `cmd` with `args` as a subprocess — no shell, so templated values reach
+the program verbatim. `script` writes inline source to a file in the working
+dir and appends its path to `args`; with `cmd: uv, args: [run]` and a PEP 723
+header the script's Python dependencies are installed on the fly. The
+working dir defaults to the run's artifact dir. Non-zero exit throws unless
+`allowFailure`. Goes through `ctx.services.shell` (§10 capabilities): the
+child env is scrubbed, `secretsEnv` names are injected and masked.
+
+```yaml
+- id: clip
+  type: exec
+  config:
+    cmd: ffmpeg
+    args: ["-y", "-ss", "{{ input.start }}", "-t", "30", "-i", "video.mp4", "clip.mp4"]
+```
+
 ### 4.2 Lib Steps
 
 Lib steps live in `src/steps/lib/<namespace>/` inside the engine itself. They are reusable domain-specific integrations (GitHub, Neo4j, Slack, …) that ship with strut but are kept out of the static dependency graph. Each file is a `defineStep(...)` export, same as core steps.

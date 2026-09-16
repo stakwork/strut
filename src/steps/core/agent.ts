@@ -45,7 +45,7 @@ import os from "node:os";
 // Shell plumbing (capture/runCmd/runShell + env scrubbing) lives in shell.ts,
 // shared with the chat builder's bash tool.
 
-import { runCmd, runShell } from "../../shell.js";
+import { runCmd, runShell, maskSecretValues } from "../../shell.js";
 
 /** Immediate subdirs of `cwd` that are git repos. */
 function listRepos(cwd: string): string[] {
@@ -586,13 +586,9 @@ export function buildRegistryTools(
  * tool output that must survive into the log untruncated because it is data
  * for the graph projector (`ACCESSED` edges), not a preview for humans.
  */
-/** Replace every occurrence of each secret value in `text` with a marker.
- *  Plain string splitting (no regex) — values are opaque tokens. */
-export function maskSecretValues(text: string, values: string[]): string {
-  let out = text;
-  for (const v of values) out = out.split(v).join("[MASKED_SECRET]");
-  return out;
-}
+/** `maskSecretValues` lives in shell.ts (shared with the exec step); re-exported
+ *  here because it is part of the agent step's tested surface. */
+export { maskSecretValues };
 
 /** Recursively mask secret values in every string leaf of a tool result.
  *  Tool outputs are JSON-ish (they get persisted to run events), so a plain

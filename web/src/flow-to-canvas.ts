@@ -59,6 +59,7 @@ const STEP_COLORS: Record<string, { fill: string; stroke: string }> = {
   llm:      { fill: "rgba(76, 29, 149, 0.4)", stroke: "#c084fc" },
   agent:    { fill: "rgba(124, 45, 18, 0.4)", stroke: "#fb923c" },
   wait:     { fill: "rgba(71, 85, 105, 0.4)", stroke: "#94a3b8" },
+  exec:     { fill: "rgba(63, 63, 70, 0.5)",  stroke: "#a1a1aa" },
   "slack/post-message": { fill: "rgba(74, 21, 75, 0.4)",  stroke: "#e879f9" },
   "slack/read-channel": { fill: "rgba(74, 21, 75, 0.4)",  stroke: "#e879f9" },
   "gdrive/export-file": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
