@@ -1613,18 +1613,30 @@ body.is-resizing-flyout * {
 .chat-input-row {
   padding: var(--sp-3) var(--sp-4);
   border-top: 1px solid var(--border);
-  display: flex;
-  gap: var(--sp-2);
-  align-items: flex-end; /* keep Send pinned to the bottom as the textarea grows */
 }
-.chat-input-row textarea {
-  flex: 1;
-  font: inherit;
+/* The composer is one bordered box: a borderless full-width textarea over
+   a footer toolbar (model picker left, mic + Send right). The footer stays
+   pinned to the bottom however tall the textarea grows. */
+.chat-composer {
+  display: flex;
+  flex-direction: column;
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  transition: border-color 80ms, box-shadow 80ms;
+}
+.chat-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.chat-composer textarea {
+  width: 100%;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  outline: none;
   color: var(--text);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
   font-size: 13px;
   line-height: 1.4;
   resize: none;
@@ -1632,12 +1644,23 @@ body.is-resizing-flyout * {
   max-height: 40vh; /* JS auto-grows height; cap it and scroll beyond */
   box-sizing: border-box;
 }
-.chat-input-row textarea:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-.chat-input-row textarea:disabled {
+.chat-composer textarea:disabled {
   opacity: 0.5;
+}
+.chat-composer-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+.chat-composer-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.chat-composer-footer .btn {
+  padding: 6px var(--sp-3);
 }
 
 /* ─── run input popover ──────────────────────────────────────── */
@@ -2085,7 +2108,9 @@ body.is-resizing-flyout * {
 .chat-mic {
   display: inline-flex;
   align-items: center;
-  padding: var(--sp-2);
+}
+.chat-composer-footer .chat-mic {
+  padding: 6px;
 }
 .chat-mic.is-listening {
   border-color: var(--danger);
@@ -2096,18 +2121,32 @@ body.is-resizing-flyout * {
   0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.45); }
   50% { box-shadow: 0 0 0 5px rgba(248, 113, 113, 0); }
 }
+/* Low-chrome picker: reads as a secondary control until hovered/focused. */
 .chat-model {
   font: inherit;
   font-size: 12px;
-  max-width: 150px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  color: var(--text);
-  padding: var(--sp-2);
+  max-width: 180px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms, color 80ms;
+}
+.chat-model:hover,
+.chat-model:focus {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--text);
+  outline: none;
 }
 .chat-model-custom {
-  width: 150px;
+  width: 180px;
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--text);
+  cursor: text;
 }
 .chat-notice {
   padding: var(--sp-1) var(--sp-4);
