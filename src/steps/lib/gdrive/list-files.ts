@@ -11,27 +11,23 @@ const EXAMPLE = `- id: list
 
 export default defineStep({
   type: "gdrive/list-files",
-  description: `List files in Google Drive (optionally in a folder, modified after a timestamp, or of a MIME type) for incremental indexing. Pair with foreach → gdrive/export-file to process each. Auth: same as gdrive/export-file (OAuth \`accessToken\`, or GOOGLE_ACCESS_TOKEN / GOOGLE_SERVICE_ACCOUNT_JSON secret, or ADC). Output: { files: [{ id, name, mimeType, modifiedTime, size, webViewLink }], nextPageToken, newestModifiedTime }. Use newestModifiedTime as the cursor for the next run's \`modifiedAfter\`.\n\n${EXAMPLE}`,
+  description: `List Google Drive files — in a folder, modified after a timestamp, of a MIME type, or by raw query — for incremental indexing; pair with foreach → gdrive/export-file to process each. Auth as gdrive/export-file (OAuth accessToken, or the GOOGLE_ACCESS_TOKEN / GOOGLE_SERVICE_ACCOUNT_JSON secret, or ADC). Incremental sync: feed one run's newestModifiedTime into the next run's modifiedAfter; page with nextPageToken → pageToken.\n\n${EXAMPLE}`,
   input: z.object({
-    /** Only files whose parent is this folder ID. */
-    folderId: z.string().optional(),
-    /** RFC 3339 timestamp — only files modified strictly after it (the
-     *  incremental-sync cursor). */
-    modifiedAfter: z.string().optional(),
-    /** Exact MIME type filter (e.g. "application/vnd.google-apps.document"). */
-    mimeType: z.string().optional(),
-    /** Raw Drive `q` query — when set, it REPLACES the folder/modifiedAfter/
-     *  mimeType filters above (full control; see Drive "search for files"). */
-    query: z.string().optional(),
-    /** Include trashed files (default false). Ignored when `query` is set. */
-    includeTrashed: z.boolean().default(false),
-    /** Page size (Drive caps at 1000). */
-    pageSize: z.number().int().positive().max(1000).default(100),
-    /** Cursor from a previous call's `nextPageToken` to fetch the next page. */
-    pageToken: z.string().optional(),
-    /** Drive orderBy (e.g. "modifiedTime", "modifiedTime desc", "name"). */
-    orderBy: z.string().default("modifiedTime"),
-    accessToken: z.string().optional(),
+    folderId: z.string().optional().describe("only files whose parent is this folder ID"),
+    modifiedAfter: z
+      .string()
+      .optional()
+      .describe("RFC 3339 timestamp — only files modified strictly after it (the incremental-sync cursor: pass the previous run's newestModifiedTime)"),
+    mimeType: z.string().optional().describe("exact MIME type filter, e.g. application/vnd.google-apps.document"),
+    query: z
+      .string()
+      .optional()
+      .describe("raw Drive `q` query — when set it REPLACES the folderId/modifiedAfter/mimeType/includeTrashed filters (see Drive \"search for files\")"),
+    includeTrashed: z.boolean().default(false).describe("include trashed files; ignored when query is set"),
+    pageSize: z.number().int().positive().max(1000).default(100).describe("files per page (Drive caps at 1000)"),
+    pageToken: z.string().optional().describe("nextPageToken from the previous call, to fetch the next page"),
+    orderBy: z.string().default("modifiedTime").describe("Drive orderBy, e.g. \"modifiedTime\", \"modifiedTime desc\", \"name\""),
+    accessToken: z.string().optional().describe("OAuth access token; omit to use the GOOGLE_ACCESS_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON secret, else Application Default Credentials"),
   }),
   output: z.object({
     files: z.array(

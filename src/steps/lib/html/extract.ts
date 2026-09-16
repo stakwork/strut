@@ -37,7 +37,7 @@ export function extractTitle(html: string): string | null {
 
 export default defineStep({
   type: "html/extract",
-  description: `Fetch a web page (or take raw HTML) and extract readable text for LLM consumption — tables rendered as aligned text tables, scripts/styles/nav dropped, entities decoded, links kept as text. Give either url (fetched via the http capability, so runs are recordable) or html. Output: { text, title, length, truncated, status }. Set maxChars to bound output (default 100000); pass request headers when the site requires them (e.g. SEC EDGAR's User-Agent policy).\n\n${EXAMPLE}`,
+  description: `Fetch a web page (or take raw HTML) and extract readable text for LLM consumption — tables rendered as aligned text, scripts/styles/nav dropped, entities decoded, links kept as text. Give either url (fetched through ctx.services.http, so runs are recordable) or html.\n\n${EXAMPLE}`,
   input: z
     .object({
       url: z.string().url().optional().describe("Page to fetch (via ctx.services.http)."),

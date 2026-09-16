@@ -75,6 +75,7 @@ export function StepInfoFlyout(props: {
                 <span class="param-type-tag">{f.kind}</span>
                 {f.required && <span class="param-type-tag schema-field-req">required</span>}
               </div>
+              {f.description && <div class="schema-field-desc">{f.description}</div>}
               {f.default !== undefined && (
                 <div class="schema-field-default">
                   default: {typeof f.default === "string" ? f.default : JSON.stringify(f.default)}

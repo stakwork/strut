@@ -19,20 +19,17 @@ export interface SlackMessage {
 
 export default defineStep({
   type: "slack/read-channel",
-  description: `Read recent messages from a Slack channel and format them as markdown for LLM consumption. Returns messages oldest→newest with author names resolved. Auth: a bot token (xoxb-…) via \`token\` or the SLACK_BOT_TOKEN secret; the bot needs channels:history (and users:read to resolve names) and must be a member of the channel. Output: { markdown, messages: [{ ts, user, text, threadTs }], channel, hasMore }.\n\n${EXAMPLE}`,
+  description: `Read recent messages from a Slack channel as markdown for LLM consumption (oldest → newest, author names resolved), with the raw messages alongside. Auth: token, else the SLACK_BOT_TOKEN secret; the bot needs channels:history (and users:read to resolve names) and must be a member of the channel. hasMore means older messages exist beyond limit — narrow with oldest/latest to page.\n\n${EXAMPLE}`,
   input: z.object({
-    /** Channel ID (e.g. C0123ABCD). */
-    channel: z.string().min(1),
-    /** Max messages to fetch (Slack caps a page at 1000). */
-    limit: z.number().int().positive().max(1000).default(50),
-    /** Only messages after this Unix ts (Slack `oldest` cursor). */
-    oldest: z.string().optional(),
-    /** Only messages before this Unix ts (Slack `latest` cursor). */
-    latest: z.string().optional(),
-    /** Resolve user IDs → display names via users.info (one call per unique
-     *  participant, fail-soft to the ID). Set false to skip (no users:read). */
-    resolveUsers: z.boolean().default(true),
-    token: z.string().optional(),
+    channel: z.string().min(1).describe("channel ID (e.g. C0123ABCD)"),
+    limit: z.number().int().positive().max(1000).default(50).describe("max messages to fetch (Slack caps a page at 1000)"),
+    oldest: z.string().optional().describe("only messages after this Slack ts"),
+    latest: z.string().optional().describe("only messages before this Slack ts"),
+    resolveUsers: z
+      .boolean()
+      .default(true)
+      .describe("resolve user IDs to display names via users.info (one call per unique participant, falls back to the ID); false skips it and needs no users:read"),
+    token: z.string().optional().describe("bot token (xoxb-…); omit to use the SLACK_BOT_TOKEN secret"),
   }),
   output: z.object({
     markdown: z.string(),

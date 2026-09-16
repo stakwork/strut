@@ -3,7 +3,7 @@ import { tool } from "ai";
 import { runWorkflow } from "../runner.js";
 import { AiDeps } from "./prompts.js";
 import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
-import { zodToFields } from "./schemaHelpers.js";
+import { stepSchemas } from "./schemaHelpers.js";
 import { runSingleStep, cassettePath } from "../run-step.js";
 import { generateRunId } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
@@ -103,21 +103,25 @@ export function buildTools(deps: AiDeps) {
 
     get_step: tool({
       description:
-        "Get details for a specific step type: its input schema fields, and source code for lib/custom steps.",
+        "Read a step type's docs before using it: `description` (what it does + a YAML example), `input` (JSON Schema of its config — every field's meaning, default, enum and nesting), and `output` (JSON Schema of what it returns, for {{ id.field }} templates; absent when the step's output is untyped — the description then states the shape). Pass source:true ONLY to author or edit a step (read a custom step before edit_step; mirror a lib step's implementation) — it adds the full TypeScript source of a lib/custom step, which you don't need to use the step in a workflow. Core steps have no source.",
       inputSchema: z.object({
         type: z.string().describe("Step type, e.g. 'http' or 'github/fetch-pr'"),
+        source: z
+          .boolean()
+          .default(false)
+          .describe("also return the TypeScript source (lib/custom steps) — for authoring/editing, not for using a step"),
       }),
-      execute: async ({ type }) => {
-        const registry = deps.registry;
-        const def = registry[type];
+      execute: async ({ type, source }) => {
+        const def = deps.registry[type];
         if (!def) {
           return { error: `Step type "${type}" not found` };
         }
-
-        const fields = zodToFields(def.input);
-        const source = await readStepSource(type, deps);
-
-        return { type, description: def.description, fields, source };
+        return {
+          type,
+          description: def.description,
+          ...stepSchemas(def),
+          ...(source ? { source: (await readStepSource(type, deps)) ?? null } : {}),
+        };
       },
     }),
 
@@ -136,7 +140,7 @@ export function buildTools(deps: AiDeps) {
 
     create_step: tool({
       description:
-        "Author a NEW custom step type from TypeScript source. The code is a self-contained strut step: `import { z, defineStep } from \"strut\"` and `export default defineStep({ type, input, output, async run(cfg, ctx) {...} })`. Reach external capabilities through `ctx.services` — for network calls use `ctx.services.http(url, opts)` and for credentials `ctx.services.secrets.get(name)` (NOT the global fetch / process.env), so the step is recordable/replayable by run_step's cassette and secrets are scrubbed from fixtures. Call get_step(\"http\") to read the canonical ctx.services.http example. Prefer raw REST over vendor SDKs; only import a package other than \"strut\" if the deployment has pre-installed it. Use this only for step types that don't exist yet; use edit_step to change an existing one. Publishing as a new step creates version v1.",
+        "Author a NEW custom step type from TypeScript source. The code is a self-contained strut step: `import { z, defineStep } from \"strut\"` and `export default defineStep({ type, input, output, async run(cfg, ctx) {...} })`. Reach external capabilities through `ctx.services` — for network calls use `ctx.services.http(url, opts)` and for credentials `ctx.services.secrets.get(name)` (NOT the global fetch / process.env), so the step is recordable/replayable by run_step's cassette and secrets are scrubbed from fixtures. Call get_step(\"http\", source:true) to read the canonical ctx.services.http example. Prefer raw REST over vendor SDKs; only import a package other than \"strut\" if the deployment has pre-installed it. Use this only for step types that don't exist yet; use edit_step to change an existing one. Publishing as a new step creates version v1.",
       inputSchema: z.object({
         name: z
           .string()
@@ -163,7 +167,7 @@ export function buildTools(deps: AiDeps) {
 
     edit_step: tool({
       description:
-        "Publish a NEW VERSION of an EXISTING custom step (e.g. tweak its prompt, logic, or config schema). Same self-contained rules as create_step. Call get_step first to read the current source. Identical content is a no-op; a change increments the version (v1 → v2 → …) and prior versions are kept for rollback. Built-in core/lib steps cannot be edited.",
+        "Publish a NEW VERSION of an EXISTING custom step (e.g. tweak its prompt, logic, or config schema). Same self-contained rules as create_step. Call get_step(type, source:true) first to read the current source. Identical content is a no-op; a change increments the version (v1 → v2 → …) and prior versions are kept for rollback. Built-in core/lib steps cannot be edited.",
       inputSchema: z.object({
         type: z.string().describe("Existing custom step type to edit, e.g. 'concepts/decide'."),
         code: z
@@ -328,7 +332,7 @@ export function buildTools(deps: AiDeps) {
 
     set_active_version: tool({
       description:
-        "ROLLBACK: make a prior version of a workflow or custom step the ACTIVE one — the version runs use (and, for steps, the one loaded in the registry). No new version is published and history is kept; later versions remain available to re-activate. Use this when a newer version turns out worse (\"go back to v2\") instead of republishing old source as yet another version. Call get_workflow / get_step first to see the versions.",
+        "ROLLBACK: make a prior version of a workflow or custom step the ACTIVE one — the version runs use (and, for steps, the one loaded in the registry). No new version is published and history is kept; later versions remain available to re-activate. Use this when a newer version turns out worse (\"go back to v2\") instead of republishing old source as yet another version. Call get_workflow first to see a workflow's versions; for a step, an unknown version here reports the available ones.",
       inputSchema: z.object({
         kind: z.enum(["workflow", "step"]).describe("What to roll back: a published workflow or a custom step."),
         name: z.string().describe("Workflow name, or custom step type (e.g. 'concepts/decide')."),

@@ -32,6 +32,8 @@ server without a rebuild (proposed).
 strut/
 ├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions
 ├── package.json           # engine deps (hono, zod, ai sdk)
+├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend by default
+├── docker-compose.yml     # test/local compose for it (named volumes for /data/workspace, /data/models, uv cache)
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
 │   ├── core.ts            # flow(), step(), defineStep(), services bag, all types
@@ -66,7 +68,7 @@ strut/
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
 │   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts)
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
-│   │   └── schemaHelpers.ts # Zod → FieldDesc[] (for get_step schema rendering)
+│   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)
 │   ├── audio/             # speech-to-text over sherpa-onnx (plans/local-desktop-and-stt.md §4). Streaming dictation is the product surface; workflows learn AROUND it (hotword lists, "dream cycles" §4.8), no STT step in v1
 │   │   ├── stt.ts         # createStt(): model download+verify, recognizer cache, streams (PCM in → partial/final out), two-recognizer mode (fast greedy partials + hotword-capable finals), batch transcribe; sherpa is an optionalDependency, lazy-imported, fakeable via `engine`
 │   │   ├── models.ts      # catalog: id → release URL + sha256 + chunk latency + hotwords?; STRUT_MODEL_DIR/stt/<id>
@@ -147,6 +149,11 @@ npm run dev                 # Vite on :5173, proxies API to :3000
 # Web UI (production build, served by engine)
 cd strut/web && npm run build  # outputs web/dist/
 cd strut && npm run dev        # serves API + UI on :3000
+
+# Docker — the standalone image (Dockerfile): fs backend, media tools baked in
+# (ffmpeg, yt-dlp, tesseract, poppler, pandoc, agent python venv, uv). Data
+# lives in named volumes: workspace, models, uv cache (docker-compose.yml).
+docker compose up --build      # http://localhost:3000
 ```
 
 ## Environment

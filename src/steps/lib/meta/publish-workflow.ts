@@ -9,7 +9,7 @@ export default defineStep({
   input: z.object({
     name: z.string().describe("Workflow name (kebab-case)"),
     yaml: z.string().describe("Full workflow YAML"),
-    description: z.string().optional(),
+    description: z.string().optional().describe("one-line summary stored with the workflow"),
     category: z
       .string()
       .optional()

@@ -1,0 +1,38 @@
+# Test / local compose for the standalone strut server on the filesystem
+# backend — no Neo4j.
+#
+#   docker compose up --build        # then open http://localhost:3000
+#
+# Provider keys: put ANTHROPIC_API_KEY=… (or OPENAI_API_KEY, GOOGLE_API_KEY,
+# OPENROUTER_API_KEY, XAI_API_KEY) in ./.env, or paste them under Secrets in
+# the UI once it's up. See AGENTS.md "Environment" for every variable.
+services:
+  strut:
+    build: .
+    image: strut:local
+    ports:
+      - "${STRUT_HOST_PORT:-3000}:3000"   # STRUT_HOST_PORT=3100 docker compose up — when `npm run dev` already has 3000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      STRUT_WORKSPACE_BACKEND: fs
+      STRUT_WORKSPACE: /data/workspace
+      STRUT_MODEL_DIR: /data/models
+      # STRUT_API_KEY: change-me     # shared secret for the API — set before exposing the port
+      # STRUT_SECRET_KEY: …          # encrypts the secret store; see AGENTS.md "Secrets"
+    volumes:
+      - strut-workspace:/data/workspace   # workflows, steps, runs, artifacts, chats, secrets
+      - strut-models:/data/models         # STT + embedding models, downloaded on demand
+      - strut-uv-cache:/root/.cache/uv    # PEP 723 script environments survive restarts
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  strut-workspace:
+  strut-models:
+  strut-uv-cache:

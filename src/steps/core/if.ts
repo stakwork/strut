@@ -20,9 +20,9 @@ const EXAMPLE = `- id: check
 
 export default defineStep({
   type: "if",
-  description: `Conditional gate. Config: "cond" (template expression). Evaluates the condition and returns true or false. Downstream steps use "when: true" or "when: false" to branch.\n\n${EXAMPLE}`,
+  description: `Conditional gate: returns the truthiness of cond, and downstream steps branch on it with depends: <this id> plus when: true / when: false. Each branch may be a chain; a step that depends on both branches runs when either did.\n\n${EXAMPLE}`,
   input: z.object({
-    cond: z.any(),
+    cond: z.any().describe("template expression, e.g. \"{{ fetch.body.status === 'active' }}\" — the step returns Boolean(cond)"),
   }),
   output: z.boolean(),
   async run(cfg) {

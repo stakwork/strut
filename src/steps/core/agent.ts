@@ -669,10 +669,22 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
   }
 }
 
+const EXAMPLE = `- id: fix
+  type: agent
+  config:
+    cwd: "{{ input.repo }}"
+    system: "You are a careful engineer. Make the smallest change that fixes the problem."
+    prompt: "The test suite fails with:\\n{{ test.stderr }}\\nFind the cause and fix it."
+    finalAnswer: "A short report: what was wrong, what you changed, how you verified it."
+    model: sonnet`;
+
 export default defineStep({
   type: "agent",
   description:
-    "General tool-using agent (AI SDK ToolLoopAgent). Explores AND edits a working dir (cwd) with built-in tools (repo_overview, fulltext_search, bash, str_replace_based_edit_tool for viewing/creating/editing files, + web_search + web_fetch on any provider (native on anthropic; elsewhere an Exa-backed search — needs EXA_API_KEY — and a guarded HTTP fetch), + file_summary when the `stakgraph` AST CLI is on PATH) and returns either a final_answer (set `finalAnswer` to its tool description), a STRUCTURED object (set `schema` to a JSON Schema → Output.object), or the final text. Config: cwd, system, prompt, finalAnswer?, schema?, toolFilter? (subset of built-in tool names; empty = all), agentTools? (registry step TYPES exposed as extra tools — the 'tools are steps' model; each tool call emits a nested run event), secretsEnv? (secret NAMES injected as env vars into the bash subprocess only — the agent writes $NAME, values are masked out of all tool output; for narrow research sub-agents), model? (id, alias like 'sonnet'/'grok', or slash format like 'openrouter/moonshotai/kimi-k2' — the provider is inferred from it), provider? (anthropic|openai|google|openrouter|xai; usually omitted), maxSteps (default 40), returnMessages? (default false — the full session is huge + persisted per step). Needs the provider key (secret store or env) + git/rg on PATH. Output: { result, object?, steps, usage, cost } (+ messages when returnMessages).",
+    `Autonomous tool-using sub-agent (AI SDK ToolLoopAgent) over a working dir: it explores and edits files with built-in tools (repo_overview, fulltext_search, bash, str_replace_based_edit_tool; web_search + web_fetch on any provider — native on anthropic, elsewhere Exa search via EXA_API_KEY plus a guarded HTTP fetch; file_summary when the \`stakgraph\` CLI is on PATH), plus any registry steps exposed through agentTools. ` +
+    `Use it for open-ended work a fixed DAG can't express — diagnose and fix a codebase, drive an app, research a question — and always when a hard stop must still produce a deliverable; prefer the loop step for a fixed repeat. ` +
+    `It returns a free-form report (finalAnswer), a structured object (schema), or the final text. Needs the provider's key (secret store or env) and git + rg on PATH. Output: { result, object?, steps, usage, cost } (+ messages when returnMessages).\n\n` +
+    EXAMPLE,
   input: z.object({
     cwd: z.string().describe("working directory the tools operate in"),
     system: z.string().describe("system prompt / agent persona"),
@@ -714,7 +726,7 @@ export default defineStep({
       .string()
       .optional()
       .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`)"),
-    maxSteps: z.number().int().positive().default(40),
+    maxSteps: z.number().int().positive().default(40).describe("cap on tool-loop turns before the agent must answer"),
     returnMessages: z
       .boolean()
       .default(false)

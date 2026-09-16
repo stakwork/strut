@@ -24,15 +24,15 @@ const DEFAULT_NATIVE_EXPORT = "text/plain";
 
 export default defineStep({
   type: "gdrive/export-file",
-  description: `Fetch a Google Drive file and return its text content for LLM consumption. Google-native files (Docs → markdown, Sheets → CSV, Slides → text) are exported; other files are downloaded as-is. Auth: pass an OAuth \`accessToken\`, else falls back to Application Default Credentials (e.g. a service account via GOOGLE_APPLICATION_CREDENTIALS). Output: { content, truncated, file: { id, name, mimeType, modifiedTime, size, webViewLink } }.\n\n${EXAMPLE}`,
+  description: `Fetch a Google Drive file as text for LLM consumption: Google-native files are exported (Docs → markdown, Sheets → CSV, Slides → text), anything else is downloaded as-is. Auth: an OAuth accessToken, else the GOOGLE_ACCESS_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON secret, else Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS). Pair with gdrive/list-files + foreach to process a folder.\n\n${EXAMPLE}`,
   input: z.object({
-    fileId: z.string().min(1),
-    accessToken: z.string().optional(),
-    /** Override the export MIME type for Google-native files. Ignored for
-     *  non-Google files (which are always downloaded as-is). */
-    exportMimeType: z.string().optional(),
-    /** Truncate content to this many characters (LLM token hygiene). */
-    maxChars: z.number().int().positive().default(50000),
+    fileId: z.string().min(1).describe("Drive file ID (from the file's URL or gdrive/list-files)"),
+    accessToken: z.string().optional().describe("OAuth access token; omit to use the GOOGLE_ACCESS_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON secret, else Application Default Credentials"),
+    exportMimeType: z
+      .string()
+      .optional()
+      .describe("override the export MIME type for Google-native files; ignored for other files (always downloaded as-is)"),
+    maxChars: z.number().int().positive().default(50000).describe("truncate content to this many characters (sets truncated: true)"),
   }),
   output: z.object({
     content: z.string(),

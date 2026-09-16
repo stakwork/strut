@@ -1,0 +1,11 @@
+.git
+node_modules
+web/node_modules
+build
+web/dist
+workspace
+dist-desktop*
+.env
+.env.*
+notes
+notes*.md

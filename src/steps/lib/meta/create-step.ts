@@ -15,7 +15,7 @@ export default defineStep({
       .describe(
         'Full TypeScript source. Shape: import { z, defineStep } from "strut"; export default defineStep({ type: "<name>", input: z.object({...}), output: z.any(), async run(cfg, ctx) {...} });',
       ),
-    description: z.string().optional(),
+    description: z.string().optional().describe("one-line summary stored with the step, shown in step listings"),
   }),
   output: z.any(),
   async run(cfg, ctx) {
