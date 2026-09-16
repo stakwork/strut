@@ -11,11 +11,11 @@ const EXAMPLE = `- id: child
 
 export default defineStep({
   type: "subflow",
-  description: `Run a published workflow. Config: "workflow" (name of a published workflow), optional "version" (defaults to active version), "input" (passed as the child's input).\n\n${EXAMPLE}`,
+  description: `Run a published workflow as a child of this run and return its output — reuse a flow from another, or split a big one. The workflow must already exist in the workspace (list_workflows); its input is validated against the child's schema at run time.\n\n${EXAMPLE}`,
   input: z.object({
-    workflow: z.string(),
-    version: z.string().optional(),
-    input: z.any(),
+    workflow: z.string().describe("name of a published workflow"),
+    version: z.string().optional().describe("a specific version, e.g. v2 (default: the active version)"),
+    input: z.any().describe("the object passed as the child workflow's input"),
   }),
   output: z.any(),
   async run() {

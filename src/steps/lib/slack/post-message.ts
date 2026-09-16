@@ -12,17 +12,16 @@ const EXAMPLE = `- id: notify
 
 export default defineStep({
   type: "slack/post-message",
-  description: `Post a message to a Slack channel (or thread). Auth: a bot token (xoxb-…) via \`token\` config or the SLACK_BOT_TOKEN secret; the bot needs the chat:write scope and must be a member of the channel. Output: { ts, channel } — pass \`ts\` back as a later step's \`thread_ts\` to reply in-thread.\n\n${EXAMPLE}`,
+  description: `Post a message to a Slack channel or thread. Auth: token, else the SLACK_BOT_TOKEN secret; the bot needs the chat:write scope and must be a member of the channel. To thread replies, post once and pass the returned ts as a later step's thread_ts.\n\n${EXAMPLE}`,
   input: z.object({
-    /** Channel ID (e.g. C0123ABCD) — recommended — or a #channel name. */
-    channel: z.string().min(1),
-    /** Message text (markdown-ish "mrkdwn"). Required unless `blocks` is set. */
-    text: z.string().optional(),
-    /** Slack Block Kit blocks, for rich messages. Overrides `text` layout. */
-    blocks: z.array(z.record(z.string(), z.unknown())).optional(),
-    /** Reply in a thread by passing the parent message's `ts`. */
-    thread_ts: z.string().optional(),
-    token: z.string().optional(),
+    channel: z.string().min(1).describe("channel ID (e.g. C0123ABCD, recommended) or a #channel name"),
+    text: z.string().optional().describe("message text (Slack mrkdwn); required unless blocks is set"),
+    blocks: z
+      .array(z.record(z.string(), z.unknown()))
+      .optional()
+      .describe("Block Kit blocks for a rich layout; text then serves as the notification fallback"),
+    thread_ts: z.string().optional().describe("ts of the parent message, to reply in its thread"),
+    token: z.string().optional().describe("bot token (xoxb-…); omit to use the SLACK_BOT_TOKEN secret"),
   }),
   output: z.object({
     ts: z.string(),

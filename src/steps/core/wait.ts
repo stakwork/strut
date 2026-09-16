@@ -9,10 +9,10 @@ const EXAMPLE = `- id: pause
 
 export default defineStep({
   type: "wait",
-  description: `Pause for a duration. Output: { waited, message }.\n\n${EXAMPLE}`,
+  description: `Pause the run for a fixed duration — rate-limit spacing, a cooldown, giving an external system time to settle. To wait UNTIL something is true, use the loop step with delayMs instead.\n\n${EXAMPLE}`,
   input: z.object({
-    durationMs: z.number().int().min(0).default(1000),
-    message: z.string().optional(),
+    durationMs: z.number().int().min(0).default(1000).describe("how long to pause"),
+    message: z.string().optional().describe("optional note, echoed in the output"),
   }),
   output: z.object({
     waited: z.number(),

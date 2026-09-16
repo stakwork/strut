@@ -77,14 +77,13 @@ const Scalar = z.union([z.string(), z.number(), z.boolean()]);
 export default defineStep({
   type: "exec",
   description:
-    `Run a program as a subprocess and capture its output — the deterministic way to call a CLI or a script (yt-dlp, ffmpeg, Python via uv, node) from a workflow, with no LLM in the loop. Runs cmd with args and NO shell (templated values are passed verbatim, never re-parsed — for a pipeline use cmd: bash, args: ["-c", "..."], or an inline script). ` +
-    `"script" writes inline source to a file in the working dir and appends its path to args: cmd: uv + args: [run] + a script with a PEP 723 header (# /// script / # dependencies = [...] / # ///) runs Python with those packages installed on the fly by uv (cached after the first run, no Dockerfile change); cmd: bash + script runs a shell script. ` +
-    `The working dir defaults to the run's artifact dir (ctx.services.artifacts), so files flow between exec/agent steps by relative path and are served at GET /artifacts/:runId/<path>. "stdin" is piped in (a string as-is, anything else as JSON). "parseJson" parses stdout into output.json. ` +
-    `A non-zero exit throws (so retry/onError apply) unless "allowFailure". "secretsEnv" injects secret NAMES as env vars (values masked out of stdout/stderr); the rest of the env is scrubbed — no server keys reach the child. ` +
-    `Output: { code, stdout, stderr, json?, cwd, durationMs, truncated }. Put big results in files, not stdout (default cap 200k chars per stream; head + tail kept).\n\n` +
+    `Run a program as a subprocess with no LLM in the loop — the deterministic way to call a CLI or a script (yt-dlp, ffmpeg, Python via uv, node) from a workflow. No shell: cmd runs directly with args passed verbatim, so templated values are never re-parsed; for a pipeline use cmd: bash with args: ["-c", "..."], or an inline script. ` +
+    `Python with dependencies: cmd: uv, args: [run] and a script with a PEP 723 header (# /// script / # dependencies = [...] / # ///) — uv installs the packages on the fly (cached after the first run, no image change). ` +
+    `Files: the working dir defaults to the run's artifact dir, so files flow between exec/agent steps by relative path and are served at GET /artifacts/:runId/<path>; put big results in files, not stdout. ` +
+    `A non-zero exit or timeout throws (so retry/onError apply) unless allowFailure. The child env is scrubbed — no server keys reach it; pass credentials via secretsEnv.\n\n` +
     EXAMPLE,
   input: z.object({
-    cmd: z.string().describe("program to run, resolved from PATH (no shell — see description)"),
+    cmd: z.string().describe("program to run, resolved from PATH; runs directly, no shell"),
     args: z.array(Scalar).default([]).describe("arguments, passed verbatim (numbers/booleans stringified)"),
     script: z
       .string()
@@ -119,7 +118,7 @@ export default defineStep({
       .default(200_000)
       .describe("per-stream cap; past it the head and tail are kept. Write big results to files instead"),
     parseJson: z.boolean().default(false).describe("parse stdout as JSON into output.json (throws if it isn't JSON)"),
-    allowFailure: z.boolean().default(false).describe("a non-zero exit returns { code, stderr } instead of throwing"),
+    allowFailure: z.boolean().default(false).describe("a non-zero exit returns the normal output (check code) instead of throwing"),
   }),
   output: z.object({
     code: z.number().nullable(),

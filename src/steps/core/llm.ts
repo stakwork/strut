@@ -11,10 +11,10 @@ const EXAMPLE = `- id: summarize
 
 export default defineStep({
   type: "llm",
-  description: `Call an LLM. Output: { text } for free-form, or structured object if "schema" is set. Providers (via aieo): anthropic, openai, google, openrouter, xai — inferred from the model name: an alias ("sonnet", "opus", "haiku", "gemini", "gpt", "kimi", "glm", "grok"), a full id, or "provider/id" (OpenRouter models as "openrouter/org/model"). Keys come from the secret store or env (ANTHROPIC_API_KEY, OPENAI_API_KEY, …).\n\n${EXAMPLE}`,
+  description: `One LLM call over a prompt — summarize, classify, extract, draft. Output: { text }, or the structured object itself when schema is set. Needs the provider's key in the secret store or env (ANTHROPIC_API_KEY, OPENAI_API_KEY, …). For multi-step work with tools, use the agent step.\n\n${EXAMPLE}`,
   input: z.object({
-    prompt: z.string(),
-    schema: z.any().optional(), // Zod schema for structured output
+    prompt: z.string().describe("the full prompt; templates resolve first"),
+    schema: z.any().optional().describe("structured-output schema (a Zod schema, for flows defined in code); omit for free-form text"),
     provider: z
       .string()
       .optional()

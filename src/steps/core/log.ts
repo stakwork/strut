@@ -9,10 +9,10 @@ const EXAMPLE = `- id: greet
 
 export default defineStep({
   type: "log",
-  description: `Log a message to the console. Output: the message string.\n\n${EXAMPLE}`,
+  description: `Print a line to the server console — a marker or a human-readable trace of a run. Returns the message itself, so it also works as a pass-through of a resolved value.\n\n${EXAMPLE}`,
   input: z.object({
-    message: z.string(),
-    level: z.enum(["info", "warn", "error"]).default("info"),
+    message: z.string().describe("text to print; templates resolve first"),
+    level: z.enum(["info", "warn", "error"]).default("info").describe("console level (prefix and stream)"),
   }),
   output: z.string(),
   async run(cfg) {

@@ -1,5 +1,6 @@
 import { formatJson, humanize } from "../helpers";
 import { CopyButton } from "./CopyButton";
+import { artifactUrl, isArtifactPath } from "../api";
 
 // ── Copyable value rendering ────────────────────────────────────────────────
 //
@@ -8,6 +9,8 @@ import { CopyButton } from "./CopyButton";
 // as clean unescaped text); anything else is a single copyable block.
 // `formatJson` returns strings RAW and pretty-prints everything else, and the
 // copy button writes that same text — so copying never yields JSON escapes.
+// A string field holding an artifact path (`/artifacts/<runId>/…`) renders
+// as a link to the served file, opened in a new tab; copy still yields the path.
 
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -21,7 +24,11 @@ export function CopyBlock(props: { value: unknown; label?: string; blockClass?: 
         {props.label ? <span class="flyout-field-key">{humanize(props.label)}</span> : <span />}
         <CopyButton value={text} label={props.label ? `Copy ${props.label}` : "Copy"} />
       </div>
-      <pre class={props.blockClass ?? "flyout-json"}>{text}</pre>
+      <pre class={props.blockClass ?? "flyout-json"}>
+        {isArtifactPath(props.value)
+          ? <a class="artifact-link" href={artifactUrl(props.value)} target="_blank" rel="noopener">{text}</a>
+          : text}
+      </pre>
     </div>
   );
 }

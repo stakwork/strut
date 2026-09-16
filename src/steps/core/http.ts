@@ -13,15 +13,15 @@ const EXAMPLE = `- id: fetch
 export default defineStep({
   type: "http",
   description:
-    `Make an HTTP request. Output: { status, body } (body is parsed JSON when the response is JSON, else text). Throws on a non-2xx response.\n\n` +
-    `This step is also the REFERENCE for authoring an adapter: it performs the request through ctx.services.http(url, opts) — NOT the global fetch — so its calls are recordable/replayable by run_step's cassette and credentials can be injected by the services bag. Read this step's source (get_step("http")) to see the exact ctx.services.http usage.\n\n` +
+    `Make an HTTP request. Output: { status, body } — body is parsed JSON when the response is JSON, else text. A non-2xx response throws (so retry/onError apply).\n\n` +
+    `This step is also the REFERENCE for authoring an adapter: it performs the request through ctx.services.http(url, opts) — NOT the global fetch — so its calls are recordable/replayable by run_step's cassette and credentials can be injected by the services bag. Read this step's source (get_step("http", source: true)) to see the exact ctx.services.http usage.\n\n` +
     EXAMPLE,
   input: z.object({
-    url: z.string(),
+    url: z.string().describe("absolute URL to request"),
     method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"]).default("GET"),
-    body: z.any().optional(),
-    headers: z.record(z.string(), z.string()).optional(),
-    timeout: z.number().positive().optional(),
+    body: z.any().optional().describe("request body: an object is sent as JSON, a string as-is"),
+    headers: z.record(z.string(), z.string()).optional().describe("request headers, e.g. Authorization"),
+    timeout: z.number().positive().optional().describe("abort after this many ms"),
   }),
   output: z.any(),
   async run(cfg, ctx) {

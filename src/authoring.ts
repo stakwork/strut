@@ -9,7 +9,7 @@ import { stepLoadError } from "./steps/registry.js";
 import type { CassetteMode } from "./cassette.js";
 import type { SecretInfo } from "./secret-store.js";
 import { lsSteps, searchSteps, readStepSource } from "./ai/stepHelpers.js";
-import { zodToFields } from "./ai/schemaHelpers.js";
+import { stepSchemas } from "./ai/schemaHelpers.js";
 import { validateWorkflowYaml, type ValidationResult } from "./validate.js";
 
 /**
@@ -349,7 +349,9 @@ export interface RunStepArgs {
 export interface AuthoringCapability {
   listSteps(path?: string): Promise<unknown>;
   searchSteps(query: string): Promise<unknown>;
-  getStep(type: string): Promise<unknown>;
+  /** Description + JSON Schema of config/result; `source: true` adds a
+   *  lib/custom step's TypeScript (for editing or mirroring it). */
+  getStep(type: string, opts?: { source?: boolean }): Promise<unknown>;
   createStep(name: string, code: string, description?: string): Promise<StepPublishResult>;
   editStep(type: string, code: string, description?: string): Promise<StepPublishResult>;
   runStep(type: string, args?: RunStepArgs): Promise<RunStepResult | { error: string }>;
@@ -435,15 +437,15 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       return searchSteps(query, await explorerDeps());
     },
 
-    async getStep(type) {
+    async getStep(type, opts) {
       const d = await explorerDeps();
       const def = d.registry[type];
       if (!def) return { error: `Step type "${type}" not found` };
       return {
         type,
         description: def.description,
-        fields: zodToFields(def.input),
-        source: await readStepSource(type, d),
+        ...stepSchemas(def),
+        ...(opts?.source ? { source: (await readStepSource(type, d)) ?? null } : {}),
       };
     },
 

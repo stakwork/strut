@@ -16,6 +16,18 @@ function deriveBase(): string {
 
 const BASE = deriveBase();
 
+/** True for a run-artifact path as steps put it in their output —
+ *  `/artifacts/<runId>/<relPath>` (see `ctx.services.artifacts`). */
+export function isArtifactPath(v: unknown): v is string {
+  return typeof v === "string" && v.startsWith("/artifacts/");
+}
+
+/** Browser URL for an artifact path. Mount-path aware (works under `/lab`);
+ *  the route is public, so a plain `<a href>` needs no key. */
+export function artifactUrl(path: string): string {
+  return `${BASE}${path}`;
+}
+
 // ── API key ────────────────────────────────────────────────────────────────
 // When the server sets STRUT_API_KEY, gated routes need `Authorization:
 // Bearer`. A host that spawns strut (desktop app) hands the per-launch key to
@@ -389,6 +401,8 @@ export interface FieldDesc {
   required: boolean;
   default?: unknown;
   enumValues?: string[];
+  /** The field's `.describe()` text — shown as a hint. */
+  description?: string;
   /** Free-text field with a suggestion catalog ("llm-models" → listLlmModels). */
   suggest?: "llm-models";
 }

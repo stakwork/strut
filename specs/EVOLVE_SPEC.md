@@ -219,10 +219,11 @@ can iterate it live via `meta/run-step type=agent`.
 ### 4.4 Current baseline (what `mcp/Dockerfile` provides)
 
 `/usr/src/agent-venv` first on `PATH` — numpy, pandas, openpyxl, pypdf,
-pdfplumber, pillow, requests, beautifulsoup4, yt-dlp — plus `pdftotext`
-(poppler), `ffmpeg`, `pandoc`, `gh`, `ripgrep`, `git`. Deliberately a
-separate venv from the system python, which carries the pinned
-`docx-mcp` / `mcp<2.0.0` resolution.
+pdfplumber, pillow, requests, beautifulsoup4, yt-dlp, opencv-python-headless,
+pytesseract — plus `pdftotext` (poppler), `ffmpeg`, `tesseract`, `pandoc`,
+`gh`, `ripgrep`, `git`, and `uv` (so an `exec` step can run a PEP 723 script
+whose libraries the venv lacks). Deliberately a separate venv from the
+system python, which carries the pinned `docx-mcp` / `mcp<2.0.0` resolution.
 
 ---
 

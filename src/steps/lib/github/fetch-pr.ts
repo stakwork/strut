@@ -27,13 +27,15 @@ type Limits = z.infer<typeof limitsSchema>;
 
 export default defineStep({
   type: "github/fetch-pr",
-  description: `Fetch a GitHub pull request with files, reviews, comments, and commits, and format it as markdown for LLM consumption. Output: { markdown, pr: { number, title, mergedAt, author, htmlUrl, additions, deletions, changedFiles } }.\n\n${EXAMPLE}`,
+  description: `Fetch a GitHub pull request — description, changed files with patches, reviews, comments, commits — and format it as markdown for LLM consumption, with a structured pr summary alongside. Auth: token, else the GITHUB_TOKEN secret.\n\n${EXAMPLE}`,
   input: z.object({
-    owner: z.string().min(1),
-    repo: z.string().min(1),
-    pull_number: z.number().int().positive(),
-    token: z.string().optional(),
-    limits: limitsSchema,
+    owner: z.string().min(1).describe("repository owner (user or org)"),
+    repo: z.string().min(1).describe("repository name"),
+    pull_number: z.number().int().positive().describe("pull request number"),
+    token: z.string().optional().describe("GitHub token; omit to use the GITHUB_TOKEN secret (needed for private repos; raises the rate limit)"),
+    limits: limitsSchema.describe(
+      "caps on what goes into the markdown — patch lines per file, files, description/comment characters, comments, reviews; the defaults fit an LLM context",
+    ),
   }),
   output: z.object({
     markdown: z.string(),

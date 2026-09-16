@@ -158,6 +158,7 @@ describe("llm: model resolution through the secrets boundary", () => {
     }
     // Nothing else grows the marker by accident.
     const prompt = zodToFields(llm.input).find((x) => x.name === "prompt")!;
-    assert.deepEqual(prompt, { name: "prompt", kind: "string", required: true, default: undefined });
+    assert.equal(prompt.kind, "string");
+    assert.equal(prompt.suggest, undefined);
   });
 });

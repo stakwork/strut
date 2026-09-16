@@ -11,10 +11,10 @@ import { createRegistry } from "./steps/registry.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
 import { MemorySecretStore } from "./secret-store.js";
-import { lsSteps, searchSteps, readStepSource } from "./ai/stepHelpers.js";
+import { lsSteps, searchSteps } from "./ai/stepHelpers.js";
 import { buildSystem } from "./ai/prompts.js";
 import { buildTools } from "./ai/tools.js";
-import { zodToFields } from "./ai/schemaHelpers.js";
+import { stepSchemas, zodToFields } from "./ai/schemaHelpers.js";
 
 /**
  * End-to-end verification that the AI workflow-builder tools can see
@@ -103,32 +103,64 @@ describe("AI tools see in-code registered steps", () => {
     );
   });
 
-  it("get_step (registry lookup + zodToFields) returns schema for in-code steps", async () => {
+  it("get_step returns JSON Schema (input + output) for in-code steps, no source by default", async () => {
     const { deps } = await setup();
-    const def = deps.registry["do-thing"];
-    assert.ok(def, "step should be in registry");
+    const tools = buildTools(deps) as any;
 
-    const fields = zodToFields(def.input);
-    assert.deepEqual(fields, [
-      { name: "x", kind: "number", required: true, default: undefined },
-    ]);
-    assert.equal(def.description, "Does a custom thing in-memory");
+    const res = await tools.get_step.execute({ type: "do-thing" });
+    assert.equal(res.type, "do-thing");
+    assert.equal(res.description, "Does a custom thing in-memory");
+    assert.deepEqual(res.input, {
+      type: "object",
+      properties: { x: { type: "number" } },
+      required: ["x"],
+    });
+    assert.deepEqual(res.output, { type: "string" });
+    assert.equal("source" in res, false);
 
-    // Source is undefined for in-code steps (no file on disk) — this is
-    // expected and OK; the model gets the schema and description.
-    const source = await readStepSource("do-thing", deps);
-    assert.equal(source, undefined);
+    // source: true on an in-code step (no file on disk) → null, not an error;
+    // the model still has the schema and description.
+    const withSource = await tools.get_step.execute({ type: "do-thing", source: true });
+    assert.equal(withSource.source, null);
   });
 
-  it("get_step works for namespaced in-code steps", async () => {
+  it("get_step omits `output` for an untyped (z.any()) step and resolves namespaced types", async () => {
     const { deps } = await setup();
-    const def = deps.registry["gitree/store-feature"];
-    assert.ok(def, "namespaced step should be in registry");
+    const tools = buildTools(deps) as any;
+    const res = await tools.get_step.execute({ type: "gitree/store-feature" });
+    assert.deepEqual(res.input.properties, { feature: { type: "string" } });
+    assert.equal("output" in res, false);
+  });
+
+  it("stepSchemas keeps .describe() text and makes defaulted fields optional; zodToFields carries description", () => {
+    const def = defineStep({
+      type: "t",
+      input: z.object({
+        cmd: z.string().describe("program to run"),
+        args: z.array(z.string()).default([]).describe("verbatim"),
+        mode: z.enum(["a", "b"]).optional().describe("which"),
+        n: z.number(),
+      }),
+      output: z.any(),
+      async run() {
+        return null;
+      },
+    });
+
+    const { input, output } = stepSchemas(def);
+    const props = input.properties as Record<string, any>;
+    assert.equal(props.cmd.description, "program to run");
+    assert.equal(props.args.description, "verbatim");
+    assert.deepEqual(props.args.default, []);
+    assert.deepEqual(input.required, ["cmd", "n"]);
+    assert.equal(output, undefined);
 
     const fields = zodToFields(def.input);
-    assert.deepEqual(fields, [
-      { name: "feature", kind: "string", required: true, default: undefined },
-    ]);
+    const by = Object.fromEntries(fields.map((f) => [f.name, f]));
+    assert.equal(by.cmd.description, "program to run");
+    assert.equal(by.mode.description, "which"); // .describe() on the outer optional wrapper
+    assert.equal(by.mode.kind, "enum");
+    assert.deepEqual(by.n, { name: "n", kind: "number", required: true, default: undefined }); // no description key when unset
   });
 
   it("the system prompt's 'Available steps' tree lists in-code steps under custom/", async () => {

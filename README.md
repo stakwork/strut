@@ -56,6 +56,12 @@ npm run dev
 
 Open http://localhost:3000, and ask the AI builder for a workflow or draw one on the canvas.
 
+Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image:
+
+```bash
+docker compose up --build
+```
+
 ## Workflows
 
 Steps run in order unless `depends` says otherwise. Any config value can hold a `{{ }}` expression that reads the run's `input`, the workflow's `params`, or an earlier step's output.

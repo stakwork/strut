@@ -9,7 +9,7 @@ export default defineStep({
   input: z.object({
     type: z.string().describe("Existing custom step type to edit, e.g. 'candidates/my-fetcher'."),
     code: z.string().describe("Full updated TypeScript source (same self-contained shape as meta/create-step)."),
-    description: z.string().optional(),
+    description: z.string().optional().describe("replaces the one-line summary stored with the step"),
   }),
   output: z.any(),
   async run(cfg, ctx) {

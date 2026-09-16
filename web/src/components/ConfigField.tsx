@@ -50,7 +50,7 @@ export function ConfigField(props: {
   if (field.kind === "enum" && field.enumValues) {
     return (
       <div class="flyout-field">
-        <label>{label}</label>
+        <label title={field.description}>{label}</label>
         <select
           value={value != null ? String(value) : (field.default != null ? String(field.default) : "")}
           onChange={(e) => onChange((e.target as HTMLSelectElement).value)}
@@ -68,7 +68,7 @@ export function ConfigField(props: {
     const checked = value != null ? Boolean(value) : (field.default != null ? Boolean(field.default) : false);
     return (
       <div class="flyout-field">
-        <label class="flyout-checkbox-label">
+        <label class="flyout-checkbox-label" title={field.description}>
           <input
             type="checkbox"
             checked={checked}
@@ -83,7 +83,7 @@ export function ConfigField(props: {
   if (field.kind === "number") {
     return (
       <div class="flyout-field">
-        <label>{label}</label>
+        <label title={field.description}>{label}</label>
         <input
           type="number"
           value={value != null ? String(value) : (field.default != null ? String(field.default) : "")}
@@ -103,7 +103,7 @@ export function ConfigField(props: {
       : "";
     return (
       <div class="flyout-field">
-        <label>{label}</label>
+        <label title={field.description}>{label}</label>
         <textarea
           value={display}
           rows={4}
@@ -122,7 +122,7 @@ export function ConfigField(props: {
   const listId = suggestions ? `suggest-${field.name}` : undefined;
   return (
     <div class="flyout-field">
-      <label>{label}</label>
+      <label title={field.description}>{label}</label>
       <input
         type="text"
         list={listId}
