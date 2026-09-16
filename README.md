@@ -20,7 +20,7 @@ An AI builder that writes workflows for you, a visual editor, and an HTTP api.</
 
 `strut` runs workflows that are small enough for a person to read and regular enough for an LLM to write. A workflow is an ordered list of steps, each with a type, a config, and optional dependencies. Templates like `{{ input.repo }}` wire step outputs together.
 
-Steps do the work. Core steps cover HTTP, branching, loops, LLM calls, and full agent loops. Library steps add integrations like GitHub, Slack, and a knowledge graph. Custom steps are small TypeScript files you (or the AI builder) add at runtime.
+Steps do the work. Core steps cover HTTP, subprocesses, branching, loops, LLM calls, and full agent loops. Library steps add integrations like GitHub, Slack, and a knowledge graph. Custom steps are small TypeScript files you (or the AI builder) add at runtime.
 
 Use it three ways:
 
@@ -94,7 +94,7 @@ params:
 
 ## Steps
 
-Core steps: `http`, `log`, `if`, `loop`, `foreach`, `subflow`, `wait`, `pack`, `llm`, `agent`.
+Core steps: `http`, `exec`, `log`, `if`, `loop`, `foreach`, `subflow`, `wait`, `pack`, `llm`, `agent`.
 
 Library steps ship with the engine and load their SDKs only when used: `github/*`, `slack/*`, `gdrive/*`, `html/*`, `graph/*`, and `meta/*` (steps that author and run other workflows).
 

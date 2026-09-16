@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runShell, runCmd, minimalEnv } from "./shell.js";
+import { runShell, runCmd, minimalEnv, runProcess } from "./shell.js";
 import { buildTools } from "./ai/tools.js";
 import type { AiDeps } from "./ai/prompts.js";
 
@@ -143,5 +143,63 @@ describe("chat bash tool", () => {
     } finally {
       delete process.env.STRUT_TEST_FAKE_KEY;
     }
+  });
+});
+
+// ── runProcess (the shell capability's primitive) ───────────────────────────
+
+describe("runProcess", () => {
+  it("returns the exit code instead of throwing, with both streams", async () => {
+    const r = await runProcess({ cmd: "sh", args: ["-c", "echo out; echo err >&2; exit 2"], cwd: dir });
+    assert.equal(r.code, 2);
+    assert.equal(r.signal, null);
+    assert.equal(r.stdout, "out\n");
+    assert.equal(r.stderr, "err\n");
+    assert.equal(r.timedOut, false);
+    assert.equal(r.truncated, false);
+  });
+
+  it("pipes stdin and closes it", async () => {
+    const r = await runProcess({ cmd: "cat", cwd: dir, stdin: "abc" });
+    assert.equal(r.stdout, "abc");
+    assert.equal(r.code, 0);
+  });
+
+  it("rejects with a clear error when the program isn't on PATH", async () => {
+    await assert.rejects(
+      runProcess({ cmd: "definitely-not-a-real-command-xyz", cwd: dir }),
+      /command not found: definitely-not-a-real-command-xyz/,
+    );
+  });
+
+  it("keeps the head and the tail past the output cap without killing the child", async () => {
+    const r = await runProcess({ cmd: "sh", args: ["-c", "yes | head -n 2000; echo END"], cwd: dir, maxOutputChars: 100 });
+    assert.equal(r.code, 0); // ran to completion
+    assert.equal(r.truncated, true);
+    assert.match(r.stdout, /^y\ny\n/);
+    assert.match(r.stdout, /END\n$/);
+    assert.match(r.stdout, /\[\.\.\. \d+ chars truncated \.\.\.\]/);
+  });
+
+  it("times out with SIGKILL", async () => {
+    const r = await runProcess({ cmd: "sleep", args: ["30"], cwd: dir, timeoutMs: 200 });
+    assert.equal(r.timedOut, true);
+    assert.equal(r.code, null);
+    assert.equal(r.signal, "SIGKILL");
+  });
+
+  it("abort kills the whole process group, not just the immediate child", async () => {
+    const ac = new AbortController();
+    // The shell prints its background child's pid, then waits on it.
+    const pending = runProcess({ cmd: "sh", args: ["-c", "sleep 30 & echo $!; wait"], cwd: dir, signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 300));
+    ac.abort();
+    const r = await pending;
+    assert.equal(r.code, null);
+    assert.equal(r.signal, "SIGTERM");
+    const grandchild = Number(r.stdout.trim());
+    assert.ok(grandchild > 0, r.stdout);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.throws(() => process.kill(grandchild, 0), /ESRCH/); // gone with the group
   });
 });

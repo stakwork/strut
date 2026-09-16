@@ -140,13 +140,17 @@ export {
   type ModelCatalog,
 } from "./llm.js";
 
-// Standard capabilities — the http + secrets + artifacts services adapter steps build on.
+// Standard capabilities — the http + secrets + artifacts + shell services adapter steps build on.
 export {
   standardServices,
   httpCapability,
   secretsCapability,
   fileArtifactsCapability,
+  shellCapability,
   type ArtifactsCapability,
+  type ShellCapability,
+  type ShellRequest,
+  type ShellResult,
   type StrutCapabilities,
   type HttpCapability,
   type HttpRequestOptions,

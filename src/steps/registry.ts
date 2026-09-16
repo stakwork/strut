@@ -29,6 +29,7 @@ import llm from "./core/llm.js";
 import agent from "./core/agent.js";
 import wait from "./core/wait.js";
 import pack from "./core/pack.js";
+import exec from "./core/exec.js";
 
 const CORE_STEPS: StepRegistry = {
   http,
@@ -41,6 +42,7 @@ const CORE_STEPS: StepRegistry = {
   agent,
   wait,
   pack,
+  exec,
 };
 
 export const CORE_STEP_TYPES = Object.freeze(Object.keys(CORE_STEPS));

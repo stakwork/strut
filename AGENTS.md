@@ -44,10 +44,12 @@ strut/
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server
 │   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+│   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses) — every one recordable by cassette.ts + secret-safe
+│   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
 │   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models
 │   ├── index.ts           # barrel export — createStrut (primary entry), createRegistry, coreRegistry, all types
 │   ├── steps/
-│   │   ├── core/          # 10 built-in steps: http, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
+│   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
 │   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus two strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
@@ -286,6 +288,39 @@ services bag can override it, same as `http`/`secrets`).
 - **HTTP:** `GET /artifacts/:runId` lists (recursive relative paths);
   `GET /artifacts/:runId/<path>` serves the file (minimal content-type map).
   Read-only — steps are the only writers.
+
+## Shell (subprocesses)
+
+`ctx.services.shell` (`ShellCapability`, `capabilities.ts`) runs a program and
+returns a plain `{ code, signal, stdout, stderr, truncated, timedOut,
+durationMs }`. It is the sanctioned way for a step to shell out — the `exec`
+core step is a thin wrapper, and a custom step wrapping a CLI should call it
+rather than `child_process` (same reasons as `http`: cassette-recordable,
+and the child env is scrubbed by construction).
+
+- **`exec` step:** `cmd` + `args`, no shell (templated values are never
+  re-parsed; `cmd: bash, args: ["-c", …]` for a pipeline). `script` writes
+  inline source into the working dir and appends its path — `cmd: uv,
+  args: [run]` + a PEP 723 header is how a workflow runs Python with
+  dependencies installed on the fly (uv caches the env; no Dockerfile edit).
+  `cwd` defaults to the run's artifact dir so files flow between exec/agent
+  steps by relative path. `stdin` pipes a string or JSON in; `parseJson`
+  parses stdout. Non-zero exit throws (retry/onError apply) unless
+  `allowFailure`.
+- **Secrets:** `secretsEnv` (same contract as the agent step's) resolves
+  names via `ctx.services.secrets` into the child env only, and masks the
+  values out of stdout/stderr. Missing names throw — a deterministic step
+  can't degrade gracefully the way an agent can.
+- **Cancel:** the step polls `ctx.control.state` while the child runs and
+  SIGTERMs the process group (SIGKILL 2s later) when the run starts
+  cancelling, then `checkpoint()` raises the canonical `CancelledError`.
+  Timeout (default 10 min) is SIGKILL.
+- **Output:** each stream is capped (default 200k chars) keeping head + tail,
+  so a JSON result and the error that ended a build both survive; the child
+  is NOT killed for being chatty. Big results belong in artifact files.
+- **Environment ≠ step:** what's on PATH (python, ffmpeg, yt-dlp) is the
+  deployment's business — the Dockerfile / `env.manifest` (EVOLVE_SPEC §4)
+  on servers, the host's PATH on desktop. The step just spawns.
 
 ## Key concepts
 

@@ -91,9 +91,11 @@ the API key is obtained.
    (or the `webDist` option) overrides it.
 5. ~~**Bind address.**~~ Done: `STRUT_HOST` (default unchanged for servers;
    desktop passes `127.0.0.1`), and `STRUT_PORT=0` resolves to the bound port.
-6. **Shell steps spawn `bash`** (`shell.ts`). macOS/Linux fine; Windows needs
-   either Git-Bash detection or a `STRUT_SHELL` override. Not blocking for a
-   macOS-first release.
+6. **Subprocesses** (`shell.ts`): the agent's `bash` tool spawns `bash`, the
+   `exec` step spawns the program directly (no shell). macOS/Linux fine;
+   Windows needs either Git-Bash detection or a `STRUT_SHELL` override for
+   the bash tool, and `exec` depends on whatever the host has on PATH (no
+   python/ffmpeg ships in the bundle). Not blocking for a macOS-first release.
 7. ~~**Native addons** (`onnxruntime-node`, `sharp` via transformers).~~
    Done: `package:desktop` uninstalls the whole embeddings stack by default
    (§2.3); sherpa ships its own `libonnxruntime` inside its platform package.

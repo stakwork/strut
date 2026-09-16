@@ -26,6 +26,7 @@ import {
   resolve as pathResolve,
   sep as pathSep,
 } from "node:path";
+import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -272,6 +273,35 @@ export function fileArtifactsCapability(root: string): ArtifactsCapability {
   };
 }
 
+// ── shell ──────────────────────────────────────────────────────────────────
+
+/** A subprocess to run — see `ProcessRequest` (shell.ts). */
+export type ShellRequest = ProcessRequest;
+/** What it did — a PLAIN serializable object (exit code, captured output). */
+export type ShellResult = ProcessResult;
+
+/**
+ * Run a program and capture its outcome. The blessed path for a step that
+ * shells out — the `exec` core step, or a custom step wrapping a CLI
+ * (`ffmpeg`, `yt-dlp`, a Python script under `uv run`) — instead of
+ * `child_process` directly, for the same two reasons as `http`:
+ *   - **recordable** — the result is a plain object, so run_step's cassette
+ *     can capture and replay it; and
+ *   - **leak-free** — the child's env is scrubbed to an allowlist
+ *     (shell.ts `minimalEnv`) plus what the request adds, so the server's
+ *     credentials never reach a subprocess. Credentials a program needs go
+ *     in `env` explicitly (the exec step's `secretsEnv` resolves names
+ *     through `secrets` and masks the values out of the output).
+ * Never throws on a non-zero exit (read `code`); rejects when the program
+ * can't be spawned.
+ */
+export type ShellCapability = (req: ShellRequest) => Promise<ShellResult>;
+
+/** The default shell capability: spawn locally via `runProcess`. */
+export function shellCapability(): ShellCapability {
+  return (req) => runProcess(req);
+}
+
 // ── standard bag ───────────────────────────────────────────────────────────
 
 /** The standard capability shape adapters rely on. Consumers extend this with
@@ -282,13 +312,18 @@ export interface StrutCapabilities {
   /** Per-run artifact files. Present on the standard server (rooted in the
    *  workspace); optional because a bare in-code bag may not carry one. */
   artifacts?: ArtifactsCapability;
+  /** Subprocesses (the `exec` step, CLI-wrapping custom steps). Injected by
+   *  `standardServices`; optional because a bare in-code bag may not carry
+   *  one — the exec step falls back to a local `shellCapability()`. */
+  shell?: ShellCapability;
   /** Speech-to-text (src/audio). Present on the standard server; a step can
    *  transcribe through it without importing sherpa. Optional because a
    *  bare in-code bag may not carry one. */
   stt?: SttService;
 }
 
-/** The default standard services bag: global-fetch http + secrets. Secrets are
+/** The default standard services bag: global-fetch http + secrets + a local
+ *  shell. Secrets are
  *  env-backed by default; pass `secretStore` for a persisted (UI-managed) store
  *  with `process.env` as fallback. Injected by the standard server; override
  *  per environment as needed. */
@@ -305,5 +340,6 @@ export function standardServices(
   return {
     http: httpCapability(opts.fetchImpl),
     secrets,
+    shell: shellCapability(),
   };
 }
