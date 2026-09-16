@@ -9,12 +9,31 @@ const EXAMPLE = `- id: summarize
     prompt: "Summarize this: {{ fetch.body }}"
     model: claude-sonnet-5`;
 
+/** Normalize a step's `schema` for the AI SDK. A YAML workflow can only write
+ *  a plain JSON Schema object, which the SDK accepts only wrapped in
+ *  `jsonSchema()` — handed a bare object it assumes a lazy thunk and throws
+ *  "schema is not a function". Zod / Standard Schema values, already-wrapped
+ *  SDK schemas, and thunks pass through untouched. */
+export async function toSdkSchema(schema: unknown): Promise<unknown> {
+  if (schema == null || typeof schema === "function") return schema;
+  if (typeof schema === "object" && ("~standard" in schema || Symbol.for("vercel.ai.schema") in schema)) {
+    return schema;
+  }
+  const { jsonSchema } = await import("ai");
+  return jsonSchema(schema as Parameters<typeof jsonSchema>[0]);
+}
+
 export default defineStep({
   type: "llm",
-  description: `One LLM call over a prompt — summarize, classify, extract, draft. Output: { text }, or the structured object itself when schema is set. Needs the provider's key in the secret store or env (ANTHROPIC_API_KEY, OPENAI_API_KEY, …). For multi-step work with tools, use the agent step.\n\n${EXAMPLE}`,
+  description: `One LLM call over a prompt — summarize, classify, extract, draft. Judgment, not arithmetic: have it return what it found (a label, a quote, a timestamp exactly as written in the source — hh:mm:ss, mm:ss, or seconds) and do conversion and math in code (exec or a custom step); set schema so numeric fields arrive typed. Output: { text }, or the structured object itself when schema is set. Needs the provider's key in the secret store or env (ANTHROPIC_API_KEY, OPENAI_API_KEY, …). For multi-step work with tools, use the agent step.\n\n${EXAMPLE}`,
   input: z.object({
     prompt: z.string().describe("the full prompt; templates resolve first"),
-    schema: z.any().optional().describe("structured-output schema (a Zod schema, for flows defined in code); omit for free-form text"),
+    schema: z
+      .any()
+      .optional()
+      .describe(
+        "JSON Schema for STRUCTURED output — the step returns the object itself, so put timestamps/numbers/labels in typed fields (in code, a Zod schema also works); omit for free-form { text }",
+      ),
     provider: z
       .string()
       .optional()
@@ -49,7 +68,7 @@ export default defineStep({
       const result = await generateObject({
         model,
         prompt: cfg.prompt,
-        schema: cfg.schema,
+        schema: (await toSdkSchema(cfg.schema)) as any,
         maxOutputTokens,
       });
       return result.object;
