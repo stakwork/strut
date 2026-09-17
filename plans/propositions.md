@@ -12,7 +12,7 @@ Companion to `specs/EVAL_SPEC.md` (a score is one kind of evidence) and
 `specs/EVOLVE_SPEC.md` (the "capture" beat: a failure becomes a claim with a
 check, so it cannot regress silently). Graph vocabulary is jarvis's
 epistemic layer (`jarvis-backend/docs/epistemic_layer.md`, migrations
-119/120/123). This plan adds two things that layer deferred — the `Check`
+119/120/124). This plan adds two things that layer deferred — the `Check`
 node and the workflow that produces evidence — plus a minimal status rule.
 The template layer and a stored verdict stay deferred (§7).
 
@@ -41,7 +41,7 @@ the failure mode EVOLVE_SPEC §6 already forbids for graders.
 
 | Where | Has | Lacks |
 | --- | --- | --- |
-| jarvis (migrations 119/120/123) | `Claim` — since 123 keyed on a caller-supplied `id` (`claim-id`), `speaker_name` optional, `claim_text` not paid, so a claim nobody "said" is writable; bitemporal `belief_valid_from/to`; claim-to-claim pairs `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM`. `Evidence` (Epistemic domain: `content`, `evidence_mode` observed\|asserted, `evidence_status` planned\|collected, `observed_at`). Pairs `Claim —EVIDENCED_BY {strength −1..1}→ Evidence`, `Evidence —HAS_SOURCE {authority_level, locators}→ Thing` | a `Check` node; a template layer; anything that produces or scores evidence — all named as deferred in its doc |
+| jarvis (migrations 119/120/124) | `Claim` — since 124 keyed on a caller-supplied `id` (`claim-id`), `speaker_name` optional, `claim_text` not paid, so a claim nobody "said" is writable; bitemporal `belief_valid_from/to`; claim-to-claim pairs `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM`. `Evidence` (Epistemic domain: `content`, `evidence_mode` observed\|asserted, `evidence_status` planned\|collected, `observed_at`). Pairs `Claim —EVIDENCED_BY {strength −1..1}→ Evidence`, `Evidence —HAS_SOURCE {authority_level, locators}→ Thing` | a `Check` node; a template layer; anything that produces or scores evidence — all named as deferred in its doc |
 | hive | evals as graph nodes (`EvalRequirement` → `EvalTriggerOutput`), one LLM judge, "not evaluated is never a fail", `evaluates: workflow\|output` | any observed evidence; any link from feature requirements to evals |
 | strut | versioned steps/workflows, persisted runs, `exec`/`agent`/`llm` steps, per-run artifacts, cassettes, the post-hoc projector, `SchemaResolver` (the node writer already accepts any type whose `:Schema` exists in the DB) | any notion of a claim; `run_step` runs are not persisted |
 
@@ -59,7 +59,7 @@ claim tools are offered and the verify pass is a no-op.
 
 ### Nodes
 
-**`Claim`** — jarvis's type, unchanged after migration 123 (Content domain,
+**`Claim`** — jarvis's type, unchanged after migration 124 (Content domain,
 node_key `claim-id`). One plain-English sentence about how a subject should
 behave. Strut writes:
 
@@ -190,11 +190,12 @@ the nodes.
 
 ## 1. Schema registration
 
-- **jarvis, migration 123 — written** (`ontology_123_claim_flexible_identity`):
+- **jarvis, migration 124 — PR open** (`ontology_124_claim_flexible_identity`,
+  stakwork/jarvis-backend#3121; upstream took 123 for an unrelated index):
   `Claim` re-keyed on `id`, `speaker_name` optional, `paid_properties`
-  dropped, old Claim nodes deleted. Deploy note: every Claim writer must now
+  emptied to `[]`, old Claim nodes deleted. Deploy note: every Claim writer must now
   send `id` (the podcast claim-extraction workflows included).
-- **jarvis, migration 124:** seeds the `Check` node and the five new pairs
+- **jarvis, migration 125:** seeds the `Check` node and the five new pairs
   in the table above — `Claim —ABOUT→ Thing`, `Evidence —ABOUT→ Thing`,
   `Check —TESTS→ Claim`, `Evidence —PRODUCED_BY→ Check`, `Check —SUPERSEDES→
   Check` — same shape as `ontology_119`, definitions read live from
@@ -204,7 +205,7 @@ the nodes.
 - **Standalone strut Neo4j:** the bundled ontology fixture
   (`src/graph/fixtures/jarvis-ontology.ts`) is a dump that PREDATES 119: its
   `Claim` is still `claim-claim_text-speaker_name` and it has no `Evidence`.
-  Re-dump it from a post-124 jarvis (preferred), or hand-add the new `Claim`
+  Re-dump it from a post-125 jarvis (preferred), or hand-add the new `Claim`
   shape, `Evidence`, `Check` and the pairs, so `ontology-seed.ts` creates
   them; `graph/create-schema` is the by-hand fallback.
 - **Strut code:** `src/graph/claims.ts` — attribute names, the
@@ -721,8 +722,8 @@ persisted step runs with `cost`, so the number exists).
 
 ## Step order
 
-1. Schema: jarvis 123 (written) + 124 (`Check` and the five pairs) + strut
-   fixture re-dumped from a post-124 jarvis + the one `STRUT_EDGES` row;
+1. Schema: jarvis 124 (PR open) + 125 (`Check` and the five pairs) + strut
+   fixture re-dumped from a post-125 jarvis + the one `STRUT_EDGES` row;
    `claims.ts` with `claimStatus()` and read helpers; graph-backend gate in
    createStrut; unit tests.
 2. `run_step` persists (§3) + projector pair.
@@ -766,7 +767,7 @@ persisted step runs with `cost`, so the number exists).
   subflow yields evidence at its path.
 - **Live graph (`npm run test:graph`):** publish with claims → `Claim` +
   `ABOUT` + `Check —TESTS→`; a Claim with no `speaker_name` and two Claims
-  with the same text and different ids are both accepted (migration 123);
+  with the same text and different ids are both accepted (migration 124);
   `run_step` on a step with claims → persisted under `step:<type>`, absent
   from every workflow listing; verify → `StrutRun` + `EXECUTED →
   StrutStepVersion`; `run_step` on a step without claims → nothing
@@ -793,7 +794,7 @@ persisted step runs with `cost`, so the number exists).
 
 ## Decided
 
-- The statement is jarvis's `Claim`, not a new type. Migration 123 removed
+- The statement is jarvis's `Claim`, not a new type. Migration 124 removed
   the blocker (identity on `id`, optional `speaker_name`), and using it
   inherits `EVIDENCED_BY`, `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM` and
   `MADE_CLAIM` instead of re-seeding them: one vocabulary whether a claim
@@ -844,10 +845,10 @@ persisted step runs with `cost`, so the number exists).
   `check:<check-id>` is the natural key (leaning yes) — one more `RunStore`
   bucket beside `steps/`.
 
-- jarvis migration 124: whether `ABOUT` needs an entry in jarvis's
+- jarvis migration 125: whether `ABOUT` needs an entry in jarvis's
   `EDGE_TYPES` allowlist or only edge schemas, and whether `→ Thing` pairs
   resolve for `Strut*` endpoints the way `HAS_SOURCE → Thing` does.
 
 - `Claim` lives in jarvis's `Content` domain, `Check` and `Evidence` in
   `Epistemic`. An operator who hides Content hides the claims but not their
-  checks and evidence. Re-home `Claim` to `Epistemic` in 124, or leave it?
+  checks and evidence. Re-home `Claim` to `Epistemic` in 125, or leave it?
