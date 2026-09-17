@@ -49,7 +49,7 @@ export const checkSpecSchema = z
 export const claimSpecSchema = z.object({
   text: z
     .string()
-    .describe("ONE plain sentence about how the subject should BEHAVE — not its mechanism, and never its output schema restated (e.g. 'the clip's audio contains the requested quote', 'fetches only the requested caption languages')."),
+    .describe("ONE plain sentence about how the subject should BEHAVE — not its mechanism, and never its output schema restated. Describes the desired end state of a process. (e.g. 'The clip's audio contains the requested quote', 'Fetches only the requested caption languages', 'The file was downloaded from youtube', 'This is a valid birthday for this person')."),
   checks: z.array(checkSpecSchema).min(1).describe("At least one check. If code cannot check it, one external check saying what to look at and why."),
 });
 
