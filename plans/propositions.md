@@ -70,7 +70,24 @@ behave, plus its optional executable twin.
 | `why_no_check` | ?string | required when `check_type` is absent |
 | `status` | string | `active` \| `retired` (never deleted; history stays) |
 | `publisher` | ?string | who wrote it (`ai`, a person, a seeder) |
-| `created_at` | datetime | |
+| `created_at` | datetime | when this node began to hold (jarvis `belief_valid_from`) |
+| `retired_at` | ?datetime | when it stopped: retired, or superseded by an edit (jarvis `belief_valid_to`) |
+
+**A proposition node is immutable once it has evidence.** Editing `text`
+or any `check_*` field creates a NEW node that `SUPERSEDES` the old one
+(existing jarvis edge type, new pair), carries the old node's `ABOUT`
+attachments across, and retires the old node with `retired_at`. Old
+evidence stays on the old node; the new node starts `unknown` — nothing
+has tested the new statement yet — and `verify_run` over kept runs
+repopulates it. This is the attribution rule EVOLVE_SPEC §6 applies to
+graders (`scorerSha256`), applied to checks. A typo fix pays the same
+price; that is the cost of one rule.
+
+**Propositions are NOT versioned with workflow versions.** They attach
+to the stable identity and apply to whatever version is active when a run
+is verified; the version dimension lives on the evidence (`Evidence —ABOUT→
+version`). "What was the contract for v2 at the time" is bitemporal: the
+propositions whose `[created_at, retired_at)` window covers v2's evidence.
 
 Why a new type and not jarvis's `Claim`: `Claim` requires `speaker_name`
 in its node_key, jarvis validation rejects a node missing any required
@@ -92,6 +109,7 @@ later add).
 | --- | --- |
 | `Proposition` —`ABOUT`→ `StrutStep` / `StrutWorkflow` | the STABLE identity, never a version. **Many-to-many**: one proposition may be about several subjects (a contract every candidate in a lineage must meet; a timestamp rule shared by two steps), and a subject has many propositions. `ABOUT` is minted because a proposition can be about any node (a feature, a repository, a concept); no existing edge type reads that way |
 | `Evidence` —`ABOUT`→ `StrutWorkflowVersion` / `StrutStepVersion` | the exact version the observation was made on. Written by whoever writes the evidence; this is what makes status per (proposition, subject) a direct lookup, including for nested subflow executions and single-step runs |
+| `Proposition` —`SUPERSEDES`→ `Proposition` | an edit: the successor points at the node it replaced (existing edge type, new pair) |
 | `Proposition` —`EVIDENCED_BY {strength}`→ `Evidence` | `+1` supports, `−1` refutes |
 | `Evidence` —`HAS_SOURCE {context, start_time, end_time, post_url}`→ `StrutRun` | provenance: the run and, in `context`, the step's event path (`wf/compute_times`) and the cassette mode; time span / url when the check has one |
 | `StrutRun` —`EXECUTED`→ `StrutStepVersion` | new pair for single-step runs (§3) |
@@ -105,7 +123,9 @@ breaks a proposition shows as refuting evidence on that version.
 ### Status is computed on read, per (proposition, subject) (`src/graph/propositions.ts`)
 
 ```
-evidence := the proposition's evidence ABOUT any version of THIS subject
+evidence := THIS proposition node's evidence ABOUT any version of THIS
+            subject (a superseded predecessor's evidence never counts —
+            the ledger shows the predecessor's last status beside it)
 no evidence                                    → unknown
 latest evidence strength < 0                   → refuted
 latest evidence strength > 0                   → supported
@@ -149,9 +169,12 @@ Publish writes each as a `Proposition` + `ABOUT` the published subject.
 Door two's `add_proposition` takes one or MORE subjects, and
 `attach_proposition(id, subject)` / `detach_proposition(id, subject)` add
 or remove a subject on an existing one — attaching is how a contract is
-shared, never by copying the node. The publish result
+shared, never by copying the node. `edit_proposition(id, …)` returns the
+SUCCESSOR's id (supersession, above); only attachments and `status` change
+in place. The publish result
 gains `propositions: <count>`; zero returns a warning the assistant has to
-answer. Editing a proposition never publishes a version.
+answer. Editing a proposition never publishes a workflow version; it
+supersedes the proposition node instead.
 
 **Door two — on their own.** `add_proposition(subject, text, check?, when?,
 why?)`, `edit_proposition(id, …)`, `retire_proposition(id)`, plus
@@ -488,7 +511,8 @@ are persisted step runs with `cost`, so the number exists).
   `EXECUTED → StrutStepVersion`; `run_step` on a step without propositions →
   nothing persisted;
   verify → `Evidence` + both edges; publish a new version → status `stale`;
-  retire → excluded from the ledger, evidence kept.
+  retire → excluded from the ledger, evidence kept; edit → successor with
+  `SUPERSEDES`, attachments moved, predecessor retired, successor `unknown`.
 - **The youtube-clip rerun, judged by transcript:** ≥3 propositions authored
   before the first run; each fixed failure adds one; final ledger has no
   `unknown`; the clip-contains-quote proposition has an OBSERVED check
