@@ -307,6 +307,23 @@ export {
   type EvidenceMode,
   type EvidenceStatus,
 } from "./graph/claims.js";
+export { ClaimsWriter, ClaimsError, boundedName, type CheckData, type ClaimsErrorCode } from "./graph/claims-writer.js";
+export {
+  buildClaimsAuthoring,
+  deniedInClosure,
+  verifyDenyPatterns,
+  toSubjectRef,
+  DEFAULT_VERIFY_DENY,
+  type ClaimsAuthoring,
+  type ClaimsAuthoringDeps,
+  type ClaimActor,
+  type ClaimSpecInput,
+  type CheckSpecInput,
+  type SubjectInput,
+  type ClaimListing,
+  type ClaimsResult,
+} from "./claims-authoring.js";
+export { subjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
 export {
   NodeWriter,
   GraphValidationError,

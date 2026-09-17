@@ -268,10 +268,24 @@ function renderModels(m: AiDeps["models"]): string {
   return `LLM providers with a key configured on this deployment: ${configured} (default model: ${m.default}). In agent/llm steps only use \`model:\` values from these providers — an alias (sonnet, opus, haiku, gemini, gpt, kimi, glm, grok), a full id, or "provider/id" (OpenRouter models as "openrouter/org/model"). For any other provider, tell the user to add its key under Secrets (${keys}).\n\n`;
 }
 
+/**
+ * The claims section (plans/claims.md §2) — appended only when the claim
+ * tools are offered (a graph-backed workspace). Deliberately short: the
+ * forcing function is the contract the model reads in its tool results, not
+ * this instruction.
+ */
+export const CLAIMS_SECTION = `Claims — state how your work should behave, and let runs prove it:
+A claim is ONE plain sentence about how a step or workflow should BEHAVE; a check is an instrument that tests it (a registry step run over the subject, or an external check for what code cannot observe); evidence is what a check observed on one run. A claim's status (supported | refuted | stale | unknown) is COMPUTED from evidence on the active version — you never assert it. "The last run returned success" is not evidence.
+1. Author claims BEFORE the first run, in the same call as the code: pass \`claims\` to create_step / edit_step / create_workflow / edit_workflow. A publish result carries \`claims.count\` — zero comes with a warning you must answer. For a subject you are not republishing, use add_claim.
+2. Behavior, not mechanism, and never the output schema restated. Claim the thing the user actually cares about ("the clip's audio contains the requested quote"), not what is easy to check ("the clip is 20 seconds long").
+3. Every claim gets at least one check. Prefer code that OBSERVES the output (an \`exec\` script, a custom step, a \`subflow\` for anything bigger than a one-liner — e.g. speech-to-text the clip, then fuzzy-match the quote): it is free, so it runs on every input. Use an \`llm\` / \`agent\` check only for judgment calls — it costs money and is recorded as asserted, not observed. If nothing can check it, give it an EXTERNAL check whose description says what to look at and why code cannot.
+4. A failure you fix becomes a claim with a check — the regression move: the 429 on auto-translated captions becomes "fetches only the requested caption languages". Otherwise the next session rediscovers it.
+Tools: add_claim, list_claims (claims + checks + computed status), edit_claim / edit_check (immutable nodes: an edit creates a successor and returns ITS id — the claim reads unknown until verified again), retire_claim / retire_check, attach_claim / detach_claim (share one contract across subjects instead of copying it), add_check.`;
+
 export async function buildSystem(deps: AiDeps): Promise<string> {
   const tree = await renderStepsTree(deps);
   return `${BASE_SYSTEM}
-
+${deps.workspace.graph ? `\n${CLAIMS_SECTION}\n` : ""}
 ${renderModels(deps.models)}Available steps:
 ${tree}
 `;

@@ -70,7 +70,7 @@ behave. Strut writes:
 
 | attribute | type | strut writes |
 | --- | --- | --- |
-| `id` | string | its own identity — never derived from the text. **Lowercase alphanumerics only** (`randomUUID()` with the dashes stripped): `node_key` is `claim-<id>` after jarvis's sanitizer lowercases and drops every non-alphanumeric, so `aB-1` and `ab1` would collide. Same rule for `Check.id` and `Evidence.id` |
+| `id` | string | its own identity — never derived from the text. **Lowercase alphanumerics only** (time-sortable, ULID-style: base36 epoch ms + a per-process sequence + random, so a contract lists in the order it was written): `node_key` is `claim-<id>` after jarvis's sanitizer lowercases and drops every non-alphanumeric, so `aB-1` and `ab1` would collide. Same rule for `Check.id` and `Evidence.id` |
 | `name` | string | the sentence, bounded (jarvis's required title) |
 | `claim_text` | string | the sentence. Behavior, not mechanism; never the output schema restated |
 | `speaker_name` | ?string | who asserts it: `ai`, a person, a seeder. This IS strut's `publisher` stamp (fixed point 1, §4.1). Later a `Person —MADE_CLAIM→ Claim` edge (existing pair) |
@@ -862,7 +862,21 @@ number exists).
    `run.start` gains `stepHashes` / `cassette` / `origin` (§3) — FIRST, since
    only runs recorded after it can ever be verified; then `run_step`
    persists under `step:<type>` (§3) + the projector pair.
-3. Authoring tools + `claims` arg + publish count + prompt section (§2),
+3. **Done** — `graph/claims-writer.ts` (invariants), `claims-authoring.ts`
+   (validation, write-time defaults, scoping, the deny-list over the check
+   closure), `claims-schemas.ts`; the `claims` arg on the four chat publish
+   tools and on `meta/create-step` / `meta/edit-step` /
+   `meta/publish-workflow` (validated BEFORE the publish — a broken
+   contract blocks it; result `claims: { count, added, existing, warning? }`);
+   the nine chat tools and their nine `meta/*` twins; prompt rules 1–4
+   (5–6 land with the ledger, step 5). Decided while building: the chat
+   surface is NOT publisher-scoped (it is human-supervised, like
+   `edit_step`) but still stamps `ai`, so the deny-list applies to its
+   checks; a scoped author may also attach / add claims only to subjects
+   it published; a successor claim is stamped by its EDITOR; a claim's
+   last subject cannot be detached (retire it); a contract passed on a
+   filesystem workspace is an error, never silently dropped.
+   Authoring tools + `claims` arg + publish count + prompt section (§2),
    and their `meta/*` twins: `meta/add-claim`, `meta/edit-claim`,
    `meta/retire-claim`, `meta/list-claims`, `meta/attach-claim`,
    `meta/detach-claim`, `meta/add-check`, `meta/edit-check`,

@@ -164,9 +164,11 @@ describe("claimStatus (pure)", () => {
 
 describe("claim ids (pure)", () => {
   it("claim/check ids are lowercase alphanumeric, so node_key sanitizing cannot collide two", () => {
-    const ids = new Set(Array.from({ length: 50 }, () => newEpistemicId()));
-    assert.equal(ids.size, 50);
+    const made = Array.from({ length: 500 }, () => newEpistemicId());
+    const ids = new Set(made);
+    assert.equal(ids.size, 500);
     for (const id of ids) assert.match(id, /^[a-z0-9]{32}$/);
+    assert.deepEqual([...made].sort(), made, "time-sortable: id order is creation order, even within one millisecond");
     assert.ok(isEpistemicId("ab1") && !isEpistemicId("aB-1") && !isEpistemicId("") && !isEpistemicId(7));
   });
 

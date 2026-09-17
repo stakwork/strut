@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { requireAuthoring } from "./_shared.js";
+import { claimsArgSchema } from "../../../claims-schemas.js";
 
 export default defineStep({
   type: "meta/publish-workflow",
@@ -14,6 +15,7 @@ export default defineStep({
       .string()
       .optional()
       .describe("Optional sidebar grouping label (e.g. an experiment name). Omit to leave unchanged."),
+    claims: claimsArgSchema,
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -22,6 +24,7 @@ export default defineStep({
       cfg.yaml,
       cfg.description,
       cfg.category,
+      cfg.claims,
     );
   },
 });

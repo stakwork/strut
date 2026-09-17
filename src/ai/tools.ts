@@ -7,6 +7,8 @@ import { stepSchemas } from "./schemaHelpers.js";
 import { runStep, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
 import { claimsReaderFor } from "../graph/claims.js";
+import { buildClaimsAuthoring, type ClaimActor } from "../claims-authoring.js";
+import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
 import { generateRunId, stepRunKey } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
@@ -73,6 +75,18 @@ export function buildTools(deps: AiDeps) {
       name,
     });
   };
+  // The claims layer (plans/claims.md) — only on a graph-backed workspace:
+  // none of the claim tools, and no `claims` arg, are offered without it.
+  // This surface is human-supervised, so it is NOT publisher-scoped (like
+  // edit_step); what it writes is still stamped `ai`, which keeps the grader
+  // deny-list on its checks.
+  const claims = deps.workspace.graph
+    ? buildClaimsAuthoring({ graph: deps.workspace.graph, workspace: deps.workspace, getRegistry: deps.getRegistry })
+    : null;
+  const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: false };
+  const claimsArg = claims ? { claims: claimsArgSchema } : {};
+  type ClaimsArg = z.infer<typeof claimsArgSchema>;
+
   /** Non-blocking: warnings ride along on a successful publish. */
   const withWarnings = <T extends object>(result: T, v: { warnings: Array<{ path: string; message: string }> }) =>
     v.warnings.length ? { ...result, warnings: v.warnings } : result;
@@ -158,15 +172,20 @@ export function buildTools(deps: AiDeps) {
             "Full TypeScript source. Shape: import { z, defineStep } from \"strut\"; export default defineStep({ type: \"<name>\", input: z.object({...}), output: z.any(), async run(cfg, ctx) { /* use ctx.services for capabilities */ } });",
           ),
         description: z.string().optional(),
+        ...claimsArg,
       }),
-      execute: async ({ name, code, description }) => {
+      execute: async ({ name, code, description, ...rest }) => {
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const result = await publishNewStep(deps, name, code, description, AI_PUBLISHER);
         deps.registry = await deps.getRegistry();
+        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name }, contract, actor) } : {};
         if (result.ok && result.loaded === false) {
-          const { loadError, ...rest } = result;
-          return { ...rest, warning: `Published but failed to load into the registry: ${loadError}` };
+          const { loadError, ...ok } = result;
+          return { ...ok, ...ledger, warning: `Published but failed to load into the registry: ${loadError}` };
         }
-        return result;
+        return { ...result, ...ledger };
       },
     }),
 
@@ -179,15 +198,20 @@ export function buildTools(deps: AiDeps) {
           .string()
           .describe("Full updated TypeScript source (same self-contained shape as create_step)."),
         description: z.string().optional(),
+        ...claimsArg,
       }),
-      execute: async ({ type, code, description }) => {
+      execute: async ({ type, code, description, ...rest }) => {
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const result = await publishStepVersion(deps, type, code, description);
         deps.registry = await deps.getRegistry();
+        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name: type }, contract, actor) } : {};
         if (result.ok && result.loaded === false) {
-          const { loadError, ...rest } = result;
-          return { ...rest, warning: `Published but failed to load into the registry: ${loadError}` };
+          const { loadError, ...ok } = result;
+          return { ...ok, ...ledger, warning: `Published but failed to load into the registry: ${loadError}` };
         }
-        return result;
+        return { ...result, ...ledger };
       },
     }),
 
@@ -227,10 +251,14 @@ export function buildTools(deps: AiDeps) {
           .describe(
             "Optional sidebar grouping label (kebab-case, e.g. an experiment name). Omit to leave uncategorized.",
           ),
+        ...claimsArg,
       }),
-      execute: async ({ name, yaml, description, category }) => {
+      execute: async ({ name, yaml, description, category, ...rest }) => {
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const { name: finalName, version } = await deps.workspace.createWorkflow(
           name,
           yaml,
@@ -246,6 +274,7 @@ export function buildTools(deps: AiDeps) {
             version,
             renamed: finalName !== name,
             requested: name,
+            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name: finalName }, contract, actor) } : {}),
           },
           v,
         );
@@ -275,8 +304,9 @@ export function buildTools(deps: AiDeps) {
           .describe(
             "Optional sidebar grouping label. Only pass to CHANGE the category (to merely re-categorize without editing YAML, use set_workflow_category).",
           ),
+        ...claimsArg,
       }),
-      execute: async ({ name, yaml, description, category }) => {
+      execute: async ({ name, yaml, description, category, ...rest }) => {
         const exists = (await deps.workspace.listWorkflows()).some(
           (w) => w.name === name,
         );
@@ -287,6 +317,9 @@ export function buildTools(deps: AiDeps) {
         }
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         let result;
         try {
           result = await deps.workspace.publishWorkflowByContent(
@@ -305,11 +338,80 @@ export function buildTools(deps: AiDeps) {
             name,
             version: result.version,
             changed: result.changed,
+            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor) } : {}),
           },
           v,
         );
       },
     }),
+
+    // ── Claims (plans/claims.md §2, door two) — graph-backed workspaces only.
+    ...(claims
+      ? {
+          add_claim: tool({
+            description:
+              "State how a step or workflow SHOULD behave, with the check(s) that test it. One claim may be about SEVERAL subjects (a contract two steps share) — attach it rather than writing it twice. Use this for a subject you are not republishing; when you ARE publishing, pass `claims` to create_step / edit_step / create_workflow / edit_workflow instead. Every claim needs at least one check; evidence is produced by verifying runs, never by this call. Returns { id, checks: [ids] }.",
+            inputSchema: z.object({
+              subjects: z.array(subjectSchema).min(1),
+              text: z.string().describe("ONE plain sentence: behavior, not mechanism; never the output schema restated."),
+              checks: z.array(checkSpecSchema).min(1),
+            }),
+            execute: async ({ subjects, text, checks }) => claims.addClaim({ subjects, text, checks }, actor),
+          }),
+
+          list_claims: tool({
+            description:
+              "A subject's active claims, each with its checks (id, step type + config or external description, when/policy) and its status COMPUTED from evidence: supported | refuted | stale (evidence is about an older version) | unknown (never checked). `assertedOnly` = the verdict rests on a model's or person's word, nothing observed; `unverified` = active checks with no evidence about the active version; `openSlot` = an external check is waiting on someone.",
+            inputSchema: z.object({ subject: subjectSchema }),
+            execute: async ({ subject }) => claims.listClaims(subject),
+          }),
+
+          edit_claim: tool({
+            description:
+              "Reword a claim. Claims are immutable once written, so this creates a SUCCESSOR that supersedes it and returns the successor's id: attachments and checks carry over, the old evidence stays on the old node, and the successor starts `unknown` until a run is verified again. Never publishes a workflow/step version.",
+            inputSchema: z.object({ id: z.string().describe("Claim id (from list_claims)"), text: z.string() }),
+            execute: async ({ id, text }) => claims.editClaim(id, text, actor),
+          }),
+
+          retire_claim: tool({
+            description: "Retire a claim that no longer holds as a requirement. It is never deleted — its evidence and history stay — it just stops being part of the contract.",
+            inputSchema: z.object({ id: z.string() }),
+            execute: async ({ id }) => claims.retireClaim(id, actor),
+          }),
+
+          attach_claim: tool({
+            description: "Attach an EXISTING claim to another subject — how a contract is shared (its checks come along), never by copying it. Each subject gets its own status. Attaching twice is a no-op.",
+            inputSchema: z.object({ id: z.string(), subject: subjectSchema }),
+            execute: async ({ id, subject }) => claims.attachClaim(id, subject, actor),
+          }),
+
+          detach_claim: tool({
+            description: "Detach a claim from ONE subject (it stays on its others). A claim's last subject cannot be detached — retire the claim instead.",
+            inputSchema: z.object({ id: z.string(), subject: subjectSchema }),
+            execute: async ({ id, subject }) => claims.detachClaim(id, subject, actor),
+          }),
+
+          add_check: tool({
+            description:
+              "Add another instrument to an existing claim — e.g. a free `exec` on every run beside an `llm` judge on change. Each check keeps its own policy, cost and evidence stream; a refutation from ANY check on the active version makes the claim refuted.",
+            inputSchema: z.object({ claim: z.string().describe("Claim id"), check: checkSpecSchema }),
+            execute: async ({ claim, check }) => claims.addCheck(claim, check, actor),
+          }),
+
+          edit_check: tool({
+            description:
+              "Change a check (its step, config, when, policy…). Pass only the fields to change. Checks are immutable once written: this creates a SUCCESSOR and returns its id; the old check's evidence stops counting — a changed instrument has measured nothing yet — so the claim reads `unknown` until it runs again.",
+            inputSchema: z.object({ id: z.string().describe("Check id (from list_claims)"), patch: checkSpecSchema }),
+            execute: async ({ id, patch }) => claims.editCheck(id, patch, actor),
+          }),
+
+          retire_check: tool({
+            description: "Retire a check. Refused when it is the claim's LAST active check — add the replacement first (add_check), or retire the claim.",
+            inputSchema: z.object({ id: z.string() }),
+            execute: async ({ id }) => claims.retireCheck(id, actor),
+          }),
+        }
+      : {}),
 
     set_workflow_category: tool({
       description:

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { requireAuthoring } from "./_shared.js";
+import { claimsArgSchema } from "../../../claims-schemas.js";
 
 export default defineStep({
   type: "meta/edit-step",
@@ -10,9 +11,10 @@ export default defineStep({
     type: z.string().describe("Existing custom step type to edit, e.g. 'candidates/my-fetcher'."),
     code: z.string().describe("Full updated TypeScript source (same self-contained shape as meta/create-step)."),
     description: z.string().optional().describe("replaces the one-line summary stored with the step"),
+    claims: claimsArgSchema,
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    return requireAuthoring(ctx.services).editStep(cfg.type, cfg.code, cfg.description);
+    return requireAuthoring(ctx.services).editStep(cfg.type, cfg.code, cfg.description, cfg.claims);
   },
 });

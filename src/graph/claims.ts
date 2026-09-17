@@ -58,14 +58,26 @@ export const DEFAULT_FRESHNESS_DAYS = 7;
 
 const EPISTEMIC_ID = /^[a-z0-9]+$/;
 
+let lastIdMs = 0;
+let lastIdSeq = 0;
+
 /**
  * Identity for a `Claim` / `Check` — never derived from the text. Lowercase
  * alphanumerics ONLY: `node_key` is `claim-<id>` after jarvis's sanitizer
  * lowercases and drops every non-alphanumeric, so `aB-1` and `ab1` would
  * collide on one node.
+ *
+ * Time-sortable (ULID-style): 9 base36 chars of epoch ms, 3 of a per-process
+ * sequence within that ms, 20 random — so ordering by id is ordering by
+ * creation, and a contract lists in the order it was written even when its
+ * claims share one `belief_valid_from` second.
  */
 export function newEpistemicId(): string {
-  return randomUUID().replace(/-/g, "");
+  const ms = Math.max(Date.now(), lastIdMs); // never backwards, even if the clock is
+  lastIdSeq = ms === lastIdMs ? lastIdSeq + 1 : 0;
+  lastIdMs = ms;
+  const random = randomUUID().replace(/-/g, "").slice(0, 20);
+  return `${ms.toString(36).padStart(9, "0")}${lastIdSeq.toString(36).padStart(3, "0")}${random}`;
 }
 
 export function isEpistemicId(id: unknown): id is string {
@@ -405,6 +417,64 @@ export class ClaimsReader {
     );
     const v = rows[0]?.["v"];
     return typeof v === "string" && v ? v : null;
+  }
+
+  /** `ref_id` of a subject's STABLE node, or null when the workspace has no
+   *  such step / workflow (built-in steps have no node). */
+  async subjectRefId(subject: SubjectRef): Promise<string | null> {
+    const n = SUBJECT_NODE[subject.kind];
+    const rows = await this.graph.bolt.run(
+      `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NOT_DELETED("s")} RETURN s.ref_id AS r LIMIT 1`,
+      { ns: this.ns, name: subjectName(subject) },
+    );
+    return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
+  }
+
+  /** One claim by id (active or not), or null. */
+  async getClaim(id: string): Promise<ClaimRow | null> {
+    const rows = await this.graph.bolt.run(
+      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NOT_DELETED("c")} RETURN ${project("c", CLAIM_FIELDS)} AS claim LIMIT 1`,
+      { ns: this.ns, id },
+    );
+    return rows.length ? compact<ClaimRow>(rows[0]!["claim"] as Record<string, unknown>) : null;
+  }
+
+  /** One check by id (active or not), or null. */
+  async getCheck(id: string): Promise<CheckRow | null> {
+    const rows = await this.graph.bolt.run(
+      `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NOT_DELETED("k")} RETURN ${project("k", CHECK_FIELDS)} AS chk LIMIT 1`,
+      { ns: this.ns, id },
+    );
+    return rows.length ? compact<CheckRow>(rows[0]!["chk"] as Record<string, unknown>) : null;
+  }
+
+  /** The subjects a claim is attached to (live `ABOUT` edges), with the
+   *  edge's ref_id — what `detach` mutes. */
+  async subjectsOf(claimId: string): Promise<Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }>> {
+    const rows = await this.graph.bolt.run(
+      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})-[a:\`${CLAIM_EDGES.ABOUT}\`]->(s)
+       WHERE ${LIVE("a")} AND ${NOT_DELETED("s")} AND (s:StrutStep OR s:StrutWorkflow)
+       RETURN s:StrutStep AS is_step, s.step_type AS step_type, s.name AS name, s.ref_id AS ref_id, a.ref_id AS edge_ref_id
+       ORDER BY is_step, name, step_type`,
+      { ns: this.ns, id: claimId },
+    );
+    return rows.map((r) => ({
+      subject: r["is_step"] === true ? { kind: "step" as const, type: String(r["step_type"]) } : { kind: "workflow" as const, name: String(r["name"]) },
+      ref_id: String(r["ref_id"]),
+      edge_ref_id: String(r["edge_ref_id"]),
+    }));
+  }
+
+  /** The ACTIVE claims a check `TESTS` — exactly one, by the writer's
+   *  invariant; more only transiently. */
+  async claimsTestedBy(checkId: string): Promise<ClaimRow[]> {
+    const rows = await this.graph.bolt.run(
+      `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id})-[t:\`${CLAIM_EDGES.TESTS}\`]->(c:\`${CLAIM_TYPE}\`)
+       WHERE ${LIVE("t")} AND ${NOT_DELETED("c")} AND c.belief_valid_to IS NULL
+       RETURN ${project("c", CLAIM_FIELDS)} AS claim ORDER BY c.belief_valid_from, c.id`,
+      { ns: this.ns, id: checkId },
+    );
+    return rows.map((r) => compact<ClaimRow>(r["claim"] as Record<string, unknown>));
   }
 
   /** Claims `ABOUT` a subject — active ones unless `includeRetired`. */

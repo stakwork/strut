@@ -7,6 +7,14 @@ import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { stepHashesFor } from "./closure.js";
 import { claimsReaderFor } from "./graph/claims.js";
+import {
+  buildClaimsAuthoring,
+  type CheckSpecInput,
+  type ClaimActor,
+  type ClaimSpecInput,
+  type SubjectInput,
+} from "./claims-authoring.js";
+import { CLAIMS_OFF } from "./claims-schemas.js";
 import { stepLoadError } from "./steps/registry.js";
 import type { CassetteMode } from "./cassette.js";
 import type { SecretInfo } from "./secret-store.js";
@@ -356,8 +364,11 @@ export interface AuthoringCapability {
   /** Description + JSON Schema of config/result; `source: true` adds a
    *  lib/custom step's TypeScript (for editing or mirroring it). */
   getStep(type: string, opts?: { source?: boolean }): Promise<unknown>;
-  createStep(name: string, code: string, description?: string): Promise<StepPublishResult>;
-  editStep(type: string, code: string, description?: string): Promise<StepPublishResult>;
+  /** `claims` (here and on `editStep` / `publishWorkflow`): the contract,
+   *  authored with the code. Additive and idempotent by exact text; invalid
+   *  claims block the publish (plans/claims.md §2, door one). */
+  createStep(name: string, code: string, description?: string, claims?: ClaimSpecInput[]): Promise<StepPublishResult>;
+  editStep(type: string, code: string, description?: string, claims?: ClaimSpecInput[]): Promise<StepPublishResult>;
   runStep(type: string, args?: RunStepArgs): Promise<RunStepResult | { error: string }>;
   listWorkflows(): Promise<unknown>;
   getWorkflow(name: string, version?: string): Promise<unknown>;
@@ -369,6 +380,7 @@ export interface AuthoringCapability {
     yaml: string,
     description?: string,
     category?: string,
+    claims?: ClaimSpecInput[],
   ): Promise<unknown>;
   runWorkflow(
     name: string,
@@ -383,6 +395,21 @@ export interface AuthoringCapability {
   getRun(name: string, runId: string, fullEvents?: boolean): Promise<unknown>;
   searchRuns(name: string, pattern: string, opts?: RunSearchOptions): Promise<unknown>;
   listSecrets(): Promise<unknown>;
+
+  // ── Claims (plans/claims.md §2, door two) ──
+  // Publisher-scoped like everything else on this surface (fixed point 1):
+  // only claims / checks stamped `ai`, only subjects it published; its
+  // checks may never reach a grader (fixed point 2). On a filesystem
+  // workspace each returns `{ error }`.
+  addClaim(input: { subjects: SubjectInput[]; text: string; checks: CheckSpecInput[] }): Promise<unknown>;
+  editClaim(id: string, text: string): Promise<unknown>;
+  retireClaim(id: string): Promise<unknown>;
+  listClaims(subject: SubjectInput): Promise<unknown>;
+  attachClaim(id: string, subject: SubjectInput): Promise<unknown>;
+  detachClaim(id: string, subject: SubjectInput): Promise<unknown>;
+  addCheck(claimId: string, check: CheckSpecInput): Promise<unknown>;
+  editCheck(id: string, patch: CheckSpecInput): Promise<unknown>;
+  retireCheck(id: string): Promise<unknown>;
 }
 
 export interface AuthoringDeps extends StepPublishDeps {
@@ -412,6 +439,19 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
   const { workspace, store } = deps;
 
   const explorerDeps = async () => ({ workspace, registry: await deps.getRegistry() });
+
+  // The claims layer exists only on a graph-backed workspace.
+  const claims = workspace.graph ? buildClaimsAuthoring({ graph: workspace.graph, workspace, getRegistry: deps.getRegistry }) : null;
+  const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: true };
+  const claimsOff = { error: CLAIMS_OFF };
+  /** Blocks a publish on an invalid contract; a contract passed where there
+   *  is no claims layer is an error too — silently dropping it would read as
+   *  "contract recorded". */
+  const claimsGate = async (arg: ClaimSpecInput[] | undefined): Promise<string | null> => {
+    if (!arg || arg.length === 0) return null;
+    if (!claims) return CLAIMS_OFF;
+    return (await claims.validateClaimsArg(arg, actor))?.error ?? null;
+  };
 
   const findWorkflow = async (name: string) =>
     (await workspace.listWorkflows()).find((w) => w.name === name);
@@ -462,8 +502,11 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       };
     },
 
-    async createStep(name, code, description) {
-      const result = await publishNewStep(deps, name, code, description, AI_PUBLISHER);
+    async createStep(name, code, description, contract) {
+      const invalid = await claimsGate(contract);
+      if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
+      const published = await publishNewStep(deps, name, code, description, AI_PUBLISHER);
+      const result = published.ok && claims ? { ...published, claims: await claims.applyClaimsArg({ kind: "step", name }, contract, actor) } : published;
       // For the in-workflow author a broken publish is a FAILURE, not a
       // warning — §5.3.4: hand the import error back loudly.
       if (result.ok && result.loaded === false) {
@@ -476,10 +519,13 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       return result;
     },
 
-    async editStep(type, code, description) {
-      const result = await publishStepVersion(deps, type, code, description, {
+    async editStep(type, code, description, contract) {
+      const invalid = await claimsGate(contract);
+      if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
+      const published = await publishStepVersion(deps, type, code, description, {
         requirePublisher: AI_PUBLISHER,
       });
+      const result = published.ok && claims ? { ...published, claims: await claims.applyClaimsArg({ kind: "step", name: type }, contract, actor) } : published;
       if (result.ok && result.loaded === false) {
         return {
           ...result,
@@ -558,7 +604,9 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       });
     },
 
-    async publishWorkflow(name, yaml, description, category) {
+    async publishWorkflow(name, yaml, description, category, contract) {
+      const invalid = await claimsGate(contract);
+      if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
       const entry = await findWorkflow(name);
       if (entry && entry.publisher !== AI_PUBLISHER) {
         return {
@@ -582,6 +630,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           version: result.version,
           changed: result.changed,
           created: !entry,
+          ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor) } : {}),
         };
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
@@ -649,5 +698,16 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       const secrets = await deps.secrets.list();
       return { secrets: secrets.map((s) => ({ name: s.name, updatedAt: s.updatedAt })) };
     },
+
+    // ── Claims — every call goes through the SCOPED actor ────────────────
+    addClaim: async (input) => (claims ? claims.addClaim(input, actor) : claimsOff),
+    editClaim: async (id, text) => (claims ? claims.editClaim(id, text, actor) : claimsOff),
+    retireClaim: async (id) => (claims ? claims.retireClaim(id, actor) : claimsOff),
+    listClaims: async (subject) => (claims ? claims.listClaims(subject) : claimsOff),
+    attachClaim: async (id, subject) => (claims ? claims.attachClaim(id, subject, actor) : claimsOff),
+    detachClaim: async (id, subject) => (claims ? claims.detachClaim(id, subject, actor) : claimsOff),
+    addCheck: async (claimId, check) => (claims ? claims.addCheck(claimId, check, actor) : claimsOff),
+    editCheck: async (id, patch) => (claims ? claims.editCheck(id, patch, actor) : claimsOff),
+    retireCheck: async (id) => (claims ? claims.retireCheck(id, actor) : claimsOff),
   };
 }
