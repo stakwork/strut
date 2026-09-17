@@ -9,6 +9,7 @@ import { stepHashesFor } from "../closure.js";
 import { claimsReaderFor } from "../graph/claims.js";
 import { buildClaimsAuthoring, type ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
+import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
@@ -86,6 +87,21 @@ export function buildTools(deps: AiDeps) {
   const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: false };
   const claimsArg = claims ? { claims: claimsArgSchema } : {};
   const verifier = claims ? (deps.verifier ?? null) : null;
+  /** The contract of what a launch can execute, every check `pending` — so
+   *  the model reads what its work is claimed to do in the RESULT of the run
+   *  it just made, and knows a verdict is coming (plans/claims.md §5). */
+  const pendingContract = async (flow: Parameters<typeof subjectsOfFlow>[0], workflowName?: string) => {
+    if (!verifier) return {};
+    try {
+      const ledger = await verifier.pendingLedger(await subjectsOfFlow(flow, deps.workspace, workflowName));
+      return ledgerIsEmpty(ledger)
+        ? {}
+        : { claims: ledger, verify: "pending — the checks run now, detached; a [verify-notification] will start your next turn with each claim's status. Finish this turn normally." };
+    } catch {
+      return {}; // the run's result never depends on the graph being reachable
+    }
+  };
+
   /** `run_when: publish` checks fire at the end of a publish; their verdicts
    *  ride along on the result. */
   const publishChecks = async (kind: "step" | "workflow", name: string) => {
@@ -141,6 +157,7 @@ export function buildTools(deps: AiDeps) {
           return { error: `Step type "${type}" not found` };
         }
         const recentRuns = (await deps.store.listRuns(stepRunKey(type))).length;
+        const verifyCostUsd = deps.verifier ? await deps.verifier.costOf({ kind: "step", type }).catch(() => 0) : 0;
         return {
           type,
           description: def.description,
@@ -148,6 +165,8 @@ export function buildTools(deps: AiDeps) {
           ...(source ? { source: (await readStepSource(type, deps)) ?? null } : {}),
           // Kept single-step runs: list_runs / get_run on the key `step:<type>`.
           ...(recentRuns ? { recentRuns } : {}),
+          // What this step's paid checks have cost so far — what its claims cost to keep true.
+          ...(verifyCostUsd > 0 ? { verifyCostUsd } : {}),
         };
       },
     }),
@@ -371,7 +390,12 @@ export function buildTools(deps: AiDeps) {
             description:
               "A subject's active claims, each with its checks (id, step type + config or external description, when/policy) and its status COMPUTED from evidence: supported | refuted | stale (evidence is about an older version) | unknown (never checked). `assertedOnly` = the verdict rests on a model's or person's word, nothing observed; `unverified` = active checks with no evidence about the active version; `openSlot` = an external check is waiting on someone.",
             inputSchema: z.object({ subject: subjectSchema }),
-            execute: async ({ subject }) => claims.listClaims(subject),
+            execute: async ({ subject }) => {
+              const listing = await claims.listClaims(subject);
+              if (!("ok" in listing) || !verifier) return listing;
+              const verifyCostUsd = await verifier.costOf(subject.kind === "step" ? { kind: "step", type: subject.name } : { kind: "workflow", name: subject.name }).catch(() => 0);
+              return verifyCostUsd > 0 ? { ...listing, verifyCostUsd } : listing;
+            },
           }),
 
           edit_claim: tool({
@@ -423,12 +447,16 @@ export function buildTools(deps: AiDeps) {
             ? {
                 verify_run: tool({
                   description:
-                    "Verify a finished run NOW and wait for it: run the checks of every claim on the subjects the run executed, and write the evidence. Runs are verified automatically after they finish, so use this to RE-verify — after adding or editing a claim or check (only checks with no evidence for this run yet execute; it never duplicates), to backfill an older run, or to fire `manual` checks. `name` is the workflow, or `step:<type>` for a kept run_step run. Returns per-check lastVerify: { ran } | { skipped: policy | budget | cannot-launch | unknown-version | denied, reason? } | { planned: <evidence id> } — then list_claims for the statuses.",
+                    "Verify a finished run NOW and wait for it: run the checks of every claim on the subjects the run executed, and write the evidence. Runs are verified automatically after they finish, so use this to RE-verify — after adding or editing a claim or check (only checks with no evidence for this run yet execute; it never duplicates), to backfill an older run, or to fire `manual` checks. `name` is the workflow, or `step:<type>` for a kept run_step run. Returns `claims` — the ledger: every claim on those subjects with its computed status and each check's lastVerify: { ran } | { skipped: policy | budget | cannot-launch | unknown-version | denied, reason? } | { planned: <evidence id> }.",
                   inputSchema: z.object({
                     name: z.string().describe("Workflow name, or `step:<type>` for a kept single-step run"),
                     runId: z.string(),
                   }),
-                  execute: async ({ name, runId }) => verifier.verifyRun(name, runId, { explicit: true }),
+                  execute: async ({ name, runId }) => {
+                    const result = await verifier.verifyRun(name, runId, { explicit: true });
+                    if (result.skipped) return result;
+                    return { ...result, claims: await verifier.ledger(result) };
+                  },
                 }),
 
                 add_evidence: tool({
@@ -603,6 +631,10 @@ export function buildTools(deps: AiDeps) {
         // Register with the host's controller registry (when wired) so the
         // run is cancellable/pausable and lists as live from launch.
         const tracked = deps.trackRun?.(name, runId);
+        // This chat wants the verdict: the verify pass that follows the run
+        // wakes it with a [verify-notification].
+        if (verifier) deps.watchVerify?.(runId);
+        const contract = await pendingContract(flow, name);
         const promise = runWorkflow(flow, coerceJsonArg(input) ?? {}, deps.registry, {
           runId,
           store: deps.store,
@@ -617,7 +649,7 @@ export function buildTools(deps: AiDeps) {
 
         // No detach seam (tests / non-chat embedders) → await as before.
         const detach = deps.detach;
-        if (!detach) return promise;
+        if (!detach) return { ...(await promise), ...contract };
 
         // Dispatch mode: race the run against the wait window. Fast runs
         // return synchronously (the quick inner-loop path); a run that
@@ -631,13 +663,14 @@ export function buildTools(deps: AiDeps) {
             timer = setTimeout(() => res(pending), detach.waitMs);
           }),
         ]).finally(() => clearTimeout(timer));
-        if (winner !== pending) return winner;
+        if (winner !== pending) return { ...winner, ...contract };
 
         detach.onDetach({ workflow: name, runId, startedAt, promise });
         return {
           status: "running",
           detached: true,
           runId,
+          ...contract,
           workflow: name,
           note:
             `Run still executing after ${Math.round(detach.waitMs / 1000)}s — it continues detached in the background. ` +
@@ -682,7 +715,7 @@ export function buildTools(deps: AiDeps) {
         if (cassette && !deps.dataDir) {
           return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
         }
-        return runStep(
+        const result = await runStep(
           type,
           registry,
           deps.services,
@@ -700,9 +733,14 @@ export function buildTools(deps: AiDeps) {
             store: deps.store,
             workspace: deps.workspace,
             claims: claimsReaderFor(deps.workspace),
-            onKept: (key, runId) => verifier?.schedule(key, runId),
+            onKept: (key, runId) => {
+              if (verifier) deps.watchVerify?.(runId);
+              verifier?.schedule(key, runId);
+            },
           },
         );
+        // A kept run is being verified: show the step's contract, pending.
+        return result.kept ? { ...result, ...(await pendingContract({ name: type, steps: [{ id: "step", type, config: {} }] })) } : result;
       },
     }),
 

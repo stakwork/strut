@@ -36,9 +36,11 @@ function setChatUrlParam(id: string | null) {
   history.replaceState(null, "", url);
 }
 
-// Server-initiated wake-up messages (a detached run finished) are stored as
-// user-role messages with this prefix; render them as a notice, not a bubble.
-const NOTIFICATION_PREFIX = "[run-notification]";
+// Server-initiated wake-up messages (a detached run finished; a run was
+// verified against its claims) are stored as user-role messages with one of
+// these prefixes; render them as a notice, not a bubble.
+const NOTIFICATION_PREFIXES = ["[run-notification]", "[verify-notification]"];
+const isNotification = (text: string) => NOTIFICATION_PREFIXES.some((p) => text.startsWith(p));
 
 // The picker's "type any model name" option.
 const CUSTOM_MODEL = "__custom__";
@@ -190,7 +192,7 @@ function transcriptToEntries(messages: { role: string; content: unknown }[]): Ch
       const text = extractText(m.content);
       if (text) {
         entries.push(
-          text.startsWith(NOTIFICATION_PREFIX)
+          isNotification(text)
             ? { kind: "notice", content: text }
             : { kind: "user", content: text },
         );

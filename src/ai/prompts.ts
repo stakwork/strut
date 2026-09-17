@@ -44,6 +44,10 @@ export interface AiDeps {
    *  after a publish, and verifies kept `run_step` runs. Optional: without it
    *  claims can still be authored, but nothing produces evidence. */
   verifier?: import("../verify.js").Verifier | null;
+  /** "This chat launched run `runId` and wants its verdict": the host wakes
+   *  the chat with a `[verify-notification]` when that run's verify pass
+   *  settles. Optional: without it the evidence is still written. */
+  watchVerify?: (runId: string) => void;
   /** Web tools for the builder — `web_search` + `web_fetch` (the same pair
    *  the agent step ships): built per turn by createStrut for the chat's
    *  resolved provider via `createWebTools` (src/llm.ts; native on
@@ -285,7 +289,9 @@ A claim is ONE plain sentence about how a step or workflow should BEHAVE; a chec
 2. Behavior, not mechanism, and never the output schema restated. Claim the thing the user actually cares about ("the clip's audio contains the requested quote"), not what is easy to check ("the clip is 20 seconds long").
 3. Every claim gets at least one check. Prefer code that OBSERVES the output (an \`exec\` script, a custom step, a \`subflow\` for anything bigger than a one-liner — e.g. speech-to-text the clip, then fuzzy-match the quote): it is free, so it runs on every input. Use an \`llm\` / \`agent\` check only for judgment calls — it costs money and is recorded as asserted, not observed. If nothing can check it, give it an EXTERNAL check whose description says what to look at and why code cannot.
 4. A failure you fix becomes a claim with a check — the regression move: the 429 on auto-translated captions becomes "fetches only the requested caption languages". Otherwise the next session rediscovers it.
-Tools: add_claim, list_claims (claims + checks + computed status), edit_claim / edit_check (immutable nodes: an edit creates a successor and returns ITS id — the claim reads unknown until verified again), retire_claim / retire_check, attach_claim / detach_claim (share one contract across subjects instead of copying it), add_check.`;
+5. Work is NOT done while any claim is unknown or refuted. run_workflow / run_step results list the contract under \`claims\` with every check \`pending\`: the checks run detached, so finish your turn after launching — a "[verify-notification]" (or the run's "[run-notification]") will start your next turn with each claim's status and its check's \`lastVerify\`. Refuted → fix the step (or the check, if the check is wrong) and run again. \`skipped: cannot-launch\` means the CHECK is broken — read its \`reason\` and fix it with edit_check; a broken check is never a pass. \`stale\` just needs a run on the current version. Evidence comes from inputs: run more than one. Tell the user plainly when a claim is only \`assertedOnly\`.
+6. A check whose lastVerify is \`planned\` is a QUESTION waiting on someone. Answer it with add_evidence only if you OBSERVED the answer with a tool, and say what you saw; otherwise relay it to the user — what to look at, and where — and end your turn. A claim waiting on a person does not keep you looping: the work is "done, not yet verified", and you say which lines are waiting.
+Tools: verify_run (re-verify a run after changing a claim or check; returns the ledger), add_evidence (your own tool-backed observation — stored as asserted), add_claim, list_claims (claims + checks + computed status), edit_claim / edit_check (immutable nodes: an edit creates a successor and returns ITS id — the claim reads unknown until verified again), retire_claim / retire_check, attach_claim / detach_claim (share one contract across subjects instead of copying it), add_check.`;
 
 export async function buildSystem(deps: AiDeps): Promise<string> {
   const tree = await renderStepsTree(deps);

@@ -45,6 +45,7 @@ strut/
 │   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change), the additive `claims` publish arg, publisher scoping (fixed point 1), the grader deny-list over the check closure (fixed point 2; STRUT_VERIFY_DENY)
 │   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps
 │   ├── verify.ts          # the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
+│   ├── ledger.ts          # the ledger (plans/claims.md §5): buildLedger (claims per subject with computed status + each check's lastVerify: pending | ran | skipped | planned), subjectsOfFlow (what a launch can execute), the [verify-notification] text. The forcing function — the model reads its contract in a tool RESULT, not an instruction
 │   ├── closure.ts         # what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (nested subflows via the workspace, agentTools grants; templated/missing child → unresolvable), stepHashesFor → run.start.stepHashes
 │   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + messages.jsonl + events.jsonl) + truncateToolMessages
@@ -722,6 +723,28 @@ and the child env is scrubbed by construction).
   per-turn agent loop. The browser (`web/src/api.ts`: `sendChat` +
   `streamChat` + `getChat`) persists the active `chatId` in
   localStorage and reattaches to a still-live turn on reopen.
+
+- **Claims, checks, evidence — the truth layer** (`plans/claims.md`; graph
+  workspaces only — on `STRUT_WORKSPACE_BACKEND=fs` no claim tool is
+  offered, `strut.claims` / `strut.verifier` are null, and nothing below
+  runs). A `Claim` states how a step or workflow should BEHAVE, a `Check`
+  is an instrument that tests it (a registry step run over the subject, or
+  an external check answered through a planned slot), `Evidence` is what
+  one check observed on one run — all three are jarvis types, written
+  through the ordinary node/edge writers. Status (`supported | refuted |
+  stale | unknown`) is COMPUTED ON READ per (claim, subject) by
+  `claimStatus()` and never stored. Authoring: the `claims` arg on the
+  publish tools + `add_claim` / `edit_claim` / … and their `meta/*` twins
+  (`src/claims-authoring.ts`). Evidence: every top-level run is verified,
+  detached, by `src/verify.ts`, hooked where `services.onRunEnd` fires;
+  check runs carry `origin: "verify"` and are never verified. The builder
+  reads its contract in tool RESULTS (`src/ledger.ts`): run results list
+  the claims `pending`, and a `[verify-notification]` (or the run's
+  `[run-notification]`, when the pass settles within 5 s —
+  `src/ai/verify-waker.ts`) starts the next turn with each claim's status.
+  Versions are recorded, never inferred: `run.start.stepHashes` /
+  `workflowHash`, and a subflow step's `step.start.subflow` — no record, no
+  evidence.
 
 - **Dispatch-mode `run_workflow` + run notifications**
   (`src/ai/notifier.ts`, `plans/dispatch-run-notifications.md`). The chat

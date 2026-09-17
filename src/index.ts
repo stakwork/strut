@@ -344,6 +344,19 @@ export {
   type MappedCheck,
   type AddEvidenceInput,
 } from "./verify.js";
+// The ledger — the contract as a tool result, and the wake-up that carries it.
+export {
+  buildLedger,
+  subjectsOfFlow,
+  formatVerifyNotification,
+  formatLedgerLines,
+  ledgerIsEmpty,
+  VERIFY_NOTIFICATION_PREFIX,
+  type Ledger,
+  type LedgerClaim,
+  type LedgerCheck,
+} from "./ledger.js";
+export { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 export {
   NodeWriter,
   GraphValidationError,

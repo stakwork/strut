@@ -341,6 +341,9 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.ok(Math.abs(caught.costUsd - 0.3) < 1e-9);
     assert.equal((await store.listRuns(`check:${sneaky.checks[0]}`)).length, 1);
     assert.deepEqual(await store.listRuns(`check:${c.checks[3]}`), [], "a check that reports no cost is not persisted at all");
+    // Cumulative, from the store alone: 3 judgments at 0.4 + the sneaky 0.3.
+    assert.ok(Math.abs((await verifier.costOf({ kind: "step", type: "clip/compute-times" })) - 1.5) < 1e-9);
+    assert.equal(await verifier.costOf({ kind: "workflow", name: "clipper" }), 0);
   });
 
   it("external checks: a planned slot (no strength, no content), filled in place by add_evidence; a newer version replaces the question", async () => {
@@ -415,6 +418,65 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.match(String(((await authoring.addEvidence({ ...input, content: " " })) as { error: string }).error), /content is empty/);
     assert.match(String(((await authoring.verifyRun("clipper", run.runId)) as { error: string }).error), /not agent-authored/, "the meta surface verifies only what it published");
     assert.ok(!("error" in ((await authoring.verifyRun("candidate", other.runId)) as object)));
+  });
+
+  it("the ledger rides in tool results: run_workflow / run_step list the contract as pending, the settled pass wakes the chat, verify_run returns it", async () => {
+    await addClaim(STEP, "end is after start", [compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}", { name: "bounds" })]);
+    await addClaim({ kind: "workflow", name: "clipper" }, "the cut sounds natural", [{ description: "listen to it", name: "ear" }]);
+    const watched: string[] = [];
+    const settled: VerifyResult[] = [];
+    // What createStrut's chat block does: remember which runs this chat
+    // launched, and hear about their verify pass settling.
+    const chatVerifier = { ...verifier, schedule: (key: string, runId: string) => void verifier.verifyRun(key, runId).then((r) => settled.push(r)) };
+    const tools = buildTools({
+      workspace: ws,
+      registry,
+      store,
+      services: strut.services,
+      getRegistry: async () => registry,
+      verifier: chatVerifier,
+      watchVerify: (runId: string) => watched.push(runId),
+    }) as unknown as Record<string, { execute: (a: unknown) => Promise<Record<string, any>> }>;
+
+    // run_workflow: the result carries the contract, every runnable check pending.
+    const ran = await tools["run_workflow"]!.execute({ name: "clipper", input: { start: 50, len: -10 } });
+    assert.equal(ran["status"], "success");
+    assert.deepEqual(watched, [ran["runId"]]);
+    assert.match(ran["verify"], /pending.*verify-notification/);
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(ran["claims"] as Record<string, any[]>).map(([k, v]) => [k, v.map((c) => [c.text, c.status, c.checks.map((x: any) => [x.name, x.lastVerify])])])),
+      {
+        clipper: [["the cut sounds natural", "unknown", [["ear", { pending: true }]]]],
+        "clip/compute-times": [["end is after start", "unknown", [["bounds", { pending: true }]]]],
+      },
+    );
+
+    // The settled pass is what the [verify-notification] is built from.
+    const pass = await verifier.verifyRun("clipper", ran["runId"]);
+    const ledger = await verifier.ledger(pass);
+    assert.deepEqual(ledger["clip/compute-times"]!.map((c) => [c.status, c.latest?.mode, c.checks[0]!.lastVerify]), [["refuted", "observed", { ran: true }]]);
+    const slot = ledger["clipper"]![0]!.checks[0]!;
+    assert.deepEqual([ledger["clipper"]![0]!.status, slot.external, Object.keys(slot.lastVerify!)], ["unknown", true, ["planned"]]);
+    const { formatVerifyNotification } = await import("../ledger.js");
+    assert.match(formatVerifyNotification({ workflow: "clipper", runId: ran["runId"], ledger }), /^\[verify-notification\] Run \d+ of "clipper".*1 REFUTED.*waiting on an external check/s);
+
+    // verify_run returns the same ledger directly.
+    const explicit = await tools["verify_run"]!.execute({ name: "clipper", runId: ran["runId"] });
+    assert.deepEqual(explicit["claims"], ledger);
+    assert.deepEqual(await tools["verify_run"]!.execute({ name: "clipper", runId: "nope" }).then((r) => [r["skipped"], r["claims"]]), ["unknown-run", undefined]);
+
+    // run_step on a step with claims: kept, watched, scheduled — and its contract shown pending.
+    const stepRun = await tools["run_step"]!.execute({ type: "clip/compute-times", config: { start: 1, len: 5 } });
+    assert.equal(stepRun["kept"], "step:clip/compute-times");
+    assert.deepEqual(watched, [ran["runId"], stepRun["runId"]]);
+    assert.deepEqual(Object.keys(stepRun["claims"]), ["clip/compute-times"]);
+    for (let i = 0; i < 100 && settled.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(settled.map((r) => [r.key, r.runId, r.evidence]), [["step:clip/compute-times", stepRun["runId"], 1]]);
+    assert.equal((await statusOf(STEP))[0]![1], "supported", "the newer run supersedes the refuting one");
+
+    // A scratch step (no claims) keeps nothing and shows no contract.
+    const scratch = await tools["run_step"]!.execute({ type: "log", config: { message: "hi" } });
+    assert.deepEqual([scratch["kept"], scratch["claims"]], [undefined, undefined]);
   });
 
   it("publish checks lint the new version's source; a kept run_step run is verified with EXECUTED → the step version it ran", async () => {

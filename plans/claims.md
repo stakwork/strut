@@ -915,7 +915,18 @@ number exists).
    verify-origin guard) + `add_evidence` + `meta/verify-run`
    + `meta/add-evidence` (§4, §6); planned slots — open in the pass for
    external checks, fill through `add_evidence` (§4.2).
-5. Ledger in run results + the `[verify-notification]` through the
+5. **Done** — `src/ledger.ts`, `src/ai/verify-waker.ts`; `run_workflow` /
+   `run_step` results carry `claims` with every run check `pending`;
+   `verify_run` returns the ledger; `[verify-notification]` wakes the chat
+   that launched the run (the flyout renders it as a notice); prompt rules
+   5–6; `verifyCostUsd` on `get_step` / `list_claims`. Decided while
+   building: a `[run-notification]` WAITS up to 5 s for its run's verify
+   pass, so one wake-up turn carries the run and the ledger (exactly one of
+   the two notifications ever carries it) — machine-triggered turns are
+   capped, and two per run would park a build loop twice as fast. The
+   SYNCHRONOUS results still never wait, as specified; whether a short
+   grace there is worth it is a call for after the youtube-clip rerun.
+   Ledger in run results + the `[verify-notification]` through the
    notifier (§5).
 6. Harness wiring (§6) — in the **stakgraph** repo (`mcp/src/lab`), after
    strut 3–5 are released there: seed the contract claims on `gaia-produce`,

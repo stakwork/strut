@@ -54,6 +54,7 @@ import {
 } from "./graph/claims.js";
 import { boundedName } from "./graph/claims-writer.js";
 import type { EdgeInput } from "./graph/edge-writer.js";
+import { buildLedger, type Ledger } from "./ledger.js";
 import { projectRun } from "./graph/projector.js";
 import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
 import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } from "./run-step.js";
@@ -336,7 +337,8 @@ export interface VerifierDeps {
   /** The services bag checks run with (a getter: createStrut builds it late). */
   services: () => unknown;
   env?: Record<string, string | undefined>;
-  /** A DETACHED pass settled (the notifier hook). Never called for a no-op pass. */
+  /** A DETACHED pass settled — always called, no-op passes included, so a
+   *  listener waiting on that run can stop waiting. */
   onSettled?: (result: VerifyResult) => void;
 }
 
@@ -684,10 +686,11 @@ export function createVerifier(deps: VerifierDeps) {
   function schedule(key: string, runId: string): void {
     setImmediate(() => {
       verifyRun(key, runId)
-        .then((r) => {
-          if (!r.skipped && r.subjects.length > 0) deps.onSettled?.(r);
+        .catch((err): VerifyResult => {
+          console.error(`[verify] pass over ${key}/${runId} failed:`, err);
+          return { key, runId, skipped: "unknown-run", subjects: [], checks: [], evidence: 0, slots: 0, costUsd: 0 };
         })
-        .catch((err) => console.error(`[verify] pass over ${key}/${runId} failed:`, err));
+        .then((r) => deps.onSettled?.(r));
     });
   }
 
@@ -810,7 +813,34 @@ export function createVerifier(deps: VerifierDeps) {
     return { ok: true, evidence: id, filled: false, subject: o.subject };
   }
 
-  return { reader, verifyRun, verifyPublish, addEvidence, schedule };
+  /**
+   * What keeping this subject's claims true has cost, all time — from the
+   * run store alone: every persisted (paid) check run in the buckets of the
+   * checks on its claims, retired ones included, tagged with this subject.
+   * Cost is a constraint, not telemetry (EVOLVE_SPEC §7): the builder, a
+   * person and the evolve loop all read the same number.
+   */
+  async function costOf(subject: SubjectRef): Promise<number> {
+    const k = subjectKey(subject);
+    let total = 0;
+    for (const claim of await reader.claimsFor(subject, { includeRetired: true })) {
+      for (const check of await reader.checksFor(claim.id, { includeRetired: true })) {
+        const bucket = checkRunKey(check.id);
+        for (const id of await store.listRuns(bucket)) {
+          const events = await store.getRunEvents(bucket, id);
+          if (events.find((e) => e.type === "run.start")?.verify?.subject === k) total += reportedCost(events);
+        }
+      }
+    }
+    return total;
+  }
+
+  /** The ledger a settled pass produced: computed statuses + per-check lastVerify. */
+  const ledger = (result: VerifyResult): Promise<Ledger> => buildLedger(reader, result.subjects, { result });
+  /** The contract of what a launch can execute, every runnable check `pending`. */
+  const pendingLedger = (subjects: readonly SubjectRef[]): Promise<Ledger> => buildLedger(reader, subjects, { pending: true });
+
+  return { reader, verifyRun, verifyPublish, addEvidence, schedule, ledger, pendingLedger, costOf };
 }
 
 /** `step:<type>` for a step subject's kept runs; the workflow name otherwise. */

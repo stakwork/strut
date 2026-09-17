@@ -37,6 +37,7 @@ import {
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF } from "./claims-schemas.js";
+import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { stepHashesFor } from "./closure.js";
 import { buildAuthoringCapability } from "./authoring.js";
@@ -467,6 +468,9 @@ export async function createStrut<TServices = unknown>(
   // must be verified too. Always detached; a consumer's own onRunEnd
   // (per-run teardown) still runs first.
   let verifySettled: ((r: VerifyResult) => void) | undefined;
+  // Wakes the chat that launched a run with its verdict — built with the chat
+  // block (it needs the notifier); without chat, evidence is just written.
+  let verifyWaker: VerifyWaker | undefined;
   const verifier = workspace.graph
     ? createVerifier({
         graph: workspace.graph,
@@ -1546,6 +1550,15 @@ export async function createStrut<TServices = unknown>(
         launchChatTurn(chatId, turn, modelMessages),
     });
 
+    // The verify pass settled for a run this chat launched: wake it with the
+    // ledger (plans/claims.md §5; ai/verify-waker.ts). Queue-and-drain applies
+    // unchanged, and `autoTurns` counts it like any machine-triggered turn, so
+    // the park limit holds.
+    if (verifier) {
+      verifyWaker = createVerifyWaker({ verifier, deliver: (chatId, text) => notifier.deliver(chatId, text) });
+      verifySettled = (r) => void verifyWaker!.settled(r);
+    }
+
     /**
      * Run one chat turn detached: build the agent, stream it server-side,
      * persist each fine-grained part to `events.jsonl`, then append the new
@@ -1608,6 +1621,7 @@ export async function createStrut<TServices = unknown>(
             graph: opts.graph,
             // verify_run / add_evidence + the verify triggers (graph workspaces only).
             verifier,
+            watchVerify: (runId: string) => verifyWaker?.watch(runId, chatId),
             // cancel_run / pause_run / resume_run over the live controllers.
             controlRun: controlRunForChat,
             publishingEnabled: !registryWasInjected,
@@ -1640,18 +1654,19 @@ export async function createStrut<TServices = unknown>(
               }) => {
                 promise
                   .then(
-                    (res) =>
-                      notifier.deliver(
-                        chatId,
-                        formatRunNotification({
-                          workflow,
-                          runId,
-                          status: res.status,
-                          durationMs: Date.now() - startedAt,
-                          output: res.output,
-                          ...(res.error ? { error: res.error } : {}),
-                        }),
-                      ),
+                    async (res) => {
+                      const text = formatRunNotification({
+                        workflow,
+                        runId,
+                        status: res.status,
+                        durationMs: Date.now() - startedAt,
+                        output: res.output,
+                        ...(res.error ? { error: res.error } : {}),
+                      });
+                      // One wake-up turn carries the run AND its ledger when the
+                      // verify pass settles quickly; else a [verify-notification] follows.
+                      return notifier.deliver(chatId, `${text}${(await verifyWaker?.ledgerLinesFor(workflow, runId)) ?? ""}`);
+                    },
                     // runWorkflow finalizes its own errors into a resolved
                     // result; a rejection here is an unexpected throw (e.g.
                     // store write failure) — still wake the chat with it.
