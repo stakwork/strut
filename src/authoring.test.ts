@@ -82,6 +82,8 @@ describe("authoring capability (the meta surface)", () => {
       "meta/add-check",
       "meta/edit-check",
       "meta/retire-check",
+      "meta/verify-run",
+      "meta/add-evidence",
     ]) {
       assert.ok(registry[type], `expected "${type}" in the registry`);
     }

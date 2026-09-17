@@ -154,6 +154,19 @@ describe("claimStatus (pure)", () => {
     assert.equal(status([elsewhere, workflowSameName, predecessor, unattributed, ev()]).status, "supported");
   });
 
+  it("same-second verdicts order by the run that produced them (observed_at is whole seconds)", () => {
+    // A pass, then the regression, inside one second: the LATER run must win.
+    const pass = ev({ observed_at: 500, run: "1789000000100" });
+    const regression = ev({ observed_at: 500, run: "1789000000900", strength: -1 });
+    assert.equal(status([pass, regression]).status, "refuted");
+    assert.equal(status([regression, pass]).status, "refuted");
+    // No run at all (publish checks): when the node was written decides.
+    const clean = ev({ observed_at: 500, date_added_to_graph: 1000, version: V1 });
+    const dirty = ev({ observed_at: 500, date_added_to_graph: 2000, strength: -1 });
+    assert.equal(status([clean, dirty]).status, "refuted");
+    assert.equal(status([dirty, clean]).status, "refuted");
+  });
+
   it("orders by observed_at, then date_added_to_graph, then id — deterministically", () => {
     const a = ev({ observed_at: undefined, date_added_to_graph: 5_000, strength: -1, run: "r1" });
     const b = ev({ observed_at: 6, run: "r2" }); // 6s = 6000ms, newer than a
@@ -320,9 +333,11 @@ describe("claims graph: node contract + reads (live Neo4j)", { skip: cfg ? false
     assert.deepEqual([again.outcome, again.ref_id], ["existing", e1.ref_id]);
 
     const [row] = await reader.evidenceFor("c1", STEP);
+    assert.equal(typeof row!.edge_ref_id, "string", "the EVIDENCED_BY edge — what muting a slot mutes");
     assert.deepEqual(
-      { ...row, date_added_to_graph: undefined },
+      { ...row, date_added_to_graph: undefined, edge_ref_id: undefined },
       {
+        edge_ref_id: undefined,
         ref_id: e1.ref_id, id, name: "computes start/end…", content: "start=12 end=31 duration=95",
         evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5, date_added_to_graph: undefined,
         claim_id: "c1", strength: 1, check_id: "k1",

@@ -553,8 +553,8 @@ export function buildRegistryTools(
         const base: StepContext = ctx ??
           ({ runId: "", path: "", scope: {}, input: undefined, emit: (async () => {}) as any, services: undefined });
         const childCtx: StepContext = options?.strutToolPath
-          ? { ...base, path: options.strutToolPath }
-          : base;
+          ? { ...base, agentTool: true, path: options.strutToolPath }
+          : { ...base, agentTool: true };
         return def.run(parsed, childCtx);
       },
     });

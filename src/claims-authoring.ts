@@ -28,7 +28,9 @@
  * Every method returns a plain result (`{ ok: true, … }` or `{ error }`) —
  * the shape the tool layer hands to a model.
  */
+import yaml from "js-yaml";
 import { closureIncludes, flowClosure, globToRegExp, type FlowClosure } from "./closure.js";
+import { validateWorkflowYaml } from "./validate.js";
 import type { StepRegistry } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
 import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type RunWhen, type SubjectRef } from "./graph/claims.js";
@@ -206,6 +208,20 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         throw new ClaimsError("REFUSED", `${where}: a check may not reach a harness-only step (${grader}) — a contract the producer can see must never embed its grader`);
       }
     }
+    // The same static check a workflow gets — a check IS a one-step flow whose
+    // input is the subject, so `{{ input.* }}` is the only root it can read.
+    // Catching a mistyped config here beats a check that silently never runs.
+    const workflows = await deps.workspace.listWorkflows().catch(() => []);
+    const v = validateWorkflowYaml(yaml.dump({ name: "check", steps: [{ id: "check", type: spec.type, config }] }), {
+      registry,
+      workflows: workflows.map((w) => ({ name: w.name, versions: w.versions })),
+      name: "check",
+    });
+    if (!v.ok) {
+      const list = v.errors.map((e) => `${e.path.replace(/^steps\[0\]\.?/, "") || "check"}: ${e.message}`).join("; ");
+      throw new ClaimsError("INVALID", `${where}: the check's config is not valid for step "${spec.type}" — ${list}. (get_step("${spec.type}") shows its config.)`);
+    }
+
     const presumedPaid = !closure.resolvable || PAID_STEP_TYPES.some((t) => closureIncludes(closure, t));
     return {
       ...common,

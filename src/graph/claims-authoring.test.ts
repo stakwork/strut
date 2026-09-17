@@ -89,7 +89,7 @@ describe("filesystem workspace: no claims layer (pure)", () => {
 
 const STEP_SRC = (type: string, tag = "one") =>
   `import { z, defineStep } from "strut";\nexport default defineStep({ type: "${type}", description: "${tag}", input: z.any(), output: z.any(), run: async () => ({ tag: "${tag}" }) });\n`;
-const EXEC = { type: "exec", config: { command: "true" } };
+const EXEC = { type: "exec", config: { cmd: "true" } };
 
 describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let backend: GraphBackend;
@@ -161,7 +161,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
 
     const contract = [
       { text: "computes start/end inside the video's duration", checks: [EXEC, { description: "scrub to the cut and look — code cannot see framing" }] },
-      { text: "fails loudly on a private video", checks: [{ type: "exec", config: { command: "test -n '{{ input.error.message }}'" }, name: "error surfaced" }] },
+      { text: "fails loudly on a private video", checks: [{ type: "exec", config: { cmd: "test", args: ["-n", "{{ input.error.message }}"] }, name: "error surfaced" }] },
     ];
     const first = await claims.applyClaimsArg(STEP, contract, chat);
     assert.deepEqual([first.count, first.added, first.existing, first.warning], [2, 2, 0, undefined]);
@@ -177,7 +177,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
       ["fetches ", "unknown", "ai", 1],
     ]);
     const [code, external] = rows[0]!.checks;
-    assert.deepEqual([code!.type, code!.config, code!.name, code!.when, code!.policy, code!.external, code!.publisher], ["exec", { command: "true" }, "exec", "run", "always", false, "ai"]);
+    assert.deepEqual([code!.type, code!.config, code!.name, code!.when, code!.policy, code!.external, code!.publisher], ["exec", { cmd: "true" }, "exec", "run", "always", false, "ai"]);
     assert.deepEqual([external!.external, external!.type, external!.policy, external!.when], [true, undefined, "on_change", "run"]);
     // The graph shape: Claim —ABOUT→ the STABLE step, Check —TESTS→ Claim.
     const shape = await backend.bolt.run(
@@ -190,7 +190,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
 
   it("defaults: free code checks fire always; anything presumed paid — llm, agent, a subflow hiding one — fires on_change", async () => {
     await ws.publishWorkflowByContent("judge", "name: judge\nsteps:\n  - id: j\n    type: llm\n    config: { prompt: ok }\n");
-    await ws.publishWorkflowByContent("matcher", "name: matcher\nsteps:\n  - id: m\n    type: exec\n    config: { command: 'true' }\n");
+    await ws.publishWorkflowByContent("matcher", "name: matcher\nsteps:\n  - id: m\n    type: exec\n    config: { cmd: 'true' }\n");
     const id = idOf(
       await claims.addClaim(
         {
@@ -201,7 +201,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
             { type: "llm", config: { prompt: "is it bare? {{ input.output.answer }}" } },
             { type: "subflow", config: { workflow: "judge", input: {} } },
             { type: "subflow", config: { workflow: "matcher", input: {} }, name: "fuzzy" },
-            { type: "exec", config: { command: "true" }, policy: "manual", when: "publish", freshnessDays: 3 },
+            { type: "exec", config: { cmd: "true" }, policy: "manual", when: "publish", freshnessDays: 3 },
           ],
         },
         human,
@@ -222,8 +222,12 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     await bad([{ type: "nope/missing" }], /not found/);
     await bad([{ description: "look", config: { a: 1 } }], /without a `type`/);
     await bad([{ description: "look", when: "publish" }], /external check cannot run at publish/);
-    await bad([{ type: "exec", policy: "sample" }], /needs a sampleRate/);
-    await bad([{ type: "exec", policy: "hourly" }], /policy must be one of/);
+    await bad([{ type: "exec", config: { cmd: "true" }, policy: "sample" }], /needs a sampleRate/);
+    await bad([{ type: "exec", config: { cmd: "true" }, policy: "hourly" }], /policy must be one of/);
+    // The check's config gets the same static check a workflow step does.
+    await bad([{ type: "exec", config: { command: "true" } }], /not valid for step "exec".*cmd/s);
+    await bad([{ type: "exec", config: { cmd: "test", args: ["{{ output.x }}"] } }], /not valid for step "exec"/);
+    await bad([{ type: "subflow", config: { workflow: "no-such-workflow", input: {} } }], /closure cannot be resolved.*missing/s);
     assert.match(errOf(await claims.addClaim({ subjects: [STEP], text: "  ", checks: [EXEC] }, chat)), /text is empty/);
     assert.match(errOf(await claims.addClaim({ subjects: [{ kind: "step", name: "exec" }], text: "t", checks: [EXEC] }, chat)), /built-in steps cannot/);
     assert.match(errOf(await claims.addClaim({ subjects: [], text: "t", checks: [EXEC] }, chat)), /at least one subject/);
@@ -282,10 +286,10 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.equal((await listed(STEP))[0]!.status, "refuted");
 
     assert.deepEqual(await claims.editCheck(k1, { policy: "always" }, chat), { ok: true, id: k1, unchanged: true });
-    const k2 = idOf(await claims.editCheck(k1, { config: { command: "test 1 -lt 2" }, name: "bounds" }, chat));
+    const k2 = idOf(await claims.editCheck(k1, { config: { cmd: "test", args: [1, "-lt", 2] }, name: "bounds" }, chat));
     const [row] = await listed(STEP);
     assert.deepEqual([row!.status, row!.unverified], ["unknown", 1], "a changed instrument has measured nothing yet");
-    assert.deepEqual(row!.checks.map((k) => [k.id, k.name, k.type, k.config, k.policy]), [[k2, "bounds", "exec", { command: "test 1 -lt 2" }, "always"]]);
+    assert.deepEqual(row!.checks.map((k) => [k.id, k.name, k.type, k.config, k.policy]), [[k2, "bounds", "exec", { cmd: "test", args: [1, "-lt", 2] }, "always"]]);
     assert.equal(typeof (await claims.reader.getCheck(k1))!.retired_at, "number");
     assert.deepEqual(await backend.bolt.run(`MATCH (:Check {id: $a})-[:SUPERSEDES]->(:Check {id: $b}) RETURN count(*) AS c`, { a: k2, b: k1 }), [{ c: 1 }]);
 
@@ -322,7 +326,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.match(errOf(await authoring.editClaim(seeded, "answer is anything")), /only edits claims it wrote/);
     assert.match(errOf(await authoring.retireClaim(seeded)), /only retires claims it wrote/);
     assert.match(errOf(await authoring.addCheck(seeded, EXEC)), /only adds checks to claims it wrote/);
-    assert.match(errOf(await authoring.editCheck(seededCheck, { config: { command: "true" } })), /only edits checks it wrote/);
+    assert.match(errOf(await authoring.editCheck(seededCheck, { config: { cmd: "false" } })), /only edits checks it wrote/);
     assert.match(errOf(await authoring.retireCheck(seededCheck)), /only retires checks it wrote/);
     // Nor may it write claims onto a subject it did not publish.
     assert.match(errOf(await authoring.addClaim({ subjects: [SEEDED], text: "mine", checks: [EXEC] })), /only adds claims to subjects it authored/);
@@ -362,7 +366,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
   });
 
   it("both doors, end to end: the capability publishes with a contract; the chat tools offer the claims surface", async () => {
-    const contract = [{ text: "returns a tag", checks: [{ type: "exec", config: { command: "test -n '{{ input.output.tag }}'" } }] }];
+    const contract = [{ text: "returns a tag", checks: [{ type: "exec", config: { cmd: "test", args: ["-n", "{{ input.output.tag }}"] } }] }];
     const created = (await authoring.createStep("cand/step", STEP_SRC("cand/step"), "d", contract)) as { ok?: true; claims?: { count: number; added: number } };
     assert.deepEqual([created.ok, created.claims?.count, created.claims?.added], [true, 1, 1]);
     const edited = (await authoring.editStep("cand/step", STEP_SRC("cand/step", "two"), "d", contract)) as { claims?: { count: number; added: number; existing: number } };

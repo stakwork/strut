@@ -34,7 +34,10 @@ import {
   MemorySecretStore,
   isValidSecretName,
 } from "./secret-store.js";
-import { runStep, cassettePath } from "./run-step.js";
+import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
+import { CLAIMS_OFF } from "./claims-schemas.js";
+import type { RunEndInfo } from "./runner.js";
 import { stepHashesFor } from "./closure.js";
 import { buildAuthoringCapability } from "./authoring.js";
 import type { CassetteMode } from "./cassette.js";
@@ -234,6 +237,12 @@ export interface Strut<TServices = unknown> {
    *  so on a filesystem workspace no claim tool is offered and the verify
    *  pass is a no-op. Every consumer gates on this. */
   claims: ClaimsReader | null;
+
+  /** The verify pass (plans/claims.md §4) — null unless the workspace is
+   *  graph-backed. Runs by itself after every top-level run; a host calls
+   *  `verifyRun` to wait for a run's evidence (single-flighted with the
+   *  automatic pass), or `addEvidence` to report what it observed. */
+  verifier: Verifier | null;
 
   /** Boot the Hono server with `@hono/node-server`. Resolves once the
    *  socket is listening, to the *bound* port — so `listen(0)` (or
@@ -451,6 +460,40 @@ export async function createStrut<TServices = unknown>(
     await rebuildRegistry();
   }
 
+  // The verify pass (plans/claims.md §4) — only where the claims layer exists.
+  // Triggered where `services.onRunEnd` fires — `runWorkflow`'s `finally`,
+  // once per TOP-LEVEL run — and NOT at the launch sites: a candidate that a
+  // harness launches through `meta/run-workflow` is its own top-level run and
+  // must be verified too. Always detached; a consumer's own onRunEnd
+  // (per-run teardown) still runs first.
+  let verifySettled: ((r: VerifyResult) => void) | undefined;
+  const verifier = workspace.graph
+    ? createVerifier({
+        graph: workspace.graph,
+        store,
+        workspace,
+        services: () => services,
+        getRegistry: async () => {
+          await rebuildRegistry();
+          return registry;
+        },
+        onSettled: (r) => verifySettled?.(r),
+      })
+    : null;
+  if (verifier) {
+    const bag = services as Record<string, unknown>;
+    const prior = (bag["onRunEnd"] as ((id: string, info?: RunEndInfo) => unknown) | undefined)?.bind(bag);
+    bag["onRunEnd"] = async (runId: string, info?: RunEndInfo) => {
+      try {
+        await prior?.(runId, info);
+      } finally {
+        // Check runs are never verified (the recursion guard); a single-step
+        // run is verified by `runStep`, once it reaches the real store.
+        if (info?.workflow && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) verifier.schedule(info.workflow, runId);
+      }
+    };
+  }
+
   // Auto-provide the AUTHORING capability (the workspace's author/test/inspect
   // operations as one service) unless the consumer injected their own — same
   // spirit as http/secrets/artifacts above, added here because it closes over
@@ -466,6 +509,7 @@ export async function createStrut<TServices = unknown>(
       store,
       services,
       trackRun,
+      verifier,
       publishingEnabled: !registryWasInjected,
       getRegistry: async () => {
         await rebuildRegistry();
@@ -1365,7 +1409,7 @@ export async function createStrut<TServices = unknown>(
           ? { cassette: { mode, path: cassettePath(dataDir, body.cassetteName ?? type) } }
           : {}),
       },
-      { store, workspace, claims },
+      { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
     );
     return c.json(result);
   });
@@ -1442,6 +1486,17 @@ export async function createStrut<TServices = unknown>(
       .finally(untrack);
     return runId;
   }
+
+  // Re-verify a finished run (plans/claims.md §4): after claims or checks
+  // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
+  // per (check, run, path), and single-flighted with the detached pass.
+  app.post("/workflows/:name/runs/:runId/verify", async (c) => {
+    if (!verifier) return c.json({ error: CLAIMS_OFF }, 409);
+    const { name, runId } = c.req.param();
+    const result = await verifier.verifyRun(name, runId, { explicit: true });
+    if (result.skipped === "unknown-run") return c.json({ error: `Run ${runId} of "${name}" not found` }, 404);
+    return c.json(result);
+  });
 
   app.post("/workflows/:name/run", async (c) => {
     const name = c.req.param("name");
@@ -1551,6 +1606,8 @@ export async function createStrut<TServices = unknown>(
             },
             // Read-only graph_query, when the host wired a graph backend.
             graph: opts.graph,
+            // verify_run / add_evidence + the verify triggers (graph workspaces only).
+            verifier,
             // cancel_run / pause_run / resume_run over the live controllers.
             controlRun: controlRunForChat,
             publishingEnabled: !registryWasInjected,
@@ -2030,6 +2087,7 @@ export async function createStrut<TServices = unknown>(
     run,
     stt,
     claims,
+    verifier,
     listen,
     close,
   };

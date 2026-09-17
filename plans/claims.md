@@ -881,7 +881,37 @@ number exists).
    `meta/retire-claim`, `meta/list-claims`, `meta/attach-claim`,
    `meta/detach-claim`, `meta/add-check`, `meta/edit-check`,
    `meta/retire-check`, with publisher scoping.
-4. `verify.ts` + check contract + check closure + triggers (incl. the
+4. **Done** — `src/verify.ts`, `strut.verifier`, `POST
+   /workflows/:name/runs/:runId/verify`, `verify_run` / `add_evidence` chat
+   tools, `meta/verify-run` / `meta/add-evidence`, publish checks on every
+   publish path, the `services.onRunEnd(runId, info)` trigger + the
+   `run_step` trigger. Decided while building:
+   - **A nested child's version is recorded when it runs**, on the subflow
+     step's `step.start` (`RunEvent.subflow: { workflow, version?, hash }`):
+     the child resolves at execution, not at launch, and nothing else in
+     the log names it. A subflow with no record yields no subject.
+   - **`observed_at` is when the behaviour happened** (the `step.end` /
+     `run.end` timestamp), not when the check ran — otherwise backfilling
+     an old run would make old evidence the newest. It is whole seconds
+     (every jarvis datetime is), so same-second evidence orders by the
+     source run's ms id, then the node's write stamp.
+   - **`exec` checks run with `allowFailure`** so a failed assertion is an
+     exit code, not a crash: 0 supports, 126 / 127 / a kill cannot-run,
+     anything else refutes. The mapping is by SHAPE, so a `subflow` check
+     whose child ends in an `exec` reads the same way.
+   - **A check's config is validated at write time** with the workflow
+     validator (a check IS a one-step flow whose only root is `input`).
+   - **`meta/add-evidence` is `observed` only for a DAG step of a workflow
+     the meta surface did not publish.** An agent tool call — even inside
+     a seeded harness — is `asserted`: `StepContext.agentTool` tells a
+     harness's deliberate step from a model's decision.
+   - `sample` is deterministic in (check, run, path), so re-verifying
+     samples the same way; `verify_run` fires `manual` checks and nothing
+     else extra; a `denied` skip reason joins the four in §5.
+   - **Gap:** the `llm` step reports no `cost` (it returns the bare object),
+     so an `llm` check is gated by the caps but its own spend is not
+     counted. `agent` steps are. Default per-day cap: $5.
+   `verify.ts` + check contract + check closure + triggers (incl. the
    verify-origin guard) + `add_evidence` + `meta/verify-run`
    + `meta/add-evidence` (§4, §6); planned slots — open in the pass for
    external checks, fill through `add_evidence` (§4.2).

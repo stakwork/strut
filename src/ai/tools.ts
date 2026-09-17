@@ -85,6 +85,14 @@ export function buildTools(deps: AiDeps) {
     : null;
   const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: false };
   const claimsArg = claims ? { claims: claimsArgSchema } : {};
+  const verifier = claims ? (deps.verifier ?? null) : null;
+  /** `run_when: publish` checks fire at the end of a publish; their verdicts
+   *  ride along on the result. */
+  const publishChecks = async (kind: "step" | "workflow", name: string) => {
+    if (!verifier) return {};
+    const r = await verifier.verifyPublish(kind === "step" ? { kind, type: name } : { kind, name }).catch(() => null);
+    return r && r.checks.length ? { publishChecks: r.checks.map((k) => ({ claim: k.claimId, check: k.checkId, lastVerify: k.lastVerify })) } : {};
+  };
   type ClaimsArg = z.infer<typeof claimsArgSchema>;
 
   /** Non-blocking: warnings ride along on a successful publish. */
@@ -180,7 +188,7 @@ export function buildTools(deps: AiDeps) {
         if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const result = await publishNewStep(deps, name, code, description, AI_PUBLISHER);
         deps.registry = await deps.getRegistry();
-        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name }, contract, actor) } : {};
+        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name }, contract, actor), ...(await publishChecks("step", name)) } : {};
         if (result.ok && result.loaded === false) {
           const { loadError, ...ok } = result;
           return { ...ok, ...ledger, warning: `Published but failed to load into the registry: ${loadError}` };
@@ -206,7 +214,7 @@ export function buildTools(deps: AiDeps) {
         if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const result = await publishStepVersion(deps, type, code, description);
         deps.registry = await deps.getRegistry();
-        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name: type }, contract, actor) } : {};
+        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name: type }, contract, actor), ...(await publishChecks("step", type)) } : {};
         if (result.ok && result.loaded === false) {
           const { loadError, ...ok } = result;
           return { ...ok, ...ledger, warning: `Published but failed to load into the registry: ${loadError}` };
@@ -274,7 +282,7 @@ export function buildTools(deps: AiDeps) {
             version,
             renamed: finalName !== name,
             requested: name,
-            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name: finalName }, contract, actor) } : {}),
+            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name: finalName }, contract, actor), ...(await publishChecks("workflow", finalName)) } : {}),
           },
           v,
         );
@@ -338,7 +346,7 @@ export function buildTools(deps: AiDeps) {
             name,
             version: result.version,
             changed: result.changed,
-            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor) } : {}),
+            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor), ...(await publishChecks("workflow", name)) } : {}),
           },
           v,
         );
@@ -410,6 +418,46 @@ export function buildTools(deps: AiDeps) {
             inputSchema: z.object({ id: z.string() }),
             execute: async ({ id }) => claims.retireCheck(id, actor),
           }),
+
+          ...(verifier
+            ? {
+                verify_run: tool({
+                  description:
+                    "Verify a finished run NOW and wait for it: run the checks of every claim on the subjects the run executed, and write the evidence. Runs are verified automatically after they finish, so use this to RE-verify — after adding or editing a claim or check (only checks with no evidence for this run yet execute; it never duplicates), to backfill an older run, or to fire `manual` checks. `name` is the workflow, or `step:<type>` for a kept run_step run. Returns per-check lastVerify: { ran } | { skipped: policy | budget | cannot-launch | unknown-version | denied, reason? } | { planned: <evidence id> } — then list_claims for the statuses.",
+                  inputSchema: z.object({
+                    name: z.string().describe("Workflow name, or `step:<type>` for a kept single-step run"),
+                    runId: z.string(),
+                  }),
+                  execute: async ({ name, runId }) => verifier.verifyRun(name, runId, { explicit: true }),
+                }),
+
+                add_evidence: tool({
+                  description:
+                    "Record something YOU observed about a claim on a specific run — only what you actually saw with a tool (ffprobe output, a transcript you read, a graph_query result); `content` must say what and how. It is stored as ASSERTED (a model's word, flagged `assertedOnly` until a check observes the same thing), sourced to that run and the version it executed. If an external check is waiting on this run (an open slot), this answers it. Never use it to mark work as passing without looking.",
+                  inputSchema: z.object({
+                    claim: z.string().describe("Claim id (from list_claims)"),
+                    name: z.string().describe("The run's workflow name, or `step:<type>` for a kept single-step run"),
+                    runId: z.string(),
+                    supports: z.boolean().describe("true: what you saw supports the claim; false: it refutes it"),
+                    content: z.string().describe("What you observed, and with which tool — one bounded statement"),
+                    subject: subjectSchema.optional().describe("Only when the run executed several of the claim's subjects"),
+                    slot: z.string().optional().describe("Evidence id of the open slot to fill (from lastVerify.planned); found automatically for this run when omitted"),
+                  }),
+                  execute: async ({ claim, name, runId, supports, content, subject, slot }) =>
+                    verifier.addEvidence({
+                      claim,
+                      name,
+                      runId,
+                      supports,
+                      content,
+                      ...(subject ? { subject: subject.kind === "step" ? { kind: "step" as const, type: subject.name } : { kind: "workflow" as const, name: subject.name } } : {}),
+                      ...(slot ? { slot } : {}),
+                      by: AI_PUBLISHER,
+                      mode: "asserted",
+                    }),
+                }),
+              }
+            : {}),
         }
       : {}),
 
@@ -648,7 +696,12 @@ export function buildTools(deps: AiDeps) {
               ? { cassette: { mode: cassette, path: cassettePath(deps.dataDir!, cassetteName ?? type) } }
               : {}),
           },
-          { store: deps.store, workspace: deps.workspace, claims: claimsReaderFor(deps.workspace) },
+          {
+            store: deps.store,
+            workspace: deps.workspace,
+            claims: claimsReaderFor(deps.workspace),
+            onKept: (key, runId) => verifier?.schedule(key, runId),
+          },
         );
       },
     }),

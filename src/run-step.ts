@@ -26,6 +26,10 @@ import {
  *   - `replay` — …serve those calls from the file: offline, deterministic, no
  *     rate limits, no cost, no side effects.
  */
+/** Name of the ad-hoc one-step flow every single-step run executes as — its
+ *  events' path root. Never a published workflow. */
+export const RUN_STEP_FLOW = "__run_step__";
+
 export interface RunStepOptions {
   /** The step's config (same shape as a workflow step's `config`). Templates
    *  like `{{ input.* }}` / `{{ params.* }}` are resolved. */
@@ -43,6 +47,8 @@ export interface RunStepOptions {
   stepHashes?: Record<string, string>;
   /** `"verify"` when the verify pass runs a check through here. */
   origin?: "verify";
+  /** Recorded on the check run's `run.start` (see `RunEvent.verify`). */
+  verify?: { checkId: string; subject: string; sourceRunId: string };
 }
 
 export interface RunStepResult {
@@ -74,7 +80,7 @@ export async function runSingleStep(
   }
 
   const flow: Flow = {
-    name: "__run_step__",
+    name: RUN_STEP_FLOW,
     input: z.any(),
     steps: [{ id: "step", type, config: opts.config ?? {} }],
     ...(opts.params != null ? { params: opts.params } : {}),
@@ -98,6 +104,7 @@ export async function runSingleStep(
     ...(opts.stepHashes ? { stepHashes: opts.stepHashes } : {}),
     ...(opts.cassette ? { cassette: opts.cassette.mode } : {}),
     ...(opts.origin ? { origin: opts.origin } : {}),
+    ...(opts.verify ? { verify: opts.verify } : {}),
     onEvent: (e) => {
       events.push(e);
     },
@@ -127,6 +134,9 @@ export interface RunStepDeps {
   workspace?: SubflowResolver & { getActiveStepHashes(): Promise<Record<string, string>> };
   /** The claims layer — null/absent on a filesystem workspace. */
   claims?: Pick<ClaimsReader, "claimsFor"> | null;
+  /** Called once a run was persisted: the verify trigger (a single-step
+   *  run only reaches the real store here, after `runWorkflow` returned). */
+  onKept?: (key: string, runId: string) => void;
 }
 
 export interface KeptRunStepResult extends RunStepResult {
@@ -179,13 +189,20 @@ export async function runStep(
   }
   if (!wanted) return result;
   const kept = await persistStepRun(deps.store, type, result);
+  // Now that it is in the real store it can be verified — detached, never awaited.
+  deps.onKept?.(kept, result.runId);
   return { ...result, kept };
 }
 
 /** Copy a finished single-step run (events + summary) into `store` under
  *  `step:<type>`. Returns the key. */
 export async function persistStepRun(store: RunStore, type: string, result: RunStepResult): Promise<string> {
-  const key = stepRunKey(type);
+  return persistRunUnder(store, stepRunKey(type), result);
+}
+
+/** Copy a finished in-memory single-step run into `store` under any key —
+ *  `step:<type>` for `run_step`, `check:<id>` for a paid check run. */
+export async function persistRunUnder(store: RunStore, key: string, result: RunStepResult): Promise<string> {
   for (const e of result.events) await store.append(key, result.runId, e);
   const first = result.events[0]!;
   const last = result.events[result.events.length - 1]!;

@@ -18,13 +18,13 @@ export const checkSpecSchema = z
       .string()
       .optional()
       .describe(
-        "Registry step that RUNS the check: `exec` (a script — free, observed; prefer it), a custom step, `llm` / `agent` (a judgment — costs money, recorded as asserted), or `subflow` (a whole workflow, for anything bigger than a one-liner: config = { workflow, version?, input }). OMIT for an EXTERNAL check — one code cannot run — and give `description` instead.",
+        "Registry step that RUNS the check: `exec` (a script — free, observed; prefer it. Config is { cmd, args?, script?, cwd? } — see get_step(\"exec\"); set cwd: \"{{ input.artifactsDir }}\" to work on the files the run produced), a custom step, `llm` / `agent` (a judgment — costs money, recorded as asserted), or `subflow` (a whole workflow, for anything bigger than a one-liner: config = { workflow, version?, input }). OMIT for an EXTERNAL check — one code cannot run — and give `description` instead.",
       ),
     config: z
       .record(z.string(), z.any())
       .optional()
       .describe(
-        "That step's config. The observed subject IS the check's input: `{{ input.output.* }}` is the step's output, `{{ input.input.* }}` its resolved config (for a workflow: its params + run input), `{{ input.error.message }}` when it failed, plus `{{ input.runId }}`, `{{ input.path }}`, `{{ input.artifactsDir }}`. A `publish` check reads `{{ input.source }}` (step) / `{{ input.yaml }}` (workflow). The check must RETURN { supports: boolean, content: string, locator?: { path?, start_time?, end_time?, url? } } — never throw on a failed assertion, return supports:false. A bare `exec` with no JSON on stdout maps from its exit code (0 = supports) with the output tail as content.",
+        "That step's config. The observed subject IS the check's input: `{{ input.output.* }}` is the step's output, `{{ input.input.* }}` its resolved config (for a workflow: the run's input, with `{{ input.params.* }}` beside it), `{{ input.error.message }}` when it failed, plus `{{ input.runId }}`, `{{ input.path }}`, `{{ input.artifactsDir }}`. A `publish` check reads `{{ input.source }}` (step) / `{{ input.yaml }}` (workflow). The check must RETURN { supports: boolean, content: string, locator?: { path?, start_time?, end_time?, url? } } — never throw on a failed assertion, return supports:false. A bare `exec` with no JSON on stdout maps from its exit code (0 = supports) with the output tail as content.",
       ),
     name: z.string().optional().describe("Short label, e.g. 'stt fuzzy-match'. Defaults to the step type."),
     description: z

@@ -214,6 +214,8 @@ export {
   runSingleStep,
   runStep,
   persistStepRun,
+  persistRunUnder,
+  RUN_STEP_FLOW,
   cassettePath,
   type RunStepOptions,
   type RunStepResult,
@@ -324,6 +326,24 @@ export {
   type ClaimsResult,
 } from "./claims-authoring.js";
 export { subjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
+// The verify pass — how evidence is produced (plans/claims.md §4).
+export {
+  createVerifier,
+  subjectsOfRun,
+  mapCheckResult,
+  policyFires,
+  sampleFires,
+  reportedCost,
+  type Verifier,
+  type VerifierDeps,
+  type VerifyResult,
+  type VerifiedCheck,
+  type LastVerify,
+  type SkipReason,
+  type ObservedSubject,
+  type MappedCheck,
+  type AddEvidenceInput,
+} from "./verify.js";
 export {
   NodeWriter,
   GraphValidationError,

@@ -126,12 +126,15 @@ const SUBJECT_NODE = {
  * What a `run` check reads: the subject IS the check step's run input, so a
  * check's config templates say `{{ input.output.quote }}` — no new template
  * root. `input` is the step's RESOLVED CONFIG (what the runner records on
- * `step.start`), or params + run input for a workflow. A step that errored
+ * `step.start`); for a workflow it is the run's input, with the param
+ * overrides beside it as `params`. A step that errored
  * has `error` and no `output`, so "fails loudly on a private video" is
  * checkable.
  */
 export interface RunCheckSubject {
   input: unknown;
+  /** A workflow subject's param overrides (`run.start.params`). */
+  params?: Record<string, unknown>;
   output?: unknown;
   error?: { message: string; stack?: string };
   runId: string;
@@ -231,6 +234,8 @@ export interface EvidenceRow {
   claim_id: string;
   /** `EVIDENCED_BY.strength`: > 0 supports, < 0 refutes; absent on a slot. */
   strength?: number;
+  /** ref_id of that `EVIDENCED_BY` edge — what muting a slot mutes. */
+  edge_ref_id?: string;
   /** `PRODUCED_BY` target; absent when no check produced it. */
   check_id?: string;
   /** `ABOUT` target, when it is a strut version node. */
@@ -278,14 +283,24 @@ export interface ClaimStatusInput {
 
 const NO_CHECK = "";
 
-function orderKey(e: EvidenceRow): number {
-  if (typeof e.observed_at === "number") return e.observed_at * 1000;
-  return typeof e.date_added_to_graph === "number" ? e.date_added_to_graph : 0;
-}
-
-/** Newest first; id as the deterministic tie-break. */
-function newestFirst(a: EvidenceRow, b: EvidenceRow): number {
-  return orderKey(b) - orderKey(a) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/**
+ * Newest first. `observed_at` is epoch SECONDS (every jarvis datetime is),
+ * and two runs — a pass, then the regression — easily land in one second,
+ * so ties fall through to millisecond keys: the source run's id (run ids
+ * are ms timestamps), then when the node was written, then the id.
+ */
+export function newestFirst(a: EvidenceRow, b: EvidenceRow): number {
+  const seconds = (e: EvidenceRow) => (typeof e.observed_at === "number" ? e.observed_at : Math.floor((e.date_added_to_graph ?? 0) / 1000));
+  const runMs = (e: EvidenceRow) => {
+    const n = Number(e.source?.run_id);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return (
+    seconds(b) - seconds(a) ||
+    runMs(b) - runMs(a) ||
+    (b.date_added_to_graph ?? 0) - (a.date_added_to_graph ?? 0) ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
 }
 
 /**
@@ -430,6 +445,16 @@ export class ClaimsReader {
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
   }
 
+  /** `ref_id` of the version node a `VersionRef` names, or null. */
+  async versionRefId(version: VersionRef): Promise<string | null> {
+    const n = SUBJECT_NODE[version.kind];
+    const rows = await this.graph.bolt.run(
+      `MATCH (v:\`${n.version}\` {namespace: $ns, \`${n.key}\`: $name, content_hash: $hash}) WHERE ${NOT_DELETED("v")} RETURN v.ref_id AS r LIMIT 1`,
+      { ns: this.ns, name: version.name, hash: version.content_hash },
+    );
+    return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
+  }
+
   /** One claim by id (active or not), or null. */
   async getClaim(id: string): Promise<ClaimRow | null> {
     const rows = await this.graph.bolt.run(
@@ -516,7 +541,7 @@ export class ClaimsReader {
        OPTIONAL MATCH (e)-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->(k:\`${CHECK_TYPE}\`) WHERE ${LIVE("pb")}
        OPTIONAL MATCH (e)-[ab:\`${CLAIM_EDGES.ABOUT}\`]->(v) WHERE ${LIVE("ab")} AND (v:StrutStepVersion OR v:StrutWorkflowVersion)
        OPTIONAL MATCH (e)-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src) WHERE ${LIVE("hs")}
-       RETURN ${project("e", EVIDENCE_FIELDS)} AS ev, eb.strength AS strength, k.id AS check_id,
+       RETURN ${project("e", EVIDENCE_FIELDS)} AS ev, eb.strength AS strength, eb.ref_id AS edge_ref_id, k.id AS check_id,
               v:StrutStepVersion AS v_is_step, v.name AS v_name, v.step_type AS v_step_type, v.content_hash AS v_hash,
               src.ref_id AS src_ref, labels(src) AS src_labels, src.run_id AS src_run_id,
               hs.context AS hs_context, hs.start_time AS hs_start, hs.end_time AS hs_end, hs.post_url AS hs_url`,
@@ -527,6 +552,7 @@ export class ClaimsReader {
       const e = compact<Omit<EvidenceRow, "claim_id">>(r["ev"] as Record<string, unknown>);
       const row: EvidenceRow = byId.get(e.id) ?? { ...e, claim_id: claimId };
       if (row.strength === undefined && typeof r["strength"] === "number") row.strength = r["strength"] as number;
+      if (row.edge_ref_id === undefined && typeof r["edge_ref_id"] === "string") row.edge_ref_id = r["edge_ref_id"] as string;
       if (row.check_id === undefined && typeof r["check_id"] === "string") row.check_id = r["check_id"] as string;
       if (!row.about && typeof r["v_hash"] === "string") {
         const isStep = r["v_is_step"] === true;

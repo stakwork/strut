@@ -39,6 +39,11 @@ export interface AiDeps {
    *  tool so the builder can verify what its `graph/*` steps wrote. Optional:
    *  without it the tool isn't offered. */
   graph?: GraphBackend;
+  /** The verify pass (plans/claims.md §4), when the workspace is
+   *  graph-backed: backs `verify_run` / `add_evidence`, runs `publish` checks
+   *  after a publish, and verifies kept `run_step` runs. Optional: without it
+   *  claims can still be authored, but nothing produces evidence. */
+  verifier?: import("../verify.js").Verifier | null;
   /** Web tools for the builder — `web_search` + `web_fetch` (the same pair
    *  the agent step ships): built per turn by createStrut for the chat's
    *  resolved provider via `createWebTools` (src/llm.ts; native on
