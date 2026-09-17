@@ -42,7 +42,7 @@ the failure mode EVOLVE_SPEC §6 already forbids for graders.
 
 | Where | Has | Lacks |
 | --- | --- | --- |
-| jarvis (migrations 119/120/124, + 125 in review) | `Claim` — since 124 keyed on a caller-supplied `id` (`claim-id`), `speaker_name` optional, `claim_text` not paid, so a claim nobody "said" is writable; bitemporal `belief_valid_from/to`; claim-to-claim pairs `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM`. `Evidence` (Epistemic domain: `content`, `evidence_mode` observed\|asserted, `evidence_status` planned\|collected, `observed_at`). Pairs `Claim —EVIDENCED_BY {strength −1..1}→ Evidence`, `Evidence —HAS_SOURCE {authority_level, locators}→ Thing` | anything that produces or scores evidence; a template layer — both named as deferred in its doc. (The `Check` node it also deferred is migration 125, written for this plan) |
+| jarvis (migrations 119/120/124/125) | `Claim` — since 124 keyed on a caller-supplied `id` (`claim-id`), `speaker_name` optional, `claim_text` not paid, so a claim nobody "said" is writable; bitemporal `belief_valid_from/to`; claim-to-claim pairs `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM`. `Evidence` (Epistemic domain: `content`, `evidence_mode` observed\|asserted, `evidence_status` planned\|collected, `observed_at`). Pairs `Claim —EVIDENCED_BY {strength −1..1}→ Evidence`, `Evidence —HAS_SOURCE {authority_level, locators}→ Thing` | anything that produces or scores evidence; a template layer — both named as deferred in its doc. (The `Check` node it also deferred is migration 125, written for this plan) |
 | hive | evals as graph nodes (`EvalRequirement` → `EvalTriggerOutput`), one LLM judge, "not evaluated is never a fail", `evaluates: workflow\|output` | any observed evidence; any link from feature requirements to evals |
 | strut | versioned steps/workflows, persisted runs, `exec`/`agent`/`llm` steps, per-run artifacts, cassettes, the post-hoc projector, `SchemaResolver` (the node writer already accepts any type whose `:Schema` exists in the DB) | any notion of a claim; `run_step` runs are not persisted |
 
@@ -56,7 +56,11 @@ check. The Hive eval chain is out of scope here.
 One new node type (`Check`), two reused (`Claim`, `Evidence`), a handful of
 edge pairs, two tool changes, one post-run pass.
 Requires the graph backend: on `STRUT_WORKSPACE_BACKEND=fs` none of the
-claim tools are offered and the verify pass is a no-op.
+claim tools are offered and the verify pass is a no-op. The gate is the
+WORKSPACE, not `StrutOptions.graph`: claims hang off the subjects' graph
+nodes, so `WorkspaceStore.graph` (set by `Neo4jWorkspaceStore`) is what
+turns the layer on, surfaced as `strut.claims` (`ClaimsReader | null`). The
+lab host passes no `graph` option and still gets it.
 
 ### Nodes
 
@@ -171,6 +175,10 @@ latest(stream) := that stream's newest COLLECTED evidence on THIS claim node
            claim's evidence (the ledger shows the predecessor's last status
            beside it), a retired check's evidence, a `planned` slot (a
            question, not evidence)
+           — plus everything else that stream observed in the SAME source
+           run: one run is one measurement (a `foreach` body yields one
+           Evidence per iteration, and the last iteration passing must not
+           paper over an earlier one failing)
 
 any latest is ABOUT the active version and refutes    → refuted
 else any latest is ABOUT the active version, supports → supported
@@ -197,7 +205,7 @@ the nodes.
   emptied to `[]`, re-homed from `Content` to the `Epistemic` domain
   (Thing-parented, beside `Evidence`), old Claim nodes deleted. Deploy note: every Claim writer must now
   send `id` (the podcast claim-extraction workflows included).
-- **jarvis, migration 125 — PR open** (`ontology_125_check_node`,
+- **jarvis, migration 125 — merged** (`ontology_125_check_node`,
   stakwork/jarvis-backend#3122)**:** seeds the `Check` node and the five new pairs
   in the table above — `Claim —ABOUT→ Thing`, `Evidence —ABOUT→ Thing`,
   `Check —TESTS→ Claim`, `Evidence —PRODUCED_BY→ Check`, `Check —SUPERSEDES→
@@ -227,8 +235,11 @@ the nodes.
   the `:Claim` nodes (none are expected on a strut DB — nothing wrote them)
   and SET the schema to the fixture's shape (`node_key`, `id`,
   `speaker_name: ?string`, `paid_properties: []`, `domain: Epistemic`,
-  `parent: Thing` + the `CHILD_OF` edge moved). A mirror of jarvis 124, and a
-  no-op on a jarvis-hosted graph, where 124 already ran.
+  `parent: Thing` + the `CHILD_OF` edge moved). A mirror of jarvis 124. It
+  runs ONLY when the ontology seed is on (`STRUT_GRAPH_SEED_ONTOLOGY` — the
+  flag that says "no jarvis here"): a jarvis-hosted graph is jarvis's to
+  migrate, and one on a pre-124 jarvis may hold real podcast claims this
+  pass must never delete.
 - **Strut code:** `src/graph/claims.ts` — attribute names, the
   subject-input contract, `claimStatus()`, and read helpers
   (`claimsFor(subject)`, `checksFor(claim)`, `evidenceFor(claim)`). Writes
@@ -827,8 +838,12 @@ number exists).
 
 ## Step order
 
-1. Schema: jarvis 124 (merged) + 125 (PR open; `Check` and the five pairs —
-   BLOCKS the live-graph tests below, not the unit work) + strut fixture
+1. **Done (strut side)** — fixture re-dumped at 125 (153 schemas, 346 edge
+   schemas; also un-mangles `HiveInitiative`'s node_key, a casualty of the
+   vein→strut rename), `claim-schema-upgrade.ts`, the `STRUT_EDGES` row,
+   `claims.ts` (`claimStatus()`, `ClaimsReader`), the `strut.claims` gate.
+   Schema: jarvis 124 + 125 (both merged; `Check` and the five pairs) +
+   strut fixture
    re-dumped from a post-125 jarvis + `claim-schema-upgrade.ts` for
    already-seeded standalone DBs (§1) + the one `STRUT_EDGES` row;
    `claims.ts` with `claimStatus()` and read helpers; graph-backend gate in

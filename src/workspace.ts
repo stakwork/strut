@@ -3,6 +3,8 @@ import { dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
 import type { Flow } from "./core.js";
+// Type-only: the graph backend stays a lazy, opt-in dependency.
+import type { GraphBackend } from "./graph/backend.js";
 import type { SubflowResolver } from "./runner.js";
 import { readStepSourceFromDisk, type StepSource } from "./steps/registry.js";
 import { contentHash, nextVersionLabel } from "./version.js";
@@ -226,6 +228,11 @@ export interface StepListEntry {
  * importable directory (`materializeCustomSteps`) for the module loader.
  */
 export interface WorkspaceStore extends SubflowResolver {
+  /** The graph backend behind this store, when workflows/steps live in one
+   *  (`Neo4jWorkspaceStore`). The claims layer hangs off the subjects' graph
+   *  nodes, so it exists only when this is set (plans/claims.md). */
+  readonly graph?: GraphBackend;
+
   // ── Workflows ──
   /** Every workflow with its version list. `lastRunAt` is NOT populated
    *  here (runs belong to the run store — the server composes it). */

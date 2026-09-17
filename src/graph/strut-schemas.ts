@@ -356,6 +356,9 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "DEPENDS_ON", source: "StrutWorkflowVersion", target: "StrutWorkflow" },
   { edge: "PUBLISHED_BY", source: "StrutStepVersion", target: "Person", note: "jarvis type; seeded only when Person exists" },
   { edge: "EXECUTED", source: "StrutRun", target: "StrutWorkflowVersion" },
+  // Single-step runs (`run_step`), projected only when evidence attaches
+  // (plans/claims.md §3).
+  { edge: "EXECUTED", source: "StrutRun", target: "StrutStepVersion" },
   { edge: "PROMOTED_FROM", source: "StrutWorkflowVersion", target: "StrutRun" },
   { edge: "IN_RUN", source: "StrutAgentSession", target: "StrutRun" },
   { edge: "IN_SESSION", source: "StrutToolCall", target: "StrutAgentSession" },

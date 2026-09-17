@@ -153,6 +153,11 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
       );
   }
 
+  /** `WorkspaceStore.graph` — what turns the claims layer on. */
+  get graph(): GraphBackend {
+    return this.backend;
+  }
+
   // ── Reads: workflows ───────────────────────────────────────────────────
 
   private async workflowRow(name: string): Promise<WorkflowRow | null> {

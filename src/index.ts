@@ -262,6 +262,40 @@ export {
 } from "./graph/strut-schemas.js";
 export { seedStrutDomain, type SeedReport } from "./graph/schema-seed.js";
 export { migrateVeinToStrut, VeinMigrationCollision, type VeinMigrationReport } from "./graph/vein-migration.js";
+export { upgradeClaimSchema, CLAIM_SCHEMA_UPGRADE_ID, type ClaimSchemaUpgradeReport } from "./graph/claim-schema-upgrade.js";
+// The truth layer — claims, checks, evidence (plans/claims.md).
+export {
+  ClaimsReader,
+  claimsReaderFor,
+  claimStatus,
+  newEpistemicId,
+  isEpistemicId,
+  evidenceId,
+  isExternalCheck,
+  subjectName,
+  CLAIM_TYPE,
+  CHECK_TYPE,
+  EVIDENCE_TYPE,
+  CLAIM_EDGES,
+  DEFAULT_FRESHNESS_DAYS,
+  type SubjectRef,
+  type VersionRef,
+  type ClaimRow,
+  type CheckRow,
+  type EvidenceRow,
+  type ClaimStatus,
+  type ClaimStatusValue,
+  type ClaimStatusInput,
+  type SubjectLedgerRow,
+  type RunCheckSubject,
+  type PublishCheckSubject,
+  type CheckResult,
+  type SourceContext,
+  type RunWhen,
+  type CheckPolicy,
+  type EvidenceMode,
+  type EvidenceStatus,
+} from "./graph/claims.js";
 export {
   NodeWriter,
   GraphValidationError,

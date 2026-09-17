@@ -39,6 +39,8 @@ import { buildAuthoringCapability } from "./authoring.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+// No runtime graph dependency in here either (type-only imports inside).
+import { claimsReaderFor, type ClaimsReader } from "./graph/claims.js";
 import { createStt, type SttService } from "./audio/stt.js";
 import { audioRoutes } from "./audio/routes.js";
 import { attachAudioWebSocket } from "./audio/ws.js";
@@ -225,6 +227,12 @@ export interface Strut<TServices = unknown> {
    *  host that mounts `app` itself must call `attachAudioWebSocket(server,
    *  strut.stt)` to get the dictation socket; `listen()` does it. */
   stt: SttService | null;
+
+  /** Reads over the claims layer (plans/claims.md) — null unless the
+   *  workspace is graph-backed: claims hang off the subjects' graph nodes,
+   *  so on a filesystem workspace no claim tool is offered and the verify
+   *  pass is a no-op. Every consumer gates on this. */
+  claims: ClaimsReader | null;
 
   /** Boot the Hono server with `@hono/node-server`. Resolves once the
    *  socket is listening, to the *bound* port — so `listen(0)` (or
@@ -2004,6 +2012,7 @@ export async function createStrut<TServices = unknown>(
     autoResumeStaleRuns,
     run,
     stt,
+    claims: claimsReaderFor(workspace),
     listen,
     close,
   };

@@ -78,11 +78,13 @@ strut/
 │   │   └── routes.ts      # /audio/models (+ SSE download), /audio/transcribe (WAV body), /audio/hotwords/:name, /audio/sessions/:id (+ corrections)
 │   ├── graph/             # jarvis-compatible Neo4j graph backend over bolt, no jarvis in the loop (plans/jarvis-graph-compat.md). Opt-in via openGraphBackend
 │   │   ├── bolt.ts        # neo4j-driver wrapper; int() for Integer writes (plain JS numbers write as FLOAT)
-│   │   ├── strut-schemas.ts# the 9 Strut node types + 14-row edge registry (label registry in plans/generic-storage.md); author-time checks
+│   │   ├── strut-schemas.ts# the 9 Strut node types + 15-row edge registry (label registry in plans/generic-storage.md); author-time checks
 │   │   ├── schema-seed.ts # idempotent domain registration: Thing root, Schema nodes, CHILD_OF, constraints, vector/fulltext indexes, migration stamp
 │   │   ├── node-writer.ts # §6 validation gate + node_key composition + Data_Bank + MERGE (create/upsert/restore/update), UNWIND batches
 │   │   ├── edge-writer.ts # edge MERGE by ref_id with IS_ALIAS rewrite (ON CREATE only); closed (source, edge, target) registry; update() = jarvis PATCH /v2/edges/:ref_id (stamps protected)
 │   │   ├── schema-crud.ts # createNodeSchema(): register a non-Strut node type like jarvis POST /v2/schema (parent, attribute grammar, node_key, CHILD_OF, constraint) or add-only extend an existing one
+│   │   ├── claims.ts      # the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject) — and ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor; muted edges invisible). `strut.claims` is null unless the workspace is graph-backed
+│   │   ├── claim-schema-upgrade.ts # one-shot standalone mirror of jarvis migration 124 (Claim re-keyed on id, Epistemic/Thing); runs before the ontology seed, only with STRUT_GRAPH_SEED_ONTOLOGY
 │   │   ├── embeddings.ts  # local all-MiniLM-L6-v2 via transformers.js, tokenized like sentence-transformers (256 incl. specials); NULL-scan backfill
 │   │   ├── search.ts      # the read surface: hybrid search (RRF + title boost + usage tiebreak), get/neighbors/counts, ontology, namespaces
 │   │   ├── backend.ts     # openGraphBackend(): cached per config; runs seed + backfill on first open
@@ -183,7 +185,7 @@ docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs 
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
 | `STRUT_GRAPH_EMBEDDINGS` | (on)       | `off` disables the local MiniLM embedder (vectors stay NULL; search is fulltext-only) |
-| `STRUT_GRAPH_SEED_ONTOLOGY` | (off)   | `1` seeds the bundled jarvis ontology (151 schemas + edge schemas + indexes, add-only) on first open, so a standalone Neo4j can host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis process. No-op on a jarvis-seeded DB. |
+| `STRUT_GRAPH_SEED_ONTOLOGY` | (off)   | `1` seeds the bundled jarvis ontology (153 schemas + edge schemas + indexes, add-only) on first open, so a standalone Neo4j can host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis process. No-op on a jarvis-seeded DB. |
 | `STRUT_MODEL_DIR`    | `~/.cache/strut-models` | Local model files: MiniLM's ONNX cache and STT models under `stt/<id>/`. `STRUT_MODEL_CACHE` is the older alias. |
 | `STRUT_STT_MODEL`    | `zipformer-en-kroko` | Finals recognizer for `/audio/stream` + `/audio/transcribe` (hotword-capable) |
 | `STRUT_STT_PARTIAL_MODEL` | `nemo-fast-conformer-en-80ms` | Fast greedy recognizer whose output is shown as live partials; `off` for single-recognizer streams |
