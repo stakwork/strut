@@ -56,7 +56,7 @@ npm run dev
 
 Open http://localhost:3000, and ask the AI builder for a workflow or draw one on the canvas.
 
-Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image:
+Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image. The compose runs the graph backend beside its own Neo4j (Browser at http://localhost:7475, `bolt://localhost:7689`, `neo4j` / `testtest`):
 
 ```bash
 docker compose up --build

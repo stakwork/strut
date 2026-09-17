@@ -7,8 +7,10 @@
 # that embeds strut today) minus the lab-only pieces. Until specs/ENV_SPEC.md
 # lands, a native binary a workflow needs goes in the apt line below.
 #
-# Defaults to the filesystem workspace backend (no Neo4j). Runs, artifacts,
-# secrets, and models live under /data — mount volumes there (docker-compose.yml).
+# A bare `docker run` defaults to the filesystem workspace backend (no Neo4j);
+# docker-compose.yml runs it on the graph backend beside a neo4j container
+# (STRUT_WORKSPACE_BACKEND=graph + NEO4J_URI). Runs, artifacts, secrets, and
+# models live under /data — mount volumes there.
 
 FROM node:22-bookworm-slim
 
@@ -45,9 +47,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /uvx /usr/local/bin/
 RUN ffmpeg -version | head -1 && yt-dlp --version && tesseract --version 2>&1 | head -1 && uv --version
 
 # Engine deps. yarn.lock is the lockfile (package-lock.json is gitignored).
-# --ignore-scripts skips only the root `prepare` — no dependency in this tree
-# has an install script — so the build is explicit below and this layer caches
-# until the manifests change. Dev deps stay: tsc builds, and tsx is needed at
+# --ignore-scripts skips the root `prepare`, so the build is explicit below and
+# this layer caches until the manifests change. It also skips the two dependency
+# install scripts in this tree, both safe to lose: onnxruntime-node's only
+# fetches CUDA libs (the linux x64/arm64 CPU binaries the graph backend's MiniLM
+# embedder loads ship in the tarball), and sharp's only checks for its prebuilt
+# @img/* binary. Dev deps stay: tsc builds, and tsx is needed at
 # runtime to import the workspace's .ts custom steps.
 COPY package.json yarn.lock ./
 RUN yarn install --frozen-lockfile --ignore-scripts && yarn cache clean

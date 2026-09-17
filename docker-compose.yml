@@ -1,38 +1,77 @@
-# Test / local compose for the standalone strut server on the filesystem
-# backend — no Neo4j.
+# Test / local compose for the standalone strut server on the graph backend:
+# strut + its own Neo4j. Workflows/steps live in Neo4j; runs, chats, secrets,
+# artifacts stay under /data/workspace (see src/graph/wiring.ts).
 #
 #   docker compose up --build        # then open http://localhost:3000
+#
+# Neo4j Browser: http://localhost:7475 — connect to bolt://localhost:7689,
+# neo4j / testtest. Host ports are offset so they don't collide with a local
+# Neo4j on 7474/7687 or the test:graph throwaway on 7688.
 #
 # Provider keys: put ANTHROPIC_API_KEY=… (or OPENAI_API_KEY, GOOGLE_API_KEY,
 # OPENROUTER_API_KEY, XAI_API_KEY) in ./.env, or paste them under Secrets in
 # the UI once it's up. See AGENTS.md "Environment" for every variable.
+#
+# Filesystem backend instead (no Neo4j):
+#   docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs strut
 services:
+  neo4j:
+    # Stock community image: the graph backend needs fulltext + vector indexes
+    # (5.13+), no APOC/GDS. Same image test:graph runs against.
+    image: neo4j:5
+    ports:
+      - "${STRUT_NEO4J_HTTP_PORT:-7475}:7474"
+      - "${STRUT_NEO4J_BOLT_PORT:-7689}:7687"
+    environment:
+      NEO4J_AUTH: neo4j/testtest   # strut's own default credentials (bolt.ts)
+    volumes:
+      - strut-neo4j:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p testtest 'RETURN 1' >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
   strut:
     build: .
     image: strut:local
+    depends_on:
+      neo4j:
+        condition: service_healthy   # bolt.verify() fails the boot when nothing is listening
     ports:
       - "${STRUT_HOST_PORT:-3000}:3000"   # STRUT_HOST_PORT=3100 docker compose up — when `npm run dev` already has 3000
     env_file:
       - path: .env
         required: false
+    # `environment` wins over env_file, so a ./.env written for `npm run dev`
+    # (STRUT_WORKSPACE_BACKEND=fs, NEO4J_* at localhost) can't misroute this.
     environment:
-      STRUT_WORKSPACE_BACKEND: fs
+      STRUT_WORKSPACE_BACKEND: graph
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: testtest
+      # No jarvis here: seed its ontology so jarvis-typed nodes (Document,
+      # Concept, EvalSet, …) have their schemas. Add-only.
+      STRUT_GRAPH_SEED_ONTOLOGY: "1"
       STRUT_WORKSPACE: /data/workspace
       STRUT_MODEL_DIR: /data/models
       # STRUT_API_KEY: change-me     # shared secret for the API — set before exposing the port
       # STRUT_SECRET_KEY: …          # encrypts the secret store; see AGENTS.md "Secrets"
     volumes:
-      - strut-workspace:/data/workspace   # workflows, steps, runs, artifacts, chats, secrets
-      - strut-models:/data/models         # STT + embedding models, downloaded on demand
+      - strut-workspace:/data/workspace   # runs, artifacts, chats, secrets, materialized custom steps
+      - strut-models:/data/models         # MiniLM (~90MB, fetched on first boot) + STT models
       - strut-uv-cache:/root/.cache/uv    # PEP 723 script environments survive restarts
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
       interval: 10s
       timeout: 3s
       retries: 6
-      start_period: 15s
+      # First boot seeds the schema + ontology and downloads MiniLM before listening.
+      start_period: 120s
 
 volumes:
+  strut-neo4j:
   strut-workspace:
   strut-models:
   strut-uv-cache:
