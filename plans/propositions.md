@@ -206,6 +206,17 @@ why?)`, `edit_proposition(id, …)`, `retire_proposition(id)`, plus
 general: an existing workflow without republishing, an in-workflow
 authoring agent, a person in the UI, Hive's planning phase on a feature.
 
+**`meta/*` twins.** Door one's `propositions` arg reaches
+`meta/create-step`, `meta/edit-step` and `meta/publish-workflow` through the
+shared core. Door two's tools do NOT come free — `meta/*` steps are
+hand-written, one file per tool (`src/steps/lib/meta/`) — so each gets a
+twin: `meta/add-proposition`, `meta/edit-proposition`,
+`meta/retire-proposition`, `meta/list-propositions`,
+`meta/attach-proposition`, `meta/detach-proposition`, all under the
+publisher scoping of §4.1 (fixed point 1). This is what lets an in-workflow
+author (`agentTools: ["meta/*"]`) make the regression move (prompt rule 4)
+on a subject it is not republishing.
+
 **Prompt rules** (`src/ai/prompts.ts`, one short section):
 
 1. Author propositions BEFORE the first run, in the same turn as the code.
@@ -652,11 +663,15 @@ are persisted step runs with `cost`, so the number exists).
    `propositions.ts` with `propositionStatus()` and read helpers;
    graph-backend gate in createStrut; unit tests.
 2. `run_step` persists (§3) + projector pair.
-3. Authoring tools + `propositions` arg + publish count + prompt section (§2).
+3. Authoring tools + `propositions` arg + publish count + prompt section
+   (§2), and their `meta/*` twins: `meta/add-proposition`,
+   `meta/edit-proposition`, `meta/retire-proposition`,
+   `meta/list-propositions`, `meta/attach-proposition`,
+   `meta/detach-proposition`, with publisher scoping.
 4. `verify.ts` + check contract + check closure + triggers (incl. the
    verify-origin guard) + `add_evidence` + `meta/verify-run`
-   + `meta/add-evidence` + `meta/attach-proposition` (§4, §6); planned
-   slots — open in the pass, fill through `add_evidence` (§4.2).
+   + `meta/add-evidence` (§4, §6); planned slots — open in the pass, fill
+   through `add_evidence` (§4.2).
 5. Ledger in run results + the `[verify-notification]` through the
    notifier (§5).
 6. UI panel, incl. open slots as to-dos.
