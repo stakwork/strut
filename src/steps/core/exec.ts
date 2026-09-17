@@ -115,8 +115,8 @@ export default defineStep({
       .number()
       .int()
       .positive()
-      .default(200_000)
-      .describe("per-stream cap; past it the head and tail are kept. Write big results to files instead"),
+      .default(500_000)
+      .describe("per-stream cap (default 500k chars); past it the head and tail are kept. Write big results to files instead"),
     parseJson: z.boolean().default(false).describe("parse stdout as JSON into output.json (throws if it isn't JSON)"),
     allowFailure: z.boolean().default(false).describe("a non-zero exit returns the normal output (check code) instead of throwing"),
   }),

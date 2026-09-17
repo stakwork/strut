@@ -21,6 +21,8 @@ export function ToolResultView(props: {
   result?: { output: unknown; isError: boolean };
   open: boolean;
   onToggle: () => void;
+  /** Overrides "Result" / "Error" (a notice's "Output", "Raw message"). */
+  label?: string;
 }) {
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -30,7 +32,7 @@ export function ToolResultView(props: {
   const text = formatJson(result.output);
   const truncated = !showAll && text.length > PREVIEW_CHARS;
   const shown = truncated ? text.slice(0, PREVIEW_CHARS) : text;
-  const label = result.isError ? "Error" : "Result";
+  const label = props.label ?? (result.isError ? "Error" : "Result");
 
   const copy = async () => {
     try {

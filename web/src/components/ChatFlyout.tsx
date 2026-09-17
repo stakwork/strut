@@ -4,7 +4,9 @@ import * as storage from "../storage";
 import { formatJson } from "../helpers";
 import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon } from "../icons";
 import { startDictation, dictationSupported, type Dictation } from "../dictation";
+import { isNotice } from "../notice";
 import { ToolResultView } from "./ToolResultView";
+import { NoticeView } from "./NoticeView";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { Markdown } from "./Markdown";
 
@@ -37,10 +39,8 @@ function setChatUrlParam(id: string | null) {
 }
 
 // Server-initiated wake-up messages (a detached run finished; a run was
-// verified against its claims) are stored as user-role messages with one of
-// these prefixes; render them as a notice, not a bubble.
-const NOTIFICATION_PREFIXES = ["[run-notification]", "[verify-notification]"];
-const isNotification = (text: string) => NOTIFICATION_PREFIXES.some((p) => text.startsWith(p));
+// verified against its claims) are stored as user-role messages with a
+// known prefix (see ../notice); render them as a notice card, not a bubble.
 
 // The picker's "type any model name" option.
 const CUSTOM_MODEL = "__custom__";
@@ -192,7 +192,7 @@ function transcriptToEntries(messages: { role: string; content: unknown }[]): Ch
       const text = extractText(m.content);
       if (text) {
         entries.push(
-          isNotification(text)
+          isNotice(text)
             ? { kind: "notice", content: text }
             : { kind: "user", content: text },
         );
@@ -683,9 +683,14 @@ export function ChatFlyout(props: {
           }
           if (entry.kind === "notice") {
             return (
-              <div key={i} class="chat-msg chat-msg-notice">
-                <div class="chat-msg-text">{entry.content}</div>
-              </div>
+              <NoticeView
+                key={i}
+                text={entry.content}
+                prefix={`notice:${i}`}
+                expanded={expanded}
+                onToggle={toggleExpanded}
+                onOpenRun={props.onWorkflowRan}
+              />
             );
           }
           if (entry.kind === "tool") {

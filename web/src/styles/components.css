@@ -1419,6 +1419,134 @@ body.is-resizing-flyout * {
   word-break: break-word;
 }
 
+/* A notice we can parse renders as a card (see NoticeView): one closed line
+   — what happened, how the claims stand — that opens level by level. Dashed
+   like the plain notice: the server said this, not a person. */
+.chat-notice-card {
+  align-self: stretch;
+  /* `overflow: hidden` zeroes a flex child's min-height: without this the
+     scrolling message column squashes the card flat. */
+  flex: none;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  font-size: 12px;
+  overflow: hidden;
+}
+.chat-notice-card.is-open { border-style: solid; }
+.chat-notice-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-notice-head:hover { background: var(--surface-2); }
+.chat-notice-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 2px var(--sp-2);
+  flex-wrap: wrap;
+}
+.chat-notice-title { font-weight: 600; color: var(--text); white-space: nowrap; }
+.chat-notice-subject {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-notice-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.chat-notice-count { font-size: 11px; font-weight: 600; white-space: nowrap; }
+.chat-notice-count.is-supported { color: var(--ok); }
+.chat-notice-count.is-refuted { color: var(--danger); }
+.chat-notice-count.is-stale { color: var(--warning); }
+.chat-notice-count.is-unknown { color: var(--text-muted); }
+.chat-notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.chat-notice-run { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.chat-notice-error {
+  margin: 0;
+  padding: var(--sp-2);
+  border-left: 2px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--text);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+.chat-notice-subject-group { display: flex; flex-direction: column; }
+.chat-notice-subject-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+}
+.chat-notice-subject-name { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text); }
+.chat-notice-claim { border-top: 1px dashed var(--border); }
+.chat-notice-claim-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-notice-claim-head:hover .chat-notice-claim-text { color: var(--text); }
+/* Pinned to the first line: a claim is a sentence and often wraps. */
+.chat-notice-claim-head .chat-tool-chev { align-self: flex-start; margin-top: 5px; }
+.chat-notice-claim-head .claim-status { flex: none; }
+.chat-notice-claim-text { line-height: 1.45; min-width: 0; }
+.chat-notice-claim-text .claim-flag { margin-left: var(--sp-2); white-space: nowrap; }
+.chat-notice-claim.is-open .chat-notice-claim-text { color: var(--text); }
+.chat-notice-claim-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0 0 var(--sp-2) 14px;
+}
+.chat-notice-verify { font-size: 11px; font-weight: 600; }
+.chat-notice-verify.is-ok { color: var(--ok); }
+.chat-notice-verify.is-warning { color: var(--warning); }
+.chat-notice-verify.is-error { color: var(--danger); }
+.chat-notice-verify.is-dim { color: var(--text-dim); }
+.chat-notice-notes { color: var(--text-dim); font-size: 11px; line-height: 1.45; }
+.chat-notice-notes-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .chat-tool-calls {
   margin-bottom: var(--sp-2);
   display: flex;
@@ -1496,6 +1624,7 @@ body.is-resizing-flyout * {
 }
 .chat-tool-dot.is-ok { background: var(--ok); }
 .chat-tool-dot.is-error { background: var(--danger); }
+.chat-tool-dot.is-warning { background: var(--warning); }
 .chat-tool-dot.is-pending {
   background: var(--warning);
   animation: chat-tool-pulse 1.2s ease-in-out infinite;

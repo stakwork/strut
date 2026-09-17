@@ -24,6 +24,10 @@ services:
       - "${STRUT_NEO4J_BOLT_PORT:-7689}:7687"
     environment:
       NEO4J_AUTH: neo4j/testtest   # strut's own default credentials (bolt.ts)
+      # Neo4j Browser prefills its connect form from the advertised address,
+      # which defaults to the container port (7687) — on the host that's some
+      # other Neo4j, or nothing. Advertise the mapped host port instead.
+      NEO4J_server_bolt_advertised__address: "localhost:${STRUT_NEO4J_BOLT_PORT:-7689}"
     volumes:
       - strut-neo4j:/data
     healthcheck:

@@ -86,7 +86,7 @@ function specOf(d: CheckDraft): api.ClaimCheckSpec {
   };
 }
 
-function ago(seconds?: number): string {
+export function ago(seconds?: number): string {
   if (!seconds) return "";
   const mins = Math.round((Date.now() / 1000 - seconds) / 60);
   if (mins < 1) return "just now";

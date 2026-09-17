@@ -343,7 +343,7 @@ and the child env is scrubbed by construction).
   SIGTERMs the process group (SIGKILL 2s later) when the run starts
   cancelling, then `checkpoint()` raises the canonical `CancelledError`.
   Timeout (default 10 min) is SIGKILL.
-- **Output:** each stream is capped (default 200k chars) keeping head + tail,
+- **Output:** each stream is capped (default 500k chars) keeping head + tail,
   so a JSON result and the error that ended a build both survive; the child
   is NOT killed for being chatty. Big results belong in artifact files.
 - **Environment ≠ step:** what's on PATH (python, ffmpeg, yt-dlp) is the
@@ -770,8 +770,13 @@ and the child env is scrubbed by construction).
   launches until a human replies. The seam is `AiDeps.detach` (absent →
   the tool awaits to completion, unchanged for tests/embedders). The
   flyout polls `GET /chat/:id` (~4s, idle+open only) to notice
-  server-initiated turns and renders `[run-notification]` messages as a
-  dashed notice, not a user bubble.
+  server-initiated turns and renders `[run-notification]` /
+  `[verify-notification]` messages as a collapsed notice card, not a user
+  bubble (`web/src/notice.ts` parses the model-facing text —
+  `notice.test.ts` runs it against the server's own formatters, so a
+  format change there fails a test; `NoticeView` opens it level by level:
+  card → claim → evidence + checks → raw message. Unparseable → the old
+  dashed text notice).
 
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
