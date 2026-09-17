@@ -479,6 +479,59 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.deepEqual([scratch["kept"], scratch["claims"]], [undefined, undefined]);
   });
 
+  it("the Claims panel's HTTP door: a person authors, reads the contract with its to-dos, and answers an open slot", async () => {
+    const http = async (method: string, path: string, body?: unknown) => {
+      const res = await strut.app.request(path, { method, ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
+      return { status: res.status, body: (await res.json()) as Record<string, any> };
+    };
+    const SUBJECT = "/claims?kind=step&name=clip%2Fcompute-times";
+    assert.deepEqual((await http("GET", SUBJECT)).body, { enabled: true, subject: STEP, claims: [] });
+    assert.equal((await http("GET", "/claims?kind=nope&name=x")).status, 400);
+    assert.deepEqual((await http("GET", "/claims?kind=step&name=exec")).body["claims"], [], "a built-in step simply has no contract");
+
+    const made = await http("POST", "/claims", {
+      subjects: [STEP],
+      text: "the cut sounds natural",
+      checks: [{ description: "listen at the cut — code cannot hear a click", name: "ear" }, compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}", { name: "bounds" })],
+    });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    assert.equal((await http("POST", "/claims", { subjects: [STEP], text: "no checks", checks: [] })).status, 400);
+    assert.match((await http("POST", "/claims", { subjects: [STEP], text: "bad check", checks: [{ type: "exec", config: { command: "x" } }] })).body["error"], /not valid for step "exec"/);
+
+    const run = await strut.run("clipper", { start: 5, len: 19 });
+    await verify("clipper", run.runId);
+    const listed = (await http("GET", SUBJECT)).body;
+    const claim = listed["claims"][0];
+    assert.deepEqual([claim.text, claim.speaker, claim.status, claim.openSlot, claim.unverified], ["the cut sounds natural", "person", "supported", true, 1]);
+    assert.deepEqual([claim.latest.content, claim.latest.mode, claim.latest.run], ["exit 0", "observed", { name: "clipper", runId: run.runId, path: "clipper/times" }]);
+    assert.deepEqual(claim.checks.map((k: any) => [k.name, k.external, k.publisher]), [["ear", true, "person"], ["bounds", false, "person"]]);
+    // The to-do: the question, and which run to look at.
+    assert.equal(claim.slots.length, 1);
+    assert.match(claim.slots[0].question, /listen at the cut.*run .* of clipper/s);
+    assert.deepEqual(claim.slots[0].run, { name: "clipper", runId: run.runId, path: "clipper/times" });
+
+    const answered = await http("POST", `/claims/${claim.id}/evidence`, { name: "clipper", runId: run.runId, supports: false, content: "audible click at 24.0s", slot: claim.slots[0].evidence });
+    assert.deepEqual([answered.status, answered.body["filled"]], [200, true]);
+    const after = (await http("GET", SUBJECT)).body["claims"][0];
+    assert.deepEqual([after.status, after.openSlot, after.slots, after.latest.by, after.latest.mode], ["refuted", false, [], "person", "asserted"], "a person's refutation on the active version wins");
+
+    // Edit → successor; check edit / add / retire; retire the claim.
+    const reworded = await http("PATCH", `/claims/${claim.id}`, { text: "the cut is inaudible" });
+    assert.ok(reworded.body["id"] && reworded.body["id"] !== claim.id);
+    const succ = (await http("GET", SUBJECT)).body["claims"][0];
+    assert.deepEqual([succ.id, succ.status, succ.checks.length], [reworded.body["id"], "unknown", 2]);
+    const bounds = succ.checks.find((k: any) => k.name === "bounds");
+    const patched = await http("PATCH", `/checks/${bounds.id}`, { patch: { policy: "manual" } });
+    assert.ok(patched.body["id"] !== bounds.id);
+    assert.equal((await http("DELETE", `/checks/${patched.body["id"]}`)).status, 200);
+    assert.match((await http("DELETE", `/checks/${succ.checks.find((k: any) => k.name === "ear").id}`)).body["error"], /last active check/);
+    assert.equal((await http("POST", `/claims/${succ.id}/attach`, { subject: { kind: "workflow", name: "clipper" } })).body["attached"], true);
+    assert.equal((await http("POST", `/claims/${succ.id}/detach`, { subject: { kind: "workflow", name: "clipper" } })).body["detached"], true);
+    assert.equal((await http("DELETE", `/claims/${succ.id}`)).status, 200);
+    assert.deepEqual((await http("GET", SUBJECT)).body["claims"], []);
+    assert.equal((await http("DELETE", `/claims/${succ.id}`)).status, 400, "already retired");
+  });
+
   it("publish checks lint the new version's source; a kept run_step run is verified with EXECUTED → the step version it ran", async () => {
     const lint = await addClaim(STEP, "never reads process.env directly", [
       { type: "exec", when: "publish", name: "env lint", config: { cmd: "bash", args: ["-c", "! grep -q 'process.env' <<< \"$SRC\""], env: { SRC: "{{ input.source }}" } } },

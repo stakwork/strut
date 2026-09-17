@@ -245,6 +245,8 @@ export interface EvidenceRow {
     ref_id: string;
     node_type?: string;
     run_id?: string;
+    /** The run-store key of that run: a workflow name, or `step:<type>`. */
+    run_key?: string;
     context?: SourceContext;
     start_time?: number;
     end_time?: number;
@@ -408,6 +410,8 @@ export interface SubjectLedgerRow {
   claim: ClaimRow;
   checks: CheckRow[];
   status: ClaimStatus;
+  /** Everything the status was computed from (slots included), newest first. */
+  evidence: EvidenceRow[];
 }
 
 /**
@@ -543,7 +547,7 @@ export class ClaimsReader {
        OPTIONAL MATCH (e)-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src) WHERE ${LIVE("hs")}
        RETURN ${project("e", EVIDENCE_FIELDS)} AS ev, eb.strength AS strength, eb.ref_id AS edge_ref_id, k.id AS check_id,
               v:StrutStepVersion AS v_is_step, v.name AS v_name, v.step_type AS v_step_type, v.content_hash AS v_hash,
-              src.ref_id AS src_ref, labels(src) AS src_labels, src.run_id AS src_run_id,
+              src.ref_id AS src_ref, labels(src) AS src_labels, src.run_id AS src_run_id, src.workflow_name AS src_run_key,
               hs.context AS hs_context, hs.start_time AS hs_start, hs.end_time AS hs_end, hs.post_url AS hs_url`,
       { ns: this.ns, id: claimId },
     );
@@ -564,6 +568,7 @@ export class ClaimsReader {
           ref_id: r["src_ref"],
           node_type: labels.find((l) => !/^(Node|Data_Bank|Domain_.*)$/.test(l)),
           run_id: r["src_run_id"],
+          run_key: r["src_run_key"],
           context: parseContext(r["hs_context"]),
           start_time: r["hs_start"],
           end_time: r["hs_end"],
@@ -583,7 +588,7 @@ export class ClaimsReader {
     return Promise.all(
       claims.map(async (claim) => {
         const [checks, evidence] = await Promise.all([this.checksFor(claim.id), this.evidenceFor(claim.id, subject)]);
-        return { claim, checks, status: claimStatus({ claim, checks, subject, evidence, activeVersion }) };
+        return { claim, checks, status: claimStatus({ claim, checks, subject, evidence, activeVersion }), evidence };
       }),
     );
   }

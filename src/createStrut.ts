@@ -37,6 +37,7 @@ import {
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF } from "./claims-schemas.js";
+import { claimsRoutes } from "./claims-routes.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { stepHashesFor } from "./closure.js";
@@ -1490,6 +1491,16 @@ export async function createStrut<TServices = unknown>(
       .finally(untrack);
     return runId;
   }
+
+  // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2).
+  claimsRoutes(app, {
+    workspace,
+    verifier,
+    getRegistry: async () => {
+      await rebuildRegistry();
+      return registry;
+    },
+  });
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks
   // change, to backfill, or to fire `manual` checks. Synchronous, idempotent

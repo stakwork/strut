@@ -33,7 +33,7 @@ import { closureIncludes, flowClosure, globToRegExp, type FlowClosure } from "./
 import { validateWorkflowYaml } from "./validate.js";
 import type { StepRegistry } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
-import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type RunWhen, type SubjectRef } from "./graph/claims.js";
+import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type EvidenceRow, type RunWhen, type SubjectRef } from "./graph/claims.js";
 import { ClaimsError, ClaimsWriter, boundedName, type CheckData } from "./graph/claims-writer.js";
 import type { WorkspaceStore } from "./workspace.js";
 
@@ -134,6 +134,10 @@ export interface ClaimListing {
   assertedOnly: boolean;
   unverified: number;
   openSlot: boolean;
+  /** The newest evidence carrying the verdict. */
+  latest?: { content?: string; observedAt?: number; mode?: string; check?: string; checkVersion?: string; by?: string; run?: { name?: string; runId?: string; path?: string } };
+  /** Open questions an external check is waiting on — the panel's to-dos. */
+  slots: Array<{ evidence: string; check?: string; question?: string; run?: { name?: string; runId?: string; path?: string } }>;
   checks: Array<{
     id: string;
     name: string;
@@ -281,6 +285,12 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     }
     return check;
   }
+
+  const runOf = (e: EvidenceRow) => ({
+    ...(e.source?.run_key ? { name: e.source.run_key } : {}),
+    ...(e.source?.run_id ? { runId: e.source.run_id } : {}),
+    ...(e.source?.context?.path ? { path: e.source.context.path } : {}),
+  });
 
   const listingOf = (k: CheckRow): ClaimListing["checks"][number] => {
     let config: unknown;
@@ -475,6 +485,28 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
             assertedOnly: r.status.assertedOnly,
             unverified: r.status.unverified,
             openSlot: r.status.openSlot,
+            ...(r.status.latest
+              ? {
+                  latest: {
+                    ...(r.status.latest.content !== undefined ? { content: r.status.latest.content } : {}),
+                    ...(r.status.latest.observed_at !== undefined ? { observedAt: r.status.latest.observed_at } : {}),
+                    ...(r.status.latest.evidence_mode ? { mode: r.status.latest.evidence_mode } : {}),
+                    ...(r.status.latest.check_id ? { check: r.status.latest.check_id } : {}),
+                    ...(r.status.latest.source?.context?.checkVersion ? { checkVersion: r.status.latest.source.context.checkVersion } : {}),
+                    ...(r.status.latest.source?.context?.by ? { by: r.status.latest.source.context.by } : {}),
+                    ...(r.status.latest.source?.run_id ? { run: runOf(r.status.latest) } : {}),
+                  },
+                }
+              : {}),
+            slots: r.status.slots.map((slot) => {
+              const e = r.evidence.find((x) => x.id === slot.evidence_id);
+              return {
+                evidence: slot.evidence_id,
+                ...(slot.check_id ? { check: slot.check_id } : {}),
+                ...(e?.description ? { question: e.description } : {}),
+                ...(e?.source?.run_id ? { run: runOf(e) } : {}),
+              };
+            }),
             checks: r.checks.map(listingOf),
           })),
         };

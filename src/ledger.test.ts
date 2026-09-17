@@ -14,6 +14,7 @@ const row = (id: string, text: string, status: SubjectLedgerRow["status"]["statu
   claim: { ref_id: `ref-${id}`, id, name: text, claim_text: text },
   checks: checks.map((k) => ({ ref_id: `ref-${k.id}`, name: k.id, created_at: 1, ...k })),
   status: { status, assertedOnly: false, unverified: 0, openSlot: false, slots: [], ...over },
+  evidence: [],
 });
 
 const reader = (bySubject: Record<string, SubjectLedgerRow[]>) => ({

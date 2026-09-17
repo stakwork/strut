@@ -24,6 +24,8 @@ import { EventsPanel } from "./components/EventsPanel";
 import { EventsResizer } from "./components/EventsResizer";
 import { StepRunFlyout } from "./components/StepRunFlyout";
 import { ParamsFlyout } from "./components/ParamsFlyout";
+import { ClaimsFlyout } from "./components/ClaimsFlyout";
+import { claimsSummary } from "./components/ClaimsPanel";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
@@ -115,6 +117,10 @@ export function App() {
   const [localParams, setLocalParams] = useState<Record<string, unknown> | null>(null);
   // Whether the Params flyout (editable) is open.
   const [showParams, setShowParams] = useState(false);
+  // The workflow's Claims flyout, and its contract as last read — null until
+  // probed; `enabled: false` (a filesystem workspace) hides the button.
+  const [showClaims, setShowClaims] = useState(false);
+  const [wfClaims, setWfClaims] = useState<api.ClaimsResponse | null>(null);
   // Declared promotions resolved against the selected run's output (the
   // "promote a winner" review surface) + whether its flyout is open.
   const [promotions, setPromotions] = useState<api.Promotion[]>([]);
@@ -308,6 +314,9 @@ export function App() {
     setRunDrill([]);
     setLoadError(false);
     setShowParams(false);
+    setShowClaims(false);
+    setWfClaims(null);
+    if (selectedWf) api.getClaims({ kind: "workflow", name: selectedWf }).then(setWfClaims).catch(() => setWfClaims(null));
     if (!selectedWf) {
       setPublishedSteps(null);
       setLocalSteps(null);
@@ -600,6 +609,7 @@ export function App() {
     const stepIndex = node.customData?.stepIndex as number | undefined;
     if (stepId == null) return;
     setShowParams(false);
+    setShowClaims(false);
     setShowPromote(false);
     setInfoStep(null);
     setFlyoutStepId(stepId);
@@ -709,6 +719,15 @@ export function App() {
 
   const closeFlyout = () => { setFlyoutStepId(null); setFlyoutStepIndex(null); };
 
+  // A claim's evidence (or to-do) points at the run it came from: go look at it.
+  const openRunFromClaim = (workflow: string, runId: string) => {
+    setShowClaims(false);
+    closeFlyout();
+    setViewVersion(null);
+    setSelectedWf(workflow);
+    setSelectedRun(runId);
+  };
+
   // Sidebar Steps catalog: grouped by tier, in the same order as the Add
   // Step picker. Clicking an item toggles its read-only info flyout.
   const stepGroups = useMemo(() => [
@@ -727,6 +746,7 @@ export function App() {
 
   const openStepInfo = useCallback((entry: StepTypeEntry) => {
     setShowParams(false);
+    setShowClaims(false);
     setShowPromote(false);
     setFlyoutStepId(null);
     setFlyoutStepIndex(null);
@@ -887,15 +907,27 @@ export function App() {
           {isRunView && promotions.length > 0 && (
             <button
               class={`btn${showPromote ? " is-active" : ""}`}
-              onClick={() => { setShowPromote((s) => !s); setShowParams(false); setInfoStep(null); closeFlyout(); }}
+              onClick={() => { setShowPromote((s) => !s); setShowParams(false); setShowClaims(false); setInfoStep(null); closeFlyout(); }}
             >Promote</button>
           )}
           {selectedWf && localParams && Object.keys(localParams).length > 0 && (
             <button
               class={`btn${showParams ? " is-active" : ""}`}
-              onClick={() => { setShowParams((s) => !s); setShowPromote(false); setInfoStep(null); setFlyoutStepId(null); }}
+              onClick={() => { setShowParams((s) => !s); setShowPromote(false); setShowClaims(false); setInfoStep(null); setFlyoutStepId(null); }}
             >Params</button>
           )}
+          {selectedWf && wfClaims?.enabled && (() => {
+            // What needs attention, at a glance: refuted > a to-do > unverified.
+            const sum = claimsSummary(wfClaims.claims);
+            const tone = sum.refuted ? "bad" : sum.todos ? "todo" : sum.open || sum.total === 0 ? "open" : "ok";
+            return (
+              <button
+                class={`btn${showClaims ? " is-active" : ""}`}
+                title={sum.total === 0 ? "No claims yet — nothing says how this workflow should behave" : `${sum.total} claim${sum.total === 1 ? "" : "s"}: ${sum.refuted} refuted, ${sum.open} unverified, ${sum.todos} waiting on someone`}
+                onClick={() => { setShowClaims((s) => !s); setShowParams(false); setShowPromote(false); setInfoStep(null); setFlyoutStepId(null); }}
+              >Claims<span class={`claims-dot claims-dot-${tone}`} /></button>
+            );
+          })()}
           <button class="btn" onClick={() => setShowSecrets(true)}>Secrets</button>
           <button class={`btn btn-ai${showChat ? " is-active" : ""}`} onClick={() => setShowChat(!showChat)}>AI</button>
           <button class="btn btn-icon" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
@@ -1012,6 +1044,17 @@ export function App() {
         />
       )}
 
+      {/* Claims flyout — the workflow's contract, its evidence, and to-dos. */}
+      {showClaims && selectedWf && (
+        <ClaimsFlyout
+          key={selectedWf}
+          workflow={selectedWf}
+          onLoaded={setWfClaims}
+          onOpenRun={openRunFromClaim}
+          onClose={() => setShowClaims(false)}
+        />
+      )}
+
       {/* Promote flyout — review + apply a run's declared promotions. */}
       {showPromote && selectedWf && selectedRun && promotions.length > 0 && (
         <PromoteFlyout
@@ -1052,6 +1095,7 @@ export function App() {
             allSteps={localSteps}
             onSave={(updated) => handleStepSave(flyoutStepIndex, updated)}
             onClose={closeFlyout}
+            onOpenRun={openRunFromClaim}
           />
         );
       })()}

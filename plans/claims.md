@@ -933,7 +933,17 @@ number exists).
    `meta/attach-claim` in `gaia-evolve-gen`, `meta/verify-run` before
    `canddigest`, the fitness `meta/add-evidence`, per-claim pass rates in
    `gaia/digest-results`. Not needed for step 8.
-7. UI panel (`web/src/components/StepEditFlyout.tsx` + the workflow view),
+7. **Done** — `src/claims-routes.ts` (the panel's HTTP door; the actor is a
+   PERSON: unscoped, stamped `person`, evidence `asserted` / `by: person`),
+   `web/src/components/ClaimsPanel.tsx` (status badge, latest evidence with
+   its run, checks, add / reword / retire, a check editor for step and
+   external checks), a collapsible Claims section in `StepEditFlyout` (on
+   the step TYPE; opens by itself on a refutation or a to-do) and a
+   workflow-level `ClaimsFlyout` behind a topbar button whose dot says what
+   needs attention. Open slots render FIRST, as to-dos: the question, the
+   run and its artifacts, a note, Supports / Refutes. Hidden entirely on a
+   filesystem workspace (`GET /claims` → `enabled: false`).
+   UI panel (`web/src/components/StepEditFlyout.tsx` + the workflow view),
    incl. open slots as to-dos.
 8. Re-run the `youtube-clip` prompt on a fresh workspace; compare transcripts.
 

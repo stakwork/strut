@@ -376,6 +376,17 @@ describe("createStrut", () => {
     assert.deepEqual(listed.map((w) => w.name), ["shouter"], "a step key is never a workflow");
   });
 
+  it("a filesystem workspace has no claims layer: GET /claims says so, mutations are 409", async () => {
+    const strut = await createStrut({ workspace: new WorkspaceManager(tempDir), store: new MemoryRunStore(), serveUi: false, enableChat: false, stt: false });
+    assert.deepEqual([strut.claims, strut.verifier], [null, null]);
+    const read = await strut.app.request("/claims?kind=step&name=log");
+    assert.deepEqual([read.status, await read.json()], [200, { enabled: false, claims: [] }]);
+    const post = (path: string) => strut.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal((await post("/claims")).status, 409);
+    assert.equal((await post("/claims/x/evidence")).status, 409);
+    assert.equal((await post("/workflows/wf/runs/1/verify")).status, 409);
+  });
+
   it("exposes /steps with registered types", async () => {
     const myStep = defineStep({
       type: "custom-thing",

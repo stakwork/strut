@@ -342,7 +342,7 @@ describe("claims graph: node contract + reads (live Neo4j)", { skip: cfg ? false
         evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5, date_added_to_graph: undefined,
         claim_id: "c1", strength: 1, check_id: "k1",
         about: { kind: "step", name: "clip/compute-times", content_hash: V2 },
-        source: { ref_id: ref["run"], node_type: "StrutRun", run_id: "run-1", context: { path: "step", cassette: "replay", checkVersion: "exec" } },
+        source: { ref_id: ref["run"], node_type: "StrutRun", run_id: "run-1", run_key: "step:clip/compute-times", context: { path: "step", cassette: "replay", checkVersion: "exec" } },
       },
     );
     assert.deepEqual(await reader.evidenceFor("c1", { kind: "workflow", name: "youtube-clip" }), [], "same claim, other subject: its own status");
