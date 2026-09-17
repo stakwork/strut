@@ -524,6 +524,19 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     return out;
   }
 
+  async getActiveStepHashes(): Promise<Record<string, string>> {
+    // `active_version` IS the active version's content hash (it mirrors the
+    // ACTIVE_VERSION edge), so this is one read of the step nodes.
+    const rows = await this.backend.bolt.run(
+      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NOT_DELETED("s")} AND s.active_version IS NOT NULL
+       RETURN s.step_type AS type, s.active_version AS hash`,
+      { ns: this.ns },
+    );
+    const out: Record<string, string> = {};
+    for (const r of rows) if (typeof r["hash"] === "string" && r["hash"]) out[String(r["type"])] = r["hash"] as string;
+    return out;
+  }
+
   async listStepVersions(name: string): Promise<StepVersionsResult> {
     validateStepName(name);
     const s = await this.stepRow(name);

@@ -308,11 +308,45 @@ export function summarizeFromEvents(
   return summary;
 }
 
+// ── Run buckets that are not workflows ──────────────────────────────────────
+
+/**
+ * Every `RunStore` read takes ONE key and there is no global run list, so a
+ * run kept under a key that is not a workflow name is invisible to every
+ * workflow listing by construction (plans/claims.md §3, §4.1):
+ *
+ *   - `step:<type>`  — a single-step run (`run_step`) worth keeping;
+ *   - `check:<id>`   — a check run the verify pass kept because it cost money.
+ *
+ * The prefix is a STORE KEY only: `FileRunStore` parses it into a sibling
+ * directory (`steps/<type>/runs/`, `checks/<id>/runs/`) and never writes it
+ * to disk. Workflow and step names cannot contain `:`, so keys never collide.
+ */
+const RUN_BUCKETS = [
+  { prefix: "step:", dir: "steps" },
+  { prefix: "check:", dir: "checks" },
+] as const;
+
+export function stepRunKey(stepType: string): string {
+  return `step:${stepType}`;
+}
+
+export function checkRunKey(checkId: string): string {
+  return `check:${checkId}`;
+}
+
+/** The step type behind a `step:<type>` key, else null. */
+export function stepTypeOfRunKey(key: string): string | null {
+  return key.startsWith("step:") && key.length > 5 ? key.slice(5) : null;
+}
+
 // ── Filesystem implementation ──────────────────────────────────────────────
 
 /**
- * Stores runs under `<workspaceRoot>/workflows/<workflow>/runs/<runId>/`.
- * runId is a millisecond timestamp, giving natural sort order and easy pagination.
+ * Stores runs under `<workspaceRoot>/workflows/<workflow>/runs/<runId>/` —
+ * and the two non-workflow buckets (above) under `steps/<type>/runs/` and
+ * `checks/<id>/runs/`. runId is a millisecond timestamp, giving natural sort
+ * order and easy pagination.
  */
 export class FileRunStore implements RunStore {
   private workspaceRoot: string;
@@ -321,8 +355,21 @@ export class FileRunStore implements RunStore {
     this.workspaceRoot = workspaceRoot;
   }
 
+  private runsDir(key: string): string {
+    for (const b of RUN_BUCKETS) {
+      if (!key.startsWith(b.prefix)) continue;
+      // A namespaced step type nests (`clip/compute-times`); nothing else may.
+      const segments = key.slice(b.prefix.length).split("/");
+      if (segments.some((seg) => !seg || seg === "." || seg === ".." || seg.includes("\\"))) {
+        throw new Error(`Invalid run store key "${key}"`);
+      }
+      return join(this.workspaceRoot, b.dir, ...segments, "runs");
+    }
+    return join(this.workspaceRoot, "workflows", key, "runs");
+  }
+
   private runDir(workflow: string, runId: string): string {
-    return join(this.workspaceRoot, "workflows", workflow, "runs", runId);
+    return join(this.runsDir(workflow), runId);
   }
 
   async append(workflow: string, runId: string, event: RunEvent): Promise<void> {
@@ -344,7 +391,7 @@ export class FileRunStore implements RunStore {
 
   /** List runs for a workflow, sorted newest first. Returns dir names (timestamps). */
   async listRuns(workflow: string): Promise<string[]> {
-    const runsDir = join(this.workspaceRoot, "workflows", workflow, "runs");
+    const runsDir = this.runsDir(workflow);
     try {
       const entries = await readdir(runsDir);
       // Sort descending (newest first) — timestamps sort lexicographically
@@ -484,8 +531,12 @@ export class MemoryRunStore implements RunStore {
   async listRuns(workflow: string): Promise<string[]> {
     const prefix = `${workflow}/`;
     const ids = new Set<string>();
-    for (const k of this.events.keys()) if (k.startsWith(prefix)) ids.add(k.slice(prefix.length));
-    for (const k of this.summaries.keys()) if (k.startsWith(prefix)) ids.add(k.slice(prefix.length));
+    // A run id has no `/`: `step:clip` must not list `step:clip/trim`'s runs.
+    const idOf = (k: string) => (k.startsWith(prefix) && !k.slice(prefix.length).includes("/") ? k.slice(prefix.length) : null);
+    for (const k of [...this.events.keys(), ...this.summaries.keys()]) {
+      const id = idOf(k);
+      if (id) ids.add(id);
+    }
     return [...ids].sort((a, b) => b.localeCompare(a));
   }
 

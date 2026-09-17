@@ -41,7 +41,9 @@ strut/
 │   ├── runner.ts          # execution engine: DAG (topological), retry, onError, control flow, journal replay
 │   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md)
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation
-│   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling
+│   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
+│   ├── closure.ts         # what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (nested subflows via the workspace, agentTools grants; templated/missing child → unresolvable), stepHashesFor → run.start.stepHashes
+│   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + messages.jsonl + events.jsonl) + truncateToolMessages
 │   ├── workspace.ts       # WorkspaceStore interface + FileWorkspaceStore (alias WorkspaceManager): versioning, _metadata.json, YAML loading
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl

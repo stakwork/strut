@@ -13,6 +13,7 @@
  * config fields are skipped when checking against the step's schema.
  */
 import yaml from "js-yaml";
+import { walkSteps } from "./closure.js";
 import type { Step, StepRegistry } from "./core.js";
 import { TemplateError, exprRoots, hasTemplates, templateExprs } from "./expr.js";
 import { assertValidWorkflowYaml } from "./workspace.js";
@@ -307,14 +308,7 @@ export function validateWorkflowYaml(source: string, opts: ValidateOptions): Val
 
 function collectTypes(steps: Step[]): string[] {
   const out: string[] = [];
-  const visit = (s: Step | undefined) => {
-    if (!s || typeof s !== "object" || typeof s.type !== "string") return;
-    out.push(s.type);
-    const body = (s.config as Record<string, unknown> | undefined)?.["body"] as Step | undefined;
-    if (BODY_STEPS.has(s.type)) visit(body);
-    visit(s.options?.onError);
-  };
-  steps.forEach(visit);
+  walkSteps(steps, (s) => out.push(s.type));
   return out;
 }
 

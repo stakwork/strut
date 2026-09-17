@@ -2,9 +2,11 @@ import { join } from "node:path";
 import type { RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
-import { generateRunId } from "./store.js";
+import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
-import { runSingleStep, cassettePath, type RunStepResult } from "./run-step.js";
+import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
+import { stepHashesFor } from "./closure.js";
+import { claimsReaderFor } from "./graph/claims.js";
 import { stepLoadError } from "./steps/registry.js";
 import type { CassetteMode } from "./cassette.js";
 import type { SecretInfo } from "./secret-store.js";
@@ -339,6 +341,8 @@ export interface RunStepArgs {
   params?: Record<string, unknown>;
   cassette?: CassetteMode;
   cassetteName?: string;
+  /** Persist the run under `step:<type>` even when the step has no claims. */
+  keep?: boolean;
 }
 
 /**
@@ -416,6 +420,13 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
    *  published (EVOLVE_SPEC §6). Returns an error message, or null when the
    *  workflow exists and is stamped. */
   const notOwned = async (name: string, verb: string): Promise<string | null> => {
+    // `step:<type>` — a step's kept single-step runs (plans/claims.md §3):
+    // same scoping, on the step's publisher stamp.
+    const stepType = stepTypeOfRunKey(name);
+    if (stepType) {
+      const owned = (await workspace.listSteps({ publisher: AI_PUBLISHER })).some((s) => s.type === stepType);
+      return owned ? null : `Step "${stepType}" is not agent-authored — the meta surface only ${verb} steps it published.`;
+    }
     const entry = await findWorkflow(name);
     if (!entry) return `Workflow "${name}" not found`;
     if (entry.publisher !== AI_PUBLISHER) {
@@ -441,11 +452,13 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       const d = await explorerDeps();
       const def = d.registry[type];
       if (!def) return { error: `Step type "${type}" not found` };
+      const recentRuns = (await store.listRuns(stepRunKey(type))).length;
       return {
         type,
         description: def.description,
         ...stepSchemas(def),
         ...(opts?.source ? { source: (await readStepSource(type, d)) ?? null } : {}),
+        ...(recentRuns ? { recentRuns } : {}),
       };
     },
 
@@ -486,20 +499,27 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       if (args.cassette && !deps.dataDir) {
         return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
       }
-      return runSingleStep(type, registry, deps.services, {
-        config: coerceJsonArg(args.config) as Record<string, unknown> | undefined,
-        input: coerceJsonArg(args.input),
-        params: coerceJsonArg(args.params) as Record<string, unknown> | undefined,
-        workspace,
-        ...(args.cassette
-          ? {
-              cassette: {
-                mode: args.cassette,
-                path: cassettePath(deps.dataDir!, args.cassetteName ?? type),
-              },
-            }
-          : {}),
-      });
+      return runStep(
+        type,
+        registry,
+        deps.services,
+        {
+          config: coerceJsonArg(args.config) as Record<string, unknown> | undefined,
+          input: coerceJsonArg(args.input),
+          params: coerceJsonArg(args.params) as Record<string, unknown> | undefined,
+          workspace,
+          keep: args.keep === true,
+          ...(args.cassette
+            ? {
+                cassette: {
+                  mode: args.cassette,
+                  path: cassettePath(deps.dataDir!, args.cassetteName ?? type),
+                },
+              }
+            : {}),
+        },
+        { store, workspace, claims: claimsReaderFor(workspace) },
+      );
     },
 
     async listWorkflows() {
@@ -597,6 +617,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           controller: tracked?.controller,
           workflowHash:
             (await workspace.getWorkflowHash(flow.name, version)) ?? undefined,
+          stepHashes: await stepHashesFor(workspace, flow),
         });
       } finally {
         tracked?.untrack();

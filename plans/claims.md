@@ -848,7 +848,18 @@ number exists).
    already-seeded standalone DBs (§1) + the one `STRUT_EDGES` row;
    `claims.ts` with `claimStatus()` and read helpers; graph-backend gate in
    createStrut; unit tests.
-2. `run.start` gains `stepHashes` / `cassette` / `origin` (§3) — FIRST, since
+2. **Done** — `src/closure.ts` (`flowClosure`, `stepHashesFor`; step 4's
+   check closure reuses it), `WorkspaceStore.getActiveStepHashes()`, the
+   three `run.start` fields (`stepHashes` is filtered to the flow's closure,
+   every active hash when that is unresolvable, and is RE-recorded on
+   `run.resumed` — a resume loads whatever is active then), `runStep` in
+   `run-step.ts` behind all three `run_step` surfaces (`keep`, result gains
+   `runId` + `kept`), the `step:` / `check:` buckets in both run stores,
+   `projectRun` (one run → its `StrutRun` ref, with `EXECUTED →
+   StrutStepVersion` for a step key), `get_step.recentRuns`, and
+   `meta/list-runs` / `meta/get-run` on a `step:` key scoped by the step's
+   publisher.
+   `run.start` gains `stepHashes` / `cassette` / `origin` (§3) — FIRST, since
    only runs recorded after it can ever be verified; then `run_step`
    persists under `step:<type>` (§3) + the projector pair.
 3. Authoring tools + `claims` arg + publish count + prompt section (§2),

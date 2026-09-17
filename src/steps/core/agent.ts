@@ -3,6 +3,7 @@ import type { SecretsCapability } from "../../capabilities.js";
 import { resolveModel, createWebTools } from "../../llm.js";
 import { accessedNodesOf, defineStep, type StepContext, type StepRegistry, withAccessedNodes } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
+import { globToRegExp } from "../../closure.js";
 import { usageFromResult, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve, dirname, isAbsolute, sep } from "node:path";
@@ -354,14 +355,6 @@ export function textEdit(input: TextEditInput, roots: string | string[]): string
  *  (`browser/click` → `browser_click`), so we sanitize for the LLM and map back. */
 function toolNameFor(stepType: string): string {
   return stepType.replace(/[^a-zA-Z0-9_]/g, "_");
-}
-
-/** Compile a glob pattern (`*` = any run of characters) to an anchored RegExp. */
-function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) =>
-    c === "*" ? ".*" : `\\${c}`,
-  );
-  return new RegExp(`^${escaped}$`);
 }
 
 /**

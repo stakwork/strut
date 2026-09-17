@@ -66,6 +66,13 @@ export interface RunOptions<TServices = unknown> {
   /** Content hash of the workflow version being run, recorded on `run.start`
    *  so resume can refuse to replay a journal into a different DAG (§5). */
   workflowHash?: string;
+  /** Active content hash of every workspace step the flow can execute
+   *  (`stepHashesFor`), recorded on `run.start` / `run.resumed`. */
+  stepHashes?: Record<string, string>;
+  /** Cassette mode this run executes under — recorded on `run.start`. */
+  cassette?: "record" | "replay";
+  /** `"verify"` when the verify pass launches this run (a check). */
+  origin?: "verify";
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -159,13 +166,21 @@ export async function runWorkflow<TServices = unknown>(
   if (opts?.resume) {
     // Continuing an interrupted run: same runId, same log — the marker both
     // records the gap and reopens tails past an earlier terminal event.
-    await emit({ type: "run.resumed", path: wfName });
+    await emit({
+      type: "run.resumed",
+      path: wfName,
+      // Steps load at (re)launch: what runs from here on is what is active NOW.
+      ...(opts.stepHashes ? { stepHashes: opts.stepHashes } : {}),
+    });
   } else {
     await emit({
       type: "run.start",
       path: wfName,
       input: parsedInput,
       ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
+      ...(opts?.stepHashes ? { stepHashes: opts.stepHashes } : {}),
+      ...(opts?.cassette ? { cassette: opts.cassette } : {}),
+      ...(opts?.origin ? { origin: opts.origin } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),

@@ -66,6 +66,9 @@ export {
   FileRunStore,
   MemoryRunStore,
   generateRunId,
+  stepRunKey,
+  checkRunKey,
+  stepTypeOfRunKey,
   tailJsonl,
   tailFromPolling,
   lastRunAtFromIds,
@@ -209,10 +212,18 @@ export {
 // Single-step runner (test one step in isolation, with optional cassette).
 export {
   runSingleStep,
+  runStep,
+  persistStepRun,
   cassettePath,
   type RunStepOptions,
   type RunStepResult,
+  type RunStepDeps,
+  type KeptRunStepResult,
 } from "./run-step.js";
+
+// What a flow can execute (nested subflows, agentTools grants) and the step
+// hashes a launch records on `run.start` (plans/claims.md §3–§4).
+export { walkSteps, flowClosure, closureIncludes, stepHashesFor, globToRegExp, type FlowClosure } from "./closure.js";
 
 // Authoring — the workspace's author/test/inspect operations as one
 // injectable service: what the meta/* steps are plumbing over. Auto-provided
@@ -342,6 +353,7 @@ export { Neo4jWorkspaceStore, type Neo4jWorkspaceStoreOptions } from "./graph/wo
 export { graphWorkspaceFromEnv, graphWorkspaceRequested, graphMaterializeDir } from "./graph/wiring.js";
 export {
   projectRuns,
+  projectRun,
   projectChats,
   projectAll,
   projectRunEvents,

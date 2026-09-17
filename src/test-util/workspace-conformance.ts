@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { WorkspaceStore } from "../workspace.js";
+import { contentHash } from "../version.js";
 
 /**
  * The `WorkspaceStore` contract as tests — one behavioral suite every
@@ -167,12 +168,17 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(versions.active, v2.version);
       assert.deepEqual(new Set(versions.versions), new Set([v1.version, v2.version]));
       assert.ok((await ws.getStepVersionSource("my-step", v1.version)).includes('"one"'));
+      // Active step hashes follow the active pointer (run.start.stepHashes).
+      const h2 = (await ws.getActiveStepHashes())["my-step"];
+      assert.equal(h2, contentHash(STEP_SRC("my-step", "two")));
       await ws.setActiveStepVersion("my-step", v1.version);
       assert.equal((await ws.listStepVersions("my-step")).active, v1.version);
+      assert.deepEqual(await ws.getActiveStepHashes(), { "my-step": contentHash(STEP_SRC("my-step", "one")) });
       assert.equal((await ws.getStepSource("my-step"))?.code.includes('"one"'), true);
       assert.equal(await ws.deleteStep("my-step"), true);
       assert.equal(await ws.deleteStep("my-step"), false);
       assert.deepEqual(await ws.listSteps(), []);
+      assert.deepEqual(await ws.getActiveStepHashes(), {});
     });
 
     it("deleteStepsByPublisher removes exactly that publisher's steps", async () => {

@@ -170,6 +170,20 @@ export interface RunEvent {
    *  `run.start` — resume refuses to replay a journal into a DIFFERENT DAG
    *  (RUN_CONTROL_SPEC §5, validity guards). */
   workflowHash?: string;
+  /** Content hash of the ACTIVE version of every workspace (custom) step
+   *  this run can execute, keyed by step type — recorded on `run.start`, and
+   *  again on `run.resumed` (a resume loads whatever is active THEN). A
+   *  workflow version does not pin its steps, so this is the ONLY record of
+   *  which step version a run executed; without an entry, the verify pass
+   *  writes no evidence for that step (plans/claims.md §3–§4). */
+  stepHashes?: Record<string, string>;
+  /** Cassette mode the run executed under, on `run.start`; absent = live. A
+   *  `replay` run is a unit test against a fixture: real evidence, weaker
+   *  than live. */
+  cassette?: "record" | "replay";
+  /** `"verify"` on a run the verify pass launched (a check). Such runs are
+   *  never themselves verified — the recursion guard. */
+  origin?: "verify";
   /** Per-run param overrides, recorded on `run.start` so a durable resume
    *  re-executes steps with the SAME knob values the original run used. */
   params?: Record<string, unknown>;

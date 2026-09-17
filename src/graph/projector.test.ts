@@ -7,7 +7,9 @@ import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
-import { messageText, preview, projectAll, projectChats, projectRunEvents, projectRuns, spawnedRunIds } from "./projector.js";
+import { messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRuns, spawnedRunIds } from "./projector.js";
+import { runStep } from "../run-step.js";
+import { buildRegistry } from "../steps/registry.js";
 
 const cfg = testGraphConfig();
 let backend: GraphBackend;
@@ -190,6 +192,38 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     // Re-projection does not duplicate the edges.
     await projectRuns(backend, store, { workflows: [WF], skipSettled: false });
     assert.equal(await edges("ACCESSED"), 2);
+  });
+
+  it("projectRun: a kept single-step run gets EXECUTED → the StrutStepVersion it actually ran, from run.start.stepHashes", async () => {
+    const src = (tag: string) =>
+      `import { z, defineStep } from "strut";\nexport default defineStep({ type: "clip/compute-times", description: "${tag}", input: z.any(), output: z.any(), run: async () => ({ tag: "${tag}" }) });\n`;
+    await ws.publishStep("clip/compute-times", src("one"), "one");
+    const registry = (await buildRegistry(await ws.materializeCustomSteps())).registry;
+    const r = await runStep("clip/compute-times", registry, {}, { keep: true }, { store, workspace: ws, claims: null });
+    assert.deepEqual([r.status, r.kept], ["success", "step:clip/compute-times"]);
+    const v1Hash = (await ws.getActiveStepHashes())["clip/compute-times"]!;
+    assert.deepEqual(r.events.find((e) => e.type === "run.start")!.stepHashes, { "clip/compute-times": v1Hash });
+
+    // The step is republished BEFORE the run is projected: the edge must
+    // still name v1 — the version recorded at launch — never "whatever is active".
+    await ws.publishStep("clip/compute-times", src("two"), "two");
+    const runRef = await projectRun(backend, store, r.kept!, r.runId);
+    assert.ok(runRef);
+    const rows = await backend.bolt.run(
+      `MATCH (run:StrutRun {run_id: $id})-[:EXECUTED]->(v:StrutStepVersion) RETURN run.ref_id AS ref, run.workflow_name AS wf, run.log_ref AS log, v.content_hash AS hash, v.description AS d`,
+      { id: r.runId },
+    );
+    assert.deepEqual(rows, [{ ref: runRef, wf: "step:clip/compute-times", log: `step:clip/compute-times/${r.runId}`, hash: v1Hash, d: "one" }]);
+    assert.equal(await projectRun(backend, store, r.kept!, r.runId), runRef, "idempotent: same StrutRun, no second edge");
+    assert.equal(await edges("EXECUTED"), 1);
+    assert.equal(await projectRun(backend, store, r.kept!, "nope"), null);
+
+    // Step runs are invisible to the workflow projection, and a run with no
+    // recorded hash gets no EXECUTED edge at all (never a guess).
+    assert.equal((await projectRuns(backend, store, { workflows: [WF, "clip/compute-times"] })).runs, 0);
+    const blind = await runStep("clip/compute-times", registry, {}, { keep: true }, { store, claims: null });
+    await projectRun(backend, store, blind.kept!, blind.runId);
+    assert.equal(await edges("EXECUTED"), 1);
   });
 
   it("is idempotent, skips settled runs, and re-projects an unsettled run once it finalizes", async () => {

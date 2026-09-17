@@ -4,8 +4,10 @@ import { runWorkflow } from "../runner.js";
 import { AiDeps } from "./prompts.js";
 import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
-import { runSingleStep, cassettePath } from "../run-step.js";
-import { generateRunId } from "../store.js";
+import { runStep, cassettePath } from "../run-step.js";
+import { stepHashesFor } from "../closure.js";
+import { claimsReaderFor } from "../graph/claims.js";
+import { generateRunId, stepRunKey } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
@@ -103,7 +105,7 @@ export function buildTools(deps: AiDeps) {
 
     get_step: tool({
       description:
-        "Read a step type's docs before using it: `description` (what it does + a YAML example), `input` (JSON Schema of its config — every field's meaning, default, enum and nesting), and `output` (JSON Schema of what it returns, for {{ id.field }} templates; absent when the step's output is untyped — the description then states the shape). Pass source:true ONLY to author or edit a step (read a custom step before edit_step; mirror a lib step's implementation) — it adds the full TypeScript source of a lib/custom step, which you don't need to use the step in a workflow. Core steps have no source.",
+        "Read a step type's docs before using it: `description` (what it does + a YAML example), `input` (JSON Schema of its config — every field's meaning, default, enum and nesting), and `output` (JSON Schema of what it returns, for {{ id.field }} templates; absent when the step's output is untyped — the description then states the shape). Pass source:true ONLY to author or edit a step (read a custom step before edit_step; mirror a lib step's implementation) — it adds the full TypeScript source of a lib/custom step, which you don't need to use the step in a workflow. Core steps have no source. `recentRuns` (when present) counts this step's KEPT run_step runs — read them with list_runs / get_run using the name `step:<type>`.",
       inputSchema: z.object({
         type: z.string().describe("Step type, e.g. 'http' or 'github/fetch-pr'"),
         source: z
@@ -116,11 +118,14 @@ export function buildTools(deps: AiDeps) {
         if (!def) {
           return { error: `Step type "${type}" not found` };
         }
+        const recentRuns = (await deps.store.listRuns(stepRunKey(type))).length;
         return {
           type,
           description: def.description,
           ...stepSchemas(def),
           ...(source ? { source: (await readStepSource(type, deps)) ?? null } : {}),
+          // Kept single-step runs: list_runs / get_run on the key `step:<type>`.
+          ...(recentRuns ? { recentRuns } : {}),
         };
       },
     }),
@@ -457,6 +462,7 @@ export function buildTools(deps: AiDeps) {
           controller: tracked?.controller,
           workflowHash:
             (await deps.workspace.getWorkflowHash(name, version)) ?? undefined,
+          stepHashes: await stepHashesFor(deps.workspace, flow),
         }).finally(() => tracked?.untrack());
 
         // No detach seam (tests / non-chat embedders) → await as before.
@@ -495,7 +501,7 @@ export function buildTools(deps: AiDeps) {
       description:
         "Run a SINGLE step in isolation with a given config + input, and return its output + events — WITHOUT wiring it into a workflow. This is the inner loop for authoring an adapter: create_step → run_step → edit_step → run_step until the output is right. " +
         "Set cassette:'record' to run live AND capture the step's external service calls (http, etc.) to a reusable fixture (secrets are scrubbed); then cassette:'replay' to iterate OFFLINE against that fixture — deterministic, no rate limits, no cost, no side effects (so you don't, e.g., create a real charge on every test). " +
-        "Returns { status, output?, error?, events, recorded? }.",
+        "Returns { runId, status, output?, error?, events, recorded?, kept? } — `kept` is the run-store key (`step:<type>`) when the run was persisted.",
       inputSchema: z.object({
         type: z.string().describe("Step type to run, e.g. 'stripe/list-charges' or 'http'."),
         config: z
@@ -518,22 +524,30 @@ export function buildTools(deps: AiDeps) {
           .string()
           .optional()
           .describe("Fixture name (defaults to the step type). Use distinct names to keep multiple scenarios per step."),
+        keep: z.boolean().optional().describe('Persist this run under the run-store key `step:<type>` (read it back with list_runs / get_run on that key). Runs of a step that has claims are kept automatically — they can become evidence; set this to keep a run of a step that has none.'),
       }),
-      execute: async ({ type, config, input, params, cassette, cassetteName }) => {
+      execute: async ({ type, config, input, params, cassette, cassetteName, keep }) => {
         const registry = deps.registry;
         if (!registry[type]) return { error: `Step type "${type}" not found` };
         if (cassette && !deps.dataDir) {
           return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
         }
-        return runSingleStep(type, registry, deps.services, {
-          config: coerceJsonArg(config) as Record<string, unknown> | undefined,
-          input: coerceJsonArg(input),
-          params: coerceJsonArg(params) as Record<string, unknown> | undefined,
-          workspace: deps.workspace,
-          ...(cassette
-            ? { cassette: { mode: cassette, path: cassettePath(deps.dataDir!, cassetteName ?? type) } }
-            : {}),
-        });
+        return runStep(
+          type,
+          registry,
+          deps.services,
+          {
+            config: coerceJsonArg(config) as Record<string, unknown> | undefined,
+            input: coerceJsonArg(input),
+            params: coerceJsonArg(params) as Record<string, unknown> | undefined,
+            workspace: deps.workspace,
+            keep: keep === true,
+            ...(cassette
+              ? { cassette: { mode: cassette, path: cassettePath(deps.dataDir!, cassetteName ?? type) } }
+              : {}),
+          },
+          { store: deps.store, workspace: deps.workspace, claims: claimsReaderFor(deps.workspace) },
+        );
       },
     }),
 

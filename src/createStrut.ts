@@ -34,7 +34,8 @@ import {
   MemorySecretStore,
   isValidSecretName,
 } from "./secret-store.js";
-import { runSingleStep, cassettePath } from "./run-step.js";
+import { runStep, cassettePath } from "./run-step.js";
+import { stepHashesFor } from "./closure.js";
 import { buildAuthoringCapability } from "./authoring.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -321,6 +322,8 @@ export async function createStrut<TServices = unknown>(
   opts: StrutOptions<TServices> = {},
 ): Promise<Strut<TServices>> {
   const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
+  // Null unless the workspace is graph-backed (see `Strut.claims`).
+  const claims = claimsReaderFor(workspace);
   // Backend mode, used ONLY to pick unspecified defaults: the run/chat/secret
   // stores follow the workspace's kind (file-backed → file stores under
   // dataDir; anything else → in-memory). No capability is gated on it —
@@ -1323,10 +1326,12 @@ export async function createStrut<TServices = unknown>(
 
   // Run a SINGLE step in isolation (synchronous) — the adapter author's inner
   // loop. Body: { config?, input?, params?, cassette?: "record"|"replay",
-  // cassetteName? }. With `cassette`, external `ctx.services` calls are recorded
+  // cassetteName?, keep? }. With `cassette`, external `ctx.services` calls are recorded
   // to / replayed from `steps/_cassettes/<name>.json` (secrets scrubbed), so the
-  // step can be iterated offline. Returns { status, output?, error?, events,
-  // recorded? }. Unlike workflow runs, this awaits and returns the result.
+  // step can be iterated offline. Returns { runId, status, output?, error?,
+  // events, recorded?, kept? }. Unlike workflow runs, this awaits and returns
+  // the result. The run is persisted under the store key `step:<type>` (never
+  // a workflow) when the step has claims or `keep` is set — `kept` names it.
   app.post("/steps/:type{.+}/run", async (c) => {
     const type = c.req.param("type");
     if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
@@ -1337,6 +1342,7 @@ export async function createStrut<TServices = unknown>(
         params?: Record<string, unknown>;
         cassette?: CassetteMode;
         cassetteName?: string;
+        keep?: boolean;
       }>()
       .catch(() => ({}) as Record<string, never>);
 
@@ -1345,15 +1351,22 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: `cassette must be "record" or "replay"` }, 400);
     }
 
-    const result = await runSingleStep(type, registry, services, {
-      config: body.config,
-      input: body.input,
-      params: body.params,
-      workspace,
-      ...(mode
-        ? { cassette: { mode, path: cassettePath(dataDir, body.cassetteName ?? type) } }
-        : {}),
-    });
+    const result = await runStep(
+      type,
+      registry,
+      services,
+      {
+        config: body.config,
+        input: body.input,
+        params: body.params,
+        workspace,
+        keep: body.keep === true,
+        ...(mode
+          ? { cassette: { mode, path: cassettePath(dataDir, body.cassetteName ?? type) } }
+          : {}),
+      },
+      { store, workspace, claims },
+    );
     return c.json(result);
   });
 
@@ -1408,6 +1421,7 @@ export async function createStrut<TServices = unknown>(
     void (async () => {
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
+      const stepHashes = await stepHashesFor(workspace, flow);
       return runWorkflow(flow, body.input ?? {}, registry, {
         runId,
         store,
@@ -1417,6 +1431,7 @@ export async function createStrut<TServices = unknown>(
         paramOverrides: body.paramOverrides,
         controller,
         ...(workflowHash ? { workflowHash } : {}),
+        ...(stepHashes ? { stepHashes } : {}),
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
       });
@@ -1918,6 +1933,7 @@ export async function createStrut<TServices = unknown>(
         typeof workflow === "string"
           ? ((await workspace.getWorkflowHash(workflow, runOpts?.version)) ?? undefined)
           : undefined;
+      const stepHashes = await stepHashesFor(workspace, flow);
       return await runWorkflow(flow, input, registry, {
         runId,
         store,
@@ -1928,6 +1944,7 @@ export async function createStrut<TServices = unknown>(
         onEvent: runOpts?.onEvent,
         controller,
         ...(workflowHash ? { workflowHash } : {}),
+        ...(stepHashes ? { stepHashes } : {}),
       });
     } finally {
       untrack();
@@ -2012,7 +2029,7 @@ export async function createStrut<TServices = unknown>(
     autoResumeStaleRuns,
     run,
     stt,
-    claims: claimsReaderFor(workspace),
+    claims,
     listen,
     close,
   };
