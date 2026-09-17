@@ -90,28 +90,31 @@ later add).
 
 | pair | carries |
 | --- | --- |
-| `Proposition` —`ABOUT`→ `StrutStep` / `StrutWorkflow` | the STABLE identity, never a version. `ABOUT` is minted because a proposition can be about any node (a feature, a repository, a concept); no existing edge type reads that way |
+| `Proposition` —`ABOUT`→ `StrutStep` / `StrutWorkflow` | the STABLE identity, never a version. **Many-to-many**: one proposition may be about several subjects (a contract every candidate in a lineage must meet; a timestamp rule shared by two steps), and a subject has many propositions. `ABOUT` is minted because a proposition can be about any node (a feature, a repository, a concept); no existing edge type reads that way |
+| `Evidence` —`ABOUT`→ `StrutWorkflowVersion` / `StrutStepVersion` | the exact version the observation was made on. Written by whoever writes the evidence; this is what makes status per (proposition, subject) a direct lookup, including for nested subflow executions and single-step runs |
 | `Proposition` —`EVIDENCED_BY {strength}`→ `Evidence` | `+1` supports, `−1` refutes |
-| `Evidence` —`HAS_SOURCE {context, start_time, end_time, post_url}`→ `StrutRun` | `context` = the step's event path (`wf/compute_times`) and the cassette mode; time span / url when the check has one |
+| `Evidence` —`HAS_SOURCE {context, start_time, end_time, post_url}`→ `StrutRun` | provenance: the run and, in `context`, the step's event path (`wf/compute_times`) and the cassette mode; time span / url when the check has one |
 | `StrutRun` —`EXECUTED`→ `StrutStepVersion` | new pair for single-step runs (§3) |
 
-Versions are reached through evidence, not attached to propositions:
-`Evidence → StrutRun → EXECUTED → version`. "Which versions satisfy this"
-is a path query; a version that breaks a proposition shows as refuting
-evidence dated after it.
+A proposition is a statement; a subject is something it is claimed of.
+Evidence is always about ONE version of ONE subject, so the same
+proposition attached to five workflows has five independent statuses.
+"Which versions satisfy this" is one hop from the evidence; a version that
+breaks a proposition shows as refuting evidence on that version.
 
-### Status is computed on read (`src/graph/propositions.ts`)
+### Status is computed on read, per (proposition, subject) (`src/graph/propositions.ts`)
 
 ```
+evidence := the proposition's evidence ABOUT any version of THIS subject
 no evidence                                    → unknown
 latest evidence strength < 0                   → refuted
 latest evidence strength > 0                   → supported
-subject's active version published AFTER
-  the latest evidence's observed_at            → stale   (overrides the two above)
+latest evidence is ABOUT a version that is not
+  the subject's active version                 → stale   (overrides the two above)
 plus: assertedOnly = no evidence with evidence_mode = observed
 ```
 
-One pure function over `(proposition, evidence[], subjectActiveVersionAt)`.
+One pure function over `(proposition, subject, evidence[], activeVersion)`.
 No verdict is ever stored on the node. jarvis's richer scorer (source
 authority, independence, `answer_volatility` decay) can replace this
 function later without touching the nodes.
@@ -142,7 +145,11 @@ Propositions are graph nodes with their own tools. Two doors onto one write.
 `create_workflow`, `edit_workflow` (`src/ai/tools.ts`, shared core in
 `src/authoring.ts` so the `meta/*` twins get it free) take
 `propositions?: Array<{ text, check?: { type, config }, when?, why? }>`.
-Publish writes each as a `Proposition` + `ABOUT`. The publish result
+Publish writes each as a `Proposition` + `ABOUT` the published subject.
+Door two's `add_proposition` takes one or MORE subjects, and
+`attach_proposition(id, subject)` / `detach_proposition(id, subject)` add
+or remove a subject on an existing one — attaching is how a contract is
+shared, never by copying the node. The publish result
 gains `propositions: <count>`; zero returns a warning the assistant has to
 answer. Editing a proposition never publishes a version.
 
@@ -398,10 +405,15 @@ hand in ≤2 runs, plus the format rules the author tunes prompts for:
 
 The last row is the promotion-review item gaia-evolve's header assigns to
 a human ("Review must also check the candidate never embeds
-gaia/evaluate") — it becomes evidence on every publish. The harness copies
-the base workflow's propositions onto the candidate deterministically
-(a `meta/copy-propositions` step in `gaia-evolve-gen` after `author`), so
-an author can add propositions but cannot drop the contract.
+gaia/evaluate") — it becomes evidence on every publish. The contract is
+ONE set of proposition nodes, `ABOUT` the base workflow AND every
+candidate: `gaia-evolve-gen` attaches them to the candidate after `author`
+(`meta/attach-proposition` for each active proposition of
+`params.baseWorkflow`; idempotent — an existing edge is a no-op). Nothing
+is copied, so editing the contract edits it for the whole lineage, and
+"which candidates satisfy it" is one query. An ai author can attach and
+add, but `detach` of a proposition it did not write is refused (fixed
+point 1), so it cannot drop the contract.
 
 **Where the score goes.** The harness IS the check for the fitness
 proposition ("the candidate's accuracy on the task set is ≥ baseline").
@@ -453,7 +465,7 @@ are persisted step runs with `cost`, so the number exists).
 2. `run_step` persists (§3) + projector pair.
 3. Authoring tools + `propositions` arg + publish count + prompt section (§2).
 4. `verify.ts` + check contract + triggers + `add_evidence` + `meta/verify-run`
-   + `meta/add-evidence` + `meta/copy-propositions` (§4, §6).
+   + `meta/add-evidence` + `meta/attach-proposition` (§4, §6).
 5. Ledger in run results + the `[verify-notification]` through the
    notifier (§5).
 6. UI panel.
@@ -485,7 +497,9 @@ are persisted step runs with `cost`, so the number exists).
 ## Decided
 
 - Type name: `Proposition` (not a `Claim` migration).
-- Subject edge: `ABOUT`, minted, `Proposition → subject`.
+- Subject edge: `ABOUT`, minted, `Proposition → subject`, many-to-many;
+  also `Evidence → version` so status is per (proposition, subject).
+- Shared contracts are attached, never copied.
 - Step runs: store key `step:<type>` in a separate `steps/<type>/runs/`
   bucket; persisted only when the step has propositions or `keep: true`;
   projected only when evidence attaches (§3).
