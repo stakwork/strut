@@ -59,8 +59,8 @@ claim tools are offered and the verify pass is a no-op.
 
 ### Nodes
 
-**`Claim`** — jarvis's type, unchanged after migration 124 (Content domain,
-node_key `claim-id`). One plain-English sentence about how a subject should
+**`Claim`** — jarvis's type, unchanged after migration 124 (`Epistemic`
+domain, Thing-parented, node_key `claim-id`). One plain-English sentence about how a subject should
 behave. Strut writes:
 
 | attribute | type | strut writes |
@@ -193,7 +193,8 @@ the nodes.
 - **jarvis, migration 124 — PR open** (`ontology_124_claim_flexible_identity`,
   stakwork/jarvis-backend#3121; upstream took 123 for an unrelated index):
   `Claim` re-keyed on `id`, `speaker_name` optional, `paid_properties`
-  emptied to `[]`, old Claim nodes deleted. Deploy note: every Claim writer must now
+  emptied to `[]`, re-homed from `Content` to the `Epistemic` domain
+  (Thing-parented, beside `Evidence`), old Claim nodes deleted. Deploy note: every Claim writer must now
   send `id` (the podcast claim-extraction workflows included).
 - **jarvis, migration 125:** seeds the `Check` node and the five new pairs
   in the table above — `Claim —ABOUT→ Thing`, `Evidence —ABOUT→ Thing`,
@@ -799,6 +800,11 @@ persisted step runs with `cost`, so the number exists).
   inherits `EVIDENCED_BY`, `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM` and
   `MADE_CLAIM` instead of re-seeding them: one vocabulary whether a claim
   was said on a podcast or written about a workflow.
+- `Claim` lives in jarvis's `Epistemic` domain with `Check` and `Evidence`
+  (re-homed by migration 124, in the same PR — free there because 124
+  deletes every Claim, so no node carried a `Domain_content` label). One
+  `?domains=epistemic` read returns the whole layer, and hiding `Content`
+  no longer hides the claims while leaving their checks and evidence.
 - The check is its own node, `Check`. Not `Policy`: jarvis already has a
   `Policy` type (Legal domain, a policy document, `policy-name`), `Check` is
   the name jarvis's own doc gave this deferred node, and `policy` is already
@@ -848,7 +854,3 @@ persisted step runs with `cost`, so the number exists).
 - jarvis migration 125: whether `ABOUT` needs an entry in jarvis's
   `EDGE_TYPES` allowlist or only edge schemas, and whether `→ Thing` pairs
   resolve for `Strut*` endpoints the way `HAS_SOURCE → Thing` does.
-
-- `Claim` lives in jarvis's `Content` domain, `Check` and `Evidence` in
-  `Epistemic`. An operator who hides Content hides the claims but not their
-  checks and evidence. Re-home `Claim` to `Epistemic` in 125, or leave it?
