@@ -32,8 +32,8 @@ server without a rebuild (proposed).
 strut/
 ├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions
 ├── package.json           # engine deps (hono, zod, ai sdk)
-├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend by default
-├── docker-compose.yml     # test/local compose for it (named volumes for /data/workspace, /data/models, uv cache)
+├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend on a bare `docker run`
+├── docker-compose.yml     # test/local compose: that image on the graph backend + a neo4j:5 container (named volumes for neo4j data, /data/workspace, /data/models, uv cache)
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
 │   ├── core.ts            # flow(), step(), defineStep(), services bag, all types
@@ -150,10 +150,15 @@ npm run dev                 # Vite on :5173, proxies API to :3000
 cd strut/web && npm run build  # outputs web/dist/
 cd strut && npm run dev        # serves API + UI on :3000
 
-# Docker — the standalone image (Dockerfile): fs backend, media tools baked in
-# (ffmpeg, yt-dlp, tesseract, poppler, pandoc, agent python venv, uv). Data
-# lives in named volumes: workspace, models, uv cache (docker-compose.yml).
-docker compose up --build      # http://localhost:3000
+# Docker — the standalone image (Dockerfile), media tools baked in (ffmpeg,
+# yt-dlp, tesseract, poppler, pandoc, agent python venv, uv), on the GRAPH
+# backend beside its own neo4j:5 (jarvis ontology seeded, MiniLM embeddings on).
+# Data lives in named volumes: neo4j, workspace, models, uv cache. Neo4j's host
+# ports are offset (Browser :7475, bolt :7689; STRUT_NEO4J_HTTP_PORT /
+# STRUT_NEO4J_BOLT_PORT) to stay clear of a local Neo4j and the test:graph one.
+docker compose up --build      # http://localhost:3000 (STRUT_HOST_PORT=3100 when `npm run dev` has 3000)
+# Same image on the fs backend, no Neo4j:
+docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs strut
 ```
 
 ## Environment
