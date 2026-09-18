@@ -366,4 +366,84 @@ describe("chat endpoints", () => {
     assert.ok(text.includes("chat.error"), text);
     assert.ok(text.includes("OPENAI_API_KEY"), text);
   });
+  /** A stand-in host: collects the callbacks a chat posts. */
+  async function callbackHost(): Promise<{ url: string; posts: any[]; close: () => void }> {
+    const posts: any[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => {
+        posts.push({ path: req.url, body: JSON.parse(body) });
+        res.writeHead(204).end();
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    return { url: `http://127.0.0.1:${port}/hook?token=s3cret`, posts, close: () => server.close() };
+  }
+
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(cond(), "condition never held");
+  }
+
+  it("POST /chat { callback } posts each turn end to the host, and never returns the URL", async () => {
+    const strut = await makeStrut();
+    const host = await callbackHost();
+    try {
+      const post = (body: unknown) =>
+        strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+      const res = await post({ message: "build it", callback: { url: host.url } });
+      assert.equal(res.status, 202);
+      const { chatId, callback } = (await res.json()) as { chatId: string; callback?: boolean };
+      assert.equal(callback, true, "the host's proof this server honors callbacks");
+
+      // No provider key → the turn fails at once; the host hears about it.
+      await until(() => host.posts.length === 1);
+      assert.equal(host.posts[0].path, "/hook?token=s3cret");
+      const { error, ...payload } = host.posts[0].body;
+      assert.deepEqual(payload, { event: "turn.end", chatId, turn: 0, status: "error", trigger: "human", settled: true, parked: false });
+      assert.match(error.message, /ANTHROPIC_API_KEY/);
+
+      // The URL is a credential: reads return its origin only.
+      const origin = new URL(host.url).origin;
+      const one = (await (await strut.app.request(`/chat/${chatId}`)).json()) as { meta: { callback: unknown } };
+      assert.deepEqual(one.meta.callback, { origin });
+      const list = (await (await strut.app.request("/chats")).json()) as Array<{ callback: unknown }>;
+      assert.deepEqual(list[0]!.callback, { origin });
+      assert.equal((await chatStore.getMeta(chatId))!.callback!.url, host.url);
+
+      // It stays on the chat: a later turn without the field still posts…
+      await settled(chatId);
+      const again = await post({ chatId, message: "again" });
+      assert.equal(((await again.json()) as { callback?: boolean }).callback, true);
+      await until(() => host.posts.length === 2);
+      assert.equal(host.posts[1].body.turn, 1);
+
+      // …until it is cleared.
+      await settled(chatId);
+      const cleared = await post({ chatId, message: "quietly", callback: null });
+      assert.equal(((await cleared.json()) as { callback?: boolean }).callback, undefined);
+      await settled(chatId);
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(host.posts.length, 2);
+      assert.equal((await chatStore.getMeta(chatId))!.callback, undefined);
+    } finally {
+      host.close();
+    }
+  });
+
+  it("POST /chat with a bad callback is a 400 and creates nothing", async () => {
+    const strut = await makeStrut();
+    for (const callback of [{}, { url: "nope" }, { url: "ftp://host/x" }, "https://host/x"]) {
+      const res = await strut.app.request("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "hi", callback }),
+      });
+      assert.equal(res.status, 400, JSON.stringify(callback));
+    }
+    assert.deepEqual(await chatStore.listChats(), []);
+  });
 });

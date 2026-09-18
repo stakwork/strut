@@ -52,6 +52,11 @@ export interface ChatMeta {
    *  `POST /chat`; at `STRUT_CHAT_MAX_AUTO_TURNS` the chat parks (see
    *  `ai/notifier.ts`). */
   autoTurns?: number;
+  /** Where a host hears about this chat's turn ends (`POST /chat { callback }`;
+   *  see `ai/turn-callback.ts`). On the chat, not the turn: notification-
+   *  triggered turns post here too. The URL is a credential — read endpoints
+   *  return its origin only. */
+  callback?: { url: string };
 }
 
 export type ChatEventType =
