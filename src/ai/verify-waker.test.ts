@@ -90,4 +90,36 @@ describe("verify waker", () => {
     broken.watch("r1", "chat-A");
     assert.equal(await broken.ledgerLinesFor("clipper", "r1"), "");
   });
+  it("a watched run is an expected wake-up until its verdict is delivered, folded in, or found to be nothing", async () => {
+    const held = (deliverMs = 0) => {
+      const log: string[] = [];
+      const waker = createVerifyWaker({
+        graceMs: 200,
+        expect: (chatId) => (log.push(`expect ${chatId}`), () => log.push("release")),
+        deliver: async () => {
+          await new Promise((r) => setTimeout(r, deliverMs));
+          log.push("delivered");
+        },
+        verifier: { verifyRun: async () => result(), ledger: async () => LEDGER },
+      });
+      return { waker, log };
+    };
+
+    const woke = held(5);
+    woke.waker.watch("r1", "chat-A");
+    woke.waker.watch("r1", "chat-A"); // run_workflow re-watching is not a second wake-up
+    await woke.waker.settled(result());
+    assert.deepEqual(woke.log, ["expect chat-A", "delivered", "release"], "released AFTER the turn it launches is live");
+
+    const nothing = held();
+    nothing.waker.watch("r1", "chat-A");
+    await nothing.waker.settled(result({ subjects: [] }));
+    assert.deepEqual(nothing.log, ["expect chat-A", "release"]);
+
+    const folded = held();
+    folded.waker.watch("r1", "chat-A");
+    await folded.waker.ledgerLinesFor("clipper", "r1");
+    await folded.waker.settled(result());
+    assert.deepEqual(folded.log, ["expect chat-A", "release"]);
+  });
 });
