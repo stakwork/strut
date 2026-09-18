@@ -79,13 +79,25 @@ export function usageFromEvaluation(u: { inputTokens?: number; outputTokens?: nu
 export function modelEvaluate(model: unknown, opts: { abortSignal?: AbortSignal } = {}): Evaluate {
   return async <Q extends Record<string, EvalQuestion>>({ state, questions }: { state: EvalInput; questions: Q }): Promise<EvaluateResult<Q>> => {
     if (Object.keys(questions).length === 0) return { answers: {} as EvaluateResult<Q>["answers"], usage: usageFromEvaluation(undefined) };
-    const { experimental_evaluate } = await import("ai");
-    const result = await experimental_evaluate({
-      model: model as any,
-      state: state as any,
-      questions: questions as any,
-      ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-    });
-    return { answers: result.answers as EvaluateResult<Q>["answers"], usage: usageFromEvaluation(result.usage) };
+    const { experimental_evaluate, InvalidResponseDataError } = await import("ai");
+    try {
+      const result = await experimental_evaluate({
+        model: model as any,
+        state: state as any,
+        questions: questions as any,
+        ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+      });
+      return { answers: result.answers as EvaluateResult<Q>["answers"], usage: usageFromEvaluation(result.usage) };
+    } catch (e) {
+      // jev's choice is not always the argmax of its (rounded) probabilities
+      // on near-ties across many options (seen live: choice f2 @0.12 beside
+      // f3 @0.13), and the SDK rejects the whole answer set. Every answer is
+      // otherwise valid, so keep them and the model's own choice. Usage is
+      // not on the error, so this call counts as zero.
+      if (InvalidResponseDataError.isInstance(e) && /did not select a highest-probability option/.test(e.message) && e.data && typeof e.data === "object") {
+        return { answers: e.data as EvaluateResult<Q>["answers"], usage: usageFromEvaluation(undefined) };
+      }
+      throw e;
+    }
   };
 }

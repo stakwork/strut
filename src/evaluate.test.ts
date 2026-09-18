@@ -77,6 +77,18 @@ describe("evaluate: modelEvaluate over an evaluation model", () => {
     await assert.rejects(evaluate({ state: "s", questions: QUESTIONS }));
   });
 
+  it("a choice that is not the argmax (jev on a near-tie) is kept as the model chose it, usage zero", async () => {
+    const evaluate = modelEvaluate(fakeEvaluationModel({
+      next: { type: "choice", choice: "c0", probabilities: { c0: 0.45, c1: 0.47, none: 0.08 } },
+      severity: { type: "score", score: 1 },
+      relevant_c0: { type: "boolean", probability: 0.5 },
+    }, { calls: 0 }));
+    const r = await evaluate({ state: "s", questions: QUESTIONS });
+    assert.equal(r.answers.next.choice, "c0");
+    assert.equal(r.answers.relevant_c0.probability, 0.5);
+    assert.equal(r.usage.totalTokens, 0);
+  });
+
   it("no questions: no model call, empty answers", async () => {
     const seen = { calls: 0 };
     const r = await modelEvaluate(fakeEvaluationModel({}, seen))({ state: "s", questions: {} });
