@@ -1,0 +1,36 @@
+name: tests
+
+# Runs the unit suite (`npm test`) on every pull request. Install mirrors the
+# Dockerfile: yarn.lock is the lockfile, and --ignore-scripts skips the root
+# `prepare` (tsc + web install + web build) — tsx runs the .ts tests directly,
+# and the two web tests only import root sources. The graph and STT suites need
+# Neo4j / a model download and stay opt-in (see AGENTS.md).
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: yarn
+
+      - name: Install
+        run: yarn install --frozen-lockfile --ignore-scripts
+
+      - name: Test
+        run: npm test
