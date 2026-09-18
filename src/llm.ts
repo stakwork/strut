@@ -69,6 +69,68 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   };
 }
 
+// ── evaluation models (for `experimental_evaluate`) ─────────────────────────
+
+/** Where TypeSafe's key lives (secret store or env). */
+export const TYPESAFE_KEY_NAME = "TYPESAFE_AI_API_KEY";
+
+export interface ResolvedEvaluationModel {
+  /** Canonical "<provider>/<modelId>" — "typesafe/jev-latest", "anthropic/claude-haiku-…". */
+  name: string;
+  /** The AI SDK EvaluationModel. Typed loosely so `ai` stays lazy. */
+  model: any;
+}
+
+/** "jev", "jev-latest", "typesafe/<id>" → the TypeSafe model id; else undefined. */
+function typesafeModelId(model: string | undefined): string | undefined {
+  const m = model?.trim();
+  if (!m) return undefined;
+  if (m.startsWith("typesafe/")) return m.slice("typesafe/".length) || "jev-latest";
+  if (m === "jev") return "jev-latest";
+  return /^jev-/.test(m) ? m : undefined;
+}
+
+/**
+ * Name → an evaluation model for `experimental_evaluate` (src/evaluate.ts).
+ *
+ * - "jev" / "jev-<ver>" / "typesafe/<id>": TypeSafe's jev, keyed by
+ *   `TYPESAFE_AI_API_KEY` (secret store, then env) — throws naming it when
+ *   missing.
+ * - no model and no provider: jev when that key is configured, otherwise
+ *   `fallback` (the caller's default language model, e.g. STRUT_LLM_*)
+ *   as below.
+ * - anything else: `resolveModel` (same names, aliases and key errors as
+ *   the llm step) wrapped in the SDK's `EvaluationLanguageModel`, which
+ *   answers the questions with one structured-output call.
+ */
+export async function resolveEvaluationModel(
+  opts: ResolveModelOptions & { fallback?: { model?: string; provider?: string } } = {},
+): Promise<ResolvedEvaluationModel> {
+  const getKey = async () =>
+    (await opts.secrets?.get(TYPESAFE_KEY_NAME))?.trim() || process.env[TYPESAFE_KEY_NAME]?.trim() || undefined;
+  let jevId = opts.provider ? undefined : typesafeModelId(opts.model);
+  let apiKey: string | undefined;
+  if (jevId) {
+    apiKey = await getKey();
+    if (!apiKey) throw new Error(`model "${opts.model}" needs ${TYPESAFE_KEY_NAME} (set it under Secrets or in env)`);
+  } else if (!opts.model && !opts.provider) {
+    apiKey = await getKey();
+    if (apiKey) jevId = "jev-latest";
+  }
+  if (jevId && apiKey) {
+    const { createTypeSafeAi } = await import("@ai-sdk/typesafe-ai");
+    return { name: `typesafe/${jevId}`, model: createTypeSafeAi({ apiKey }).evaluationModel(jevId) };
+  }
+  const named = !!(opts.model || opts.provider);
+  const r = await resolveModel({
+    model: named ? opts.model : opts.fallback?.model,
+    provider: named ? opts.provider : opts.fallback?.provider,
+    secrets: opts.secrets,
+  });
+  const { Experimental_EvaluationLanguageModel } = await import("@ai-sdk/provider-utils/experimental-evaluation");
+  return { name: r.name, model: new Experimental_EvaluationLanguageModel({ model: r.model, provider: `${r.provider}.evaluation` }) };
+}
+
 export interface WebTools {
   /** `web_search` and/or `web_fetch`, ready to spread into a tool set. A
    *  tool is absent when its backend has no key: search off anthropic

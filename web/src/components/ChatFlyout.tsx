@@ -9,12 +9,14 @@ import { ToolResultView } from "./ToolResultView";
 import { NoticeView } from "./NoticeView";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { Markdown } from "./Markdown";
+import { WalkView } from "./WalkView";
 
 // ── Chat Flyout (AI workflow builder) ──────────────────────────────────────
 
 /** A tool RESULT paired to its call. `isError` = the tool threw. */
 type ToolResult = { output: unknown; isError: boolean };
-type ToolCall = api.ToolCallInfo & { result?: ToolResult };
+/** `progress`: a streaming tool's intermediate outputs (graph_walk's hops). */
+type ToolCall = api.ToolCallInfo & { result?: ToolResult; progress?: unknown[] };
 type ToolGroup = { name: string; calls: ToolCall[] };
 
 type ChatEntry =
@@ -72,6 +74,15 @@ function attachResult(
   toolCallId: string | undefined,
   result: ToolResult,
 ): { entries: ChatEntry[]; call: ToolCall | null } {
+  return updateCall(entries, toolCallId, (c) => ({ ...c, result }));
+}
+
+/** Replace the call with this id (searched from the end) by `fn(call)`. */
+function updateCall(
+  entries: ChatEntry[],
+  toolCallId: string | undefined,
+  fn: (c: ToolCall) => ToolCall,
+): { entries: ChatEntry[]; call: ToolCall | null } {
   if (!toolCallId) return { entries, call: null };
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
@@ -80,7 +91,7 @@ function attachResult(
       const g = e.groups[j]!;
       const k = g.calls.findIndex((c) => c.toolCallId === toolCallId);
       if (k < 0) continue;
-      const call: ToolCall = { ...g.calls[k]!, result };
+      const call = fn(g.calls[k]!);
       const groups = e.groups.slice();
       groups[j] = { ...g, calls: g.calls.map((c, idx) => (idx === k ? call : c)) };
       const next = entries.slice();
@@ -465,6 +476,12 @@ export function ChatFlyout(props: {
           props.onWorkflowRan(input.name, tr.output.runId);
         }
       },
+      onToolProgress: (p) => {
+        if (signal.aborted) return;
+        const add = (c: ToolCall): ToolCall => ({ ...c, progress: [...(c.progress ?? []), p.output] });
+        toolBuf = toolBuf.map((c) => (c.toolCallId === p.toolCallId ? add(c) : c));
+        setEntries((prev) => updateCall(prev, p.toolCallId, add).entries);
+      },
       onStepFinish: () => {
         textBuf = "";
         toolBuf = [];
@@ -702,6 +719,21 @@ export function ChatFlyout(props: {
               <div key={i} class="chat-tool-calls">
                 {entry.groups.map((g, j) => {
                   const key = `${i}:${j}`;
+                  // A graph walk renders as its live graph, not a JSON chip.
+                  if (g.name === "graph_walk") {
+                    return g.calls.map((tc, k) => (
+                      <WalkView
+                        key={`${j}:${tc.toolCallId ?? k}`}
+                        chatId={chatId}
+                        toolCallId={tc.toolCallId}
+                        input={tc.input}
+                        progress={tc.progress}
+                        result={tc.result}
+                        live={loading && i === entries.length - 1}
+                        onOpenRun={props.onWorkflowRan}
+                      />
+                    ));
+                  }
                   const isOpen = !!expanded[key];
                   const count = g.calls.length;
                   const status = groupStatus(g, loading && i === entries.length - 1);

@@ -228,7 +228,7 @@ describe("claims graph: node contract + reads (live Neo4j)", { skip: cfg ? false
       { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V1, created_at: now - 100 } },
       { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V2, created_at: now - 50 } },
       { type: "StrutWorkflow", data: { name: "youtube-clip", active_version: "wf-hash" } },
-      { type: "StrutRun", data: { run_id: "run-1", workflow_name: "step:clip/compute-times", status: "success", started_at: now - 10 } },
+      { type: "StrutRun", data: { run_id: "run-1", workflow_name: "step:clip/compute-times", run_status: "success", started_at: now - 10 } },
     ]);
     [ref["step"], ref["v1"], ref["v2"], ref["wf"], ref["run"]] = made.map((m) => m.ref_id);
   });

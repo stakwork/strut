@@ -1,30 +1,9 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
-const LABEL_MAX = 160;
+import { graphCtx, errText, deriveNodeName } from "./_shared.js";
 const NEIGHBOR_CAP = 50;
 const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn"];
-
-/** Nodes keep their human label under different keys depending on node
- *  type — try a generous ordered candidate list (same as jarvis/graph-get). */
-function deriveNodeName(node: any, p: Record<string, any>): string {
-  const candidates = [
-    node?.name, p.name, p.title, p.label, p.display_name, p.displayName,
-    p.identifier, p.file_name, p.fileName, p.file, p.path, p.symbol,
-    p.function_name, p.class_name, p.method_name, p.operation_id, p.endpoint,
-    p.route, p.url, p.entity, p.key, p.slug, p.episode_title, p.show_title,
-    p.username, p.email, p.summary, p.description, p.text, p.content, p.body, p.docs,
-    p.workflow_name, p.step_type, p.run_id, p.tool_name, p.chat_id,
-  ];
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim().length > 0) {
-      const t = c.trim();
-      return t.length > LABEL_MAX ? t.slice(0, LABEL_MAX) : t;
-    }
-  }
-  return "";
-}
 
 export default defineStep({
   type: "graph/graph-neighbors",

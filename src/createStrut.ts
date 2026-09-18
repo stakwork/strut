@@ -1777,41 +1777,9 @@ export async function createStrut<TServices = unknown>(
           });
 
           for await (const part of result.stream) {
-            switch (part.type) {
-              case "text-delta":
-                if (part.text) await emit({ type: "text-delta", delta: part.text });
-                break;
-              case "tool-call":
-                await emit({
-                  type: "tool-input",
-                  toolName: part.toolName,
-                  toolCallId: part.toolCallId,
-                  input: part.input,
-                });
-                break;
-              case "tool-result":
-                await emit({
-                  type: "tool-output",
-                  toolName: part.toolName,
-                  toolCallId: part.toolCallId,
-                  output: part.output,
-                });
-                break;
-              case "tool-error":
-                await emit({
-                  type: "tool-output",
-                  toolName: part.toolName,
-                  toolCallId: part.toolCallId,
-                  output: part.error instanceof Error ? part.error.message : String(part.error),
-                  isError: true,
-                });
-                break;
-              case "finish-step":
-                await emit({ type: "step.finish" });
-                break;
-              case "error":
-                throw part.error;
-            }
+            if (part.type === "error") throw part.error;
+            const e = chatEventOf(part);
+            if (e) await emit(e);
           }
 
           // Every step's messages (tool calls + results), not just the last:
@@ -2005,6 +1973,26 @@ export async function createStrut<TServices = unknown>(
     });
 
     // Full chat transcript + meta (for reload / reattach).
+    // A streaming tool call's progress (graph_walk's hop events), for a chat
+    // loaded from history: messages.jsonl keeps only the final result, the
+    // event log keeps every `tool-progress`. Scans finished turns, newest first.
+    app.get("/chat/:chatId/progress/:toolCallId", async (c) => {
+      const chatId = c.req.param("chatId");
+      const toolCallId = c.req.param("toolCallId");
+      let meta = await chatStore.getMeta(chatId);
+      if (!meta) return c.json({ error: `Chat "${chatId}" not found` }, 404);
+      meta = await reconcileStaleChat(meta);
+      const last = meta.status === "live" ? meta.currentTurn - 1 : meta.currentTurn;
+      for (let turn = last; turn >= 0; turn--) {
+        const outputs: unknown[] = [];
+        for await (const e of chatStore.tailEvents(chatId, turn)) {
+          if (e.type === "tool-progress" && e.toolCallId === toolCallId) outputs.push(e.output);
+        }
+        if (outputs.length) return c.json({ outputs });
+      }
+      return c.json({ outputs: [] });
+    });
+
     app.get("/chat/:chatId", async (c) => {
       const chatId = c.req.param("chatId");
       let meta = await chatStore.getMeta(chatId);
@@ -2048,6 +2036,7 @@ export async function createStrut<TServices = unknown>(
 
   if (serveUi) {
     app.use("/assets/*", serveStatic({ root: webDist }));
+    app.use("/favicon.ico", serveStatic({ root: webDist }));
 
     app.get("*", async (c) => {
       const path = c.req.path;
@@ -2228,4 +2217,47 @@ function contentTypeFor(path: string): string {
     vtt: "text/vtt; charset=utf-8",
   };
   return map[ext] ?? "application/octet-stream";
+}
+
+/**
+ * One agent stream part → the chat event it persists as (null = not logged).
+ * A generator tool's intermediate yields arrive as PRELIMINARY tool-results
+ * (graph_walk's hops) and become `tool-progress`; only the last yield is the
+ * tool's `tool-output`, and only it reaches messages.jsonl.
+ */
+export function chatEventOf(part: {
+  type: string;
+  text?: string;
+  toolName?: string;
+  toolCallId?: string;
+  input?: unknown;
+  output?: unknown;
+  error?: unknown;
+  preliminary?: boolean;
+}): (Partial<ChatEvent> & { type: ChatEvent["type"] }) | null {
+  switch (part.type) {
+    case "text-delta":
+      return part.text ? { type: "text-delta", delta: part.text } : null;
+    case "tool-call":
+      return { type: "tool-input", toolName: part.toolName, toolCallId: part.toolCallId, input: part.input };
+    case "tool-result":
+      return {
+        type: part.preliminary ? "tool-progress" : "tool-output",
+        toolName: part.toolName,
+        toolCallId: part.toolCallId,
+        output: part.output,
+      };
+    case "tool-error":
+      return {
+        type: "tool-output",
+        toolName: part.toolName,
+        toolCallId: part.toolCallId,
+        output: part.error instanceof Error ? part.error.message : String(part.error),
+        isError: true,
+      };
+    case "finish-step":
+      return { type: "step.finish" };
+    default:
+      return null;
+  }
 }

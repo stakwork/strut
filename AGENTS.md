@@ -63,7 +63,7 @@ strut/
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
-│   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus two strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
+│   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus three strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, walk gathers context for a goal hop by hop with a decision model (jev via experimental_evaluate, or a wrapped LLM) judging relevance/next/enough — plans/graph-walk.md); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
 │   ├── ai/                # AI workflow-builder backend (used by POST /chat)
 │   │   ├── index.ts       # barrel export
@@ -72,8 +72,10 @@ strut/
 │   │   │                  #                   list_secrets (NAMES only), create_step, edit_step,
 │   │   │                  #                   create_workflow, run_workflow (threads ctx.services),
 │   │   │                  #                   graph_query (read-only Cypher; only when deps.graph is wired),
+│   │   │                  #                   graph_walk (graph/walk as a chat tool; same gate),
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
 │   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts)
+│   │   ├── walk-tool.ts   # graph_walk: an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
 │   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)
@@ -113,6 +115,7 @@ strut/
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
+        ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage)
@@ -125,6 +128,8 @@ strut/
         │   ├── SecretsDialog.tsx     # manage deployment secrets (write-only values; names+meta listed)
         │   ├── StepEditFlyout.tsx    # edit step (id / type / config / depends / options)
         │   ├── StepRunFlyout.tsx     # view a step's run I/O (leaf: input/output; container: aggregate summary)
+        │   ├── WalkView.tsx          # a graph_walk call in the chat: paced hop playback (live) / final state + replay (history), node detail, open run
+        │   ├── WalkGraph.tsx         # d3-force graph of a walk (ported from hive): ONE simulation for the component's life, nodes kept by id, joins not rebuilds
         │   └── FlyoutResizer.tsx     # drag handle for flyout width
         └── styles/
             ├── base.css       # palette (CSS vars on :root), reset, type

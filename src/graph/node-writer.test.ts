@@ -35,7 +35,7 @@ function rejects(fn: () => unknown, code: string, attribute?: string) {
 const RUN = {
   run_id: "1725220000123",
   workflow_name: "harvey-deliver",
-  status: "success",
+  run_status: "success",
   summary: "Delivered 60 of 60",
   started_at: "2026-09-01T20:00:00Z",
   duration_ms: 1234,
@@ -67,10 +67,10 @@ describe("validateNode (§6 gate)", () => {
     assert.equal(v.values["weight"], 2);
   });
   it("rejects missing / null / empty required attributes", () => {
-    const { status: _s, ...noStatus } = RUN;
-    rejects(() => validateNode("StrutRun", noStatus), "MISSING_REQUIRED", "status");
-    rejects(() => validateNode("StrutRun", { ...RUN, status: null }), "MISSING_REQUIRED", "status");
-    rejects(() => validateNode("StrutRun", { ...RUN, status: "" }), "MISSING_REQUIRED", "status");
+    const { run_status: _s, ...noStatus } = RUN;
+    rejects(() => validateNode("StrutRun", noStatus), "MISSING_REQUIRED", "run_status");
+    rejects(() => validateNode("StrutRun", { ...RUN, run_status: null }), "MISSING_REQUIRED", "run_status");
+    rejects(() => validateNode("StrutRun", { ...RUN, run_status: "" }), "MISSING_REQUIRED", "run_status");
   });
   it("drops optional null/undefined/empty values instead of writing them", () => {
     const v = validateNode("StrutRun", { ...RUN, summary: "", log_ref: null, error_message: undefined });
@@ -82,7 +82,7 @@ describe("validateNode (§6 gate)", () => {
     rejects(() => validateNode("StrutRun", { ...RUN, duration_ms: true }), "WRONG_TYPE", "duration_ms");
     rejects(() => validateNode("StrutRun", { ...RUN, duration_ms: 1.5 }), "WRONG_TYPE", "duration_ms");
     rejects(() => validateNode("StrutRun", { ...RUN, duration_ms: "12" }), "WRONG_TYPE", "duration_ms");
-    rejects(() => validateNode("StrutRun", { ...RUN, status: 1 }), "WRONG_TYPE", "status");
+    rejects(() => validateNode("StrutRun", { ...RUN, run_status: 1 }), "WRONG_TYPE", "run_status");
     rejects(() => validateNode("StrutRun", { ...RUN, is_muted: "no" }), "WRONG_TYPE", "is_muted");
     rejects(() => validateNode("StrutRun", { ...RUN, started_at: "yesterday" }), "INVALID_DATETIME", "started_at");
     // int-where-float is fine.
@@ -122,13 +122,13 @@ describe("composeNodeKey (parity with jarvis sanitize_node_key)", () => {
 describe("buildSearchText (Data_Bank)", () => {
   it("joins index fields in declared order with newlines, skipping blanks", () => {
     const s = fromStrut(getStrutSchema("StrutRun")!);
-    assert.deepEqual(buildSearchText(s, { summary: " sum ", workflow_name: "wf", status: "  " }), {
+    assert.deepEqual(buildSearchText(s, { summary: " sum ", workflow_name: "wf", run_status: "  " }), {
       text: "wf\nsum",
       fields: ["workflow_name", "summary"],
     });
     // No usable index field → jarvis's kitchen-sink fallback (priority
     // fields first, then everything not in DATA_BANK_EXCLUDED_FIELDS).
-    assert.deepEqual(buildSearchText(s, { run_id: "x", duration_ms: 5, status: "" }), { text: "x\n5", fields: ["run_id", "duration_ms"] });
+    assert.deepEqual(buildSearchText(s, { run_id: "x", duration_ms: 5, run_status: "" }), { text: "x\n5", fields: ["run_id", "duration_ms"] });
     assert.deepEqual(buildSearchText(s, { log_ref: "" }), { text: null, fields: [] });
   });
   it("kitchen-sink fallback: priority order, exclusions, non-string values", () => {
@@ -193,13 +193,13 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     assert.equal(n["durType"], "INTEGER NOT NULL");
     assert.equal(n["weightType"], "FLOAT NOT NULL");
     assert.equal(p["Data_Bank"], "harvey-deliver\nsuccess\nDelivered 60 of 60");
-    assert.deepEqual(p["_search_fields_used"], ["workflow_name", "status", "summary"]);
+    assert.deepEqual(p["_search_fields_used"], ["workflow_name", "run_status", "summary"]);
     assert.ok(!("log_ref" in p), "empty string never written");
     assert.ok(!("text_embeddings" in p), "no embedder → NULL, not a marker");
     assert.ok(!("is_deleted" in p));
     assert.deepEqual(
       Object.keys(p).sort(),
-      ["Data_Bank", "_search_fields_used", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "started_at", "status", "summary", "weight", "workflow_name"],
+      ["Data_Bank", "_search_fields_used", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "weight", "workflow_name"],
     );
   });
 
@@ -215,13 +215,13 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
   it("upsert updates everything except the preserved identity and rebuilds Data_Bank", async () => {
     const a = await writer.write({ type: "StrutRun", data: RUN });
     const before = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    const b = await writer.write({ type: "StrutRun", data: { ...RUN, status: "error", summary: "boom", error_message: "x" } }, "upsert");
+    const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_status: "error", summary: "boom", error_message: "x" } }, "upsert");
     assert.equal(b.outcome, "updated");
     assert.equal(b.ref_id, a.ref_id);
     const after = (await node(a.ref_id))["props"] as Record<string, unknown>;
     assert.equal(after["date_added_to_graph"], before["date_added_to_graph"]);
     assert.equal(after["node_key"], before["node_key"]);
-    assert.equal(after["status"], "error");
+    assert.equal(after["run_status"], "error");
     assert.equal(after["error_message"], "x");
     assert.equal(after["Data_Bank"], "harvey-deliver\nerror\nboom");
     assert.ok(!("is_deleted" in after), "upsert on a live node does not add is_deleted");
@@ -312,10 +312,10 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     const w = new NodeWriter(bolt, { embedder: fake });
     const a = await w.write({ type: "StrutRun", data: { ...RUN, log_ref: "runs/1" } });
     const before = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    const u = await w.update(a.ref_id, { set: { status: "error", error_message: "boom" }, remove: ["log_ref"] });
+    const u = await w.update(a.ref_id, { set: { run_status: "error", error_message: "boom" }, remove: ["log_ref"] });
     assert.deepEqual(u, { ref_id: a.ref_id, node_key: "strutrun-1725220000123", rekeyed: false });
     const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p["status"], "error");
+    assert.equal(p["run_status"], "error");
     assert.equal(p["error_message"], "boom");
     assert.ok(!("log_ref" in p));
     assert.equal(p["summary"], RUN.summary, "untouched attrs survive");
@@ -327,7 +327,7 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["Data_Bank"], "harvey-deliver\nerror");
     // Validation still applies to the merged payload.
     await assert.rejects(w.update(a.ref_id, { set: { bogus: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
-    await assert.rejects(w.update(a.ref_id, { remove: ["status"] }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
+    await assert.rejects(w.update(a.ref_id, { remove: ["run_status"] }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
     await assert.rejects(w.update(a.ref_id, { set: { duration_ms: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE");
     await assert.rejects(w.update("nope", { set: { status: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "NOT_FOUND");
     // Re-key: editing an identity attr recomposes node_key; colliding fails.
@@ -338,7 +338,7 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     assert.equal(((await node(b.ref_id))["props"] as Record<string, unknown>)["node_key"], "strutrun-renamed");
     // Without an embedder, a changed text drops the stale vector so backfill heals it.
     const plain = new NodeWriter(bolt);
-    await plain.update(a.ref_id, { set: { status: "success" } });
+    await plain.update(a.ref_id, { set: { run_status: "success" } });
     assert.ok(!("text_embeddings" in ((await node(a.ref_id))["props"] as Record<string, unknown>)));
   });
 

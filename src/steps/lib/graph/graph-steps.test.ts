@@ -17,10 +17,11 @@ const STEP_TYPES = [
   "graph/get-ontology", "graph/get-ontology-type", "graph/graph-search", "graph/graph-get",
   "graph/graph-get-batched", "graph/graph-neighbors", "graph/register-namespace", "graph/create-node",
   "graph/edit-node", "graph/create-triplet", "graph/create-batch-triplet", "graph/create-schema", "graph/edit-edge",
+  "graph/walk",
 ];
 
 describe("graph/* lib steps are discovered by the registry", () => {
-  it("all thirteen graph steps are present, sourced from lib", async () => {
+  it("all fourteen graph steps are present, sourced from lib", async () => {
     const { registry, sources } = await buildRegistry();
     for (const t of STEP_TYPES) {
       assert.ok(registry[t], `missing ${t}`);
@@ -281,6 +282,67 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.match(await run("graph/create-schema", { type: "Bad", attributes: { score: "number" } }), /WRONG_TYPE/);
     assert.match(await run("graph/create-schema", { type: "Bad", attributes: { a: "string" }, node_key: "b" }), /UNKNOWN_ATTRIBUTE/);
   });
+
+  it("walk: gathers context over the seeded graph — real reader, scripted decider", async () => {
+    // The decider is scripted (no model): versions are relevant, anything
+    // else is not; expand a version when one is offered; enough after two
+    // decisions. What's under test is the walk over the REAL reader — seeds,
+    // neighbors with direction, provenance, and the per-hop events.
+    const { graphCtx } = await import("./_shared.js");
+    const { runWalk } = await import("./walk.js");
+    const b = await graphCtx(ctx as any);
+    const events: any[] = [];
+    const wctx = { ...ctx, path: "wf/gather", emit: async (e: any) => { events.push(e); } } as unknown as StepContext;
+    let decisions = 0;
+    const evaluate = async ({ state, questions }: any) => {
+      decisions++;
+      const answers: Record<string, unknown> = {};
+      for (const [id, q] of Object.entries<any>(questions)) {
+        if (id.startsWith("relevant_")) {
+          const c = state.candidates.find((x: any) => x.id === id.slice("relevant_".length));
+          answers[id] = { type: "boolean", probability: c.type === "StrutWorkflowVersion" ? 0.9 : 0.2 };
+        } else if (id === "next") {
+          const keys = Object.keys(q.criteria);
+          const choice = keys.find((k) => q.criteria[k].startsWith("StrutWorkflowVersion")) ?? keys.find((k) => k !== "none") ?? "none";
+          answers[id] = { type: "choice", choice };
+        } else if (id === "sufficient") {
+          answers[id] = { type: "boolean", probability: decisions >= 2 ? 0.9 : 0 };
+        }
+      }
+      return { answers, usage: { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, totalTokens: 0 } };
+    };
+
+    const out = await runWalk(
+      { goal: "which versions does harvey-deliver have?", start: [wfRef], namespace: NS, maxHops: 4, maxNodes: 10, threshold: 0.5 },
+      { reader: b.reader, evaluate: evaluate as any, ctx: wctx },
+    );
+    assert.equal(out.stopped, "sufficient", JSON.stringify(out.hops));
+    // hop 0 judged the seed (a workflow: not kept) and expanded it; hop 1 judged its one
+    // neighbor (the version — its two parallel edges collapse to one candidate; the
+    // StrutStep hangs off the version, not the workflow).
+    assert.deepEqual(out.hops.map((h) => [h.hop, h.expanded?.ref_id, h.candidates, h.kept, h.next?.ref_id]), [
+      [0, undefined, 1, [], wfRef],
+      [1, wfRef, 1, [wfvRef], wfvRef],
+    ]);
+    assert.equal(out.nodes.length, 1);
+    const kept = out.nodes[0]!;
+    assert.deepEqual([kept.ref_id, kept.node_type, kept.name, kept.relevance, kept.hop], [wfvRef, "StrutWorkflowVersion", "harvey-deliver", 0.9, 1]);
+    assert.deepEqual(kept.via, { from: wfRef, edge_type: "VERSION_OF", direction: "reverse" }, "the importance-sorted first edge wins over ACTIVE_VERSION");
+    assert.equal(kept.properties["content_hash"], "c-1");
+    assert.ok(!("Data_Bank" in kept.properties) && !("node_key" in kept.properties), "the reader's envelope, internals stripped");
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "expanded + kept");
+    assert.deepEqual(events.map((e) => [e.type, e.path]), [
+      ["step.start", "wf/gather/001-hop"], ["step.end", "wf/gather/001-hop"],
+      ["step.start", "wf/gather/002-hop"], ["step.end", "wf/gather/002-hop"],
+    ]);
+    assert.deepEqual(events[3].nodes, [{ ref_id: wfRef, node_type: "StrutWorkflow" }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "hop 1 read the workflow and its version");
+    // The live-viz deltas: hop 1's start carries the discovered subgraph, its end the verdicts.
+    assert.deepEqual(events[2].input.candidates, [
+      { ref_id: wfvRef, node_type: "StrutWorkflowVersion", name: "harvey-deliver", via: { from: wfRef, edge_type: "VERSION_OF", direction: "reverse" } },
+    ]);
+    assert.deepEqual(events[3].output.verdicts, [{ ref_id: wfvRef, relevance: 0.9, kept: true }]);
+    assert.deepEqual([events[2].iteration, events[3].iteration], [1, 1]);
+  });
 });
 
 // ── graph/project: the run/chat projector as a step ─────────────────────────
@@ -334,7 +396,7 @@ describe("graph/project step", () => {
       assert.deepEqual([again.runs, again.skipped], [0, 1], "settled run skipped on re-run");
 
       const b = await openGraphBackend({ ...cfg!, namespace: cfg!.namespace }, { embeddings: false, skipBoot: true });
-      const rows = await b.bolt.run(`MATCH (r:StrutRun) RETURN r.run_id AS id, r.status AS s`);
+      const rows = await b.bolt.run(`MATCH (r:StrutRun) RETURN r.run_id AS id, r.run_status AS s`);
       assert.deepEqual(rows, [{ id: base.runId, s: "success" }]);
     } finally {
       if (prevBackend === undefined) delete process.env["STRUT_WORKSPACE_BACKEND"];
