@@ -620,6 +620,16 @@ ai@^7.0.105:
     "@ai-sdk/provider" "4.0.17"
     "@ai-sdk/provider-utils" "5.0.43"
 
+aieo@^0.2.0:
+  version "0.2.0"
+  resolved "https://registry.yarnpkg.com/aieo/-/aieo-0.2.0.tgz#2af4521d70a16b0e3004f6446289df608e7da591"
+  integrity sha512-1IPsbqXehtc6+uCM4oL8JZse71Pb4D7NK7xicIhZCYBn8+wLjZ+ne5M4WMJfDkEqGgTfUYFrVlKXrDcRp9SNag==
+  dependencies:
+    "@ai-sdk/anthropic" "4.0.56"
+    "@ai-sdk/google" "4.0.74"
+    "@ai-sdk/openai" "4.0.69"
+    "@ai-sdk/xai" "5.0.2"
+    "@openrouter/ai-sdk-provider" "3.0.0"
 
 ansi-regex@^5.0.1:
   version "5.0.1"
