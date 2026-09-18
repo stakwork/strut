@@ -89,7 +89,13 @@ matters, look at the `sufficient` question: its instructions, or asking it
 per claim ("is each claim's status explained?"). Lowering `SUFFICIENT_AT`
 is not the fix: at 0.7, walk 1 would have stopped at hop 4 with one Claim.
 
-## 2. Server: the `graph_walk` chat tool
+## 2. Server: the `graph_walk` chat tool — DONE
+
+Done: `src/ai/walk-tool.ts`, `chatEventOf` in `createStrut.ts`, and
+`GET /chat/:id/progress/:toolCallId` (a history load's hop events: the stored
+message holds only the model's view). Found in the build: the SDK streams
+EVERY yield as preliminary, the final `done` included, then repeats it as the
+final result; the client keeps only `walking` outputs as progress.
 
 In `src/ai/tools.ts`, next to `graph_query` and gated on `deps.graph` in the
 same way:
@@ -142,7 +148,7 @@ Tests (`src/chat-endpoints.test.ts` or a new `src/ai/tools.test.ts` case):
 - New test files must be added to the explicit list in the root
   `package.json` `test` script.
 
-## 3. Client: fold the hop events into a walk graph
+## 3. Client: fold the hop events into a walk graph — DONE
 
 - In `web/src/api.ts`, add `tool-progress` to `ChatEvent` and dispatch it.
 - **Fold function** (pure, in something like `web/src/walk-graph.ts`, with
@@ -171,7 +177,15 @@ Tests (`src/chat-endpoints.test.ts` or a new `src/ai/tools.test.ts` case):
   (`GET /chat/:id` replay) renders its final state at once, with a small
   "replay" button.
 
-## 4. Client: the force graph (ported from hive)
+## 4. Client: the force graph (ported from hive) — DONE
+
+Changed from the plan after trying it at flyout width (~360 px, where a
+25-node walk fits at ~0.45×): labels and strokes are counter-scaled to a
+constant screen size; only the 8 most relevant kept nodes are labeled at
+rest; a plain wheel scrolls the chat (ctrl/⌘-wheel or pinch zooms); weak
+x/y pulls replace the center force so unconnected seeds don't drift apart;
+the view auto-fits until the user pans or zooms. The UI has no light theme,
+so the colors are dark-only like the rest of it.
 
 - **Dependencies:** add `d3-force`, `d3-selection`, `d3-zoom`, `d3-drag`
   and their `@types` to `web/package.json`, not the whole `d3`. Use the

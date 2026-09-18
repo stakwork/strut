@@ -15,6 +15,16 @@
   --warning: #fbbf24;
   --ok: #22c55e;
 
+  /* graph_walk node types (WalkGraph); Evidence with a verdict uses --ok / --danger. */
+  --walk-workflow: #6ea8ff;
+  --walk-version: #8b9cf7;
+  --walk-run: #fbbf24;
+  --walk-step: #2dd4bf;
+  --walk-claim: #c084fc;
+  --walk-check: #f472b6;
+  --walk-evidence: #94a3b8;
+  --walk-other: #6b7689;
+
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
     Arial, sans-serif;

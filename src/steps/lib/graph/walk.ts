@@ -504,6 +504,32 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
   return withAccessedNodes(out, provenance);
 }
 
+/** The step's input — also the source of the `graph_walk` chat tool's fields (src/ai/walk-tool.ts). */
+export const walkInput = z.object({
+  goal: z.string().describe("what the gathered context is for — the question an LLM should be able to answer from it; every decision is judged against this"),
+  start: z.array(z.string()).optional().describe("ref_ids to start from (from graph_graph_search / graph_graph_get); else use `query`"),
+  query: z.string().optional().describe("seed the walk with the top hits of a graph search for this text (when `start` is not given)"),
+  edge_type: z.array(z.string()).optional().describe('only hop along these edge types, e.g. ["VERSION_OF", "USES_STEP"]'),
+  node_type: z.array(z.string()).optional().describe('only visit these node types, e.g. ["StrutStep", "Concept"]'),
+  namespace: z.string().optional().describe("data partition for the seed search and edge counts"),
+  maxHops: z.number().int().positive().default(12).describe("decision rounds; each round judges one node's neighbors and expands at most one"),
+  maxNodes: z.number().int().positive().default(25).describe("stop once this many nodes are kept"),
+  threshold: z.number().min(0).max(1).default(0.7).describe("minimum relevance probability for a node to be kept in the bundle"),
+  provider: z
+    .string()
+    .optional()
+    .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`; not used for jev)"),
+  model: z
+    .string()
+    .optional()
+    .meta({
+      description:
+        "the decision model. 'jev' is TypeSafe's evaluation model (TYPESAFE_AI_API_KEY; fast, calibrated probabilities) and the default " +
+        "when that key is set; otherwise any language model as in the llm step — a small fast one is ideal (e.g. 'haiku')",
+      suggest: "llm-models",
+    }),
+});
+
 const EXAMPLE = `- id: gather
   type: graph/walk
   config:
@@ -527,30 +553,7 @@ export default defineStep({
     "ordered by relevance, hops (the trace), stopped: sufficient|plateau|hops|nodes|exhausted, usage } — hand nodes to an llm or agent step to " +
     "synthesize an answer. Each hop emits a nested run event. Needs the graph backend (NEO4J_*) and the decision model's provider key.\n\n" +
     EXAMPLE,
-  input: z.object({
-    goal: z.string().describe("what the gathered context is for — the question an LLM should be able to answer from it; every decision is judged against this"),
-    start: z.array(z.string()).optional().describe("ref_ids to start from (from graph_graph_search / graph_graph_get); else use `query`"),
-    query: z.string().optional().describe("seed the walk with the top hits of a graph search for this text (when `start` is not given)"),
-    edge_type: z.array(z.string()).optional().describe('only hop along these edge types, e.g. ["VERSION_OF", "USES_STEP"]'),
-    node_type: z.array(z.string()).optional().describe('only visit these node types, e.g. ["StrutStep", "Concept"]'),
-    namespace: z.string().optional().describe("data partition for the seed search and edge counts"),
-    maxHops: z.number().int().positive().default(12).describe("decision rounds; each round judges one node's neighbors and expands at most one"),
-    maxNodes: z.number().int().positive().default(25).describe("stop once this many nodes are kept"),
-    threshold: z.number().min(0).max(1).default(0.7).describe("minimum relevance probability for a node to be kept in the bundle"),
-    provider: z
-      .string()
-      .optional()
-      .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`; not used for jev)"),
-    model: z
-      .string()
-      .optional()
-      .meta({
-        description:
-          "the decision model. 'jev' is TypeSafe's evaluation model (TYPESAFE_AI_API_KEY; fast, calibrated probabilities) and the default " +
-          "when that key is set; otherwise any language model as in the llm step — a small fast one is ideal (e.g. 'haiku')",
-        suggest: "llm-models",
-      }),
-  }),
+  input: walkInput,
   output: z.any(),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
     try {

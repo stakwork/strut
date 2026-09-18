@@ -11,6 +11,9 @@ import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schem
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
+import { modelEvaluate } from "../evaluate.js";
+import { resolveEvaluationModel } from "../llm.js";
+import { graphWalkTool } from "./walk-tool.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
 // the run-history reads. The chat tools layer their own policy on top (no
@@ -889,6 +892,28 @@ export function buildTools(deps: AiDeps) {
                 return { error: e instanceof Error ? e.message : String(e) };
               }
             },
+          }),
+        }
+      : {}),
+
+    // graph_walk: the graph/walk step as a chat tool, streaming each hop as a
+    // preliminary result (walk-tool.ts). Same gate as graph_query.
+    ...(deps.graph
+      ? {
+          graph_walk: graphWalkTool({
+            reader: deps.graph.reader,
+            // As graph/walk's run(): jev when TYPESAFE_AI_API_KEY is set, else
+            // the deployment's language model — keys via the secrets capability.
+            evaluate:
+              deps.walkEvaluate ??
+              (async ({ model, abortSignal }) => {
+                const em = await resolveEvaluationModel({
+                  model,
+                  secrets: (deps.services as { secrets?: NonNullable<Parameters<typeof resolveEvaluationModel>[0]>["secrets"] } | undefined)?.secrets,
+                  fallback: { model: process.env["STRUT_LLM_MODEL"], provider: process.env["STRUT_LLM_PROVIDER"] },
+                });
+                return { evaluate: modelEvaluate(em.model, { abortSignal }), name: em.name };
+              }),
           }),
         }
       : {}),

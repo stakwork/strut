@@ -161,6 +161,31 @@ describe("chat endpoints", () => {
     assert.ok(text.includes("event: done"), text);
   });
 
+  it("GET /chat/:id/progress/:toolCallId returns a finished call's tool-progress outputs", async () => {
+    const strut = await makeStrut();
+    await chatStore.createChat({ id: "c1" });
+    await chatStore.setMeta("c1", { status: "done", currentTurn: 1 });
+    const ev = (turn: number, type: ChatEvent["type"], extra: Partial<ChatEvent> = {}): ChatEvent => ({
+      ts: new Date().toISOString(),
+      chatId: "c1",
+      turn,
+      type,
+      ...extra,
+    });
+    await chatStore.appendEvent("c1", ev(0, "tool-progress", { toolCallId: "w1", output: { n: 1 } }));
+    await chatStore.appendEvent("c1", ev(0, "tool-progress", { toolCallId: "w1", output: { n: 2 } }));
+    await chatStore.appendEvent("c1", ev(0, "tool-output", { toolCallId: "w1", output: { status: "done" } }));
+    await chatStore.appendEvent("c1", ev(0, "chat.end"));
+    await chatStore.appendEvent("c1", ev(1, "text-delta", { delta: "later" }));
+    await chatStore.appendEvent("c1", ev(1, "chat.end"));
+
+    const body = (await (await strut.app.request("/chat/c1/progress/w1")).json()) as { outputs: unknown[] };
+    assert.deepEqual(body.outputs, [{ n: 1 }, { n: 2 }]);
+    const none = (await (await strut.app.request("/chat/c1/progress/nope")).json()) as { outputs: unknown[] };
+    assert.deepEqual(none.outputs, []);
+    assert.equal((await strut.app.request("/chat/zz/progress/w1")).status, 404);
+  });
+
   it("POST /chat is a 409 while that chat has a turn in progress", async () => {
     const strut = await makeStrut();
     const post = (body: object) =>
