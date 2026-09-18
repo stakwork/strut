@@ -732,7 +732,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    const { ToolLoopAgent, Output, tool, stepCountIs, hasToolCall, jsonSchema, streamText } = await import("ai");
+    const { ToolLoopAgent, Output, tool, isStepCount, hasToolCall, jsonSchema, streamText } = await import("ai");
 
     // Model/provider resolution via aieo (shared with mcp) through strut's
     // resolver (src/llm.ts): friendly aliases ("sonnet", "grok"), canonical
@@ -921,8 +921,8 @@ export default defineStep({
     wrapToolsWithEmit(tools, ctx);
 
     const stopWhen = !useSchema && cfg.finalAnswer
-      ? [hasToolCall("final_answer"), stepCountIs(cfg.maxSteps)]
-      : [stepCountIs(cfg.maxSteps)];
+      ? [hasToolCall("final_answer"), isStepCount(cfg.maxSteps)]
+      : [isStepCount(cfg.maxSteps)];
 
     // Resolved LAST (after all config validation): the key lookup throws when
     // no key is configured — a config error should surface before a
@@ -961,7 +961,7 @@ export default defineStep({
     wrapToolsWithEmit(webTools, ctx);
     Object.assign(tools, webTools);
     // Steps that completed BEFORE a mid-stream failure are unreachable through
-    // the stream's result promises — `steps`, `response`, `totalUsage` and
+    // the stream's result promises — `steps`, `responseMessages`, `usage` and
     // `text` all reject with the stream error — so the only way to keep that
     // work is to bank each step as it finishes. Cumulative across resume
     // attempts, which is exactly what a continuation needs to replay.
@@ -969,8 +969,9 @@ export default defineStep({
     const bankedMessages: any[] = [];
     let bankedUsage = emptyUsage();
     // Shared by the main loop and the premature-stop nudge continuation.
-    const onStepFinish = (sf: any) => {
+    const onStepEnd = (sf: any) => {
       bankedSteps.push(sf);
+      // Per-step in v7 (v6 made these cumulative, so banking them duplicated history).
       bankedMessages.push(...((sf.response?.messages ?? []) as any[]));
       bankedUsage = addUsage(bankedUsage, usageFromResult(sf.usage));
       // A length finish means the generation was TRUNCATED at the output
@@ -1006,7 +1007,7 @@ export default defineStep({
       ...(providerOptions ? { providerOptions } : {}),
       ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
       prepareStep,
-      onStepFinish,
+      onStepEnd,
     });
 
     const preamble = buildPreamble(cfg.cwd);
@@ -1026,9 +1027,8 @@ export default defineStep({
     let streamErrorContinuations = 0;
     let res!: {
       steps: any;
-      response: any;
-      totalUsage: any;
-      usage: unknown;
+      responseMessages: any[];
+      usage: any;
       text: any;
       output: any;
     };
@@ -1044,18 +1044,18 @@ export default defineStep({
             maxOutputTokens,
             stopWhen:
               !useSchema && cfg.finalAnswer
-                ? [hasToolCall("final_answer"), stepCountIs(remaining)]
-                : [stepCountIs(remaining)],
+                ? [hasToolCall("final_answer"), isStepCount(remaining)]
+                : [isStepCount(remaining)],
             ...(providerOptions ? { providerOptions } : {}),
             ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
             prepareStep,
-            onStepFinish,
+            onStepEnd,
           })
         : agent;
       const attempt = resuming
         ? await runner.stream({
             messages: [
-              // response.messages holds only generated turns, so the task
+              // responseMessages holds only generated turns, so the task
               // itself has to lead the replay.
               { role: "user", content: basePrompt },
               ...(bankedMessages as any[]),
@@ -1068,9 +1068,9 @@ export default defineStep({
       if (!streamError) {
         res = {
           steps: await attempt.steps,
-          response: await attempt.response,
-          totalUsage: await attempt.totalUsage,
-          usage: undefined as unknown,
+          // v7: `response` is final-step only; `responseMessages` spans every step.
+          responseMessages: await attempt.responseMessages,
+          usage: await attempt.usage,
           text: await attempt.text,
           output: useSchema ? await (attempt as any).output : undefined,
         };
@@ -1084,10 +1084,14 @@ export default defineStep({
         throw streamError;
       }
       streamErrorContinuations++;
+      // v7 wraps the socket fault ("Failed to process successful response");
+      // the root cause is the useful part of the log line.
+      let rootCause: any = streamError;
+      while (rootCause?.cause) rootCause = rootCause.cause;
       console.warn(
         `[agent] stream severed after ${bankedSteps.length} banked step(s) (${
           (streamError as Error).message
-        }); resuming ${streamErrorContinuations}/${MAX_STREAM_ERROR_CONTINUATIONS}.`,
+        }${rootCause !== streamError ? `: ${rootCause?.message ?? rootCause}` : ""}); resuming ${streamErrorContinuations}/${MAX_STREAM_ERROR_CONTINUATIONS}.`,
       );
     }
     // A resumed run's final attempt only knows its own segment — the banked
@@ -1101,15 +1105,15 @@ export default defineStep({
     // The full session is HUGE and the runner persists every step's output, so we
     // only include it when explicitly asked (a future fork/sub-agent). Off by
     // default keeps the explore step's persisted output to `{ result, steps, … }`.
-    const messages = resumedFromStreamError ? bankedMessages : (res.response?.messages ?? []);
+    const messages = resumedFromStreamError ? bankedMessages : (res.responseMessages ?? []);
     const maybeMessages = cfg.returnMessages ? { messages } : {};
 
-    // Token usage + cost across the WHOLE agent loop (totalUsage aggregates every
-    // step; fall back to the final-step usage). `provider` drives the rate table.
+    // Token usage + cost across the WHOLE agent loop (v7 `usage` aggregates every
+    // step). `provider` drives the rate table.
     // Mutable so a forced final-answer turn (below) can be folded in.
     let usage = resumedFromStreamError
       ? bankedUsage
-      : usageFromResult(res.totalUsage ?? res.usage);
+      : usageFromResult(res.usage);
     let cost = costOf(usage);
     console.log(
       `[agent] tokens in:${usage.inputTokens} cacheRead:${usage.cacheReadTokens} cacheWrite:${usage.cacheWriteTokens} out:${usage.outputTokens} → $${cost.toFixed(4)}`,
@@ -1138,15 +1142,15 @@ export default defineStep({
             tools,
             maxOutputTokens,
             // At least a few turns even when the stop came near the cap.
-            stopWhen: [stepCountIs(Math.max(4, cfg.maxSteps - stepsUsed))],
+            stopWhen: [isStepCount(Math.max(4, cfg.maxSteps - stepsUsed))],
             ...(providerOptions ? { providerOptions } : {}),
             output: Output.object({ schema: jsonSchema(cfg.schema) }),
             prepareStep,
-            onStepFinish,
+            onStepEnd,
           });
           const nudged = await nudger.stream({
             messages: [
-              // response.messages holds only generated turns — the task leads.
+              // responseMessages holds only generated turns — the task leads.
               { role: "user", content: basePrompt },
               ...(messages as any[]),
               {
@@ -1165,8 +1169,8 @@ export default defineStep({
           if (nudgeError) throw nudgeError;
           const nudgedSteps = (await nudged.steps) ?? [];
           stepsUsed += nudgedSteps.length;
-          messages.push(...(((await nudged.response)?.messages ?? []) as any[]));
-          const nu = usageFromResult(await nudged.totalUsage);
+          messages.push(...(((await nudged.responseMessages) ?? []) as any[]));
+          const nu = usageFromResult(await nudged.usage);
           usage = addUsage(usage, nu);
           cost += costOf(nu);
           // The continuation may have done real work (a publish) before
@@ -1231,15 +1235,15 @@ export default defineStep({
               hasToolCall("final_answer"),
               // At least a few turns even when the stop came near the cap —
               // finishing file work takes more than one call.
-              stepCountIs(Math.max(4, cfg.maxSteps - stepsUsed)),
+              isStepCount(Math.max(4, cfg.maxSteps - stepsUsed)),
             ],
             ...(providerOptions ? { providerOptions } : {}),
             prepareStep,
-            onStepFinish,
+            onStepEnd,
           });
           const nudged = await nudger.stream({
             messages: [
-              // The session's own user prompt first — response.messages holds
+              // The session's own user prompt first — responseMessages holds
               // only the generated turns, and the continuation needs the task.
               { role: "user", content: preamble ? `${preamble}\n\n${cfg.prompt}` : cfg.prompt },
               ...(messages as any[]),
@@ -1258,14 +1262,14 @@ export default defineStep({
           if (nudgeError) throw nudgeError;
           const nudgedSteps = (await nudged.steps) ?? [];
           stepsUsed += nudgedSteps.length;
-          messages.push(...(((await nudged.response)?.messages ?? []) as any[]));
+          messages.push(...(((await nudged.responseMessages) ?? []) as any[]));
           for (const step of nudgedSteps) {
             for (const item of step.content) {
               if (item.type === "text" && item.text?.trim()) lastText = item.text.trim();
             }
           }
           final = extractFinal(nudgedSteps);
-          const nu = usageFromResult(await nudged.totalUsage);
+          const nu = usageFromResult(await nudged.usage);
           usage = addUsage(usage, nu);
           cost += costOf(nu);
         } catch (e) {
@@ -1300,7 +1304,7 @@ export default defineStep({
           const ft = ((await forced.text) ?? "").trim();
           if (ft) {
             final = ft;
-            const fu = usageFromResult(await forced.totalUsage);
+            const fu = usageFromResult(await forced.usage);
             usage = addUsage(usage, fu);
             cost += costOf(fu);
           }

@@ -5,7 +5,7 @@ import { jsonSchema } from "ai";
 import llm, { toSdkSchema } from "./llm.js";
 
 // OFFLINE: no model call. This covers the normalization a workflow's `schema:`
-// goes through before generateObject. The bug it pins: a YAML workflow can only
+// goes through before Output.object. The bug it pins: a YAML workflow can only
 // write a plain JSON Schema object, and handed one bare the SDK assumes a lazy
 // thunk and throws "schema is not a function".
 describe("llm step: toSdkSchema", () => {

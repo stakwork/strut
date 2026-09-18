@@ -51,7 +51,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
     // Dynamic import to avoid hard dependency if not using LLM steps
-    const { generateText, generateObject } = await import("ai");
+    const { generateText, Output } = await import("ai");
 
     // Provider/model/key via the shared resolver (src/llm.ts → aieo): the key
     // comes through the secrets boundary (secret store → env). The output
@@ -65,13 +65,13 @@ export default defineStep({
 
     if (cfg.schema) {
       // Structured output
-      const result = await generateObject({
+      const result = await generateText({
         model,
         prompt: cfg.prompt,
-        schema: (await toSdkSchema(cfg.schema)) as any,
+        output: Output.object({ schema: (await toSdkSchema(cfg.schema)) as any }),
         maxOutputTokens,
       });
-      return result.object;
+      return result.output;
     } else {
       // Free-form text
       const result = await generateText({

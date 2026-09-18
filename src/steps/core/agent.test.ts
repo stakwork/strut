@@ -836,7 +836,12 @@ describe("mid-stream socket death is resumed, not lost", () => {
     });
     process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
     try {
-      await assert.rejects(run(), /terminated/);
+      // v7 wraps the socket death (APICallError → TypeError: terminated), so
+      // match anywhere on the cause chain.
+      await assert.rejects(run(), (e: any) => {
+        for (let c = e; c; c = c.cause) if (/terminated/.test(String(c.message))) return true;
+        return false;
+      });
       // 1 good call + the first sever + MAX_STREAM_ERROR_CONTINUATIONS resumes.
       assert.equal(s.calls(), 7);
     } finally {

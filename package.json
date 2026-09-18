@@ -33,7 +33,7 @@
     "@hono/node-server": "^2.0.4",
     "@huggingface/transformers": "^4.1.0",
     "@octokit/rest": "^22.0.1",
-    "aieo": "^0.1.41",
+    "aieo": "^0.2.0",
     "hono": "^4.12.23",
     "html-to-text": "^10.0.1",
     "js-yaml": "^4.1.1",
@@ -44,23 +44,26 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^3.0.92",
+    "@ai-sdk/anthropic": "^4.0.56",
     "@types/html-to-text": "^9.0.4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",
-    "ai": "^6.0.196",
+    "ai": "^7.0.105",
     "tsx": "^4.21.0",
     "typescript": "^5.9.0",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@ai-sdk/anthropic": "^3.0.92",
-    "ai": "^6.0.175",
+    "@ai-sdk/anthropic": "^4.0.56",
+    "ai": "^7.0.105",
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
     "sherpa-onnx-node": "^1.13.7"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

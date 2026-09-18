@@ -1612,7 +1612,7 @@ export async function createStrut<TServices = unknown>(
           });
 
         try {
-          const { ToolLoopAgent, stepCountIs } = await import("ai");
+          const { ToolLoopAgent, isStepCount } = await import("ai");
           const { buildTools, buildSystem } = await import("./ai/index.js");
 
           // The chat's model (`ChatMeta.model`, set by POST /chat) or the
@@ -1730,8 +1730,8 @@ export async function createStrut<TServices = unknown>(
             instructions: await buildSystem(deps),
             tools: buildTools(deps),
             maxOutputTokens: llm.maxOutputTokens,
-            stopWhen: stepCountIs(chatMaxSteps),
-            onFinish: () => {
+            stopWhen: isStepCount(chatMaxSteps),
+            onEnd: () => {
               registry = deps.registry;
             },
           });
@@ -1740,7 +1740,7 @@ export async function createStrut<TServices = unknown>(
 
           const result = await agent.stream({
             messages: modelMessages,
-            onStepFinish: (step) => {
+            onStepEnd: (step) => {
               const u = step.usage;
               console.log(
                 `[chat ${chatId}] turn ${turn} step ${step.stepNumber} finish=${step.finishReason} tokens=in:${u?.inputTokens ?? "?"}/out:${u?.outputTokens ?? "?"}`,
@@ -1755,7 +1755,7 @@ export async function createStrut<TServices = unknown>(
             },
           });
 
-          for await (const part of result.fullStream) {
+          for await (const part of result.stream) {
             switch (part.type) {
               case "text-delta":
                 if (part.text) await emit({ type: "text-delta", delta: part.text });
@@ -1793,8 +1793,9 @@ export async function createStrut<TServices = unknown>(
             }
           }
 
-          const resp = await result.response;
-          await chatStore.appendMessages(chatId, resp.messages as any);
+          // Every step's messages (tool calls + results), not just the last:
+          // v7's `response` is final-step only.
+          await chatStore.appendMessages(chatId, (await result.responseMessages) as any);
           await emit({ type: "chat.end" });
           await chatStore.setMeta(chatId, { status: "done" });
         } catch (err) {

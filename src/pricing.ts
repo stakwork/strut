@@ -28,11 +28,11 @@ export function emptyUsage(): TokenUsage {
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 /**
- * Normalize a Vercel AI SDK `LanguageModelUsage` (the `.usage` / `.totalUsage`
- * on a generate result) into a flat {@link TokenUsage}. Prefers the v6
+ * Normalize a Vercel AI SDK `LanguageModelUsage` (the `.usage` on a generate
+ * result — all steps in v7) into a flat {@link TokenUsage}. Prefers the
  * `inputTokenDetails` breakdown (noCache / cacheRead / cacheWrite); falls back
- * to the flat `inputTokens` + deprecated `cachedInputTokens` when details are
- * absent (other providers), treating the remainder as non-cached input.
+ * to the flat `inputTokens` + pre-v7 `cachedInputTokens` when details are
+ * absent, treating the remainder as non-cached input.
  */
 export function usageFromResult(usage: unknown): TokenUsage {
   if (!usage || typeof usage !== "object") return emptyUsage();
