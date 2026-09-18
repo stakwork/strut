@@ -50,6 +50,21 @@ const EDGE_PROPERTY_MAX = 160;
 /** Edge stamps that say nothing about the relationship itself. */
 const EDGE_STAMPS = new Set(["date_added_to_graph", "is_muted", "namespace", "importance"]);
 
+/**
+ * Claims and checks are immutable: an edit writes a successor that
+ * `SUPERSEDES` the old node and closes it (claims-writer.ts) — a retired
+ * check keeps its `TESTS` edge, an edited claim its `ABOUT` edge. Closed
+ * nodes are history, not context: offered, they cost a judgment each and
+ * a `SUPERSEDES` chain costs a hop per version. They are never offered
+ * (explicit `start` ids excepted); their evidence still is.
+ */
+function isClosed(n: NodeEnvelope): boolean {
+  const p = (n.properties ?? {}) as Record<string, unknown>;
+  if (n.node_type === "Check") return p["retired_at"] != null;
+  if (n.node_type === "Claim") return p["belief_valid_to"] != null;
+  return false;
+}
+
 /** The slice of `GraphReader` the walk needs (structural, so tests inject a fake). */
 export interface WalkReader {
   getNode(ref_id: string): Promise<NodeEnvelope | null>;
@@ -263,7 +278,7 @@ async function seedCandidates(cfg: WalkConfig, reader: WalkReader): Promise<Cand
       limit: SEED_LIMIT,
       include_edge_counts: true,
     });
-    return r.nodes.map((n) => candidateOf(n, 0));
+    return r.nodes.filter((n) => !isClosed(n)).map((n) => candidateOf(n, 0));
   }
   throw new Error("needs `start` (ref_ids) or `query`");
 }
@@ -281,7 +296,7 @@ async function neighborsOf(reader: WalkReader, current: Candidate, filters: Neig
     const ref_id = direction === "forward" ? e.target : e.source;
     if (ref_id === current.ref_id || seen.has(ref_id)) continue;
     const n = nodes.get(ref_id);
-    if (!n) continue;
+    if (!n || isClosed(n)) continue;
     seen.add(ref_id);
     const properties = edgeProperties(e.properties);
     out.push(candidateOf(n, hop, { from: current.ref_id, edge_type: e.edge_type, direction, ...(properties ? { properties } : {}) }));
@@ -371,9 +386,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
       candidates.forEach((c, i) => {
         questions[`relevant_c${i}`] = {
           type: "boolean",
-          instructions:
-            `Is candidate c${i} (${c.node_type} "${c.name}") relevant context for the goal — worth including in what an assistant reads before answering it? ` +
-            "Answer no if it only repeats what is already gathered or what an earlier candidate in this list says: include it only when it adds something new the answer needs.",
+          instructions: `Is candidate c${i} (${c.node_type} "${c.name}") relevant context for the goal — worth including in what an assistant reads before answering it?`,
         };
       });
       const criteria: Record<string, string> = {};

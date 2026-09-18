@@ -245,6 +245,9 @@ describe("graph/walk: evidence labels and edge attributes", () => {
     // e1's claim and verdict again, on another run: folds into e1
     e4: node("e4", "Evidence", { name: CLAIM, content: "quote_len=85 in_full=True word_frac=0.98" }),
     run: node("run", "StrutRun", { run_id: "r1", summary: "success · 7 steps" }),
+    // history: a retired check still TESTS the claim; the claim superseded an older wording
+    chkOld: node("chkOld", "Check", { name: "quote in transcript", retired_at: 1789747090 }),
+    claimOld: node("claimOld", "Claim", { name: "The clip covers the prompt.", belief_valid_to: 1789746856 }),
   };
   const edges: Array<[string, string, string, Record<string, unknown>]> = [
     ["claim", "EVIDENCED_BY", "e1", { strength: 1, date_added_to_graph: 5 }],
@@ -254,6 +257,8 @@ describe("graph/walk: evidence labels and edge attributes", () => {
     ["e1", "HAS_SOURCE", "run", { context: "x".repeat(500) }],
     ["e2", "HAS_SOURCE", "run", {}],
     ["e4", "HAS_SOURCE", "run", {}],
+    ["chkOld", "TESTS", "claim", {}],
+    ["claim", "SUPERSEDES", "claimOld", {}],
   ];
   const reader: WalkReader = {
     async getNode(id) {
@@ -313,6 +318,17 @@ describe("graph/walk: evidence labels and edge attributes", () => {
     assert.deepEqual(out.nodes.find((n) => n.ref_id === "e1")!.merged, [{ ref_id: "e4", name: "supports (1): quote_len=85 in_full=True word_frac=0.98" }]);
     assert.ok(!out.nodes.some((n) => n.ref_id === "e4"));
     assert.ok(accessedNodesOf(out)!.some((n) => n.ref_id === "e4"));
+  });
+
+  it("retired checks and superseded claims are never offered, unless named in start", async () => {
+    const { evaluate, calls } = scripted((hop) => (hop === 0 ? {} : { next: "none" }));
+    await runWalk({ ...BASE, start: ["claim"], maxHops: 2 }, { reader, evaluate });
+    const offered = calls[1]!.state.candidates.map((c: any) => c.type);
+    assert.deepEqual(offered, ["Evidence", "Evidence", "Evidence"]);
+
+    const fromOld = scripted(() => ({ next: "none" }));
+    await runWalk({ ...BASE, start: ["chkOld"], maxHops: 1 }, { reader, evaluate: fromOld.evaluate });
+    assert.deepEqual(fromOld.calls[0]!.state.candidates.map((c: any) => c.name), ["quote in transcript"]);
   });
 
   it("a later hop's repeat folds into the group from an earlier hop and is not offered again", async () => {
