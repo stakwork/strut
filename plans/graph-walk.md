@@ -17,15 +17,20 @@ already uses for timestamps: traversal and bookkeeping in code, judgment
 in a model, synthesis in an `llm`/`agent` step afterwards. Each hop:
 
 1. fetch one node's neighbors (the `graph/graph-neighbors` call, importance
-   sorted, capped at 50, same excluded types);
+   sorted, capped at 50, same excluded types); Evidence is labelled by its
+   verdict + result, and Evidence repeating an already-seen verdict + claim
+   (the same check on another run) folds into that first one (`merged`,
+   `similar_results`) instead of being judged again;
 2. ONE decider call over a compact state — goal, what's gathered (name,
    type, snippet), the node just expanded, the new candidates (type, name,
    edge + direction, connection counts, snippet), the frontier's best — asking
-   `relevant_c<i>` (boolean, per candidate), `next` (choice over candidates +
+   `relevant_c<i>` (boolean, per candidate; "no" when it only repeats
+   what's gathered), `next` (choice over candidates +
    frontier + `none`), `sufficient` (boolean);
-3. keep candidates at/above `threshold`, push everything discovered onto
+3. keep candidates at/above `threshold` (default 0.7 — jev rates nearly
+   anything on-topic above 0.5), push everything discovered onto
    the frontier (a hub can be worth expanding without being worth keeping),
-   stop on `sufficient ≥ 0.5`, `maxNodes`, `none`, `maxHops`, or an empty
+   stop on `sufficient ≥ 0.8`, `maxNodes`, `none`, `maxHops`, or an empty
    frontier; else expand `next`.
 
 Output: `{ goal, nodes (kept, most relevant first, with via + clipped

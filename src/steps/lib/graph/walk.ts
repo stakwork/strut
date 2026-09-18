@@ -40,11 +40,15 @@ const SEED_LIMIT = 5;
 /** Options offered to `next` per hop: this hop's candidates, then the best of the frontier. */
 const OPTIONS_CAP = 60;
 /** `sufficient` probability at which the walk stops. */
-const SUFFICIENT_AT = 0.5;
+const SUFFICIENT_AT = 0.8;
 const SNIPPET_MAX = 240;
 /** Long string properties in the output bundle are cut here (a document body is not context, its summary is). */
 const PROPERTY_MAX = 2000;
 const TEXT_KEYS = ["description", "summary", "text", "content", "body", "docs", "prompt", "message"];
+/** Edge attributes shown to the decider are cut here (HAS_SOURCE.context is a JSON blob). */
+const EDGE_PROPERTY_MAX = 160;
+/** Edge stamps that say nothing about the relationship itself. */
+const EDGE_STAMPS = new Set(["date_added_to_graph", "is_muted", "namespace", "importance"]);
 
 /** The slice of `GraphReader` the walk needs (structural, so tests inject a fake). */
 export interface WalkReader {
@@ -75,6 +79,8 @@ interface Via {
   from: string;
   edge_type: string;
   direction: "forward" | "reverse";
+  /** The arriving edge's own attributes (e.g. `EVIDENCED_BY.strength`), minus graph stamps. */
+  properties?: Record<string, unknown>;
 }
 
 interface Candidate {
@@ -87,6 +93,10 @@ interface Candidate {
   hop: number;
   via?: Via;
   relevance?: number;
+  /** Evidence only: verdict + claim. Evidence sharing one is shown to the decider once (`mergeEvidence`). */
+  evidenceKey?: string;
+  /** Evidence folded into this one: same claim, same verdict, other runs. */
+  merged?: Candidate[];
 }
 
 interface Brief {
@@ -113,7 +123,9 @@ export interface HopRecord {
 
 export interface WalkOutput {
   goal: string;
-  nodes: Array<Brief & { relevance: number; hop: number; via?: Via; properties: Record<string, unknown> }>;
+  nodes: Array<
+    Brief & { relevance: number; hop: number; via?: Via; properties: Record<string, unknown>; merged?: Array<{ ref_id: string; name: string }> }
+  >;
   hops: HopRecord[];
   stopped: "sufficient" | "hops" | "nodes" | "exhausted";
   usage: TokenUsage;
@@ -160,6 +172,80 @@ function byPriority(a: Candidate, b: Candidate): number {
   return (b.relevance ?? 0) - (a.relevance ?? 0) || a.hop - b.hop || a.name.localeCompare(b.name);
 }
 
+/** The arriving edge's attributes worth showing, strings clipped; undefined when none. */
+function edgeProperties(p: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(p ?? {})) {
+    if (EDGE_STAMPS.has(k) || v === null || v === undefined) continue;
+    out[k] = typeof v === "string" && v.length > EDGE_PROPERTY_MAX ? v.slice(0, EDGE_PROPERTY_MAX) + "…" : v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function viaText(v: Via): string {
+  const props = v.properties ? ` ${JSON.stringify(v.properties)}` : "";
+  return `${v.edge_type} (${v.direction})${props}`;
+}
+
+/**
+ * Evidence reads as its RESULT, not its claim. The verifier names every
+ * Evidence node after the claim it bears on (verify.ts `writeEvidence`), so
+ * a version's twenty evidence nodes would reach the decider under four
+ * names. Here the label leads with the verdict (the claim's `EVIDENCED_BY`
+ * strength: >0 supports, <0 refutes, absent = a planned slot) and the
+ * observed result (`content`); the claim moves to the snippet. Display
+ * only — the node and its properties are untouched. A candidate that did
+ * not arrive over `EVIDENCED_BY` costs one filtered neighbors call.
+ */
+async function labelEvidence(reader: WalkReader, cands: Candidate[]): Promise<void> {
+  await Promise.all(
+    cands
+      .filter((c) => c.node_type === "Evidence")
+      .map(async (c) => {
+        let strength: unknown;
+        if (c.via?.edge_type === "EVIDENCED_BY") strength = c.via.properties?.["strength"];
+        else {
+          const r = await reader.neighbors(c.ref_id, { edge_types: ["EVIDENCED_BY"], limit: 5 });
+          strength = r.edges?.find((e) => e.target === c.ref_id)?.properties?.["strength"];
+        }
+        const n = typeof strength === "number" ? strength : Number.NaN;
+        const verdict = n > 0 ? "supports" : n < 0 ? "refutes" : "no verdict";
+        const content = typeof c.properties["content"] === "string" ? c.properties["content"].trim().replace(/\s+/g, " ") : "";
+        const claim = c.name;
+        c.name = `${verdict}${Number.isNaN(n) ? "" : ` (${n})`}: ${content || claim}`.slice(0, SNIPPET_MAX);
+        c.snippet = `claim: ${claim}`;
+        c.evidenceKey = `${verdict}\u0000${claim}`;
+      }),
+  );
+}
+
+/**
+ * One claim checked on many runs leaves near-identical Evidence (same claim,
+ * same verdict, a different artifacts path in the result) that would crowd
+ * the bundle and cost one judgment each. The first of each verdict + claim
+ * stands for the rest: it is judged, kept and expanded; later ones — this
+ * hop or any later hop — fold into its `merged` list and are never offered.
+ * Returns the candidates left to judge and the folded (member → group) pairs.
+ */
+function mergeEvidence(cands: Candidate[], groups: Map<string, Candidate>): { cands: Candidate[]; folded: Array<[Candidate, Candidate]> } {
+  const out: Candidate[] = [];
+  const folded: Array<[Candidate, Candidate]> = [];
+  for (const c of cands) {
+    const group = c.evidenceKey ? groups.get(c.evidenceKey) : undefined;
+    if (group) {
+      (group.merged ??= []).push(c);
+      folded.push([c, group]);
+      continue;
+    }
+    if (c.evidenceKey) groups.set(c.evidenceKey, c);
+    out.push(c);
+  }
+  return { cands: out, folded };
+}
+
+/** "N more like it" for a merged Evidence group, as the decider sees it. */
+const similar = (c: Candidate) => (c.merged?.length ? { similar_results: c.merged.length } : {});
+
 async function seedCandidates(cfg: WalkConfig, reader: WalkReader): Promise<Candidate[]> {
   if (cfg.start?.length) {
     const out: Candidate[] = [];
@@ -197,7 +283,8 @@ async function neighborsOf(reader: WalkReader, current: Candidate, filters: Neig
     const n = nodes.get(ref_id);
     if (!n) continue;
     seen.add(ref_id);
-    out.push(candidateOf(n, hop, { from: current.ref_id, edge_type: e.edge_type, direction }));
+    const properties = edgeProperties(e.properties);
+    out.push(candidateOf(n, hop, { from: current.ref_id, edge_type: e.edge_type, direction, ...(properties ? { properties } : {}) }));
     if (out.length >= NEIGHBOR_CAP) break;
   }
   return out;
@@ -221,10 +308,16 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
   const kept = new Map<string, Candidate>();
   const expanded: Candidate[] = [];
   const hops: HopRecord[] = [];
+  const evidenceGroups = new Map<string, Candidate>();
   let usage = emptyUsage();
 
-  let candidates = await seedCandidates(cfg, reader);
-  for (const c of candidates) seen.add(c.ref_id);
+  /** Label, mark seen, and fold repeated Evidence: what's left is this hop's to judge. */
+  const discover = async (found: Candidate[]) => {
+    await labelEvidence(reader, found);
+    for (const c of found) seen.add(c.ref_id);
+    return mergeEvidence(found, evidenceGroups);
+  };
+  let { cands: candidates, folded } = await discover(await seedCandidates(cfg, reader));
   let current: Candidate | undefined;
   let stopped: WalkOutput["stopped"];
 
@@ -251,22 +344,26 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
       input: {
         hop,
         expanded: current ? brief(current) : null,
-        candidates: candidates.map((c) => ({ ...brief(c), ...(c.via ? { via: c.via } : {}) })),
+        candidates: [
+          ...candidates.map((c) => ({ ...brief(c), ...(c.via ? { via: c.via } : {}) })),
+          ...folded.map(([m, g]) => ({ ...brief(m), ...(m.via ? { via: m.via } : {}), merged_into: g.ref_id })),
+        ],
         frontier: shown.map((f) => ({ ref_id: f.ref_id, relevance: round(f.relevance ?? 0) })),
       },
     });
     try {
       const state = {
         goal: cfg.goal,
-        gathered: [...kept.values()].sort(byPriority).map((k) => ({ type: k.node_type, name: k.name, snippet: k.snippet })),
+        gathered: [...kept.values()].sort(byPriority).map((k) => ({ type: k.node_type, name: k.name, snippet: k.snippet, ...similar(k) })),
         expanded: current ? { type: current.node_type, name: current.name, snippet: current.snippet } : null,
         candidates: candidates.map((c, i) => ({
           id: `c${i}`,
           type: c.node_type,
           name: c.name,
-          via: c.via ? `${c.via.edge_type} (${c.via.direction})` : "seed",
+          via: c.via ? viaText(c.via) : "seed",
           connections: c.edges,
           snippet: c.snippet,
+          ...similar(c),
         })),
         frontier: shown.map((f, i) => ({ id: `f${i}`, type: f.node_type, name: f.name, relevance: round(f.relevance ?? 0), snippet: f.snippet })),
       };
@@ -274,11 +371,13 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
       candidates.forEach((c, i) => {
         questions[`relevant_c${i}`] = {
           type: "boolean",
-          instructions: `Is candidate c${i} (${c.node_type} "${c.name}") relevant context for the goal — worth including in what an assistant reads before answering it?`,
+          instructions:
+            `Is candidate c${i} (${c.node_type} "${c.name}") relevant context for the goal — worth including in what an assistant reads before answering it? ` +
+            "Answer no if it only repeats what is already gathered or what an earlier candidate in this list says: include it only when it adds something new the answer needs.",
         };
       });
       const criteria: Record<string, string> = {};
-      for (const [k, c] of options) criteria[k] = `${c.node_type}: ${c.name}${c.via ? ` (via ${c.via.edge_type}, ${c.via.direction})` : ""}`;
+      for (const [k, c] of options) criteria[k] = `${c.node_type}: ${c.name}${c.via ? ` (via ${c.via.edge_type}, ${c.via.direction}${c.via.properties ? ` ${JSON.stringify(c.via.properties)}` : ""})` : ""}`;
       criteria["none"] = "no option is worth another hop";
       questions["next"] = {
         type: "choice",
@@ -319,7 +418,11 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
         ...(current ? { expanded: brief(current) } : {}),
         candidates: candidates.length,
         kept: keptNow,
-        verdicts: candidates.map((c) => ({ ref_id: c.ref_id, relevance: round(c.relevance ?? 0), kept: keptSet.has(c.ref_id) })),
+        verdicts: [
+          ...candidates.map((c) => ({ ref_id: c.ref_id, relevance: round(c.relevance ?? 0), kept: keptSet.has(c.ref_id) })),
+          // A folded member shares its group's verdict (judged this hop or earlier).
+          ...folded.map(([m, g]) => ({ ref_id: m.ref_id, relevance: round(g.relevance ?? 0), kept: kept.has(g.ref_id) })),
+        ],
         ...(next ? { next: brief(next) } : {}),
         ...(nextProbabilities ? { next_probabilities: nextProbabilities } : {}),
         sufficient: round(sufficient),
@@ -332,7 +435,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
         iteration: hop,
         output: record,
         durationMs: Date.now() - startedAt,
-        nodes: [...(current ? [brief(current)] : []), ...candidates.map(brief)].map(({ ref_id, node_type }) => ({ ref_id, node_type })),
+        nodes: [...(current ? [brief(current)] : []), ...candidates.map(brief), ...folded.map(([m]) => brief(m))].map(({ ref_id, node_type }) => ({ ref_id, node_type })),
       });
 
       if (sufficient >= SUFFICIENT_AT) {
@@ -354,8 +457,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
       frontier.delete(next.ref_id);
       expanded.push(next);
       current = next;
-      candidates = (await neighborsOf(reader, next, filters, hop + 1)).filter((c) => !seen.has(c.ref_id));
-      for (const c of candidates) seen.add(c.ref_id);
+      ({ cands: candidates, folded } = await discover((await neighborsOf(reader, next, filters, hop + 1)).filter((c) => !seen.has(c.ref_id))));
     } catch (e) {
       await emit?.({ type: "step.error", path, stepType: "walk:hop", iteration: hop, error: { message: (e as Error).message } });
       throw e;
@@ -368,9 +470,10 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
     hop: c.hop,
     ...(c.via ? { via: c.via } : {}),
     properties: clipStrings(c.properties) as Record<string, unknown>,
+    ...(c.merged?.length ? { merged: c.merged.map((m) => ({ ref_id: m.ref_id, name: m.name })) } : {}),
   }));
   const out: WalkOutput = { goal: cfg.goal, nodes, hops, stopped, usage };
-  const provenance: AccessedNode[] = [...expanded.map(brief), ...nodes].map((c) => ({ ref_id: c.ref_id, node_type: c.node_type }));
+  const provenance: AccessedNode[] = [...expanded.map(brief), ...nodes, ...[...kept.values()].flatMap((k) => (k.merged ?? []).map(brief))].map((c) => ({ ref_id: c.ref_id, node_type: c.node_type }));
   return withAccessedNodes(out, provenance);
 }
 
@@ -406,7 +509,7 @@ export default defineStep({
     namespace: z.string().optional().describe("data partition for the seed search and edge counts"),
     maxHops: z.number().int().positive().default(12).describe("decision rounds; each round judges one node's neighbors and expands at most one"),
     maxNodes: z.number().int().positive().default(25).describe("stop once this many nodes are kept"),
-    threshold: z.number().min(0).max(1).default(0.5).describe("minimum relevance probability for a node to be kept in the bundle"),
+    threshold: z.number().min(0).max(1).default(0.7).describe("minimum relevance probability for a node to be kept in the bundle"),
     provider: z
       .string()
       .optional()

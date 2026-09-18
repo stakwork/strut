@@ -233,10 +233,102 @@ describe("graph/walk: runWalk (offline)", () => {
   });
 });
 
+describe("graph/walk: evidence labels and edge attributes", () => {
+  // claim ─EVIDENCED_BY{strength}→ e1 (+1), e2 (−1), e3 (planned slot: no strength)
+  // e1, e2 ─HAS_SOURCE{context}→ run
+  const CLAIM = "The clip covers caption text that answers the prompt.";
+  const nodes: Record<string, NodeEnvelope> = {
+    claim: node("claim", "Claim", { name: CLAIM, claim_text: CLAIM }),
+    e1: node("e1", "Evidence", { name: CLAIM, content: "quote_len=85 in_full=True word_frac=1.00" }),
+    e2: node("e2", "Evidence", { name: CLAIM, content: "quote_len=85  in_transcript=False" }),
+    e3: node("e3", "Evidence", { name: CLAIM }),
+    // e1's claim and verdict again, on another run: folds into e1
+    e4: node("e4", "Evidence", { name: CLAIM, content: "quote_len=85 in_full=True word_frac=0.98" }),
+    run: node("run", "StrutRun", { run_id: "r1", summary: "success · 7 steps" }),
+  };
+  const edges: Array<[string, string, string, Record<string, unknown>]> = [
+    ["claim", "EVIDENCED_BY", "e1", { strength: 1, date_added_to_graph: 5 }],
+    ["claim", "EVIDENCED_BY", "e2", { strength: -1 }],
+    ["claim", "EVIDENCED_BY", "e3", {}],
+    ["claim", "EVIDENCED_BY", "e4", { strength: 1 }],
+    ["e1", "HAS_SOURCE", "run", { context: "x".repeat(500) }],
+    ["e2", "HAS_SOURCE", "run", {}],
+    ["e4", "HAS_SOURCE", "run", {}],
+  ];
+  const reader: WalkReader = {
+    async getNode(id) {
+      return nodes[id] ?? null;
+    },
+    async neighbors(id, p) {
+      const es = edges.filter(([s, e, t]) => (s === id || t === id) && (!p?.edge_types || p.edge_types.includes(e)));
+      return {
+        nodes: [...new Set(es.flatMap(([s, , t]) => [s, t]))].map((i) => nodes[i]!),
+        edges: es.map(([s, e, t, properties]) => ({ source: s, target: t, ref_id: `${s}|${e}|${t}`, edge_type: e, properties })),
+      };
+    },
+    async search() {
+      return { nodes: [], total: 0, truncated: false };
+    },
+  };
+  const walkFrom = async (start: string) => {
+    const { evaluate, calls } = scripted((hop) => (hop === 0 ? {} : { next: "none" }));
+    await runWalk({ ...BASE, start: [start], maxHops: 2 }, { reader, evaluate });
+    return calls[1]!.state.candidates as Array<{ name: string; snippet: string; via: string }>;
+  };
+
+  it("from the claim: labels lead with the EVIDENCED_BY verdict and the result; the claim moves to the snippet; strength shown on via", async () => {
+    const c = await walkFrom("claim");
+    assert.deepEqual(c.map((x) => x.name), [
+      "supports (1): quote_len=85 in_full=True word_frac=1.00",
+      "refutes (-1): quote_len=85 in_transcript=False",
+      `no verdict: ${CLAIM}`,
+    ]);
+    assert.ok(c.every((x) => x.snippet === `claim: ${CLAIM}`));
+    assert.deepEqual(c.map((x) => x.via), ['EVIDENCED_BY (forward) {"strength":1}', 'EVIDENCED_BY (forward) {"strength":-1}', "EVIDENCED_BY (forward)"]);
+  });
+
+  it("from a run over HAS_SOURCE: the verdict is looked up; long edge attributes are clipped", async () => {
+    const c = await walkFrom("run");
+    assert.deepEqual(c.map((x) => x.name.split(":")[0]), ["supports (1)", "refutes (-1)"]);
+    assert.match(c[0]!.via, /^HAS_SOURCE \(reverse\) \{"context":"x{160}…"\}$/);
+    assert.equal(c[1]!.via, "HAS_SOURCE (reverse)");
+  });
+
+  it("evidence with the same claim and verdict is judged once: the rest fold into it (event, verdicts, bundle, provenance)", async () => {
+    const { ctx, events } = ctxWithEvents();
+    const { evaluate, calls } = scripted((hop) => (hop === 0 ? {} : { next: "none" }));
+    const out = await runWalk({ ...BASE, start: ["claim"], maxHops: 2 }, { reader, evaluate, ctx });
+    const shown = calls[1]!.state.candidates as Array<{ id: string; name: string; similar_results?: number }>;
+    assert.deepEqual(shown.map((c) => c.similar_results), [1, undefined, undefined]);
+    assert.deepEqual(Object.keys(calls[1]!.questions).filter((k) => k.startsWith("relevant_")), ["relevant_c0", "relevant_c1", "relevant_c2"]);
+    const start = events.find((e) => e.type === "step.start" && e.iteration === 1)!;
+    assert.deepEqual(start.input.candidates.find((c: any) => c.ref_id === "e4"), {
+      ref_id: "e4",
+      node_type: "Evidence",
+      name: "supports (1): quote_len=85 in_full=True word_frac=0.98",
+      via: { from: "claim", edge_type: "EVIDENCED_BY", direction: "forward", properties: { strength: 1 } },
+      merged_into: "e1",
+    });
+    assert.deepEqual(out.hops[1]!.verdicts.find((v) => v.ref_id === "e4"), { ref_id: "e4", relevance: 0.9, kept: true });
+    assert.deepEqual(out.nodes.find((n) => n.ref_id === "e1")!.merged, [{ ref_id: "e4", name: "supports (1): quote_len=85 in_full=True word_frac=0.98" }]);
+    assert.ok(!out.nodes.some((n) => n.ref_id === "e4"));
+    assert.ok(accessedNodesOf(out)!.some((n) => n.ref_id === "e4"));
+  });
+
+  it("a later hop's repeat folds into the group from an earlier hop and is not offered again", async () => {
+    // e1 (seed) → claim → e2, e3, e4: e4 repeats e1
+    const { evaluate, calls } = scripted((hop) => (hop < 2 ? { next: "c0" } : { next: "none" })); // e1, then its one neighbor: the claim
+    const out = await runWalk({ ...BASE, start: ["e1"], edge_type: ["EVIDENCED_BY"], maxHops: 3 }, { reader, evaluate });
+    assert.deepEqual(calls[2]!.state.candidates.map((c: any) => c.name.split(":")[0]), ["refutes (-1)", "no verdict"]);
+    assert.deepEqual(calls[2]!.state.gathered.find((g: any) => g.name.startsWith("supports")).similar_results, 1);
+    assert.deepEqual(out.nodes.find((n) => n.ref_id === "e1")!.merged?.map((m) => m.ref_id), ["e4"]);
+  });
+});
+
 describe("graph/walk: step definition", () => {
   it("defaults the budgets and threshold", () => {
     const cfg = walk.input.parse({ goal: "g", query: "q" });
-    assert.deepEqual([cfg.maxHops, cfg.maxNodes, cfg.threshold], [12, 25, 0.5]);
+    assert.deepEqual([cfg.maxHops, cfg.maxNodes, cfg.threshold], [12, 25, 0.7]);
   });
 
   it("run() refuses a config with neither start nor query before touching the backend", async () => {
