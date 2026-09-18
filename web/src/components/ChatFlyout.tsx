@@ -432,9 +432,6 @@ export function ChatFlyout(props: {
       onToolCall: (tc) => {
         if (signal.aborted) return;
         toolBuf.push(tc);
-        if (tc.name === "create_workflow" && tc.input?.name) {
-          props.onWorkflowCreated(tc.input.name);
-        }
         const groups = groupCalls(toolBuf);
         const replace = stepHasToolEntry;
         stepHasToolEntry = true;
@@ -457,6 +454,13 @@ export function ChatFlyout(props: {
         setEntries((prev) => attachResult(prev, tr.toolCallId, result).entries);
         // The tool-output event carries no input; recover it from the call.
         const input = tr.input ?? toolBuf.find((c) => c.toolCallId === tr.toolCallId)?.input;
+        // Select a new workflow only once the tool has actually published it
+        // (the call event fires before execution, so the workflow wouldn't
+        // exist yet), and by its FINAL name — create_workflow may rename on
+        // collision, and a validation failure publishes nothing.
+        if (tr.name === "create_workflow" && !tr.isError && tr.output?.ok && tr.output.name) {
+          props.onWorkflowCreated(tr.output.name);
+        }
         if (tr.name === "run_workflow" && !tr.isError && input?.name && tr.output?.runId) {
           props.onWorkflowRan(input.name, tr.output.runId);
         }
