@@ -1991,6 +1991,7 @@ export async function createStrut<TServices = unknown>(
 
   if (serveUi) {
     app.use("/assets/*", serveStatic({ root: webDist }));
+    app.use("/favicon.ico", serveStatic({ root: webDist }));
 
     app.get("*", async (c) => {
       const path = c.req.path;
