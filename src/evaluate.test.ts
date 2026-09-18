@@ -1,11 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { questionsSchema, renderPrompt, toAnswers, languageModelEvaluate, type EvalQuestion } from "./evaluate.js";
+import { modelEvaluate, usageFromEvaluation, type EvalQuestion } from "./evaluate.js";
+import { resolveEvaluationModel, TYPESAFE_KEY_NAME } from "./llm.js";
 
-// OFFLINE: the decider's pure parts (schema, prompt, answer mapping) plus the
-// generateObject backend over a hand-rolled fake language model. The shapes
-// pinned here are the AI SDK's `experimental_evaluate` contract (ai@7) — the
-// reason this module exists is to swap that in later without touching callers.
+// OFFLINE: `modelEvaluate` through the real `experimental_evaluate` over two
+// hand-rolled models — an evaluation model (jev's shape: answers with
+// probabilities) and a language model wrapped in the SDK's
+// EvaluationLanguageModel (the fallback path) — plus the resolver's routing.
 
 const QUESTIONS = {
   next: { type: "choice", instructions: "Which node next?", criteria: { c0: "StrutStep: fetch", c1: "StrutRun: run-1", none: "stop" } },
@@ -13,104 +14,138 @@ const QUESTIONS = {
   relevant_c0: { type: "boolean", instructions: "Is c0 relevant?" },
 } as const satisfies Record<string, EvalQuestion>;
 
-describe("evaluate: questionsSchema", () => {
-  it("one required field per question: an enum, a bounded number, a probability", () => {
-    const s = questionsSchema(QUESTIONS) as any;
-    assert.deepEqual(s.required, ["next", "severity", "relevant_c0"]);
-    assert.equal(s.additionalProperties, false);
-    assert.deepEqual(s.properties.next.enum, ["c0", "c1", "none"]);
-    assert.deepEqual([s.properties.severity.type, s.properties.severity.minimum, s.properties.severity.maximum], ["number", 0, 2]);
-    assert.deepEqual([s.properties.relevant_c0.type, s.properties.relevant_c0.minimum, s.properties.relevant_c0.maximum], ["number", 0, 1]);
-  });
+/** A minimal V4 evaluation model answering every call with `answers`. */
+function fakeEvaluationModel(answers: Record<string, unknown>, seen: { calls: number; state?: unknown; questions?: unknown }) {
+  return {
+    specificationVersion: "v4",
+    provider: "fake.evaluation",
+    modelId: "fake-eval-1",
+    supportedQuestionTypes: ["choice", "score", "boolean"],
+    async doEvaluate(opts: any) {
+      seen.calls++;
+      seen.state = opts.state;
+      seen.questions = opts.questions;
+      return { answers, usage: { inputTokens: 40, outputTokens: 0 }, warnings: [] };
+    },
+  };
+}
 
-  it("refuses a choice with no options and a score with one level", () => {
-    assert.throws(() => questionsSchema({ q: { type: "choice", instructions: "x", criteria: {} } }), /no options/);
-    assert.throws(() => questionsSchema({ q: { type: "score", instructions: "x", criteria: ["only"] } }), /at least two/);
-  });
-});
+/** A minimal V4 language model answering every doGenerate with `object` as JSON text. */
+function fakeLanguageModel(object: Record<string, unknown>, seen: { calls: number; prompt?: string }) {
+  return {
+    specificationVersion: "v4",
+    provider: "fake",
+    modelId: "fake-1",
+    supportedUrls: {},
+    async doGenerate(opts: any) {
+      seen.calls++;
+      seen.prompt = JSON.stringify(opts.prompt);
+      return {
+        content: [{ type: "text", text: JSON.stringify(object) }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage: { inputTokens: { total: 12, noCache: 12, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 7, text: 7, reasoning: 0 } },
+        warnings: [],
+      };
+    },
+  };
+}
 
-describe("evaluate: renderPrompt", () => {
-  it("lays out the state, then each question with its criteria and answer format", () => {
-    const p = renderPrompt({ goal: "why failing", candidates: [{ id: "c0" }] }, QUESTIONS);
-    assert.match(p, /STATE:\n\{\n  "goal": "why failing"/);
-    assert.match(p, /- next \(choice\): Which node next\?\n    c0: StrutStep: fetch\n    c1: StrutRun: run-1\n    none: stop\n    answer with the option key, one of: c0, c1, none/);
-    assert.match(p, /- severity \(score\): How severe\?\n    0: cosmetic\n    1: workaround\n    2: blocking\n    answer with a number from 0 to 2/);
-    assert.match(p, /- relevant_c0 \(boolean\): Is c0 relevant\?\n    answer with the probability that the answer is true/);
-  });
-
-  it("renders a string state verbatim and only the boolean criteria that are given", () => {
-    const p = renderPrompt("I was charged twice.", {
-      refund: { type: "boolean", instructions: "Refund?", criteria: { true: "asks for money back", false: null } },
-    });
-    assert.match(p, /STATE:\nI was charged twice\.\n/);
-    assert.match(p, /- refund \(boolean\): Refund\?\n    true: asks for money back\n    answer with/);
-    assert.doesNotMatch(p, /false:/);
-  });
-});
-
-describe("evaluate: toAnswers", () => {
-  it("maps fields onto typed answers, clamping numbers into range", () => {
-    const a = toAnswers({ next: "c1", severity: 2.7, relevant_c0: -0.2 }, QUESTIONS);
-    assert.deepEqual(a.next, { type: "choice", choice: "c1" });
-    assert.deepEqual(a.severity, { type: "score", score: 2 });
-    assert.deepEqual(a.relevant_c0, { type: "boolean", probability: 0 });
-  });
-
-  it("an option outside the criteria or a non-number is an error, never a silent default", () => {
-    assert.throws(() => toAnswers({ next: "c9", severity: 1, relevant_c0: 0.5 }, QUESTIONS), /"next" is not one of c0, c1, none/);
-    assert.throws(() => toAnswers({ next: "c0", severity: "high", relevant_c0: 0.5 }, QUESTIONS), /"severity" is not a number/);
-  });
-});
-
-describe("evaluate: languageModelEvaluate (fake language model, offline)", () => {
-  /** A minimal AI SDK language model: answers every generateObject call with `object`. */
-  function fakeModel(object: Record<string, unknown>, seen: { prompt: string; calls: number }) {
-    return {
-      specificationVersion: "v3",
-      provider: "fake",
-      modelId: "fake-1",
-      supportedUrls: {},
-      async doGenerate(opts: any) {
-        seen.calls++;
-        seen.prompt = (opts.prompt as any[])
-          .map((m) => (typeof m.content === "string" ? m.content : m.content.map((p: any) => p.text ?? "").join("")))
-          .join("\n");
-        return {
-          content: [{ type: "text", text: JSON.stringify(object) }],
-          finishReason: "stop",
-          // The provider spec's (v3) nested usage; the SDK flattens it for `result.usage`.
-          usage: { inputTokens: { total: 12, noCache: 12, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 7, text: 7, reasoning: 0 } },
-          warnings: [],
-        };
-      },
-    };
-  }
-
-  it("prompts with the state + questions, and returns typed answers with usage", async () => {
-    const seen = { prompt: "", calls: 0 };
-    const evaluate = languageModelEvaluate(fakeModel({ next: "c0", severity: 1, relevant_c0: 0.9 }, seen));
+describe("evaluate: modelEvaluate over an evaluation model", () => {
+  it("passes state + questions through and returns typed answers with probabilities", async () => {
+    const seen: { calls: number; state?: unknown; questions?: unknown } = { calls: 0 };
+    const evaluate = modelEvaluate(fakeEvaluationModel({
+      next: { type: "choice", choice: "c1", probabilities: { c0: 0.2, c1: 0.7, none: 0.1 } },
+      severity: { type: "score", score: 1.4 },
+      relevant_c0: { type: "boolean", probability: 0.9 },
+    }, seen));
     const r = await evaluate({ state: { goal: "g" }, questions: QUESTIONS });
     assert.equal(seen.calls, 1);
-    assert.match(seen.prompt, /STATE:\n\{\n  "goal": "g"\n\}\n\nQUESTIONS:\n- next \(choice\)/);
-    assert.deepEqual(r.answers, {
-      next: { type: "choice", choice: "c0" },
-      severity: { type: "score", score: 1 },
-      relevant_c0: { type: "boolean", probability: 0.9 },
-    });
-    assert.deepEqual([r.usage.inputTokens, r.usage.outputTokens, r.usage.totalTokens], [12, 7, 19]);
+    assert.deepEqual(seen.state, { goal: "g" });
+    assert.deepEqual(Object.keys(seen.questions as object), ["next", "severity", "relevant_c0"]);
+    assert.deepEqual(r.answers.next, { type: "choice", choice: "c1", probabilities: { c0: 0.2, c1: 0.7, none: 0.1 } });
+    assert.deepEqual(r.answers.severity, { type: "score", score: 1.4 });
+    assert.deepEqual(r.answers.relevant_c0, { type: "boolean", probability: 0.9 });
+    assert.deepEqual([r.usage.inputTokens, r.usage.outputTokens, r.usage.totalTokens], [40, 0, 40]);
   });
 
-  it("an out-of-range enum answer fails generation instead of being accepted", async () => {
-    const seen = { prompt: "", calls: 0 };
-    const evaluate = languageModelEvaluate(fakeModel({ next: "c9", severity: 1, relevant_c0: 0.9 }, seen));
+  it("a choice outside the criteria is rejected by the SDK, never accepted", async () => {
+    const evaluate = modelEvaluate(fakeEvaluationModel({
+      next: { type: "choice", choice: "c9" },
+      severity: { type: "score", score: 1 },
+      relevant_c0: { type: "boolean", probability: 0.5 },
+    }, { calls: 0 }));
     await assert.rejects(evaluate({ state: "s", questions: QUESTIONS }));
   });
 
   it("no questions: no model call, empty answers", async () => {
-    const seen = { prompt: "", calls: 0 };
-    const evaluate = languageModelEvaluate(fakeModel({}, seen));
-    const r = await evaluate({ state: "s", questions: {} });
+    const seen = { calls: 0 };
+    const r = await modelEvaluate(fakeEvaluationModel({}, seen))({ state: "s", questions: {} });
     assert.deepEqual(r.answers, {});
     assert.equal(seen.calls, 0);
+  });
+});
+
+describe("evaluate: modelEvaluate over a wrapped language model (the fallback)", () => {
+  it("one structured-output call; option codes map back to the criteria keys", async () => {
+    const { Experimental_EvaluationLanguageModel } = await import("@ai-sdk/provider-utils/experimental-evaluation");
+    const seen: { calls: number; prompt?: string } = { calls: 0 };
+    // The wrapper numbers questions q0.. and choice options c0.. in order.
+    const lm = fakeLanguageModel({ q0: "c2", q1: 2, q2: 0.25 }, seen);
+    const evaluate = modelEvaluate(new Experimental_EvaluationLanguageModel({ model: lm as any }));
+    const r = await evaluate({ state: { goal: "why failing" }, questions: QUESTIONS });
+    assert.equal(seen.calls, 1);
+    assert.match(seen.prompt!, /why failing/);
+    assert.deepEqual(r.answers.next, { type: "choice", choice: "none" });
+    assert.deepEqual(r.answers.severity, { type: "score", score: 2 });
+    assert.deepEqual(r.answers.relevant_c0, { type: "boolean", probability: 0.25 });
+    assert.deepEqual([r.usage.inputTokens, r.usage.outputTokens, r.usage.totalTokens], [12, 7, 19]);
+  });
+});
+
+describe("evaluate: usageFromEvaluation", () => {
+  it("flat counts, total derived when absent, missing → zeros", () => {
+    assert.deepEqual(usageFromEvaluation({ inputTokens: 5, outputTokens: 2 }), { inputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 2, totalTokens: 7 });
+    assert.equal(usageFromEvaluation(undefined).totalTokens, 0);
+  });
+});
+
+describe("resolveEvaluationModel: routing", () => {
+  const secretsWith = (vals: Record<string, string>) => ({ get: async (k: string) => vals[k] });
+  const withoutEnvKey = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const saved = process.env[TYPESAFE_KEY_NAME];
+    delete process.env[TYPESAFE_KEY_NAME];
+    try { return await fn(); } finally { if (saved !== undefined) process.env[TYPESAFE_KEY_NAME] = saved; }
+  };
+
+  it("'jev' resolves to typesafe/jev-latest with the key from secrets", async () => {
+    const r = await withoutEnvKey(() => resolveEvaluationModel({ model: "jev", secrets: secretsWith({ [TYPESAFE_KEY_NAME]: "k" }) }));
+    assert.equal(r.name, "typesafe/jev-latest");
+    assert.equal(r.model.specificationVersion, "v4");
+    assert.equal(typeof r.model.doEvaluate, "function");
+  });
+
+  it("'typesafe/<id>' keeps the id", async () => {
+    const r = await withoutEnvKey(() => resolveEvaluationModel({ model: "typesafe/jev-2", secrets: secretsWith({ [TYPESAFE_KEY_NAME]: "k" }) }));
+    assert.equal(r.name, "typesafe/jev-2");
+  });
+
+  it("'jev' without a key is an error naming the key", async () => {
+    await withoutEnvKey(() => assert.rejects(resolveEvaluationModel({ model: "jev", secrets: secretsWith({}) }), new RegExp(TYPESAFE_KEY_NAME)));
+  });
+
+  it("no model named: jev when the key is configured", async () => {
+    const r = await withoutEnvKey(() => resolveEvaluationModel({ secrets: secretsWith({ [TYPESAFE_KEY_NAME]: "k" }), fallback: { model: "haiku" } }));
+    assert.equal(r.name, "typesafe/jev-latest");
+  });
+
+  it("no model named and no jev key: the fallback language model, wrapped", async () => {
+    const r = await withoutEnvKey(() => resolveEvaluationModel({ secrets: secretsWith({ ANTHROPIC_API_KEY: "k" }), fallback: { model: "haiku" } }));
+    assert.match(r.name, /^anthropic\/claude-haiku/);
+    assert.equal(r.model.provider, "anthropic.evaluation");
+  });
+
+  it("a named language model wins over a configured jev key", async () => {
+    const r = await resolveEvaluationModel({ model: "haiku", secrets: secretsWith({ [TYPESAFE_KEY_NAME]: "k", ANTHROPIC_API_KEY: "k" }) });
+    assert.match(r.name, /^anthropic\/claude-haiku/);
   });
 });

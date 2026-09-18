@@ -2,9 +2,9 @@ import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes, type AccessedNode } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { NodeEnvelope, EdgeEnvelope, NeighborsParams, SearchParams, SearchResult } from "../../../graph/search.js";
-import { languageModelEvaluate, type Evaluate, type EvalQuestion, type EvalAnswer } from "../../../evaluate.js";
+import { modelEvaluate, type Evaluate, type EvalQuestion, type EvalAnswer } from "../../../evaluate.js";
 import { addUsage, emptyUsage, type TokenUsage } from "../../../pricing.js";
-import { resolveModel } from "../../../llm.js";
+import { resolveEvaluationModel } from "../../../llm.js";
 import { graphCtx, errText, deriveNodeName } from "./_shared.js";
 
 /**
@@ -27,7 +27,8 @@ import { graphCtx, errText, deriveNodeName } from "./_shared.js";
  * as it goes. The step's provenance marker lists the expanded + kept nodes.
  *
  * `runWalk` is pure over an injected reader + decider (offline-testable);
- * `run()` wires strut's graph backend and an aieo-resolved model.
+ * `run()` wires strut's graph backend and an evaluation model (jev, or an
+ * aieo-resolved language model — `resolveEvaluationModel`).
  */
 
 /** Neighbor fetch cap per hop, as in graph/graph-neighbors (importance-sorted first). */
@@ -105,7 +106,7 @@ export interface HopRecord {
   verdicts: Array<{ ref_id: string; relevance: number; kept: boolean }>;
   next?: Brief;
   /** ref_id → probability for `next` (plus the `none` option), when the
-   *  decider reports one — evaluation models do; generateObject does not. */
+   *  decider reports one — jev does; a wrapped language model does not. */
   next_probabilities?: Record<string, number>;
   sufficient: number;
 }
@@ -380,7 +381,7 @@ const EXAMPLE = `- id: gather
     query: "nightly deliver"
     maxHops: 8
     maxNodes: 15
-    model: haiku
+    model: jev            # or haiku etc.; omitted = jev when TYPESAFE_AI_API_KEY is set
 - id: answer
   type: llm
   config:
@@ -409,13 +410,14 @@ export default defineStep({
     provider: z
       .string()
       .optional()
-      .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`)"),
+      .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`; not used for jev)"),
     model: z
       .string()
       .optional()
       .meta({
         description:
-          "the decision model — a small fast one is ideal (e.g. 'haiku'); model id, aieo alias, or 'provider/id', as in the llm step",
+          "the decision model. 'jev' is TypeSafe's evaluation model (TYPESAFE_AI_API_KEY; fast, calibrated probabilities) and the default " +
+          "when that key is set; otherwise any language model as in the llm step — a small fast one is ideal (e.g. 'haiku')",
         suggest: "llm-models",
       }),
   }),
@@ -424,12 +426,15 @@ export default defineStep({
     try {
       if (!cfg.start?.length && !cfg.query?.trim()) return "graph/walk failed: needs `start` (ref_ids) or `query`";
       const b = await graphCtx(ctx);
-      const { model, maxOutputTokens } = await resolveModel({
-        model: cfg.model ?? process.env["STRUT_LLM_MODEL"],
-        provider: cfg.provider ?? process.env["STRUT_LLM_PROVIDER"],
+      // No model named: jev when its key is configured, else the deployment's
+      // default language model (STRUT_LLM_*), as the llm step would use.
+      const em = await resolveEvaluationModel({
+        model: cfg.model,
+        provider: cfg.provider,
         secrets: ctx?.services?.secrets,
+        fallback: { model: process.env["STRUT_LLM_MODEL"], provider: process.env["STRUT_LLM_PROVIDER"] },
       });
-      return await runWalk(cfg, { reader: b.reader, evaluate: languageModelEvaluate(model, { maxOutputTokens }), ctx });
+      return await runWalk(cfg, { reader: b.reader, evaluate: modelEvaluate(em.model), ctx });
     } catch (e) {
       return errText("graph/walk", e);
     }

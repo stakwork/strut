@@ -53,57 +53,48 @@ under one step path (the `EvolveChart` pattern) and light nodes up on start
 
 ## The decider: `src/evaluate.ts`
 
-`evaluate({ state, questions })` — named choice / score / boolean questions
-answered independently against one state, returning typed answers with
-probabilities. The question and answer shapes are copied from the AI SDK's
-`experimental_evaluate` contract (ai@7, provider spec
-`Experimental_EvaluationModelV4Question/Answer`) on purpose:
+`modelEvaluate(model)` → an `Evaluate`: named choice / score / boolean
+questions answered independently against one state, returning typed answers
+with probabilities. It is one `experimental_evaluate({ model, state,
+questions })` call (ai@7). `resolveEvaluationModel` (src/llm.ts) picks the model:
 
-- **Today** (strut is on ai@6, which has no evaluation models):
-  `languageModelEvaluate(model)` runs `generateObject` on an aieo-resolved
-  language model at temperature 0, one object with a field per question.
-  Probabilities are the model's estimates, not calibrated — fine for
-  ranking and thresholding, which is all the walk does with them. A small
-  fast model (`haiku`) is the intended default.
-- **Later** (ai@7): the body becomes one `experimental_evaluate({ model,
-  state, questions })` call over an EVALUATION model — TypeSafe's `jev`
-  (`@ai-sdk/typesafe-ai`, `TYPESAFE_AI_API_KEY`; a non-generative decision
-  model: 70–500 ms, $0.042/MTok input, output free, calibrated
-  probabilities, questions evaluated in parallel, up to 255 choice options;
-  its own demos include Wikiracing, i.e. exactly this traversal shape) or
-  `anthropic.evaluationModel('claude-haiku-4-5-20251001')` when no new
-  vendor is wanted. No walker or caller changes.
+- **jev** (`model: jev`, `jev-<ver>`, or `typesafe/<id>`): TypeSafe's
+  evaluation model via `@ai-sdk/typesafe-ai`, keyed by `TYPESAFE_AI_API_KEY`
+  (secret store, then env). Non-generative: 70–500 ms, $0.042/MTok input,
+  output free, calibrated probabilities (a choice answer carries
+  `probabilities`, which the walk records as `next_probabilities`),
+  questions evaluated in parallel, up to 255 choice options. Its own demos
+  include Wikiracing — exactly this traversal shape.
+- **Default** (no `model`/`provider`): jev when that key is configured,
+  else the deployment's language model (`STRUT_LLM_MODEL`/`_PROVIDER`).
+- **Any other name**: `resolveModel` (same aliases and key errors as the
+  `llm` step) wrapped in the SDK's `EvaluationLanguageModel`
+  (`@ai-sdk/provider-utils/experimental-evaluation` — the same wrapper
+  behind `anthropic.evaluationModel(...)`): one structured-output call,
+  the model's own estimates, no choice probabilities. Fine for ranking and
+  thresholding, which is all the walk does.
 
 The walker takes any `Evaluate`, so tests script one and never touch a
 model.
 
-## Prerequisites for the swap (not done here)
-
-- **AI SDK 7.** `experimental_evaluate` exists only in `ai@7`. aieo pins
-  `ai@6.0.x` and the 3.x providers, and ai@7 speaks the V4 model spec while
-  those providers speak V3 — so the bump lands in aieo first, then strut.
-  Strut's side touches the agent step (`system` → `instructions`,
-  `onStepFinish` → `onStepEnd`, usage accumulates across steps,
-  `prepareStep` instructions carry forward) and needs Node 22+.
-- **An evaluation-model resolver.** aieo resolves language models only;
-  the evaluation model needs the same key-through-secrets treatment
-  (`TYPESAFE_AI_API_KEY`, else the anthropic key).
-- The evaluate API is marked experimental (may change in patch releases)
-  and jev's maximum state size is undocumented — the per-hop state is kept
-  compact (names, types, edge types, snippets) for that reason.
+Caveats: the evaluate API is experimental (may change in patch releases),
+and jev's maximum state size is undocumented — the per-hop state is kept
+compact (names, types, edge types, snippets) for that reason.
 
 ## Status
 
-Implemented on this branch: `src/evaluate.ts` (+ offline tests, including
-the generateObject backend over a fake language model), `graph/walk`
-(`runWalk` offline tests over an in-memory graph and a scripted decider;
-a live case in `graph-steps.test.ts` over the real reader), and
-`deriveNodeName` lifted into `_shared.ts` for the four steps that label
-nodes. Not yet exercised end to end with a real model: `run()` wires
-`resolveModel` + `languageModelEvaluate` exactly as the `llm` step does, but
-this branch was built without a provider key in the environment.
+Implemented on this branch: `src/evaluate.ts` + `resolveEvaluationModel`
+(offline tests through the real `experimental_evaluate` over a fake
+evaluation model and a wrapped fake language model, plus the resolver's
+routing), `graph/walk` (`runWalk` offline tests over an in-memory graph and
+a scripted decider; a live case in `graph-steps.test.ts` over the real
+reader), and `deriveNodeName` lifted into `_shared.ts` for the four steps
+that label nodes. One live `experimental_evaluate` call through the
+fallback path (haiku) returned sensible answers in ~1.4 s; jev itself has
+not been called live yet (no `TYPESAFE_AI_API_KEY` in the build env), nor
+has a full walk run against a real model.
 
-Possible next steps, in order of value: run a real walk on a seeded graph
-and tune the three instructions; a generic "evaluate-driven loop" step
-where `expand` is a registry step (like `agentTools`) so the same walk
-covers files or GitHub issues; the ai@7 + jev swap above.
+Possible next steps, in order of value: run a real walk with jev on a
+seeded graph and tune the three instructions; a generic "evaluate-driven
+loop" step where `expand` is a registry step (like `agentTools`) so the
+same walk covers files or GitHub issues.
