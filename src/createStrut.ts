@@ -54,6 +54,7 @@ import { attachAudioWebSocket } from "./audio/ws.js";
 // Static import is safe: notifier depends only on chat-store, never the AI
 // SDK (which stays lazy-loaded inside launchChatTurn).
 import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
+import { callbackOrigin, createTurnCallbacks, finalAssistantText, parseCallback } from "./ai/turn-callback.js";
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -1579,15 +1580,27 @@ export async function createStrut<TServices = unknown>(
       chatStore,
       maxAutoTurns: chatMaxAutoTurns,
       startTurn: (chatId, turn, modelMessages) =>
-        launchChatTurn(chatId, turn, modelMessages),
+        launchChatTurn(chatId, turn, modelMessages, "notification"),
     });
 
     // The verify pass settled for a run this chat launched: wake it with the
     // ledger (plans/claims.md §5; ai/verify-waker.ts). Queue-and-drain applies
     // unchanged, and `autoTurns` counts it like any machine-triggered turn, so
     // the park limit holds.
+    // Tells a dispatching host (`POST /chat { callback }`) when each turn
+    // ends and whether another is coming — see ai/turn-callback.ts.
+    const callbacks = createTurnCallbacks({
+      chatStore,
+      isLive: (chatId) => notifier.isLive(chatId),
+      maxAutoTurns: chatMaxAutoTurns,
+    });
+
     if (verifier) {
-      verifyWaker = createVerifyWaker({ verifier, deliver: (chatId, text) => notifier.deliver(chatId, text) });
+      verifyWaker = createVerifyWaker({
+        verifier,
+        deliver: (chatId, text) => notifier.deliver(chatId, text),
+        expect: (chatId) => callbacks.expect(chatId),
+      });
       verifySettled = (r) => void verifyWaker!.settled(r);
     }
 
@@ -1598,8 +1611,14 @@ export async function createStrut<TServices = unknown>(
      * Not awaited by the request (`launchChatTurn` returns void) — its
      * liveness is decoupled from any connection, exactly like `launchDetached`.
      */
-    function launchChatTurn(chatId: string, turn: number, modelMessages: any[]): void {
+    function launchChatTurn(
+      chatId: string,
+      turn: number,
+      modelMessages: any[],
+      trigger: "human" | "notification" = "human",
+    ): void {
       void (async () => {
+        let outcome: { status: "done" | "error"; text?: string; error?: { message: string } } = { status: "done" };
         // Synchronous (before any await): run-notifications arriving during
         // this turn must queue rather than launching a concurrent turn.
         notifier.turnStarted(chatId);
@@ -1686,6 +1705,7 @@ export async function createStrut<TServices = unknown>(
                 startedAt: number;
                 promise: Promise<RunResult>;
               }) => {
+                const delivered = callbacks.expect(chatId);
                 promise
                   .then(
                     async (res) => {
@@ -1720,7 +1740,8 @@ export async function createStrut<TServices = unknown>(
                   )
                   .catch((err) =>
                     console.error(`[chat ${chatId}] run-notification delivery failed:`, err),
-                  );
+                  )
+                  .finally(delivered);
               },
             },
           };
@@ -1795,12 +1816,15 @@ export async function createStrut<TServices = unknown>(
 
           // Every step's messages (tool calls + results), not just the last:
           // v7's `response` is final-step only.
-          await chatStore.appendMessages(chatId, (await result.responseMessages) as any);
+          const responseMessages = await result.responseMessages;
+          await chatStore.appendMessages(chatId, responseMessages as any);
+          outcome = { status: "done", text: finalAssistantText(responseMessages) };
           await emit({ type: "chat.end" });
           await chatStore.setMeta(chatId, { status: "done" });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[chat ${chatId}] turn ${turn} failed:`, err);
+          outcome = { status: "error", error: { message } };
           await emit({ type: "chat.error", error: { message } });
           await chatStore.setMeta(chatId, { status: "error" });
         } finally {
@@ -1810,6 +1834,14 @@ export async function createStrut<TServices = unknown>(
             await notifier.turnEnded(chatId);
           } catch (err) {
             console.error(`[chat ${chatId}] notification drain failed:`, err);
+          }
+          // Tell the dispatching host — AFTER the drain, so the chat is no
+          // longer live when it hears (or the follow-up turn already is, and
+          // this one reports `settled: false`).
+          try {
+            await callbacks.turnEnded({ chatId, turn, trigger, ...outcome });
+          } catch (err) {
+            console.error(`[chat ${chatId}] turn callback failed:`, err);
           }
         }
       })();
@@ -1841,9 +1873,20 @@ export async function createStrut<TServices = unknown>(
       return (await chatStore.setMeta(meta.id, { status: "error" })) ?? meta;
     }
 
+    /** A chat's meta as a read endpoint returns it: the callback URL is a
+     *  credential, so only its origin leaves the server. */
+    const publicMeta = (meta: ChatMeta) =>
+      meta.callback ? { ...meta, callback: { origin: callbackOrigin(meta.callback.url) } } : meta;
+
     // Send a message: append it, launch the turn detached, return ids (202).
     app.post("/chat", async (c) => {
-      const body = await c.req.json<{ chatId?: string; message?: string; title?: string; model?: string }>();
+      const body = await c.req.json<{
+        chatId?: string;
+        message?: string;
+        title?: string;
+        model?: string;
+        callback?: { url?: string } | null;
+      }>();
       if (!body.message || typeof body.message !== "string") {
         return c.json({ error: "message (string) is required" }, 400);
       }
@@ -1877,6 +1920,16 @@ export async function createStrut<TServices = unknown>(
           return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
         }
       }
+      // A host that wants to hear each turn end (ai/turn-callback.ts). Kept on
+      // the chat until replaced, or cleared with `callback: null`.
+      let callback: { url: string } | null | undefined;
+      if (body.callback !== undefined) {
+        try {
+          callback = body.callback === null ? null : parseCallback(body.callback);
+        } catch (err) {
+          return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+        }
+      }
       if (!chatId) {
         chatId = generateChatId();
         meta = await chatStore.createChat({
@@ -1898,19 +1951,23 @@ export async function createStrut<TServices = unknown>(
         currentTurn: turn,
         autoTurns: 0,
         ...(pickedModel ? { model: pickedModel } : {}),
+        ...(callback !== undefined ? { callback: callback ?? undefined } : {}),
       });
 
       // Lossless on disk (transcript); truncated copy re-fed to the model.
       const modelMessages = truncateToolMessages([...prior, userMsg]);
       launchChatTurn(chatId, turn, modelMessages);
 
-      return c.json({ chatId, turn }, 202);
+      // `callback: true` is the host's proof this server honors callbacks (an
+      // older one ignores the field and would never call back).
+      const hasCallback = callback !== undefined ? callback !== null : !!meta!.callback;
+      return c.json({ chatId, turn, ...(hasCallback ? { callback: true } : {}) }, 202);
     });
 
     // List chat sessions (newest first).
     app.get("/chats", async (c) => {
       const list = await chatStore.listChats();
-      return c.json(await Promise.all(list.map(reconcileStaleChat)));
+      return c.json((await Promise.all(list.map(reconcileStaleChat))).map(publicMeta));
     });
 
     // Reattach to a chat turn's event stream (live or completed) — SSE tail.
@@ -1954,7 +2011,7 @@ export async function createStrut<TServices = unknown>(
       if (!meta) return c.json({ error: `Chat "${chatId}" not found` }, 404);
       meta = await reconcileStaleChat(meta);
       const messages = await chatStore.loadMessages(chatId);
-      return c.json({ meta, messages });
+      return c.json({ meta: publicMeta(meta), messages });
     });
   }
 

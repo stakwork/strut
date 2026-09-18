@@ -36,27 +36,39 @@ export const STILL_VERIFYING = "Verification against its claims is still running
 export function createVerifyWaker(opts: {
   verifier: Pick<Verifier, "verifyRun" | "ledger">;
   deliver: (chatId: string, text: string) => Promise<void>;
+  /** A watched run MAY wake its chat later (`ai/turn-callback.ts`): held from
+   *  `watch` until the verdict is delivered, folded into the run's own
+   *  notification, or found to be nothing. */
+  expect?: (chatId: string) => () => void;
   graceMs?: number;
 }): VerifyWaker {
   const watchers = new Map<string, string>();
+  const releases = new Map<string, () => void>();
+  const release = (runId: string) => {
+    releases.get(runId)?.();
+    releases.delete(runId);
+  };
   const graceMs = opts.graceMs ?? 5_000;
   const hasContract = (r: VerifyResult) => !r.skipped && r.subjects.length > 0;
 
   return {
     watch(runId, chatId) {
       watchers.set(runId, chatId);
+      if (opts.expect && !releases.has(runId)) releases.set(runId, opts.expect(chatId));
     },
 
     async settled(r) {
       const chatId = watchers.get(r.runId);
       if (!chatId) return;
       watchers.delete(r.runId);
-      if (!hasContract(r)) return;
       try {
+        if (!hasContract(r)) return;
         const ledger = await opts.verifier.ledger(r);
         if (!ledgerIsEmpty(ledger)) await opts.deliver(chatId, formatVerifyNotification({ workflow: r.key, runId: r.runId, ledger, costUsd: r.costUsd }));
       } catch (err) {
         console.error(`[chat ${chatId}] verify-notification delivery failed:`, err);
+      } finally {
+        release(r.runId); // after deliver: a turn it launched is already live
       }
     },
 
@@ -72,6 +84,7 @@ export function createVerifyWaker(opts: {
         ]).finally(() => clearTimeout(timer));
         if (!result) return `\n${STILL_VERIFYING}`; // still watched: `settled` will deliver
         if (!watchers.delete(runId)) return ""; // `settled` got there first and delivered
+        release(runId); // folded into the run's notification, whose own expect() is still held
         if (!hasContract(result)) return "";
         const ledger = await opts.verifier.ledger(result);
         return ledgerIsEmpty(ledger) ? "" : `\n${formatLedgerLines(ledger)}`;

@@ -74,6 +74,7 @@ strut/
 │   │   │                  #                   graph_query (read-only Cypher; only when deps.graph is wired),
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
 │   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts)
+│   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
 │   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)
 │   ├── audio/             # speech-to-text over sherpa-onnx (plans/local-desktop-and-stt.md §4). Streaming dictation is the product surface; workflows learn AROUND it (hotword lists, "dream cycles" §4.8), no STT step in v1
@@ -780,6 +781,33 @@ and the child env is scrubbed by construction).
   format change there fails a test; `NoticeView` opens it level by level:
   card → claim → evidence + checks → raw message. Unparseable → the old
   dashed text notice).
+
+- **Turn-end callbacks — how a HOST dispatches the builder**
+  (`src/ai/turn-callback.ts`). A turn takes seconds or hours, and one
+  dispatch can produce SEVERAL turns (the detached-run / verify wake-ups
+  above), so a host app does not tail or poll: `POST /chat { …, callback:
+  { url } }` stores the URL on `ChatMeta.callback` — on the CHAT, so
+  notification-triggered turns post too; `callback: null` clears it — and
+  the 202 carries `callback: true` (the host's proof this server honors
+  the field; an older one ignores it and would never call back). Every turn
+  end POSTs `{ event: "turn.end", chatId, turn, status, trigger: "human" |
+  "notification", text?, error?, settled, parked }` from `launchChatTurn`'s
+  `finally`, AFTER the notifier's drain — so the chat is no longer live when
+  the host hears (it may reply at once without a 409), unless queued
+  notifications already launched the next turn. `settled: false` = something
+  this process knows of will (or may) start another turn: an `expect()`
+  token is outstanding (a detached run until its notification is delivered;
+  a watched verify pass until its verdict is delivered, folded into the
+  run's notification, or found to be nothing) or the next turn is already
+  live. When the last token resolves WITHOUT a turn (a quiet verify pass; a
+  notification that parked at the auto-turn cap) an `{ event: "settled" }`
+  post follows — a host told `settled: false` always hears `settled: true`.
+  `parked` = the auto-turn cap is reached. Posts are chained per chat
+  (ordered), retried a few times, detached from the turn; state is
+  in-process, the notifier's crash posture (a restart drops it — the host's
+  fallback is `GET /chat/:id`). The URL is the credential (the host signs
+  it): logs and read endpoints (`GET /chat/:id`, `/chats`) carry its origin
+  only.
 
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
