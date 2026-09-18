@@ -6,8 +6,7 @@ import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
 import { runStep, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
-import { claimsReaderFor } from "../graph/claims.js";
-import { buildClaimsAuthoring, type ClaimActor } from "../claims-authoring.js";
+import type { ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
@@ -76,14 +75,12 @@ export function buildTools(deps: AiDeps) {
       name,
     });
   };
-  // The claims layer (plans/claims.md) — only on a graph-backed workspace:
-  // none of the claim tools, and no `claims` arg, are offered without it.
-  // This surface is human-supervised, so it is NOT publisher-scoped (like
+  // The claims layer (plans/claims.md), where the host turned it on: none of
+  // the claim tools, and no `claims` arg, are offered without it. This
+  // surface is human-supervised, so it is NOT publisher-scoped (like
   // edit_step); what it writes is still stamped `ai`, which keeps the grader
   // deny-list on its checks.
-  const claims = deps.workspace.graph
-    ? buildClaimsAuthoring({ graph: deps.workspace.graph, workspace: deps.workspace, getRegistry: deps.getRegistry })
-    : null;
+  const claims = deps.claims ?? null;
   const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: false };
   const claimsArg = claims ? { claims: claimsArgSchema } : {};
   const verifier = claims ? (deps.verifier ?? null) : null;
@@ -732,7 +729,7 @@ export function buildTools(deps: AiDeps) {
           {
             store: deps.store,
             workspace: deps.workspace,
-            claims: claimsReaderFor(deps.workspace),
+            claims: claims?.reader ?? null,
             onKept: (key, runId) => {
               if (verifier) deps.watchVerify?.(runId);
               verifier?.schedule(key, runId);

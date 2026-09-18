@@ -9,29 +9,27 @@
  * vouched, no instrument measured.
  *
  * Reads are open, like the rest of the read surface; every mutation is
- * behind `requireApiKey` (permissive in dev). On a filesystem workspace
- * `GET /claims` answers `{ enabled: false }` — the panel hides itself — and
- * mutations answer 409.
+ * behind `requireApiKey` (permissive in dev). Where the claims layer is off
+ * (a filesystem workspace, or `STRUT_CLAIMS=0`) `GET /claims` answers
+ * `{ enabled: false }` — the panel hides itself — and mutations answer 409.
  */
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { requireApiKey } from "./auth.js";
-import { buildClaimsAuthoring, toSubjectRef, type ClaimActor } from "./claims-authoring.js";
+import { toSubjectRef, type ClaimActor, type ClaimsAuthoring } from "./claims-authoring.js";
 import { CLAIMS_OFF, checkSpecSchema, claimSpecSchema, subjectSchema } from "./claims-schemas.js";
-import type { StepRegistry } from "./core.js";
 import type { Verifier } from "./verify.js";
-import type { WorkspaceStore } from "./workspace.js";
 
 export interface ClaimsRoutesDeps {
-  workspace: WorkspaceStore;
+  /** The claims layer, where it is on (see `StrutOptions.claims`). */
+  claims: ClaimsAuthoring | null;
   verifier: Verifier | null;
-  getRegistry(): Promise<StepRegistry>;
 }
 
 const PERSON: ClaimActor = { publisher: "person", scoped: false };
 
 export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
-  const claims = deps.workspace.graph ? buildClaimsAuthoring({ graph: deps.workspace.graph, workspace: deps.workspace, getRegistry: deps.getRegistry }) : null;
+  const claims = deps.claims;
 
   /** Parse the JSON body with a zod shape; a 400 names what is wrong. */
   async function bodyOf<S extends z.ZodType>(c: Context, shape: S): Promise<{ data: z.infer<S> } | { error: string }> {

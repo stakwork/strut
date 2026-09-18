@@ -46,7 +46,8 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 // No runtime graph dependency in here either (type-only imports inside).
-import { claimsReaderFor, type ClaimsReader } from "./graph/claims.js";
+import type { ClaimsReader } from "./graph/claims.js";
+import { buildClaimsAuthoring } from "./claims-authoring.js";
 import { createStt, type SttService } from "./audio/stt.js";
 import { audioRoutes } from "./audio/routes.js";
 import { attachAudioWebSocket } from "./audio/ws.js";
@@ -146,6 +147,14 @@ export interface StrutOptions<TServices = unknown> {
    *  the guards. Only the NEWEST root run per workflow is considered. */
   autoResume?: boolean | AutoResumeOptions;
 
+  /** The claims layer (plans/claims.md): claims, checks, the verify pass, the
+   *  claim tools and the Claims panel. Needs a graph-backed workspace; there
+   *  it defaults to ON unless `STRUT_CLAIMS=0`. Pass `false` to turn the
+   *  whole layer off — `strut.claims` / `strut.verifier` are null, no claim
+   *  tool or `claims` arg is offered, the prompt has no claims section, no
+   *  run is verified and the panel hides itself. */
+  claims?: boolean;
+
   /** The strut graph backend, when the deployment has one (server.ts passes
    *  the one behind its graph-backed workspace). Enables the chat builder's
    *  read-only `graph_query` tool. Omit and the tool isn't offered. */
@@ -235,13 +244,13 @@ export interface Strut<TServices = unknown> {
   stt: SttService | null;
 
   /** Reads over the claims layer (plans/claims.md) — null unless the
-   *  workspace is graph-backed: claims hang off the subjects' graph nodes,
-   *  so on a filesystem workspace no claim tool is offered and the verify
-   *  pass is a no-op. Every consumer gates on this. */
+   *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
+   *  claims hang off the subjects' graph nodes, so on a filesystem workspace
+   *  no claim tool is offered and the verify pass is a no-op. */
   claims: ClaimsReader | null;
 
-  /** The verify pass (plans/claims.md §4) — null unless the workspace is
-   *  graph-backed. Runs by itself after every top-level run; a host calls
+  /** The verify pass (plans/claims.md §4) — null wherever `claims` is.
+   *  Runs by itself after every top-level run; a host calls
    *  `verifyRun` to wait for a run's evidence (single-flighted with the
    *  automatic pass), or `addEvidence` to report what it observed. */
   verifier: Verifier | null;
@@ -333,8 +342,6 @@ export async function createStrut<TServices = unknown>(
   opts: StrutOptions<TServices> = {},
 ): Promise<Strut<TServices>> {
   const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
-  // Null unless the workspace is graph-backed (see `Strut.claims`).
-  const claims = claimsReaderFor(workspace);
   // Backend mode, used ONLY to pick unspecified defaults: the run/chat/secret
   // stores follow the workspace's kind (file-backed → file stores under
   // dataDir; anything else → in-memory). No capability is gated on it —
@@ -462,6 +469,26 @@ export async function createStrut<TServices = unknown>(
     await rebuildRegistry();
   }
 
+  // The claims layer (plans/claims.md) — decided HERE and nowhere else. It
+  // needs the subjects' graph nodes, so a filesystem workspace never has it;
+  // on a graph workspace it is on unless `claims: false` / `STRUT_CLAIMS=0`.
+  // Everything downstream (authoring, the chat tools, the prompt, the HTTP
+  // door, the verify pass) is handed `claimsAuthoring` and gates on that,
+  // never on `workspace.graph`.
+  const claimsEnabled = opts.claims ?? process.env["STRUT_CLAIMS"] !== "0";
+  const claimsGraph = claimsEnabled ? workspace.graph : undefined;
+  const claimsAuthoring = claimsGraph
+    ? buildClaimsAuthoring({
+        graph: claimsGraph,
+        workspace,
+        getRegistry: async () => {
+          await rebuildRegistry();
+          return registry;
+        },
+      })
+    : null;
+  const claims = claimsAuthoring?.reader ?? null;
+
   // The verify pass (plans/claims.md §4) — only where the claims layer exists.
   // Triggered where `services.onRunEnd` fires — `runWorkflow`'s `finally`,
   // once per TOP-LEVEL run — and NOT at the launch sites: a candidate that a
@@ -472,9 +499,9 @@ export async function createStrut<TServices = unknown>(
   // Wakes the chat that launched a run with its verdict — built with the chat
   // block (it needs the notifier); without chat, evidence is just written.
   let verifyWaker: VerifyWaker | undefined;
-  const verifier = workspace.graph
+  const verifier = claimsGraph
     ? createVerifier({
-        graph: workspace.graph,
+        graph: claimsGraph,
         store,
         workspace,
         services: () => services,
@@ -514,6 +541,7 @@ export async function createStrut<TServices = unknown>(
       store,
       services,
       trackRun,
+      claims: claimsAuthoring,
       verifier,
       publishingEnabled: !registryWasInjected,
       getRegistry: async () => {
@@ -1493,14 +1521,7 @@ export async function createStrut<TServices = unknown>(
   }
 
   // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2).
-  claimsRoutes(app, {
-    workspace,
-    verifier,
-    getRegistry: async () => {
-      await rebuildRegistry();
-      return registry;
-    },
-  });
+  claimsRoutes(app, { claims: claimsAuthoring, verifier });
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks
   // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
@@ -1630,7 +1651,9 @@ export async function createStrut<TServices = unknown>(
             },
             // Read-only graph_query, when the host wired a graph backend.
             graph: opts.graph,
-            // verify_run / add_evidence + the verify triggers (graph workspaces only).
+            // The claim tools + `claims` arg, and verify_run / add_evidence +
+            // the verify triggers — where the claims layer is on.
+            claims: claimsAuthoring,
             verifier,
             watchVerify: (runId: string) => verifyWaker?.watch(runId, chatId),
             // cancel_run / pause_run / resume_run over the live controllers.

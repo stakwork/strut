@@ -6,10 +6,9 @@ import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { stepHashesFor } from "./closure.js";
-import { claimsReaderFor } from "./graph/claims.js";
 import {
-  buildClaimsAuthoring,
   toSubjectRef,
+  type ClaimsAuthoring,
   type CheckSpecInput,
   type ClaimActor,
   type ClaimSpecInput,
@@ -449,7 +448,12 @@ export interface AuthoringDeps extends StepPublishDeps {
     runId: string,
     parentRunId?: string,
   ) => { controller?: import("./run-control.js").RunController; untrack: () => void };
-  /** The verify pass, where the claims layer exists (graph workspaces). */
+  /** The claims layer (plans/claims.md), built once by `createStrut` where
+   *  it is on (a graph workspace, `StrutOptions.claims` not false). Null /
+   *  absent → no contract is accepted or recorded, and the claim operations
+   *  answer `CLAIMS_OFF`. */
+  claims?: ClaimsAuthoring | null;
+  /** The verify pass, wherever `claims` is. */
   verifier?: import("./verify.js").Verifier | null;
 }
 
@@ -458,8 +462,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
 
   const explorerDeps = async () => ({ workspace, registry: await deps.getRegistry() });
 
-  // The claims layer exists only on a graph-backed workspace.
-  const claims = workspace.graph ? buildClaimsAuthoring({ graph: workspace.graph, workspace, getRegistry: deps.getRegistry }) : null;
+  const claims = deps.claims ?? null;
   const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: true };
   const claimsOff = { error: CLAIMS_OFF };
   /** Blocks a publish on an invalid contract; a contract passed where there
@@ -588,7 +591,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
               }
             : {}),
         },
-        { store, workspace, claims: claimsReaderFor(workspace), onKept: (key, runId) => deps.verifier?.schedule(key, runId) },
+        { store, workspace, claims: claims?.reader ?? null, onKept: (key, runId) => deps.verifier?.schedule(key, runId) },
       );
     },
 

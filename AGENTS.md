@@ -726,9 +726,12 @@ and the child env is scrubbed by construction).
   localStorage and reattaches to a still-live turn on reopen.
 
 - **Claims, checks, evidence — the truth layer** (`plans/claims.md`; graph
-  workspaces only — on `STRUT_WORKSPACE_BACKEND=fs` no claim tool is
-  offered, `strut.claims` / `strut.verifier` are null, and nothing below
-  runs). A `Claim` states how a step or workflow should BEHAVE, a `Check`
+  workspaces only, on by default there — on `STRUT_WORKSPACE_BACKEND=fs`,
+  or with `STRUT_CLAIMS=0` / `createStrut({ claims: false })`, no claim
+  tool is offered, `strut.claims` / `strut.verifier` are null, and nothing
+  below runs. `createStrut` decides this once and threads the
+  `ClaimsAuthoring | null` to every consumer; nothing else reads
+  `workspace.graph`). A `Claim` states how a step or workflow should BEHAVE, a `Check`
   is an instrument that tests it (a registry step run over the subject, or
   an external check answered through a planned slot), `Evidence` is what
   one check observed on one run — all three are jarvis types, written

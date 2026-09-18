@@ -147,7 +147,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
       ...Object.fromEntries((await ws.listSteps()).map((s) => [s.type, defineStep({ type: s.type, input: z.any(), output: z.any(), run: async () => ({}) })])),
     });
     claims = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry, env: {} });
-    authoring = buildAuthoringCapability({ workspace: ws, store: new MemoryRunStore(), getRegistry });
+    authoring = buildAuthoringCapability({ workspace: ws, store: new MemoryRunStore(), getRegistry, claims });
 
     await ws.publishStep("clip/compute-times", STEP_SRC("clip/compute-times"), "one", AI_PUBLISHER);
     await ws.publishWorkflowByContent("gaia-produce", "name: gaia-produce\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n", "seeded", undefined, "seeder");
@@ -375,7 +375,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.equal(bare.claims?.count, 0);
     assert.match(bare.claims!.warning!, /NO claims/);
 
-    const deps = { workspace: ws, registry, store: new MemoryRunStore(), getRegistry };
+    const deps = { workspace: ws, registry, store: new MemoryRunStore(), getRegistry, claims };
     const tools = buildTools(deps) as Record<string, { inputSchema: z.ZodObject; execute: (a: unknown) => Promise<Record<string, unknown>> }>;
     for (const t of ["add_claim", "list_claims", "edit_claim", "retire_claim", "attach_claim", "detach_claim", "add_check", "edit_check", "retire_check"]) assert.ok(tools[t], t);
     for (const t of ["create_step", "edit_step", "create_workflow", "edit_workflow"]) assert.ok("claims" in tools[t]!.inputSchema.shape, t);

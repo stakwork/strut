@@ -60,7 +60,12 @@ claim tools are offered and the verify pass is a no-op. The gate is the
 WORKSPACE, not `StrutOptions.graph`: claims hang off the subjects' graph
 nodes, so `WorkspaceStore.graph` (set by `Neo4jWorkspaceStore`) is what
 turns the layer on, surfaced as `strut.claims` (`ClaimsReader | null`). The
-lab host passes no `graph` option and still gets it.
+lab host passes no `graph` option and still gets it. On a graph workspace
+the layer is on by default; `STRUT_CLAIMS=0` (or `createStrut({ claims:
+false })`) turns the whole thing off. `createStrut` decides this ONCE and
+hands the resulting `ClaimsAuthoring | null` to every consumer (authoring
+capability, chat tools, system prompt, `/claims` routes, verify pass) —
+nothing downstream reads `workspace.graph` for itself.
 
 ### Nodes
 

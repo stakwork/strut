@@ -16,6 +16,8 @@ import { createStrut, type Strut } from "../createStrut.js";
 import { coreRegistry } from "../steps/registry.js";
 import { MemoryRunStore } from "../store.js";
 import { buildTools } from "../ai/tools.js";
+import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
+import { CLAIMS_OFF } from "../claims-schemas.js";
 import { buildAuthoringCapability, type AuthoringCapability } from "../authoring.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
 import type { VerifyResult, Verifier } from "../verify.js";
@@ -364,7 +366,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.equal((await verify("clipper", run.runId)).slots, 0, "re-verifying the same run opens nothing");
 
     // The chat tool surface: add_evidence finds the open slot for this run and FILLS it.
-    const tools = buildTools({ workspace: ws, registry, store, getRegistry: async () => registry, verifier }) as unknown as Record<string, { execute: (a: unknown) => Promise<Record<string, unknown>> }>;
+    const tools = buildTools({ workspace: ws, registry, store, getRegistry: async () => registry, claims, verifier }) as unknown as Record<string, { execute: (a: unknown) => Promise<Record<string, unknown>> }>;
     assert.ok(tools["verify_run"] && tools["add_evidence"]);
     const filled = await tools["add_evidence"]!.execute({ claim: c.id, name: "clipper", runId: run.runId, supports: true, content: "ffmpeg astats at the cut: no sample discontinuity above -60dB" });
     assert.deepEqual([filled["ok"], filled["filled"], filled["evidence"]], [true, true, slotId]);
@@ -434,6 +436,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
       store,
       services: strut.services,
       getRegistry: async () => registry,
+      claims,
       verifier: chatVerifier,
       watchVerify: (runId: string) => watched.push(runId),
     }) as unknown as Record<string, { execute: (a: unknown) => Promise<Record<string, any>> }>;
@@ -539,7 +542,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     await addClaim(STEP, "end is after start", [compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}")]);
     // The instance's registry is injected (publishing off), so publish through
     // a capability of our own over the same workspace, store and verifier.
-    const authoring = buildAuthoringCapability({ workspace: ws, store, getRegistry: async () => registry, services: strut.services, verifier });
+    const authoring = buildAuthoringCapability({ workspace: ws, store, getRegistry: async () => registry, services: strut.services, claims, verifier });
     const clean = (await authoring.editStep("clip/compute-times", SRC("clip/compute-times", "clean"))) as { publishChecks?: Array<{ check: string; lastVerify: unknown }> };
     assert.deepEqual(clean.publishChecks, [{ claim: lint.id, check: lint.checks[0], lastVerify: { ran: true } }]);
     const about = await rows(`MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence)-[:ABOUT]->(v:StrutStepVersion)<-[:HAS_SOURCE]-(e) RETURN eb.strength AS s, v.content_hash AS h`, { c: lint.id });
@@ -554,5 +557,39 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const executed = await rows(`MATCH (run:StrutRun {run_id: $r})-[:EXECUTED]->(v:StrutStepVersion) RETURN run.workflow_name AS wf, v.content_hash AS h`, { r: r.runId });
     assert.deepEqual(executed, [{ wf: "step:clip/compute-times", h: (await ws.getActiveStepHashes())["clip/compute-times"] }]);
     assert.ok(!(await ws.listWorkflows()).some((w) => w.name.startsWith("step:")));
+  });
+
+  it("the switch: `claims: false` or STRUT_CLAIMS=0 turns the whole layer off on a graph workspace; on by default; the option wins", async () => {
+    assert.ok(strut.claims && strut.verifier, "on by default where the workspace is graph-backed");
+    const base = { workspace: ws, store: new MemoryRunStore(), registry, dataDir: dir, serveUi: false, enableChat: false, stt: false } as const;
+    const off = await createStrut({ ...base, claims: false });
+    try {
+      assert.deepEqual([off.claims, off.verifier], [null, null]);
+      assert.deepEqual(await (await off.app.request("/claims?kind=step&name=clip/compute-times")).json(), { enabled: false, claims: [] });
+      const post = (path: string) => off.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      assert.equal((await post("/claims")).status, 409);
+      assert.equal((await post("/workflows/clipper/runs/1/verify")).status, 409);
+      const authoring = (off.services as Record<string, unknown>)["authoring"] as AuthoringCapability;
+      assert.deepEqual(await authoring.addClaim({ subjects: [{ kind: "step", name: "clip/compute-times" }], text: "x", checks: [] }), { error: CLAIMS_OFF });
+    } finally {
+      await off.close();
+    }
+    process.env["STRUT_CLAIMS"] = "0";
+    try {
+      const env = await createStrut(base);
+      assert.deepEqual([env.claims, env.verifier], [null, null], "the env kill-switch");
+      await env.close();
+      const forced = await createStrut({ ...base, claims: true });
+      assert.ok(forced.claims && forced.verifier, "the option wins over the env");
+      await forced.close();
+    } finally {
+      delete process.env["STRUT_CLAIMS"];
+    }
+    // Downstream never re-derives the gate from `workspace.graph`: handed no
+    // claims layer, the chat surface offers nothing — same workspace.
+    const bare = { workspace: ws, registry, store: new MemoryRunStore(), getRegistry: async () => registry };
+    const tools = buildTools(bare) as Record<string, { inputSchema: z.ZodObject }>;
+    assert.ok(!tools["add_claim"] && !tools["verify_run"] && !("claims" in tools["create_step"]!.inputSchema.shape));
+    assert.ok(!(await buildSystem(bare)).includes(CLAIMS_SECTION));
   });
 });

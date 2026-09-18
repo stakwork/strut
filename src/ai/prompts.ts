@@ -39,10 +39,15 @@ export interface AiDeps {
    *  tool so the builder can verify what its `graph/*` steps wrote. Optional:
    *  without it the tool isn't offered. */
   graph?: GraphBackend;
-  /** The verify pass (plans/claims.md §4), when the workspace is
-   *  graph-backed: backs `verify_run` / `add_evidence`, runs `publish` checks
-   *  after a publish, and verifies kept `run_step` runs. Optional: without it
-   *  claims can still be authored, but nothing produces evidence. */
+  /** The claims layer (plans/claims.md), where the host turned it on (a
+   *  graph workspace, `StrutOptions.claims` not false): offers the claim
+   *  tools and the `claims` arg on the publish tools, and puts the claims
+   *  section in the system prompt. Optional: absent → none of that. */
+  claims?: import("../claims-authoring.js").ClaimsAuthoring | null;
+  /** The verify pass (plans/claims.md §4), wherever `claims` is: backs
+   *  `verify_run` / `add_evidence`, runs `publish` checks after a publish,
+   *  and verifies kept `run_step` runs. Optional: without it claims can
+   *  still be authored, but nothing produces evidence. */
   verifier?: import("../verify.js").Verifier | null;
   /** "This chat launched run `runId` and wants its verdict": the host wakes
    *  the chat with a `[verify-notification]` when that run's verify pass
@@ -279,7 +284,7 @@ function renderModels(m: AiDeps["models"]): string {
 
 /**
  * The claims section (plans/claims.md §2) — appended only when the claim
- * tools are offered (a graph-backed workspace). Deliberately short: the
+ * tools are offered (`deps.claims`). Deliberately short: the
  * forcing function is the contract the model reads in its tool results, not
  * this instruction.
  */
@@ -296,7 +301,7 @@ Tools: verify_run (re-verify a run after changing a claim or check; returns the 
 export async function buildSystem(deps: AiDeps): Promise<string> {
   const tree = await renderStepsTree(deps);
   return `${BASE_SYSTEM}
-${deps.workspace.graph ? `\n${CLAIMS_SECTION}\n` : ""}
+${deps.claims ? `\n${CLAIMS_SECTION}\n` : ""}
 ${renderModels(deps.models)}Available steps:
 ${tree}
 `;
