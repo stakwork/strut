@@ -63,7 +63,7 @@ strut/
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
-│   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus two strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
+│   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus three strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, walk gathers context for a goal hop by hop with a decision model judging relevance/next/enough — plans/graph-walk.md); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
 │   ├── ai/                # AI workflow-builder backend (used by POST /chat)
 │   │   ├── index.ts       # barrel export

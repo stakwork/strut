@@ -105,3 +105,26 @@ export function errText(step: string, e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
   return code ? `${step} failed — ${code}: ${msg}` : `${step} failed: ${msg}`;
 }
+
+const LABEL_MAX = 160;
+
+/** Nodes keep their human label under different keys depending on node
+ *  type — try a generous ordered candidate list (same as jarvis/graph-get).
+ *  Shared by graph-get, graph-get-batched, graph-neighbors and walk. */
+export function deriveNodeName(node: any, p: Record<string, any>): string {
+  const candidates = [
+    node?.name, p.name, p.title, p.label, p.display_name, p.displayName,
+    p.identifier, p.file_name, p.fileName, p.file, p.path, p.symbol,
+    p.function_name, p.class_name, p.method_name, p.operation_id, p.endpoint,
+    p.route, p.url, p.entity, p.key, p.slug, p.episode_title, p.show_title,
+    p.username, p.email, p.summary, p.description, p.text, p.content, p.body, p.docs,
+    p.workflow_name, p.step_type, p.run_id, p.tool_name, p.chat_id,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim().length > 0) {
+      const t = c.trim();
+      return t.length > LABEL_MAX ? t.slice(0, LABEL_MAX) : t;
+    }
+  }
+  return "";
+}
