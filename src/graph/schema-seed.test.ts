@@ -12,7 +12,7 @@ describe("strut-schemas (pure)", () => {
   it("library is well-formed", () => {
     assertLibraryWellFormed();
     assert.equal(STRUT_SCHEMAS.length, 9);
-    assert.equal(STRUT_EDGES.length, 14);
+    assert.equal(STRUT_EDGES.length, 15);
   });
 
   it("flattens attributes onto the top level with no attributes blob", () => {

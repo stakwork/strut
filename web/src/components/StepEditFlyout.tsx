@@ -5,6 +5,7 @@ import { ConfigField } from "./ConfigField";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { CloseIcon } from "../icons";
 import { humanize } from "../helpers";
+import { ClaimsPanel, claimsSummary } from "./ClaimsPanel";
 import yaml from "js-yaml";
 
 // ── Step Edit Flyout ───────────────────────────────────────────────────────
@@ -14,6 +15,8 @@ export function StepEditFlyout(props: {
   allSteps: StepData[];
   onSave: (updated: StepData) => void;
   onClose: () => void;
+  /** Open a run from a claim's evidence / to-do. */
+  onOpenRun?: (workflow: string, runId: string) => void;
 }) {
   const [id, setId] = useState(props.step.id);
   const [config, setConfig] = useState<Record<string, any>>({ ...props.step.config });
@@ -28,6 +31,10 @@ export function StepEditFlyout(props: {
   const [sourceOpen, setSourceOpen] = useState(false);
   const [source, setSource] = useState<api.StepSourceResponse | null>(null);
   const [sourceLoading, setSourceLoading] = useState(false);
+  // Claims belong to the step TYPE (not this instance in this workflow). The
+  // probe tells us whether there is a claims layer at all, and drives the note.
+  const [claims, setClaims] = useState<api.ClaimsResponse | null>(null);
+  const [claimsOpen, setClaimsOpen] = useState(false);
 
   // Fetch schema for this step type
   useEffect(() => {
@@ -40,6 +47,19 @@ export function StepEditFlyout(props: {
   useEffect(() => {
     setSourceOpen(false);
     setSource(null);
+  }, [props.step.type]);
+
+  useEffect(() => {
+    setClaims(null);
+    setClaimsOpen(false);
+    api.getClaims({ kind: "step", name: props.step.type })
+      .then((r) => {
+        setClaims(r);
+        // A to-do or a refutation should not hide behind a collapsed row.
+        const s = claimsSummary(r.claims);
+        if (s.todos > 0 || s.refuted > 0) setClaimsOpen(true);
+      })
+      .catch(() => setClaims(null));
   }, [props.step.type]);
 
   const toggleSource = () => {
@@ -222,6 +242,29 @@ export function StepEditFlyout(props: {
             </div>
           </div>
         )}
+
+        {/* Claims on this step TYPE — only custom steps carry them, and only on
+            a graph-backed workspace. */}
+        {claims?.enabled && !claims.note && (() => {
+          const sum = claimsSummary(claims.claims);
+          const note = sum.total === 0
+            ? "none"
+            : [sum.refuted ? `${sum.refuted} refuted` : "", sum.open ? `${sum.open} unverified` : "", sum.todos ? `${sum.todos} to do` : ""].filter(Boolean).join(", ") || `${sum.total} supported`;
+          return (
+            <div class="flyout-section">
+              <button class="flyout-toggle" onClick={() => setClaimsOpen((o) => !o)} type="button" aria-expanded={claimsOpen}>
+                <span class={`flyout-toggle-caret${claimsOpen ? " open" : ""}`}>▶</span>
+                Claims
+                <span class={`flyout-toggle-note${sum.refuted ? " claim-note-bad" : ""}`}>{note}</span>
+              </button>
+              {claimsOpen && (
+                <div class="flyout-toggle-body">
+                  <ClaimsPanel subject={{ kind: "step", name: props.step.type }} onOpenRun={props.onOpenRun} onLoaded={setClaims} />
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* YAML preview (read-only) */}
         <div class="flyout-section">

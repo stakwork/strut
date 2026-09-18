@@ -3,6 +3,7 @@ import type { SecretsCapability } from "../../capabilities.js";
 import { resolveModel, createWebTools } from "../../llm.js";
 import { accessedNodesOf, defineStep, type StepContext, type StepRegistry, withAccessedNodes } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
+import { globToRegExp } from "../../closure.js";
 import { usageFromResult, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve, dirname, isAbsolute, sep } from "node:path";
@@ -181,9 +182,11 @@ const FILE_SUMMARY_MAX_CHARS = 12000;
  *  same retrieval, so they get the same budget — the agent legitimately needs
  *  large output (a lockfile, a full test log, a big JSON response). This is a
  *  context-budget cap, not a crash guard: the agent loop keeps every tool result
- *  in the message history for the whole run, so it stays well under the model's
- *  context window rather than going to a V8-string-limit-sized ceiling. */
-const BASH_MAX_CHARS = 200_000;
+ *  in the message history for the whole run, so it is sized to one big
+ *  retrieval (~125k–250k tokens at 2–4 chars/token — a 2.5-hour transcript)
+ *  rather than going to a V8-string-limit-sized ceiling. Same default as
+ *  exec's maxOutputChars. */
+const BASH_MAX_CHARS = 500_000;
 
 /** Is an executable named `bin` on PATH? Unix-style — the agent's tools already
  *  assume a unix env (git/rg/bash). Used to skip a tool whose CLI isn't present
@@ -244,7 +247,7 @@ function buildPreamble(cwd: string): string {
 // ── file editing tool (str_replace_based_edit_tool) ────────────────────────────
 
 /** Max chars returned by a `view` before truncation. */
-const FILE_VIEW_MAX_CHARS = 200_000;
+const FILE_VIEW_MAX_CHARS = 500_000;
 
 /** The Anthropic text-editor tool's input shape (also used by the generic
  *  fallback for non-anthropic providers). All commands operate on a path that
@@ -354,14 +357,6 @@ export function textEdit(input: TextEditInput, roots: string | string[]): string
  *  (`browser/click` → `browser_click`), so we sanitize for the LLM and map back. */
 function toolNameFor(stepType: string): string {
   return stepType.replace(/[^a-zA-Z0-9_]/g, "_");
-}
-
-/** Compile a glob pattern (`*` = any run of characters) to an anchored RegExp. */
-function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) =>
-    c === "*" ? ".*" : `\\${c}`,
-  );
-  return new RegExp(`^${escaped}$`);
 }
 
 /**
@@ -560,8 +555,8 @@ export function buildRegistryTools(
         const base: StepContext = ctx ??
           ({ runId: "", path: "", scope: {}, input: undefined, emit: (async () => {}) as any, services: undefined });
         const childCtx: StepContext = options?.strutToolPath
-          ? { ...base, path: options.strutToolPath }
-          : base;
+          ? { ...base, agentTool: true, path: options.strutToolPath }
+          : { ...base, agentTool: true };
         return def.run(parsed, childCtx);
       },
     });

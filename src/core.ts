@@ -66,6 +66,12 @@ export interface StepContext<TServices = unknown> {
    *  skip completed iterations (RUN_CONTROL_SPEC §5/§6). Absent on a fresh
    *  run or when there is nothing journaled under this step. */
   journal?: Record<string, unknown>;
+  /** True when this step is executing as an AGENT'S TOOL CALL (granted via
+   *  `agentTools`) rather than as a step of the workflow's DAG. A step that
+   *  acts on the caller's authority reads it: what a harness workflow does
+   *  deliberately and what a model inside it decided to do are not the same
+   *  actor (plans/claims.md §4.1, fixed point 3). */
+  agentTool?: boolean;
 }
 
 /** Error handling options for a step. */
@@ -170,6 +176,31 @@ export interface RunEvent {
    *  `run.start` — resume refuses to replay a journal into a DIFFERENT DAG
    *  (RUN_CONTROL_SPEC §5, validity guards). */
   workflowHash?: string;
+  /** Content hash of the ACTIVE version of every workspace (custom) step
+   *  this run can execute, keyed by step type — recorded on `run.start`, and
+   *  again on `run.resumed` (a resume loads whatever is active THEN). A
+   *  workflow version does not pin its steps, so this is the ONLY record of
+   *  which step version a run executed; without an entry, the verify pass
+   *  writes no evidence for that step (plans/claims.md §3–§4). */
+  stepHashes?: Record<string, string>;
+  /** Cassette mode the run executed under, on `run.start`; absent = live. A
+   *  `replay` run is a unit test against a fixture: real evidence, weaker
+   *  than live. */
+  cassette?: "record" | "replay";
+  /** `"verify"` on a run the verify pass launched (a check). Such runs are
+   *  never themselves verified — the recursion guard. */
+  origin?: "verify";
+  /** On a CHECK run's `run.start`: which check ran, over what. Lets the
+   *  verify budget be computed from the run store alone (plans/claims.md
+   *  §4.1): a subject's spend today is the cost of today's runs in its
+   *  checks' buckets whose `verify.subject` is that subject. */
+  verify?: { checkId: string; subject: string; sourceRunId: string };
+  /** On a `subflow` step's `step.start`: the child workflow it is about to
+   *  execute, as resolved at THAT moment — name, pinned version if any, and
+   *  the content hash of the version that will run. A nested execution is an
+   *  execution of the child workflow, and this is the only record of which
+   *  version it was (the child resolves when the step runs, not at launch). */
+  subflow?: { workflow: string; version?: string; hash?: string };
   /** Per-run param overrides, recorded on `run.start` so a durable resume
    *  re-executes steps with the SAME knob values the original run used. */
   params?: Record<string, unknown>;

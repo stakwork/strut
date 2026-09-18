@@ -28,3 +28,6 @@ package-lock.json
 .idea
 .cursorrules
 .cursorignore
+
+# Claude Code worktrees (EnterWorktree sessions) live here — never commit them
+.claude/worktrees/

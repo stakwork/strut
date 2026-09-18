@@ -4,13 +4,16 @@
  * config and cached, with the boot-time obligations run on open:
  *
  *   1. `migrateVeinToStrut` — one-shot rename of pre-#1664 `Vein*` names;
- *   2. `seedStrutDomain` — schema meta-graph, constraints, indexes (§4);
- *   3. `backfillEmbeddings` — heal any NULL vectors left by a crash (§2).
+ *   2. with `seedOntology`: `upgradeClaimSchema` (one-shot, the standalone
+ *      mirror of jarvis migration 124), then `seedJarvisOntology`;
+ *   3. `seedStrutDomain` — schema meta-graph, constraints, indexes (§4);
+ *   4. `backfillEmbeddings` — heal any NULL vectors left by a crash (§2).
  *
  * Consumers (the `graph/*` lab steps, a future `Neo4jWorkspaceStore` and
  * run projector) call `openGraphBackend(cfg)` and share the instance.
  */
 import { Bolt, graphConfigFromEnv, type GraphConfig } from "./bolt.js";
+import { upgradeClaimSchema, type ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { MiniLMEmbedder, backfillEmbeddings, type BackfillReport } from "./embeddings.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
@@ -46,6 +49,7 @@ export interface GraphBackend {
   /** What the boot-time seed did (undefined when skipped). */
   readonly seed: SeedReport | undefined;
   readonly veinMigration: VeinMigrationReport | undefined;
+  readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
   readonly ontologySeed: OntologySeedReport | undefined;
   readonly backfill: BackfillReport | undefined;
   close(): Promise<void>;
@@ -108,6 +112,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await MiniLMEmbedder.load();
     let seed: SeedReport | undefined;
     let veinMigration: VeinMigrationReport | undefined;
+    let claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
     let ontologySeed: OntologySeedReport | undefined;
     let backfill: BackfillReport | undefined;
     if (!opts.skipBoot) {
@@ -121,7 +126,17 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       }
       // Ontology first so a standalone DB gets jarvis's own Thing (with its
       // ref_id) before the Strut domain hangs off it.
-      if (opts.seedOntology) ontologySeed = await seedJarvisOntology(bolt);
+      if (opts.seedOntology) {
+        // The seed is add-only, so an already-seeded DB keeps its pre-124
+        // `Claim` schema unless this runs first (plans/claims.md §1).
+        claimSchemaUpgrade = await upgradeClaimSchema(bolt);
+        if (claimSchemaUpgrade.status === "upgraded") {
+          console.warn(`[graph] upgraded the Claim schema to claim-id: ${JSON.stringify(claimSchemaUpgrade)}`);
+        } else if (claimSchemaUpgrade.status === "skipped_duplicates") {
+          console.warn(`[graph] more than one Claim schema node — left alone; claims cannot be written until that is resolved by hand`);
+        }
+        ontologySeed = await seedJarvisOntology(bolt);
+      }
       seed = await seedStrutDomain(bolt);
       if (embedder) backfill = await backfillEmbeddings(bolt, embedder);
     }
@@ -136,6 +151,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       embedder,
       seed,
       veinMigration,
+      claimSchemaUpgrade,
       ontologySeed,
       backfill,
       async close() {

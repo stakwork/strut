@@ -4,8 +4,12 @@ import { runWorkflow } from "../runner.js";
 import { AiDeps } from "./prompts.js";
 import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
-import { runSingleStep, cassettePath } from "../run-step.js";
-import { generateRunId } from "../store.js";
+import { runStep, cassettePath } from "../run-step.js";
+import { stepHashesFor } from "../closure.js";
+import type { ClaimActor } from "../claims-authoring.js";
+import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
+import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
+import { generateRunId, stepRunKey } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
@@ -71,6 +75,39 @@ export function buildTools(deps: AiDeps) {
       name,
     });
   };
+  // The claims layer (plans/claims.md), where the host turned it on: none of
+  // the claim tools, and no `claims` arg, are offered without it. This
+  // surface is human-supervised, so it is NOT publisher-scoped (like
+  // edit_step); what it writes is still stamped `ai`, which keeps the grader
+  // deny-list on its checks.
+  const claims = deps.claims ?? null;
+  const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: false };
+  const claimsArg = claims ? { claims: claimsArgSchema } : {};
+  const verifier = claims ? (deps.verifier ?? null) : null;
+  /** The contract of what a launch can execute, every check `pending` — so
+   *  the model reads what its work is claimed to do in the RESULT of the run
+   *  it just made, and knows a verdict is coming (plans/claims.md §5). */
+  const pendingContract = async (flow: Parameters<typeof subjectsOfFlow>[0], workflowName?: string) => {
+    if (!verifier) return {};
+    try {
+      const ledger = await verifier.pendingLedger(await subjectsOfFlow(flow, deps.workspace, workflowName));
+      return ledgerIsEmpty(ledger)
+        ? {}
+        : { claims: ledger, verify: "pending — the checks run now, detached; a [verify-notification] will start your next turn with each claim's status. Finish this turn normally." };
+    } catch {
+      return {}; // the run's result never depends on the graph being reachable
+    }
+  };
+
+  /** `run_when: publish` checks fire at the end of a publish; their verdicts
+   *  ride along on the result. */
+  const publishChecks = async (kind: "step" | "workflow", name: string) => {
+    if (!verifier) return {};
+    const r = await verifier.verifyPublish(kind === "step" ? { kind, type: name } : { kind, name }).catch(() => null);
+    return r && r.checks.length ? { publishChecks: r.checks.map((k) => ({ claim: k.claimId, check: k.checkId, lastVerify: k.lastVerify })) } : {};
+  };
+  type ClaimsArg = z.infer<typeof claimsArgSchema>;
+
   /** Non-blocking: warnings ride along on a successful publish. */
   const withWarnings = <T extends object>(result: T, v: { warnings: Array<{ path: string; message: string }> }) =>
     v.warnings.length ? { ...result, warnings: v.warnings } : result;
@@ -103,7 +140,7 @@ export function buildTools(deps: AiDeps) {
 
     get_step: tool({
       description:
-        "Read a step type's docs before using it: `description` (what it does + a YAML example), `input` (JSON Schema of its config — every field's meaning, default, enum and nesting), and `output` (JSON Schema of what it returns, for {{ id.field }} templates; absent when the step's output is untyped — the description then states the shape). Pass source:true ONLY to author or edit a step (read a custom step before edit_step; mirror a lib step's implementation) — it adds the full TypeScript source of a lib/custom step, which you don't need to use the step in a workflow. Core steps have no source.",
+        "Read a step type's docs before using it: `description` (what it does + a YAML example), `input` (JSON Schema of its config — every field's meaning, default, enum and nesting), and `output` (JSON Schema of what it returns, for {{ id.field }} templates; absent when the step's output is untyped — the description then states the shape). Pass source:true ONLY to author or edit a step (read a custom step before edit_step; mirror a lib step's implementation) — it adds the full TypeScript source of a lib/custom step, which you don't need to use the step in a workflow. Core steps have no source. `recentRuns` (when present) counts this step's KEPT run_step runs — read them with list_runs / get_run using the name `step:<type>`.",
       inputSchema: z.object({
         type: z.string().describe("Step type, e.g. 'http' or 'github/fetch-pr'"),
         source: z
@@ -116,11 +153,17 @@ export function buildTools(deps: AiDeps) {
         if (!def) {
           return { error: `Step type "${type}" not found` };
         }
+        const recentRuns = (await deps.store.listRuns(stepRunKey(type))).length;
+        const verifyCostUsd = deps.verifier ? await deps.verifier.costOf({ kind: "step", type }).catch(() => 0) : 0;
         return {
           type,
           description: def.description,
           ...stepSchemas(def),
           ...(source ? { source: (await readStepSource(type, deps)) ?? null } : {}),
+          // Kept single-step runs: list_runs / get_run on the key `step:<type>`.
+          ...(recentRuns ? { recentRuns } : {}),
+          // What this step's paid checks have cost so far — what its claims cost to keep true.
+          ...(verifyCostUsd > 0 ? { verifyCostUsd } : {}),
         };
       },
     }),
@@ -153,15 +196,20 @@ export function buildTools(deps: AiDeps) {
             "Full TypeScript source. Shape: import { z, defineStep } from \"strut\"; export default defineStep({ type: \"<name>\", input: z.object({...}), output: z.any(), async run(cfg, ctx) { /* use ctx.services for capabilities */ } });",
           ),
         description: z.string().optional(),
+        ...claimsArg,
       }),
-      execute: async ({ name, code, description }) => {
+      execute: async ({ name, code, description, ...rest }) => {
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const result = await publishNewStep(deps, name, code, description, AI_PUBLISHER);
         deps.registry = await deps.getRegistry();
+        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name }, contract, actor), ...(await publishChecks("step", name)) } : {};
         if (result.ok && result.loaded === false) {
-          const { loadError, ...rest } = result;
-          return { ...rest, warning: `Published but failed to load into the registry: ${loadError}` };
+          const { loadError, ...ok } = result;
+          return { ...ok, ...ledger, warning: `Published but failed to load into the registry: ${loadError}` };
         }
-        return result;
+        return { ...result, ...ledger };
       },
     }),
 
@@ -174,15 +222,20 @@ export function buildTools(deps: AiDeps) {
           .string()
           .describe("Full updated TypeScript source (same self-contained shape as create_step)."),
         description: z.string().optional(),
+        ...claimsArg,
       }),
-      execute: async ({ type, code, description }) => {
+      execute: async ({ type, code, description, ...rest }) => {
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const result = await publishStepVersion(deps, type, code, description);
         deps.registry = await deps.getRegistry();
+        const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name: type }, contract, actor), ...(await publishChecks("step", type)) } : {};
         if (result.ok && result.loaded === false) {
-          const { loadError, ...rest } = result;
-          return { ...rest, warning: `Published but failed to load into the registry: ${loadError}` };
+          const { loadError, ...ok } = result;
+          return { ...ok, ...ledger, warning: `Published but failed to load into the registry: ${loadError}` };
         }
-        return result;
+        return { ...result, ...ledger };
       },
     }),
 
@@ -222,10 +275,14 @@ export function buildTools(deps: AiDeps) {
           .describe(
             "Optional sidebar grouping label (kebab-case, e.g. an experiment name). Omit to leave uncategorized.",
           ),
+        ...claimsArg,
       }),
-      execute: async ({ name, yaml, description, category }) => {
+      execute: async ({ name, yaml, description, category, ...rest }) => {
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const { name: finalName, version } = await deps.workspace.createWorkflow(
           name,
           yaml,
@@ -241,6 +298,7 @@ export function buildTools(deps: AiDeps) {
             version,
             renamed: finalName !== name,
             requested: name,
+            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name: finalName }, contract, actor), ...(await publishChecks("workflow", finalName)) } : {}),
           },
           v,
         );
@@ -270,8 +328,9 @@ export function buildTools(deps: AiDeps) {
           .describe(
             "Optional sidebar grouping label. Only pass to CHANGE the category (to merely re-categorize without editing YAML, use set_workflow_category).",
           ),
+        ...claimsArg,
       }),
-      execute: async ({ name, yaml, description, category }) => {
+      execute: async ({ name, yaml, description, category, ...rest }) => {
         const exists = (await deps.workspace.listWorkflows()).some(
           (w) => w.name === name,
         );
@@ -282,6 +341,9 @@ export function buildTools(deps: AiDeps) {
         }
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
+        const contract = (rest as { claims?: ClaimsArg }).claims;
+        const invalid = await claims?.validateClaimsArg(contract, actor);
+        if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         let result;
         try {
           result = await deps.workspace.publishWorkflowByContent(
@@ -300,11 +362,129 @@ export function buildTools(deps: AiDeps) {
             name,
             version: result.version,
             changed: result.changed,
+            ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor), ...(await publishChecks("workflow", name)) } : {}),
           },
           v,
         );
       },
     }),
+
+    // ── Claims (plans/claims.md §2, door two) — graph-backed workspaces only.
+    ...(claims
+      ? {
+          add_claim: tool({
+            description:
+              "State how a step or workflow SHOULD behave, with the check(s) that test it. One claim may be about SEVERAL subjects (a contract two steps share) — attach it rather than writing it twice. Use this for a subject you are not republishing; when you ARE publishing, pass `claims` to create_step / edit_step / create_workflow / edit_workflow instead. Every claim needs at least one check; evidence is produced by verifying runs, never by this call. Returns { id, checks: [ids] }.",
+            inputSchema: z.object({
+              subjects: z.array(subjectSchema).min(1),
+              text: z.string().describe("ONE plain sentence: behavior, not mechanism; never the output schema restated."),
+              checks: z.array(checkSpecSchema).min(1),
+            }),
+            execute: async ({ subjects, text, checks }) => claims.addClaim({ subjects, text, checks }, actor),
+          }),
+
+          list_claims: tool({
+            description:
+              "A subject's active claims, each with its checks (id, step type + config or external description, when/policy) and its status COMPUTED from evidence: supported | refuted | stale (evidence is about an older version) | unknown (never checked). `assertedOnly` = the verdict rests on a model's or person's word, nothing observed; `unverified` = active checks with no evidence about the active version; `openSlot` = an external check is waiting on someone.",
+            inputSchema: z.object({ subject: subjectSchema }),
+            execute: async ({ subject }) => {
+              const listing = await claims.listClaims(subject);
+              if (!("ok" in listing) || !verifier) return listing;
+              const verifyCostUsd = await verifier.costOf(subject.kind === "step" ? { kind: "step", type: subject.name } : { kind: "workflow", name: subject.name }).catch(() => 0);
+              return verifyCostUsd > 0 ? { ...listing, verifyCostUsd } : listing;
+            },
+          }),
+
+          edit_claim: tool({
+            description:
+              "Reword a claim. Claims are immutable once written, so this creates a SUCCESSOR that supersedes it and returns the successor's id: attachments and checks carry over, the old evidence stays on the old node, and the successor starts `unknown` until a run is verified again. Never publishes a workflow/step version.",
+            inputSchema: z.object({ id: z.string().describe("Claim id (from list_claims)"), text: z.string() }),
+            execute: async ({ id, text }) => claims.editClaim(id, text, actor),
+          }),
+
+          retire_claim: tool({
+            description: "Retire a claim that no longer holds as a requirement. It is never deleted — its evidence and history stay — it just stops being part of the contract.",
+            inputSchema: z.object({ id: z.string() }),
+            execute: async ({ id }) => claims.retireClaim(id, actor),
+          }),
+
+          attach_claim: tool({
+            description: "Attach an EXISTING claim to another subject — how a contract is shared (its checks come along), never by copying it. Each subject gets its own status. Attaching twice is a no-op.",
+            inputSchema: z.object({ id: z.string(), subject: subjectSchema }),
+            execute: async ({ id, subject }) => claims.attachClaim(id, subject, actor),
+          }),
+
+          detach_claim: tool({
+            description: "Detach a claim from ONE subject (it stays on its others). A claim's last subject cannot be detached — retire the claim instead.",
+            inputSchema: z.object({ id: z.string(), subject: subjectSchema }),
+            execute: async ({ id, subject }) => claims.detachClaim(id, subject, actor),
+          }),
+
+          add_check: tool({
+            description:
+              "Add another instrument to an existing claim — e.g. a free `exec` on every run beside an `llm` judge on change. Each check keeps its own policy, cost and evidence stream; a refutation from ANY check on the active version makes the claim refuted.",
+            inputSchema: z.object({ claim: z.string().describe("Claim id"), check: checkSpecSchema }),
+            execute: async ({ claim, check }) => claims.addCheck(claim, check, actor),
+          }),
+
+          edit_check: tool({
+            description:
+              "Change a check (its step, config, when, policy…). Pass only the fields to change. Checks are immutable once written: this creates a SUCCESSOR and returns its id; the old check's evidence stops counting — a changed instrument has measured nothing yet — so the claim reads `unknown` until it runs again.",
+            inputSchema: z.object({ id: z.string().describe("Check id (from list_claims)"), patch: checkSpecSchema }),
+            execute: async ({ id, patch }) => claims.editCheck(id, patch, actor),
+          }),
+
+          retire_check: tool({
+            description: "Retire a check. Refused when it is the claim's LAST active check — add the replacement first (add_check), or retire the claim.",
+            inputSchema: z.object({ id: z.string() }),
+            execute: async ({ id }) => claims.retireCheck(id, actor),
+          }),
+
+          ...(verifier
+            ? {
+                verify_run: tool({
+                  description:
+                    "Verify a finished run NOW and wait for it: run the checks of every claim on the subjects the run executed, and write the evidence. Runs are verified automatically after they finish, so use this to RE-verify — after adding or editing a claim or check (only checks with no evidence for this run yet execute; it never duplicates), to backfill an older run, or to fire `manual` checks. `name` is the workflow, or `step:<type>` for a kept run_step run. Returns `claims` — the ledger: every claim on those subjects with its computed status and each check's lastVerify: { ran } | { skipped: policy | budget | cannot-launch | unknown-version | denied, reason? } | { planned: <evidence id> }.",
+                  inputSchema: z.object({
+                    name: z.string().describe("Workflow name, or `step:<type>` for a kept single-step run"),
+                    runId: z.string(),
+                  }),
+                  execute: async ({ name, runId }) => {
+                    const result = await verifier.verifyRun(name, runId, { explicit: true });
+                    if (result.skipped) return result;
+                    return { ...result, claims: await verifier.ledger(result) };
+                  },
+                }),
+
+                add_evidence: tool({
+                  description:
+                    "Record something YOU observed about a claim on a specific run — only what you actually saw with a tool (ffprobe output, a transcript you read, a graph_query result); `content` must say what and how. It is stored as ASSERTED (a model's word, flagged `assertedOnly` until a check observes the same thing), sourced to that run and the version it executed. If an external check is waiting on this run (an open slot), this answers it. Never use it to mark work as passing without looking.",
+                  inputSchema: z.object({
+                    claim: z.string().describe("Claim id (from list_claims)"),
+                    name: z.string().describe("The run's workflow name, or `step:<type>` for a kept single-step run"),
+                    runId: z.string(),
+                    supports: z.boolean().describe("true: what you saw supports the claim; false: it refutes it"),
+                    content: z.string().describe("What you observed, and with which tool — one bounded statement"),
+                    subject: subjectSchema.optional().describe("Only when the run executed several of the claim's subjects"),
+                    slot: z.string().optional().describe("Evidence id of the open slot to fill (from lastVerify.planned); found automatically for this run when omitted"),
+                  }),
+                  execute: async ({ claim, name, runId, supports, content, subject, slot }) =>
+                    verifier.addEvidence({
+                      claim,
+                      name,
+                      runId,
+                      supports,
+                      content,
+                      ...(subject ? { subject: subject.kind === "step" ? { kind: "step" as const, type: subject.name } : { kind: "workflow" as const, name: subject.name } } : {}),
+                      ...(slot ? { slot } : {}),
+                      by: AI_PUBLISHER,
+                      mode: "asserted",
+                    }),
+                }),
+              }
+            : {}),
+        }
+      : {}),
 
     set_workflow_category: tool({
       description:
@@ -448,6 +628,10 @@ export function buildTools(deps: AiDeps) {
         // Register with the host's controller registry (when wired) so the
         // run is cancellable/pausable and lists as live from launch.
         const tracked = deps.trackRun?.(name, runId);
+        // This chat wants the verdict: the verify pass that follows the run
+        // wakes it with a [verify-notification].
+        if (verifier) deps.watchVerify?.(runId);
+        const contract = await pendingContract(flow, name);
         const promise = runWorkflow(flow, coerceJsonArg(input) ?? {}, deps.registry, {
           runId,
           store: deps.store,
@@ -457,11 +641,12 @@ export function buildTools(deps: AiDeps) {
           controller: tracked?.controller,
           workflowHash:
             (await deps.workspace.getWorkflowHash(name, version)) ?? undefined,
+          stepHashes: await stepHashesFor(deps.workspace, flow),
         }).finally(() => tracked?.untrack());
 
         // No detach seam (tests / non-chat embedders) → await as before.
         const detach = deps.detach;
-        if (!detach) return promise;
+        if (!detach) return { ...(await promise), ...contract };
 
         // Dispatch mode: race the run against the wait window. Fast runs
         // return synchronously (the quick inner-loop path); a run that
@@ -475,13 +660,14 @@ export function buildTools(deps: AiDeps) {
             timer = setTimeout(() => res(pending), detach.waitMs);
           }),
         ]).finally(() => clearTimeout(timer));
-        if (winner !== pending) return winner;
+        if (winner !== pending) return { ...winner, ...contract };
 
         detach.onDetach({ workflow: name, runId, startedAt, promise });
         return {
           status: "running",
           detached: true,
           runId,
+          ...contract,
           workflow: name,
           note:
             `Run still executing after ${Math.round(detach.waitMs / 1000)}s — it continues detached in the background. ` +
@@ -495,7 +681,7 @@ export function buildTools(deps: AiDeps) {
       description:
         "Run a SINGLE step in isolation with a given config + input, and return its output + events — WITHOUT wiring it into a workflow. This is the inner loop for authoring an adapter: create_step → run_step → edit_step → run_step until the output is right. " +
         "Set cassette:'record' to run live AND capture the step's external service calls (http, etc.) to a reusable fixture (secrets are scrubbed); then cassette:'replay' to iterate OFFLINE against that fixture — deterministic, no rate limits, no cost, no side effects (so you don't, e.g., create a real charge on every test). " +
-        "Returns { status, output?, error?, events, recorded? }.",
+        "Returns { runId, status, output?, error?, events, recorded?, kept? } — `kept` is the run-store key (`step:<type>`) when the run was persisted.",
       inputSchema: z.object({
         type: z.string().describe("Step type to run, e.g. 'stripe/list-charges' or 'http'."),
         config: z
@@ -518,22 +704,40 @@ export function buildTools(deps: AiDeps) {
           .string()
           .optional()
           .describe("Fixture name (defaults to the step type). Use distinct names to keep multiple scenarios per step."),
+        keep: z.boolean().optional().describe('Persist this run under the run-store key `step:<type>` (read it back with list_runs / get_run on that key). Runs of a step that has claims are kept automatically — they can become evidence; set this to keep a run of a step that has none.'),
       }),
-      execute: async ({ type, config, input, params, cassette, cassetteName }) => {
+      execute: async ({ type, config, input, params, cassette, cassetteName, keep }) => {
         const registry = deps.registry;
         if (!registry[type]) return { error: `Step type "${type}" not found` };
         if (cassette && !deps.dataDir) {
           return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
         }
-        return runSingleStep(type, registry, deps.services, {
-          config: coerceJsonArg(config) as Record<string, unknown> | undefined,
-          input: coerceJsonArg(input),
-          params: coerceJsonArg(params) as Record<string, unknown> | undefined,
-          workspace: deps.workspace,
-          ...(cassette
-            ? { cassette: { mode: cassette, path: cassettePath(deps.dataDir!, cassetteName ?? type) } }
-            : {}),
-        });
+        const result = await runStep(
+          type,
+          registry,
+          deps.services,
+          {
+            config: coerceJsonArg(config) as Record<string, unknown> | undefined,
+            input: coerceJsonArg(input),
+            params: coerceJsonArg(params) as Record<string, unknown> | undefined,
+            workspace: deps.workspace,
+            keep: keep === true,
+            ...(cassette
+              ? { cassette: { mode: cassette, path: cassettePath(deps.dataDir!, cassetteName ?? type) } }
+              : {}),
+          },
+          {
+            store: deps.store,
+            workspace: deps.workspace,
+            claims: claims?.reader ?? null,
+            onKept: (key, runId) => {
+              if (verifier) deps.watchVerify?.(runId);
+              verifier?.schedule(key, runId);
+            },
+          },
+        );
+        // A kept run is being verified: show the step's contract, pending.
+        return result.kept ? { ...result, ...(await pendingContract({ name: type, steps: [{ id: "step", type, config: {} }] })) } : result;
       },
     }),
 

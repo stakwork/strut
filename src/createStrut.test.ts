@@ -327,6 +327,66 @@ describe("createStrut", () => {
     assert.equal(missing.status, 404);
   });
 
+  it("records stepHashes on every launch path, and keeps a single-step run only under step:<type>", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    await ws.publishStep(
+      "clip/shout",
+      `import { z, defineStep } from "strut";
+       export default defineStep({ type: "clip/shout", input: z.object({ text: z.string() }), output: z.string(), async run(cfg) { return cfg.text.toUpperCase(); } });`,
+    );
+    await ws.publishStep(
+      "clip/unused",
+      `import { z, defineStep } from "strut";
+       export default defineStep({ type: "clip/unused", input: z.any(), output: z.any(), async run() { return 1; } });`,
+    );
+    await ws.publishWorkflow("shouter", "v1", { steps: [{ id: "s", type: "clip/shout", config: { text: "{{ input.text }}" } }] });
+    const store = new MemoryRunStore();
+    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false });
+    const hash = (await ws.getActiveStepHashes())["clip/shout"]!;
+    assert.equal(strut.claims, null, "a filesystem workspace has no claims layer");
+
+    // strut.run()
+    const direct = await strut.run("shouter", { text: "hi" });
+    assert.equal(direct.output, "HI");
+    const startOf = async (key: string, runId: string) => (await store.getRunEvents(key, runId)).find((e) => e.type === "run.start")!;
+    assert.deepEqual((await startOf("shouter", direct.runId)).stepHashes, { "clip/shout": hash }, "only the steps the flow can execute");
+
+    // POST /workflows/:name/run (detached)
+    const launched = await strut.app.request("/workflows/shouter/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: { text: "yo" } }),
+    });
+    assert.equal(launched.status, 202);
+    const { runId } = (await launched.json()) as { runId: string };
+    await (await strut.app.request(`/workflows/shouter/runs/${runId}/stream`)).text(); // drain to completion
+    assert.deepEqual((await startOf("shouter", runId)).stepHashes, { "clip/shout": hash });
+
+    // POST /steps/:type/run — in memory unless asked (no claims here), then kept under the step key.
+    const post = (body: unknown) =>
+      strut.app.request("/steps/clip/shout/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const scratch = (await (await post({ config: { text: "a" } })).json()) as { runId: string; kept?: string; events: Array<{ type: string; stepHashes?: unknown }> };
+    assert.equal(scratch.kept, undefined);
+    assert.deepEqual(scratch.events.find((e) => e.type === "run.start")!.stepHashes, { "clip/shout": hash });
+    const kept = (await (await post({ config: { text: "b" }, keep: true })).json()) as { runId: string; kept?: string; output: unknown };
+    assert.deepEqual([kept.kept, kept.output], ["step:clip/shout", "B"]);
+    assert.deepEqual(await store.listRuns("step:clip/shout"), [kept.runId]);
+    assert.equal((await store.listRuns("shouter")).length, 2, "workflow run history is untouched");
+    const listed = (await (await strut.app.request("/workflows")).json()) as Array<{ name: string }>;
+    assert.deepEqual(listed.map((w) => w.name), ["shouter"], "a step key is never a workflow");
+  });
+
+  it("a filesystem workspace has no claims layer: GET /claims says so, mutations are 409", async () => {
+    const strut = await createStrut({ workspace: new WorkspaceManager(tempDir), store: new MemoryRunStore(), serveUi: false, enableChat: false, stt: false });
+    assert.deepEqual([strut.claims, strut.verifier], [null, null]);
+    const read = await strut.app.request("/claims?kind=step&name=log");
+    assert.deepEqual([read.status, await read.json()], [200, { enabled: false, claims: [] }]);
+    const post = (path: string) => strut.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal((await post("/claims")).status, 409);
+    assert.equal((await post("/claims/x/evidence")).status, 409);
+    assert.equal((await post("/workflows/wf/runs/1/verify")).status, 409);
+  });
+
   it("exposes /steps with registered types", async () => {
     const myStep = defineStep({
       type: "custom-thing",

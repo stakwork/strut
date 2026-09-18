@@ -3,6 +3,8 @@ import { dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
 import type { Flow } from "./core.js";
+// Type-only: the graph backend stays a lazy, opt-in dependency.
+import type { GraphBackend } from "./graph/backend.js";
 import type { SubflowResolver } from "./runner.js";
 import { readStepSourceFromDisk, type StepSource } from "./steps/registry.js";
 import { contentHash, nextVersionLabel } from "./version.js";
@@ -226,6 +228,11 @@ export interface StepListEntry {
  * importable directory (`materializeCustomSteps`) for the module loader.
  */
 export interface WorkspaceStore extends SubflowResolver {
+  /** The graph backend behind this store, when workflows/steps live in one
+   *  (`Neo4jWorkspaceStore`). The claims layer hangs off the subjects' graph
+   *  nodes, so it exists only when this is set (plans/claims.md). */
+  readonly graph?: GraphBackend;
+
   // ── Workflows ──
   /** Every workflow with its version list. `lastRunAt` is NOT populated
    *  here (runs belong to the run store — the server composes it). */
@@ -280,6 +287,12 @@ export interface WorkspaceStore extends SubflowResolver {
     opts?: PublishByContentOptions,
   ): Promise<{ version: string; changed: boolean }>;
   listStepVersions(name: string): Promise<StepVersionsResult>;
+  /** Content hash of every custom step's ACTIVE version, keyed by step
+   *  type — the sibling of `getWorkflowHash`. A workflow version does not
+   *  pin its steps (the registry loads whatever is active), so a launch
+   *  records this on `run.start.stepHashes`: the only record of which step
+   *  version a run executed (plans/claims.md §3). */
+  getActiveStepHashes(): Promise<Record<string, string>>;
   getStepVersionSource(name: string, version: string): Promise<string>;
   setActiveStepVersion(name: string, version: string): Promise<void>;
   deleteStep(name: string): Promise<boolean>;
@@ -736,6 +749,25 @@ export class FileWorkspaceStore implements WorkspaceStore {
     const info = meta?.steps[name];
     if (!info) throw new Error(`Step "${name}" not found`);
     return { active: info.active, versions: Object.keys(info.versions) };
+  }
+
+  async getActiveStepHashes(): Promise<Record<string, string>> {
+    const meta = await this.readStepMetadata(join(this.root, "steps", "custom"));
+    const out: Record<string, string> = {};
+    for (const [name, info] of Object.entries(meta?.steps ?? {})) {
+      const recorded = info.versions[info.active]?.hash;
+      if (recorded) {
+        out[name] = recorded;
+        continue;
+      }
+      // Metadata from before hashes were recorded: hash the archived source.
+      try {
+        out[name] = contentHash(await readFile(this.stepVersionPath(name, info.active), "utf-8"));
+      } catch {
+        // No source on record → no hash → that step's runs carry no evidence.
+      }
+    }
+    return out;
   }
 
   /** Get the archived source for a specific step version. */

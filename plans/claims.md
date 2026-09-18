@@ -42,7 +42,7 @@ the failure mode EVOLVE_SPEC §6 already forbids for graders.
 
 | Where | Has | Lacks |
 | --- | --- | --- |
-| jarvis (migrations 119/120/124, + 125 in review) | `Claim` — since 124 keyed on a caller-supplied `id` (`claim-id`), `speaker_name` optional, `claim_text` not paid, so a claim nobody "said" is writable; bitemporal `belief_valid_from/to`; claim-to-claim pairs `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM`. `Evidence` (Epistemic domain: `content`, `evidence_mode` observed\|asserted, `evidence_status` planned\|collected, `observed_at`). Pairs `Claim —EVIDENCED_BY {strength −1..1}→ Evidence`, `Evidence —HAS_SOURCE {authority_level, locators}→ Thing` | anything that produces or scores evidence; a template layer — both named as deferred in its doc. (The `Check` node it also deferred is migration 125, written for this plan) |
+| jarvis (migrations 119/120/124/125) | `Claim` — since 124 keyed on a caller-supplied `id` (`claim-id`), `speaker_name` optional, `claim_text` not paid, so a claim nobody "said" is writable; bitemporal `belief_valid_from/to`; claim-to-claim pairs `SUPERSEDES`, `PARENT_OF`, `DERIVED_FROM`. `Evidence` (Epistemic domain: `content`, `evidence_mode` observed\|asserted, `evidence_status` planned\|collected, `observed_at`). Pairs `Claim —EVIDENCED_BY {strength −1..1}→ Evidence`, `Evidence —HAS_SOURCE {authority_level, locators}→ Thing` | anything that produces or scores evidence; a template layer — both named as deferred in its doc. (The `Check` node it also deferred is migration 125, written for this plan) |
 | hive | evals as graph nodes (`EvalRequirement` → `EvalTriggerOutput`), one LLM judge, "not evaluated is never a fail", `evaluates: workflow\|output` | any observed evidence; any link from feature requirements to evals |
 | strut | versioned steps/workflows, persisted runs, `exec`/`agent`/`llm` steps, per-run artifacts, cassettes, the post-hoc projector, `SchemaResolver` (the node writer already accepts any type whose `:Schema` exists in the DB) | any notion of a claim; `run_step` runs are not persisted |
 
@@ -56,7 +56,16 @@ check. The Hive eval chain is out of scope here.
 One new node type (`Check`), two reused (`Claim`, `Evidence`), a handful of
 edge pairs, two tool changes, one post-run pass.
 Requires the graph backend: on `STRUT_WORKSPACE_BACKEND=fs` none of the
-claim tools are offered and the verify pass is a no-op.
+claim tools are offered and the verify pass is a no-op. The gate is the
+WORKSPACE, not `StrutOptions.graph`: claims hang off the subjects' graph
+nodes, so `WorkspaceStore.graph` (set by `Neo4jWorkspaceStore`) is what
+turns the layer on, surfaced as `strut.claims` (`ClaimsReader | null`). The
+lab host passes no `graph` option and still gets it. On a graph workspace
+the layer is on by default; `STRUT_CLAIMS=0` (or `createStrut({ claims:
+false })`) turns the whole thing off. `createStrut` decides this ONCE and
+hands the resulting `ClaimsAuthoring | null` to every consumer (authoring
+capability, chat tools, system prompt, `/claims` routes, verify pass) —
+nothing downstream reads `workspace.graph` for itself.
 
 ### Nodes
 
@@ -66,7 +75,7 @@ behave. Strut writes:
 
 | attribute | type | strut writes |
 | --- | --- | --- |
-| `id` | string | its own identity — never derived from the text. **Lowercase alphanumerics only** (`randomUUID()` with the dashes stripped): `node_key` is `claim-<id>` after jarvis's sanitizer lowercases and drops every non-alphanumeric, so `aB-1` and `ab1` would collide. Same rule for `Check.id` and `Evidence.id` |
+| `id` | string | its own identity — never derived from the text. **Lowercase alphanumerics only** (time-sortable, ULID-style: base36 epoch ms + a per-process sequence + random, so a contract lists in the order it was written): `node_key` is `claim-<id>` after jarvis's sanitizer lowercases and drops every non-alphanumeric, so `aB-1` and `ab1` would collide. Same rule for `Check.id` and `Evidence.id` |
 | `name` | string | the sentence, bounded (jarvis's required title) |
 | `claim_text` | string | the sentence. Behavior, not mechanism; never the output schema restated |
 | `speaker_name` | ?string | who asserts it: `ai`, a person, a seeder. This IS strut's `publisher` stamp (fixed point 1, §4.1). Later a `Person —MADE_CLAIM→ Claim` edge (existing pair) |
@@ -171,6 +180,10 @@ latest(stream) := that stream's newest COLLECTED evidence on THIS claim node
            claim's evidence (the ledger shows the predecessor's last status
            beside it), a retired check's evidence, a `planned` slot (a
            question, not evidence)
+           — plus everything else that stream observed in the SAME source
+           run: one run is one measurement (a `foreach` body yields one
+           Evidence per iteration, and the last iteration passing must not
+           paper over an earlier one failing)
 
 any latest is ABOUT the active version and refutes    → refuted
 else any latest is ABOUT the active version, supports → supported
@@ -197,7 +210,7 @@ the nodes.
   emptied to `[]`, re-homed from `Content` to the `Epistemic` domain
   (Thing-parented, beside `Evidence`), old Claim nodes deleted. Deploy note: every Claim writer must now
   send `id` (the podcast claim-extraction workflows included).
-- **jarvis, migration 125 — PR open** (`ontology_125_check_node`,
+- **jarvis, migration 125 — merged** (`ontology_125_check_node`,
   stakwork/jarvis-backend#3122)**:** seeds the `Check` node and the five new pairs
   in the table above — `Claim —ABOUT→ Thing`, `Evidence —ABOUT→ Thing`,
   `Check —TESTS→ Claim`, `Evidence —PRODUCED_BY→ Check`, `Check —SUPERSEDES→
@@ -227,8 +240,11 @@ the nodes.
   the `:Claim` nodes (none are expected on a strut DB — nothing wrote them)
   and SET the schema to the fixture's shape (`node_key`, `id`,
   `speaker_name: ?string`, `paid_properties: []`, `domain: Epistemic`,
-  `parent: Thing` + the `CHILD_OF` edge moved). A mirror of jarvis 124, and a
-  no-op on a jarvis-hosted graph, where 124 already ran.
+  `parent: Thing` + the `CHILD_OF` edge moved). A mirror of jarvis 124. It
+  runs ONLY when the ontology seed is on (`STRUT_GRAPH_SEED_ONTOLOGY` — the
+  flag that says "no jarvis here"): a jarvis-hosted graph is jarvis's to
+  migrate, and one on a pre-124 jarvis may hold real podcast claims this
+  pass must never delete.
 - **Strut code:** `src/graph/claims.ts` — attribute names, the
   subject-input contract, `claimStatus()`, and read helpers
   (`claimsFor(subject)`, `checksFor(claim)`, `evidenceFor(claim)`). Writes
@@ -827,32 +843,112 @@ number exists).
 
 ## Step order
 
-1. Schema: jarvis 124 (merged) + 125 (PR open; `Check` and the five pairs —
-   BLOCKS the live-graph tests below, not the unit work) + strut fixture
+1. **Done (strut side)** — fixture re-dumped at 125 (153 schemas, 346 edge
+   schemas; also un-mangles `HiveInitiative`'s node_key, a casualty of the
+   vein→strut rename), `claim-schema-upgrade.ts`, the `STRUT_EDGES` row,
+   `claims.ts` (`claimStatus()`, `ClaimsReader`), the `strut.claims` gate.
+   Schema: jarvis 124 + 125 (both merged; `Check` and the five pairs) +
+   strut fixture
    re-dumped from a post-125 jarvis + `claim-schema-upgrade.ts` for
    already-seeded standalone DBs (§1) + the one `STRUT_EDGES` row;
    `claims.ts` with `claimStatus()` and read helpers; graph-backend gate in
    createStrut; unit tests.
-2. `run.start` gains `stepHashes` / `cassette` / `origin` (§3) — FIRST, since
+2. **Done** — `src/closure.ts` (`flowClosure`, `stepHashesFor`; step 4's
+   check closure reuses it), `WorkspaceStore.getActiveStepHashes()`, the
+   three `run.start` fields (`stepHashes` is filtered to the flow's closure,
+   every active hash when that is unresolvable, and is RE-recorded on
+   `run.resumed` — a resume loads whatever is active then), `runStep` in
+   `run-step.ts` behind all three `run_step` surfaces (`keep`, result gains
+   `runId` + `kept`), the `step:` / `check:` buckets in both run stores,
+   `projectRun` (one run → its `StrutRun` ref, with `EXECUTED →
+   StrutStepVersion` for a step key), `get_step.recentRuns`, and
+   `meta/list-runs` / `meta/get-run` on a `step:` key scoped by the step's
+   publisher.
+   `run.start` gains `stepHashes` / `cassette` / `origin` (§3) — FIRST, since
    only runs recorded after it can ever be verified; then `run_step`
    persists under `step:<type>` (§3) + the projector pair.
-3. Authoring tools + `claims` arg + publish count + prompt section (§2),
+3. **Done** — `graph/claims-writer.ts` (invariants), `claims-authoring.ts`
+   (validation, write-time defaults, scoping, the deny-list over the check
+   closure), `claims-schemas.ts`; the `claims` arg on the four chat publish
+   tools and on `meta/create-step` / `meta/edit-step` /
+   `meta/publish-workflow` (validated BEFORE the publish — a broken
+   contract blocks it; result `claims: { count, added, existing, warning? }`);
+   the nine chat tools and their nine `meta/*` twins; prompt rules 1–4
+   (5–6 land with the ledger, step 5). Decided while building: the chat
+   surface is NOT publisher-scoped (it is human-supervised, like
+   `edit_step`) but still stamps `ai`, so the deny-list applies to its
+   checks; a scoped author may also attach / add claims only to subjects
+   it published; a successor claim is stamped by its EDITOR; a claim's
+   last subject cannot be detached (retire it); a contract passed on a
+   filesystem workspace is an error, never silently dropped.
+   Authoring tools + `claims` arg + publish count + prompt section (§2),
    and their `meta/*` twins: `meta/add-claim`, `meta/edit-claim`,
    `meta/retire-claim`, `meta/list-claims`, `meta/attach-claim`,
    `meta/detach-claim`, `meta/add-check`, `meta/edit-check`,
    `meta/retire-check`, with publisher scoping.
-4. `verify.ts` + check contract + check closure + triggers (incl. the
+4. **Done** — `src/verify.ts`, `strut.verifier`, `POST
+   /workflows/:name/runs/:runId/verify`, `verify_run` / `add_evidence` chat
+   tools, `meta/verify-run` / `meta/add-evidence`, publish checks on every
+   publish path, the `services.onRunEnd(runId, info)` trigger + the
+   `run_step` trigger. Decided while building:
+   - **A nested child's version is recorded when it runs**, on the subflow
+     step's `step.start` (`RunEvent.subflow: { workflow, version?, hash }`):
+     the child resolves at execution, not at launch, and nothing else in
+     the log names it. A subflow with no record yields no subject.
+   - **`observed_at` is when the behaviour happened** (the `step.end` /
+     `run.end` timestamp), not when the check ran — otherwise backfilling
+     an old run would make old evidence the newest. It is whole seconds
+     (every jarvis datetime is), so same-second evidence orders by the
+     source run's ms id, then the node's write stamp.
+   - **`exec` checks run with `allowFailure`** so a failed assertion is an
+     exit code, not a crash: 0 supports, 126 / 127 / a kill cannot-run,
+     anything else refutes. The mapping is by SHAPE, so a `subflow` check
+     whose child ends in an `exec` reads the same way.
+   - **A check's config is validated at write time** with the workflow
+     validator (a check IS a one-step flow whose only root is `input`).
+   - **`meta/add-evidence` is `observed` only for a DAG step of a workflow
+     the meta surface did not publish.** An agent tool call — even inside
+     a seeded harness — is `asserted`: `StepContext.agentTool` tells a
+     harness's deliberate step from a model's decision.
+   - `sample` is deterministic in (check, run, path), so re-verifying
+     samples the same way; `verify_run` fires `manual` checks and nothing
+     else extra; a `denied` skip reason joins the four in §5.
+   - **Gap:** the `llm` step reports no `cost` (it returns the bare object),
+     so an `llm` check is gated by the caps but its own spend is not
+     counted. `agent` steps are. Default per-day cap: $5.
+   `verify.ts` + check contract + check closure + triggers (incl. the
    verify-origin guard) + `add_evidence` + `meta/verify-run`
    + `meta/add-evidence` (§4, §6); planned slots — open in the pass for
    external checks, fill through `add_evidence` (§4.2).
-5. Ledger in run results + the `[verify-notification]` through the
+5. **Done** — `src/ledger.ts`, `src/ai/verify-waker.ts`; `run_workflow` /
+   `run_step` results carry `claims` with every run check `pending`;
+   `verify_run` returns the ledger; `[verify-notification]` wakes the chat
+   that launched the run (the flyout renders it as a notice); prompt rules
+   5–6; `verifyCostUsd` on `get_step` / `list_claims`. Decided while
+   building: a `[run-notification]` WAITS up to 5 s for its run's verify
+   pass, so one wake-up turn carries the run and the ledger (exactly one of
+   the two notifications ever carries it) — machine-triggered turns are
+   capped, and two per run would park a build loop twice as fast. The
+   SYNCHRONOUS results still never wait, as specified; whether a short
+   grace there is worth it is a call for after the youtube-clip rerun.
+   Ledger in run results + the `[verify-notification]` through the
    notifier (§5).
 6. Harness wiring (§6) — in the **stakgraph** repo (`mcp/src/lab`), after
    strut 3–5 are released there: seed the contract claims on `gaia-produce`,
    `meta/attach-claim` in `gaia-evolve-gen`, `meta/verify-run` before
    `canddigest`, the fitness `meta/add-evidence`, per-claim pass rates in
    `gaia/digest-results`. Not needed for step 8.
-7. UI panel (`web/src/components/StepEditFlyout.tsx` + the workflow view),
+7. **Done** — `src/claims-routes.ts` (the panel's HTTP door; the actor is a
+   PERSON: unscoped, stamped `person`, evidence `asserted` / `by: person`),
+   `web/src/components/ClaimsPanel.tsx` (status badge, latest evidence with
+   its run, checks, add / reword / retire, a check editor for step and
+   external checks), a collapsible Claims section in `StepEditFlyout` (on
+   the step TYPE; opens by itself on a refutation or a to-do) and a
+   workflow-level `ClaimsFlyout` behind a topbar button whose dot says what
+   needs attention. Open slots render FIRST, as to-dos: the question, the
+   run and its artifacts, a note, Supports / Refutes. Hidden entirely on a
+   filesystem workspace (`GET /claims` → `enabled: false`).
+   UI panel (`web/src/components/StepEditFlyout.tsx` + the workflow view),
    incl. open slots as to-dos.
 8. Re-run the `youtube-clip` prompt on a fresh workspace; compare transcripts.
 

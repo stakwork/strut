@@ -20,7 +20,7 @@ const cfg = testGraphConfig();
 
 describe("ontology fixture (pure)", () => {
   it("is the jarvis default library with its wildcard sentinel", () => {
-    assert.equal(JARVIS_ONTOLOGY.schemas.length, 151);
+    assert.equal(JARVIS_ONTOLOGY.schemas.length, 153);
     assert.ok(JARVIS_ONTOLOGY.schemas.some((s) => s["type"] === "*"));
     for (const t of ["Thing", "Document", "Concept", "EvalSet", "EvalRequirement", "EvalTrigger", "EvalTriggerOutput", "CriterionResult", "ScratchpadEntry"]) {
       assert.ok(JARVIS_ONTOLOGY.schemas.some((s) => s["type"] === t), t);
@@ -46,7 +46,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     await bolt.verify();
     await wipeGraph(bolt);
     const r = await seedJarvisOntology(bolt);
-    assert.equal(r.createdSchemas.length, 151);
+    assert.equal(r.createdSchemas.length, 153);
     assert.ok(r.createdEdgeSchemas >= 300, `edge schemas ${r.createdEdgeSchemas}`);
     assert.ok(r.domains.includes("content") && r.domains.includes("legal"));
     await seedStrutDomain(bolt);

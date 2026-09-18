@@ -149,7 +149,7 @@ export interface ProcessRequest {
   /** SIGKILL the process group after this long. Default 10 minutes. */
   timeoutMs?: number;
   /** Per-stream cap: past it the head and tail are kept and the middle is
-   *  dropped — the child keeps running. Default 200k chars. */
+   *  dropped — the child keeps running. Default 500k chars. */
   maxOutputChars?: number;
   /** Abort → SIGTERM the process group, SIGKILL 2s later. */
   signal?: AbortSignal;
@@ -213,7 +213,7 @@ class OutputSink {
  *  the server, as the agent's `bash` children already do.) Spawn failure,
  *  e.g. a program that isn't on PATH, rejects. */
 export function runProcess(req: ProcessRequest): Promise<ProcessResult> {
-  const { cmd, args = [], cwd, stdin, env, timeoutMs = 600_000, maxOutputChars = 200_000, signal } = req;
+  const { cmd, args = [], cwd, stdin, env, timeoutMs = 600_000, maxOutputChars = 500_000, signal } = req;
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const detached = process.platform !== "win32";

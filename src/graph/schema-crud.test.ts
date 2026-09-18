@@ -80,19 +80,19 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
 
   it("a new type is writable through the NodeWriter, with constraint + index, CHILD_OF, and inherited attributes", async () => {
     // Unknown before.
-    await assert.rejects(nodes.write({ type: "Evidence", data: { name: "e" } }, "create"), (e: any) => e.code === "UNKNOWN_TYPE");
+    await assert.rejects(nodes.write({ type: "FieldNote", data: { name: "e" } }, "create"), (e: any) => e.code === "UNKNOWN_TYPE");
     const r = await createNodeSchema(bolt, resolver, {
-      type: "Evidence",
+      type: "FieldNote",
       attributes: { description: "string", content: "?string", evidence_status: "?string", strength: "?float" },
       node_key: "description",
       title_key: "description",
       description_key: "content",
-      type_description: "A planned or collected piece of evidence",
+      type_description: "A planned or collected field note",
     });
     assert.equal(r.created, true);
-    assert.equal(r.type, "Evidence");
+    assert.equal(r.type, "FieldNote");
     assert.equal(r.parent, "Thing");
-    assert.equal(r.node_key, "evidence-description");
+    assert.equal(r.node_key, "fieldnote-description");
     assert.deepEqual(r.added, []);
     // `description` is a jarvis dual-use (core) name: the resolver reports it
     // optional, and its presence is enforced through the node_key instead.
@@ -101,55 +101,55 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.equal(r.attributes.name, "?string", "Thing's name inherited (optional, as for every jarvis type)");
     assert.equal(r.attributes.content, "?string");
 
-    const w = await nodes.write({ type: "Evidence", data: { description: "Falkor docs mention vector indexes", evidence_status: "planned" } }, "create");
+    const w = await nodes.write({ type: "FieldNote", data: { description: "Falkor docs mention vector indexes", evidence_status: "planned" } }, "create");
     assert.equal(w.outcome, "created");
-    assert.equal(w.node_key, "evidence-falkordocsmentionvectorindexes");
+    assert.equal(w.node_key, "fieldnote-falkordocsmentionvectorindexes");
     const got = await reader.getNode(w.ref_id);
-    assert.equal(got?.node_type, "Evidence");
-    await assert.rejects(nodes.write({ type: "Evidence", data: { description: "x", bogus: 1 } }, "create"), (e: any) => e.code === "UNKNOWN_ATTRIBUTE");
-    await assert.rejects(nodes.write({ type: "Evidence", data: { content: "no description" } }, "create"), (e: any) => e.code === "MISSING_REQUIRED");
+    assert.equal(got?.node_type, "FieldNote");
+    await assert.rejects(nodes.write({ type: "FieldNote", data: { description: "x", bogus: 1 } }, "create"), (e: any) => e.code === "UNKNOWN_ATTRIBUTE");
+    await assert.rejects(nodes.write({ type: "FieldNote", data: { content: "no description" } }, "create"), (e: any) => e.code === "MISSING_REQUIRED");
 
     const names = await schemaObjectNames(bolt);
-    assert.ok(names.constraints.includes("unique_evidence_node_key"), names.constraints.join(","));
-    const chain = await bolt.run(`MATCH (s:Schema {type: "Evidence"})-[:CHILD_OF]->(p:Schema) RETURN p.type AS p, s.domain AS d, s.index AS i`);
+    assert.ok(names.constraints.includes("unique_fieldnote_node_key"), names.constraints.join(","));
+    const chain = await bolt.run(`MATCH (s:Schema {type: "FieldNote"})-[:CHILD_OF]->(p:Schema) RETURN p.type AS p, s.domain AS d, s.index AS i`);
     assert.equal(chain[0]!["p"], "Thing");
     assert.equal(chain[0]!["d"], "entity");
     assert.deepEqual(chain[0]!["i"], ["description"]);
     // The ontology read surface sees it.
     const listed = await reader.listSchemas();
-    assert.ok(listed.schemas.some((s) => s.type === "Evidence"));
+    assert.ok(listed.schemas.some((s) => s.type === "FieldNote"));
   });
 
   it("an edge schema between a new type and a seeded one lets the edge write through", async () => {
-    const claim = await nodes.write({ type: "Claim", data: { name: "c", claim_text: "Falkor supports vector search", speaker_name: "anon" } }, "create");
-    const ev = await nodes.write({ type: "Evidence", data: { description: "release notes" } }, "create");
+    const claim = await nodes.write({ type: "Claim", data: { id: "c1", name: "c", claim_text: "Falkor supports vector search", speaker_name: "anon" } }, "create");
+    const ev = await nodes.write({ type: "FieldNote", data: { description: "release notes" } }, "create");
     await assert.rejects(edges.write({ edge: "EVIDENCED_BY", source_ref_id: claim.ref_id, target_ref_id: ev.ref_id }), (e: any) => e.code === "WRONG_TYPE");
-    await resolver.createEdgeSchema("Claim", "EVIDENCED_BY", "Evidence");
+    await resolver.createEdgeSchema("Claim", "EVIDENCED_BY", "FieldNote");
     const e = await edges.write({ edge: "EVIDENCED_BY", source_ref_id: claim.ref_id, target_ref_id: ev.ref_id, properties: { strength: 0.6 } });
     assert.equal(e.created, true);
   });
 
   it("extends an existing jarvis type add-only, with cache invalidation, and refuses Strut types", async () => {
-    // Claim (from the seeded ontology) has no verdict.
-    await assert.rejects(nodes.write({ type: "Claim", data: { name: "c2", claim_text: "t", speaker_name: "s", verdict: "unknown" } }, "create"), (e: any) => e.code === "UNKNOWN_ATTRIBUTE");
+    // Claim (from the seeded ontology) has no review_note.
+    await assert.rejects(nodes.write({ type: "Claim", data: { id: "c2", name: "c2", claim_text: "t", review_note: "unknown" } }, "create"), (e: any) => e.code === "UNKNOWN_ATTRIBUTE");
     const before = await bolt.run(`MATCH (s:Schema {type: "Claim"}) RETURN s.ref_id AS r, s.node_key AS k, s.claim_text AS ct`);
     const r = await createNodeSchema(bolt, resolver, {
       type: "claim", // case-insensitive, adopts live casing
-      parent: "Content",
-      attributes: { verdict: "?string", confidence_score: "?float", claim_text: "?string" /* existing: left alone */ },
+      parent: "Thing",
+      attributes: { review_note: "?string", review_score: "?float", claim_text: "?string" /* existing: left alone */ },
       node_key: "name", // ignored on extend
     });
     assert.equal(r.created, false);
     assert.equal(r.type, "Claim");
     assert.equal(r.ref_id, before[0]!["r"]);
-    assert.deepEqual(r.added, ["confidence_score", "verdict"]);
+    assert.deepEqual(r.added, ["review_note", "review_score"]);
     assert.equal(r.node_key, before[0]!["k"], "identity untouched");
     assert.equal(r.attributes.claim_text, "string", "existing attribute not downgraded to optional");
-    assert.equal(r.attributes.verdict, "?string");
-    const w = await nodes.write({ type: "Claim", data: { name: "c2", claim_text: "t", speaker_name: "s", verdict: "unknown", confidence_score: 0.5 } }, "create");
+    assert.equal(r.attributes.review_note, "?string");
+    const w = await nodes.write({ type: "Claim", data: { id: "c2", name: "c2", claim_text: "t", review_note: "unknown", review_score: 0.5 } }, "create");
     assert.equal(w.outcome, "created");
     // Nothing to add → still not created, empty added.
-    const again = await createNodeSchema(bolt, resolver, { type: "Claim", attributes: { verdict: "?string" } });
+    const again = await createNodeSchema(bolt, resolver, { type: "Claim", attributes: { review_note: "?string" } });
     assert.deepEqual([again.created, again.added], [false, []]);
 
     await assert.rejects(createNodeSchema(bolt, resolver, { type: "StrutRun", attributes: { x: "string" } }), (e: any) => e.code === "UNKNOWN_TYPE");

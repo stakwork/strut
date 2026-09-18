@@ -23,7 +23,7 @@
  * recording the source run.
  */
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
-import type { RunStore } from "../store.js";
+import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatStore, StoredMessage } from "../chat-store.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
@@ -98,6 +98,7 @@ interface RunProjection {
   sessions: NodeInput[];
   toolCalls: Array<{ node: NodeInput; sessionPath: string; accessed: AccessedNode[] }>;
   workflowHash?: string;
+  stepHashes?: Record<string, string>;
 }
 
 /** Pure: the nodes one run contributes (no graph access). */
@@ -208,7 +209,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     });
   }
 
-  return { run, sessions, toolCalls, workflowHash: start?.workflowHash };
+  return { run, sessions, toolCalls, workflowHash: start?.workflowHash, stepHashes: start?.stepHashes };
 }
 
 /** Project runs from a `RunStore` into the graph. */
@@ -235,58 +236,87 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
         report.skipped++;
         continue;
       }
-      const [events, summary] = await Promise.all([store.getRunEvents(workflow, runId), store.getRunSummary(workflow, runId)]);
-      const p = projectRunEvents(workflow, runId, events, summary);
-      if (!p) continue;
-
-      const nodes = [p.run, ...p.sessions, ...p.toolCalls.map((t) => t.node)];
-      const written = await backend.nodes.writeMany(nodes, "upsert");
-      const runRef = written[0]!.ref_id;
-      const sessionRef = new Map<string, string>();
-      p.sessions.forEach((s, i) => sessionRef.set(String(s.data["path"]).replace(/#\d+$/, ""), written[1 + i]!.ref_id));
-      report.runs++;
-      report.sessions += p.sessions.length;
-      report.toolCalls += p.toolCalls.length;
-
-      const edges: EdgeInput[] = [];
-      p.sessions.forEach((s) => {
-        const ref = sessionRef.get(String(s.data["path"]).replace(/#\d+$/, ""))!;
-        edges.push({ edge: "IN_RUN", source_ref_id: ref, target_ref_id: runRef });
-      });
-      const toolRef = (i: number) => written[1 + p.sessions.length + i]!.ref_id;
-      p.toolCalls.forEach((t, i) => {
-        edges.push({ edge: "IN_SESSION", source_ref_id: toolRef(i), target_ref_id: sessionRef.get(t.sessionPath)! });
-      });
-      // ACCESSED: only toward nodes this graph actually holds (the edge
-      // writer treats a missing endpoint as an error, and a ref may point
-      // at another database or a since-deleted node).
-      const wanted = new Set(p.toolCalls.flatMap((t) => t.accessed.map((n) => n.ref_id)));
-      if (wanted.size) {
-        const rows = await backend.bolt.run(`MATCH (n:Data_Bank) WHERE n.ref_id IN $ids RETURN DISTINCT n.ref_id AS ref_id`, { ids: [...wanted] });
-        const present = new Set(rows.map((r) => r["ref_id"] as string));
-        p.toolCalls.forEach((t, i) => {
-          for (const n of t.accessed) {
-            if (present.has(n.ref_id)) {
-              edges.push({ edge: "ACCESSED", source_ref_id: toolRef(i), target_ref_id: n.ref_id });
-              report.accessed++;
-            } else report.unresolved++;
-          }
-        });
-      }
-      if (p.workflowHash) {
-        const rows = await backend.bolt.run(
-          `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $wf, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
-          { ns, wf: workflow, h: p.workflowHash },
-        );
-        if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
-      }
-      if (edges.length) {
-        await backend.edges.writeMany(edges);
-        report.edges += edges.length;
-      }
+      await projectRun(backend, store, workflow, runId, report);
     }
   }
   return report;
+}
+
+/**
+ * Project ONE run and return its `StrutRun` ref_id (null for an unknown
+ * run). `workflow` is the run-store key: a workflow name, or `step:<type>`
+ * for a kept single-step run — which gets `EXECUTED → StrutStepVersion`
+ * from `run.start.stepHashes` instead of the workflow-version edge. The
+ * verify pass calls this for the run it is about to attach evidence to
+ * (plans/claims.md §3): step runs that produced no evidence never reach the
+ * graph, and `projectRuns` never lists them.
+ */
+export async function projectRun(
+  backend: GraphBackend,
+  store: RunStore,
+  workflow: string,
+  runId: string,
+  report: ProjectReport = emptyReport(),
+): Promise<string | null> {
+  const ns = backend.cfg.namespace;
+  const [events, summary] = await Promise.all([store.getRunEvents(workflow, runId), store.getRunSummary(workflow, runId)]);
+  const p = projectRunEvents(workflow, runId, events, summary);
+  if (!p) return null;
+
+  const nodes = [p.run, ...p.sessions, ...p.toolCalls.map((t) => t.node)];
+  const written = await backend.nodes.writeMany(nodes, "upsert");
+  const runRef = written[0]!.ref_id;
+  const sessionRef = new Map<string, string>();
+  p.sessions.forEach((s, i) => sessionRef.set(String(s.data["path"]).replace(/#\d+$/, ""), written[1 + i]!.ref_id));
+  report.runs++;
+  report.sessions += p.sessions.length;
+  report.toolCalls += p.toolCalls.length;
+
+  const edges: EdgeInput[] = [];
+  p.sessions.forEach((s) => {
+    const ref = sessionRef.get(String(s.data["path"]).replace(/#\d+$/, ""))!;
+    edges.push({ edge: "IN_RUN", source_ref_id: ref, target_ref_id: runRef });
+  });
+  const toolRef = (i: number) => written[1 + p.sessions.length + i]!.ref_id;
+  p.toolCalls.forEach((t, i) => {
+    edges.push({ edge: "IN_SESSION", source_ref_id: toolRef(i), target_ref_id: sessionRef.get(t.sessionPath)! });
+  });
+  // ACCESSED: only toward nodes this graph actually holds (the edge
+  // writer treats a missing endpoint as an error, and a ref may point
+  // at another database or a since-deleted node).
+  const wanted = new Set(p.toolCalls.flatMap((t) => t.accessed.map((n) => n.ref_id)));
+  if (wanted.size) {
+    const rows = await backend.bolt.run(`MATCH (n:Data_Bank) WHERE n.ref_id IN $ids RETURN DISTINCT n.ref_id AS ref_id`, { ids: [...wanted] });
+    const present = new Set(rows.map((r) => r["ref_id"] as string));
+    p.toolCalls.forEach((t, i) => {
+      for (const n of t.accessed) {
+        if (present.has(n.ref_id)) {
+          edges.push({ edge: "ACCESSED", source_ref_id: toolRef(i), target_ref_id: n.ref_id });
+          report.accessed++;
+        } else report.unresolved++;
+      }
+    });
+  }
+  const stepType = stepTypeOfRunKey(workflow);
+  const stepHash = stepType ? p.stepHashes?.[stepType] : undefined;
+  if (stepType && stepHash) {
+    const rows = await backend.bolt.run(
+      `MATCH (v:StrutStepVersion {namespace: $ns, step_type: $type, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
+      { ns, type: stepType, h: stepHash },
+    );
+    if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
+  } else if (p.workflowHash) {
+    const rows = await backend.bolt.run(
+      `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $wf, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
+      { ns, wf: workflow, h: p.workflowHash },
+    );
+    if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
+  }
+  if (edges.length) {
+    await backend.edges.writeMany(edges);
+    report.edges += edges.length;
+  }
+  return runRef;
 }
 
 // ── Chats ─────────────────────────────────────────────────────────────────

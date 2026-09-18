@@ -34,11 +34,20 @@ import {
   MemorySecretStore,
   isValidSecretName,
 } from "./secret-store.js";
-import { runSingleStep, cassettePath } from "./run-step.js";
+import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
+import { CLAIMS_OFF } from "./claims-schemas.js";
+import { claimsRoutes } from "./claims-routes.js";
+import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
+import type { RunEndInfo } from "./runner.js";
+import { stepHashesFor } from "./closure.js";
 import { buildAuthoringCapability } from "./authoring.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+// No runtime graph dependency in here either (type-only imports inside).
+import type { ClaimsReader } from "./graph/claims.js";
+import { buildClaimsAuthoring } from "./claims-authoring.js";
 import { createStt, type SttService } from "./audio/stt.js";
 import { audioRoutes } from "./audio/routes.js";
 import { attachAudioWebSocket } from "./audio/ws.js";
@@ -138,6 +147,14 @@ export interface StrutOptions<TServices = unknown> {
    *  the guards. Only the NEWEST root run per workflow is considered. */
   autoResume?: boolean | AutoResumeOptions;
 
+  /** The claims layer (plans/claims.md): claims, checks, the verify pass, the
+   *  claim tools and the Claims panel. Needs a graph-backed workspace; there
+   *  it defaults to ON unless `STRUT_CLAIMS=0`. Pass `false` to turn the
+   *  whole layer off — `strut.claims` / `strut.verifier` are null, no claim
+   *  tool or `claims` arg is offered, the prompt has no claims section, no
+   *  run is verified and the panel hides itself. */
+  claims?: boolean;
+
   /** The strut graph backend, when the deployment has one (server.ts passes
    *  the one behind its graph-backed workspace). Enables the chat builder's
    *  read-only `graph_query` tool. Omit and the tool isn't offered. */
@@ -225,6 +242,18 @@ export interface Strut<TServices = unknown> {
    *  host that mounts `app` itself must call `attachAudioWebSocket(server,
    *  strut.stt)` to get the dictation socket; `listen()` does it. */
   stt: SttService | null;
+
+  /** Reads over the claims layer (plans/claims.md) — null unless the
+   *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
+   *  claims hang off the subjects' graph nodes, so on a filesystem workspace
+   *  no claim tool is offered and the verify pass is a no-op. */
+  claims: ClaimsReader | null;
+
+  /** The verify pass (plans/claims.md §4) — null wherever `claims` is.
+   *  Runs by itself after every top-level run; a host calls
+   *  `verifyRun` to wait for a run's evidence (single-flighted with the
+   *  automatic pass), or `addEvidence` to report what it observed. */
+  verifier: Verifier | null;
 
   /** Boot the Hono server with `@hono/node-server`. Resolves once the
    *  socket is listening, to the *bound* port — so `listen(0)` (or
@@ -440,6 +469,63 @@ export async function createStrut<TServices = unknown>(
     await rebuildRegistry();
   }
 
+  // The claims layer (plans/claims.md) — decided HERE and nowhere else. It
+  // needs the subjects' graph nodes, so a filesystem workspace never has it;
+  // on a graph workspace it is on unless `claims: false` / `STRUT_CLAIMS=0`.
+  // Everything downstream (authoring, the chat tools, the prompt, the HTTP
+  // door, the verify pass) is handed `claimsAuthoring` and gates on that,
+  // never on `workspace.graph`.
+  const claimsEnabled = opts.claims ?? process.env["STRUT_CLAIMS"] !== "0";
+  const claimsGraph = claimsEnabled ? workspace.graph : undefined;
+  const claimsAuthoring = claimsGraph
+    ? buildClaimsAuthoring({
+        graph: claimsGraph,
+        workspace,
+        getRegistry: async () => {
+          await rebuildRegistry();
+          return registry;
+        },
+      })
+    : null;
+  const claims = claimsAuthoring?.reader ?? null;
+
+  // The verify pass (plans/claims.md §4) — only where the claims layer exists.
+  // Triggered where `services.onRunEnd` fires — `runWorkflow`'s `finally`,
+  // once per TOP-LEVEL run — and NOT at the launch sites: a candidate that a
+  // harness launches through `meta/run-workflow` is its own top-level run and
+  // must be verified too. Always detached; a consumer's own onRunEnd
+  // (per-run teardown) still runs first.
+  let verifySettled: ((r: VerifyResult) => void) | undefined;
+  // Wakes the chat that launched a run with its verdict — built with the chat
+  // block (it needs the notifier); without chat, evidence is just written.
+  let verifyWaker: VerifyWaker | undefined;
+  const verifier = claimsGraph
+    ? createVerifier({
+        graph: claimsGraph,
+        store,
+        workspace,
+        services: () => services,
+        getRegistry: async () => {
+          await rebuildRegistry();
+          return registry;
+        },
+        onSettled: (r) => verifySettled?.(r),
+      })
+    : null;
+  if (verifier) {
+    const bag = services as Record<string, unknown>;
+    const prior = (bag["onRunEnd"] as ((id: string, info?: RunEndInfo) => unknown) | undefined)?.bind(bag);
+    bag["onRunEnd"] = async (runId: string, info?: RunEndInfo) => {
+      try {
+        await prior?.(runId, info);
+      } finally {
+        // Check runs are never verified (the recursion guard); a single-step
+        // run is verified by `runStep`, once it reaches the real store.
+        if (info?.workflow && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) verifier.schedule(info.workflow, runId);
+      }
+    };
+  }
+
   // Auto-provide the AUTHORING capability (the workspace's author/test/inspect
   // operations as one service) unless the consumer injected their own — same
   // spirit as http/secrets/artifacts above, added here because it closes over
@@ -455,6 +541,8 @@ export async function createStrut<TServices = unknown>(
       store,
       services,
       trackRun,
+      claims: claimsAuthoring,
+      verifier,
       publishingEnabled: !registryWasInjected,
       getRegistry: async () => {
         await rebuildRegistry();
@@ -1315,10 +1403,12 @@ export async function createStrut<TServices = unknown>(
 
   // Run a SINGLE step in isolation (synchronous) — the adapter author's inner
   // loop. Body: { config?, input?, params?, cassette?: "record"|"replay",
-  // cassetteName? }. With `cassette`, external `ctx.services` calls are recorded
+  // cassetteName?, keep? }. With `cassette`, external `ctx.services` calls are recorded
   // to / replayed from `steps/_cassettes/<name>.json` (secrets scrubbed), so the
-  // step can be iterated offline. Returns { status, output?, error?, events,
-  // recorded? }. Unlike workflow runs, this awaits and returns the result.
+  // step can be iterated offline. Returns { runId, status, output?, error?,
+  // events, recorded?, kept? }. Unlike workflow runs, this awaits and returns
+  // the result. The run is persisted under the store key `step:<type>` (never
+  // a workflow) when the step has claims or `keep` is set — `kept` names it.
   app.post("/steps/:type{.+}/run", async (c) => {
     const type = c.req.param("type");
     if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
@@ -1329,6 +1419,7 @@ export async function createStrut<TServices = unknown>(
         params?: Record<string, unknown>;
         cassette?: CassetteMode;
         cassetteName?: string;
+        keep?: boolean;
       }>()
       .catch(() => ({}) as Record<string, never>);
 
@@ -1337,15 +1428,22 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: `cassette must be "record" or "replay"` }, 400);
     }
 
-    const result = await runSingleStep(type, registry, services, {
-      config: body.config,
-      input: body.input,
-      params: body.params,
-      workspace,
-      ...(mode
-        ? { cassette: { mode, path: cassettePath(dataDir, body.cassetteName ?? type) } }
-        : {}),
-    });
+    const result = await runStep(
+      type,
+      registry,
+      services,
+      {
+        config: body.config,
+        input: body.input,
+        params: body.params,
+        workspace,
+        keep: body.keep === true,
+        ...(mode
+          ? { cassette: { mode, path: cassettePath(dataDir, body.cassetteName ?? type) } }
+          : {}),
+      },
+      { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
+    );
     return c.json(result);
   });
 
@@ -1400,6 +1498,7 @@ export async function createStrut<TServices = unknown>(
     void (async () => {
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
+      const stepHashes = await stepHashesFor(workspace, flow);
       return runWorkflow(flow, body.input ?? {}, registry, {
         runId,
         store,
@@ -1409,6 +1508,7 @@ export async function createStrut<TServices = unknown>(
         paramOverrides: body.paramOverrides,
         controller,
         ...(workflowHash ? { workflowHash } : {}),
+        ...(stepHashes ? { stepHashes } : {}),
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
       });
@@ -1419,6 +1519,20 @@ export async function createStrut<TServices = unknown>(
       .finally(untrack);
     return runId;
   }
+
+  // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2).
+  claimsRoutes(app, { claims: claimsAuthoring, verifier });
+
+  // Re-verify a finished run (plans/claims.md §4): after claims or checks
+  // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
+  // per (check, run, path), and single-flighted with the detached pass.
+  app.post("/workflows/:name/runs/:runId/verify", async (c) => {
+    if (!verifier) return c.json({ error: CLAIMS_OFF }, 409);
+    const { name, runId } = c.req.param();
+    const result = await verifier.verifyRun(name, runId, { explicit: true });
+    if (result.skipped === "unknown-run") return c.json({ error: `Run ${runId} of "${name}" not found` }, 404);
+    return c.json(result);
+  });
 
   app.post("/workflows/:name/run", async (c) => {
     const name = c.req.param("name");
@@ -1467,6 +1581,15 @@ export async function createStrut<TServices = unknown>(
       startTurn: (chatId, turn, modelMessages) =>
         launchChatTurn(chatId, turn, modelMessages),
     });
+
+    // The verify pass settled for a run this chat launched: wake it with the
+    // ledger (plans/claims.md §5; ai/verify-waker.ts). Queue-and-drain applies
+    // unchanged, and `autoTurns` counts it like any machine-triggered turn, so
+    // the park limit holds.
+    if (verifier) {
+      verifyWaker = createVerifyWaker({ verifier, deliver: (chatId, text) => notifier.deliver(chatId, text) });
+      verifySettled = (r) => void verifyWaker!.settled(r);
+    }
 
     /**
      * Run one chat turn detached: build the agent, stream it server-side,
@@ -1528,6 +1651,11 @@ export async function createStrut<TServices = unknown>(
             },
             // Read-only graph_query, when the host wired a graph backend.
             graph: opts.graph,
+            // The claim tools + `claims` arg, and verify_run / add_evidence +
+            // the verify triggers — where the claims layer is on.
+            claims: claimsAuthoring,
+            verifier,
+            watchVerify: (runId: string) => verifyWaker?.watch(runId, chatId),
             // cancel_run / pause_run / resume_run over the live controllers.
             controlRun: controlRunForChat,
             publishingEnabled: !registryWasInjected,
@@ -1560,18 +1688,19 @@ export async function createStrut<TServices = unknown>(
               }) => {
                 promise
                   .then(
-                    (res) =>
-                      notifier.deliver(
-                        chatId,
-                        formatRunNotification({
-                          workflow,
-                          runId,
-                          status: res.status,
-                          durationMs: Date.now() - startedAt,
-                          output: res.output,
-                          ...(res.error ? { error: res.error } : {}),
-                        }),
-                      ),
+                    async (res) => {
+                      const text = formatRunNotification({
+                        workflow,
+                        runId,
+                        status: res.status,
+                        durationMs: Date.now() - startedAt,
+                        output: res.output,
+                        ...(res.error ? { error: res.error } : {}),
+                      });
+                      // One wake-up turn carries the run AND its ledger when the
+                      // verify pass settles quickly; else a [verify-notification] follows.
+                      return notifier.deliver(chatId, `${text}${(await verifyWaker?.ledgerLinesFor(workflow, runId)) ?? ""}`);
+                    },
                     // runWorkflow finalizes its own errors into a resolved
                     // result; a rejection here is an unexpected throw (e.g.
                     // store write failure) — still wake the chat with it.
@@ -1910,6 +2039,7 @@ export async function createStrut<TServices = unknown>(
         typeof workflow === "string"
           ? ((await workspace.getWorkflowHash(workflow, runOpts?.version)) ?? undefined)
           : undefined;
+      const stepHashes = await stepHashesFor(workspace, flow);
       return await runWorkflow(flow, input, registry, {
         runId,
         store,
@@ -1920,6 +2050,7 @@ export async function createStrut<TServices = unknown>(
         onEvent: runOpts?.onEvent,
         controller,
         ...(workflowHash ? { workflowHash } : {}),
+        ...(stepHashes ? { stepHashes } : {}),
       });
     } finally {
       untrack();
@@ -2004,6 +2135,8 @@ export async function createStrut<TServices = unknown>(
     autoResumeStaleRuns,
     run,
     stt,
+    claims,
+    verifier,
     listen,
     close,
   };

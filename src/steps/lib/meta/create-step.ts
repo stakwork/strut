@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { requireAuthoring } from "./_shared.js";
+import { claimsArgSchema } from "../../../claims-schemas.js";
 
 export default defineStep({
   type: "meta/create-step",
@@ -16,9 +17,10 @@ export default defineStep({
         'Full TypeScript source. Shape: import { z, defineStep } from "strut"; export default defineStep({ type: "<name>", input: z.object({...}), output: z.any(), async run(cfg, ctx) {...} });',
       ),
     description: z.string().optional().describe("one-line summary stored with the step, shown in step listings"),
+    claims: claimsArgSchema,
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    return requireAuthoring(ctx.services).createStep(cfg.name, cfg.code, cfg.description);
+    return requireAuthoring(ctx.services).createStep(cfg.name, cfg.code, cfg.description, cfg.claims);
   },
 });

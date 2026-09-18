@@ -770,3 +770,86 @@ export const deleteSecret = (name: string) =>
   fetchJSON<{ ok: true; name: string }>(`/secrets/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
+
+// ── Claims (plans/claims.md) ───────────────────────────────────────────────
+// A subject's contract: how it should behave, the checks that test it, and
+// what the evidence says. Graph-backed workspaces only — `enabled: false`
+// otherwise, and the panel hides itself.
+
+export interface ClaimSubject {
+  kind: "step" | "workflow";
+  /** Workflow name, or custom step type. */
+  name: string;
+}
+
+export type ClaimStatusValue = "supported" | "refuted" | "stale" | "unknown";
+
+export interface ClaimRunRef {
+  /** Run-store key: a workflow name, or `step:<type>`. */
+  name?: string;
+  runId?: string;
+  path?: string;
+}
+
+/** A check as the panel edits it: a STEP check names a registry step
+ *  (`type` + `config`); an EXTERNAL check has only a `description`. */
+export interface ClaimCheckSpec {
+  type?: string;
+  config?: Record<string, unknown>;
+  name?: string;
+  description?: string;
+  when?: "run" | "publish";
+  policy?: "always" | "on_change" | "sample" | "manual";
+  freshnessDays?: number;
+  sampleRate?: number;
+}
+
+export interface ClaimCheck extends ClaimCheckSpec {
+  id: string;
+  name: string;
+  external: boolean;
+  publisher?: string;
+}
+
+export interface ClaimEntry {
+  id: string;
+  text: string;
+  /** Who wrote it: `ai`, `person`, a seeder. */
+  speaker?: string;
+  status: ClaimStatusValue;
+  /** The verdict rests on a model's or a person's word — nothing observed. */
+  assertedOnly: boolean;
+  /** Active checks with no evidence about the active version. */
+  unverified: number;
+  openSlot: boolean;
+  latest?: { content?: string; observedAt?: number; mode?: string; check?: string; checkVersion?: string; by?: string; run?: ClaimRunRef };
+  /** Questions an external check is waiting on — the panel's to-dos. */
+  slots: Array<{ evidence: string; check?: string; question?: string; run?: ClaimRunRef }>;
+  checks: ClaimCheck[];
+}
+
+export interface ClaimsResponse {
+  enabled: boolean;
+  subject?: ClaimSubject;
+  claims: ClaimEntry[];
+  /** Why there is no contract here (e.g. a built-in step). */
+  note?: string;
+  /** What this subject's paid checks have cost so far. */
+  verifyCostUsd?: number;
+}
+
+const json = (method: string, body?: unknown): RequestInit => ({ method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+
+export const getClaims = (subject: ClaimSubject) =>
+  fetchJSON<ClaimsResponse>(`/claims?kind=${subject.kind}&name=${encodeURIComponent(subject.name)}`);
+export const addClaim = (subject: ClaimSubject, text: string, checks: ClaimCheckSpec[]) =>
+  fetchJSON<{ id: string; checks: string[] }>("/claims", json("POST", { subjects: [subject], text, checks }));
+/** Rewording creates a SUCCESSOR (claims are immutable); returns its id. */
+export const editClaim = (id: string, text: string) => fetchJSON<{ id: string; superseded?: string }>(`/claims/${id}`, json("PATCH", { text }));
+export const retireClaim = (id: string) => fetchJSON<{ id: string }>(`/claims/${id}`, json("DELETE"));
+export const addCheck = (claimId: string, check: ClaimCheckSpec) => fetchJSON<{ id: string }>(`/claims/${claimId}/checks`, json("POST", { check }));
+export const editCheck = (id: string, patch: ClaimCheckSpec) => fetchJSON<{ id: string }>(`/checks/${id}`, json("PATCH", { patch }));
+export const retireCheck = (id: string) => fetchJSON<{ id: string }>(`/checks/${id}`, json("DELETE"));
+/** A person's observation on a run; with `slot`, the answer to an open question. */
+export const addClaimEvidence = (claimId: string, body: { name: string; runId: string; supports: boolean; content: string; slot?: string }) =>
+  fetchJSON<{ evidence: string; filled: boolean }>(`/claims/${claimId}/evidence`, json("POST", body));

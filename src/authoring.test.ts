@@ -72,6 +72,18 @@ describe("authoring capability (the meta surface)", () => {
       "meta/get-run",
       "meta/search-runs",
       "meta/list-secrets",
+      // the claims surface (plans/claims.md §2)
+      "meta/add-claim",
+      "meta/list-claims",
+      "meta/edit-claim",
+      "meta/retire-claim",
+      "meta/attach-claim",
+      "meta/detach-claim",
+      "meta/add-check",
+      "meta/edit-check",
+      "meta/retire-check",
+      "meta/verify-run",
+      "meta/add-evidence",
     ]) {
       assert.ok(registry[type], `expected "${type}" in the registry`);
     }

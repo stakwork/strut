@@ -66,6 +66,9 @@ export {
   FileRunStore,
   MemoryRunStore,
   generateRunId,
+  stepRunKey,
+  checkRunKey,
+  stepTypeOfRunKey,
   tailJsonl,
   tailFromPolling,
   lastRunAtFromIds,
@@ -209,10 +212,20 @@ export {
 // Single-step runner (test one step in isolation, with optional cassette).
 export {
   runSingleStep,
+  runStep,
+  persistStepRun,
+  persistRunUnder,
+  RUN_STEP_FLOW,
   cassettePath,
   type RunStepOptions,
   type RunStepResult,
+  type RunStepDeps,
+  type KeptRunStepResult,
 } from "./run-step.js";
+
+// What a flow can execute (nested subflows, agentTools grants) and the step
+// hashes a launch records on `run.start` (plans/claims.md §3–§4).
+export { walkSteps, flowClosure, closureIncludes, stepHashesFor, globToRegExp, type FlowClosure } from "./closure.js";
 
 // Authoring — the workspace's author/test/inspect operations as one
 // injectable service: what the meta/* steps are plumbing over. Auto-provided
@@ -262,6 +275,89 @@ export {
 } from "./graph/strut-schemas.js";
 export { seedStrutDomain, type SeedReport } from "./graph/schema-seed.js";
 export { migrateVeinToStrut, VeinMigrationCollision, type VeinMigrationReport } from "./graph/vein-migration.js";
+export { upgradeClaimSchema, CLAIM_SCHEMA_UPGRADE_ID, type ClaimSchemaUpgradeReport } from "./graph/claim-schema-upgrade.js";
+// The truth layer — claims, checks, evidence (plans/claims.md).
+export {
+  ClaimsReader,
+  claimsReaderFor,
+  claimStatus,
+  newEpistemicId,
+  isEpistemicId,
+  evidenceId,
+  isExternalCheck,
+  subjectName,
+  CLAIM_TYPE,
+  CHECK_TYPE,
+  EVIDENCE_TYPE,
+  CLAIM_EDGES,
+  DEFAULT_FRESHNESS_DAYS,
+  type SubjectRef,
+  type VersionRef,
+  type ClaimRow,
+  type CheckRow,
+  type EvidenceRow,
+  type ClaimStatus,
+  type ClaimStatusValue,
+  type ClaimStatusInput,
+  type SubjectLedgerRow,
+  type RunCheckSubject,
+  type PublishCheckSubject,
+  type CheckResult,
+  type SourceContext,
+  type RunWhen,
+  type CheckPolicy,
+  type EvidenceMode,
+  type EvidenceStatus,
+} from "./graph/claims.js";
+export { ClaimsWriter, ClaimsError, boundedName, type CheckData, type ClaimsErrorCode } from "./graph/claims-writer.js";
+export {
+  buildClaimsAuthoring,
+  deniedInClosure,
+  verifyDenyPatterns,
+  toSubjectRef,
+  DEFAULT_VERIFY_DENY,
+  type ClaimsAuthoring,
+  type ClaimsAuthoringDeps,
+  type ClaimActor,
+  type ClaimSpecInput,
+  type CheckSpecInput,
+  type SubjectInput,
+  type ClaimListing,
+  type ClaimsResult,
+} from "./claims-authoring.js";
+export { subjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
+export { claimsRoutes, type ClaimsRoutesDeps } from "./claims-routes.js";
+// The verify pass — how evidence is produced (plans/claims.md §4).
+export {
+  createVerifier,
+  subjectsOfRun,
+  mapCheckResult,
+  policyFires,
+  sampleFires,
+  reportedCost,
+  type Verifier,
+  type VerifierDeps,
+  type VerifyResult,
+  type VerifiedCheck,
+  type LastVerify,
+  type SkipReason,
+  type ObservedSubject,
+  type MappedCheck,
+  type AddEvidenceInput,
+} from "./verify.js";
+// The ledger — the contract as a tool result, and the wake-up that carries it.
+export {
+  buildLedger,
+  subjectsOfFlow,
+  formatVerifyNotification,
+  formatLedgerLines,
+  ledgerIsEmpty,
+  VERIFY_NOTIFICATION_PREFIX,
+  type Ledger,
+  type LedgerClaim,
+  type LedgerCheck,
+} from "./ledger.js";
+export { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 export {
   NodeWriter,
   GraphValidationError,
@@ -308,6 +404,7 @@ export { Neo4jWorkspaceStore, type Neo4jWorkspaceStoreOptions } from "./graph/wo
 export { graphWorkspaceFromEnv, graphWorkspaceRequested, graphMaterializeDir } from "./graph/wiring.js";
 export {
   projectRuns,
+  projectRun,
   projectChats,
   projectAll,
   projectRunEvents,

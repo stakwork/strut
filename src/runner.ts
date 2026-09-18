@@ -66,6 +66,22 @@ export interface RunOptions<TServices = unknown> {
   /** Content hash of the workflow version being run, recorded on `run.start`
    *  so resume can refuse to replay a journal into a different DAG (§5). */
   workflowHash?: string;
+  /** Active content hash of every workspace step the flow can execute
+   *  (`stepHashesFor`), recorded on `run.start` / `run.resumed`. */
+  stepHashes?: Record<string, string>;
+  /** Cassette mode this run executes under — recorded on `run.start`. */
+  cassette?: "record" | "replay";
+  /** `"verify"` when the verify pass launches this run (a check). */
+  origin?: "verify";
+  /** Recorded on a check run's `run.start` (see `RunEvent.verify`). */
+  verify?: { checkId: string; subject: string; sourceRunId: string };
+}
+
+/** What `services.onRunEnd(runId, info)` is told about the settled run. */
+export interface RunEndInfo {
+  /** The flow's name — the run-store key the run was written under. */
+  workflow: string;
+  origin?: "verify";
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -159,13 +175,22 @@ export async function runWorkflow<TServices = unknown>(
   if (opts?.resume) {
     // Continuing an interrupted run: same runId, same log — the marker both
     // records the gap and reopens tails past an earlier terminal event.
-    await emit({ type: "run.resumed", path: wfName });
+    await emit({
+      type: "run.resumed",
+      path: wfName,
+      // Steps load at (re)launch: what runs from here on is what is active NOW.
+      ...(opts.stepHashes ? { stepHashes: opts.stepHashes } : {}),
+    });
   } else {
     await emit({
       type: "run.start",
       path: wfName,
       input: parsedInput,
       ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
+      ...(opts?.stepHashes ? { stepHashes: opts.stepHashes } : {}),
+      ...(opts?.cassette ? { cassette: opts.cassette } : {}),
+      ...(opts?.origin ? { origin: opts.origin } : {}),
+      ...(opts?.verify ? { verify: opts.verify } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
@@ -240,7 +265,13 @@ export async function runWorkflow<TServices = unknown>(
     // the run's real result. (Hard kills (SIGKILL) still skip this — identical to
     // any in-process `finally`; that case is handled out-of-band.)
     try {
-      await (services as { onRunEnd?: (id: string) => unknown })?.onRunEnd?.(runId);
+      // The second argument names WHICH run settled — what a post-run
+      // consumer (the verify pass, plans/claims.md §4) needs and a teardown
+      // hook can ignore.
+      await (services as { onRunEnd?: (id: string, info: RunEndInfo) => unknown })?.onRunEnd?.(runId, {
+        workflow: wfName,
+        ...(opts?.origin ? { origin: opts.origin } : {}),
+      });
     } catch (teardownErr) {
       console.error(`[runner] onRunEnd hook failed for run ${runId}:`, teardownErr);
     }
@@ -499,11 +530,13 @@ async function executeStep(
             : undefined
         : resolvedConfig;
 
+      const subflow = step.type === "subflow" ? await describeSubflow(step, scope, exec) : undefined;
       await exec.emit({
         type: "step.start",
         path,
         stepType: step.type,
         input: startInput,
+        ...(subflow ? { subflow } : {}),
       });
 
       // Execute based on step type
@@ -886,6 +919,23 @@ async function executeForeach(
   }
 
   return results;
+}
+
+/** Which child a `subflow` step is about to run (`RunEvent.subflow`). Never
+ *  throws: a bad reference fails in `executeSubflow`, with its own message.
+ *  The hash needs more than a `SubflowResolver` — a full workspace has it. */
+async function describeSubflow(step: Step, scope: Record<string, unknown>, exec: Exec): Promise<RunEvent["subflow"]> {
+  try {
+    const workflow = resolveConfig(step.config["workflow"], scope);
+    if (typeof workflow !== "string" || !workflow) return undefined;
+    const v = step.config["version"] != null ? resolveConfig(step.config["version"], scope) : undefined;
+    const version = typeof v === "string" && v ? v : undefined;
+    const hashOf = (exec.workspace as { getWorkflowHash?: (name: string, version?: string) => Promise<string | null> } | undefined)?.getWorkflowHash;
+    const hash = hashOf ? await hashOf.call(exec.workspace, workflow, version).catch(() => null) : null;
+    return { workflow, ...(version ? { version } : {}), ...(hash ? { hash } : {}) };
+  } catch {
+    return undefined;
+  }
 }
 
 async function executeSubflow(

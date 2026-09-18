@@ -48,7 +48,7 @@ ancestor walks + `*` wildcard, the `EDGE_TYPES` allowlist,
 `create_schema_if_missing`). The §6 closed registry still governs Strut
 types and Strut-sourced edges. For a STANDALONE Neo4j, the bundled
 `fixtures/jarvis-ontology.ts` (a read-only dump of jarvis's default
-library: 151 schemas, 309 edge schemas) is seeded add-only by
+library: 153 schemas, 346 edge schemas) is seeded add-only by
 `seedJarvisOntology` (`STRUT_GRAPH_SEED_ONTOLOGY=1`), including the
 per-domain fulltext/vector indexes. jarvis's kitchen-sink `Data_Bank`
 fallback (priority fields + every non-excluded property) IS ported after

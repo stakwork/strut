@@ -1419,6 +1419,134 @@ body.is-resizing-flyout * {
   word-break: break-word;
 }
 
+/* A notice we can parse renders as a card (see NoticeView): one closed line
+   — what happened, how the claims stand — that opens level by level. Dashed
+   like the plain notice: the server said this, not a person. */
+.chat-notice-card {
+  align-self: stretch;
+  /* `overflow: hidden` zeroes a flex child's min-height: without this the
+     scrolling message column squashes the card flat. */
+  flex: none;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  font-size: 12px;
+  overflow: hidden;
+}
+.chat-notice-card.is-open { border-style: solid; }
+.chat-notice-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-notice-head:hover { background: var(--surface-2); }
+.chat-notice-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 2px var(--sp-2);
+  flex-wrap: wrap;
+}
+.chat-notice-title { font-weight: 600; color: var(--text); white-space: nowrap; }
+.chat-notice-subject {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-notice-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.chat-notice-count { font-size: 11px; font-weight: 600; white-space: nowrap; }
+.chat-notice-count.is-supported { color: var(--ok); }
+.chat-notice-count.is-refuted { color: var(--danger); }
+.chat-notice-count.is-stale { color: var(--warning); }
+.chat-notice-count.is-unknown { color: var(--text-muted); }
+.chat-notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.chat-notice-run { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.chat-notice-error {
+  margin: 0;
+  padding: var(--sp-2);
+  border-left: 2px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--text);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+.chat-notice-subject-group { display: flex; flex-direction: column; }
+.chat-notice-subject-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+}
+.chat-notice-subject-name { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text); }
+.chat-notice-claim { border-top: 1px dashed var(--border); }
+.chat-notice-claim-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-notice-claim-head:hover .chat-notice-claim-text { color: var(--text); }
+/* Pinned to the first line: a claim is a sentence and often wraps. */
+.chat-notice-claim-head .chat-tool-chev { align-self: flex-start; margin-top: 5px; }
+.chat-notice-claim-head .claim-status { flex: none; }
+.chat-notice-claim-text { line-height: 1.45; min-width: 0; }
+.chat-notice-claim-text .claim-flag { margin-left: var(--sp-2); white-space: nowrap; }
+.chat-notice-claim.is-open .chat-notice-claim-text { color: var(--text); }
+.chat-notice-claim-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0 0 var(--sp-2) 14px;
+}
+.chat-notice-verify { font-size: 11px; font-weight: 600; }
+.chat-notice-verify.is-ok { color: var(--ok); }
+.chat-notice-verify.is-warning { color: var(--warning); }
+.chat-notice-verify.is-error { color: var(--danger); }
+.chat-notice-verify.is-dim { color: var(--text-dim); }
+.chat-notice-notes { color: var(--text-dim); font-size: 11px; line-height: 1.45; }
+.chat-notice-notes-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .chat-tool-calls {
   margin-bottom: var(--sp-2);
   display: flex;
@@ -1496,6 +1624,7 @@ body.is-resizing-flyout * {
 }
 .chat-tool-dot.is-ok { background: var(--ok); }
 .chat-tool-dot.is-error { background: var(--danger); }
+.chat-tool-dot.is-warning { background: var(--warning); }
 .chat-tool-dot.is-pending {
   background: var(--warning);
   animation: chat-tool-pulse 1.2s ease-in-out infinite;
@@ -2167,3 +2296,129 @@ body.is-resizing-flyout * {
   color: var(--danger);
   font-size: 12px;
 }
+
+/* ── Claims panel (plans/claims.md) ─────────────────────────────────────── */
+.claims-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
+.claim {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.claim-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.claim-text { font-size: 13px; line-height: 1.45; color: var(--text); }
+.claim-dim { color: var(--text-dim); font-size: 11px; }
+.claim-status {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+}
+.claim-status-supported { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.claim-status-refuted { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.claim-status-stale { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.claim-status-unknown { color: var(--text-dim); background: var(--surface-2); }
+.claim-flag {
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.claim-evidence {
+  border-left: 2px solid var(--border-strong);
+  padding: 2px 0 2px var(--sp-2);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.claim-evidence-content { font-family: var(--font-mono); font-size: 11.5px; word-break: break-word; }
+.claim-mode {
+  margin-right: var(--sp-2);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.claim-mode-observed { color: var(--ok); }
+.claim-mode-asserted { color: var(--warning); }
+.claim-checks { display: flex; flex-direction: column; gap: 2px; }
+.claim-check {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  font-size: 12px;
+  padding: 3px 0;
+  border-top: 1px dashed var(--border);
+}
+.claim-check-name { font-weight: 600; color: var(--text); }
+.claim-check-actions { margin-left: auto; display: flex; gap: var(--sp-2); }
+.claim-check-desc { flex-basis: 100%; color: var(--text-muted); font-size: 12px; }
+.claim-foot, .claim-actions { display: flex; gap: var(--sp-2); align-items: center; }
+.claim-actions { justify-content: flex-end; }
+.claim-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.claim-link:hover { color: var(--accent-strong); text-decoration: underline; }
+.claim-link:disabled { color: var(--text-dim); cursor: default; text-decoration: none; }
+.claim-add { align-self: flex-start; }
+.claim-hint { color: var(--text-dim); font-size: 11px; line-height: 1.4; }
+.claim-error { color: var(--danger); font-size: 12px; white-space: pre-wrap; }
+.claim-cost { text-align: right; }
+.claim-edit { display: flex; flex-direction: column; gap: var(--sp-2); }
+.claim-edit textarea, .claim-todo textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  font-size: 12px;
+  resize: vertical;
+}
+.claim-check-editor { display: flex; flex-direction: column; gap: var(--sp-2); }
+.claim-kind { display: flex; gap: var(--sp-4); font-size: 12px; color: var(--text-muted); }
+.claim-kind label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.claim-row { display: flex; gap: var(--sp-3); }
+.claim-row .flyout-field { flex: 1; min-width: 0; }
+/* An open slot: a question only a person (or an outside system) can answer. */
+.claim-todo {
+  border: 1px dashed var(--warning);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: color-mix(in srgb, var(--warning) 6%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.claim-todo-title { font-size: 12px; font-weight: 700; color: var(--warning); }
+.claim-todo-question { font-size: 12px; color: var(--text); white-space: pre-wrap; line-height: 1.45; }
+.claim-todo-run { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
+.claim-note-bad { color: var(--danger); }
+.claims-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 6px; vertical-align: 1px; }
+.claims-dot-ok { background: var(--ok); }
+.claims-dot-bad { background: var(--danger); }
+.claims-dot-todo { background: var(--warning); }
+.claims-dot-open { background: var(--text-dim); }
+/* Claim forms are short sentences and small YAML snippets, not the config
+   editor's 140px panes — and their labels read as sentences, not eyebrows. */
+.claims-panel .flyout-field { margin-bottom: 0; }
+.claims-panel .flyout-field textarea { min-height: 0; }
+.claims-panel .flyout-field textarea:not(.mono) { font-family: var(--font-sans); font-size: 13px; }
+.claims-panel .flyout-field label { text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 12px; }
+.claims-panel .flyout-field label code { font-size: 11px; color: var(--text); }
+.claims-panel .flyout-section-title { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
