@@ -30,9 +30,26 @@ in a model, synthesis in an `llm`/`agent` step afterwards. Each hop:
 
 Output: `{ goal, nodes (kept, most relevant first, with via + clipped
 properties), hops (the trace), stopped, usage }`, provenance-marked with the
-expanded + kept nodes. Every hop is a nested run event (`<path>/NNN-hop`,
-`walk:hop`) carrying the nodes it read, so a walk is visible in the events
-panel like an agent's tool calls.
+expanded + kept nodes.
+
+**Every hop is a pair of nested run events** (`<path>/NNN-hop`, stepType
+`walk:hop`, `iteration` = hop), shaped as deltas a viewer can fold:
+
+- `step.start.input` — the subgraph this hop discovered: `expanded` (the
+  node whose neighbors these are), `candidates` (ref_id, type, name, and
+  `via` = the edge each arrived by: from, edge_type, direction), and the
+  `frontier` under consideration (ref_id, relevance).
+- `step.end.output` — the hop record: `verdicts` (ref_id, relevance, kept)
+  for every candidate, `next`, `next_probabilities` (ref_id → probability,
+  present once the decider is an evaluation model), `sufficient`; plus the
+  provenance `nodes` it read.
+
+Nothing else is needed for a live force-graph: the run's SSE tail
+(`GET …/runs/:runId/stream`, replay-then-follow, 250 ms poll) already
+delivers every nested event as it is appended, and the same events replay a
+finished walk from the log. A frontend would filter `stepType === "walk:hop"`
+under one step path (the `EvolveChart` pattern) and light nodes up on start
+(discovered) and end (kept by relevance, expanded, next).
 
 ## The decider: `src/evaluate.ts`
 

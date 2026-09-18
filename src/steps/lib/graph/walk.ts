@@ -19,8 +19,12 @@ import { graphCtx, errText, deriveNodeName } from "./_shared.js";
  *   - `sufficient` (boolean): is what's gathered enough to answer the goal?
  * Kept nodes are ordered by relevance; the output is a context bundle for
  * an `llm`/`agent` step to synthesize from. Every hop is a nested run event
- * (`<path>/NNN-hop`) so the traversal is visible in the events panel, and the
- * step's provenance marker lists the expanded + kept nodes.
+ * (`<path>/NNN-hop`, `iteration` = hop): `step.start` carries the subgraph
+ * the hop discovered (each candidate with the edge it arrived by, and the
+ * frontier under consideration), `step.end` the verdicts (relevance + kept
+ * per candidate, next, sufficient). A viewer folding those deltas — from the
+ * run's SSE tail live, or from the log afterwards — can light up the walk
+ * as it goes. The step's provenance marker lists the expanded + kept nodes.
  *
  * `runWalk` is pure over an injected reader + decider (offline-testable);
  * `run()` wires strut's graph backend and an aieo-resolved model.
@@ -97,7 +101,12 @@ export interface HopRecord {
   candidates: number;
   /** ref_ids kept this hop. */
   kept: string[];
+  /** Every candidate this hop judged: its relevance and whether it was kept. */
+  verdicts: Array<{ ref_id: string; relevance: number; kept: boolean }>;
   next?: Brief;
+  /** ref_id → probability for `next` (plus the `none` option), when the
+   *  decider reports one — evaluation models do; generateObject does not. */
+  next_probabilities?: Record<string, number>;
   sufficient: number;
 }
 
@@ -226,19 +235,26 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
     await ctx?.control?.checkpoint();
     const path = `${ctx?.path ?? "walk"}/${String(hop + 1).padStart(3, "0")}-hop`;
     const startedAt = Date.now();
+    // Options for `next`: this hop's candidates (c<i>), then the frontier's best (f<i>).
+    const shown = [...frontier.values()].sort(byPriority).slice(0, Math.max(0, OPTIONS_CAP - candidates.length));
+    const options = new Map<string, Candidate>();
+    candidates.forEach((c, i) => options.set(`c${i}`, c));
+    shown.forEach((f, i) => options.set(`f${i}`, f));
+    // The subgraph this hop discovered: nodes + the edge each arrived by, and
+    // the frontier being considered. Verdicts follow on step.end.
     await emit?.({
       type: "step.start",
       path,
       stepType: "walk:hop",
-      input: { hop, expanded: current ? brief(current) : null, candidates: candidates.length, frontier: frontier.size },
+      iteration: hop,
+      input: {
+        hop,
+        expanded: current ? brief(current) : null,
+        candidates: candidates.map((c) => ({ ...brief(c), ...(c.via ? { via: c.via } : {}) })),
+        frontier: shown.map((f) => ({ ref_id: f.ref_id, relevance: round(f.relevance ?? 0) })),
+      },
     });
     try {
-      // Options for `next`: this hop's candidates (c<i>), then the frontier's best (f<i>).
-      const shown = [...frontier.values()].sort(byPriority).slice(0, Math.max(0, OPTIONS_CAP - candidates.length));
-      const options = new Map<string, Candidate>();
-      candidates.forEach((c, i) => options.set(`c${i}`, c));
-      shown.forEach((f, i) => options.set(`f${i}`, f));
-
       const state = {
         goal: cfg.goal,
         gathered: [...kept.values()].sort(byPriority).map((k) => ({ type: k.node_type, name: k.name, snippet: k.snippet })),
@@ -287,15 +303,24 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
         frontier.set(c.ref_id, c);
       });
       const sufficient = prob(answers["sufficient"]);
-      const choice = chosen(answers["next"]);
+      const nextAnswer = answers["next"];
+      const choice = chosen(nextAnswer);
       const next = choice && choice !== "none" ? options.get(choice) : undefined;
+      // Option keys → ref_ids, so a viewer can heat the whole frontier, not just the winner.
+      const nextProbabilities =
+        nextAnswer?.type === "choice" && nextAnswer.probabilities
+          ? Object.fromEntries(Object.entries(nextAnswer.probabilities).map(([k, p]) => [options.get(k)?.ref_id ?? k, round(p)]))
+          : undefined;
 
+      const keptSet = new Set(keptNow);
       const record: HopRecord = {
         hop,
         ...(current ? { expanded: brief(current) } : {}),
         candidates: candidates.length,
         kept: keptNow,
+        verdicts: candidates.map((c) => ({ ref_id: c.ref_id, relevance: round(c.relevance ?? 0), kept: keptSet.has(c.ref_id) })),
         ...(next ? { next: brief(next) } : {}),
+        ...(nextProbabilities ? { next_probabilities: nextProbabilities } : {}),
         sufficient: round(sufficient),
       };
       hops.push(record);
@@ -303,6 +328,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
         type: "step.end",
         path,
         stepType: "walk:hop",
+        iteration: hop,
         output: record,
         durationMs: Date.now() - startedAt,
         nodes: [...(current ? [brief(current)] : []), ...candidates.map(brief)].map(({ ref_id, node_type }) => ({ ref_id, node_type })),
@@ -330,7 +356,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
       candidates = (await neighborsOf(reader, next, filters, hop + 1)).filter((c) => !seen.has(c.ref_id));
       for (const c of candidates) seen.add(c.ref_id);
     } catch (e) {
-      await emit?.({ type: "step.error", path, stepType: "walk:hop", error: { message: (e as Error).message } });
+      await emit?.({ type: "step.error", path, stepType: "walk:hop", iteration: hop, error: { message: (e as Error).message } });
       throw e;
     }
   }

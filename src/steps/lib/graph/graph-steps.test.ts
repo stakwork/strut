@@ -336,6 +336,12 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
       ["step.start", "wf/gather/002-hop"], ["step.end", "wf/gather/002-hop"],
     ]);
     assert.deepEqual(events[3].nodes, [{ ref_id: wfRef, node_type: "StrutWorkflow" }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "hop 1 read the workflow and its version");
+    // The live-viz deltas: hop 1's start carries the discovered subgraph, its end the verdicts.
+    assert.deepEqual(events[2].input.candidates, [
+      { ref_id: wfvRef, node_type: "StrutWorkflowVersion", name: "harvey-deliver", via: { from: wfRef, edge_type: "VERSION_OF", direction: "reverse" } },
+    ]);
+    assert.deepEqual(events[3].output.verdicts, [{ ref_id: wfvRef, relevance: 0.9, kept: true }]);
+    assert.deepEqual([events[2].iteration, events[3].iteration], [1, 1]);
   });
 });
 

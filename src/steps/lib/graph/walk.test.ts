@@ -58,6 +58,8 @@ function fakeReader() {
 interface HopScript {
   relevant?: (c: { id: string; type: string; name: string }) => number;
   next?: string;
+  /** Per-option probabilities for `next`, keyed by option key (what an evaluation model reports). */
+  nextProbabilities?: Record<string, number>;
   sufficient?: number;
 }
 function scripted(script: (hop: number, state: any, questions: Record<string, EvalQuestion>) => HopScript) {
@@ -73,7 +75,11 @@ function scripted(script: (hop: number, state: any, questions: Record<string, Ev
         answers[id] = { type: "boolean", probability: s.relevant ? s.relevant(cand) : 0.9 };
       } else if (id === "next" && q.type === "choice") {
         const keys = Object.keys(q.criteria);
-        answers[id] = { type: "choice", choice: s.next ?? keys.find((k) => k !== "none") ?? "none" };
+        answers[id] = {
+          type: "choice",
+          choice: s.next ?? keys.find((k) => k !== "none") ?? "none",
+          ...(s.nextProbabilities ? { probabilities: s.nextProbabilities } : {}),
+        };
       } else if (id === "sufficient") {
         answers[id] = { type: "boolean", probability: s.sufficient ?? 0 };
       }
@@ -103,6 +109,7 @@ describe("graph/walk: runWalk (offline)", () => {
       relevant: (c) => rel[state.candidates.find((x: any) => x.id === c.id).name === "deliver" ? "wf" : nameToId(c.name)]!,
       // hop 1 sees wf's neighbors; expand v2 (deliver@2) so hop 2 sees the run
       next: hop === 1 ? optionFor(state, "deliver@2") : undefined,
+      nextProbabilities: hop === 1 ? { c0: 0.1, c1: 0.8, c2: 0.05, none: 0.05 } : undefined,
       sufficient: hop === 2 ? 0.9 : 0,
     }));
     const { ctx, events } = ctxWithEvents();
@@ -120,6 +127,13 @@ describe("graph/walk: runWalk (offline)", () => {
       [1, "wf", 3, ["v2", "st"], "v2", 0],
       [2, "v2", 1, ["run"], "run", 0.9],
     ]);
+    assert.deepEqual(out.hops[1]!.verdicts, [
+      { ref_id: "v1", relevance: 0.3, kept: false },
+      { ref_id: "v2", relevance: 0.9, kept: true },
+      { ref_id: "st", relevance: 0.7, kept: true },
+    ], "every candidate judged, with the verdict");
+    assert.deepEqual(out.hops[1]!.next_probabilities, { v1: 0.1, v2: 0.8, st: 0.05, none: 0.05 }, "option keys mapped back to ref_ids");
+    assert.equal(out.hops[0]!.next_probabilities, undefined, "absent when the decider reports none");
     assert.equal(out.usage.inputTokens, 300, "usage accumulates over the three decisions");
 
     // The decider's view: hop 2 offers the new candidate first, then the frontier's best, then none.
@@ -141,7 +155,21 @@ describe("graph/walk: runWalk (offline)", () => {
       ["step.start", "wf/gather/003-hop"], ["step.end", "wf/gather/003-hop"],
     ]);
     assert.equal(events[2].stepType, "walk:hop");
-    assert.deepEqual(events[2].input, { hop: 1, expanded: { ref_id: "wf", node_type: "StrutWorkflow", name: "deliver" }, candidates: 3, frontier: 0 });
+    assert.deepEqual([events[2].iteration, events[3].iteration], [1, 1]);
+    // step.start: the subgraph this hop discovered — each candidate with the edge it arrived by.
+    assert.deepEqual(events[2].input, {
+      hop: 1,
+      expanded: { ref_id: "wf", node_type: "StrutWorkflow", name: "deliver" },
+      candidates: [
+        { ref_id: "v1", node_type: "StrutWorkflowVersion", name: "deliver@1", via: { from: "wf", edge_type: "VERSION_OF", direction: "reverse" } },
+        { ref_id: "v2", node_type: "StrutWorkflowVersion", name: "deliver@2", via: { from: "wf", edge_type: "VERSION_OF", direction: "reverse" } },
+        { ref_id: "st", node_type: "StrutStep", name: "harvey/fetch-docs", via: { from: "wf", edge_type: "USES_STEP", direction: "forward" } },
+      ],
+      frontier: [],
+    });
+    assert.deepEqual(events[4].input.candidates.map((c: any) => c.ref_id), ["run"]);
+    assert.deepEqual(events[4].input.frontier, [{ ref_id: "st", relevance: 0.7 }, { ref_id: "v1", relevance: 0.3 }], "the frontier under consideration, best first");
+    // step.end: the verdicts (the hop record itself).
     assert.deepEqual(events[3].nodes.map((n: any) => n.ref_id), ["wf", "v1", "v2", "st"]);
     assert.deepEqual(events[3].output, out.hops[1]);
     assert.ok(typeof events[3].durationMs === "number");
@@ -195,7 +223,7 @@ describe("graph/walk: runWalk (offline)", () => {
     const { ctx, events } = ctxWithEvents();
     const evaluate: Evaluate = async () => { throw new Error("decider down"); };
     await assert.rejects(runWalk({ ...BASE, start: ["wf"] }, { reader, evaluate, ctx }), /decider down/);
-    assert.deepEqual(events.map((e) => [e.type, e.path]), [["step.start", "wf/gather/001-hop"], ["step.error", "wf/gather/001-hop"]]);
+    assert.deepEqual(events.map((e) => [e.type, e.path, e.iteration]), [["step.start", "wf/gather/001-hop", 0], ["step.error", "wf/gather/001-hop", 0]]);
     assert.equal(events[1].error.message, "decider down");
   });
 
