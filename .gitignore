@@ -31,3 +31,6 @@ package-lock.json
 
 # Claude Code worktrees (EnterWorktree sessions) live here — never commit them
 .claude/worktrees/
+
+# graph snapshots (scripts/graph-save)
+/backups

@@ -9,3 +9,4 @@ dist-desktop*
 .env.*
 notes
 notes*.md
+backups

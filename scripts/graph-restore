@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Restore a snapshot made by scripts/graph-save into the docker-compose volumes,
+# replacing whatever is there now (save that first if you want to keep it).
+#
+#   scripts/graph-restore [name]     # no name: list snapshots
+#
+# Restores every volume in the snapshot (strut-neo4j, plus strut-workspace if it
+# was saved with --workspace). Stops strut + neo4j; start them again with
+# `docker compose up`.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+  echo; echo "snapshots:"; ls -1 backups/graph 2>/dev/null | sed 's/^/  /' || true
+  exit 0
+fi
+src="backups/graph/$1"
+[ -f "$src/strut-neo4j.tgz" ] || { echo "no snapshot at $src" >&2; exit 1; }
+
+project="${COMPOSE_PROJECT_NAME:-$(docker compose config --format json | sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' | head -1)}"
+
+docker compose stop strut neo4j >/dev/null 2>&1 || true
+# Creates the compose volumes (with compose's labels) if a --reset removed them.
+docker compose create neo4j strut >/dev/null
+
+for archive in "$src"/*.tgz; do
+  v=$(basename "$archive" .tgz)
+  vol="${project}_${v}"
+  echo "restoring $archive -> $vol"
+  docker run --rm --user root --entrypoint sh \
+    -v "$vol":/vol -v "$PWD/$src":/in:ro \
+    neo4j:5 -c "find /vol -mindepth 1 -delete && tar -xzpf /in/$v.tgz -C /vol"
+done
+
+echo "restored $src — run: docker compose up"

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Snapshot the docker-compose Neo4j volume (strut-neo4j) to ./backups/graph/<name>/.
+#
+#   scripts/graph-save [name] [--workspace] [--reset]
+#
+#   name         snapshot name (default: timestamp)
+#   --workspace  also snapshot strut-workspace (runs, chats, secrets, artifacts),
+#                which refers into the graph — save both to keep them in step
+#   --reset      after saving, delete the saved volume(s) so the next
+#                `docker compose up --build` starts on a fresh graph
+#
+# Neo4j is stopped while the volume is copied (a live store isn't a consistent
+# copy) and restarted afterwards if it was running and --reset wasn't given.
+# Restore with scripts/graph-restore <name>.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+name="" workspace=0 reset=0
+for arg in "$@"; do
+  case "$arg" in
+    --workspace) workspace=1 ;;
+    --reset) reset=1 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) echo "unknown flag: $arg" >&2; exit 1 ;;
+    *) name="$arg" ;;
+  esac
+done
+name="${name:-$(date +%Y%m%d-%H%M%S)}"
+dest="backups/graph/$name"
+[ -e "$dest" ] && { echo "$dest already exists" >&2; exit 1; }
+
+project="${COMPOSE_PROJECT_NAME:-$(docker compose config --format json | sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' | head -1)}"
+volumes=(strut-neo4j)
+[ "$workspace" = 1 ] && volumes+=(strut-workspace)
+
+running=$(docker compose ps --status running --services)
+docker compose stop strut neo4j >/dev/null 2>&1 || true
+
+mkdir -p "$dest"
+for v in "${volumes[@]}"; do
+  vol="${project}_${v}"
+  docker volume inspect "$vol" >/dev/null 2>&1 || { echo "no volume $vol" >&2; rm -rf "$dest"; exit 1; }
+  echo "saving $vol -> $dest/$v.tgz"
+  # neo4j:5 is already pulled and has GNU tar; run as root to keep ownership.
+  docker run --rm --user root --entrypoint tar \
+    -v "$vol":/vol:ro -v "$PWD/$dest":/out \
+    neo4j:5 -czf "/out/$v.tgz" -C /vol .
+done
+
+if [ "$reset" = 1 ]; then
+  docker compose rm -f strut neo4j >/dev/null
+  for v in "${volumes[@]}"; do
+    echo "removing ${project}_${v}"
+    docker volume rm "${project}_${v}" >/dev/null
+  done
+  echo "saved $dest; volumes reset — run: docker compose up --build"
+else
+  [ -n "$running" ] && docker compose start $running >/dev/null
+  echo "saved $dest"
+fi
