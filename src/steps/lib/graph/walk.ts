@@ -41,6 +41,14 @@ const SEED_LIMIT = 5;
 const OPTIONS_CAP = 60;
 /** `sufficient` probability at which the walk stops. */
 const SUFFICIENT_AT = 0.8;
+/**
+ * Plateau stop: after PLATEAU_HOPS hops in a row that kept nothing at
+ * PLATEAU_AT or above, the walk ends — jev's `sufficient` can hover below
+ * SUFFICIENT_AT for a whole walk. Tuned on the youtube-clip walks, which
+ * still found claims at hops 7–11: two hops or a 0.9 bar cut 3–4 of 5 claims.
+ */
+const PLATEAU_HOPS = 3;
+const PLATEAU_AT = 0.85;
 const SNIPPET_MAX = 240;
 /** Long string properties in the output bundle are cut here (a document body is not context, its summary is). */
 const PROPERTY_MAX = 2000;
@@ -142,7 +150,7 @@ export interface WalkOutput {
     Brief & { relevance: number; hop: number; via?: Via; properties: Record<string, unknown>; merged?: Array<{ ref_id: string; name: string }> }
   >;
   hops: HopRecord[];
-  stopped: "sufficient" | "hops" | "nodes" | "exhausted";
+  stopped: "sufficient" | "plateau" | "hops" | "nodes" | "exhausted";
   usage: TokenUsage;
 }
 
@@ -335,6 +343,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
   let { cands: candidates, folded } = await discover(await seedCandidates(cfg, reader));
   let current: Candidate | undefined;
   let stopped: WalkOutput["stopped"];
+  let flatHops = 0; // consecutive hops that kept nothing at PLATEAU_AT
 
   for (let hop = 0; ; hop++) {
     if (candidates.length === 0 && frontier.size === 0) {
@@ -459,6 +468,11 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
         stopped = "nodes";
         break;
       }
+      flatHops = keptNow.some((id) => (kept.get(id)!.relevance ?? 0) >= PLATEAU_AT) ? 0 : flatHops + 1;
+      if (flatHops >= PLATEAU_HOPS) {
+        stopped = "plateau";
+        break;
+      }
       if (!next) {
         stopped = "exhausted";
         break;
@@ -510,7 +524,7 @@ export default defineStep({
     "expands one node's neighbors while a small decision model judges each neighbor's relevance (kept or not), which node to expand next, " +
     "and whether enough has been gathered. Traversal is code and the model only answers typed choice/boolean questions, so it is cheap and " +
     "bounded (maxHops decision rounds, maxNodes kept). Output: { goal, nodes: [{ref_id, node_type, name, relevance, hop, via, properties}] " +
-    "ordered by relevance, hops (the trace), stopped: sufficient|hops|nodes|exhausted, usage } — hand nodes to an llm or agent step to " +
+    "ordered by relevance, hops (the trace), stopped: sufficient|plateau|hops|nodes|exhausted, usage } — hand nodes to an llm or agent step to " +
     "synthesize an answer. Each hop emits a nested run event. Needs the graph backend (NEO4J_*) and the decision model's provider key.\n\n" +
     EXAMPLE,
   input: z.object({

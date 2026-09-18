@@ -218,6 +218,18 @@ describe("graph/walk: runWalk (offline)", () => {
     assert.deepEqual(accessedNodesOf(missing) ?? [], [], "nothing read, nothing kept");
   });
 
+  it("stops on a plateau: three hops in a row that keep nothing at 0.85 or above", async () => {
+    // wf (seed, 0.9) → v1, v2, st (0.8) → v1: nothing new → v2: run (0.8) → stop
+    const { reader } = fakeReader();
+    const flat = await runWalk({ ...BASE, start: ["wf"] }, { reader, evaluate: scripted((hop) => ({ relevant: () => (hop === 0 ? 0.9 : 0.8) })).evaluate });
+    assert.deepEqual([flat.stopped, flat.hops.length, flat.nodes.length], ["plateau", 4, 5], "still keeps what cleared the threshold");
+
+    // a strong keep on the third flat hop resets the count; the walk runs until the graph is exhausted
+    const reset = await runWalk({ ...BASE, start: ["wf"] }, { reader: fakeReader().reader, evaluate: scripted((hop) => ({ relevant: () => (hop === 0 || hop === 3 ? 0.9 : 0.8) })).evaluate });
+    assert.equal(reset.stopped, "exhausted");
+    assert.ok(reset.hops.length > 4);
+  });
+
   it("a hop's failure is emitted as step.error and rethrown", async () => {
     const { reader } = fakeReader();
     const { ctx, events } = ctxWithEvents();

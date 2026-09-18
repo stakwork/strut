@@ -32,8 +32,9 @@ in a model, synthesis in an `llm`/`agent` step afterwards. Each hop:
 3. keep candidates at/above `threshold` (default 0.7 — jev rates nearly
    anything on-topic above 0.5), push everything discovered onto
    the frontier (a hub can be worth expanding without being worth keeping),
-   stop on `sufficient ≥ 0.8`, `maxNodes`, `none`, `maxHops`, or an empty
-   frontier; else expand `next`.
+   stop on `sufficient ≥ 0.8`, `maxNodes`, a plateau (3 hops in a row
+   keeping nothing at ≥ 0.85), `none`, `maxHops`, or an empty frontier;
+   else expand `next`.
 
 Output: `{ goal, nodes (kept, most relevant first, with via + clipped
 properties), hops (the trace), stopped, usage }`, provenance-marked with the

@@ -67,21 +67,27 @@ decides, apart from the stop rule in §1.
   - `src/components/graph-explorer/walkGraph.ts`: `mergeRawGraph`, which
     grows a graph without reordering it.
 
-## 1. First: the walk has to stop on its own
+## 1. Plateau stop — DONE
 
-On the live graph (2026-09-18, `youtube-clip`), the walk's `sufficient`
-score stayed between 0.58 and 0.72 and never reached `SUFFICIENT_AT = 0.8`.
-Every walk ran all 12 hops, even though the bundle had stopped improving
-around hop 8. A live graph should end when the answer is there, not at an
-arbitrary cap. Lowering the threshold to 0.7 is not the fix: that would have
-stopped walk 1 at hop 4 with one Claim.
+Done on this branch: `runWalk` stops with `stopped: "plateau"` after
+`PLATEAU_HOPS = 3` hops in a row that kept nothing at relevance ≥
+`PLATEAU_AT = 0.85`. It is in `WalkOutput["stopped"]` and the step
+description, and `walk.test.ts` covers the stop and the reset.
 
-Add a **plateau stop** in `runWalk`: stop with `stopped: "plateau"` after
-`PLATEAU_HOPS = 3` hops in a row that kept nothing at relevance ≥ 0.85.
-Tune the number against the live graph. Add `"plateau"` to
-`WalkOutput["stopped"]` and to the step description, and add a
-`walk.test.ts` case that uses a scripted decider. Measure with the two
-youtube-clip walks from `plans/graph-walk.md`.
+What tuning found: on the live graph (2026-09-18, `youtube-clip`), jev's
+`sufficient` score stayed between 0.58 and 0.72, below `SUFFICIENT_AT =
+0.8`, so both walks ran all 12 hops. Replaying their hop records showed
+those hops were not wasted: Claims were still being kept at hops 7, 8 and
+11. Stopping after 2 flat hops, or with a 0.9 bar, would have stopped early
+but cut 3–4 of the 5 Claims. So at 0.85 and 3 hops, the plateau stop does
+not fire on those walks. It is a guard against walks that really do stall,
+not a fix for `sufficient`.
+
+Still open for the demo: a live graph that ends on `hops` is fine (12 hops
+≈ 2 s, played back at about 400 ms each). If a clean "sufficient" ending
+matters, look at the `sufficient` question: its instructions, or asking it
+per claim ("is each claim's status explained?"). Lowering `SUFFICIENT_AT`
+is not the fix: at 0.7, walk 1 would have stopped at hop 4 with one Claim.
 
 ## 2. Server: the `graph_walk` chat tool
 
@@ -217,7 +223,7 @@ Tests (`src/chat-endpoints.test.ts` or a new `src/ai/tools.test.ts` case):
 
 ## 5. Order of work
 
-1. §1: the plateau stop, measured on the live graph.
+1. ~~§1: the plateau stop~~ — done.
 2. §2: the `graph_walk` tool, the `tool-progress` event, and their tests.
    Check it with `curl` on `/chat` and the stream endpoint before building
    any UI.
@@ -235,8 +241,8 @@ refuting evidence:
 1. Open the chat and ask "Does the youtube-clip workflow work? What do its
    claims say?"
 2. The graph fills in over about 12 hops: workflow version → failed run →
-   the refuting "quote not in transcript" evidence → its claim → checks. It
-   should stop with `plateau` or `sufficient`, not `hops`.
+   the refuting "quote not in transcript" evidence → its claim → checks. On
+   this graph it ends on `hops` (see §1); the playback makes that fine.
 3. The answer names the claims, what supports or refutes each one, and the
    failed run.
 4. Click the failed StrutRun node; the run opens.
