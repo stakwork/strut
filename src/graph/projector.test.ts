@@ -55,7 +55,7 @@ describe("projectRunEvents (pure)", () => {
   it("derives run, session, and tool-call nodes with previews and log refs", () => {
     const p = projectRunEvents(WF, RUN, sampleEvents("abc123def456"), null)!;
     assert.equal(p.run.type, "StrutRun");
-    assert.equal(p.run.data["status"], "success");
+    assert.equal(p.run.data["run_status"], "success");
     assert.equal(p.run.data["workflow_hash"], "abc123def456");
     assert.equal(p.run.data["params_json"], '{"model":"m"}');
     assert.equal(p.run.data["log_ref"], `${WF}/${RUN}`);
@@ -85,7 +85,7 @@ describe("projectRunEvents (pure)", () => {
 
   it("uses the summary when present, and marks a finalize-less log stale", () => {
     const events = sampleEvents("h").slice(0, 3);
-    assert.equal(projectRunEvents(WF, RUN, events, null)!.run.data["status"], "stale");
+    assert.equal(projectRunEvents(WF, RUN, events, null)!.run.data["run_status"], "stale");
     const withSummary = projectRunEvents(WF, RUN, events, {
       runId: RUN,
       workflow: WF,
@@ -96,7 +96,7 @@ describe("projectRunEvents (pure)", () => {
       input: {},
       error: { message: "boom" },
     })!;
-    assert.equal(withSummary.run.data["status"], "error");
+    assert.equal(withSummary.run.data["run_status"], "error");
     assert.equal(withSummary.run.data["error_message"], "boom");
     assert.equal(withSummary.run.data["summary"], "error: boom");
     assert.equal(projectRunEvents(WF, RUN, [], null), null);
@@ -167,7 +167,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.equal(await edges("EXECUTED"), 1);
 
     const run = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN properties(r) AS p`))[0]!["p"] as Record<string, unknown>;
-    assert.equal(run["status"], "success");
+    assert.equal(run["run_status"], "success");
     assert.equal(run["output_preview"], '{"delivered":60}');
     assert.equal(run["unique_source_id"], `strutrun:${RUN}`);
     assert.equal(run["started_at"], Math.floor(T0 / 1000));
@@ -231,7 +231,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     for (const e of events.slice(0, 7)) await store.append(WF, RUN, e); // no terminal event yet
     let report = await projectRuns(backend, store, { workflows: [WF] });
     assert.equal(report.runs, 1);
-    let run = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.status AS s, r.ref_id AS id`))[0]!;
+    let run = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.run_status AS s, r.ref_id AS id`))[0]!;
     assert.equal(run["s"], "stale");
 
     // Re-run with nothing new: the stale run is re-read (not settled), same nodes.
@@ -246,7 +246,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
       runId: RUN, workflow: WF, startedAt: ts(0), finishedAt: ts(9), durationMs: 9000, status: "success", input: {},
     });
     report = await projectRuns(backend, store, { workflows: [WF] });
-    const after = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.status AS s, r.ref_id AS id`))[0]!;
+    const after = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.run_status AS s, r.ref_id AS id`))[0]!;
     assert.equal(after["s"], "success");
     assert.equal(after["id"], run["id"], "upsert keeps the node identity");
 

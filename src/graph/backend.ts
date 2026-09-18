@@ -6,6 +6,7 @@
  *   1. `migrateVeinToStrut` — one-shot rename of pre-#1664 `Vein*` names;
  *   2. with `seedOntology`: `upgradeClaimSchema` (one-shot, the standalone
  *      mirror of jarvis migration 124), then `seedJarvisOntology`;
+ *   2b. `migrateRunStatus` — one-shot `StrutRun.status` → `run_status`;
  *   3. `seedStrutDomain` — schema meta-graph, constraints, indexes (§4);
  *   4. `backfillEmbeddings` — heal any NULL vectors left by a crash (§2).
  *
@@ -22,6 +23,7 @@ import { SchemaResolver } from "./schema-resolver.js";
 import { seedStrutDomain, type SeedReport } from "./schema-seed.js";
 import { GraphReader } from "./search.js";
 import { migrateVeinToStrut, type VeinMigrationReport } from "./vein-migration.js";
+import { migrateRunStatus, type RunStatusMigrationReport } from "./run-status-migration.js";
 
 export interface GraphBackendOptions {
   /** `false` disables embeddings entirely (vectors stay NULL, search is
@@ -49,6 +51,7 @@ export interface GraphBackend {
   /** What the boot-time seed did (undefined when skipped). */
   readonly seed: SeedReport | undefined;
   readonly veinMigration: VeinMigrationReport | undefined;
+  readonly runStatusMigration: RunStatusMigrationReport | undefined;
   readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
   readonly ontologySeed: OntologySeedReport | undefined;
   readonly backfill: BackfillReport | undefined;
@@ -112,6 +115,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await MiniLMEmbedder.load();
     let seed: SeedReport | undefined;
     let veinMigration: VeinMigrationReport | undefined;
+    let runStatusMigration: RunStatusMigrationReport | undefined;
     let claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
     let ontologySeed: OntologySeedReport | undefined;
     let backfill: BackfillReport | undefined;
@@ -137,6 +141,12 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
         }
         ontologySeed = await seedJarvisOntology(bolt);
       }
+      // Before the seed, which is add-only: it would keep the old `status`
+      // attribute and the fulltext index built over it.
+      runStatusMigration = await migrateRunStatus(bolt);
+      if (runStatusMigration.status === "migrated") {
+        console.warn(`[graph] moved StrutRun.status to run_status: ${JSON.stringify(runStatusMigration)}`);
+      }
       seed = await seedStrutDomain(bolt);
       if (embedder) backfill = await backfillEmbeddings(bolt, embedder);
     }
@@ -151,6 +161,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       embedder,
       seed,
       veinMigration,
+      runStatusMigration,
       claimSchemaUpgrade,
       ontologySeed,
       backfill,

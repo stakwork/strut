@@ -50,7 +50,7 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     nodes = new NodeWriter(bolt);
     edges = new EdgeWriter(bolt);
     const rs = await nodes.writeMany([
-      { type: "StrutRun", data: { run_id: "r1", workflow_name: "wf", status: "ok", started_at: 1 } },
+      { type: "StrutRun", data: { run_id: "r1", workflow_name: "wf", run_status: "ok", started_at: 1 } },
       { type: "StrutAgentSession", data: { run_id: "r1", path: "wf/agent" } },
       { type: "StrutToolCall", data: { run_id: "r1", path: "wf/agent", seq: 0, tool_name: "search" } },
     ]);
@@ -170,7 +170,7 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
   });
 
   it("IS_ALIAS rewrite lands the edge on the canonical node", async () => {
-    const canonical = (await nodes.write({ type: "StrutRun", data: { run_id: "canon", workflow_name: "wf", status: "ok", started_at: 1 } })).ref_id;
+    const canonical = (await nodes.write({ type: "StrutRun", data: { run_id: "canon", workflow_name: "wf", run_status: "ok", started_at: 1 } })).ref_id;
     // Park `run` as an alias of `canonical` (what jarvis node-merge does).
     await bolt.run(`MATCH (a:Data_Bank {ref_id: $a}), (c:Data_Bank {ref_id: $c}) CREATE (a)-[:IS_ALIAS {ref_id: $e}]->(c)`, { a: run, c: canonical, e: randomUUID() });
     const r = await edges.write({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run });

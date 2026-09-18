@@ -396,7 +396,7 @@ describe("graph/project step", () => {
       assert.deepEqual([again.runs, again.skipped], [0, 1], "settled run skipped on re-run");
 
       const b = await openGraphBackend({ ...cfg!, namespace: cfg!.namespace }, { embeddings: false, skipBoot: true });
-      const rows = await b.bolt.run(`MATCH (r:StrutRun) RETURN r.run_id AS id, r.status AS s`);
+      const rows = await b.bolt.run(`MATCH (r:StrutRun) RETURN r.run_id AS id, r.run_status AS s`);
       assert.deepEqual(rows, [{ id: base.runId, s: "success" }]);
     } finally {
       if (prevBackend === undefined) delete process.env["STRUT_WORKSPACE_BACKEND"];

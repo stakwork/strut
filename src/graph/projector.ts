@@ -120,7 +120,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     data: compact({
       run_id: runId,
       workflow_name: workflow,
-      status,
+      run_status: status,
       summary: summaryText,
       started_at: summary?.startedAt ?? start?.ts ?? events[0]?.ts ?? new Date(Number(runId) || Date.now()).toISOString(),
       finished_at: summary?.finishedAt,
@@ -225,7 +225,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
     let settled = new Set<string>();
     if (opts.skipSettled !== false) {
       const rows = await backend.bolt.run(
-        `MATCH (r:StrutRun {namespace: $ns, workflow_name: $wf}) WHERE r.run_id IN $ids RETURN r.run_id AS id, r.status AS status`,
+        `MATCH (r:StrutRun {namespace: $ns, workflow_name: $wf}) WHERE r.run_id IN $ids RETURN r.run_id AS id, r.run_status AS status`,
         { ns, wf: workflow, ids: runIds },
       );
       settled = new Set(rows.filter((r) => isTerminalStatus(r["status"])).map((r) => r["id"] as string));

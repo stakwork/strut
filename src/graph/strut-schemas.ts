@@ -239,14 +239,17 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     ...base,
     type: "StrutRun",
     node_key: "strutrun-run_id",
-    index: ["workflow_name", "status", "summary"],
+    index: ["workflow_name", "run_status", "summary"],
     title_key: "workflow_name",
     description_key: "summary",
     type_description: "One strut workflow run — status, timings, params, and a pointer to its log",
     attributes: {
       run_id: "string",
       workflow_name: "string",
-      status: "string",
+      /** success | error | cancelled | stale. NOT `status`: the reader (like
+       *  jarvis) hides nodes whose `status` is error/failed/…, which would
+       *  make every failed run invisible (run-status-migration.ts). */
+      run_status: "string",
       summary: "?string",
       started_at: "datetime",
       finished_at: "?datetime",

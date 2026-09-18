@@ -76,7 +76,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(run.properties["domain"], "Strut");
     assert.equal(run.properties["parent"], "Thing");
     assert.equal(run.properties["run_id"], "string");
-    assert.deepEqual(run.properties["index"], ["workflow_name", "status", "summary"]);
+    assert.deepEqual(run.properties["index"], ["workflow_name", "run_status", "summary"]);
     const childOf = snap1.rels.filter((r) => r.type === "CHILD_OF");
     assert.equal(childOf.length, 9);
     for (const r of childOf) {

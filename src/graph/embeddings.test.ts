@@ -87,8 +87,8 @@ describe("backfillEmbeddings (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
     // Written WITHOUT an embedder → vectors NULL (the crash case).
     const w = new NodeWriter(bolt);
     await w.writeMany([
-      { type: "StrutRun", data: { run_id: "1", workflow_name: "wf", status: "ok", started_at: 1 } },
-      { type: "StrutRun", data: { run_id: "2", workflow_name: "wf", status: "ok", started_at: 1 } },
+      { type: "StrutRun", data: { run_id: "1", workflow_name: "wf", run_status: "ok", started_at: 1 } },
+      { type: "StrutRun", data: { run_id: "2", workflow_name: "wf", run_status: "ok", started_at: 1 } },
       { type: "StrutStep", data: { step_type: "s", input_schema: "{in}", output_schema: "   " } },
       { type: "StrutTurn", data: { chat_id: "c", turn: 0 } }, // no index text → kitchen-sink Data_Bank "c\n0"
     ]);
