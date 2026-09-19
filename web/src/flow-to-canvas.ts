@@ -62,6 +62,8 @@ const STEP_COLORS: Record<string, { fill: string; stroke: string }> = {
   exec:     { fill: "rgba(63, 63, 70, 0.5)",  stroke: "#a1a1aa" },
   "slack/post-message": { fill: "rgba(74, 21, 75, 0.4)",  stroke: "#e879f9" },
   "slack/read-channel": { fill: "rgba(74, 21, 75, 0.4)",  stroke: "#e879f9" },
+  "x/search-posts":     { fill: "rgba(12, 74, 110, 0.4)", stroke: "#38bdf8" },
+  "x/mentions":         { fill: "rgba(12, 74, 110, 0.4)", stroke: "#38bdf8" },
   "gdrive/export-file": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
   "gdrive/list-files":  { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
   default:  { fill: "rgba(38, 38, 38, 0.6)",  stroke: "#737373" },
