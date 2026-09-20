@@ -160,6 +160,9 @@ export type RunEventType =
    *  was being cancelled, not cut off. */
   | "run.cancelling";
 
+/** Who launched a run, when it was not a person or an API call. */
+export type RunOrigin = "verify" | "schedule";
+
 /** A single event in the run log. */
 export interface RunEvent {
   ts: string;
@@ -187,9 +190,13 @@ export interface RunEvent {
    *  `replay` run is a unit test against a fixture: real evidence, weaker
    *  than live. */
   cassette?: "record" | "replay";
-  /** `"verify"` on a run the verify pass launched (a check). Such runs are
-   *  never themselves verified — the recursion guard. */
-  origin?: "verify";
+  /** Who launched the run, on `run.start`; absent = a person or an API call.
+   *  `"verify"`: the verify pass (a check) — such runs are never themselves
+   *  verified, the recursion guard. `"schedule"`: an automation's fire
+   *  (plans/automations.md) — a real execution, verified like any other. */
+  origin?: RunOrigin;
+  /** On a scheduled run's `run.start`: the automation that fired it. */
+  automation?: { id: string };
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its
@@ -277,6 +284,10 @@ export interface RunSummary {
   input: unknown;
   output?: unknown;
   error?: { message: string; stack?: string };
+  /** The automation that fired this run, if one did. On the SUMMARY (not
+   *  only `run.start`) so "this automation's last successful run" is a scan
+   *  of summaries, never of event logs (plans/automations.md §5). */
+  automation?: { id: string };
 }
 
 /** A step definition with erased generics, for use in the registry.

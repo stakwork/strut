@@ -23,6 +23,7 @@ export {
   type RunResult,
   type RunSummary,
   type RunEventType,
+  type RunOrigin,
   type AccessedNode,
   withAccessedNodes,
   accessedNodesOf,
@@ -327,6 +328,33 @@ export {
 } from "./claims-authoring.js";
 export { subjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
 export { claimsRoutes, type ClaimsRoutesDeps } from "./claims-routes.js";
+// Automations — run a workflow on a schedule (plans/automations.md).
+export {
+  triggerSchema,
+  automationDraftSchema,
+  automationPatchSchema,
+  automationInputSchema,
+  normalizeTrigger,
+  nextFire,
+  nextFires,
+  describeTrigger,
+  checkInputTemplates,
+  resolveAutomationInput,
+  type Automation,
+  type AutomationDraft,
+  type AutomationPatch,
+  type Trigger,
+  type TriggerDraft,
+  type LastRun,
+} from "./automations.js";
+export {
+  createAutomations,
+  type Automations,
+  type AutomationsDeps,
+  type AutomationsResult,
+  type AutomationView,
+} from "./scheduler.js";
+export { automationsRoutes } from "./automations-routes.js";
 // The verify pass — how evidence is produced (plans/claims.md §4).
 export {
   createVerifier,

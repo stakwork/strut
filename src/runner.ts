@@ -4,6 +4,7 @@ import type {
   StepContext,
   StepRegistry,
   RunEvent,
+  RunOrigin,
   RunResult,
 } from "./core.js";
 import { resolveConfig } from "./expr.js";
@@ -71,8 +72,12 @@ export interface RunOptions<TServices = unknown> {
   stepHashes?: Record<string, string>;
   /** Cassette mode this run executes under — recorded on `run.start`. */
   cassette?: "record" | "replay";
-  /** `"verify"` when the verify pass launches this run (a check). */
-  origin?: "verify";
+  /** `"verify"` when the verify pass launches this run (a check);
+   *  `"schedule"` when an automation does. Recorded on `run.start`. */
+  origin?: RunOrigin;
+  /** The automation firing this run — recorded on `run.start` and on the
+   *  summary (see `RunSummary.automation`). */
+  automation?: { id: string };
   /** Recorded on a check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
 }
@@ -81,7 +86,7 @@ export interface RunOptions<TServices = unknown> {
 export interface RunEndInfo {
   /** The flow's name — the run-store key the run was written under. */
   workflow: string;
-  origin?: "verify";
+  origin?: RunOrigin;
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -133,6 +138,8 @@ export async function runWorkflow<TServices = unknown>(
   const store = opts?.store ?? new MemoryRunStore();
   const wfName = workflow.name;
   const startedAt = new Date().toISOString();
+  // On every summary this run can write (see `RunSummary.automation`).
+  const automationStamp = opts?.automation ? { automation: opts.automation } : {};
   // Default services to an empty object so steps can destructure freely.
   const services = (opts?.services ?? ({} as TServices)) as TServices;
 
@@ -168,6 +175,7 @@ export async function runWorkflow<TServices = unknown>(
       status: "error",
       input,
       error,
+      ...automationStamp,
     });
     return { runId, status: "error", error };
   }
@@ -190,6 +198,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.stepHashes ? { stepHashes: opts.stepHashes } : {}),
       ...(opts?.cassette ? { cassette: opts.cassette } : {}),
       ...(opts?.origin ? { origin: opts.origin } : {}),
+      ...(opts?.automation ? { automation: opts.automation } : {}),
       ...(opts?.verify ? { verify: opts.verify } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
@@ -225,6 +234,7 @@ export async function runWorkflow<TServices = unknown>(
       status: "success",
       input: parsedInput,
       output,
+      ...automationStamp,
     });
     return { runId, status: "success", output };
   } catch (err) {
@@ -251,6 +261,7 @@ export async function runWorkflow<TServices = unknown>(
       status: cancelled ? "cancelled" : "error",
       input: parsedInput,
       ...(cancelled ? {} : { error }),
+      ...automationStamp,
     });
     return cancelled ? { runId, status: "cancelled" } : { runId, status: "error", error };
   } finally {

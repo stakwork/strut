@@ -171,6 +171,9 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       publisher: "?string",
       /** Content hash of the active version (mirrors `ACTIVE_VERSION`). */
       active_version: "?string",
+      /** JSON-encoded `Automation[]` — the workflow's schedules
+       *  (plans/automations.md §2). Workflow-level, like `category`. */
+      automations: "?string",
       ...USAGE_ATTRIBUTES,
     },
   },

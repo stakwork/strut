@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import yaml from "js-yaml";
+import type { Automation } from "../automations.js";
 import type { Flow } from "../core.js";
 import {
   assertValidWorkflowYaml,
@@ -60,6 +61,19 @@ interface WorkflowRow {
   category?: string;
   publisher?: string;
   active_version?: string;
+  /** JSON-encoded `Automation[]` (plans/automations.md §2). */
+  automations?: string;
+}
+
+/** A workflow row's automations; a blob that fails to parse reads as none. */
+function automationsOf(w: WorkflowRow): Automation[] {
+  if (!w.automations) return [];
+  try {
+    const list: unknown = JSON.parse(w.automations);
+    return Array.isArray(list) ? (list as Automation[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 interface VersionRow {
@@ -198,6 +212,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
         description: active?.description,
         ...(w.category ? { category: w.category } : {}),
         ...(w.publisher ? { publisher: w.publisher } : {}),
+        ...(automationsOf(w).length ? { automations: automationsOf(w) } : {}),
       });
     }
     return out;
@@ -218,6 +233,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     }
     if (w.category) meta.category = w.category;
     if (w.publisher) meta.publisher = w.publisher;
+    if (automationsOf(w).length) meta.automations = automationsOf(w);
     return meta;
   }
 
@@ -438,6 +454,14 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     const w = await this.workflowRow(name);
     if (!w) throw new Error(`Workflow "${name}" not found`);
     const patch = patchFor(w as unknown as Record<string, unknown>, { category: category || undefined });
+    if (patch) await this.backend.nodes.update(w.ref_id, patch);
+  }
+
+  async setWorkflowAutomations(name: string, automations: Automation[]): Promise<void> {
+    const w = await this.workflowRow(name);
+    if (!w) throw new Error(`Workflow "${name}" not found`);
+    const blob = automations.length > 0 ? JSON.stringify(automations) : undefined;
+    const patch = patchFor(w as unknown as Record<string, unknown>, { automations: blob });
     if (patch) await this.backend.nodes.update(w.ref_id, patch);
   }
 

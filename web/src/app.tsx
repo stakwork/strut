@@ -15,7 +15,7 @@ import { CategoryEditor } from "./components/CategoryEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { GearIcon } from "./icons";
+import { ClockIcon, GearIcon } from "./icons";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
 import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
 import { StepEditFlyout } from "./components/StepEditFlyout";
@@ -25,6 +25,7 @@ import { EventsResizer } from "./components/EventsResizer";
 import { StepRunFlyout } from "./components/StepRunFlyout";
 import { ParamsFlyout } from "./components/ParamsFlyout";
 import { ClaimsFlyout } from "./components/ClaimsFlyout";
+import { AutomationsFlyout } from "./components/AutomationsFlyout";
 import { claimsSummary } from "./components/ClaimsPanel";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
@@ -120,6 +121,8 @@ export function App() {
   // The workflow's Claims flyout, and its contract as last read — null until
   // probed; `enabled: false` (a filesystem workspace) hides the button.
   const [showClaims, setShowClaims] = useState(false);
+  // Whether the Automations flyout (this workflow's schedules) is open.
+  const [showAutomations, setShowAutomations] = useState(false);
   const [wfClaims, setWfClaims] = useState<api.ClaimsResponse | null>(null);
   // Declared promotions resolved against the selected run's output (the
   // "promote a winner" review surface) + whether its flyout is open.
@@ -315,6 +318,7 @@ export function App() {
     setLoadError(false);
     setShowParams(false);
     setShowClaims(false);
+    setShowAutomations(false);
     setWfClaims(null);
     if (selectedWf) api.getClaims({ kind: "workflow", name: selectedWf }).then(setWfClaims).catch(() => setWfClaims(null));
     if (!selectedWf) {
@@ -551,11 +555,13 @@ export function App() {
     setRunEpoch((n) => n + 1);
   }, [selectedWf, selectedRun, refreshRuns]);
 
-  const handleRun = useCallback(async () => {
-    if (!selectedWf || !localSteps || localSteps.length === 0) return;
-    // Inputs are referenced wherever they're consumed, so every step's schema
-    // is consulted — not just the first's (see run-inputs.ts). A type whose
-    // schema fails to load still contributes its refs, as untyped fields.
+  // The inputs this workflow needs at run time — asked for by the Run popover
+  // and by the Automations editor. Inputs are referenced wherever they're
+  // consumed, so every step's schema is consulted — not just the first's (see
+  // run-inputs.ts). A type whose schema fails to load still contributes its
+  // refs, as untyped fields.
+  const loadInputBindings = useCallback(async (): Promise<InputBinding[]> => {
+    if (!localSteps) return [];
     const schemas = new Map<string, api.FieldDesc[]>();
     await Promise.all(
       stepTypesIn(localSteps).map(async (type) => {
@@ -566,14 +572,19 @@ export function App() {
         }
       }),
     );
-    const bindings = deriveInputBindings(localSteps, (type) => schemas.get(type));
+    return deriveInputBindings(localSteps, (type) => schemas.get(type));
+  }, [localSteps]);
+
+  const handleRun = useCallback(async () => {
+    if (!selectedWf || !localSteps || localSteps.length === 0) return;
+    const bindings = await loadInputBindings();
     const hasParams = localParams != null && Object.keys(localParams).length > 0;
     if (bindings.length === 0 && !hasParams) {
       await submitRun({});
     } else {
       setRunBindings(bindings);
     }
-  }, [selectedWf, localSteps, submitRun, localParams]);
+  }, [selectedWf, localSteps, submitRun, localParams, loadInputBindings]);
 
   const handleCreate = useCallback(async (name: string, yamlStr: string, desc: string, category?: string) => {
     // Server auto-suffixes on collision; navigate to the resolved name.
@@ -610,6 +621,7 @@ export function App() {
     if (stepId == null) return;
     setShowParams(false);
     setShowClaims(false);
+    setShowAutomations(false);
     setShowPromote(false);
     setInfoStep(null);
     setFlyoutStepId(stepId);
@@ -722,6 +734,7 @@ export function App() {
   // A claim's evidence (or to-do) points at the run it came from: go look at it.
   const openRunFromClaim = (workflow: string, runId: string) => {
     setShowClaims(false);
+    setShowAutomations(false);
     closeFlyout();
     setViewVersion(null);
     setSelectedWf(workflow);
@@ -747,6 +760,7 @@ export function App() {
   const openStepInfo = useCallback((entry: StepTypeEntry) => {
     setShowParams(false);
     setShowClaims(false);
+    setShowAutomations(false);
     setShowPromote(false);
     setFlyoutStepId(null);
     setFlyoutStepIndex(null);
@@ -782,6 +796,9 @@ export function App() {
                     <div key={wf.name} class={`list-item ${selectedWf === wf.name ? "is-active" : ""}`}
                       onClick={() => { setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
                       <span class="list-item-name">{wf.name}</span>
+                      {wf.automations?.some((a) => a.enabled) && (
+                        <span class="list-item-clock" title="Runs on a schedule"><ClockIcon size={11} /></span>
+                      )}
                       <span class="badge badge-accent">{wf.activeVersion}</span>
                     </div>
                   ))}
@@ -802,7 +819,10 @@ export function App() {
               <div key={run.runId} class={`list-item ${selectedRun === run.runId ? "is-active" : ""}`}
                 onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
                 <div class="list-item-stack">
-                  <span class="list-item-name">{run.runId.slice(0, 10)}</span>
+                  <span class="list-item-name">
+                    {run.runId.slice(0, 10)}
+                    {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                  </span>
                   <span class="list-item-sub">
                     {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "..."}
                     {run.durationMs != null && ` (${run.durationMs}ms)`}
@@ -907,13 +927,13 @@ export function App() {
           {isRunView && promotions.length > 0 && (
             <button
               class={`btn${showPromote ? " is-active" : ""}`}
-              onClick={() => { setShowPromote((s) => !s); setShowParams(false); setShowClaims(false); setInfoStep(null); closeFlyout(); }}
+              onClick={() => { setShowPromote((s) => !s); setShowParams(false); setShowClaims(false); setShowAutomations(false); setInfoStep(null); closeFlyout(); }}
             >Promote</button>
           )}
           {selectedWf && localParams && Object.keys(localParams).length > 0 && (
             <button
               class={`btn${showParams ? " is-active" : ""}`}
-              onClick={() => { setShowParams((s) => !s); setShowPromote(false); setShowClaims(false); setInfoStep(null); setFlyoutStepId(null); }}
+              onClick={() => { setShowParams((s) => !s); setShowPromote(false); setShowClaims(false); setShowAutomations(false); setInfoStep(null); setFlyoutStepId(null); }}
             >Params</button>
           )}
           {selectedWf && wfClaims?.enabled && (() => {
@@ -924,8 +944,18 @@ export function App() {
               <button
                 class={`btn${showClaims ? " is-active" : ""}`}
                 title={sum.total === 0 ? "No claims yet — nothing says how this workflow should behave" : `${sum.total} claim${sum.total === 1 ? "" : "s"}: ${sum.refuted} refuted, ${sum.open} unverified, ${sum.todos} waiting on someone`}
-                onClick={() => { setShowClaims((s) => !s); setShowParams(false); setShowPromote(false); setInfoStep(null); setFlyoutStepId(null); }}
+                onClick={() => { setShowClaims((s) => !s); setShowParams(false); setShowPromote(false); setShowAutomations(false); setInfoStep(null); setFlyoutStepId(null); }}
               >Claims<span class={`claims-dot claims-dot-${tone}`} /></button>
+            );
+          })()}
+          {selectedWf && !viewingOld && (() => {
+            const active = (selectedEntry?.automations ?? []).filter((a) => a.enabled).length;
+            return (
+              <button
+                class={`btn btn-automations${showAutomations ? " is-active" : ""}`}
+                title={active ? `${active} schedule${active === 1 ? "" : "s"} running this workflow` : "Run this workflow on a schedule"}
+                onClick={() => { setShowAutomations((s) => !s); setShowParams(false); setShowClaims(false); setShowPromote(false); setInfoStep(null); setFlyoutStepId(null); }}
+              ><ClockIcon size={12} />Automate{active > 0 && <span class="automations-count">{active}</span>}</button>
             );
           })()}
           <button class="btn" onClick={() => setShowSecrets(true)}>Secrets</button>
@@ -1052,6 +1082,19 @@ export function App() {
           onLoaded={setWfClaims}
           onOpenRun={openRunFromClaim}
           onClose={() => setShowClaims(false)}
+        />
+      )}
+
+      {/* Automations flyout — this workflow's schedules (metadata, never a version). */}
+      {showAutomations && selectedWf && (
+        <AutomationsFlyout
+          key={selectedWf}
+          workflow={selectedWf}
+          loadBindings={loadInputBindings}
+          onOpenRun={openRunFromClaim}
+          // A change may be a schedule (sidebar badge) or a "Run now" (a new run).
+          onChanged={() => { void refreshWorkflows(); void refreshRuns(selectedWf); }}
+          onClose={() => setShowAutomations(false)}
         />
       )}
 
