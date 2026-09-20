@@ -824,7 +824,32 @@ Runs are scoped to workflows. Run IDs are millisecond timestamps.
 | GET    | `/workflows/:name/runs/:runId`            | Get run summary (run.json)                      |
 | GET    | `/workflows/:name/runs/:runId/events`     | Get all events as JSON array                    |
 
-### 12.4 Health
+### 12.4 Automations
+
+A workflow can be launched on a schedule (`plans/automations.md`). An automation is `{ id, name, enabled, trigger, input }`, stored as **workflow-level metadata** (in `_metadata.json`, beside `active`) — never in the versioned YAML, so creating, editing or pausing one publishes no version. The trigger is a closed grammar, not cron:
+
+| `every`    | Fields                                                              |
+| ---------- | ------------------------------------------------------------------- |
+| `interval` | `minutes`, `anchor` (fires are `anchor + k·minutes`), `on?`, `between?` |
+| `day`      | `at` (one or more `"HH:MM"`)                                        |
+| `week`     | `on` (`mon`…`sun`), `at`                                            |
+| `month`    | `day`: `1–28` \| `"last"` \| `{ nth: 1–4 \| "last", weekday }`, `at`   |
+| `once`     | `at` (`"YYYY-MM-DDTHH:MM"`)                                         |
+
+Every shape carries an IANA `tz`. `input` is the run's input; its values may be templates over three roots resolved at each fire — `now` (ISO instant), `today` (`YYYY-MM-DD` in the trigger's zone) and `last` (`{ runId, startedAt, finishedAt, output }` of this automation's latest **successful** run; `output` is `{}` before the first). A scheduled run is an ordinary detached run whose `run.start` and `run.json` carry `origin: "schedule"` / `automation: { id }`.
+
+| Method | Path                                       | Description                                                    |
+| ------ | ------------------------------------------ | -------------------------------------------------------------- |
+| GET    | `/automations[?workflow=]`                 | Automations with `summary`, `nextRunAt`, `lastRun`, `running`  |
+| POST   | `/automations/preview`                     | `{ trigger }` → `{ summary, next }` (five fires); writes nothing |
+| POST   | `/workflows/:name/automations`             | Create: `{ name, trigger, input?, enabled? }` (auth)           |
+| PATCH  | `/workflows/:name/automations/:id`         | Edit any subset; `{ enabled }` pauses/resumes (auth)           |
+| DELETE | `/workflows/:name/automations/:id`         | Remove (auth)                                                  |
+| POST   | `/workflows/:name/automations/:id/fire`    | Run now → `{ runId }` 202; 409 while its previous run is going (auth) |
+
+The scheduler is in-process and keeps no state beyond the definitions: a run missed while the server was down is skipped, not replayed (`STRUT_SCHEDULER=0` turns the tick loop off).
+
+### 12.5 Health
 
 | Method | Path      | Description                                    |
 | ------ | --------- | ---------------------------------------------- |

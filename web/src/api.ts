@@ -185,6 +185,8 @@ export interface WorkflowEntry {
   description?: string;
   /** Sidebar grouping label, if set. */
   category?: string;
+  /** The workflow's schedules, if any — the sidebar's clock badge. */
+  automations?: Automation[];
   /** Start time (epoch ms) of the most recent run, if any. */
   lastRunAt?: number;
 }
@@ -436,6 +438,8 @@ export interface RunSummary {
   input?: unknown;
   output?: unknown;
   error?: { message: string };
+  /** Set when an automation fired this run (plans/automations.md). */
+  automation?: { id: string };
 }
 
 export interface RunEvent {
@@ -853,3 +857,73 @@ export const retireCheck = (id: string) => fetchJSON<{ id: string }>(`/checks/${
 /** A person's observation on a run; with `slot`, the answer to an open question. */
 export const addClaimEvidence = (claimId: string, body: { name: string; runId: string; supports: boolean; content: string; slot?: string }) =>
   fetchJSON<{ evidence: string; filled: boolean }>(`/claims/${claimId}/evidence`, json("POST", body));
+
+// ── Automations (plans/automations.md) ─────────────────────────────────────
+//
+// A schedule that launches a workflow. Workflow-level metadata: creating,
+// editing or pausing one never publishes a version. The trigger is a closed
+// grammar (no cron); the SERVER owns the calendar math — the form asks
+// `previewAutomation` for the sentence and the next fires.
+
+export type Day = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+export type MonthDay = number | "last" | { nth: 1 | 2 | 3 | 4 | "last"; weekday: Day };
+
+/** What the form sends. The server fills `tz` / `anchor` when omitted. */
+export type TriggerDraft =
+  | { every: "interval"; minutes: number; anchor?: string; on?: Day[]; between?: [string, string]; tz?: string }
+  | { every: "day"; at: string[]; tz?: string }
+  | { every: "week"; on: Day[]; at: string[]; tz?: string }
+  | { every: "month"; day: MonthDay; at: string[]; tz?: string }
+  | { every: "once"; at: string; tz?: string };
+/** As stored: zone always present. */
+export type Trigger = TriggerDraft & { type: "schedule"; tz: string };
+
+export interface Automation {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger: Trigger;
+  input: Record<string, unknown>;
+}
+
+/** An automation plus what the server derives for display. */
+export interface AutomationView extends Automation {
+  workflow: string;
+  /** The trigger as one plain sentence. */
+  summary: string;
+  /** ISO instant; null when paused or never again. */
+  nextRunAt: string | null;
+  lastRun: { runId: string; status: "running" | "success" | "error" | "cancelled"; startedAt: string } | null;
+  /** Its previous run is still going — a fire now would be skipped. */
+  running: boolean;
+  /** Why the latest fire launched nothing. */
+  lastFireError?: string;
+}
+
+export interface AutomationDraft {
+  name: string;
+  trigger: TriggerDraft;
+  input?: Record<string, unknown>;
+  enabled?: boolean;
+}
+export interface AutomationSaved {
+  automation: AutomationView;
+  next: string[];
+}
+
+const automationsPath = (workflow: string) => `/workflows/${encodeURIComponent(workflow)}/automations`;
+
+export const listAutomations = (workflow?: string) =>
+  fetchJSON<{ automations: AutomationView[] }>(`/automations${workflow ? `?workflow=${encodeURIComponent(workflow)}` : ""}`).then((r) => r.automations);
+/** The trigger as a sentence + its next five fires. Writes nothing. */
+export const previewAutomation = (trigger: TriggerDraft) =>
+  fetchJSON<{ summary: string; next: string[] }>("/automations/preview", json("POST", { trigger }));
+export const createAutomation = (workflow: string, draft: AutomationDraft) =>
+  fetchJSON<AutomationSaved>(automationsPath(workflow), json("POST", draft));
+export const updateAutomation = (workflow: string, id: string, patch: Partial<AutomationDraft>) =>
+  fetchJSON<AutomationSaved>(`${automationsPath(workflow)}/${id}`, json("PATCH", patch));
+export const deleteAutomation = (workflow: string, id: string) =>
+  fetchJSON<{ id: string }>(`${automationsPath(workflow)}/${id}`, json("DELETE"));
+/** Run now, off-schedule. */
+export const fireAutomation = (workflow: string, id: string) =>
+  fetchJSON<{ runId: string }>(`${automationsPath(workflow)}/${id}/fire`, json("POST"));

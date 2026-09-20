@@ -8,6 +8,7 @@ import { runStep, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
 import type { ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
+import { automationDraftSchema, automationInputSchema, triggerSchema } from "../automations.js";
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
@@ -509,6 +510,62 @@ export function buildTools(deps: AiDeps) {
         }
       },
     }),
+
+    // Schedules (plans/automations.md). Thin wrappers: every rule lives in
+    // the policy layer the HTTP routes share. The RESULT carries the computed
+    // `summary` + `next` fires, so the model confirms from facts.
+    ...(deps.automations
+      ? {
+          list_automations: tool({
+            description:
+              "List automations (schedules that launch a workflow): each with its trigger, a plain-sentence `summary`, " +
+              "`nextRunAt`, its `lastRun`, whether it is `running`, and `lastFireError` when a fire launched nothing. " +
+              "Omit `workflow` to list them all.",
+            inputSchema: z.object({ workflow: z.string().optional().describe("Only this workflow's automations") }),
+            execute: async ({ workflow }) => {
+              try {
+                return { automations: await deps.automations!.list(workflow) };
+              } catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+              }
+            },
+          }),
+
+          set_automation: tool({
+            description:
+              "Create an automation on a workflow, or (with `id`) edit one — only the fields you pass change. Metadata-only: " +
+              "NO workflow version is published. Pause/resume with { id, enabled }. Returns the stored automation plus " +
+              "`summary` (the schedule as a sentence) and `next` (the next five fires, ISO) — confirm to the user from those.",
+            inputSchema: z.object({
+              workflow: z.string().describe("Existing workflow name"),
+              id: z.string().optional().describe("An existing automation's id, to edit it. Omit to create."),
+              name: automationDraftSchema.shape.name.optional().describe("Short human label, e.g. 'Morning mentions digest'. Required to create."),
+              trigger: triggerSchema.optional().describe("WHEN it runs. Required to create. " + (triggerSchema.description ?? "")),
+              input: automationInputSchema.optional(),
+              enabled: z.boolean().optional().describe("false = paused. Default true."),
+            }),
+            execute: async ({ workflow, id, ...fields }) => {
+              try {
+                return id ? await deps.automations!.update(workflow, id, fields) : await deps.automations!.create(workflow, fields);
+              } catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+              }
+            },
+          }),
+
+          delete_automation: tool({
+            description: "Delete an automation. To stop it temporarily, prefer set_automation { id, enabled: false }.",
+            inputSchema: z.object({ workflow: z.string(), id: z.string() }),
+            execute: async ({ workflow, id }) => {
+              try {
+                return await deps.automations!.remove(workflow, id);
+              } catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+              }
+            },
+          }),
+        }
+      : {}),
 
     set_active_version: tool({
       description:

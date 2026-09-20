@@ -2422,3 +2422,154 @@ body.is-resizing-flyout * {
 .claims-panel .flyout-field label { text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 12px; }
 .claims-panel .flyout-field label code { font-size: 11px; color: var(--text); }
 .claims-panel .flyout-section-title { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+
+/* ─── automations ────────────────────────────────────────────── */
+
+.btn-automations { display: inline-flex; align-items: center; gap: 5px; }
+.automations-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(110, 168, 255, 0.18);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+/* A workflow that runs on a schedule / a run an automation started. */
+.list-item-clock { display: inline-flex; align-items: center; color: var(--accent); margin: 0 6px 0 auto; flex: none; }
+.list-item-name .list-item-clock { margin: 0 0 0 5px; vertical-align: -1px; }
+
+.auto-hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.auto-empty { font-size: 12px; color: var(--text-dim); padding: var(--sp-3) 0; }
+.auto-error {
+  font-size: 12px;
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  line-height: 1.45;
+}
+
+.auto-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.auto-card.is-paused .auto-summary,
+.auto-card.is-paused .auto-name { color: var(--text-dim); }
+.auto-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.auto-name {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auto-name:hover { color: var(--accent); }
+.auto-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); cursor: pointer; flex: none; }
+.auto-summary { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.auto-summary svg { flex: none; color: var(--accent); }
+.auto-meta { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; font-size: 11px; color: var(--text-muted); }
+.auto-card-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); }
+.auto-card-actions .btn { padding: 3px 10px; font-size: 11px; }
+.auto-card-actions .btn:disabled { opacity: 0.45; cursor: default; }
+.auto-new { margin-top: var(--sp-1); }
+.auto-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.auto-link:hover { color: var(--accent-strong); }
+
+/* Editor */
+.auto-row { display: flex; align-items: center; gap: var(--sp-2); font-size: 12px; color: var(--text-muted); }
+.auto-row input[type="number"] { width: 90px; flex: none; }
+.auto-sub { margin-top: var(--sp-2); }
+.auto-between { margin: calc(-1 * var(--sp-1)) 0 var(--sp-4); }
+.auto-between input {
+  font: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+}
+.auto-check { display: flex; align-items: center; gap: var(--sp-2); font-size: 12px; color: var(--text); margin-bottom: var(--sp-3); cursor: pointer; }
+.auto-days { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-3); }
+.flyout-field .auto-days { margin-bottom: 0; }
+.auto-day {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.auto-day.is-on { background: rgba(110, 168, 255, 0.18); border-color: var(--accent); color: var(--accent); }
+.auto-times { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.auto-time { display: inline-flex; align-items: center; gap: 2px; }
+.flyout-field .auto-time input { width: 130px; }
+.auto-x {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px;
+  display: inline-flex;
+  flex: none;
+}
+.auto-x:hover { color: var(--danger); }
+
+/* The trust feature: the rule as a sentence, and the dates it produces. */
+.auto-preview {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+.auto-preview-summary { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: var(--sp-2); }
+.auto-preview-title { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 4px; }
+.auto-next { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-muted); line-height: 1.7; }
+.auto-rel { color: var(--text-dim); margin-left: 4px; }
+
+.auto-input { margin-bottom: var(--sp-4); }
+.auto-input .flyout-field { margin-bottom: var(--sp-1); }
+.auto-insert {
+  font: inherit;
+  font-size: 11px;
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  cursor: pointer;
+  max-width: 100%;
+}
+.auto-token { display: flex; align-items: center; gap: 2px; }
+.flyout-field .auto-token-input { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }

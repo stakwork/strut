@@ -2,6 +2,7 @@ import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm } from "no
 import { dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import type { Automation } from "./automations.js";
 import type { Flow } from "./core.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -141,6 +142,10 @@ export interface WorkflowMetadata {
    *  version-level: it survives publishes and can be changed at any time via
    *  `setWorkflowCategory`. */
   category?: string;
+  /** Schedules that launch this workflow (plans/automations.md).
+   *  Workflow-level like `category`: editing or pausing one publishes no
+   *  version, and it survives every publish. Absent = none. */
+  automations?: Automation[];
   /** Optional identifier of the service that published this workflow
    *  (parallels `StepInfo.publisher`). Workflow-level provenance: the
    *  authoring capability stamps everything it publishes `"ai"` and its
@@ -200,6 +205,9 @@ export interface WorkflowListEntry {
   category?: string;
   /** Provenance stamp, if any (see WorkflowMetadata.publisher). */
   publisher?: string;
+  /** The workflow's schedules, if any (see WorkflowMetadata.automations) —
+   *  carried here so the scheduler's boot load is one `listWorkflows()`. */
+  automations?: Automation[];
   /** Start time (epoch ms) of the most recent run, if any. Not produced by
    *  the workspace itself (runs are the run store's records) — the server's
    *  `GET /workflows` decorates entries from `RunStore.lastRunAt`. */
@@ -270,6 +278,11 @@ export interface WorkspaceStore extends SubflowResolver {
     opts?: PublishByContentOptions,
   ): Promise<{ version: string; changed: boolean }>;
   setWorkflowCategory(name: string, category: string | null): Promise<void>;
+  /** Replace the workflow's automations (an empty list clears the field).
+   *  Metadata-only, like `setWorkflowCategory`; throws for an unknown
+   *  workflow. The whole list, because every mutation is a
+   *  read-modify-write of a short list in one process. */
+  setWorkflowAutomations(name: string, automations: Automation[]): Promise<void>;
   setActiveVersion(name: string, version: string): Promise<void>;
   setParam(
     name: string,
@@ -343,6 +356,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           description: activeDesc,
           ...(meta.category ? { category: meta.category } : {}),
           ...(meta.publisher ? { publisher: meta.publisher } : {}),
+          ...(meta.automations?.length ? { automations: meta.automations } : {}),
         });
       }
     }
@@ -486,6 +500,19 @@ export class FileWorkspaceStore implements WorkspaceStore {
     if (!meta) throw new Error(`Workflow "${name}" not found`);
     if (category) meta.category = category;
     else delete meta.category;
+    await writeFile(
+      join(this.root, "workflows", name, "_metadata.json"),
+      JSON.stringify(meta, null, 2),
+      "utf-8",
+    );
+  }
+
+  /** Replace a workflow's automations. Metadata-only, like the category. */
+  async setWorkflowAutomations(name: string, automations: Automation[]): Promise<void> {
+    const meta = await this.readWorkflowMetadata(name);
+    if (!meta) throw new Error(`Workflow "${name}" not found`);
+    if (automations.length > 0) meta.automations = automations;
+    else delete meta.automations;
     await writeFile(
       join(this.root, "workflows", name, "_metadata.json"),
       JSON.stringify(meta, null, 2),

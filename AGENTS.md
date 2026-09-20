@@ -47,6 +47,9 @@ strut/
 │   ├── verify.ts          # the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
 │   ├── ledger.ts          # the ledger (plans/claims.md §5): buildLedger (claims per subject with computed status + each check's lastVerify: pending | ran | skipped | planned), subjectsOfFlow (what a launch can execute), the [verify-notification] text. The forcing function — the model reads its contract in a tool RESULT, not an instruction
 │   ├── claims-routes.ts   # the Claims panel's HTTP door: GET /claims?kind=&name= (contract + computed status + latest evidence + open slots; `{ enabled: false }` on a filesystem workspace), POST/PATCH/DELETE /claims[/:id], /claims/:id/{attach,detach,checks,evidence}, PATCH/DELETE /checks/:id. Mutations behind requireApiKey; the actor is a PERSON (unscoped, stamped `person`; evidence `asserted`, `by: person`)
+│   ├── automations.ts     # automations, the PURE half (plans/automations.md): the record, the closed trigger grammar (zod; interval / day / week / month / once — no cron), normalizeTrigger (fills tz + the interval anchor), nextFire / nextFires (Intl-only zone math, DST-safe), describeTrigger (the human sentence), and the fire-time input scope (`now` / `today` / `last`; checkInputTemplates, resolveAutomationInput)
+│   ├── scheduler.ts       # automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire) + the in-process tick loop. `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
+│   ├── automations-routes.ts # the Automations flyout's HTTP door: GET /automations[?workflow=], POST /automations/preview, POST/PATCH/DELETE /workflows/:name/automations[/:id], POST …/:id/fire (Run now). Mutations + fire behind requireApiKey
 │   ├── closure.ts         # what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (nested subflows via the workspace, agentTools grants; templated/missing child → unresolvable), stepHashesFor → run.start.stepHashes
 │   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + messages.jsonl + events.jsonl) + truncateToolMessages
@@ -73,7 +76,8 @@ strut/
 │   │   │                  #                   create_workflow, run_workflow (threads ctx.services),
 │   │   │                  #                   graph_query (read-only Cypher; only when deps.graph is wired),
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
-│   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts)
+│   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts),
+│   │   │                  #                   list_automations / set_automation / delete_automation (schedules; when deps.automations is wired)
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
 │   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)
@@ -100,7 +104,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 622 unit tests across 25 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 910 unit tests across 49 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -111,10 +115,12 @@ strut/
         ├── api.ts         # typed fetch wrapper for all API endpoints (+ run SSE tail; chat: sendChat/streamChat/getChat reattach)
         ├── flow-to-canvas.ts  # Flow → CanvasData; STEP_COLORS → categories; childRefForStep/stepWorkflow (container nav)
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
+        ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
+        │   ├── AutomationsFlyout.tsx # a workflow's schedules: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc
         │   ├── CreateDialog.tsx      # new-workflow dialog
@@ -137,7 +143,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 622 tests, ~1s
+npm test                    # 910 tests, ~3s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -190,6 +196,7 @@ docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs 
 | `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder); anthropic uses its native tool. Store or env, like provider keys |
+| `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
@@ -750,6 +757,43 @@ and the child env is scrubbed by construction).
   Versions are recorded, never inferred: `run.start.stepHashes` /
   `workflowHash`, and a subflow step's `step.start.subflow` — no record, no
   evidence.
+
+- **Automations — run a workflow on a schedule** (`plans/automations.md`;
+  `src/automations.ts` pure, `src/scheduler.ts` stateful). An automation is
+  `{ id, name, enabled, trigger, input }`, stored as **workflow-level
+  metadata beside `category`** (`WorkflowMetadata.automations`:
+  `_metadata.json` on the filesystem, one JSON-string `automations`
+  property on the `StrutWorkflow` node in the graph;
+  `WorkspaceStore.setWorkflowAutomations`). It is NOT in the versioned
+  YAML: adding, editing or pausing a schedule publishes no version, so it
+  never re-fires `on_change` checks and a rollback never changes a
+  schedule. The trigger is a **closed grammar** — never cron: `interval`
+  (anchored: fires are `anchor + k·minutes`, `on` / `between` filter it),
+  `day`, `week`, `month` (`day` 1–28 | `"last"` | nth weekday), `once`. A
+  schedule the grammar cannot express is fixed by adding a shape. ONE
+  implementation of the calendar math (`nextFire`) drives the form's
+  preview (`POST /automations/preview`), the chat tool's result and the
+  tick loop. **Nothing but the definition is persisted**: `nextRunAt` is
+  memory-only and always computed from the current time (the first load
+  from process start), so a restart neither stampedes nor double-fires and
+  a run missed while the process was down is skipped; the tick advances
+  `nextRunAt` BEFORE launching. A fire goes through `launchDetached` like
+  `POST /run`, stamped `origin: "schedule"` + `automation: { id }` on
+  `run.start` AND on the `RunSummary` — scheduled runs are verified like
+  any other. **Dynamic inputs**: `input` is resolved per fire against
+  `{ now, today, last }`, `last` being this automation's latest SUCCESSFUL
+  run (a newest-first scan of summaries, ≤100) — so a failed run never
+  advances a cursor. `last` is never null (before the first success its
+  `output` is `{}`) and a top-level key resolving to `undefined` is
+  dropped. One fixed overlap rule, not a setting: a fire is skipped while
+  that automation's previous run is still in flight (read from the run
+  store, so it holds across a restart) — two overlapping runs would read
+  the same cursor. Both doors are thin: the routes and the chat tools
+  (`set_automation`'s RESULT carries `summary` + `next`, so the model
+  confirms from computed facts) call the same `createAutomations` layer.
+  UI is per-workflow: the topbar **Automate** button opens
+  `AutomationsFlyout`; scheduled workflows and scheduled runs carry a clock
+  badge in the sidebar.
 
 - **Dispatch-mode `run_workflow` + run notifications**
   (`src/ai/notifier.ts`, `plans/dispatch-run-notifications.md`). The chat

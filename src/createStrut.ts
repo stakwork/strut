@@ -38,6 +38,8 @@ import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF } from "./claims-schemas.js";
 import { claimsRoutes } from "./claims-routes.js";
+import { automationsRoutes } from "./automations-routes.js";
+import { createAutomations, type Automations } from "./scheduler.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { stepHashesFor } from "./closure.js";
@@ -148,6 +150,14 @@ export interface StrutOptions<TServices = unknown> {
    *  the guards. Only the NEWEST root run per workflow is considered. */
   autoResume?: boolean | AutoResumeOptions;
 
+  /** The automations tick loop (plans/automations.md §6): fires scheduled
+   *  workflows from inside this process. Defaults to ON unless
+   *  `STRUT_SCHEDULER=0`. Pass `false` for a host that owns the clock itself
+   *  — `strut.automations` still stores, previews and fires on demand
+   *  (`fire`), it just never ticks. Single-process by design: two strut
+   *  processes over one workspace would each fire. */
+  scheduler?: boolean;
+
   /** The claims layer (plans/claims.md): claims, checks, the verify pass, the
    *  claim tools and the Claims panel. Needs a graph-backed workspace; there
    *  it defaults to ON unless `STRUT_CLAIMS=0`. Pass `false` to turn the
@@ -243,6 +253,11 @@ export interface Strut<TServices = unknown> {
    *  host that mounts `app` itself must call `attachAudioWebSocket(server,
    *  strut.stt)` to get the dictation socket; `listen()` does it. */
   stt: SttService | null;
+
+  /** Automations (plans/automations.md): the policy layer behind the
+   *  `/automations` routes and the chat tools — list / create / update /
+   *  remove / preview / fire. Ticks by itself unless `scheduler: false`. */
+  automations: Automations;
 
   /** Reads over the claims layer (plans/claims.md) — null unless the
    *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
@@ -800,7 +815,12 @@ export async function createStrut<TServices = unknown>(
         params: p.runStart.params,
         paramOverrides: p.runStart.paramOverrides,
       },
-      { journal: p.journal, resume: true, ...(p.version ? { version: p.version } : {}) },
+      {
+        journal: p.journal,
+        resume: true,
+        ...(p.version ? { version: p.version } : {}),
+        ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
+      },
     );
   };
 
@@ -1492,7 +1512,14 @@ export async function createStrut<TServices = unknown>(
   function launchDetached(
     flow: Flow,
     body: RunBody,
-    extra?: { journal?: Record<string, unknown>; resume?: boolean; version?: string },
+    extra?: {
+      journal?: Record<string, unknown>;
+      resume?: boolean;
+      version?: string;
+      /** An automation's fire (plans/automations.md §3). */
+      origin?: "schedule";
+      automation?: { id: string };
+    },
   ): string {
     const runId = body.runId ?? generateRunId();
     const { controller, untrack } = trackRun(flow.name, runId);
@@ -1512,6 +1539,8 @@ export async function createStrut<TServices = unknown>(
         ...(stepHashes ? { stepHashes } : {}),
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
+        ...(extra?.origin ? { origin: extra.origin } : {}),
+        ...(extra?.automation ? { automation: extra.automation } : {}),
       });
     })()
       .catch((err) => {
@@ -1523,6 +1552,17 @@ export async function createStrut<TServices = unknown>(
 
   // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2).
   claimsRoutes(app, { claims: claimsAuthoring, verifier });
+
+  // Automations (plans/automations.md): scheduled launches go through the
+  // same detached path as `POST /run`, stamped with their automation.
+  const automations = createAutomations({
+    workspace,
+    store,
+    launch: (flow, input, automation) => launchDetached(flow, { input }, { origin: "schedule", automation }),
+    isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+  });
+  automationsRoutes(app, automations);
+  if (opts.scheduler === undefined ? process.env["STRUT_SCHEDULER"] !== "0" : opts.scheduler) automations.start();
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks
   // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
@@ -1675,6 +1715,8 @@ export async function createStrut<TServices = unknown>(
             claims: claimsAuthoring,
             verifier,
             watchVerify: (runId: string) => verifyWaker?.watch(runId, chatId),
+            // list_automations / set_automation / delete_automation.
+            automations,
             // cancel_run / pause_run / resume_run over the live controllers.
             controlRun: controlRunForChat,
             publishingEnabled: !registryWasInjected,
@@ -2155,6 +2197,7 @@ export async function createStrut<TServices = unknown>(
   }
 
   async function close(): Promise<void> {
+    automations.stop();
     const s = httpServer;
     if (!s) return;
     httpServer = null;
@@ -2193,6 +2236,7 @@ export async function createStrut<TServices = unknown>(
     autoResumeStaleRuns,
     run,
     stt,
+    automations,
     claims,
     verifier,
     listen,
