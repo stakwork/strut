@@ -52,6 +52,8 @@ describe("triggerSchema", () => {
       { every: "month", day: { nth: 5, weekday: "fri" }, at: ["09:00"] },
       { every: "interval", minutes: 0 },
       { every: "interval", minutes: 30, between: ["17:00", "09:00"] },
+      { every: "interval", minutes: 30, between: ["09:00"] },
+      { every: "interval", minutes: 30, between: ["09:00", "12:00", "17:00"] },
       { every: "interval", minutes: 30, anchor: "soon" },
       { every: "once", at: "2026-02-30T09:00" },
       { every: "once", at: "2026-10-03 14:00" },
