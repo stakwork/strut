@@ -4,6 +4,7 @@ import type { CanvasData, CanvasNode, CanvasEdge } from "system-canvas";
 import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
+import { replaceUrl } from "./embed";
 import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
 import "./styles/base.css";
@@ -169,8 +170,9 @@ export function App() {
   const activeTab: WorkflowTab | null = workflowTabs.includes(wfTab) ? wfTab : (workflowTabs[0] ?? null);
 
   // Mirror the selection into the address bar (replaceState — no history
-  // spam) so the current view is always copy-paste shareable. Unrelated
-  // params (e.g. ?chat) are preserved.
+  // spam) so the current view is always copy-paste shareable — and, when
+  // embedded, reported to the host so ITS address bar is too (./embed).
+  // Unrelated params (e.g. ?chat) are preserved.
   useEffect(() => {
     const p = new URLSearchParams(location.search);
     const put = (k: string, val: string | null) => (val ? p.set(k, val) : p.delete(k));
@@ -180,7 +182,7 @@ export function App() {
     const qs = p.toString();
     const next = `${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`;
     if (next !== `${location.pathname}${location.search}${location.hash}`) {
-      history.replaceState(null, "", next);
+      replaceUrl(next);
     }
   }, [selectedWf, selectedRun, viewVersion]);
 
