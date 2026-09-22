@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tool } from "ai";
+import { tool, type ToolSet } from "ai";
 import { runWorkflow } from "../runner.js";
 import { AiDeps } from "./prompts.js";
 import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
@@ -64,7 +64,7 @@ function runControlTools(controlRun: ControlRun) {
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 
-export function buildTools(deps: AiDeps) {
+export function buildTools(deps: AiDeps): ToolSet {
   /** The static check behind validate_workflow — also the gate on
    *  create_workflow / edit_workflow, so an invalid YAML never becomes a
    *  version. Registry + workflow list come from deps at call time. */
