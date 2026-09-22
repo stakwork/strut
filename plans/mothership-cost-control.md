@@ -1,13 +1,17 @@
 # Mothership cost control — per-step and per-workflow LLM spend
 
-> **Status (2026-09-22): strut side built (§1–§3, step order 1–3);
-> hive (§4) and mcp (§5) not started; end-to-end (§6) not run.** Spans
+> **Status (2026-09-22): strut side built (§1–§3, step order 1–3) and
+> hive side built (§4, step order 4) — hive is open as
+> [stakwork/hive#5329](https://github.com/stakwork/hive/pull/5329),
+> reviewed but not merged. mcp (§5) not started; end-to-end (§6) not
+> run — it cannot run until §5 lands, because hive's push 404s until mcp
+> mounts the module.** Spans
 > four repos: strut, hive, stakgraph `mcp` (the host that embeds strut at
 > `/lab`) and stakgraph `gateway` (the "Agent Mothership": Bifrost + our
 > macaroon plugin). The gateway needs **no changes** for v1 — every
 > gateway citation below was re-read on `stakgraph@8989934a`. Hive
 > citations are `hive@5525f68b0`; the issuer (§4.2) was re-read on
-> `hive@7cd0c2a40`.
+> `hive@7cd0c2a40`; what hive actually shipped is `hive@0d7f56c49`.
 >
 > **What strut ships.** `src/llm.ts`: the `llmAuth` seam + `stepAuth`.
 > `src/mothership.ts`: `createMothership({ dataDir }) → { llmAuth, mount }`,
@@ -29,6 +33,31 @@
 > `mount(strut)` (it needs the workspace for run caps), and `GET
 > /llm/delegations` is gated like the mutations. AGENTS.md "Mothership
 > cost control" is the operator summary.
+>
+> **What hive ships** (`hive@0d7f56c49`). `strut-agent` +
+> `strut-assistant` in `BIFROST_AGENT_NAMES` with catalog specs.
+> `services/bifrost/strut-delegation.ts`: the actor (`buildBifrostName`,
+> the macaroon `user_id` — never the raw `User.id`), the lab client
+> (`GET/PUT/DELETE /lab/llm/delegations[/:actor]`), `mintStrutDelegation`
+> over the existing `mintInvocationMacaroon`, and `ensureStrutDelegation`
+> — behind the same gates as `getBifrostForLLM`, running the same
+> trust-register / catalog-seed / `reconcileBifrostVK` steps first,
+> skipped while the stored delegation has more than half its life left,
+> and never throwing. Pushed from the strut embed-url route (which also
+> sends the actor as the mint-token `sub`), the `dispatch_strut` chat tool
+> and the workflow-benchmark strut runner; the latter two send
+> `x-strut-actor`. Daily reconciler `api/cron/strut-delegations`
+> (`STRUT_DELEGATIONS_CRON_ENABLED`) re-mints what strut lost or what is
+> within 15 days of expiry and deletes the delegations of members who
+> left, keyed off two new `WorkspaceMember` columns (`strutDelegationExp`,
+> `strutDelegationId` — never the token). Constants in
+> `services/bifrost/constants.ts`; `STRUT_DELEGATION_MAX_COST_USD`
+> overrides the $10,000 ceiling. Two things to know: hive sends the swarm
+> key as **both** `x-api-token` (mcp's gate) and `Authorization: Bearer`
+> (strut's `requireApiKey`), so the lab strut's `STRUT_API_KEY` must stay
+> unset or equal `API_TOKEN` when §5 lands; and until mcp mounts the
+> module every push logs `unsupported` (404) and the embed, dispatch and
+> benchmark proceed exactly as before.
 >
 > **What changed in revision 2.** Revision 1 gave strut its own ed25519
 > key and had hive's org key sign a second UA per user binding that user
@@ -383,6 +412,15 @@ without splitting that history.
 
 ## 4. Hive
 
+> **Built** on `hive@0d7f56c49` ([stakwork/hive#5329](https://github.com/stakwork/hive/pull/5329),
+> open). All five items below shipped as written, in
+> `services/bifrost/strut-delegation.ts` + `services/strut-delegations-cron.ts`.
+> Deviations: the client sends the swarm key as both `x-api-token` and
+> `Authorization: Bearer` (see §5); a 404 on `/llm/delegations` is its own
+> `unsupported` status rather than an error, so the push is a no-op on an
+> mcp that predates §5; and the mint-token `sub` of item 4 is sent by hive
+> but still needs the mcp half (§5) to mean anything.
+
 1. `services/bifrost/agent-names.ts:12`: add `strut-agent`,
    `strut-assistant` to `BIFROST_AGENT_NAMES`. `DEFAULT_AGENT_SPECS` in
    `agent-catalog.ts:79` is `Record<BifrostAgentName, …>`, so both need a
@@ -477,6 +515,13 @@ passes `llmAuth` + `resolveActor`, then `mount`s its routes.
   → hive's own `x-strut-actor` header, trusted because the token proves
   it is hive. Basic auth → no actor. The dictation WebSocket path
   (`mount.ts:164`) bypasses Express and needs no actor.
+- **`STRUT_API_KEY` must stay unset or equal `API_TOKEN`.** Hive's
+  delegation calls clear mcp's `/lab` gate with `x-api-token: <swarm key>`
+  and then hit strut's own `requireApiKey`, which reads
+  `Authorization: Bearer STRUT_API_KEY` and is permissive while that env is
+  unset. Hive sends the swarm key in both headers (`hive@0d7f56c49`,
+  `strut-delegation.ts` `delegationHeaders`), so mounting the module on a
+  lab strut with a *different* `STRUT_API_KEY` set would 401 every push.
 - **Where the file lives.** `createLabStrut` passes `workspacePath`
   (`STRUT_LAB_WORKSPACE`, else `./lab-workspace`) as strut's `dataDir` in
   both workspace modes (`createLabStrut.ts:152`), so `mothership.json`
@@ -538,12 +583,13 @@ already sets; a per-user lifetime-of-delegation cap is the ceiling.
 
 ## Step order
 
-1. strut: the `llmAuth` seam (§1). Ship and test with a static hook.
-2. strut: actor plumbing and the principal rule (§2).
-3. strut: `src/mothership.ts` (§3).
-4. hive: agent names, the push (calling `mintInvocationMacaroon`), the
-   actor, the reconciler (§4).
-5. mcp: bump, enable, `labAuth` (§5).
+1. ~~strut: the `llmAuth` seam (§1). Ship and test with a static hook.~~ Done.
+2. ~~strut: actor plumbing and the principal rule (§2).~~ Done.
+3. ~~strut: `src/mothership.ts` (§3).~~ Done.
+4. ~~hive: agent names, the push (calling `mintInvocationMacaroon`), the
+   actor, the reconciler (§4).~~ Done, `hive@0d7f56c49` (PR open).
+5. mcp: bump, enable, `labAuth` (§5). **Next** — nothing else can move
+   until this lands.
 6. End-to-end check in shadow mode (below).
 7. Later: mcp lab code that calls the AI SDK's default `anthropic()`
    singleton (env key + `ANTHROPIC_BASE_URL`, no per-call auth) bypasses
@@ -593,10 +639,11 @@ already sets; a per-user lifetime-of-delegation cap is the ceiling.
 
 ## Open questions
 
-- **A lapsed delegation.** With the reconciler, a delegation only goes away
-  when hive removes it — the owner left the workspace. Should that owner's
-  workflows then fail with "transfer ownership" (proposed: their spend has
-  nobody to land on), or fall back to the deployment's direct keys?
+- ~~**A lapsed delegation.**~~ *Answered.* With the reconciler, a delegation
+  only goes away when hive removes it — the owner left the workspace (hive's
+  cron `DELETE`s on `leftAt`, `hive@0d7f56c49`). Strut refuses rather than
+  falling back to direct keys: under `STRUT_MOTHERSHIP_REQUIRED=1` the run
+  fails and names the actor. Transfer of ownership is the manual fix.
 - **Until the UI groups them:** unchecked whether the Mothership canvas copes
   with a few dozen agent names that are not in its catalog. Look at it in
   the end-to-end pass, before any workflow-heavy swarm turns this on.
