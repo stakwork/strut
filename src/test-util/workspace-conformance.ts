@@ -124,6 +124,24 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await ws.listWorkflows()).find((w) => w.name === "wf")?.automations, undefined);
     });
 
+    it("owner and run cap are workflow-level metadata: set, survive a publish, clear", async () => {
+      const meta = () => ws.getWorkflowMetadata("wf");
+      await ws.publishWorkflow("wf", "v1", { steps });
+      await ws.setWorkflowOwner("wf", "alice-1");
+      await ws.setWorkflowRunCap("wf", 2.5);
+      assert.equal((await meta())?.owner, "alice-1");
+      assert.equal((await meta())?.maxRunCostUsd, 2.5);
+
+      await ws.publishWorkflow("wf", "v2", { steps, params: { greeting: "other" } });
+      assert.equal((await meta())?.owner, "alice-1", "survives a publish");
+      assert.equal((await meta())?.maxRunCostUsd, 2.5);
+
+      await ws.setWorkflowOwner("wf", null);
+      await ws.setWorkflowRunCap("wf", null);
+      assert.equal((await meta())?.owner, undefined);
+      assert.equal((await meta())?.maxRunCostUsd, undefined);
+    });
+
     it("reactivateKnown: false keeps a workspace edit active across a reseed", async () => {
       await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "old" } });
       const seed = await ws.getWorkflowSource("wf", "v1");
