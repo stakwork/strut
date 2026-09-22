@@ -80,7 +80,7 @@ strut/
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
 │   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts),
 │   │   │                  #                   list_automations / set_automation / delete_automation (schedules; when deps.automations is wired)
-│   │   ├── walk-tool.ts   # graph_walk: an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
+│   │   ├── walk-tool.ts   # graph_walk (OFF for now: `GRAPH_WALK_TOOL_ENABLED` in prompts.ts): an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
 │   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)

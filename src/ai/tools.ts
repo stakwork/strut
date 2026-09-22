@@ -1,13 +1,14 @@
 import { z } from "zod";
-import { tool } from "ai";
+import { tool, type ToolSet } from "ai";
 import { runWorkflow } from "../runner.js";
-import { AiDeps } from "./prompts.js";
+import { AiDeps, GRAPH_WALK_TOOL_ENABLED } from "./prompts.js";
 import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
 import { runStep, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
 import type { ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
+import { automationDraftSchema, automationInputSchema, triggerSchema } from "../automations.js";
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
 import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
@@ -66,7 +67,7 @@ function runControlTools(controlRun: ControlRun) {
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 
-export function buildTools(deps: AiDeps) {
+export function buildTools(deps: AiDeps): ToolSet {
   /** The static check behind validate_workflow — also the gate on
    *  create_workflow / edit_workflow, so an invalid YAML never becomes a
    *  version. Registry + workflow list come from deps at call time. */
@@ -114,6 +115,18 @@ export function buildTools(deps: AiDeps) {
   /** Non-blocking: warnings ride along on a successful publish. */
   const withWarnings = <T extends object>(result: T, v: { warnings: Array<{ path: string; message: string }> }) =>
     v.warnings.length ? { ...result, warnings: v.warnings } : result;
+
+  /** A workflow with no owner is adopted by the chat's actor when it publishes
+   *  it (plans/mothership-cost-control.md §2). */
+  const adopt = async (name: string) => {
+    if (!deps.actor) return;
+    const meta = await deps.workspace.getWorkflowMetadata(name).catch(() => null);
+    if (meta && !meta.owner) await deps.workspace.setWorkflowOwner(name, deps.actor);
+  };
+  /** Who a run the builder launches is billed to: the chat's actor, else the
+   *  workflow's owner (the principal rule, §2). */
+  const principalFor = async (name: string) =>
+    deps.actor ?? (await deps.workspace.getWorkflowMetadata(name).catch(() => null))?.owner;
 
   return {
     list_steps: tool({
@@ -292,6 +305,7 @@ export function buildTools(deps: AiDeps) {
           description,
           category,
         );
+        await adopt(finalName);
         // Rebuild registry in case the workflow references new patterns
         deps.registry = await deps.getRegistry();
         return withWarnings(
@@ -358,6 +372,7 @@ export function buildTools(deps: AiDeps) {
         } catch (err) {
           return { error: err instanceof Error ? err.message : String(err) };
         }
+        await adopt(name);
         deps.registry = await deps.getRegistry();
         return withWarnings(
           {
@@ -513,6 +528,64 @@ export function buildTools(deps: AiDeps) {
       },
     }),
 
+    // Schedules (plans/automations.md). Thin wrappers: every rule lives in
+    // the policy layer the HTTP routes share. The RESULT carries the computed
+    // `summary` + `next` fires, so the model confirms from facts.
+    ...(deps.automations
+      ? {
+          list_automations: tool({
+            description:
+              "List automations (schedules that launch a workflow): each with its trigger, a plain-sentence `summary`, " +
+              "`nextRunAt`, its `lastRun`, whether it is `running`, and `lastFireError` when a fire launched nothing. " +
+              "Omit `workflow` to list them all.",
+            inputSchema: z.object({ workflow: z.string().optional().describe("Only this workflow's automations") }),
+            execute: async ({ workflow }) => {
+              try {
+                return { automations: await deps.automations!.list(workflow) };
+              } catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+              }
+            },
+          }),
+
+          set_automation: tool({
+            description:
+              "Create an automation on a workflow, or (with `id`) edit one — only the fields you pass change. Metadata-only: " +
+              "NO workflow version is published. Pause/resume with { id, enabled }. Returns the stored automation plus " +
+              "`summary` (the schedule as a sentence) and `next` (the next five fires, ISO) — confirm to the user from those.",
+            inputSchema: z.object({
+              workflow: z.string().describe("Existing workflow name"),
+              id: z.string().optional().describe("An existing automation's id, to edit it. Omit to create."),
+              name: automationDraftSchema.shape.name.optional().describe("Short human label, e.g. 'Morning mentions digest'. Required to create."),
+              trigger: triggerSchema.optional().describe("WHEN it runs. Required to create. " + (triggerSchema.description ?? "")),
+              input: automationInputSchema.optional(),
+              enabled: z.boolean().optional().describe("false = paused. Default true."),
+            }),
+            execute: async ({ workflow, id, ...fields }) => {
+              try {
+                // Scheduling is an edit: an ownerless workflow is adopted by the chat's actor.
+                await adopt(workflow);
+                return id ? await deps.automations!.update(workflow, id, fields) : await deps.automations!.create(workflow, fields);
+              } catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+              }
+            },
+          }),
+
+          delete_automation: tool({
+            description: "Delete an automation. To stop it temporarily, prefer set_automation { id, enabled: false }.",
+            inputSchema: z.object({ workflow: z.string(), id: z.string() }),
+            execute: async ({ workflow, id }) => {
+              try {
+                return await deps.automations!.remove(workflow, id);
+              } catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+              }
+            },
+          }),
+        }
+      : {}),
+
     set_active_version: tool({
       description:
         "ROLLBACK: make a prior version of a workflow or custom step the ACTIVE one — the version runs use (and, for steps, the one loaded in the registry). No new version is published and history is kept; later versions remain available to re-activate. Use this when a newer version turns out worse (\"go back to v2\") instead of republishing old source as yet another version. Call get_workflow first to see a workflow's versions; for a step, an unknown version here reports the available ones.",
@@ -635,6 +708,7 @@ export function buildTools(deps: AiDeps) {
         // wakes it with a [verify-notification].
         if (verifier) deps.watchVerify?.(runId);
         const contract = await pendingContract(flow, name);
+        const principal = await principalFor(name);
         const promise = runWorkflow(flow, coerceJsonArg(input) ?? {}, deps.registry, {
           runId,
           store: deps.store,
@@ -645,6 +719,8 @@ export function buildTools(deps: AiDeps) {
           workflowHash:
             (await deps.workspace.getWorkflowHash(name, version)) ?? undefined,
           stepHashes: await stepHashesFor(deps.workspace, flow),
+          ...(deps.actor ? { actor: deps.actor } : {}),
+          ...(principal ? { principal } : {}),
         }).finally(() => tracked?.untrack());
 
         // No detach seam (tests / non-chat embedders) → await as before.
@@ -725,6 +801,7 @@ export function buildTools(deps: AiDeps) {
             params: coerceJsonArg(params) as Record<string, unknown> | undefined,
             workspace: deps.workspace,
             keep: keep === true,
+            ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
             ...(cassette
               ? { cassette: { mode: cassette, path: cassettePath(deps.dataDir!, cassetteName ?? type) } }
               : {}),
@@ -897,8 +974,9 @@ export function buildTools(deps: AiDeps) {
       : {}),
 
     // graph_walk: the graph/walk step as a chat tool, streaming each hop as a
-    // preliminary result (walk-tool.ts). Same gate as graph_query.
-    ...(deps.graph
+    // preliminary result (walk-tool.ts). Same gate as graph_query, plus
+    // GRAPH_WALK_TOOL_ENABLED (off for now).
+    ...(GRAPH_WALK_TOOL_ENABLED && deps.graph
       ? {
           graph_walk: graphWalkTool({
             reader: deps.graph.reader,

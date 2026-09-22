@@ -5,12 +5,20 @@ import type { SecretInfo } from "../secret-store.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { lsSteps } from "./stepHelpers.js";
 
+/** Offer the builder chat the `graph_walk` tool (walk-tool.ts). Off for now —
+ *  the code stays in the repo; flip to `true` to bring it back. */
+export const GRAPH_WALK_TOOL_ENABLED = false;
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface AiDeps {
   workspace: WorkspaceStore;
   registry: StepRegistry;
   store: RunStore;
+  /** The chat's actor (`ChatMeta.actor`): the runs the builder launches are
+   *  billed to it, and a workflow it publishes with no owner adopts it
+   *  (plans/mothership-cost-control.md §2). Optional. */
+  actor?: string;
   /** Local directory for cassettes (`run_step` record/replay). Optional:
    *  without it, cassette modes report an error instead of recording. */
   dataDir?: string;
@@ -47,6 +55,9 @@ export interface AiDeps {
    *  tools and the `claims` arg on the publish tools, and puts the claims
    *  section in the system prompt. Optional: absent → none of that. */
   claims?: import("../claims-authoring.js").ClaimsAuthoring | null;
+  /** Automations (plans/automations.md): offers list_automations /
+   *  set_automation / delete_automation. Optional: absent → not offered. */
+  automations?: import("../scheduler.js").Automations;
   /** The verify pass (plans/claims.md §4), wherever `claims` is: backs
    *  `verify_run` / `add_evidence`, runs `publish` checks after a publish,
    *  and verifies kept `run_step` runs. Optional: without it claims can
@@ -227,8 +238,8 @@ Tools:
 - create_step / edit_step: author or revise a custom step (see above).
 - bash(command, timeoutMs?): BUILD-TIME shell in the workspace dir (when offered) — probe an API's real response shape with curl before authoring a step, clone a repo into scratch/ to study a format, check a CLI exists, inspect a run's file outputs under artifacts/<runId>/. Env is scrubbed (no server API keys — probe authed APIs via run_step with a real secret instead). NEVER a substitute for ctx.services.http/secrets/shell inside a step: a step that uses the global fetch, process.env, or child_process directly is wrong — it breaks cassette record/replay and secret scrubbing. To run a CLI or a script from a WORKFLOW, use the exec step (cmd + args; or cmd: uv, args: [run] + an inline Python script with a PEP 723 dependency header — uv installs the packages on the fly).
 - graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the strut graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. Nodes carry their type as a label plus :Node:Data_Bank and {ref_id, node_key, namespace} — filter on namespace. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
-- graph_walk(goal, query) (when offered): walk the graph for evidence about a workflow or step — for "does X work?", "why does X fail?", "what do X's claims say?", call it BEFORE answering, with goal = the user's question and query = the workflow/step name. It returns the kept nodes (versions, runs, claims, checks, supporting/refuting evidence); answer from them and cite node names. The user watches the walk as a live graph.
-- web_search / web_fetch (when offered): search the web / read a page by URL — for API documentation while authoring (endpoint shapes, auth schemes, rate limits; fetch the docs page a search turned up), not something workflows can call (a workflow agent gets the same web_search + web_fetch built into the agent step).
+${GRAPH_WALK_TOOL_ENABLED ? `- graph_walk(goal, query) (when offered): walk the graph for evidence about a workflow or step — for "does X work?", "why does X fail?", "what do X's claims say?", call it BEFORE answering, with goal = the user's question and query = the workflow/step name. It returns the kept nodes (versions, runs, claims, checks, supporting/refuting evidence); answer from them and cite node names. The user watches the walk as a live graph.
+` : ""}- web_search / web_fetch (when offered): search the web / read a page by URL — for API documentation while authoring (endpoint shapes, auth schemes, rate limits; fetch the docs page a search turned up), not something workflows can call (a workflow agent gets the same web_search + web_fetch built into the agent step).
 - run_step("<type>", config?, input?, params?, cassette?, cassetteName?): run ONE step in isolation and get its output — the inner loop for authoring an adapter, no workflow needed. After create_step, call run_step to test it. Use cassette:"record" for the first live run (captures external calls to a fixture, secrets scrubbed), then cassette:"replay" to iterate offline (deterministic, no rate limits, no side effects) while you edit_step.
 - list_workflows(): list existing workflows (name, active version, versions, description). Check this before creating a new workflow or referencing one in a subflow.
 - get_workflow("<name>", version?): read an existing workflow's full YAML + version metadata. Call before editing, referencing, or reusing a workflow you didn't just write.
@@ -237,6 +248,7 @@ Tools:
 - set_active_version(kind, "<name>", "<version>"): ROLLBACK — make a prior version of a workflow or custom step the active one (the one runs and the registry use). No new version is published; history is kept. Use this when a new version turns out worse ("go back to v2") instead of republishing old source as a fresh version.
 - cancel_run / pause_run / resume_run("<name>", "<runId>") (when offered): control a run that is LIVE in this process — e.g. a detached run_workflow you launched with the wrong input, or one you want to stop after seeing partial output in get_run. Only live runs; a finished run reports its terminal status instead. resume_run continues a run you paused.
 - set_workflow_category("<name>", category|null): set or clear a workflow's sidebar category without publishing a version. Use for "categorize/group these workflows" requests.
+- list_automations / set_automation / delete_automation (when offered): SCHEDULES — "run this every weekday at 9", "check mentions every 15 minutes", "pause the nightly sync". An automation is workflow METADATA: { name, trigger, input, enabled }. NEVER publish a workflow version to add, change or pause a schedule, and never write a cron string — the trigger is a closed grammar by \`every\`: interval { minutes, on?, between? } · day { at } · week { on, at } · month { day: 1–28 | "last" | { nth, weekday }, at } · once { at: "YYYY-MM-DDTHH:MM" }; days are mon…sun, times 24-hour "HH:MM", \`tz\` an IANA zone (omitted = the SERVER's zone — if the user named no zone, say which one you assumed). You translate the request into that object; the tool computes every date. Its RESULT carries \`summary\` (the schedule as a sentence) and \`next\` (the next five fires): confirm to the user from THOSE, not from your own arguments. \`input\` is the run's input and may use three fire-time roots: {{ now }} (ISO instant), {{ today }} (YYYY-MM-DD in the trigger's zone), {{ last.output.x }} (output of this automation's latest SUCCESSFUL run — the cursor idiom for polling: have the workflow RETURN the newest id/timestamp it saw, and feed it back as the next run's input). On the first fire last.output is {} and a key that resolves to undefined is dropped, so the workflow must tolerate the missing key (\`input.since_id || ""\`); defaults use \`||\` — \`??\` is not supported. A failed run does not advance \`last\`, and a fire is skipped while the automation's previous run is still going. Run the workflow once with run_workflow BEFORE scheduling it.
 - run_workflow("<name>", input?, params?, version?): run a published workflow and return its result. LONG RUNS AUTO-DETACH: if the run is still executing after the wait window (~a minute), the call returns { status: "running", detached: true, runId } and the run continues in the background. When it finishes, a "[run-notification]" user message will automatically start your next turn with the outcome (several runs finishing while you work arrive batched in one message). Do NOT poll get_run in a loop while waiting — finish your turn normally, stating what you launched and what you plan to do when the result arrives.
 - list_runs("<name>", limit?): a workflow's past runs (newest first) with status/duration — for inspecting history or comparing experiment runs.
 - get_run("<name>", "<runId>", fullEvents?): one run's summary (input/output/error) + event log (slimmed by default; fullEvents:true for per-step payloads) — for debugging a failed run.
