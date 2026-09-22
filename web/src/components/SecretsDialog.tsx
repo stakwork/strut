@@ -15,6 +15,7 @@ export function SecretsDialog(props: { onClose: () => void }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
 
   const refresh = async () => {
     try {
@@ -65,6 +66,10 @@ export function SecretsDialog(props: { onClose: () => void }) {
   };
 
   const existingNames = new Set(secrets.map((s) => s.name));
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? secrets.filter((s) => s.name.toLowerCase().includes(q))
+    : secrets;
 
   return (
     <div
@@ -73,7 +78,7 @@ export function SecretsDialog(props: { onClose: () => void }) {
         if (e.target === e.currentTarget) props.onClose();
       }}
     >
-      <div class="dialog">
+      <div class="dialog secrets-dialog">
         <div class="dialog-title">Secrets</div>
         <div class="dialog-hint" style="margin-bottom:12px;">
           Deployment-wide credentials read by steps via{" "}
@@ -81,11 +86,30 @@ export function SecretsDialog(props: { onClose: () => void }) {
           they're never shown again after saving.
         </div>
 
+        {secrets.length > 0 && (
+          <div class="secret-search">
+            <input
+              type="search"
+              value={query}
+              placeholder={`Filter ${secrets.length} secrets by name…`}
+              onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+            />
+            {q && (
+              <span class="secret-count">
+                {shown.length} / {secrets.length}
+              </span>
+            )}
+          </div>
+        )}
+
         <div class="secret-list">
           {secrets.length === 0 && (
             <div class="secret-empty">No secrets yet.</div>
           )}
-          {secrets.map((s) => (
+          {secrets.length > 0 && shown.length === 0 && (
+            <div class="secret-empty">No secrets match "{query.trim()}".</div>
+          )}
+          {shown.map((s) => (
             <div class="secret-row" key={s.name}>
               <span class="secret-name">{s.name}</span>
               <span class="secret-meta">
