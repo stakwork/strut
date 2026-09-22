@@ -75,6 +75,9 @@ export interface Automations {
   preview(trigger: unknown): AutomationsResult<{ summary: string; next: string[] }>;
   /** "Run now": the scheduler's fire path, off-schedule. */
   fire(workflow: string, id: string): Promise<AutomationsResult<{ runId: string }>>;
+  /** Drop a workflow's schedules from the tick loop (the workflow is being
+   *  deleted; its metadata goes with it). */
+  forget(workflow: string): void;
   /** Begin ticking (idempotent). The timer is unref'd. */
   start(): void;
   stop(): void;
@@ -308,6 +311,8 @@ export function createAutomations(deps: AutomationsDeps): Automations {
   }
 
   return {
+    forget: (workflow) => setEntries(workflow, []),
+
     async list(workflow) {
       if (workflow !== undefined) {
         const list = await stored(workflow);

@@ -762,7 +762,7 @@ interface WorkspaceStore {
   createWorkflow(...): Promise<{ name: string; version: string }>;
   publishWorkflow(...): Promise<void>;
   publishWorkflowByContent(...): Promise<{ version: string; changed: boolean }>;
-  setWorkflowCategory / setActiveVersion / setParam
+  setWorkflowCategory / setActiveVersion / setParam / deleteWorkflow
 
   // Steps (custom tier)
   listSteps(filter?): Promise<StepListEntry[]>;
@@ -793,6 +793,7 @@ The engine ships with an HTTP server (Hono) that exposes all operations. Set `ST
 | GET    | `/workflows/:name/:version`    | Get workflow YAML source for a specific version                  |
 | POST   | `/workflows/:name`             | Publish new version: `{ version, steps }` or `{ version, yaml }` |
 | PUT    | `/workflows/:name/active`      | Set active version: `{ version }`                                |
+| DELETE | `/workflows/:name`             | Delete: every version, metadata + runs; 409 while a run is live (auth) |
 | POST   | `/workflows/:name/run`         | Run active version: `{ input?, params?, runId? }`                |
 | POST   | `/workflows/:name/:version/run`| Run specific version: `{ input?, params?, runId? }`              |
 

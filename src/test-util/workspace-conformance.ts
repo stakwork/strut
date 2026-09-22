@@ -124,6 +124,36 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await ws.listWorkflows()).find((w) => w.name === "wf")?.automations, undefined);
     });
 
+    it("deleteWorkflow removes every version and all metadata; the name starts over", async () => {
+      const automations: Automation[] = [
+        { id: "a-1", name: "Morning", enabled: true, trigger: { type: "schedule", every: "day", at: ["09:00"], tz: "UTC" }, input: {} },
+      ];
+      await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "old" } }, "first", "exp");
+      await ws.publishWorkflowByContent("wf", (await ws.getWorkflowSource("wf", "v1")).replace("old", "new"));
+      await ws.setWorkflowAutomations("wf", automations);
+      await ws.setWorkflowOwner("wf", "alice-1");
+      await ws.setWorkflowRunCap("wf", 2.5);
+      await ws.publishWorkflow("other", "v1", { steps });
+
+      assert.equal(await ws.deleteWorkflow("wf"), true);
+      assert.equal(await ws.deleteWorkflow("wf"), false, "already gone");
+      assert.equal(await ws.deleteWorkflow("never"), false);
+      assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["other"]);
+      assert.equal(await ws.getWorkflowMetadata("wf"), null);
+      assert.equal(await ws.getWorkflowHash("wf"), null);
+      await assert.rejects(() => ws.getWorkflow("wf"), /not found/);
+
+      // The name is free, and nothing of the old one rides along.
+      assert.equal((await ws.createWorkflow("wf", { steps })).name, "wf");
+      const meta = await ws.getWorkflowMetadata("wf");
+      assert.deepEqual(Object.keys(meta!.versions), ["v1"]);
+      assert.equal(meta!.active, "v1");
+      assert.equal(meta!.category, undefined);
+      assert.equal(meta!.owner, undefined);
+      assert.equal(meta!.maxRunCostUsd, undefined);
+      assert.equal(meta!.automations, undefined);
+    });
+
     it("owner and run cap are workflow-level metadata: set, survive a publish, clear", async () => {
       const meta = () => ws.getWorkflowMetadata("wf");
       await ws.publishWorkflow("wf", "v1", { steps });
