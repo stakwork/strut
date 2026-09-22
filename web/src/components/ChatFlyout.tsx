@@ -10,6 +10,7 @@ import { NoticeView } from "./NoticeView";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { Markdown } from "./Markdown";
 import { WalkView } from "./WalkView";
+import { replaceUrl } from "../embed";
 
 // ── Chat Flyout (AI workflow builder) ──────────────────────────────────────
 
@@ -37,7 +38,7 @@ function setChatUrlParam(id: string | null) {
   const url = new URL(location.href);
   if (id) url.searchParams.set(CHAT_URL_PARAM, id);
   else url.searchParams.delete(CHAT_URL_PARAM);
-  history.replaceState(null, "", url);
+  replaceUrl(url);
 }
 
 // Server-initiated wake-up messages (a detached run finished; a run was
