@@ -269,6 +269,14 @@ export const setWorkflowRunCap = (name: string, maxRunCostUsd: number | null) =>
     body: JSON.stringify({ maxRunCostUsd }),
   });
 
+/** Claim ownerless workflows for whoever this request is from (all of them
+ *  when `workflows` is omitted). Never takes one someone else owns. */
+export const claimWorkflows = (workflows?: string[]) =>
+  fetchJSON<{ actor: string; claimed: string[]; skipped: Array<{ workflow: string; owner?: string; reason: string }> }>("/actor/claim", {
+    method: "POST",
+    body: JSON.stringify(workflows ? { workflows } : {}),
+  });
+
 /** Does this deployment route LLM spend through the Mothership? The run-cap
  *  chip is only shown then — without it nothing enforces the number. */
 export const getMothership = () =>

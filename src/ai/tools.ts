@@ -560,6 +560,8 @@ export function buildTools(deps: AiDeps) {
             }),
             execute: async ({ workflow, id, ...fields }) => {
               try {
+                // Scheduling is an edit: an ownerless workflow is adopted by the chat's actor.
+                await adopt(workflow);
                 return id ? await deps.automations!.update(workflow, id, fields) : await deps.automations!.create(workflow, fields);
               } catch (err) {
                 return { error: err instanceof Error ? err.message : String(err) };

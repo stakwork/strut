@@ -13,6 +13,7 @@ import { load as loadPref, save as savePref } from "./storage";
 import { ChatFlyout } from "./components/ChatFlyout";
 import { CategoryEditor } from "./components/CategoryEditor";
 import { RunCapEditor } from "./components/RunCapEditor";
+import { OwnerEditor } from "./components/OwnerEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -875,6 +876,15 @@ export function App() {
               workflow={selectedWf}
               category={selectedEntry?.category}
               categories={categories}
+              onSaved={refreshWorkflows}
+            />
+          )}
+          {selectedWf && mothership && (
+            <OwnerEditor
+              key={`owner:${selectedWf}`}
+              workflow={selectedWf}
+              owner={selectedEntry?.owner}
+              unowned={workflows.filter((w) => !w.owner).length}
               onSaved={refreshWorkflows}
             />
           )}

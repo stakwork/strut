@@ -9,7 +9,14 @@ import type { Context, Hono } from "hono";
 import { requireApiKey } from "./auth.js";
 import type { Automations } from "./scheduler.js";
 
-export function automationsRoutes(app: Hono, automations: Automations): void {
+export interface AutomationsRoutesOptions {
+  /** Scheduling is an edit: an ownerless workflow is adopted by the actor
+   *  who schedules it, since its scheduled runs are billed to the owner
+   *  (plans/mothership-cost-control.md §2). Called before create / update. */
+  adopt?: (workflow: string, c: Context) => Promise<void>;
+}
+
+export function automationsRoutes(app: Hono, automations: Automations, opts: AutomationsRoutesOptions = {}): void {
   const body = (c: Context) => c.req.json().catch(() => null) as Promise<unknown>;
   /** Policy results are `{ ok, … } | { error }` — an error is the caller's to fix. */
   const reply = (c: Context, result: object, okStatus: 200 | 201 | 202 = 200) =>
@@ -26,8 +33,14 @@ export function automationsRoutes(app: Hono, automations: Automations): void {
     return reply(c, automations.preview(b?.trigger));
   });
 
-  app.post("/workflows/:name/automations", requireApiKey, async (c) => reply(c, await automations.create(wf(c), await body(c)), 201));
-  app.patch("/workflows/:name/automations/:id", requireApiKey, async (c) => reply(c, await automations.update(wf(c), id(c), await body(c))));
+  app.post("/workflows/:name/automations", requireApiKey, async (c) => {
+    await opts.adopt?.(wf(c), c);
+    return reply(c, await automations.create(wf(c), await body(c)), 201);
+  });
+  app.patch("/workflows/:name/automations/:id", requireApiKey, async (c) => {
+    await opts.adopt?.(wf(c), c);
+    return reply(c, await automations.update(wf(c), id(c), await body(c)));
+  });
   app.delete("/workflows/:name/automations/:id", requireApiKey, async (c) => reply(c, await automations.remove(wf(c), id(c))));
 
   // Run now. A skip (previous run still in flight) is a 409, not a bad request.

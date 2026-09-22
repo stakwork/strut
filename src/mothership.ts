@@ -30,7 +30,7 @@
 import type { Hono } from "hono";
 import type { Attenuation, AttenuationCaveats, Macaroon } from "gatekey";
 import { randomBytes } from "node:crypto";
-import { requireApiKey } from "./auth.js";
+import { principalRequired, requireApiKey } from "./auth.js";
 import { FileSecretStore, type SecretStore } from "./secret-store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { LlmAuth, LlmAuthContext, LlmAuthResult } from "./llm.js";
@@ -242,7 +242,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
    *  id, re-linked within an hour of its exp or when the delegation changed). */
   const runLinks = new Map<string, RunLink>();
 
-  const required = () => process.env["STRUT_MOTHERSHIP_REQUIRED"] === "1";
+  const required = principalRequired;
   const nonce = () => randomBytes(16).toString("hex");
   const caveats = (agents: string[], runId: string, capUsd: number, exp: string): AttenuationCaveats => ({
     agents,

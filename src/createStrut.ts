@@ -1649,7 +1649,36 @@ export async function createStrut<TServices = unknown>(
     launch: (flow, input, automation) => launchDetached(flow, { input }, { origin: "schedule", automation }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
   });
-  automationsRoutes(app, automations);
+  // Scheduling adopts an ownerless workflow: the scheduler's runs are billed
+  // to the owner, and whoever schedules it just made it spend (§2).
+  automationsRoutes(app, automations, { adopt: async (name, c) => adoptWorkflow(name, await resolveActor(c)) });
+
+  // Claim ownerless workflows for the request actor — the migration for a
+  // workspace that predates owners (seeded lab workflows, script publishes).
+  // Never re-owns: a workflow someone else owns is reported, not taken;
+  // transfers are `PUT /workflows/:name/owner`. Omit `workflows` for all.
+  app.post("/actor/claim", async (c) => {
+    const actor = await resolveActor(c);
+    if (!actor) return c.json({ error: "no actor on this request — nothing to claim for" }, 400);
+    const body = await c.req.json<{ workflows?: unknown }>().catch(() => ({}) as { workflows?: unknown });
+    if (body.workflows !== undefined && !(Array.isArray(body.workflows) && body.workflows.every((w) => typeof w === "string"))) {
+      return c.json({ error: "workflows must be a list of names" }, 400);
+    }
+    const names = (body.workflows as string[] | undefined) ?? (await workspace.listWorkflows()).map((w) => w.name);
+    const claimed: string[] = [];
+    const skipped: Array<{ workflow: string; owner?: string; reason: string }> = [];
+    for (const name of names) {
+      const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
+      if (!meta) skipped.push({ workflow: name, reason: "not found" });
+      else if (meta.owner === actor) skipped.push({ workflow: name, owner: actor, reason: "already yours" });
+      else if (meta.owner) skipped.push({ workflow: name, owner: meta.owner, reason: "owned by someone else — transfer instead" });
+      else {
+        await workspace.setWorkflowOwner(name, actor);
+        claimed.push(name);
+      }
+    }
+    return c.json({ actor, claimed, skipped });
+  });
   if (opts.scheduler === undefined ? process.env["STRUT_SCHEDULER"] !== "0" : opts.scheduler) automations.start();
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks

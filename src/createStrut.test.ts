@@ -1059,4 +1059,65 @@ describe("actors and the principal rule", () => {
     assert.deepEqual(summary.output, { actor: "alice-1", principal: "alice-1" });
     assert.equal(summary.principal, "alice-1");
   });
+
+  it("scheduling adopts an ownerless workflow; with the Mothership required, an unowned schedule is refused at the door and at fire time", async () => {
+    const { strut, call } = await boot({ resolveActor: (c) => c.req.header("x-test-actor") || undefined });
+    const draft = { name: "Nightly", trigger: { every: "day", at: ["09:00"], tz: "UTC" } };
+    // Whoever schedules an ownerless workflow becomes its owner…
+    const made = await call("POST", "/workflows/wf/automations", draft, { "x-test-actor": "alice-1" });
+    assert.equal(made.status, 201, JSON.stringify(made.json));
+    assert.equal((await strut.workspace.getWorkflowMetadata("wf"))!.owner, "alice-1");
+    // …and a later scheduler does not take it over.
+    await call("PATCH", `/workflows/wf/automations/${made.json.automation.id}`, { name: "Renamed" }, { "x-test-actor": "bob-2" });
+    assert.equal((await strut.workspace.getWorkflowMetadata("wf"))!.owner, "alice-1");
+
+    await strut.workspace.publishWorkflow("orphan", "v1", { steps: STEPS });
+    process.env["STRUT_MOTHERSHIP_REQUIRED"] = "1";
+    try {
+      // Nobody present, nobody to bill: refused, and the workflow stays as it was.
+      const refused = await call("POST", "/workflows/orphan/automations", draft);
+      assert.equal(refused.status, 400);
+      assert.match(refused.json.error, /no owner/);
+      assert.equal((await strut.workspace.getWorkflowMetadata("orphan"))!.automations, undefined);
+      // A paused one is fine to store; enabling it is not.
+      const paused = await call("POST", "/workflows/orphan/automations", { ...draft, enabled: false });
+      assert.equal(paused.status, 201);
+      const id = paused.json.automation.id as string;
+      assert.match((await call("PATCH", `/workflows/orphan/automations/${id}`, { enabled: true })).json.error, /no owner/);
+      // Fire launches nothing and says why where the flyout shows it.
+      const fired = await call("POST", `/workflows/orphan/automations/${id}/fire`);
+      assert.equal(fired.status, 400);
+      assert.match(fired.json.error, /no owner/);
+      assert.match((await call("GET", "/automations?workflow=orphan")).json.automations[0].lastFireError, /no owner/);
+      // A person scheduling it adopts it, and then it runs — billed to them.
+      assert.equal((await call("PATCH", `/workflows/orphan/automations/${id}`, { enabled: true }, { "x-test-actor": "carol-3" })).status, 200);
+      const ok = await call("POST", `/workflows/orphan/automations/${id}/fire`);
+      assert.equal(ok.status, 202, JSON.stringify(ok.json));
+    } finally {
+      delete process.env["STRUT_MOTHERSHIP_REQUIRED"];
+    }
+  });
+
+  it("POST /actor/claim: claims every ownerless workflow (or the named ones) for the actor, never one someone else owns", async () => {
+    const { strut, call } = await boot({ resolveActor: (c) => c.req.header("x-test-actor") || undefined });
+    for (const name of ["a", "b", "c"]) await strut.workspace.publishWorkflow(name, "v1", { steps: STEPS });
+    await strut.workspace.setWorkflowOwner("c", "bob-2");
+    assert.equal((await call("POST", "/actor/claim", {})).status, 400, "no actor → nothing to claim for");
+    assert.equal((await call("POST", "/actor/claim", { workflows: "a" }, { "x-test-actor": "alice-1" })).status, 400);
+
+    const one = await call("POST", "/actor/claim", { workflows: ["a", "nope"] }, { "x-test-actor": "alice-1" });
+    assert.equal(one.status, 200);
+    assert.deepEqual(one.json.claimed, ["a"]);
+    assert.deepEqual(one.json.skipped.map((s: any) => [s.workflow, s.reason]), [["nope", "not found"]]);
+
+    const all = await call("POST", "/actor/claim", {}, { "x-test-actor": "alice-1" });
+    assert.equal(all.json.actor, "alice-1");
+    assert.deepEqual(all.json.claimed.sort(), ["b", "wf"]);
+    assert.deepEqual(
+      all.json.skipped.map((s: any) => [s.workflow, s.owner]).sort(),
+      [["a", "alice-1"], ["c", "bob-2"]],
+    );
+    const owners = Object.fromEntries((await call("GET", "/workflows")).json.map((w: any) => [w.name, w.owner]));
+    assert.deepEqual(owners, { a: "alice-1", b: "alice-1", c: "bob-2", wf: "alice-1" });
+  });
 });

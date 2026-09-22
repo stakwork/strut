@@ -190,7 +190,7 @@ docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs 
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
 | `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
-| `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` makes an LLM call with no principal, or no delegation on file for it, a step error instead of a direct provider call. |
+| `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` = every LLM call must have someone to bill: a call with no principal, or no delegation on file for it, is a step error instead of a direct provider call, and an enabled automation on an ownerless workflow is refused when scheduled and when it fires (`lastFireError`). Set it wherever the Mothership is mounted. |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
@@ -301,8 +301,13 @@ module. Strut core knows two generic hooks and nothing about macaroons:
   no login). The default honors `x-strut-actor` only alongside a configured,
   matching `STRUT_API_KEY`; mcp passes its own hook (the verified JWT's `sub`).
 
-**Stamps.** `WorkflowMetadata.owner` is set by the first publish that carries
-an actor and changed only by `PUT /workflows/:name/owner` (gated). A run
+**Stamps.** `WorkflowMetadata.owner` is set by the first publish — or the
+first schedule — that carries an actor, and changed only by
+`PUT /workflows/:name/owner` (gated). `POST /actor/claim { workflows? }`
+claims every ownerless workflow (or the named ones) for the request actor and
+never takes one someone else owns — the migration for a workspace that
+predates owners (seeded lab workflows, script publishes); the topbar's owner
+chip offers it as "Claim" / "Claim all unowned". A run
 records `actor` (who launched it) and `principal` (who pays: the actor, else
 the owner — so an automation's spend lands on the owner) on `run.start` and
 the summary, and hands both to every step as `ctx.actor` / `ctx.principal`. A

@@ -18,7 +18,13 @@
 > automations, chat tools, `meta/run-workflow`, the verify pass, single
 > steps, resume), `owner` + `maxRunCostUsd` on `WorkflowMetadata` with
 > `PUT /workflows/:name/owner` (gated) and `/run-cap`, `ChatMeta.actor`,
-> the topbar cap chip (shown only when the module is mounted). Two
+> the topbar cap and owner chips (shown only when the module is mounted).
+> Ownerless workflows: scheduling adopts (whoever schedules an ownerless
+> workflow owns it), `POST /actor/claim` migrates a workspace that predates
+> owners, and with `STRUT_MOTHERSHIP_REQUIRED=1` an enabled automation on
+> an ownerless workflow is refused when scheduled and when it fires — the
+> answer to the "lapsed delegation" open question below is the same
+> refusal, not a fallback to direct keys. Two
 > deviations from the text below: the module's routes are mounted with
 > `mount(strut)` (it needs the workspace for run caps), and `GET
 > /llm/delegations` is gated like the mutations. AGENTS.md "Mothership

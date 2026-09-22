@@ -76,6 +76,17 @@ export function actorFromHeader(c: Context): string | undefined {
   return v ? v : undefined;
 }
 
+/**
+ * `STRUT_MOTHERSHIP_REQUIRED=1`: every LLM call must have someone to bill.
+ * Read by the Mothership module (a call with no principal, or no delegation
+ * for it, is a step error) and by the scheduler (an automation on an
+ * ownerless workflow is refused at the door instead of dying at its first
+ * LLM step) — see plans/mothership-cost-control.md §2.
+ */
+export function principalRequired(): boolean {
+  return process.env["STRUT_MOTHERSHIP_REQUIRED"] === "1";
+}
+
 /** Test-only: reset the one-time-warning state so tests stay deterministic. */
 export function _resetAuthState(): void {
   warned = false;
