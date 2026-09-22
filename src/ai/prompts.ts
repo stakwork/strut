@@ -5,6 +5,10 @@ import type { SecretInfo } from "../secret-store.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { lsSteps } from "./stepHelpers.js";
 
+/** Offer the builder chat the `graph_walk` tool (walk-tool.ts). Off for now —
+ *  the code stays in the repo; flip to `true` to bring it back. */
+export const GRAPH_WALK_TOOL_ENABLED = false;
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface AiDeps {
@@ -43,6 +47,9 @@ export interface AiDeps {
    *  tool so the builder can verify what its `graph/*` steps wrote. Optional:
    *  without it the tool isn't offered. */
   graph?: GraphBackend;
+  /** The `graph_walk` decider, injected (tests). Absent → resolved per call
+   *  like graph/walk's (jev, else the deployment's language model). */
+  walkEvaluate?: import("./walk-tool.js").WalkToolDeps["evaluate"];
   /** The claims layer (plans/claims.md), where the host turned it on (a
    *  graph workspace, `StrutOptions.claims` not false): offers the claim
    *  tools and the `claims` arg on the publish tools, and puts the claims
@@ -231,7 +238,8 @@ Tools:
 - create_step / edit_step: author or revise a custom step (see above).
 - bash(command, timeoutMs?): BUILD-TIME shell in the workspace dir (when offered) — probe an API's real response shape with curl before authoring a step, clone a repo into scratch/ to study a format, check a CLI exists, inspect a run's file outputs under artifacts/<runId>/. Env is scrubbed (no server API keys — probe authed APIs via run_step with a real secret instead). NEVER a substitute for ctx.services.http/secrets/shell inside a step: a step that uses the global fetch, process.env, or child_process directly is wrong — it breaks cassette record/replay and secret scrubbing. To run a CLI or a script from a WORKFLOW, use the exec step (cmd + args; or cmd: uv, args: [run] + an inline Python script with a PEP 723 dependency header — uv installs the packages on the fly).
 - graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the strut graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. Nodes carry their type as a label plus :Node:Data_Bank and {ref_id, node_key, namespace} — filter on namespace. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
-- web_search / web_fetch (when offered): search the web / read a page by URL — for API documentation while authoring (endpoint shapes, auth schemes, rate limits; fetch the docs page a search turned up), not something workflows can call (a workflow agent gets the same web_search + web_fetch built into the agent step).
+${GRAPH_WALK_TOOL_ENABLED ? `- graph_walk(goal, query) (when offered): walk the graph for evidence about a workflow or step — for "does X work?", "why does X fail?", "what do X's claims say?", call it BEFORE answering, with goal = the user's question and query = the workflow/step name. It returns the kept nodes (versions, runs, claims, checks, supporting/refuting evidence); answer from them and cite node names. The user watches the walk as a live graph.
+` : ""}- web_search / web_fetch (when offered): search the web / read a page by URL — for API documentation while authoring (endpoint shapes, auth schemes, rate limits; fetch the docs page a search turned up), not something workflows can call (a workflow agent gets the same web_search + web_fetch built into the agent step).
 - run_step("<type>", config?, input?, params?, cassette?, cassetteName?): run ONE step in isolation and get its output — the inner loop for authoring an adapter, no workflow needed. After create_step, call run_step to test it. Use cassette:"record" for the first live run (captures external calls to a fixture, secrets scrubbed), then cassette:"replay" to iterate offline (deterministic, no rate limits, no side effects) while you edit_step.
 - list_workflows(): list existing workflows (name, active version, versions, description). Check this before creating a new workflow or referencing one in a subflow.
 - get_workflow("<name>", version?): read an existing workflow's full YAML + version metadata. Call before editing, referencing, or reusing a workflow you didn't just write.

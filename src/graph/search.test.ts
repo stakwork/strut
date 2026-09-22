@@ -136,7 +136,7 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
       { type: "StrutWorkflow", data: { name: "harvey", description: "Legal research assistant" } },
       { type: "StrutWorkflow", data: { name: "gaia-eval", description: "Benchmark runs against GAIA questions", usage_count_30d: 50 } },
       { type: "StrutWorkflow", data: { name: "hidden-one", description: "Deliver memos" } },
-      { type: "StrutRun", data: { run_id: "r1", workflow_name: "harvey-deliver", status: "success", summary: "Delivered 60 of 60 memos", started_at: 1 } },
+      { type: "StrutRun", data: { run_id: "r1", workflow_name: "harvey-deliver", run_status: "success", summary: "Delivered 60 of 60 memos", started_at: 1 } },
       { type: "StrutStep", data: { step_type: "video/transcribe", description: "Transcribe audio", input_schema: "{ video_url: string }", output_schema: "{ transcript: string, words: [] }" } },
       { type: "StrutStep", data: { step_type: "email/send", description: "Send an email", input_schema: "{ to: string, body: string }", output_schema: "{ message_id: string }" } },
       { type: "StrutWorkflowVersion", data: { name: "harvey-deliver", content_hash: "c-1", created_at: 1, input_schema: "{ matterId: string }" } },
@@ -283,7 +283,7 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const run = schemas.find((s) => s.type === "StrutRun")!;
     assert.equal(run["domain"], "Strut");
     assert.equal(run["parent"], "Thing");
-    assert.deepEqual(run["index"], ["workflow_name", "status", "summary"]);
+    assert.deepEqual(run["index"], ["workflow_name", "run_status", "summary"]);
     assert.equal(run.attributes["run_id"], "string");
     assert.ok(!("name" in run.attributes), "parent attrs moved out");
     assert.equal(run.inherited_attributes["name"], "string");

@@ -611,6 +611,8 @@ export interface ChatCallbacks {
   onTextDelta: (delta: string) => void;
   onToolCall: (tc: ToolCallInfo) => void;
   onToolResult?: (tr: ToolResultInfo) => void;
+  /** A streaming tool's intermediate yield (graph_walk's hop events). */
+  onToolProgress?: (p: { name: string; toolCallId?: string; output: any }) => void;
   onStepFinish: () => void;
   onFinish: (status: string) => void;
 }
@@ -632,7 +634,7 @@ export interface ChatEvent {
   ts: string;
   chatId: string;
   turn: number;
-  type: "text-delta" | "tool-input" | "tool-output" | "step.finish" | "chat.end" | "chat.error";
+  type: "text-delta" | "tool-input" | "tool-output" | "tool-progress" | "step.finish" | "chat.end" | "chat.error";
   delta?: string;
   toolName?: string;
   toolCallId?: string;
@@ -680,6 +682,12 @@ export async function sendChat(
 /** Load a chat's full transcript + meta (for reload / reattach). */
 export const getChat = (chatId: string) =>
   fetchJSON<ChatTranscript>(`/chat/${chatId}`);
+
+/** A finished tool call's progress outputs (`tool-progress` events), in
+ *  order — for a streaming tool (graph_walk) loaded from history, whose
+ *  stored message holds only the final result. */
+export const getToolProgress = (chatId: string, toolCallId: string) =>
+  fetchJSON<{ outputs: any[] }>(`/chat/${chatId}/progress/${encodeURIComponent(toolCallId)}`);
 
 /** List chat sessions (newest first). */
 export const listChats = () => fetchJSON<ChatMeta[]>("/chats");
@@ -773,6 +781,9 @@ function dispatchChatEvent(e: ChatEvent, cb: ChatCallbacks): void {
         toolCallId: e.toolCallId,
         isError: e.isError,
       });
+      break;
+    case "tool-progress":
+      cb.onToolProgress?.({ name: e.toolName ?? "", toolCallId: e.toolCallId, output: e.output });
       break;
     case "step.finish":
       cb.onStepFinish();

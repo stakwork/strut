@@ -67,6 +67,7 @@ export type ChatEventType =
   | "text-delta"
   | "tool-input"
   | "tool-output"
+  | "tool-progress"
   | "step.finish"
   | "chat.end"
   | "chat.error";
@@ -80,7 +81,8 @@ export interface ChatEvent {
   type: ChatEventType;
   /** text-delta */
   delta?: string;
-  /** tool-input / tool-output */
+  /** tool-input / tool-output / tool-progress (a preliminary result — a
+   *  streaming tool's intermediate yield; never stored in messages.jsonl) */
   toolName?: string;
   toolCallId?: string;
   input?: unknown;
