@@ -105,7 +105,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 910 unit tests across 49 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 950 unit tests across 50 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -121,7 +121,9 @@ strut/
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
-        │   ├── AutomationsFlyout.tsx # a workflow's schedules: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
+        │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
+        │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
+        │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc
         │   ├── CreateDialog.tsx      # new-workflow dialog
@@ -848,9 +850,19 @@ and the child env is scrubbed by construction).
   the same cursor. Both doors are thin: the routes and the chat tools
   (`set_automation`'s RESULT carries `summary` + `next`, so the model
   confirms from computed facts) call the same `createAutomations` layer.
-  UI is per-workflow: the topbar **Automate** button opens
-  `AutomationsFlyout`; scheduled workflows and scheduled runs carry a clock
-  badge in the sidebar.
+  UI is per-workflow: the topbar **Workflow** button opens `WorkflowFlyout`
+  (the Automate tab is `AutomationsPanel`); scheduled workflows and scheduled
+  runs carry a clock badge in the sidebar.
+
+- **Deleting a workflow** (`DELETE /workflows/:name`, gated; the Workflow
+  flyout's footer). Three layers, in order: `automations.forget` drops its
+  schedules from the tick loop, `RunStore.deleteRuns` removes its run
+  records, `WorkspaceStore.deleteWorkflow` removes every version + metadata
+  (`rm -rf` of the workflow directory on files; soft-delete on the graph,
+  with schedules / owner / cap / category cleared FIRST — the node writer
+  restores a soft-deleted node on a key match, so a later publish under the
+  same name must come back clean). 409 while one of its runs is in flight;
+  the run artifacts under `artifacts/<runId>/` are not touched.
 
 - **Dispatch-mode `run_workflow` + run notifications**
   (`src/ai/notifier.ts`, `plans/dispatch-run-notifications.md`). The chat

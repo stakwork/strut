@@ -1653,6 +1653,22 @@ export async function createStrut<TServices = unknown>(
   // to the owner, and whoever schedules it just made it spend (§2).
   automationsRoutes(app, automations, { adopt: async (name, c) => adoptWorkflow(name, await resolveActor(c)) });
 
+  // Delete a workflow: every version, its metadata (category, owner, cap,
+  // schedules) and its run records. Refused while one of its runs is in
+  // flight — a live run needs somewhere to write; cancel it first. Gated
+  // like the owner transfer: the one workflow mutation nothing undoes from
+  // the UI (the graph backend keeps the nodes, soft-deleted).
+  app.delete("/workflows/:name", requireApiKey, async (c) => {
+    const name = c.req.param("name")!;
+    const live = [...controllers.keys()].filter((k) => k.startsWith(`${name}/`)).length;
+    if (live) return c.json({ error: `Workflow "${name}" has ${live} run${live === 1 ? "" : "s"} in flight — cancel first` }, 409);
+    if (!(await workspace.getWorkflowMetadata(name))) return c.json({ error: `Workflow "${name}" not found` }, 404);
+    automations.forget(name);
+    await store.deleteRuns(name);
+    await workspace.deleteWorkflow(name);
+    return c.json({ ok: true, workflow: name });
+  });
+
   // Claim ownerless workflows for the request actor — the migration for a
   // workspace that predates owners (seeded lab workflows, script publishes).
   // Never re-owns: a workflow someone else owns is reported, not taken;

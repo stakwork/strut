@@ -269,6 +269,10 @@ export const setWorkflowRunCap = (name: string, maxRunCostUsd: number | null) =>
     body: JSON.stringify({ maxRunCostUsd }),
   });
 
+/** Every version, its metadata and its runs. 409 while a run is in flight. */
+export const deleteWorkflow = (name: string) =>
+  fetchJSON<{ ok: boolean; workflow: string }>(`/workflows/${encodeURIComponent(name)}`, { method: "DELETE" });
+
 /** Claim ownerless workflows for whoever this request is from (all of them
  *  when `workflows` is omitted). Never takes one someone else owns. */
 export const claimWorkflows = (workflows?: string[]) =>

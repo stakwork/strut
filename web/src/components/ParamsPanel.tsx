@@ -1,11 +1,9 @@
 import { useState, useEffect } from "preact/hooks";
 import yaml from "js-yaml";
-import { CloseIcon } from "../icons";
-import { FlyoutResizer } from "./FlyoutResizer";
 import { YamlEditor } from "./YamlEditor";
 import { humanize } from "../helpers";
 
-// ── Params Flyout (editable) ───────────────────────────────────────────────
+// ── Params panel (a Workflow flyout tab) ───────────────────────────────────
 //
 // Edit a workflow's `params` block — the tunable default knobs (prompts,
 // rubrics, expected gold, datasets, thresholds) referenced by step configs via
@@ -31,20 +29,18 @@ const dumpYaml = (v: unknown): string => {
   }
 };
 
-export function ParamsFlyout(props: {
-  workflow: string;
+export function ParamsPanel(props: {
   params: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
   /** Reports whether every structured param currently parses (parent blocks
    *  Publish while false). */
   onValidChange?: (valid: boolean) => void;
-  onClose: () => void;
 }) {
   const keys = Object.keys(props.params);
 
   // Freeze each param's editing KIND at mount (string vs yaml) so it doesn't
   // flip mid-edit if a structured value momentarily parses to a scalar. The
-  // flyout remounts on workflow switch, so this re-initializes per workflow.
+  // panel remounts on workflow switch, so this re-initializes per workflow.
   const [kinds] = useState<Record<string, "string" | "yaml">>(() => {
     const m: Record<string, "string" | "yaml"> = {};
     for (const k of keys) m[k] = typeof props.params[k] === "string" ? "string" : "yaml";
@@ -79,41 +75,31 @@ export function ParamsFlyout(props: {
   };
 
   return (
-    <div class="flyout">
-      <FlyoutResizer />
-      <div class="flyout-header">
-        <div>
-          <div class="flyout-eyebrow">Params</div>
-          <div class="flyout-title">{props.workflow}</div>
-        </div>
-        <button class="flyout-close" onClick={props.onClose} aria-label="Close"><CloseIcon /></button>
-      </div>
-      <div class="flyout-body">
-        {keys.length === 0 ? (
-          <div class="flyout-section">
-            <span class="flyout-meta-value">This workflow has no params.</span>
-          </div>
-        ) : (
-          keys.map((k) => (
-            <div class="flyout-section" key={k}>
-              <div class="flyout-section-title">
-                {humanize(k)}
-                {kinds[k] === "yaml" && <span class="param-type-tag">yaml</span>}
-                {invalid[k] && <span class="param-type-tag param-invalid">invalid</span>}
-              </div>
-              <YamlEditor
-                value={drafts[k] ?? ""}
-                language={kinds[k] === "string" ? "text" : "yaml"}
-                onChange={(text) => update(k, text)}
-              />
-            </div>
-          ))
-        )}
+    <div class="flyout-body">
+      {keys.length === 0 ? (
         <div class="flyout-section">
-          <span class="flyout-meta-value">
-            Edits mark the workflow changed — hit Publish to save as a new version. Invalid YAML blocks publishing.
-          </span>
+          <span class="flyout-meta-value">This workflow has no params.</span>
         </div>
+      ) : (
+        keys.map((k) => (
+          <div class="flyout-section" key={k}>
+            <div class="flyout-section-title">
+              {humanize(k)}
+              {kinds[k] === "yaml" && <span class="param-type-tag">yaml</span>}
+              {invalid[k] && <span class="param-type-tag param-invalid">invalid</span>}
+            </div>
+            <YamlEditor
+              value={drafts[k] ?? ""}
+              language={kinds[k] === "string" ? "text" : "yaml"}
+              onChange={(text) => update(k, text)}
+            />
+          </div>
+        ))
+      )}
+      <div class="flyout-section">
+        <span class="flyout-meta-value">
+          Edits mark the workflow changed — hit Publish to save as a new version. Invalid YAML blocks publishing.
+        </span>
       </div>
     </div>
   );

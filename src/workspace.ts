@@ -301,6 +301,11 @@ export interface WorkspaceStore extends SubflowResolver {
    *  read-modify-write of a short list in one process. */
   setWorkflowAutomations(name: string, automations: Automation[]): Promise<void>;
   setActiveVersion(name: string, version: string): Promise<void>;
+  /** Remove a workflow: every version and its metadata (category, owner,
+   *  cap, automations). False when there was nothing to remove. The name is
+   *  free again afterwards — a later workflow under it starts at v1 with no
+   *  metadata. Run records are the run store's (`RunStore.deleteRuns`). */
+  deleteWorkflow(name: string): Promise<boolean>;
   setParam(
     name: string,
     param: string,
@@ -531,6 +536,18 @@ export class FileWorkspaceStore implements WorkspaceStore {
       if (owner) meta.owner = owner;
       else delete meta.owner;
     });
+  }
+
+  async deleteWorkflow(name: string): Promise<boolean> {
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      throw new Error(`Invalid workflow name "${name}"`);
+    }
+    if (!(await this.readWorkflowMetadata(name))) return false;
+    // The whole directory. On a file-backed deployment the run store keeps
+    // this workflow's runs under it (`runs/`) and they go with it — the same
+    // records `RunStore.deleteRuns` removes.
+    await rm(join(this.root, "workflows", name), { recursive: true, force: true });
+    return true;
   }
 
   async setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void> {

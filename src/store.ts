@@ -1,4 +1,4 @@
-import { mkdir, writeFile, appendFile, readdir, readFile, open } from "node:fs/promises";
+import { mkdir, writeFile, appendFile, readdir, readFile, open, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { RunEvent, RunSummary } from "./core.js";
 
@@ -173,6 +173,9 @@ export interface RunStore {
   tailEvents(workflow: string, runId: string, opts?: TailOpts): AsyncGenerator<RunEvent>;
   /** Start time (epoch ms) of the most recent run, or null if never run. */
   lastRunAt(workflow: string): Promise<number | null>;
+  /** Remove every run record of a workflow (a deleted workflow's history).
+   *  Nothing to remove is not an error. */
+  deleteRuns(workflow: string): Promise<void>;
   /** Heal a log left torn by a crash mid-append (a truncated final line with
    *  no newline) so the next append starts on a fresh line instead of being
    *  glued onto the fragment. Called before a durable resume; returns true
@@ -356,16 +359,17 @@ export class FileRunStore implements RunStore {
   }
 
   private runsDir(key: string): string {
-    for (const b of RUN_BUCKETS) {
-      if (!key.startsWith(b.prefix)) continue;
-      // A namespaced step type nests (`clip/compute-times`); nothing else may.
-      const segments = key.slice(b.prefix.length).split("/");
-      if (segments.some((seg) => !seg || seg === "." || seg === ".." || seg.includes("\\"))) {
-        throw new Error(`Invalid run store key "${key}"`);
-      }
-      return join(this.workspaceRoot, b.dir, ...segments, "runs");
+    const bucket = RUN_BUCKETS.find((b) => key.startsWith(b.prefix));
+    // A namespaced step type nests (`clip/compute-times`); no key may escape the root.
+    const segments = (bucket ? key.slice(bucket.prefix.length) : key).split("/");
+    if (segments.some((seg) => !seg || seg === "." || seg === ".." || seg.includes("\\"))) {
+      throw new Error(`Invalid run store key "${key}"`);
     }
-    return join(this.workspaceRoot, "workflows", key, "runs");
+    return join(this.workspaceRoot, bucket?.dir ?? "workflows", ...segments, "runs");
+  }
+
+  async deleteRuns(workflow: string): Promise<void> {
+    await rm(this.runsDir(workflow), { recursive: true, force: true });
   }
 
   private runDir(workflow: string, runId: string): string {
@@ -542,6 +546,13 @@ export class MemoryRunStore implements RunStore {
 
   async getRunSummary(workflow: string, runId: string): Promise<RunSummary | null> {
     return this.summaries.get(this.key(workflow, runId)) ?? null;
+  }
+
+  async deleteRuns(workflow: string): Promise<void> {
+    for (const id of await this.listRuns(workflow)) {
+      this.events.delete(this.key(workflow, id));
+      this.summaries.delete(this.key(workflow, id));
+    }
   }
 
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {

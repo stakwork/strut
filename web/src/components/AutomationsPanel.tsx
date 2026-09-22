@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import * as api from "../api";
-import { CloseIcon, ClockIcon } from "../icons";
-import { FlyoutResizer } from "./FlyoutResizer";
+import { ClockIcon, CloseIcon } from "../icons";
 import { ConfigField } from "./ConfigField";
 import type { InputBinding } from "../run-inputs";
 import {
@@ -22,12 +21,13 @@ import {
 } from "../automation-form";
 import { humanize } from "../helpers";
 
-// ── Automations Flyout (workflow level) ────────────────────────────────────
+// ── Automations panel (a Workflow flyout tab) ──────────────────────────────
 //
 // Run this workflow on a schedule (plans/automations.md). Two states: the
-// LIST of this workflow's automations, and the EDITOR for one. An automation
-// is workflow metadata — saving, pausing or deleting one never publishes a
-// version. The form holds no calendar math: the sentence and the "next runs"
+// LIST of this workflow's automations, and the EDITOR for one (reported up
+// through `onEditingChange`, so the flyout's footer yields to the editor's
+// own action bar). An automation is workflow metadata — saving, pausing or
+// deleting one never publishes a version. The form holds no calendar math: the sentence and the "next runs"
 // list under it come from the server, which is what a person checks a rule
 // against.
 
@@ -54,19 +54,23 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 const when = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-export function AutomationsFlyout(props: {
+export function AutomationsPanel(props: {
   workflow: string;
   /** Resolve the workflow's run inputs (same inference as the Run popover). */
   loadBindings: () => Promise<InputBinding[]>;
   onOpenRun: (workflow: string, runId: string) => void;
   /** The set changed — the parent refreshes the sidebar's clock badges. */
   onChanged: () => void;
-  onClose: () => void;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const [list, setList] = useState<api.AutomationView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** null = list; "new" or an automation = editor. */
   const [editing, setEditing] = useState<api.AutomationView | "new" | null>(null);
+  useEffect(() => {
+    props.onEditingChange?.(editing != null);
+    return () => props.onEditingChange?.(false);
+  }, [editing]);
 
   const refresh = useCallback(async () => {
     try {
@@ -96,16 +100,7 @@ export function AutomationsFlyout(props: {
   };
 
   return (
-    <div class="flyout">
-      <FlyoutResizer />
-      <div class="flyout-header">
-        <div>
-          <div class="flyout-eyebrow">Automations</div>
-          <div class="flyout-title">{props.workflow}</div>
-        </div>
-        <button class="flyout-close" onClick={props.onClose} aria-label="Close"><CloseIcon /></button>
-      </div>
-
+    <>
       {editing ? (
         <AutomationEditor
           key={editing === "new" ? "new" : editing.id}
@@ -165,7 +160,7 @@ export function AutomationsFlyout(props: {
           <button class="btn btn-primary auto-new" onClick={() => setEditing("new")}>New automation</button>
         </div>
       )}
-    </div>
+    </>
   );
 }
 

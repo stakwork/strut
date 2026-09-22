@@ -486,6 +486,22 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     if (patch) await this.backend.nodes.update(w.ref_id, patch);
   }
 
+  /** Soft, like `deleteStep`: the nodes stay, flagged `is_deleted`. A later
+   *  publish under the same name RESTORES the workflow node (the node writer
+   *  clears the flag on a key match), so the metadata that would otherwise
+   *  ride along — schedules, owner, cap, category — is cleared first: the
+   *  new workflow is a new one, not this one back. Versions stay deleted
+   *  unless their exact content is published again. */
+  async deleteWorkflow(name: string): Promise<boolean> {
+    const w = await this.workflowRow(name);
+    if (!w) return false;
+    const remove = (["automations", "owner", "max_run_cost_usd", "category"] as const).filter((k) => w[k] != null);
+    if (remove.length) await this.backend.nodes.update(w.ref_id, { remove: [...remove] });
+    for (const v of await this.versionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
+    await this.backend.nodes.softDelete(w.ref_id);
+    return true;
+  }
+
   async setActiveVersion(name: string, version: string): Promise<void> {
     const w = await this.workflowRow(name);
     if (!w) throw new Error(`Workflow "${name}" not found`);
