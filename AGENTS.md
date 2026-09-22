@@ -960,6 +960,17 @@ and the child env is scrubbed by construction).
 
 ## Conventions
 
+- **A new workspace/graph field needs a schema entry.** The graph node
+  writer rejects any attribute not declared on its type in
+  `src/graph/strut-schemas.ts` (`<Type>.<attr>: attribute is not declared
+  on the schema`). The file and memory stores accept anything, so
+  `npm test` stays green and the break only shows on the graph backend —
+  the default server. When a `WorkspaceStore` method (or the projector)
+  writes a new property: declare it on the schema (optional `?` type —
+  the boot seed only ever ADDS keys, so a deployed graph picks it up on
+  restart), add a case to `src/test-util/workspace-conformance.ts`, and
+  run `npm run test:graph`.
+
 - **Vanilla CSS** with custom properties. Two files only:
   `base.css` (palette + reset) and `components.css` (all
   component classes). No JS styles, no CSS-in-JS, no Tailwind.
