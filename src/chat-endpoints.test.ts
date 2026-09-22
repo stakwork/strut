@@ -421,4 +421,94 @@ describe("chat endpoints", () => {
     }
     assert.deepEqual(await chatStore.listChats(), []);
   });
+  // ── stop (POST /chat/:id/cancel) ─────────────────────────────────────
+
+  /** A stand-in provider that streams the start of a reply, then hangs — a
+   *  turn on it stays live until stopped. */
+  async function stuckProvider(): Promise<{ port: number; close: () => void }> {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const ev = (type: string, data: object) =>
+        res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+      ev("message_start", {
+        message: { id: "m1", type: "message", role: "assistant", model: "claude-sonnet-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } },
+      });
+      ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+      ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "Hello, part" } });
+      // …and never finishes.
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return {
+      port: (server.address() as { port: number }).port,
+      close: () => {
+        server.closeAllConnections();
+        server.close();
+      },
+    };
+  }
+
+  it("POST /chat/:id/cancel is a 404 for an unknown chat and a 409 for an idle one", async () => {
+    const strut = await makeStrut();
+    assert.equal((await strut.app.request("/chat/missing/cancel", { method: "POST" })).status, 404);
+    await chatStore.createChat({ id: "c1" });
+    assert.equal((await strut.app.request("/chat/c1/cancel", { method: "POST" })).status, 409);
+  });
+
+  it("POST /chat/:id/cancel stops a live turn, keeps what streamed, and frees the chat", async () => {
+    const stuck = await stuckProvider();
+    const host = await callbackHost();
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${stuck.port}`;
+    try {
+      const strut = await makeStrut();
+      const post = (body: unknown) =>
+        strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const cancel = (id: string) => strut.app.request(`/chat/${id}/cancel`, { method: "POST" });
+
+      const res = await post({ message: "go", callback: { url: host.url } });
+      assert.equal(res.status, 202);
+      const { chatId } = (await res.json()) as { chatId: string };
+
+      // The partial reply has streamed into the log; the turn is still live.
+      await until(() => (chatStore.events.get(chatId) ?? []).some((e) => e.type === "text-delta"));
+      assert.equal((await chatStore.getMeta(chatId))!.status, "live");
+
+      assert.equal((await cancel(chatId)).status, 200);
+      await settled(chatId);
+      assert.equal((await chatStore.getMeta(chatId))!.status, "done");
+
+      // The turn ended as chat.end { stopped } — an attached tail finishes normally.
+      const text = await (await strut.app.request(`/chat/${chatId}/stream?turn=0`)).text();
+      assert.ok(text.includes('"type":"chat.end"') && text.includes('"stopped":true'), text);
+      assert.ok(!text.includes("chat.error"), text);
+
+      // The transcript holds exactly what streamed before the stop.
+      const messages = await chatStore.loadMessages(chatId);
+      assert.equal(messages.length, 2);
+      assert.equal(messages[1]!.role, "assistant");
+      assert.deepEqual(messages[1]!.content, [{ type: "text", text: "Hello, part" }]);
+
+      // The host hears a done-but-stopped turn, with the partial text…
+      await until(() => host.posts.length === 1);
+      const { body } = host.posts[0];
+      assert.equal(body.status, "done");
+      assert.equal(body.stopped, true);
+      assert.equal(body.text, "Hello, part");
+
+      // …and the chat is free for the next message. Stopping that one before
+      // the model is even called ends it just as cleanly, with nothing added.
+      assert.equal((await post({ chatId, message: "again" })).status, 202);
+      assert.equal((await cancel(chatId)).status, 200);
+      await settled(chatId);
+      assert.equal((await chatStore.getMeta(chatId))!.status, "done");
+      assert.equal((await chatStore.loadMessages(chatId)).length, 3);
+      await until(() => host.posts.length === 2);
+      assert.equal(host.posts[1].body.stopped, true);
+      assert.equal(host.posts[1].body.text, undefined);
+    } finally {
+      stuck.close();
+      host.close();
+    }
+  });
+
 });

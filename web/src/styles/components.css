@@ -1316,6 +1316,13 @@ body.is-resizing-flyout * {
   background: rgba(255, 255, 255, 0.04);
 }
 
+/* The stop square: only rendered while the chat is working. */
+.chat-stop-btn:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
 .chat-history {
   flex: 1;
   overflow-y: auto;

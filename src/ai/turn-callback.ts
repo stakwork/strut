@@ -40,6 +40,9 @@ export interface TurnCallbackPayload {
   /** The turn's final assistant text (`turn.end` with `status: "done"`). */
   text?: string;
   error?: { message: string };
+  /** The turn was stopped (`POST /chat/:id/cancel`): `text` is what streamed
+   *  before the stop, not an answer. */
+  stopped?: true;
   /** Nothing this process knows of will start another turn. */
   settled: boolean;
   /** The auto-turn cap is reached: notifications append to the transcript but
@@ -63,6 +66,7 @@ export interface TurnCallbacks {
     trigger: "human" | "notification";
     text?: string;
     error?: { message: string };
+    stopped?: true;
   }): Promise<void>;
 }
 

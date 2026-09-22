@@ -1761,6 +1761,10 @@ export async function createStrut<TServices = unknown>(
       verifySettled = (r) => void verifyWaker!.settled(r);
     }
 
+    // The live turn's abort handle per chat — `POST /chat/:id/cancel` stops
+    // it. In-process, like the notifier's liveness set.
+    const turnAborts = new Map<string, AbortController>();
+
     /**
      * Run one chat turn detached: build the agent, stream it server-side,
      * persist each fine-grained part to `events.jsonl`, then append the new
@@ -1775,10 +1779,12 @@ export async function createStrut<TServices = unknown>(
       trigger: "human" | "notification" = "human",
     ): void {
       void (async () => {
-        let outcome: { status: "done" | "error"; text?: string; error?: { message: string } } = { status: "done" };
+        let outcome: { status: "done" | "error"; text?: string; error?: { message: string }; stopped?: true } = { status: "done" };
         // Synchronous (before any await): run-notifications arriving during
         // this turn must queue rather than launching a concurrent turn.
         notifier.turnStarted(chatId);
+        const ac = new AbortController();
+        turnAborts.set(chatId, ac);
         const emit = (e: Partial<ChatEvent> & { type: ChatEvent["type"] }) =>
           chatStore.appendEvent(chatId, {
             ts: new Date().toISOString(),
@@ -1927,9 +1933,45 @@ export async function createStrut<TServices = unknown>(
 
           console.log(`[chat ${chatId}] turn ${turn} start (${modelMessages.length} msgs, model ${llm.name})`);
 
+          // For a stop mid-turn (POST /chat/:id/cancel): the completed steps'
+          // messages, collected as they finish, plus the in-flight step as far
+          // as it streamed — so the transcript holds what the user saw, and a
+          // tool call cut off before its result gets a "stopped" result rather
+          // than dangling into the next turn.
+          const doneMessages: any[] = [];
+          let stepText = "";
+          let stepCalls: { toolCallId: string; toolName: string; input: unknown; output?: unknown }[] = [];
+          const setOutput = (toolCallId: string, output: unknown) => {
+            const call = stepCalls.find((c) => c.toolCallId === toolCallId);
+            if (call) call.output = output;
+          };
+          const partialStep = (): any[] => {
+            if (!stepText && stepCalls.length === 0) return [];
+            const assistant = {
+              role: "assistant",
+              content: [
+                ...(stepText ? [{ type: "text", text: stepText }] : []),
+                ...stepCalls.map(({ toolCallId, toolName, input }) => ({ type: "tool-call", toolCallId, toolName, input })),
+              ],
+            };
+            if (stepCalls.length === 0) return [assistant];
+            const tool = {
+              role: "tool",
+              content: stepCalls.map(({ toolCallId, toolName, output }) => ({
+                type: "tool-result",
+                toolCallId,
+                toolName,
+                output: output ?? { type: "error-text", value: "Stopped by the user; this call's result was not recorded." },
+              })),
+            };
+            return [assistant, tool];
+          };
+
           const result = await agent.stream({
             messages: modelMessages,
+            abortSignal: ac.signal,
             onStepEnd: (step) => {
+              doneMessages.push(...step.response.messages);
               const u = step.usage;
               console.log(
                 `[chat ${chatId}] turn ${turn} step ${step.stepNumber} finish=${step.finishReason} tokens=in:${u?.inputTokens ?? "?"}/out:${u?.outputTokens ?? "?"}`,
@@ -1944,50 +1986,68 @@ export async function createStrut<TServices = unknown>(
             },
           });
 
-          for await (const part of result.stream) {
-            switch (part.type) {
-              case "text-delta":
-                if (part.text) await emit({ type: "text-delta", delta: part.text });
-                break;
-              case "tool-call":
-                await emit({
-                  type: "tool-input",
-                  toolName: part.toolName,
-                  toolCallId: part.toolCallId,
-                  input: part.input,
-                });
-                break;
-              case "tool-result":
-                await emit({
-                  type: "tool-output",
-                  toolName: part.toolName,
-                  toolCallId: part.toolCallId,
-                  output: part.output,
-                });
-                break;
-              case "tool-error":
-                await emit({
-                  type: "tool-output",
-                  toolName: part.toolName,
-                  toolCallId: part.toolCallId,
-                  output: part.error instanceof Error ? part.error.message : String(part.error),
-                  isError: true,
-                });
-                break;
-              case "finish-step":
-                await emit({ type: "step.finish" });
-                break;
-              case "error":
-                throw part.error;
+          try {
+            for await (const part of result.stream) {
+              switch (part.type) {
+                case "text-delta":
+                  if (part.text) {
+                    stepText += part.text;
+                    await emit({ type: "text-delta", delta: part.text });
+                  }
+                  break;
+                case "tool-call":
+                  stepCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
+                  await emit({
+                    type: "tool-input",
+                    toolName: part.toolName,
+                    toolCallId: part.toolCallId,
+                    input: part.input,
+                  });
+                  break;
+                case "tool-result":
+                  setOutput(part.toolCallId, { type: "json", value: part.output });
+                  await emit({
+                    type: "tool-output",
+                    toolName: part.toolName,
+                    toolCallId: part.toolCallId,
+                    output: part.output,
+                  });
+                  break;
+                case "tool-error": {
+                  const message = part.error instanceof Error ? part.error.message : String(part.error);
+                  setOutput(part.toolCallId, { type: "error-text", value: message });
+                  await emit({
+                    type: "tool-output",
+                    toolName: part.toolName,
+                    toolCallId: part.toolCallId,
+                    output: message,
+                    isError: true,
+                  });
+                  break;
+                }
+                case "finish-step":
+                  stepText = "";
+                  stepCalls = [];
+                  await emit({ type: "step.finish" });
+                  break;
+                case "error":
+                  throw part.error;
+              }
             }
+          } catch (err) {
+            // A stop can surface as the aborted provider call's throw.
+            if (!ac.signal.aborted) throw err;
           }
 
           // Every step's messages (tool calls + results), not just the last:
-          // v7's `response` is final-step only.
-          const responseMessages = await result.responseMessages;
-          await chatStore.appendMessages(chatId, responseMessages as any);
-          outcome = { status: "done", text: finalAssistantText(responseMessages) };
-          await emit({ type: "chat.end" });
+          // v7's `response` is final-step only. A stopped turn never awaits
+          // the SDK's promises (they reject when no step completed): what it
+          // has is what streamed.
+          const stopped = ac.signal.aborted;
+          const responseMessages = stopped ? [...doneMessages, ...partialStep()] : await result.responseMessages;
+          if (responseMessages.length) await chatStore.appendMessages(chatId, responseMessages as any);
+          outcome = { status: "done", text: finalAssistantText(responseMessages), ...(stopped ? { stopped: true as const } : {}) };
+          await emit({ type: "chat.end", ...(stopped ? { stopped: true as const } : {}) });
           await chatStore.setMeta(chatId, { status: "done" });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -1996,6 +2056,7 @@ export async function createStrut<TServices = unknown>(
           await emit({ type: "chat.error", error: { message } });
           await chatStore.setMeta(chatId, { status: "error" });
         } finally {
+          turnAborts.delete(chatId);
           // Drain run-notifications that queued during this turn — delivers
           // them all in ONE follow-up turn (launched via startTurn above).
           try {
@@ -2173,6 +2234,17 @@ export async function createStrut<TServices = unknown>(
           data: JSON.stringify({ chatId, turn, status: fresh?.status ?? "done" }),
         });
       });
+    });
+
+    // Stop the live turn (the flyout's stop square): abort the agent stream,
+    // keep what streamed, end the turn as `chat.end { stopped: true }`.
+    app.post("/chat/:chatId/cancel", async (c) => {
+      const chatId = c.req.param("chatId");
+      if (!(await chatStore.getMeta(chatId))) return c.json({ error: `Chat "${chatId}" not found` }, 404);
+      const ac = turnAborts.get(chatId);
+      if (!ac) return c.json({ error: `Chat "${chatId}" has no turn in progress` }, 409);
+      ac.abort();
+      return c.json({ ok: true });
     });
 
     // Full chat transcript + meta (for reload / reattach).
