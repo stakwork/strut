@@ -22,6 +22,14 @@ export function CloseIcon({ size = 14, ...rest }: IconProps) {
   );
 }
 
+export function StopIcon({ size = 10, ...rest }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true" {...rest}>
+      <rect x="4" y="4" width="16" height="16" rx="3" />
+    </svg>
+  );
+}
+
 export function CopyIcon({ size = 13, ...rest }: IconProps) {
   return (
     <svg
@@ -120,6 +128,26 @@ export function MicIcon({ size = 15, ...rest }: IconProps) {
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="17" x2="12" y2="21" />
       <line x1="8" y1="21" x2="16" y2="21" />
+    </svg>
+  );
+}
+
+export function ClockIcon({ size = 14, ...rest }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+      {...rest}
+    >
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15.5 14" />
     </svg>
   );
 }

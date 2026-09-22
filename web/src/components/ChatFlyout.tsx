@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from "preact/hooks";
 import * as api from "../api";
 import * as storage from "../storage";
 import { formatJson } from "../helpers";
-import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon } from "../icons";
+import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon } from "../icons";
 import { startDictation, dictationSupported, type Dictation } from "../dictation";
 import { isNotice } from "../notice";
 import { ToolResultView } from "./ToolResultView";
@@ -577,6 +577,12 @@ export function ChatFlyout(props: {
     seenTurn.current = -1;
   }, [detach]);
 
+  // Stop the live turn. The server aborts the agent and ends the turn with
+  // chat.end, so the attached stream finishes and `loading` clears as usual.
+  const stop = useCallback(() => {
+    if (chatId) api.cancelChat(chatId).catch(() => {});
+  }, [chatId]);
+
   // Toggle the history list, fetching the latest sessions when opening.
   const toggleHistory = useCallback(async () => {
     if (showHistory) {
@@ -641,6 +647,11 @@ export function ChatFlyout(props: {
           <div class="flyout-title">Create Workflow</div>
         </div>
         <div class="chat-header-actions">
+          {loading && chatId && (
+            <button class="flyout-close chat-stop-btn" onClick={stop} aria-label="Stop" title="Stop">
+              <StopIcon />
+            </button>
+          )}
           {entries.length > 0 && (
             <button
               class="flyout-close chat-history-btn"

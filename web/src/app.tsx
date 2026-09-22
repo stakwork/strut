@@ -12,10 +12,12 @@ import { deepEqual, normalizeSteps, statusTone } from "./helpers";
 import { load as loadPref, save as savePref } from "./storage";
 import { ChatFlyout } from "./components/ChatFlyout";
 import { CategoryEditor } from "./components/CategoryEditor";
+import { RunCapEditor } from "./components/RunCapEditor";
+import { OwnerEditor } from "./components/OwnerEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { GearIcon } from "./icons";
+import { ClockIcon, GearIcon } from "./icons";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
 import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
 import { StepEditFlyout } from "./components/StepEditFlyout";
@@ -23,9 +25,7 @@ import { StepInfoFlyout } from "./components/StepInfoFlyout";
 import { EventsPanel } from "./components/EventsPanel";
 import { EventsResizer } from "./components/EventsResizer";
 import { StepRunFlyout } from "./components/StepRunFlyout";
-import { ParamsFlyout } from "./components/ParamsFlyout";
-import { ClaimsFlyout } from "./components/ClaimsFlyout";
-import { claimsSummary } from "./components/ClaimsPanel";
+import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
@@ -115,16 +115,17 @@ export function App() {
   // a param and publishing = a new workflow version (params live in the YAML).
   const [wfParams, setWfParams] = useState<Record<string, unknown> | null>(null);
   const [localParams, setLocalParams] = useState<Record<string, unknown> | null>(null);
-  // Whether the Params flyout (editable) is open.
-  const [showParams, setShowParams] = useState(false);
-  // The workflow's Claims flyout, and its contract as last read — null until
-  // probed; `enabled: false` (a filesystem workspace) hides the button.
-  const [showClaims, setShowClaims] = useState(false);
+  // Which workflow-level flyout is open — the Workflow flyout (params /
+  // claims / automations as tabs) or Promote — so they exclude each other by
+  // construction. `wfTab` remembers the tab across open/close.
+  const [panel, setPanel] = useState<"workflow" | "promote" | null>(null);
+  const [wfTab, setWfTab] = useState<WorkflowTab>("params");
+  // The workflow's contract as last read — null until probed;
+  // `enabled: false` (a filesystem workspace) hides the Claims tab.
   const [wfClaims, setWfClaims] = useState<api.ClaimsResponse | null>(null);
   // Declared promotions resolved against the selected run's output (the
-  // "promote a winner" review surface) + whether its flyout is open.
+  // "promote a winner" review surface).
   const [promotions, setPromotions] = useState<api.Promotion[]>([]);
-  const [showPromote, setShowPromote] = useState(false);
   // Whether every structured param currently parses (the flyout reports this);
   // an invalid YAML param blocks Publish while the flyout is open.
   const [paramsValid, setParamsValid] = useState(true);
@@ -154,6 +155,18 @@ export function App() {
   // Viewing history is read-only: editing/publishing/running only make sense
   // against the active version (Publish always builds on active, Run runs it).
   const viewingOld = viewVersion != null && activeVersion != null && viewVersion !== activeVersion;
+  // The Workflow flyout's tabs — only what applies: no params → no Params
+  // tab; claims off (filesystem workspace) → no Claims tab; history view →
+  // no Automate tab (a schedule runs the active version).
+  const workflowTabs = useMemo<WorkflowTab[]>(() => {
+    if (!selectedWf) return [];
+    const tabs: WorkflowTab[] = [];
+    if (localParams && Object.keys(localParams).length > 0) tabs.push("params");
+    if (wfClaims?.enabled) tabs.push("claims");
+    if (!viewingOld) tabs.push("automations");
+    return tabs;
+  }, [selectedWf, localParams, wfClaims, viewingOld]);
+  const activeTab: WorkflowTab | null = workflowTabs.includes(wfTab) ? wfTab : (workflowTabs[0] ?? null);
 
   // Mirror the selection into the address bar (replaceState — no history
   // spam) so the current view is always copy-paste shareable. Unrelated
@@ -308,13 +321,15 @@ export function App() {
   }, []);
 
   useEffect(() => { refreshWorkflows(); refreshStepTypes(); }, []);
+  // Spend routed through the Mothership? Then the per-run cap means something.
+  const [mothership, setMothership] = useState(false);
+  useEffect(() => { api.getMothership().then(setMothership); }, []);
 
   // Load workflow + its runs when selected
   useEffect(() => {
     setRunDrill([]);
     setLoadError(false);
-    setShowParams(false);
-    setShowClaims(false);
+    setPanel(null);
     setWfClaims(null);
     if (selectedWf) api.getClaims({ kind: "workflow", name: selectedWf }).then(setWfClaims).catch(() => setWfClaims(null));
     if (!selectedWf) {
@@ -380,7 +395,7 @@ export function App() {
   // param). Drives the topbar Promote button + flyout. Empty unless the
   // workflow declares `promotes` and the run output resolves them.
   useEffect(() => {
-    setShowPromote(false);
+    setPanel((p) => (p === "promote" ? null : p));
     setPromotions([]);
     if (!selectedRun || !selectedWf) return;
     api.getPromotions(selectedWf, selectedRun)
@@ -551,11 +566,13 @@ export function App() {
     setRunEpoch((n) => n + 1);
   }, [selectedWf, selectedRun, refreshRuns]);
 
-  const handleRun = useCallback(async () => {
-    if (!selectedWf || !localSteps || localSteps.length === 0) return;
-    // Inputs are referenced wherever they're consumed, so every step's schema
-    // is consulted — not just the first's (see run-inputs.ts). A type whose
-    // schema fails to load still contributes its refs, as untyped fields.
+  // The inputs this workflow needs at run time — asked for by the Run popover
+  // and by the Automations editor. Inputs are referenced wherever they're
+  // consumed, so every step's schema is consulted — not just the first's (see
+  // run-inputs.ts). A type whose schema fails to load still contributes its
+  // refs, as untyped fields.
+  const loadInputBindings = useCallback(async (): Promise<InputBinding[]> => {
+    if (!localSteps) return [];
     const schemas = new Map<string, api.FieldDesc[]>();
     await Promise.all(
       stepTypesIn(localSteps).map(async (type) => {
@@ -566,14 +583,19 @@ export function App() {
         }
       }),
     );
-    const bindings = deriveInputBindings(localSteps, (type) => schemas.get(type));
+    return deriveInputBindings(localSteps, (type) => schemas.get(type));
+  }, [localSteps]);
+
+  const handleRun = useCallback(async () => {
+    if (!selectedWf || !localSteps || localSteps.length === 0) return;
+    const bindings = await loadInputBindings();
     const hasParams = localParams != null && Object.keys(localParams).length > 0;
     if (bindings.length === 0 && !hasParams) {
       await submitRun({});
     } else {
       setRunBindings(bindings);
     }
-  }, [selectedWf, localSteps, submitRun, localParams]);
+  }, [selectedWf, localSteps, submitRun, localParams, loadInputBindings]);
 
   const handleCreate = useCallback(async (name: string, yamlStr: string, desc: string, category?: string) => {
     // Server auto-suffixes on collision; navigate to the resolved name.
@@ -608,9 +630,7 @@ export function App() {
     const stepId = node.customData?.stepId as string | undefined;
     const stepIndex = node.customData?.stepIndex as number | undefined;
     if (stepId == null) return;
-    setShowParams(false);
-    setShowClaims(false);
-    setShowPromote(false);
+    setPanel(null);
     setInfoStep(null);
     setFlyoutStepId(stepId);
     setFlyoutStepIndex(stepIndex ?? null);
@@ -721,12 +741,25 @@ export function App() {
 
   // A claim's evidence (or to-do) points at the run it came from: go look at it.
   const openRunFromClaim = (workflow: string, runId: string) => {
-    setShowClaims(false);
+    setPanel(null);
     closeFlyout();
     setViewVersion(null);
     setSelectedWf(workflow);
     setSelectedRun(runId);
   };
+
+  // Delete the selected workflow (the flyout confirmed). The server refuses
+  // while a run is in flight — the flyout shows why; nothing changes here.
+  const handleDeleteWorkflow = useCallback(async () => {
+    if (!selectedWf) return;
+    await api.deleteWorkflow(selectedWf);
+    setPanel(null);
+    closeFlyout();
+    setSelectedWf(null);
+    setSelectedRun(null);
+    setEvents([]);
+    await refreshWorkflows();
+  }, [selectedWf, refreshWorkflows]);
 
   // Sidebar Steps catalog: grouped by tier, in the same order as the Add
   // Step picker. Clicking an item toggles its read-only info flyout.
@@ -745,9 +778,7 @@ export function App() {
   }, []);
 
   const openStepInfo = useCallback((entry: StepTypeEntry) => {
-    setShowParams(false);
-    setShowClaims(false);
-    setShowPromote(false);
+    setPanel(null);
     setFlyoutStepId(null);
     setFlyoutStepIndex(null);
     setInfoStep((prev) => (prev?.type === entry.type ? null : entry));
@@ -782,6 +813,9 @@ export function App() {
                     <div key={wf.name} class={`list-item ${selectedWf === wf.name ? "is-active" : ""}`}
                       onClick={() => { setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
                       <span class="list-item-name">{wf.name}</span>
+                      {wf.automations?.some((a) => a.enabled) && (
+                        <span class="list-item-clock" title="Runs on a schedule"><ClockIcon size={11} /></span>
+                      )}
                       <span class="badge badge-accent">{wf.activeVersion}</span>
                     </div>
                   ))}
@@ -802,7 +836,10 @@ export function App() {
               <div key={run.runId} class={`list-item ${selectedRun === run.runId ? "is-active" : ""}`}
                 onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
                 <div class="list-item-stack">
-                  <span class="list-item-name">{run.runId.slice(0, 10)}</span>
+                  <span class="list-item-name">
+                    {run.runId.slice(0, 10)}
+                    {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                  </span>
                   <span class="list-item-sub">
                     {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "..."}
                     {run.durationMs != null && ` (${run.durationMs}ms)`}
@@ -854,6 +891,23 @@ export function App() {
               onSaved={refreshWorkflows}
             />
           )}
+          {selectedWf && mothership && (
+            <OwnerEditor
+              key={`owner:${selectedWf}`}
+              workflow={selectedWf}
+              owner={selectedEntry?.owner}
+              unowned={workflows.filter((w) => !w.owner).length}
+              onSaved={refreshWorkflows}
+            />
+          )}
+          {selectedWf && mothership && (
+            <RunCapEditor
+              key={`cap:${selectedWf}`}
+              workflow={selectedWf}
+              maxRunCostUsd={selectedEntry?.maxRunCostUsd}
+              onSaved={refreshWorkflows}
+            />
+          )}
           {/* Version picker — browse the workflow's published lineage. Only
               outside run view (a run overlays the active structure), and only
               when there is history to browse. */}
@@ -865,7 +919,7 @@ export function App() {
                 const v = (e.target as HTMLSelectElement).value;
                 setViewVersion(v === activeVersion ? null : v);
                 closeFlyout();
-                setShowParams(false);
+                if (activeTab === "params") setPanel(null);
               }}
             >
               {[...selectedEntry.versions].reverse().map((v) => (
@@ -903,31 +957,22 @@ export function App() {
           {selectedRun && (runIsPaused || runIsResumable) && (
             <button class="btn btn-primary" onClick={handleResumeRun}>Resume</button>
           )}
-          {isDirty && !viewingOld && <button class="btn btn-publish" disabled={showParams && !paramsValid} onClick={handlePublish}>Publish</button>}
+          {isDirty && !viewingOld && <button class="btn btn-publish" disabled={panel === "workflow" && activeTab === "params" && !paramsValid} onClick={handlePublish}>Publish</button>}
           {isRunView && promotions.length > 0 && (
             <button
-              class={`btn${showPromote ? " is-active" : ""}`}
-              onClick={() => { setShowPromote((s) => !s); setShowParams(false); setShowClaims(false); setInfoStep(null); closeFlyout(); }}
+              class={`btn${panel === "promote" ? " is-active" : ""}`}
+              onClick={() => { setPanel((p) => (p === "promote" ? null : "promote")); setInfoStep(null); closeFlyout(); }}
             >Promote</button>
           )}
-          {selectedWf && localParams && Object.keys(localParams).length > 0 && (
+          {/* The workflow's own flyout: params, claims, schedules — and delete.
+              The claims dot rides along: the one "act now" signal up here. */}
+          {workflowTabs.length > 0 && (
             <button
-              class={`btn${showParams ? " is-active" : ""}`}
-              onClick={() => { setShowParams((s) => !s); setShowPromote(false); setShowClaims(false); setInfoStep(null); setFlyoutStepId(null); }}
-            >Params</button>
+              class={`btn${panel === "workflow" ? " is-active" : ""}`}
+              title="Params, claims and schedules"
+              onClick={() => { setPanel((p) => (p === "workflow" ? null : "workflow")); setInfoStep(null); closeFlyout(); }}
+            >Workflow{wfClaims?.enabled && <span class={`claims-dot claims-dot-${claimsTone(wfClaims)}`} />}</button>
           )}
-          {selectedWf && wfClaims?.enabled && (() => {
-            // What needs attention, at a glance: refuted > a to-do > unverified.
-            const sum = claimsSummary(wfClaims.claims);
-            const tone = sum.refuted ? "bad" : sum.todos ? "todo" : sum.open || sum.total === 0 ? "open" : "ok";
-            return (
-              <button
-                class={`btn${showClaims ? " is-active" : ""}`}
-                title={sum.total === 0 ? "No claims yet — nothing says how this workflow should behave" : `${sum.total} claim${sum.total === 1 ? "" : "s"}: ${sum.refuted} refuted, ${sum.open} unverified, ${sum.todos} waiting on someone`}
-                onClick={() => { setShowClaims((s) => !s); setShowParams(false); setShowPromote(false); setInfoStep(null); setFlyoutStepId(null); }}
-              >Claims<span class={`claims-dot claims-dot-${tone}`} /></button>
-            );
-          })()}
           <button class="btn" onClick={() => setShowSecrets(true)}>Secrets</button>
           <button class={`btn btn-ai${showChat ? " is-active" : ""}`} onClick={() => setShowChat(!showChat)}>AI</button>
           <button class="btn btn-icon" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
@@ -1031,38 +1076,39 @@ export function App() {
         <StepInfoFlyout key={infoStep.type} entry={infoStep} onClose={() => setInfoStep(null)} />
       )}
 
-      {/* Params flyout — edit the workflow's tunable knobs; Publish persists
-          them as a new version (params live in the workflow YAML). */}
-      {showParams && selectedWf && localParams && (
-        <ParamsFlyout
+      {/* Workflow flyout — params (edits → Publish, a new version), claims
+          (the contract + evidence), automations (schedules — metadata, never
+          a version), and delete at the bottom. */}
+      {panel === "workflow" && selectedWf && activeTab && (
+        <WorkflowFlyout
           key={selectedWf}
           workflow={selectedWf}
-          params={localParams}
-          onChange={setLocalParams}
-          onValidChange={setParamsValid}
-          onClose={() => setShowParams(false)}
-        />
-      )}
-
-      {/* Claims flyout — the workflow's contract, its evidence, and to-dos. */}
-      {showClaims && selectedWf && (
-        <ClaimsFlyout
-          key={selectedWf}
-          workflow={selectedWf}
-          onLoaded={setWfClaims}
+          tab={activeTab}
+          tabs={workflowTabs}
+          onTab={setWfTab}
+          onClose={() => setPanel(null)}
+          onDelete={handleDeleteWorkflow}
+          params={localParams ?? {}}
+          onParamsChange={setLocalParams}
+          onParamsValidChange={setParamsValid}
+          claims={wfClaims}
+          onClaimsLoaded={setWfClaims}
           onOpenRun={openRunFromClaim}
-          onClose={() => setShowClaims(false)}
+          automations={selectedEntry?.automations ?? []}
+          loadBindings={loadInputBindings}
+          // A change may be a schedule (sidebar badge) or a "Run now" (a new run).
+          onAutomationsChanged={() => { void refreshWorkflows(); void refreshRuns(selectedWf); }}
         />
       )}
 
       {/* Promote flyout — review + apply a run's declared promotions. */}
-      {showPromote && selectedWf && selectedRun && promotions.length > 0 && (
+      {panel === "promote" && selectedWf && selectedRun && promotions.length > 0 && (
         <PromoteFlyout
           key={`${selectedWf}/${selectedRun}`}
           workflow={selectedWf}
           runId={selectedRun}
           promotions={promotions}
-          onClose={() => setShowPromote(false)}
+          onClose={() => setPanel(null)}
           onPromoted={() => { refreshWorkflows(); }}
         />
       )}

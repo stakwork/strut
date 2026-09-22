@@ -47,6 +47,9 @@ strut/
 │   ├── verify.ts          # the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
 │   ├── ledger.ts          # the ledger (plans/claims.md §5): buildLedger (claims per subject with computed status + each check's lastVerify: pending | ran | skipped | planned), subjectsOfFlow (what a launch can execute), the [verify-notification] text. The forcing function — the model reads its contract in a tool RESULT, not an instruction
 │   ├── claims-routes.ts   # the Claims panel's HTTP door: GET /claims?kind=&name= (contract + computed status + latest evidence + open slots; `{ enabled: false }` on a filesystem workspace), POST/PATCH/DELETE /claims[/:id], /claims/:id/{attach,detach,checks,evidence}, PATCH/DELETE /checks/:id. Mutations behind requireApiKey; the actor is a PERSON (unscoped, stamped `person`; evidence `asserted`, `by: person`)
+│   ├── automations.ts     # automations, the PURE half (plans/automations.md): the record, the closed trigger grammar (zod; interval / day / week / month / once — no cron), normalizeTrigger (fills tz + the interval anchor), nextFire / nextFires (Intl-only zone math, DST-safe), describeTrigger (the human sentence), and the fire-time input scope (`now` / `today` / `last`; checkInputTemplates, resolveAutomationInput)
+│   ├── scheduler.ts       # automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire) + the in-process tick loop. `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
+│   ├── automations-routes.ts # the Automations flyout's HTTP door: GET /automations[?workflow=], POST /automations/preview, POST/PATCH/DELETE /workflows/:name/automations[/:id], POST …/:id/fire (Run now). Mutations + fire behind requireApiKey
 │   ├── closure.ts         # what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (nested subflows via the workspace, agentTools grants; templated/missing child → unresolvable), stepHashesFor → run.start.stepHashes
 │   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + messages.jsonl + events.jsonl) + truncateToolMessages
@@ -54,11 +57,12 @@ strut/
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server
-│   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret)
-│   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+│   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
+│   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses) — every one recordable by cassette.ts + secret-safe
 │   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
-│   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models
+│   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models. Also the `llmAuth` seam (plans/mothership-cost-control.md §1): a host hook that returns {apiKey, baseUrl, headers} per call, consulted before the client is built; `stepAuth(ctx)` builds a step's call context
+│   ├── mothership.ts      # OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir }) → { llmAuth, mount }. Hive pushes one standing macaroon per user (PUT /llm/delegations/:actor); strut appends keyless HMAC links per run and per step (gatekey `attenuate`) so the gateway bills user × workflow × step and caps the run. Delegations live in a second encrypted file (mothership.json), never on the services bag. Core never imports it
 │   ├── index.ts           # barrel export — createStrut (primary entry), createRegistry, coreRegistry, all types
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
@@ -74,7 +78,8 @@ strut/
 │   │   │                  #                   graph_query (read-only Cypher; only when deps.graph is wired),
 │   │   │                  #                   graph_walk (graph/walk as a chat tool; same gate),
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
-│   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts)
+│   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts),
+│   │   │                  #                   list_automations / set_automation / delete_automation (schedules; when deps.automations is wired)
 │   │   ├── walk-tool.ts   # graph_walk: an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
@@ -102,7 +107,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 622 unit tests across 25 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 950 unit tests across 50 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -113,11 +118,15 @@ strut/
         ├── api.ts         # typed fetch wrapper for all API endpoints (+ run SSE tail; chat: sendChat/streamChat/getChat reattach)
         ├── flow-to-canvas.ts  # Flow → CanvasData; STEP_COLORS → categories; childRefForStep/stepWorkflow (container nav)
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
+        ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
+        │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
+        │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
+        │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc
         │   ├── CreateDialog.tsx      # new-workflow dialog
@@ -142,7 +151,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 622 tests, ~1s
+npm test                    # 910 tests, ~3s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -187,6 +196,8 @@ docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs 
 | `STRUT_WEB_DIST`     | `<module>/../web/dist` | Where the built UI is served from, for packagers that relocate it. |
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
+| `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
+| `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` = every LLM call must have someone to bill: a call with no principal, or no delegation on file for it, is a step error instead of a direct provider call, and an enabled automation on an ownerless workflow is refused when scheduled and when it fires (`lastFireError`). Set it wherever the Mothership is mounted. |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
@@ -195,6 +206,7 @@ docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs 
 | `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder); anthropic uses its native tool. Store or env, like provider keys |
+| `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
@@ -279,6 +291,54 @@ instead of baked into env at deploy time.
   engine. If interactive per-end-user OAuth is ever needed, the **host app**
   (mcp) should own the OAuth dance and deposit/refresh tokens *into* this store;
   strut's `secrets` capability stays generic and provider-agnostic.
+
+## Mothership cost control (opt-in)
+
+`plans/mothership-cost-control.md` is the design; `src/mothership.ts` the
+module. Strut core knows two generic hooks and nothing about macaroons:
+
+- **`createStrut({ llmAuth })`** — consulted by the `agent`/`llm` steps and
+  the chat turn before a model client is built (`src/llm.ts`), with the
+  call's context (`kind`, `provider`, `runId`, `workflow`, `stepPath`,
+  `actor`, `principal`). Returns `{ apiKey, baseUrl, headers }` to route the
+  call through a gateway, or `undefined` to call the provider directly with
+  the secrets boundary's key, as always.
+- **`createStrut({ resolveActor(c) })`** — who a request is from, as an
+  opaque string strut stores and forwards but never interprets (no accounts,
+  no login). The default honors `x-strut-actor` only alongside a configured,
+  matching `STRUT_API_KEY`; mcp passes its own hook (the verified JWT's `sub`).
+
+**Stamps.** `WorkflowMetadata.owner` is set by the first publish — or the
+first schedule — that carries an actor, and changed only by
+`PUT /workflows/:name/owner` (gated). `POST /actor/claim { workflows? }`
+claims every ownerless workflow (or the named ones) for the request actor and
+never takes one someone else owns — the migration for a workspace that
+predates owners (seeded lab workflows, script publishes); the topbar's owner
+chip offers it as "Claim" / "Claim all unowned". A run
+records `actor` (who launched it) and `principal` (who pays: the actor, else
+the owner — so an automation's spend lands on the owner) on `run.start` and
+the summary, and hands both to every step as `ctx.actor` / `ctx.principal`. A
+resume reads the principal back from the log rather than re-deriving it. The
+chat's actor is whoever last spoke to it; the builder's runs are billed to
+them. `WorkflowMetadata.maxRunCostUsd` (`PUT /workflows/:name/run-cap`, the
+topbar's cap chip) is the run's cap when routed; nothing else reads it.
+
+**The module.** `createMothership({ dataDir })` → `{ llmAuth, mount(strut) }`.
+Hive mints, once per user and deployment, a macaroon (org-signed user
+authorization + a user-signed standing invocation for `strut-agent`, 60
+days, a cumulative ceiling) and pushes it with that user's virtual key and
+the gateway URL: `PUT /llm/delegations/:actor { macaroon, apiKey, baseUrl }`
+(`GET` lists `{ actor, exp, delegationId }`; `DELETE` removes; all behind
+`requireApiKey`). Strut never signs: per run it appends one keyless HMAC link
+(the run id, the cap, 8 h) and per step a second one that adds
+`<workflow>.<step>` to the agent lineage — the gateway bills the last name
+— and sends `x-macaroon`, `x-bf-dim-session-id: <workflow>` and
+`x-bf-dim-root-agent: strut-agent`. A chat turn is one link billed as
+`strut-assistant`. Delegations live in a second encrypted `FileSecretStore`
+file, `mothership.json` beside `secrets.json`: never on the services bag (no
+step can read another user's macaroon), never in the Secrets list. Tests:
+`src/mothership.test.ts` verifies the built chain with gatekey's own
+verifier — the TS mirror of the gateway's Go one.
 
 ## Lib step credentials
 
@@ -708,6 +768,12 @@ and the child env is scrubbed by construction).
   and persists each part; close the browser and it keeps running.
   Watch/reattach via `GET /chat/:id/stream` (SSE tail), load the
   transcript via `GET /chat/:id`, list sessions via `GET /chats`.
+  `POST /chat/:id/cancel` stops the live turn (the flyout's stop square,
+  shown only while the chat is working): the agent stream is aborted, what
+  streamed so far is persisted — a tool call cut off before its result gets
+  a stopped result, so the next turn never re-feeds a dangling call — and
+  the turn ends `chat.end { stopped: true }`, status `done` (the turn
+  callback carries `stopped: true` too). Queued notifications still drain.
   Each chat lives in `chats/<id>/` with the deliberate **two-file
   split** (borrowed from `mcp/src/repo/session.ts`): `messages.jsonl`
   is the lossless, **replayable** conversation (re-fed to the agent
@@ -755,6 +821,53 @@ and the child env is scrubbed by construction).
   Versions are recorded, never inferred: `run.start.stepHashes` /
   `workflowHash`, and a subflow step's `step.start.subflow` — no record, no
   evidence.
+
+- **Automations — run a workflow on a schedule** (`plans/automations.md`;
+  `src/automations.ts` pure, `src/scheduler.ts` stateful). An automation is
+  `{ id, name, enabled, trigger, input }`, stored as **workflow-level
+  metadata beside `category`** (`WorkflowMetadata.automations`:
+  `_metadata.json` on the filesystem, one JSON-string `automations`
+  property on the `StrutWorkflow` node in the graph;
+  `WorkspaceStore.setWorkflowAutomations`). It is NOT in the versioned
+  YAML: adding, editing or pausing a schedule publishes no version, so it
+  never re-fires `on_change` checks and a rollback never changes a
+  schedule. The trigger is a **closed grammar** — never cron: `interval`
+  (anchored: fires are `anchor + k·minutes`, `on` / `between` filter it),
+  `day`, `week`, `month` (`day` 1–28 | `"last"` | nth weekday), `once`. A
+  schedule the grammar cannot express is fixed by adding a shape. ONE
+  implementation of the calendar math (`nextFire`) drives the form's
+  preview (`POST /automations/preview`), the chat tool's result and the
+  tick loop. **Nothing but the definition is persisted**: `nextRunAt` is
+  memory-only and always computed from the current time (the first load
+  from process start), so a restart neither stampedes nor double-fires and
+  a run missed while the process was down is skipped; the tick advances
+  `nextRunAt` BEFORE launching. A fire goes through `launchDetached` like
+  `POST /run`, stamped `origin: "schedule"` + `automation: { id }` on
+  `run.start` AND on the `RunSummary` — scheduled runs are verified like
+  any other. **Dynamic inputs**: `input` is resolved per fire against
+  `{ now, today, last }`, `last` being this automation's latest SUCCESSFUL
+  run (a newest-first scan of summaries, ≤100) — so a failed run never
+  advances a cursor. `last` is never null (before the first success its
+  `output` is `{}`) and a top-level key resolving to `undefined` is
+  dropped. One fixed overlap rule, not a setting: a fire is skipped while
+  that automation's previous run is still in flight (read from the run
+  store, so it holds across a restart) — two overlapping runs would read
+  the same cursor. Both doors are thin: the routes and the chat tools
+  (`set_automation`'s RESULT carries `summary` + `next`, so the model
+  confirms from computed facts) call the same `createAutomations` layer.
+  UI is per-workflow: the topbar **Workflow** button opens `WorkflowFlyout`
+  (the Automate tab is `AutomationsPanel`); scheduled workflows and scheduled
+  runs carry a clock badge in the sidebar.
+
+- **Deleting a workflow** (`DELETE /workflows/:name`, gated; the Workflow
+  flyout's footer). Three layers, in order: `automations.forget` drops its
+  schedules from the tick loop, `RunStore.deleteRuns` removes its run
+  records, `WorkspaceStore.deleteWorkflow` removes every version + metadata
+  (`rm -rf` of the workflow directory on files; soft-delete on the graph,
+  with schedules / owner / cap / category cleared FIRST — the node writer
+  restores a soft-deleted node on a key match, so a later publish under the
+  same name must come back clean). 409 while one of its runs is in flight;
+  the run artifacts under `artifacts/<runId>/` are not touched.
 
 - **Dispatch-mode `run_workflow` + run notifications**
   (`src/ai/notifier.ts`, `plans/dispatch-run-notifications.md`). The chat
@@ -869,6 +982,17 @@ and the child env is scrubbed by construction).
     `execute`). `agent.run` now consumes `ctx` (registry + emit).
 
 ## Conventions
+
+- **A new workspace/graph field needs a schema entry.** The graph node
+  writer rejects any attribute not declared on its type in
+  `src/graph/strut-schemas.ts` (`<Type>.<attr>: attribute is not declared
+  on the schema`). The file and memory stores accept anything, so
+  `npm test` stays green and the break only shows on the graph backend —
+  the default server. When a `WorkspaceStore` method (or the projector)
+  writes a new property: declare it on the schema (optional `?` type —
+  the boot seed only ever ADDS keys, so a deployed graph picks it up on
+  restart), add a case to `src/test-util/workspace-conformance.ts`, and
+  run `npm run test:graph`.
 
 - **Vanilla CSS** with custom properties. Two files only:
   `base.css` (palette + reset) and `components.css` (all

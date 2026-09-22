@@ -222,6 +222,32 @@ describe("runWorkflow - event logging", () => {
     ]);
   });
 
+  it("a scheduled run is stamped on run.start, on the summary (success AND error), and in onRunEnd", async () => {
+    const store = new MemoryRunStore();
+    const ended: unknown[] = [];
+    const opts = (runId: string) => ({
+      runId,
+      store,
+      origin: "schedule" as const,
+      automation: { id: "a-1" },
+      services: { onRunEnd: (_id: string, info: unknown) => void ended.push(info) },
+    });
+    const ok = flow("sched", { input: z.object({}), steps: [step("a", "value", { result: 1 })] });
+    await runWorkflow(ok, {}, makeRegistry(), opts("s-1"));
+    const start = store.events.get("sched/s-1")!.find((e) => e.type === "run.start")!;
+    assert.deepEqual([start.origin, start.automation], ["schedule", { id: "a-1" }]);
+    assert.deepEqual((await store.getRunSummary("sched", "s-1"))?.automation, { id: "a-1" });
+
+    const bad = flow("sched", { input: z.object({}), steps: [step("a", "fail", {})] });
+    await runWorkflow(bad, {}, makeRegistry(), opts("s-2"));
+    const failed = await store.getRunSummary("sched", "s-2");
+    assert.deepEqual([failed?.status, failed?.automation], ["error", { id: "a-1" }]);
+    assert.deepEqual(ended, [{ workflow: "sched", origin: "schedule" }, { workflow: "sched", origin: "schedule" }]);
+
+    await runWorkflow(ok, {}, makeRegistry(), { runId: "s-3", store });
+    assert.equal((await store.getRunSummary("sched", "s-3"))?.automation, undefined, "an ordinary run carries no stamp");
+  });
+
   it("emits step events with correct paths", async () => {
     const wf = flow("paths", {
       input: z.object({}),

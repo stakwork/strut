@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { logger } from "hono/logger";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -20,12 +20,12 @@ import {
 import { FileWorkspaceStore, type WorkspaceStore } from "./workspace.js";
 import { buildRegistry } from "./steps/registry.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
-import { resolveModel, listModelOptions, createWebTools } from "./llm.js";
+import { resolveModel, listModelOptions, createWebTools, type LlmAuth } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { requireApiKey, warnIfUnconfigured } from "./auth.js";
+import { requireApiKey, warnIfUnconfigured, actorFromHeader } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -38,6 +38,8 @@ import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF } from "./claims-schemas.js";
 import { claimsRoutes } from "./claims-routes.js";
+import { automationsRoutes } from "./automations-routes.js";
+import { createAutomations, type Automations } from "./scheduler.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { stepHashesFor } from "./closure.js";
@@ -148,6 +150,14 @@ export interface StrutOptions<TServices = unknown> {
    *  the guards. Only the NEWEST root run per workflow is considered. */
   autoResume?: boolean | AutoResumeOptions;
 
+  /** The automations tick loop (plans/automations.md §6): fires scheduled
+   *  workflows from inside this process. Defaults to ON unless
+   *  `STRUT_SCHEDULER=0`. Pass `false` for a host that owns the clock itself
+   *  — `strut.automations` still stores, previews and fires on demand
+   *  (`fire`), it just never ticks. Single-process by design: two strut
+   *  processes over one workspace would each fire. */
+  scheduler?: boolean;
+
   /** The claims layer (plans/claims.md): claims, checks, the verify pass, the
    *  claim tools and the Claims panel. Needs a graph-backed workspace; there
    *  it defaults to ON unless `STRUT_CLAIMS=0`. Pass `false` to turn the
@@ -175,6 +185,20 @@ export interface StrutOptions<TServices = unknown> {
    *  optionalDependency loaded on first use, so the default costs nothing
    *  at boot and the routes answer 501 without it. */
   stt?: SttService | false;
+
+  /** Where an LLM call goes and how it is attributed (plans/mothership-
+   *  cost-control.md §1): consulted by the `agent`/`llm` steps and the chat
+   *  turn before a model client is built. `undefined` from the hook = call
+   *  the provider directly with the secrets boundary's key, as always.
+   *  Placed on the services bag as `llmAuth`. Omit and nothing changes. */
+  llmAuth?: LlmAuth;
+
+  /** Who is making this request (§2) — an opaque string strut stores and
+   *  forwards, never interprets: the workflow owner stamp, the run's `actor`,
+   *  and (with `llmAuth`) who the spend is billed to. The host decides per
+   *  request: mcp reads its verified JWT. Default: the `x-strut-actor`
+   *  header, honored only alongside a configured, matching `STRUT_API_KEY`. */
+  resolveActor?: (c: Context) => string | undefined | Promise<string | undefined>;
 }
 
 export interface AutoResumeOptions {
@@ -244,6 +268,11 @@ export interface Strut<TServices = unknown> {
    *  strut.stt)` to get the dictation socket; `listen()` does it. */
   stt: SttService | null;
 
+  /** Automations (plans/automations.md): the policy layer behind the
+   *  `/automations` routes and the chat tools — list / create / update /
+   *  remove / preview / fire. Ticks by itself unless `scheduler: false`. */
+  automations: Automations;
+
   /** Reads over the claims layer (plans/claims.md) — null unless the
    *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
    *  claims hang off the subjects' graph nodes, so on a filesystem workspace
@@ -290,6 +319,10 @@ export interface StrutRunOptions<TServices = unknown> {
   /** Per-run overrides keyed by workflow name, applied at every level of the
    *  execution tree (entry + nested subflows). See `RunOptions.paramOverrides`. */
   paramOverrides?: Record<string, Record<string, unknown>>;
+  /** Who launched this run; billed to `principal`, else to the actor, else
+   *  to the workflow's owner (plans/mothership-cost-control.md §2). */
+  actor?: string;
+  principal?: string;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -427,6 +460,8 @@ export async function createStrut<TServices = unknown>(
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
     ...(stt ? { stt } : {}),
+    // The LLM auth seam, for the model-building call sites (llm.ts).
+    ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
     ...((opts.services ?? {}) as Record<string, unknown>),
   } as TServices;
   const artifacts = (services as Record<string, unknown>)["artifacts"] as
@@ -437,6 +472,29 @@ export async function createStrut<TServices = unknown>(
   const secretsCap = (services as Record<string, unknown>)["secrets"] as
     | SecretsCapability
     | undefined;
+
+  // ── Actors and the principal rule (plans/mothership-cost-control.md §2) ──
+  //
+  // The host says who a request is from; strut never reads a header it did
+  // not ask for. A run's spend lands on the actor who launched it, else on
+  // the workflow's owner (an automation has no actor, so the owner pays).
+  const resolveActor = opts.resolveActor ?? actorFromHeader;
+  const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
+    if (actor) return actor;
+    return (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.owner;
+  };
+  /** A workflow with no owner is adopted by the first actor who publishes it. */
+  const adoptWorkflow = async (name: string, actor: string | undefined) => {
+    if (!actor) return;
+    const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
+    if (meta && !meta.owner) await workspace.setWorkflowOwner(name, actor);
+  };
+  /** `{ actor, principal }` for a launch with no workflow to own it (a single
+   *  step): the actor pays for their own call. */
+  const actorStamp = async (c: Context) => {
+    const actor = await resolveActor(c);
+    return actor ? { actor, principal: actor } : {};
+  };
   const serveUi = opts.serveUi ?? true;
   const enableChat = opts.enableChat ?? true;
   const chatStore: ChatStore =
@@ -598,6 +656,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "either steps or yaml is required" }, 400);
     }
 
+    await adoptWorkflow(result.name, await resolveActor(c));
     await rebuildRegistry();
 
     return c.json(
@@ -800,7 +859,16 @@ export async function createStrut<TServices = unknown>(
         params: p.runStart.params,
         paramOverrides: p.runStart.paramOverrides,
       },
-      { journal: p.journal, resume: true, ...(p.version ? { version: p.version } : {}) },
+      {
+        journal: p.journal,
+        resume: true,
+        ...(p.version ? { version: p.version } : {}),
+        ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
+        // Billed to whoever the original launch was billed to — never
+        // re-derived, the owner may have changed since (§2).
+        ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
+        ...(p.runStart.principal ? { principal: p.runStart.principal } : {}),
+      },
     );
   };
 
@@ -1190,6 +1258,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "either steps or yaml is required" }, 400);
     }
 
+    await adoptWorkflow(name, await resolveActor(c));
     await rebuildRegistry();
 
     return c.json({ ok: true, workflow: name, version: body.version, active: body.version }, 201);
@@ -1203,6 +1272,37 @@ export async function createStrut<TServices = unknown>(
     try {
       await workspace.setWorkflowCategory(name, body.category ?? null);
       return c.json({ ok: true, workflow: name, category: body.category ?? null });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+    }
+  });
+
+  // Transfer a workflow to another actor (plans/mothership-cost-control.md §2).
+  // The owner pays for the workflow's automations, so this is gated.
+  app.put("/workflows/:name/owner", requireApiKey, async (c) => {
+    const name = c.req.param("name")!;
+    const body = await c.req.json<{ owner?: string | null }>();
+    const owner = (typeof body.owner === "string" ? body.owner.trim() : "") || null;
+    try {
+      await workspace.setWorkflowOwner(name, owner);
+      return c.json({ ok: true, workflow: name, owner });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+    }
+  });
+
+  // Set or clear a workflow's per-run LLM spend cap (§3). Metadata-only like
+  // the category; only the Mothership module enforces it.
+  app.put("/workflows/:name/run-cap", async (c) => {
+    const name = c.req.param("name");
+    const body = await c.req.json<{ maxRunCostUsd?: number | null }>();
+    const cap = body.maxRunCostUsd ?? null;
+    if (cap !== null && !(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) {
+      return c.json({ error: "maxRunCostUsd must be a positive number, or null to clear" }, 400);
+    }
+    try {
+      await workspace.setWorkflowRunCap(name, cap);
+      return c.json({ ok: true, workflow: name, maxRunCostUsd: cap });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
@@ -1439,6 +1539,7 @@ export async function createStrut<TServices = unknown>(
         params: body.params,
         workspace,
         keep: body.keep === true,
+        ...(await actorStamp(c)),
         ...(mode
           ? { cassette: { mode, path: cassettePath(dataDir, body.cassetteName ?? type) } }
           : {}),
@@ -1492,7 +1593,18 @@ export async function createStrut<TServices = unknown>(
   function launchDetached(
     flow: Flow,
     body: RunBody,
-    extra?: { journal?: Record<string, unknown>; resume?: boolean; version?: string },
+    extra?: {
+      journal?: Record<string, unknown>;
+      resume?: boolean;
+      version?: string;
+      /** An automation's fire (plans/automations.md §3). */
+      origin?: "schedule";
+      automation?: { id: string };
+      /** The request actor, and (on resume) the principal recorded at the
+       *  original launch; otherwise the principal rule decides (§2). */
+      actor?: string;
+      principal?: string;
+    },
   ): string {
     const runId = body.runId ?? generateRunId();
     const { controller, untrack } = trackRun(flow.name, runId);
@@ -1500,6 +1612,7 @@ export async function createStrut<TServices = unknown>(
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
+      const principal = extra?.principal ?? (await principalFor(flow.name, extra?.actor));
       return runWorkflow(flow, body.input ?? {}, registry, {
         runId,
         store,
@@ -1512,6 +1625,10 @@ export async function createStrut<TServices = unknown>(
         ...(stepHashes ? { stepHashes } : {}),
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
+        ...(extra?.origin ? { origin: extra.origin } : {}),
+        ...(extra?.automation ? { automation: extra.automation } : {}),
+        ...(extra?.actor ? { actor: extra.actor } : {}),
+        ...(principal ? { principal } : {}),
       });
     })()
       .catch((err) => {
@@ -1523,6 +1640,62 @@ export async function createStrut<TServices = unknown>(
 
   // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2).
   claimsRoutes(app, { claims: claimsAuthoring, verifier });
+
+  // Automations (plans/automations.md): scheduled launches go through the
+  // same detached path as `POST /run`, stamped with their automation.
+  const automations = createAutomations({
+    workspace,
+    store,
+    launch: (flow, input, automation) => launchDetached(flow, { input }, { origin: "schedule", automation }),
+    isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+  });
+  // Scheduling adopts an ownerless workflow: the scheduler's runs are billed
+  // to the owner, and whoever schedules it just made it spend (§2).
+  automationsRoutes(app, automations, { adopt: async (name, c) => adoptWorkflow(name, await resolveActor(c)) });
+
+  // Delete a workflow: every version, its metadata (category, owner, cap,
+  // schedules) and its run records. Refused while one of its runs is in
+  // flight — a live run needs somewhere to write; cancel it first. Gated
+  // like the owner transfer: the one workflow mutation nothing undoes from
+  // the UI (the graph backend keeps the nodes, soft-deleted).
+  app.delete("/workflows/:name", requireApiKey, async (c) => {
+    const name = c.req.param("name")!;
+    const live = [...controllers.keys()].filter((k) => k.startsWith(`${name}/`)).length;
+    if (live) return c.json({ error: `Workflow "${name}" has ${live} run${live === 1 ? "" : "s"} in flight — cancel first` }, 409);
+    if (!(await workspace.getWorkflowMetadata(name))) return c.json({ error: `Workflow "${name}" not found` }, 404);
+    automations.forget(name);
+    await store.deleteRuns(name);
+    await workspace.deleteWorkflow(name);
+    return c.json({ ok: true, workflow: name });
+  });
+
+  // Claim ownerless workflows for the request actor — the migration for a
+  // workspace that predates owners (seeded lab workflows, script publishes).
+  // Never re-owns: a workflow someone else owns is reported, not taken;
+  // transfers are `PUT /workflows/:name/owner`. Omit `workflows` for all.
+  app.post("/actor/claim", async (c) => {
+    const actor = await resolveActor(c);
+    if (!actor) return c.json({ error: "no actor on this request — nothing to claim for" }, 400);
+    const body = await c.req.json<{ workflows?: unknown }>().catch(() => ({}) as { workflows?: unknown });
+    if (body.workflows !== undefined && !(Array.isArray(body.workflows) && body.workflows.every((w) => typeof w === "string"))) {
+      return c.json({ error: "workflows must be a list of names" }, 400);
+    }
+    const names = (body.workflows as string[] | undefined) ?? (await workspace.listWorkflows()).map((w) => w.name);
+    const claimed: string[] = [];
+    const skipped: Array<{ workflow: string; owner?: string; reason: string }> = [];
+    for (const name of names) {
+      const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
+      if (!meta) skipped.push({ workflow: name, reason: "not found" });
+      else if (meta.owner === actor) skipped.push({ workflow: name, owner: actor, reason: "already yours" });
+      else if (meta.owner) skipped.push({ workflow: name, owner: meta.owner, reason: "owned by someone else — transfer instead" });
+      else {
+        await workspace.setWorkflowOwner(name, actor);
+        claimed.push(name);
+      }
+    }
+    return c.json({ actor, claimed, skipped });
+  });
+  if (opts.scheduler === undefined ? process.env["STRUT_SCHEDULER"] !== "0" : opts.scheduler) automations.start();
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks
   // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
@@ -1544,7 +1717,7 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-    const runId = launchDetached(flow, body);
+    const runId = launchDetached(flow, body, { actor: await resolveActor(c) });
     return c.json({ runId }, 202);
   });
 
@@ -1557,7 +1730,7 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-    const runId = launchDetached(flow, body, { version });
+    const runId = launchDetached(flow, body, { version, actor: await resolveActor(c) });
     return c.json({ runId }, 202);
   });
 
@@ -1604,6 +1777,10 @@ export async function createStrut<TServices = unknown>(
       verifySettled = (r) => void verifyWaker!.settled(r);
     }
 
+    // The live turn's abort handle per chat — `POST /chat/:id/cancel` stops
+    // it. In-process, like the notifier's liveness set.
+    const turnAborts = new Map<string, AbortController>();
+
     /**
      * Run one chat turn detached: build the agent, stream it server-side,
      * persist each fine-grained part to `events.jsonl`, then append the new
@@ -1618,10 +1795,12 @@ export async function createStrut<TServices = unknown>(
       trigger: "human" | "notification" = "human",
     ): void {
       void (async () => {
-        let outcome: { status: "done" | "error"; text?: string; error?: { message: string } } = { status: "done" };
+        let outcome: { status: "done" | "error"; text?: string; error?: { message: string }; stopped?: true } = { status: "done" };
         // Synchronous (before any await): run-notifications arriving during
         // this turn must queue rather than launching a concurrent turn.
         notifier.turnStarted(chatId);
+        const ac = new AbortController();
+        turnAborts.set(chatId, ac);
         const emit = (e: Partial<ChatEvent> & { type: ChatEvent["type"] }) =>
           chatStore.appendEvent(chatId, {
             ts: new Date().toISOString(),
@@ -1642,7 +1821,15 @@ export async function createStrut<TServices = unknown>(
           // default truncates a create_step call MID-JSON). A missing key
           // throws here and lands in the stream as chat.error, naming it.
           const meta = await chatStore.getMeta(chatId);
-          const llm = await resolveModel({ model: meta?.model ?? chatModel, secrets: secretsCap });
+          const actor = meta?.actor;
+          const llm = await resolveModel({
+            model: meta?.model ?? chatModel,
+            secrets: secretsCap,
+            // Billed as the assistant, to the chat's actor (plans/mothership-cost-control.md §3).
+            ...(opts.llmAuth
+              ? { llmAuth: opts.llmAuth, auth: { kind: "chat" as const, chatId, turn, ...(actor ? { actor, principal: actor } : {}) } }
+              : {}),
+          });
           const catalog = await listModelOptions({ default: chatModel, secrets: secretsCap });
           const web = await createWebTools({
             provider: llm.provider,
@@ -1657,6 +1844,7 @@ export async function createStrut<TServices = unknown>(
             registry,
             store,
             services,
+            ...(actor ? { actor } : {}),
             secrets: secretsInjected ? undefined : secretStore,
             // Build-time bash for the chat builder, cwd'd at the local data
             // dir (scrubbed env — see shell.ts).
@@ -1675,6 +1863,8 @@ export async function createStrut<TServices = unknown>(
             claims: claimsAuthoring,
             verifier,
             watchVerify: (runId: string) => verifyWaker?.watch(runId, chatId),
+            // list_automations / set_automation / delete_automation.
+            automations,
             // cancel_run / pause_run / resume_run over the live controllers.
             controlRun: controlRunForChat,
             publishingEnabled: !registryWasInjected,
@@ -1759,9 +1949,45 @@ export async function createStrut<TServices = unknown>(
 
           console.log(`[chat ${chatId}] turn ${turn} start (${modelMessages.length} msgs, model ${llm.name})`);
 
+          // For a stop mid-turn (POST /chat/:id/cancel): the completed steps'
+          // messages, collected as they finish, plus the in-flight step as far
+          // as it streamed — so the transcript holds what the user saw, and a
+          // tool call cut off before its result gets a "stopped" result rather
+          // than dangling into the next turn.
+          const doneMessages: any[] = [];
+          let stepText = "";
+          let stepCalls: { toolCallId: string; toolName: string; input: unknown; output?: unknown }[] = [];
+          const setOutput = (toolCallId: string, output: unknown) => {
+            const call = stepCalls.find((c) => c.toolCallId === toolCallId);
+            if (call) call.output = output;
+          };
+          const partialStep = (): any[] => {
+            if (!stepText && stepCalls.length === 0) return [];
+            const assistant = {
+              role: "assistant",
+              content: [
+                ...(stepText ? [{ type: "text", text: stepText }] : []),
+                ...stepCalls.map(({ toolCallId, toolName, input }) => ({ type: "tool-call", toolCallId, toolName, input })),
+              ],
+            };
+            if (stepCalls.length === 0) return [assistant];
+            const tool = {
+              role: "tool",
+              content: stepCalls.map(({ toolCallId, toolName, output }) => ({
+                type: "tool-result",
+                toolCallId,
+                toolName,
+                output: output ?? { type: "error-text", value: "Stopped by the user; this call's result was not recorded." },
+              })),
+            };
+            return [assistant, tool];
+          };
+
           const result = await agent.stream({
             messages: modelMessages,
+            abortSignal: ac.signal,
             onStepEnd: (step) => {
+              doneMessages.push(...step.response.messages);
               const u = step.usage;
               console.log(
                 `[chat ${chatId}] turn ${turn} step ${step.stepNumber} finish=${step.finishReason} tokens=in:${u?.inputTokens ?? "?"}/out:${u?.outputTokens ?? "?"}`,
@@ -1776,18 +2002,51 @@ export async function createStrut<TServices = unknown>(
             },
           });
 
-          for await (const part of result.stream) {
-            if (part.type === "error") throw part.error;
-            const e = chatEventOf(part);
-            if (e) await emit(e);
+          try {
+            for await (const part of result.stream) {
+              // Bookkeeping for a stop mid-turn (partialStep above). A
+              // preliminary tool-result (graph_walk's hops) is progress, not
+              // the call's result.
+              switch (part.type) {
+                case "text-delta":
+                  if (part.text) stepText += part.text;
+                  break;
+                case "tool-call":
+                  stepCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
+                  break;
+                case "tool-result":
+                  if (!(part as { preliminary?: boolean }).preliminary) setOutput(part.toolCallId, { type: "json", value: part.output });
+                  break;
+                case "tool-error":
+                  setOutput(part.toolCallId, {
+                    type: "error-text",
+                    value: part.error instanceof Error ? part.error.message : String(part.error),
+                  });
+                  break;
+                case "finish-step":
+                  stepText = "";
+                  stepCalls = [];
+                  break;
+                case "error":
+                  throw part.error;
+              }
+              const e = chatEventOf(part);
+              if (e) await emit(e);
+            }
+          } catch (err) {
+            // A stop can surface as the aborted provider call's throw.
+            if (!ac.signal.aborted) throw err;
           }
 
           // Every step's messages (tool calls + results), not just the last:
-          // v7's `response` is final-step only.
-          const responseMessages = await result.responseMessages;
-          await chatStore.appendMessages(chatId, responseMessages as any);
-          outcome = { status: "done", text: finalAssistantText(responseMessages) };
-          await emit({ type: "chat.end" });
+          // v7's `response` is final-step only. A stopped turn never awaits
+          // the SDK's promises (they reject when no step completed): what it
+          // has is what streamed.
+          const stopped = ac.signal.aborted;
+          const responseMessages = stopped ? [...doneMessages, ...partialStep()] : await result.responseMessages;
+          if (responseMessages.length) await chatStore.appendMessages(chatId, responseMessages as any);
+          outcome = { status: "done", text: finalAssistantText(responseMessages), ...(stopped ? { stopped: true as const } : {}) };
+          await emit({ type: "chat.end", ...(stopped ? { stopped: true as const } : {}) });
           await chatStore.setMeta(chatId, { status: "done" });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -1796,6 +2055,7 @@ export async function createStrut<TServices = unknown>(
           await emit({ type: "chat.error", error: { message } });
           await chatStore.setMeta(chatId, { status: "error" });
         } finally {
+          turnAborts.delete(chatId);
           // Drain run-notifications that queued during this turn — delivers
           // them all in ONE follow-up turn (launched via startTurn above).
           try {
@@ -1858,6 +2118,8 @@ export async function createStrut<TServices = unknown>(
       if (!body.message || typeof body.message !== "string") {
         return c.json({ error: "message (string) is required" }, 400);
       }
+      // Whoever speaks to the chat is its actor from here on (§2).
+      const actor = await resolveActor(c);
 
       let chatId = body.chatId;
       let meta = chatId ? await chatStore.getMeta(chatId) : null;
@@ -1920,6 +2182,7 @@ export async function createStrut<TServices = unknown>(
         autoTurns: 0,
         ...(pickedModel ? { model: pickedModel } : {}),
         ...(callback !== undefined ? { callback: callback ?? undefined } : {}),
+        ...(actor ? { actor } : {}),
       });
 
       // Lossless on disk (transcript); truncated copy re-fed to the model.
@@ -1970,6 +2233,17 @@ export async function createStrut<TServices = unknown>(
           data: JSON.stringify({ chatId, turn, status: fresh?.status ?? "done" }),
         });
       });
+    });
+
+    // Stop the live turn (the flyout's stop square): abort the agent stream,
+    // keep what streamed, end the turn as `chat.end { stopped: true }`.
+    app.post("/chat/:chatId/cancel", async (c) => {
+      const chatId = c.req.param("chatId");
+      if (!(await chatStore.getMeta(chatId))) return c.json({ error: `Chat "${chatId}" not found` }, 404);
+      const ac = turnAborts.get(chatId);
+      if (!ac) return c.json({ error: `Chat "${chatId}" has no turn in progress` }, 409);
+      ac.abort();
+      return c.json({ ok: true });
     });
 
     // Full chat transcript + meta (for reload / reattach).
@@ -2038,8 +2312,10 @@ export async function createStrut<TServices = unknown>(
     app.use("/assets/*", serveStatic({ root: webDist }));
     app.use("/favicon.ico", serveStatic({ root: webDist }));
 
-    app.get("*", async (c) => {
+    app.get("*", async (c, next) => {
       const path = c.req.path;
+      // API prefixes fall through — to a route a host mounted after
+      // construction (e.g. createMothership's `/llm/delegations`), else 404.
       if (
         path.startsWith("/workflows") ||
         path.startsWith("/steps") ||
@@ -2048,7 +2324,7 @@ export async function createStrut<TServices = unknown>(
         path.startsWith("/llm") ||
         path.startsWith("/audio")
       ) {
-        return c.notFound();
+        return next();
       }
       try {
         const html = await readFile(join(webDist, "index.html"), "utf-8");
@@ -2087,6 +2363,7 @@ export async function createStrut<TServices = unknown>(
           ? ((await workspace.getWorkflowHash(workflow, runOpts?.version)) ?? undefined)
           : undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
+      const principal = runOpts?.principal ?? (await principalFor(flow.name, runOpts?.actor));
       return await runWorkflow(flow, input, registry, {
         runId,
         store,
@@ -2098,6 +2375,8 @@ export async function createStrut<TServices = unknown>(
         controller,
         ...(workflowHash ? { workflowHash } : {}),
         ...(stepHashes ? { stepHashes } : {}),
+        ...(runOpts?.actor ? { actor: runOpts.actor } : {}),
+        ...(principal ? { principal } : {}),
       });
     } finally {
       untrack();
@@ -2144,6 +2423,7 @@ export async function createStrut<TServices = unknown>(
   }
 
   async function close(): Promise<void> {
+    automations.stop();
     const s = httpServer;
     if (!s) return;
     httpServer = null;
@@ -2182,6 +2462,7 @@ export async function createStrut<TServices = unknown>(
     autoResumeStaleRuns,
     run,
     stt,
+    automations,
     claims,
     verifier,
     listen,

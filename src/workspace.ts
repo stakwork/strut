@@ -2,6 +2,7 @@ import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm } from "no
 import { dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import type { Automation } from "./automations.js";
 import type { Flow } from "./core.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -141,12 +142,26 @@ export interface WorkflowMetadata {
    *  version-level: it survives publishes and can be changed at any time via
    *  `setWorkflowCategory`. */
   category?: string;
+  /** Schedules that launch this workflow (plans/automations.md).
+   *  Workflow-level like `category`: editing or pausing one publishes no
+   *  version, and it survives every publish. Absent = none. */
+  automations?: Automation[];
   /** Optional identifier of the service that published this workflow
    *  (parallels `StepInfo.publisher`). Workflow-level provenance: the
    *  authoring capability stamps everything it publishes `"ai"` and its
    *  publish/run/run-history operations are closed over that stamped set —
    *  see `authoring.ts` and EVOLVE_SPEC §6 (run-history scoping). */
   publisher?: string;
+  /** The PERSON this workflow belongs to — an opaque actor string
+   *  (plans/mothership-cost-control.md §2). Set by the first publish that
+   *  carries an actor, then changed only by an explicit transfer
+   *  (`setWorkflowOwner`). Distinct from `publisher`, a service stamp. The
+   *  owner pays for the workflow's automations. */
+  owner?: string;
+  /** Per-run LLM spend cap in dollars, enforced by the Mothership when the
+   *  deployment routes through it (§3) — otherwise nothing reads it.
+   *  Operating policy like `category`: metadata-only, no version. */
+  maxRunCostUsd?: number;
 }
 
 export interface StepVersionInfo {
@@ -200,6 +215,12 @@ export interface WorkflowListEntry {
   category?: string;
   /** Provenance stamp, if any (see WorkflowMetadata.publisher). */
   publisher?: string;
+  /** The owning actor and run cap, if set (see WorkflowMetadata). */
+  owner?: string;
+  maxRunCostUsd?: number;
+  /** The workflow's schedules, if any (see WorkflowMetadata.automations) —
+   *  carried here so the scheduler's boot load is one `listWorkflows()`. */
+  automations?: Automation[];
   /** Start time (epoch ms) of the most recent run, if any. Not produced by
    *  the workspace itself (runs are the run store's records) — the server's
    *  `GET /workflows` decorates entries from `RunStore.lastRunAt`. */
@@ -270,7 +291,21 @@ export interface WorkspaceStore extends SubflowResolver {
     opts?: PublishByContentOptions,
   ): Promise<{ version: string; changed: boolean }>;
   setWorkflowCategory(name: string, category: string | null): Promise<void>;
+  /** Set (or clear) the owning actor — metadata-only, like the category. */
+  setWorkflowOwner(name: string, owner: string | null): Promise<void>;
+  /** Set (or clear) the per-run spend cap — metadata-only. */
+  setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void>;
+  /** Replace the workflow's automations (an empty list clears the field).
+   *  Metadata-only, like `setWorkflowCategory`; throws for an unknown
+   *  workflow. The whole list, because every mutation is a
+   *  read-modify-write of a short list in one process. */
+  setWorkflowAutomations(name: string, automations: Automation[]): Promise<void>;
   setActiveVersion(name: string, version: string): Promise<void>;
+  /** Remove a workflow: every version and its metadata (category, owner,
+   *  cap, automations). False when there was nothing to remove. The name is
+   *  free again afterwards — a later workflow under it starts at v1 with no
+   *  metadata. Run records are the run store's (`RunStore.deleteRuns`). */
+  deleteWorkflow(name: string): Promise<boolean>;
   setParam(
     name: string,
     param: string,
@@ -343,6 +378,9 @@ export class FileWorkspaceStore implements WorkspaceStore {
           description: activeDesc,
           ...(meta.category ? { category: meta.category } : {}),
           ...(meta.publisher ? { publisher: meta.publisher } : {}),
+          ...(meta.owner ? { owner: meta.owner } : {}),
+          ...(meta.maxRunCostUsd != null ? { maxRunCostUsd: meta.maxRunCostUsd } : {}),
+          ...(meta.automations?.length ? { automations: meta.automations } : {}),
         });
       }
     }
@@ -486,6 +524,57 @@ export class FileWorkspaceStore implements WorkspaceStore {
     if (!meta) throw new Error(`Workflow "${name}" not found`);
     if (category) meta.category = category;
     else delete meta.category;
+    await writeFile(
+      join(this.root, "workflows", name, "_metadata.json"),
+      JSON.stringify(meta, null, 2),
+      "utf-8",
+    );
+  }
+
+  async setWorkflowOwner(name: string, owner: string | null): Promise<void> {
+    await this.patchWorkflowMetadata(name, (meta) => {
+      if (owner) meta.owner = owner;
+      else delete meta.owner;
+    });
+  }
+
+  async deleteWorkflow(name: string): Promise<boolean> {
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      throw new Error(`Invalid workflow name "${name}"`);
+    }
+    if (!(await this.readWorkflowMetadata(name))) return false;
+    // The whole directory. On a file-backed deployment the run store keeps
+    // this workflow's runs under it (`runs/`) and they go with it — the same
+    // records `RunStore.deleteRuns` removes.
+    await rm(join(this.root, "workflows", name), { recursive: true, force: true });
+    return true;
+  }
+
+  async setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void> {
+    await this.patchWorkflowMetadata(name, (meta) => {
+      if (maxRunCostUsd != null) meta.maxRunCostUsd = maxRunCostUsd;
+      else delete meta.maxRunCostUsd;
+    });
+  }
+
+  /** Read-modify-write one workflow's `_metadata.json`; throws when missing. */
+  private async patchWorkflowMetadata(name: string, patch: (meta: WorkflowMetadata) => void): Promise<void> {
+    const meta = await this.readWorkflowMetadata(name);
+    if (!meta) throw new Error(`Workflow "${name}" not found`);
+    patch(meta);
+    await writeFile(
+      join(this.root, "workflows", name, "_metadata.json"),
+      JSON.stringify(meta, null, 2),
+      "utf-8",
+    );
+  }
+
+  /** Replace a workflow's automations. Metadata-only, like the category. */
+  async setWorkflowAutomations(name: string, automations: Automation[]): Promise<void> {
+    const meta = await this.readWorkflowMetadata(name);
+    if (!meta) throw new Error(`Workflow "${name}" not found`);
+    if (automations.length > 0) meta.automations = automations;
+    else delete meta.automations;
     await writeFile(
       join(this.root, "workflows", name, "_metadata.json"),
       JSON.stringify(meta, null, 2),

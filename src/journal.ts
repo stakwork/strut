@@ -30,6 +30,13 @@ export function readRunStart(
   paramOverrides?: Record<string, Record<string, unknown>>;
   /** Set for a nested run (§5.3: boot-time auto-resume resumes roots only). */
   parentRunId?: string;
+  /** Set for a scheduled run — a resume keeps the stamp, so the summary it
+   *  finally writes still names its automation (plans/automations.md §3). */
+  automation?: { id: string };
+  /** Who launched and who pays — a resume re-uses the recorded principal
+   *  rather than re-deriving it (the owner may have changed since). */
+  actor?: string;
+  principal?: string;
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -39,6 +46,9 @@ export function readRunStart(
     params: start.params,
     paramOverrides: start.paramOverrides,
     parentRunId: start.parentRunId,
+    automation: start.automation,
+    actor: start.actor,
+    principal: start.principal,
   };
 }
 

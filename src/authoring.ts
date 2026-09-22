@@ -388,8 +388,10 @@ export interface AuthoringCapability {
     params?: Record<string, unknown>,
     version?: string,
     /** `parentRunId` = the calling step's `ctx.runId`, linking the nested
-     *  run's controller under the launching run's (subtree control). */
-    opts?: { parentRunId?: string },
+     *  run's controller under the launching run's (subtree control).
+     *  `actor` / `principal`: the launching step's — a nested run is billed
+     *  like the run that launched it. */
+    opts?: { parentRunId?: string; actor?: string; principal?: string },
   ): Promise<RunResult | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, fullEvents?: boolean): Promise<unknown>;
@@ -694,6 +696,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           workflowHash:
             (await workspace.getWorkflowHash(flow.name, version)) ?? undefined,
           stepHashes: await stepHashesFor(workspace, flow),
+          ...(opts?.actor ? { actor: opts.actor } : {}),
+          ...(opts?.principal ? { principal: opts.principal } : {}),
         });
       } finally {
         tracked?.untrack();

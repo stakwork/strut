@@ -4,6 +4,7 @@ import { mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import type { Automation } from "../automations.js";
 import type { WorkspaceStore } from "../workspace.js";
 import { contentHash } from "../version.js";
 
@@ -91,6 +92,84 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       const p = await ws.setParam("wf", "greeting", "newer");
       assert.deepEqual([p.before, p.after], ["old", "newer"]);
       assert.equal((await ws.getWorkflow("wf")).params?.["greeting"], "newer");
+    });
+
+    it("automations are workflow-level metadata: they round-trip and survive every other write", async () => {
+      const automations: Automation[] = [
+        { id: "a-1", name: "Morning", enabled: true, trigger: { type: "schedule", every: "day", at: ["09:00"], tz: "UTC" }, input: { since: "{{ last.output.id }}" } },
+        { id: "a-2", name: "Paused", enabled: false, trigger: { type: "schedule", every: "week", on: ["mon"], at: ["08:00"], tz: "America/New_York" }, input: {} },
+      ];
+      const stored = async () => (await ws.getWorkflowMetadata("wf"))?.automations;
+      await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "old" } });
+      assert.equal(await stored(), undefined, "absent until set");
+      await assert.rejects(() => ws.setWorkflowAutomations("nope", automations));
+
+      await ws.setWorkflowAutomations("wf", automations);
+      assert.deepEqual(await stored(), automations);
+      assert.deepEqual((await ws.listWorkflows()).find((w) => w.name === "wf")?.automations, automations, "the list entry carries them");
+      assert.equal((await ws.getWorkflowMetadata("wf"))?.active, "v1", "no version is published");
+
+      const source = await ws.getWorkflowSource("wf", "v1");
+      await ws.publishWorkflowByContent("wf", source); // no-op publish
+      const next = await ws.publishWorkflowByContent("wf", source.replace("old", "new"));
+      await ws.setWorkflowCategory("wf", "cat");
+      await ws.setActiveVersion("wf", "v1");
+      await ws.setParam("wf", "greeting", "newer");
+      assert.equal(next.changed, true);
+      assert.deepEqual(await stored(), automations, "survives publish, category, active switch, setParam");
+      assert.equal((await ws.getWorkflowMetadata("wf"))?.category, "cat");
+
+      await ws.setWorkflowAutomations("wf", []);
+      assert.equal(await stored(), undefined, "an empty list clears the field");
+      assert.equal((await ws.listWorkflows()).find((w) => w.name === "wf")?.automations, undefined);
+    });
+
+    it("deleteWorkflow removes every version and all metadata; the name starts over", async () => {
+      const automations: Automation[] = [
+        { id: "a-1", name: "Morning", enabled: true, trigger: { type: "schedule", every: "day", at: ["09:00"], tz: "UTC" }, input: {} },
+      ];
+      await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "old" } }, "first", "exp");
+      await ws.publishWorkflowByContent("wf", (await ws.getWorkflowSource("wf", "v1")).replace("old", "new"));
+      await ws.setWorkflowAutomations("wf", automations);
+      await ws.setWorkflowOwner("wf", "alice-1");
+      await ws.setWorkflowRunCap("wf", 2.5);
+      await ws.publishWorkflow("other", "v1", { steps });
+
+      assert.equal(await ws.deleteWorkflow("wf"), true);
+      assert.equal(await ws.deleteWorkflow("wf"), false, "already gone");
+      assert.equal(await ws.deleteWorkflow("never"), false);
+      assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["other"]);
+      assert.equal(await ws.getWorkflowMetadata("wf"), null);
+      assert.equal(await ws.getWorkflowHash("wf"), null);
+      await assert.rejects(() => ws.getWorkflow("wf"), /not found/);
+
+      // The name is free, and nothing of the old one rides along.
+      assert.equal((await ws.createWorkflow("wf", { steps })).name, "wf");
+      const meta = await ws.getWorkflowMetadata("wf");
+      assert.deepEqual(Object.keys(meta!.versions), ["v1"]);
+      assert.equal(meta!.active, "v1");
+      assert.equal(meta!.category, undefined);
+      assert.equal(meta!.owner, undefined);
+      assert.equal(meta!.maxRunCostUsd, undefined);
+      assert.equal(meta!.automations, undefined);
+    });
+
+    it("owner and run cap are workflow-level metadata: set, survive a publish, clear", async () => {
+      const meta = () => ws.getWorkflowMetadata("wf");
+      await ws.publishWorkflow("wf", "v1", { steps });
+      await ws.setWorkflowOwner("wf", "alice-1");
+      await ws.setWorkflowRunCap("wf", 2.5);
+      assert.equal((await meta())?.owner, "alice-1");
+      assert.equal((await meta())?.maxRunCostUsd, 2.5);
+
+      await ws.publishWorkflow("wf", "v2", { steps, params: { greeting: "other" } });
+      assert.equal((await meta())?.owner, "alice-1", "survives a publish");
+      assert.equal((await meta())?.maxRunCostUsd, 2.5);
+
+      await ws.setWorkflowOwner("wf", null);
+      await ws.setWorkflowRunCap("wf", null);
+      assert.equal((await meta())?.owner, undefined);
+      assert.equal((await meta())?.maxRunCostUsd, undefined);
     });
 
     it("reactivateKnown: false keeps a workspace edit active across a reseed", async () => {

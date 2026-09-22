@@ -81,6 +81,20 @@ for (const impl of runImpls) {
       assert.equal(await store.lastRunAt("never"), null);
     });
 
+    it("deleteRuns removes every run of that workflow and nothing else", async () => {
+      await store.append(WF, "1000", ev("1000", "run.start"));
+      await store.finalize(WF, "1000", summaryFor("1000"));
+      await store.append(WF, "2000", ev("2000", "run.start"));
+      await store.append("other", "9000", ev("9000", "run.start"));
+      await store.deleteRuns(WF);
+      assert.deepEqual(await store.listRuns(WF), []);
+      assert.equal(await store.getRunSummary(WF, "1000"), null);
+      assert.deepEqual(await store.getRunEvents(WF, "2000"), []);
+      assert.equal(await store.lastRunAt(WF), null);
+      assert.deepEqual(await store.listRuns("other"), ["9000"]);
+      await store.deleteRuns("never"); // nothing to remove is not an error
+    });
+
     it("a finalize-less log yields a partial summary (crash / in-flight)", async () => {
       await store.append(WF, "1", ev("1", "run.start", { input: { q: 1 } }));
       await store.append(WF, "1", ev("1", "step.end", { path: `${WF}/a`, output: "A" }));
@@ -159,6 +173,14 @@ const cev = (chatId: string, turn: number, type: ChatEvent["type"], extra: Parti
   turn,
   type,
   ...extra,
+});
+
+describe("FileRunStore paths", () => {
+  it("refuses a key that would escape the workspace root", async () => {
+    const store = new FileRunStore(join(tmpdir(), `strut-conf-run-${randomUUID()}`));
+    await assert.rejects(() => store.deleteRuns("../escape"), /Invalid run store key/);
+    await assert.rejects(() => store.append("..", "1", ev("1", "run.start")), /Invalid run store key/);
+  });
 });
 
 for (const impl of chatImpls) {

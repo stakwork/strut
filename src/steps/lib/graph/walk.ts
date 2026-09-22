@@ -4,7 +4,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import type { NodeEnvelope, EdgeEnvelope, NeighborsParams, SearchParams, SearchResult } from "../../../graph/search.js";
 import { modelEvaluate, type Evaluate, type EvalQuestion, type EvalAnswer } from "../../../evaluate.js";
 import { addUsage, emptyUsage, type TokenUsage } from "../../../pricing.js";
-import { resolveEvaluationModel } from "../../../llm.js";
+import { resolveEvaluationModel, stepAuth } from "../../../llm.js";
 import { graphCtx, errText, deriveNodeName } from "./_shared.js";
 
 /**
@@ -566,6 +566,7 @@ export default defineStep({
         provider: cfg.provider,
         secrets: ctx?.services?.secrets,
         fallback: { model: process.env["STRUT_LLM_MODEL"], provider: process.env["STRUT_LLM_PROVIDER"] },
+        ...stepAuth(ctx),
       });
       return await runWalk(cfg, { reader: b.reader, evaluate: modelEvaluate(em.model), ctx });
     } catch (e) {

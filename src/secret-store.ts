@@ -129,13 +129,15 @@ function decrypt(enc: EncryptedValue, salt: Buffer): string {
 
 /** Filesystem-backed, encrypted secret store. Persists a single
  *  `<workspace>/secrets.json` with a random per-file salt + AES-256-GCM
- *  values. The default for the standard server. */
+ *  values. The default for the standard server. A second instance with its
+ *  own `filename` keeps a separate, equally encrypted file beside it — how
+ *  `mothership.ts` holds delegations off the services bag. */
 export class FileSecretStore implements SecretStore {
   private file: string;
   private cache: SecretsFile | null = null;
 
-  constructor(workspaceRoot: string) {
-    this.file = join(workspaceRoot, "secrets.json");
+  constructor(workspaceRoot: string, filename = "secrets.json") {
+    this.file = join(workspaceRoot, filename);
   }
 
   private async load(): Promise<SecretsFile> {

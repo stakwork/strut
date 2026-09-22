@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../core.js";
 import type { StrutCapabilities } from "../../capabilities.js";
-import { resolveModel } from "../../llm.js";
+import { resolveModel, stepAuth } from "../../llm.js";
 
 const EXAMPLE = `- id: summarize
   type: llm
@@ -61,6 +61,8 @@ export default defineStep({
       model: cfg.model ?? process.env["STRUT_LLM_MODEL"],
       provider: cfg.provider ?? process.env["STRUT_LLM_PROVIDER"],
       secrets: ctx?.services?.secrets,
+      // Where to send the call and how to attribute it (plans/mothership-cost-control.md §1).
+      ...stepAuth(ctx),
     });
 
     if (cfg.schema) {
