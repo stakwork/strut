@@ -65,7 +65,7 @@ export const triggerSchema = z
       minutes: z.number().int().min(1).describe("Gap between fires, in minutes (2 hours = 120)."),
       anchor: z.string().optional().describe("ISO instant the rhythm starts from (fires are anchor + k·minutes). Omitted = now."),
       on: z.array(day).min(1).optional().describe("Only fire on these days."),
-      between: z.tuple([hhmm, hhmm]).optional().describe("Only fire inside this time-of-day window, inclusive, e.g. [\"09:00\",\"17:00\"]."),
+      between: z.array(hhmm).length(2).optional().describe("Only fire inside this time-of-day window, inclusive, e.g. [\"09:00\",\"17:00\"]."),
       tz,
     }),
     z.object({ type, every: z.literal("day"), at, tz }),
