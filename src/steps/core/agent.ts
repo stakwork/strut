@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { SecretsCapability } from "../../capabilities.js";
-import { resolveModel, createWebTools } from "../../llm.js";
+import { resolveModel, createWebTools, stepAuth } from "../../llm.js";
 import { accessedNodesOf, defineStep, type StepContext, type StepRegistry, withAccessedNodes } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
 import { globToRegExp } from "../../closure.js";
@@ -934,6 +934,8 @@ export default defineStep({
       model: modelName,
       provider: providerHint,
       secrets: (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets,
+      // Where to send the call and how to attribute it (plans/mothership-cost-control.md §1).
+      ...stepAuth(ctx),
     });
     const model: any = resolved.model;
     const maxOutputTokens = resolved.maxOutputTokens;

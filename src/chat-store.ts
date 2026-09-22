@@ -57,6 +57,10 @@ export interface ChatMeta {
    *  triggered turns post here too. The URL is a credential — read endpoints
    *  return its origin only. */
   callback?: { url: string };
+  /** Who is talking to this chat — the request actor of the latest human
+   *  message (plans/mothership-cost-control.md §2). Chat turns, and the runs
+   *  the builder launches, are billed to it. */
+  actor?: string;
 }
 
 export type ChatEventType =

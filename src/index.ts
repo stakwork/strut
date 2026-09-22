@@ -138,11 +138,37 @@ export {
   resolveModel,
   listModelOptions,
   canonicalModelName,
+  stepAuth,
   type ResolveModelOptions,
   type ResolvedModel,
   type ModelOption,
   type ModelCatalog,
+  type LlmAuth,
+  type LlmAuthContext,
+  type LlmAuthResult,
 } from "./llm.js";
+
+// Mothership cost control (plans/mothership-cost-control.md) — opt-in: the
+// host builds it, passes `llmAuth` to createStrut, mounts its routes.
+export {
+  createMothership,
+  delegationStore,
+  checkDelegationMacaroon,
+  stepAgentName,
+  resolveRunCap,
+  explainExhausted,
+  STRUT_AGENT,
+  STRUT_ASSISTANT,
+  DELEGATIONS_FILE,
+  type Mothership,
+  type MothershipOptions,
+  type Delegation,
+  type DelegationStore,
+  type DelegationSummary,
+} from "./mothership.js";
+
+// Auth: the deployment-key middleware and the default actor resolver.
+export { requireApiKey, apiKeyMatches, actorFromHeader } from "./auth.js";
 
 // Standard capabilities — the http + secrets + artifacts + shell services adapter steps build on.
 export {

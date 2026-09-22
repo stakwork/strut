@@ -185,6 +185,10 @@ export interface WorkflowEntry {
   description?: string;
   /** Sidebar grouping label, if set. */
   category?: string;
+  /** The owning actor and per-run LLM spend cap, if set
+   *  (plans/mothership-cost-control.md). */
+  owner?: string;
+  maxRunCostUsd?: number;
   /** The workflow's schedules, if any — the sidebar's clock badge. */
   automations?: Automation[];
   /** Start time (epoch ms) of the most recent run, if any. */
@@ -256,6 +260,19 @@ export const setWorkflowCategory = (name: string, category: string | null) =>
     method: "PUT",
     body: JSON.stringify({ category }),
   });
+
+/** Set or clear a workflow's per-run LLM spend cap (metadata-only, no new
+ *  version). Enforced only where spend routes through the Mothership. */
+export const setWorkflowRunCap = (name: string, maxRunCostUsd: number | null) =>
+  fetchJSON<{ ok: boolean }>(`/workflows/${name}/run-cap`, {
+    method: "PUT",
+    body: JSON.stringify({ maxRunCostUsd }),
+  });
+
+/** Does this deployment route LLM spend through the Mothership? The run-cap
+ *  chip is only shown then — without it nothing enforces the number. */
+export const getMothership = () =>
+  fetchJSON<{ enabled?: boolean }>("/llm/mothership").then((r) => !!r.enabled).catch(() => false);
 
 /** Publish a new version of an existing workflow. */
 export const publishWorkflow = (

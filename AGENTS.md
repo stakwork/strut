@@ -57,11 +57,12 @@ strut/
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server
-│   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret)
-│   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+│   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
+│   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses) — every one recordable by cassette.ts + secret-safe
 │   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
-│   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models
+│   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models. Also the `llmAuth` seam (plans/mothership-cost-control.md §1): a host hook that returns {apiKey, baseUrl, headers} per call, consulted before the client is built; `stepAuth(ctx)` builds a step's call context
+│   ├── mothership.ts      # OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir }) → { llmAuth, mount }. Hive pushes one standing macaroon per user (PUT /llm/delegations/:actor); strut appends keyless HMAC links per run and per step (gatekey `attenuate`) so the gateway bills user × workflow × step and caps the run. Delegations live in a second encrypted file (mothership.json), never on the services bag. Core never imports it
 │   ├── index.ts           # barrel export — createStrut (primary entry), createRegistry, coreRegistry, all types
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
@@ -188,6 +189,8 @@ docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs 
 | `STRUT_WEB_DIST`     | `<module>/../web/dist` | Where the built UI is served from, for packagers that relocate it. |
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
+| `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
+| `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` makes an LLM call with no principal, or no delegation on file for it, a step error instead of a direct provider call. |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
@@ -281,6 +284,49 @@ instead of baked into env at deploy time.
   engine. If interactive per-end-user OAuth is ever needed, the **host app**
   (mcp) should own the OAuth dance and deposit/refresh tokens *into* this store;
   strut's `secrets` capability stays generic and provider-agnostic.
+
+## Mothership cost control (opt-in)
+
+`plans/mothership-cost-control.md` is the design; `src/mothership.ts` the
+module. Strut core knows two generic hooks and nothing about macaroons:
+
+- **`createStrut({ llmAuth })`** — consulted by the `agent`/`llm` steps and
+  the chat turn before a model client is built (`src/llm.ts`), with the
+  call's context (`kind`, `provider`, `runId`, `workflow`, `stepPath`,
+  `actor`, `principal`). Returns `{ apiKey, baseUrl, headers }` to route the
+  call through a gateway, or `undefined` to call the provider directly with
+  the secrets boundary's key, as always.
+- **`createStrut({ resolveActor(c) })`** — who a request is from, as an
+  opaque string strut stores and forwards but never interprets (no accounts,
+  no login). The default honors `x-strut-actor` only alongside a configured,
+  matching `STRUT_API_KEY`; mcp passes its own hook (the verified JWT's `sub`).
+
+**Stamps.** `WorkflowMetadata.owner` is set by the first publish that carries
+an actor and changed only by `PUT /workflows/:name/owner` (gated). A run
+records `actor` (who launched it) and `principal` (who pays: the actor, else
+the owner — so an automation's spend lands on the owner) on `run.start` and
+the summary, and hands both to every step as `ctx.actor` / `ctx.principal`. A
+resume reads the principal back from the log rather than re-deriving it. The
+chat's actor is whoever last spoke to it; the builder's runs are billed to
+them. `WorkflowMetadata.maxRunCostUsd` (`PUT /workflows/:name/run-cap`, the
+topbar's cap chip) is the run's cap when routed; nothing else reads it.
+
+**The module.** `createMothership({ dataDir })` → `{ llmAuth, mount(strut) }`.
+Hive mints, once per user and deployment, a macaroon (org-signed user
+authorization + a user-signed standing invocation for `strut-agent`, 60
+days, a cumulative ceiling) and pushes it with that user's virtual key and
+the gateway URL: `PUT /llm/delegations/:actor { macaroon, apiKey, baseUrl }`
+(`GET` lists `{ actor, exp, delegationId }`; `DELETE` removes; all behind
+`requireApiKey`). Strut never signs: per run it appends one keyless HMAC link
+(the run id, the cap, 8 h) and per step a second one that adds
+`<workflow>.<step>` to the agent lineage — the gateway bills the last name
+— and sends `x-macaroon`, `x-bf-dim-session-id: <workflow>` and
+`x-bf-dim-root-agent: strut-agent`. A chat turn is one link billed as
+`strut-assistant`. Delegations live in a second encrypted `FileSecretStore`
+file, `mothership.json` beside `secrets.json`: never on the services bag (no
+step can read another user's macaroon), never in the Secrets list. Tests:
+`src/mothership.test.ts` verifies the built chain with gatekey's own
+verifier — the TS mirror of the gateway's Go one.
 
 ## Lib step credentials
 

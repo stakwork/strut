@@ -63,6 +63,19 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
   return !!got && got === expected;
 }
 
+/**
+ * The default `resolveActor` (plans/mothership-cost-control.md §2): the
+ * `x-strut-actor` header, honored only when the request also carries the
+ * deployment key AND a key is configured. With `STRUT_API_KEY` unset nothing
+ * is honored — an unauthenticated caller must never pick who pays. A host
+ * that authenticates requests itself (mcp's JWT) passes its own hook.
+ */
+export function actorFromHeader(c: Context): string | undefined {
+  if (!configuredKey() || !apiKeyMatches(c.req.header("authorization"))) return undefined;
+  const v = c.req.header("x-strut-actor")?.trim();
+  return v ? v : undefined;
+}
+
 /** Test-only: reset the one-time-warning state so tests stay deterministic. */
 export function _resetAuthState(): void {
   warned = false;

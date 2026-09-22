@@ -1,12 +1,28 @@
 # Mothership cost control — per-step and per-workflow LLM spend
 
-> **Status (2026-09-22): proposed, revision 2, audited against all four
-> codebases.** Nothing built. Spans four repos: strut, hive, stakgraph
-> `mcp` (the host that embeds strut at `/lab`) and stakgraph `gateway`
-> (the "Agent Mothership": Bifrost + our macaroon plugin). The gateway
-> needs **no changes** for v1 — every gateway citation below was re-read
-> on `stakgraph@8989934a`. Hive citations are `hive@5525f68b0`; the
-> issuer (§4.2) was re-read on `hive@7cd0c2a40`.
+> **Status (2026-09-22): strut side built (§1–§3, step order 1–3);
+> hive (§4) and mcp (§5) not started; end-to-end (§6) not run.** Spans
+> four repos: strut, hive, stakgraph `mcp` (the host that embeds strut at
+> `/lab`) and stakgraph `gateway` (the "Agent Mothership": Bifrost + our
+> macaroon plugin). The gateway needs **no changes** for v1 — every
+> gateway citation below was re-read on `stakgraph@8989934a`. Hive
+> citations are `hive@5525f68b0`; the issuer (§4.2) was re-read on
+> `hive@7cd0c2a40`.
+>
+> **What strut ships.** `src/llm.ts`: the `llmAuth` seam + `stepAuth`.
+> `src/mothership.ts`: `createMothership({ dataDir }) → { llmAuth, mount }`,
+> the delegation store (`mothership.json`), `PUT/GET/DELETE
+> /llm/delegations[/:actor]`, `GET /llm/mothership`, run + step links,
+> the chat link, cap resolution, the exhausted-ceiling error. Core:
+> `resolveActor`, the principal rule at every launch path (HTTP, `strut.run`,
+> automations, chat tools, `meta/run-workflow`, the verify pass, single
+> steps, resume), `owner` + `maxRunCostUsd` on `WorkflowMetadata` with
+> `PUT /workflows/:name/owner` (gated) and `/run-cap`, `ChatMeta.actor`,
+> the topbar cap chip (shown only when the module is mounted). Two
+> deviations from the text below: the module's routes are mounted with
+> `mount(strut)` (it needs the workspace for run caps), and `GET
+> /llm/delegations` is gated like the mutations. AGENTS.md "Mothership
+> cost control" is the operator summary.
 >
 > **What changed in revision 2.** Revision 1 gave strut its own ed25519
 > key and had hive's org key sign a second UA per user binding that user

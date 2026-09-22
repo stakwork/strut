@@ -113,6 +113,18 @@ export function buildTools(deps: AiDeps) {
   const withWarnings = <T extends object>(result: T, v: { warnings: Array<{ path: string; message: string }> }) =>
     v.warnings.length ? { ...result, warnings: v.warnings } : result;
 
+  /** A workflow with no owner is adopted by the chat's actor when it publishes
+   *  it (plans/mothership-cost-control.md §2). */
+  const adopt = async (name: string) => {
+    if (!deps.actor) return;
+    const meta = await deps.workspace.getWorkflowMetadata(name).catch(() => null);
+    if (meta && !meta.owner) await deps.workspace.setWorkflowOwner(name, deps.actor);
+  };
+  /** Who a run the builder launches is billed to: the chat's actor, else the
+   *  workflow's owner (the principal rule, §2). */
+  const principalFor = async (name: string) =>
+    deps.actor ?? (await deps.workspace.getWorkflowMetadata(name).catch(() => null))?.owner;
+
   return {
     list_steps: tool({
       description:
@@ -290,6 +302,7 @@ export function buildTools(deps: AiDeps) {
           description,
           category,
         );
+        await adopt(finalName);
         // Rebuild registry in case the workflow references new patterns
         deps.registry = await deps.getRegistry();
         return withWarnings(
@@ -356,6 +369,7 @@ export function buildTools(deps: AiDeps) {
         } catch (err) {
           return { error: err instanceof Error ? err.message : String(err) };
         }
+        await adopt(name);
         deps.registry = await deps.getRegistry();
         return withWarnings(
           {
@@ -689,6 +703,7 @@ export function buildTools(deps: AiDeps) {
         // wakes it with a [verify-notification].
         if (verifier) deps.watchVerify?.(runId);
         const contract = await pendingContract(flow, name);
+        const principal = await principalFor(name);
         const promise = runWorkflow(flow, coerceJsonArg(input) ?? {}, deps.registry, {
           runId,
           store: deps.store,
@@ -699,6 +714,8 @@ export function buildTools(deps: AiDeps) {
           workflowHash:
             (await deps.workspace.getWorkflowHash(name, version)) ?? undefined,
           stepHashes: await stepHashesFor(deps.workspace, flow),
+          ...(deps.actor ? { actor: deps.actor } : {}),
+          ...(principal ? { principal } : {}),
         }).finally(() => tracked?.untrack());
 
         // No detach seam (tests / non-chat embedders) → await as before.
@@ -779,6 +796,7 @@ export function buildTools(deps: AiDeps) {
             params: coerceJsonArg(params) as Record<string, unknown> | undefined,
             workspace: deps.workspace,
             keep: keep === true,
+            ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
             ...(cassette
               ? { cassette: { mode: cassette, path: cassettePath(deps.dataDir!, cassetteName ?? type) } }
               : {}),

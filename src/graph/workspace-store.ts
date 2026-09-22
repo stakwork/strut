@@ -63,6 +63,9 @@ interface WorkflowRow {
   active_version?: string;
   /** JSON-encoded `Automation[]` (plans/automations.md §2). */
   automations?: string;
+  /** The owning actor and per-run cap (plans/mothership-cost-control.md). */
+  owner?: string;
+  max_run_cost_usd?: number;
 }
 
 /** A workflow row's automations; a blob that fails to parse reads as none. */
@@ -212,6 +215,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
         description: active?.description,
         ...(w.category ? { category: w.category } : {}),
         ...(w.publisher ? { publisher: w.publisher } : {}),
+        ...(w.owner ? { owner: w.owner } : {}),
+        ...(w.max_run_cost_usd != null ? { maxRunCostUsd: Number(w.max_run_cost_usd) } : {}),
         ...(automationsOf(w).length ? { automations: automationsOf(w) } : {}),
       });
     }
@@ -233,6 +238,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     }
     if (w.category) meta.category = w.category;
     if (w.publisher) meta.publisher = w.publisher;
+    if (w.owner) meta.owner = w.owner;
+    if (w.max_run_cost_usd != null) meta.maxRunCostUsd = Number(w.max_run_cost_usd);
     if (automationsOf(w).length) meta.automations = automationsOf(w);
     return meta;
   }
@@ -454,6 +461,20 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     const w = await this.workflowRow(name);
     if (!w) throw new Error(`Workflow "${name}" not found`);
     const patch = patchFor(w as unknown as Record<string, unknown>, { category: category || undefined });
+    if (patch) await this.backend.nodes.update(w.ref_id, patch);
+  }
+
+  async setWorkflowOwner(name: string, owner: string | null): Promise<void> {
+    const w = await this.workflowRow(name);
+    if (!w) throw new Error(`Workflow "${name}" not found`);
+    const patch = patchFor(w as unknown as Record<string, unknown>, { owner: owner || undefined });
+    if (patch) await this.backend.nodes.update(w.ref_id, patch);
+  }
+
+  async setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void> {
+    const w = await this.workflowRow(name);
+    if (!w) throw new Error(`Workflow "${name}" not found`);
+    const patch = patchFor(w as unknown as Record<string, unknown>, { max_run_cost_usd: maxRunCostUsd ?? undefined });
     if (patch) await this.backend.nodes.update(w.ref_id, patch);
   }
 

@@ -12,6 +12,7 @@ import { deepEqual, normalizeSteps, statusTone } from "./helpers";
 import { load as loadPref, save as savePref } from "./storage";
 import { ChatFlyout } from "./components/ChatFlyout";
 import { CategoryEditor } from "./components/CategoryEditor";
+import { RunCapEditor } from "./components/RunCapEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -311,6 +312,9 @@ export function App() {
   }, []);
 
   useEffect(() => { refreshWorkflows(); refreshStepTypes(); }, []);
+  // Spend routed through the Mothership? Then the per-run cap means something.
+  const [mothership, setMothership] = useState(false);
+  useEffect(() => { api.getMothership().then(setMothership); }, []);
 
   // Load workflow + its runs when selected
   useEffect(() => {
@@ -871,6 +875,14 @@ export function App() {
               workflow={selectedWf}
               category={selectedEntry?.category}
               categories={categories}
+              onSaved={refreshWorkflows}
+            />
+          )}
+          {selectedWf && mothership && (
+            <RunCapEditor
+              key={`cap:${selectedWf}`}
+              workflow={selectedWf}
+              maxRunCostUsd={selectedEntry?.maxRunCostUsd}
               onSaved={refreshWorkflows}
             />
           )}

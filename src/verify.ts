@@ -389,6 +389,9 @@ export function createVerifier(deps: VerifierDeps) {
       runRef: undefined as string | null | undefined,
       activeStepHashes: undefined as Record<string, string> | undefined,
       registry: undefined as StepRegistry | undefined,
+      // The source run's principal: its checks are billed to the same person
+      // (plans/mothership-cost-control.md §2).
+      principal: undefined as string | undefined,
     };
   }
   type Pass = ReturnType<typeof newPass>;
@@ -516,6 +519,7 @@ export function createVerifier(deps: VerifierDeps) {
       origin: "verify",
       verify: { checkId: check.id, subject: subjectKey(subject), sourceRunId: pass.runId },
       ...(pass.activeStepHashes[type] ? { stepHashes: { [type]: pass.activeStepHashes[type]! } } : {}),
+      ...(pass.principal ? { principal: pass.principal } : {}),
     });
     const cost = reportedCost(run.events);
     let checkRun: string | undefined;
@@ -633,6 +637,7 @@ export function createVerifier(deps: VerifierDeps) {
     const launch = events.find((e) => e.type === "run.start");
     if (!launch) return { ...pass.result, skipped: "unknown-run" };
     if (launch.origin === "verify" || key.startsWith("check:")) return { ...pass.result, skipped: "verify-origin" };
+    pass.principal = launch.principal;
     if (!events.some((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled")) return { ...pass.result, skipped: "unfinished" };
 
     let artifactsDir: string | undefined;

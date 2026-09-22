@@ -152,6 +152,16 @@ export interface WorkflowMetadata {
    *  publish/run/run-history operations are closed over that stamped set —
    *  see `authoring.ts` and EVOLVE_SPEC §6 (run-history scoping). */
   publisher?: string;
+  /** The PERSON this workflow belongs to — an opaque actor string
+   *  (plans/mothership-cost-control.md §2). Set by the first publish that
+   *  carries an actor, then changed only by an explicit transfer
+   *  (`setWorkflowOwner`). Distinct from `publisher`, a service stamp. The
+   *  owner pays for the workflow's automations. */
+  owner?: string;
+  /** Per-run LLM spend cap in dollars, enforced by the Mothership when the
+   *  deployment routes through it (§3) — otherwise nothing reads it.
+   *  Operating policy like `category`: metadata-only, no version. */
+  maxRunCostUsd?: number;
 }
 
 export interface StepVersionInfo {
@@ -205,6 +215,9 @@ export interface WorkflowListEntry {
   category?: string;
   /** Provenance stamp, if any (see WorkflowMetadata.publisher). */
   publisher?: string;
+  /** The owning actor and run cap, if set (see WorkflowMetadata). */
+  owner?: string;
+  maxRunCostUsd?: number;
   /** The workflow's schedules, if any (see WorkflowMetadata.automations) —
    *  carried here so the scheduler's boot load is one `listWorkflows()`. */
   automations?: Automation[];
@@ -278,6 +291,10 @@ export interface WorkspaceStore extends SubflowResolver {
     opts?: PublishByContentOptions,
   ): Promise<{ version: string; changed: boolean }>;
   setWorkflowCategory(name: string, category: string | null): Promise<void>;
+  /** Set (or clear) the owning actor — metadata-only, like the category. */
+  setWorkflowOwner(name: string, owner: string | null): Promise<void>;
+  /** Set (or clear) the per-run spend cap — metadata-only. */
+  setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void>;
   /** Replace the workflow's automations (an empty list clears the field).
    *  Metadata-only, like `setWorkflowCategory`; throws for an unknown
    *  workflow. The whole list, because every mutation is a
@@ -356,6 +373,8 @@ export class FileWorkspaceStore implements WorkspaceStore {
           description: activeDesc,
           ...(meta.category ? { category: meta.category } : {}),
           ...(meta.publisher ? { publisher: meta.publisher } : {}),
+          ...(meta.owner ? { owner: meta.owner } : {}),
+          ...(meta.maxRunCostUsd != null ? { maxRunCostUsd: meta.maxRunCostUsd } : {}),
           ...(meta.automations?.length ? { automations: meta.automations } : {}),
         });
       }
@@ -500,6 +519,32 @@ export class FileWorkspaceStore implements WorkspaceStore {
     if (!meta) throw new Error(`Workflow "${name}" not found`);
     if (category) meta.category = category;
     else delete meta.category;
+    await writeFile(
+      join(this.root, "workflows", name, "_metadata.json"),
+      JSON.stringify(meta, null, 2),
+      "utf-8",
+    );
+  }
+
+  async setWorkflowOwner(name: string, owner: string | null): Promise<void> {
+    await this.patchWorkflowMetadata(name, (meta) => {
+      if (owner) meta.owner = owner;
+      else delete meta.owner;
+    });
+  }
+
+  async setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void> {
+    await this.patchWorkflowMetadata(name, (meta) => {
+      if (maxRunCostUsd != null) meta.maxRunCostUsd = maxRunCostUsd;
+      else delete meta.maxRunCostUsd;
+    });
+  }
+
+  /** Read-modify-write one workflow's `_metadata.json`; throws when missing. */
+  private async patchWorkflowMetadata(name: string, patch: (meta: WorkflowMetadata) => void): Promise<void> {
+    const meta = await this.readWorkflowMetadata(name);
+    if (!meta) throw new Error(`Workflow "${name}" not found`);
+    patch(meta);
     await writeFile(
       join(this.root, "workflows", name, "_metadata.json"),
       JSON.stringify(meta, null, 2),

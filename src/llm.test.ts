@@ -162,3 +162,104 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.equal(prompt.suggest, undefined);
   });
 });
+
+describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
+  let saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+    for (const k of ENV) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k]!;
+    }
+  });
+
+  it("the hook is told the PROVIDER before the model is built, and its key/URL/headers win over the secrets boundary", async () => {
+    const store = new MemorySecretStore();
+    await store.set("OPENAI_API_KEY", "from-store");
+    const secrets = secretsCapability(store, { envFallback: process.env });
+    const seen: unknown[] = [];
+    const r = await resolveModel({
+      model: "gpt",
+      secrets,
+      llmAuth: async (ctx) => {
+        seen.push(ctx);
+        return { apiKey: "vk-user", baseUrl: "https://gateway.example", headers: { "x-macaroon": "m" } };
+      },
+      auth: { kind: "step", runId: "r1", workflow: "wf", stepPath: "wf/s", principal: "alice" },
+    });
+    assert.deepEqual(seen, [{ kind: "step", provider: "openai", runId: "r1", workflow: "wf", stepPath: "wf/s", principal: "alice" }]);
+    assert.equal(r.apiKey, "vk-user", "the grant's key, not the store's");
+    assert.equal(r.provider, "openai");
+  });
+
+  it("`undefined` from the hook means the provider is called directly, with the boundary's key", async () => {
+    const store = new MemorySecretStore();
+    await store.set("OPENAI_API_KEY", "from-store");
+    const secrets = secretsCapability(store, { envFallback: process.env });
+    const r = await resolveModel({ model: "gpt", secrets, llmAuth: async () => undefined, auth: { kind: "step", runId: "r1" } });
+    assert.equal(r.apiKey, "from-store");
+  });
+
+  it("no `auth` context → the hook is never consulted (a call site that opted out)", async () => {
+    process.env["OPENAI_API_KEY"] = "env";
+    let calls = 0;
+    const r = await resolveModel({ model: "gpt", llmAuth: async () => (calls++, { apiKey: "never" }) });
+    assert.equal(calls, 0);
+    assert.equal(r.apiKey, "env");
+  });
+
+  it("a grant with explainError wraps the model: a gateway 402 the auth layer recognises is rethrown with its explanation", async () => {
+    // A stand-in gateway: every request is a 402 naming the delegation.
+    const { createServer } = await import("node:http");
+    const server = createServer((_req, res) => {
+      res.writeHead(402, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "run dele-1 spent $10000.0000 of its $10000.00 cap", code: "run_cost_exceeded" } }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const explainError = (e: unknown) => {
+        const err = e as { message?: string; responseBody?: string };
+        return `${err.message ?? ""} ${err.responseBody ?? ""}`.includes("dele-1") ? "authorization for alice is exhausted" : undefined;
+      };
+      const r = await resolveModel({
+        model: "gpt",
+        llmAuth: async () => ({ apiKey: "vk", baseUrl: `http://127.0.0.1:${port}`, explainError }),
+        auth: { kind: "step", runId: "r1", principal: "alice" },
+      });
+      assert.equal(r.model.modelId, "gpt-5.6-luna", "same model underneath");
+      const { generateText } = await import("ai");
+      await assert.rejects(
+        () => generateText({ model: r.model, prompt: "hi", maxRetries: 0 }),
+        (err: unknown) => {
+          assert.equal((err as Error).message, "authorization for alice is exhausted");
+          assert.match(String(((err as Error).cause as Error)?.message), /402|cap/);
+          return true;
+        },
+      );
+      // The same failure without a recognisable delegation id is left as the SDK raised it.
+      const plain = await resolveModel({
+        model: "gpt",
+        llmAuth: async () => ({ apiKey: "vk", baseUrl: `http://127.0.0.1:${port}`, explainError: () => undefined }),
+        auth: { kind: "step", runId: "r1" },
+      });
+      await assert.rejects(() => generateText({ model: plain.model, prompt: "hi", maxRetries: 0 }), /run dele-1 spent|402/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("stepAuth: builds the step context from a StepContext, or nothing without a hook on the bag", async () => {
+    const { stepAuth } = await import("./llm.js");
+    const hook = async () => undefined;
+    const ctx = { runId: "r9", path: "digest/loop#2/summarize", scope: {}, input: undefined, emit: async () => {}, services: { llmAuth: hook }, actor: "a", principal: "p" };
+    const a = stepAuth(ctx as any);
+    assert.equal(a.llmAuth, hook);
+    assert.deepEqual(a.auth, { kind: "step", runId: "r9", workflow: "digest", stepPath: "digest/loop#2/summarize", actor: "a", principal: "p" });
+    assert.deepEqual(stepAuth({ ...ctx, services: {} } as any), {});
+    assert.deepEqual(stepAuth(undefined), {});
+  });
+});
