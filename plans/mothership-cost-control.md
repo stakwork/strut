@@ -1,9 +1,11 @@
 # Mothership cost control — per-step and per-workflow LLM spend
 
-> **Status (2026-09-21): proposed.** Nothing built. Spans four repos: strut,
-> hive, stakgraph `mcp` (the host that embeds strut at `/lab`) and stakgraph
-> `gateway` (the "Agent Mothership": Bifrost + our macaroon plugin). The
-> gateway needs **no changes** for v1.
+> **Status (2026-09-22): proposed, audited against all four codebases.**
+> Nothing built. Spans four repos: strut, hive, stakgraph `mcp` (the host
+> that embeds strut at `/lab`) and stakgraph `gateway` (the "Agent
+> Mothership": Bifrost + our macaroon plugin). The gateway needs **no
+> changes** for v1 — every gateway citation below was re-read on
+> `stakgraph@8989934a`. Hive citations are `hive@5525f68b0`.
 
 ## Problem
 
@@ -37,8 +39,9 @@ Two things make strut different from hive's other agents:
 | Renewal | UA lives 60 days; a **hive reconciler cron renews it inside the last 15**. Renewal needs no user — the org key signs, and the key bound is strut's |
 | Automations | **The workflow owner pays** |
 | Grouping in the Mothership UI | No name prefix. Strut sends `x-bf-dim-root-agent: strut-agent` so its steps can be grouped under one node (UI work, later) |
-| Users in strut | An **opaque `actor` string**. Strut stores and forwards it; it never interprets it. No accounts, no login |
-| Strut core | Knows only a generic hook: `llmAuth(ctx) → {apiKey, baseUrl, headers}`. Macaroons live in one opt-in module, `src/mothership.ts` |
+| Users in strut | An **opaque `actor` string**. Strut stores and forwards it; it never interprets it. No accounts, no login. The host says who it is: `createStrut({ resolveActor(c) })` |
+| Strut core | Knows two generic hooks: `llmAuth(ctx) → {apiKey, baseUrl, headers}` and `resolveActor(c) → string \| undefined`. Macaroons live in one opt-in module, `src/mothership.ts` |
+| Where delegations live | A **second `FileSecretStore` instance** writing `mothership.json` beside `secrets.json` — same encryption, never on the services bag, never in the Secrets list |
 | Windowed quotas | Gateway-side, keyed by name and user — `agent_budgets` (per step, `1d`/`1w`) and the Bifrost customer budget (per user, daily). Independent of token lifetime |
 
 ## Design in one paragraph
@@ -96,18 +99,38 @@ export type LlmAuth = (ctx: LlmAuthContext) =>
 `resolveModel` gains `auth?: LlmAuthContext`, calls the hook when both exist,
 and forwards the result to aieo. `undefined` from the hook means "call the
 provider directly". The three call sites pass their context:
-`steps/core/agent.ts` (~933), `steps/core/llm.ts` (~60), `createStrut.ts`
-(~1685, the chat turn).
+`steps/core/agent.ts:933`, `steps/core/llm.ts:60`, `createStrut.ts:1685`
+(the chat turn).
+
+- **Provider before hook.** `ctx.provider` must be known when the hook
+  runs, but today the provider is only resolved inside `aieo.resolveModel`.
+  Call aieo's keyless `canonicalModelName(model, provider)` first, hand its
+  provider to the hook, then `aieo.resolveModel` with the hook's result.
+  The hook returns the gateway **root**; aieo's `getModel` appends the
+  per-provider path (`gatewayUrlFor`), all five providers covered.
+- **Web tools need no change.** `createWebTools` builds an anthropic
+  client only to construct the native `web_search`/`web_fetch` tool
+  *definitions*; the request itself rides the model client, which now
+  carries the gateway URL and headers.
 
 This step is useful alone: a static hook returning the gateway URL and a
 virtual key routes all strut spend through the Mothership, untagged.
 
 ## 2. Actors and the principal
 
-- **Request → actor.** Header `x-strut-actor`, honored only on a request
-  authenticated with the deployment key. The host sets it: mcp's `labAuth`
-  copies it from the embed JWT's `sub` (and strips any client-sent value);
-  hive's server-side calls send it beside `x-api-token`.
+- **Request → actor: `createStrut({ resolveActor(c) })`.** The host
+  decides, per request, who the actor is — strut never reads a header it
+  did not ask for. Two reasons a plain `x-strut-actor` header rule cannot
+  work: strut's run and chat routes are **not** behind `requireApiKey`
+  (only steps/secrets/automations/claims are), and embed requests carry
+  the mcp JWT, not the deployment key — so "honored only with the
+  deployment key" would honor nothing from the UI, and with
+  `STRUT_API_KEY` unset (dev) it would honor anything. The hook takes the
+  Hono context and returns the actor or `undefined`.
+  - Standalone `server.ts`: default hook reads `x-strut-actor` iff
+    `apiKeyMatches(authorization)` **and** a key is configured.
+  - mcp: see §5 — the actor comes from the verified JWT's `sub`, or from
+    hive's `x-strut-actor` on an `x-api-token` call.
 - **Stamps.** `WorkflowMetadata.owner` — set by the first publish that
   carries an actor (so today's ownerless workflows are adopted by whoever
   edits them next), then changed only by an explicit transfer
@@ -115,6 +138,18 @@ virtual key routes all strut spend through the Mothership, untagged.
   *service* stamp.
   `actor` on `run.start` / `RunSummary` / `RunOptions`, carried like
   `automation`. `ChatMeta.actor`. `StepContext.actor`.
+- **Stamp the resolved principal too.** `run.start` records
+  `principal` beside `actor` (they differ for an automation, or a run
+  launched by someone who is not the owner). Resume and the verify pass
+  read `principal` back from the log instead of re-deriving it — the
+  owner may have changed since.
+- **The actor string.** It is the macaroon `user_id`, built by hive's
+  `buildBifrostName` (`reconciler.ts:676`): `{githubLogin}-{User.id}`,
+  or the bare `User.id` when the user has no GitHub auth. Hive must use
+  that one function everywhere it sets an actor (§4) — every hive caller
+  today holds the raw `User.id`, which is not the same string. A GitHub
+  rename changes it and would orphan `owner`; **deferred**, not a v1
+  concern.
 - **Principal rule** (who a run's spend is billed to):
 
 | Trigger | Principal |
@@ -130,17 +165,48 @@ No principal, or no delegation for it → direct provider keys, as today
 
 ## 3. `src/mothership.ts` (opt-in, lazy-imports `gatekey`)
 
+`gatekey` is on npm (0.1.1; hive already depends on `^0.1.1`) and exports
+everything needed: `signInvocation`, `invocationSigBytes`, `attenuate`,
+`ed25519PublicKey`, `verify`. Source is `stakgraph/gateway/auth/ts`.
+
+**Wiring.** `createMothership({ dataDir, store?, runCapDefault? }) →
+{ llmAuth, mount(app) }`. The host passes `llmAuth` to `createStrut` and
+calls `mount(strut.app)` to add the routes below (mutations behind
+`requireApiKey`, which `auth.ts` exports). Core never imports the module.
+
+**Store.** A `DelegationStore` interface owned by this module —
+`getKey/setKey`, `get/put/delete(actor)`, `list() → {actor, exp}[]` — with
+one implementation over any `SecretStore`, defaulting to a **second
+`FileSecretStore` instance** writing `dataDir/mothership.json`
+(`FileSecretStore` gains an optional filename). Why a separate instance and
+not a reserved prefix in the main store: the main store is on the services
+bag, so any step — including an LLM-authored custom one — can
+`ctx.services.secrets.get()` strut's private key and every user's virtual
+key; a prefix rule would have to be remembered by every present and future
+`SecretStore` consumer. A separate file is hidden from the Secrets list by
+construction. Same AES-256-GCM under `STRUT_SECRET_KEY`, no new crypto,
+nothing new to back up. Names inside the file: `KEY` for the private key,
+`D_<hex(actor)>` for delegations (actors carry `-`, which secret names
+refuse). The value is JSON `{ orgId, userAuthorization, apiKey, baseUrl,
+exp }`, `exp` copied out of the UA on `PUT` so `list()` is one decrypt per
+entry — dozens at most, daily. Tests inject a `MemorySecretStore`. Both mcp
+modes (fs and graph workspace) are file-backed at `dataDir`, so the key
+survives restarts everywhere it matters.
+
 **Key.** An ed25519 keypair, generated on first use, private half in the
-secret store. `GET /llm/delegation-key → { alg: "ed25519", key }`.
+store. `GET /llm/delegation-key → { alg: "ed25519", key }`.
 
 **Delegations.** `PUT /llm/delegations/:actor` with
-`{ orgId, userAuthorization, apiKey, baseUrl }` — stored in the secret store,
-hidden from the Secrets list. `GET /llm/delegations` lists `{ actor, exp }`
-and nothing else — what hive's reconciler diffs against. `DELETE` removes one. A wiped volume means a new key and dead UAs;
+`{ orgId, userAuthorization, apiKey, baseUrl }`. `GET /llm/delegations`
+lists `{ actor, exp }` and nothing else — what hive's reconciler diffs
+against. `DELETE` removes one. A wiped volume means a new key and dead UAs;
 hive's next push repairs it, because it reads the key before every mint.
 
 **Per run** (cached by `runId`; re-signed on resume or near exp — the
-gateway's `cost:run:<id>` is keyed by run id, so the cap survives a re-sign):
+gateway's `cost:run:<id>` is keyed by run id, so the cap survives a re-sign
+*while that key lives*: its TTL is the macaroon's exp + 1h, floor 1h,
+ceiling 7d (`internal/auth/ttl.go:25`), so a run resumed more than ~9h
+after its last call starts the cap from $0 again. Accepted for v1):
 
 ```ts
 signInvocation({ agents: ["strut-agent"], run_id: runId,
@@ -168,7 +234,11 @@ own terms — the dollar figure happens to land in the same place.
   (`capwalk.go:89`), and that must never happen by way of an empty env var.
 - **`exp`: 8h**, for strut's own reason: the header is fixed when a step
   builds its model client, so the macaroon must outlive the longest single
-  step. It does not bound the run — strut re-signs.
+  step. It does not bound the run — strut re-signs. Must be ≤ the UA's
+  `exp` (`verify.go:247`).
+- **Timestamps are `toISOString()`.** The verifier orders `exp` values as
+  strings (`verify.go:247`, `:355`), which only works for same-format
+  RFC 3339 UTC — never hand-format one.
 
 **Per step:**
 
@@ -189,9 +259,15 @@ attenuate(invocationSigBytes(inv), {
   `capwalk.go:216-225`); with the step on the run's own `run_id`, the
   **link's** `max_cost_usd` is the one enforced and the invocation's is
   shadowed.
-- `stepAgentName`: drop `#n` iteration suffixes, replace `/` with `.` →
-  `digest.loop.summarize`. **Never `/`** — the gateway's
-  `/_plugin/agents/<name>/spend` routes split the path on it (`server.go:353`).
+- `stepAgentName`: per path segment drop the `#n` iteration suffix
+  **and** the `NNN-` tool-call prefix, then join with `.` →
+  `digest.loop.summarize`. The prefix matters: a step granted as an
+  agent's tool runs at `<agent>/003-llm` with a per-call counter
+  (`agent.ts:638`), and without stripping it every call would be its own
+  agent name. **Never `/`** — the gateway's `/_plugin/agents/<name>/spend`
+  routes split the path on it (`server.go:353`). Workflow names are not
+  validated on publish (step names are, `workspace.ts:986`), so the
+  function also maps anything outside `[A-Za-z0-9_.-]` to `_`.
 - v1 keeps the step layer on the run's own `run_id`: one strut run is one
   gateway run, steps are told apart by agent name.
 
@@ -215,34 +291,104 @@ without splitting that history.
 
 ## 4. Hive
 
-1. `agent-names.ts`: add `strut-agent`, `strut-assistant` (plus the catalog
-   seed and `BIFROST_ENABLED_AGENTS`).
-2. `mintStrutDelegation({ workspaceId, userId, strutPubkey, ttlSeconds })` in
-   `macaroon-issuer.ts` — the UA half of `mintInvocationMacaroon`, with
-   `user_pubkey` = strut's key, both agent names, exp ≈ 60 days, no invocation.
+1. `services/bifrost/agent-names.ts:12`: add `strut-agent`,
+   `strut-assistant` to `BIFROST_AGENT_NAMES`. `DEFAULT_AGENT_SPECS` in
+   `agent-catalog.ts:79` is `Record<BifrostAgentName, …>`, so both need a
+   spec or hive does not compile; the catalog re-seeds every swarm on its
+   next `getBifrostForLLM` (hash on `Swarm.bifrostAgentsSeedHash`).
+   `BIFROST_ENABLED_AGENTS` is a default-open env CSV — only a deployment
+   that sets it explicitly needs the two names added. Side effect: the
+   names also surface in the prompts-UI agent dropdowns
+   (`lib/utils/hive-agent.ts` derives from the list); acceptable.
+2. `mintStrutDelegation({ workspaceId, userId, strutPubkey, ttlSeconds })`
+   **in `macaroon-issuer.ts`** — it must live there: `fetchAndDecryptOrgPrivkey`
+   and `randomNonceHex` are module-private, and `mintInvocationMacaroon`
+   (`:154`) builds the UA inline with `user_pubkey` hardwired to the user's
+   own key. The library call is fine as is — `signUserAuthorizationSingle`
+   takes any pubkey. UA fields: `user_id`, `user_pubkey`, `agents` (both
+   names), `iat`, `exp` ≈ 60 days, `nonce`; no `budget` block (hive emits
+   none today). Org key path unchanged: workspace → `sourceControlOrgId` →
+   `ensureMacaroonOrgKeys`.
 3. Push it from `strut/embed-url/route.ts`, `strutTools.ts` (chat dispatch)
-   and the workflow-benchmark runner: read the delegation key, skip if the
-   stored UA has more than half its life left, else mint and `PUT`. Same
-   `BIFROST_ENABLED` gates as `getBifrostForLLM`; a failed push never blocks
-   the embed.
-4. Actor: `POST /mint-token` body gains `sub: <macaroonUserId>`; server-side
-   calls send `x-strut-actor`. The actor string **must equal** the macaroon
-   `user_id` (`{githubLogin}-{User.id}`) so strut's spend merges with the
-   user's other spend.
+   and the workflow-benchmark route
+   (`api/workspaces/[slug]/workflow-benchmarks/run/route.ts:416`): read the
+   delegation key, skip if the stored UA has more than half its life left,
+   else mint and `PUT`. A failed push never blocks the embed. The push is
+   **more than the UA**: it also needs the user's virtual key and the
+   gateway URL, and the swarm must already trust the org and hold the
+   catalog — today all of that only happens inside `getBifrostForLLM`
+   (`orchestrator.ts:93`). So the push runs behind the same gates
+   (`BIFROST_ENABLED`, workspace + user present, not the public viewer) and
+   calls the same trust-register / catalog-seed / `reconcileBifrostVK`
+   building blocks first. Two `reconcileBifrostVK` traps: it throws when
+   the user has no `WorkspaceMember` row (owners only get one lazily via
+   `/access`), and it ignores `leftAt`. Note `strutTools.ts` also runs with
+   no live session (`api/cron/automations`, `canvas-strut-autoturn`) — the
+   user is attributed, not present; the push still works, the org signs.
+4. Actor: `POST /mint-token` body gains `sub: buildBifrostName(userId,
+   login)`; server-side calls send `x-strut-actor` with the same value. The
+   actor string **must equal** the macaroon `user_id` so strut's spend
+   merges with the user's other spend (§2). A second `/mint-token` caller
+   exists (`stakgraph-sessions/embed-url/route.ts:50`) — `sub` stays
+   optional.
 5. **Reconciler** — `api/cron/strut-delegations`, daily, in the shape of the
-   other cron routes. Hive records a row per (workspace, user) it has pushed;
-   that is the desired state. Per workspace the cron reads strut's
-   delegation key and `GET /llm/delegations`, then re-mints and `PUT`s any
-   row that is **missing, within 15 days of exp, or bound to an old key** (a
-   wiped strut volume heals here, with nobody visiting). No user is needed:
-   the org key signs. For a user who has **left the workspace** it does the
-   opposite — `DELETE`s the delegation and drops the row. So the 60-day exp
-   is a backstop for hive being down, not a thing people ever meet.
+   other 22 cron routes (`GET`, `Bearer ${CRON_SECRET}`, a `*_ENABLED`
+   kill-switch, `vercel.json` entry). Desired state lives on
+   `WorkspaceMember`, which already holds the pushed-to-gateway VK fields
+   (`bifrostVkValue`, `bifrostSyncedAt`, …): add `strutDelegationExp` and
+   `strutDelegationKey` (the strut pubkey it was bound to). Per workspace
+   the cron reads strut's delegation key and `GET /llm/delegations`, then
+   re-mints and `PUT`s any row that is **missing, within 15 days of exp, or
+   bound to an old key** (a wiped strut volume heals here, with nobody
+   visiting). No user is needed: the org key signs. Leaving a workspace is
+   a **soft delete** (`leftAt` set by `removeWorkspaceMember`,
+   `services/workspace.ts:1354`; nothing revokes any Bifrost state today),
+   so the cron `DELETE`s the delegation for every member with `leftAt` set
+   and clears the two columns. So the 60-day exp is a backstop for hive
+   being down, not a thing people ever meet.
 
 ## 5. mcp (the host)
 
-Bump strut; enable the module in `createLabStrut`; `/mint-token` accepts
-`sub`; `labAuth` sets `x-strut-actor` from the verified JWT.
+Bump strut (a git dep pinned to a SHA, `package.json:83` — one merge
+behind strut main today); `createLabStrut.ts:101` builds the module and
+passes `llmAuth` + `resolveActor`, then `mount`s its routes.
+
+- **`/mint-token`** (`src/index.ts:183`) reads only `expires_in` today and
+  `signApiToken` (`repo/events.ts:57`) signs `{ scope: "api" }`. Add an
+  optional `sub` to both. `isEmbedJwt` in `lab/mount.ts` returns a boolean
+  and discards the payload — make it return the payload.
+- **`labAuth` cannot set a header for strut.** The mount is
+  `app.use("/lab", labAuth, bridge(labStrut))` where `bridge` is
+  `@hono/node-server`'s `getRequestListener`, which builds the Hono
+  `Request` from `incoming.rawHeaders` — writes to `req.headers` are
+  invisible. So `labAuth` stashes the actor on `req`, and
+  `resolveActor(c)` reads it back through `c.env.incoming` (the listener
+  passes `{ incoming, outgoing }` as Hono's env). No header rewriting.
+- **Per credential:** JWT → `sub`. `x-api-token` (hive server-to-server)
+  → hive's own `x-strut-actor` header, trusted because the token proves
+  it is hive. Basic auth → no actor. The dictation WebSocket path
+  (`mount.ts:164`) bypasses Express and needs no actor.
+- **Where the file lives.** `createLabStrut` passes `workspacePath`
+  (`STRUT_LAB_WORKSPACE`, else `./lab-workspace`) as strut's `dataDir` in
+  both workspace modes (`createLabStrut.ts:152`), so `mothership.json`
+  sits beside `secrets.json` there. sphinx-swarm already binds that path
+  to the named volume `<image>-lab-workspace` (`repo2graph.rs:170-182`),
+  precisely so run data survives container recreation. Nothing new to
+  mount.
+- **`STRUT_SECRET_KEY` is not set anywhere** — not by sphinx-swarm, the
+  mcp Dockerfile, or mcp itself — so `secrets.json` on that volume is
+  encrypted with strut's fixed dev passphrase (`secret-store.ts:75`),
+  obfuscated only. Not new (provider keys are in there today), but
+  `mothership.json` adds a signing key and every user's virtual key.
+  **Fix: at mcp boot, `process.env.STRUT_SECRET_KEY ??= process.env.API_TOKEN`**
+  before `createLabStrut`. The passphrase is only scrypt input
+  (`secret-store.ts:104`), so any string works, and `API_TOKEN` is already
+  persisted per swarm. Anyone holding `API_TOKEN` is already full admin of
+  the lab strut (they can register a step that reads any secret), so this
+  raises the floor without adding a second secret to manage. Cost: rotating
+  `API_TOKEN` makes both files unreadable — `mothership.json` self-heals
+  (new key, hive re-pushes), `secrets.json` needs its provider keys
+  re-entered. Acceptable; the token effectively never rotates.
 
 ## 6. Reading it back
 
@@ -269,6 +415,10 @@ already sets.
   the provisioning token is far too powerful to hand over.
 - **Any user model in strut** beyond the opaque actor. **Non-LLM spend** (Exa).
 - **Callbacks from strut to hive.**
+- **Actor renames.** A GitHub login change alters `{login}-{id}` and
+  orphans `owner`; a transfer endpoint exists for the manual fix. Deferred.
+- **Cap continuity across a long pause.** `cost:run` expires ~9h after the
+  last call (§3); a run resumed later restarts its cap. Deferred.
 
 ## Step order
 
@@ -278,11 +428,17 @@ already sets.
 4. hive: agent names, `mintStrutDelegation`, the push, the actor (§4).
 5. mcp: bump, enable, `labAuth` (§5).
 6. End-to-end check in shadow mode (below).
-7. Later: two gitsee lab steps in mcp build the Anthropic client directly
-   (`boot-and-exercise.ts`, `vision.ts`) and bypass all of this; a writable
-   budget endpoint on the gateway; badges in the strut UI; the gateway
-   stamping `root-agent` from verified claims and the Mothership UI folding
-   strut's steps under one `strut-agent` node (→ workflows → steps).
+7. Later: mcp lab code that calls the AI SDK's default `anthropic()`
+   singleton (env key + `ANTHROPIC_BASE_URL`, no per-call auth) bypasses
+   all of this — `gitsee/steps/boot-and-exercise.ts:647,843`,
+   `gitsee/services/vision.ts:35`, `gitsee/steps/verify-setup.ts:272`,
+   `gitsee/steps/score-setup.ts:217`, `eval/steps/score.ts:76`,
+   `eval/steps/reflect.ts:117`, plus `concepts/services.ts:84` and the
+   `harvey` subprocess that inherits `ANTHROPIC_API_KEY`. Each moves to
+   `resolveModel` with its step context. Also: a writable budget endpoint on
+   the gateway; badges in the strut UI; the gateway stamping `root-agent`
+   from verified claims and the Mothership UI folding strut's steps under
+   one `strut-agent` node (→ workflows → steps).
 
 ## Validation
 
@@ -291,13 +447,19 @@ already sets.
   widens `max_cost_usd`, drops `strut-agent`, or carries a positive
   `max_steps` under a `0` parent fails. Cap resolution: workflow override →
   env → default, and a non-positive result throws. `stepAgentName` never
-  emits `/`. Principal rule, one case per trigger. No delegation → the hook
-  returns `undefined` and the provider is called directly.
+  emits `/`, and `wf/agent/003-llm` → `wf.agent.llm`. Principal rule, one
+  case per trigger; `principal` read back from `run.start` on resume. No
+  delegation → the hook returns `undefined` and the provider is called
+  directly. The delegation file is not visible through
+  `ctx.services.secrets` or `GET /secrets`. `resolveActor` returning
+  `undefined` → no owner stamp, no actor on the run.
 - **End to end** (gateway ships with `enforce_macaroons: false`, so this is
   safe to run against a live swarm): open strut from hive, run a workflow with
   two agent steps, then fire it from an automation. Both runs appear under the
   user; each step has its own `/agents/<name>/spend`; the session summary
-  equals their sum.
+  equals their sum. **Shadow mode hides verification failures** — a bad
+  chain is logged and let through, so also grep the plugin log for
+  `FAIL` lines (`enforcement.go:301`) before calling the pass green.
 - **Enforcement:** with the flags on, a run past `max_cost_usd` gets a 402
   `run_cost_exceeded` and the step fails with that message, not a retry loop.
 
