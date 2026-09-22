@@ -33,7 +33,7 @@
     "@hono/node-server": "^2.0.4",
     "@huggingface/transformers": "^4.1.0",
     "@octokit/rest": "^22.0.1",
-    "aieo": "^0.2.0",
+    "aieo": "^0.2.1",
     "gatekey": "^0.1.1",
     "hono": "^4.12.23",
     "html-to-text": "^10.0.1",
