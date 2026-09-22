@@ -49,6 +49,9 @@ export interface RunStepOptions {
   origin?: "verify";
   /** Recorded on the check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
+  /** Who launched the run and who pays (see `RunOptions`). */
+  actor?: string;
+  principal?: string;
 }
 
 export interface RunStepResult {
@@ -105,6 +108,8 @@ export async function runSingleStep(
     ...(opts.cassette ? { cassette: opts.cassette.mode } : {}),
     ...(opts.origin ? { origin: opts.origin } : {}),
     ...(opts.verify ? { verify: opts.verify } : {}),
+    ...(opts.actor ? { actor: opts.actor } : {}),
+    ...(opts.principal ? { principal: opts.principal } : {}),
     onEvent: (e) => {
       events.push(e);
     },

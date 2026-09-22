@@ -16,6 +16,42 @@
 
 import type { Provider } from "aieo";
 import type { SecretsCapability } from "./capabilities.js";
+import type { StepContext } from "./core.js";
+
+// ── The auth seam (plans/mothership-cost-control.md §1) ────────────────────
+//
+// Core knows one hook: `llmAuth(ctx)` → where to send the call and what to
+// send with it. A host that routes spend through a gateway (src/mothership.ts)
+// returns the gateway root, a per-user key and the headers that attribute the
+// call; `undefined` means "call the provider directly, as always". Core never
+// knows what a macaroon is.
+
+/** What a call site tells the hook about the call it is about to make. */
+export interface LlmAuthContext {
+  kind: "step" | "chat";
+  provider: Provider;
+  runId?: string;
+  chatId?: string;
+  turn?: number;
+  /** The top-level workflow of the run (a subflow's steps name their root). */
+  workflow?: string;
+  /** The step's event path, e.g. `digest/loop#3/summarize`. */
+  stepPath?: string;
+  actor?: string;
+  principal?: string;
+}
+
+export interface LlmAuthResult {
+  apiKey?: string;
+  /** The gateway ROOT; aieo appends the per-provider path. */
+  baseUrl?: string;
+  headers?: Record<string, string>;
+  /** Turn a provider/gateway error into a clearer message (a 402 that names
+   *  a delegation, say). Return `undefined` to keep the original error. */
+  explainError?: (err: unknown) => string | undefined;
+}
+
+export type LlmAuth = (ctx: LlmAuthContext) => Promise<LlmAuthResult | undefined>;
 
 export interface ResolveModelOptions {
   /** alias | id | "provider/id" | "openrouter/org/id". Omit for the provider's default. */
@@ -25,6 +61,11 @@ export interface ResolveModelOptions {
   /** The secrets boundary (`ctx.services.secrets`). Optional — without it
    *  aieo reads `process.env` directly. */
   secrets?: SecretsCapability;
+  /** The auth hook (`ctx.services.llmAuth`), consulted when `auth` is also
+   *  given. Its result takes precedence over the secrets boundary. */
+  llmAuth?: LlmAuth;
+  /** What the hook is told; the provider is filled in here. */
+  auth?: Omit<LlmAuthContext, "provider">;
 }
 
 export interface ResolvedModel {
@@ -53,20 +94,80 @@ export interface ResolvedModel {
 export async function resolveModel(opts: ResolveModelOptions = {}): Promise<ResolvedModel> {
   const aieo = await import("aieo");
   const secrets = opts.secrets;
+  // The hook needs the provider before the model is built (the gateway path
+  // is per provider), and aieo only resolves it inside resolveModel — so ask
+  // the keyless canonicalizer first. Same errors as the resolve below.
+  let grant: LlmAuthResult | undefined;
+  if (opts.llmAuth && opts.auth) {
+    const provider = aieo.canonicalModelName(opts.model, opts.provider).provider;
+    grant = await opts.llmAuth({ ...opts.auth, provider });
+  }
   const r = await aieo.resolveModel({
     model: opts.model,
     provider: opts.provider,
     getSecret: secrets ? (name) => secrets.get(name) : undefined,
+    ...(grant?.apiKey ? { apiKey: grant.apiKey } : {}),
+    ...(grant?.baseUrl ? { baseUrl: grant.baseUrl } : {}),
+    ...(grant?.headers ? { headers: grant.headers } : {}),
   });
   return {
     provider: r.provider,
     modelId: r.modelId,
     name: r.name,
     apiKey: r.apiKey,
-    model: r.model,
+    model: grant?.explainError ? await explaining(r.model, grant.explainError) : r.model,
     contextLimit: r.contextLimit,
     maxOutputTokens: strutOutputCap() ?? r.maxOutputTokens,
   };
+}
+
+/** The `llmAuth` + `auth` pair for a STEP's `resolveModel` call, from its
+ *  context: the hook off the services bag, the run, the top-level workflow
+ *  (the path's first segment) and the step path. `{}` without a hook. */
+export function stepAuth(ctx: StepContext<unknown> | undefined): Pick<ResolveModelOptions, "llmAuth" | "auth"> {
+  const llmAuth = (ctx?.services as { llmAuth?: LlmAuth } | undefined)?.llmAuth;
+  if (!llmAuth || !ctx) return {};
+  return {
+    llmAuth,
+    auth: {
+      kind: "step",
+      runId: ctx.runId,
+      workflow: ctx.path.split("/")[0],
+      stepPath: ctx.path,
+      ...(ctx.actor ? { actor: ctx.actor } : {}),
+      ...(ctx.principal ? { principal: ctx.principal } : {}),
+    },
+  };
+}
+
+/** Wrap a model so a request failure the auth layer can explain is rethrown
+ *  with that explanation (the original stays as `cause`). Mid-stream errors
+ *  are untouched — a rejected request fails before any stream opens. */
+async function explaining(model: any, explain: (err: unknown) => string | undefined): Promise<any> {
+  const { wrapLanguageModel } = await import("ai");
+  const rethrow = (err: unknown): never => {
+    const message = explain(err);
+    throw message ? new Error(message, { cause: err }) : err;
+  };
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      wrapGenerate: async ({ doGenerate }) => {
+        try {
+          return await doGenerate();
+        } catch (err) {
+          return rethrow(err);
+        }
+      },
+      wrapStream: async ({ doStream }) => {
+        try {
+          return await doStream();
+        } catch (err) {
+          return rethrow(err);
+        }
+      },
+    },
+  });
 }
 
 export interface WebTools {

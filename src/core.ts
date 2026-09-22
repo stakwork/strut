@@ -72,6 +72,13 @@ export interface StepContext<TServices = unknown> {
    *  deliberately and what a model inside it decided to do are not the same
    *  actor (plans/claims.md §4.1, fixed point 3). */
   agentTool?: boolean;
+  /** Who launched this run — an opaque string the host resolved from the
+   *  request (plans/mothership-cost-control.md §2). Strut stores and forwards
+   *  it, never interprets it. Absent when nobody is known. */
+  actor?: string;
+  /** Who this run's spend is billed to: the actor, else the workflow's
+   *  owner (§2, the principal rule). What `llmAuth` receives. */
+  principal?: string;
 }
 
 /** Error handling options for a step. */
@@ -197,6 +204,11 @@ export interface RunEvent {
   origin?: RunOrigin;
   /** On a scheduled run's `run.start`: the automation that fired it. */
   automation?: { id: string };
+  /** On `run.start`: who launched the run (`actor`) and who pays for it
+   *  (`principal`) — see `StepContext`. Recorded so a resume bills the same
+   *  person even if the workflow's owner has changed since. */
+  actor?: string;
+  principal?: string;
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its
@@ -288,6 +300,9 @@ export interface RunSummary {
    *  only `run.start`) so "this automation's last successful run" is a scan
    *  of summaries, never of event logs (plans/automations.md §5). */
   automation?: { id: string };
+  /** Who launched the run and who was billed for it (see `StepContext`). */
+  actor?: string;
+  principal?: string;
 }
 
 /** A step definition with erased generics, for use in the registry.

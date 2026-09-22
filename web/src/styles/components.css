@@ -380,6 +380,15 @@ body.is-resizing-events * {
   justify-content: flex-end;
   gap: var(--sp-2);
 }
+.cat-popover-error {
+  color: var(--danger);
+  font-size: 11px;
+}
+.cat-popover-text {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
 
 /* ─── badges ─────────────────────────────────────────────────── */
 

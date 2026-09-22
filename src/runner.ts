@@ -80,6 +80,12 @@ export interface RunOptions<TServices = unknown> {
   automation?: { id: string };
   /** Recorded on a check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
+  /** Who launched the run and who pays for it (plans/mothership-cost-control.md
+   *  §2). Recorded on `run.start` and the summary, handed to every step as
+   *  `ctx.actor` / `ctx.principal`. The launcher resolves them; the runner
+   *  only carries them. */
+  actor?: string;
+  principal?: string;
 }
 
 /** What `services.onRunEnd(runId, info)` is told about the settled run. */
@@ -126,6 +132,8 @@ interface Exec {
   paramOverrides?: Record<string, Record<string, unknown>>;
   controller?: RunController;
   journal?: Record<string, unknown>;
+  actor?: string;
+  principal?: string;
 }
 
 export async function runWorkflow<TServices = unknown>(
@@ -139,7 +147,11 @@ export async function runWorkflow<TServices = unknown>(
   const wfName = workflow.name;
   const startedAt = new Date().toISOString();
   // On every summary this run can write (see `RunSummary.automation`).
-  const automationStamp = opts?.automation ? { automation: opts.automation } : {};
+  const automationStamp = {
+    ...(opts?.automation ? { automation: opts.automation } : {}),
+    ...(opts?.actor ? { actor: opts.actor } : {}),
+    ...(opts?.principal ? { principal: opts.principal } : {}),
+  };
   // Default services to an empty object so steps can destructure freely.
   const services = (opts?.services ?? ({} as TServices)) as TServices;
 
@@ -200,6 +212,8 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.origin ? { origin: opts.origin } : {}),
       ...(opts?.automation ? { automation: opts.automation } : {}),
       ...(opts?.verify ? { verify: opts.verify } : {}),
+      ...(opts?.actor ? { actor: opts.actor } : {}),
+      ...(opts?.principal ? { principal: opts.principal } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
@@ -218,6 +232,8 @@ export async function runWorkflow<TServices = unknown>(
     paramOverrides: opts?.paramOverrides,
     controller: opts?.controller,
     journal: opts?.journal,
+    actor: opts?.actor,
+    principal: opts?.principal,
   };
 
   try {
@@ -672,6 +688,9 @@ async function dispatchStep(
         // this unit so the subtree can quiesce (§2.2 threading).
         ...(exec.controller ? { control: exec.controller.forUnit() } : {}),
         ...(stepJournal ? { journal: stepJournal } : {}),
+        // Same run, same principal — a subflow's steps inherit these unchanged.
+        ...(exec.actor ? { actor: exec.actor } : {}),
+        ...(exec.principal ? { principal: exec.principal } : {}),
       };
 
       if (exec.controller) {

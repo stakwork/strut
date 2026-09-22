@@ -32,6 +32,7 @@ import {
 import type { Flow } from "./core.js";
 import type { RunStore } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
+import { principalRequired } from "./auth.js";
 
 export interface AutomationsDeps {
   workspace: WorkspaceStore;
@@ -198,6 +199,10 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     try {
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
+      // Nobody to bill → nothing launches (surfaces as `lastFireError`), rather
+      // than a run that dies at its first LLM step.
+      const unowned = await ownerGate(workflow, true);
+      if (unowned) throw new Error(unowned);
       const flow = await workspace.getWorkflow(workflow);
       const input = resolveAutomationInput(automation, at, facts.last);
       const runId = deps.launch(flow, input, { id: automation.id });
@@ -274,6 +279,17 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     return meta ? (meta.automations ?? []) : null;
   }
 
+  /** An automation is the one launch with nobody present: its runs are billed
+   *  to the workflow's OWNER (plans/mothership-cost-control.md §2). Where the
+   *  deployment requires someone to bill, an enabled automation on an ownerless
+   *  workflow is refused here — the message, or null when it may proceed. */
+  async function ownerGate(workflow: string, enabled: boolean): Promise<string | null> {
+    if (!enabled || !principalRequired()) return null;
+    const meta = await workspace.getWorkflowMetadata(workflow);
+    if (!meta || meta.owner) return null;
+    return `workflow "${workflow}" has no owner — its scheduled runs would have nobody to bill. Claim the workflow (or transfer it) first.`;
+  }
+
   async function save(workflow: string, list: Automation[], changed: Automation): Promise<Saved> {
     await workspace.setWorkflowAutomations(workflow, list);
     fireErrors.delete(key(workflow, changed.id));
@@ -312,6 +328,8 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         if (problems.length) return { error: problems.join("; ") };
         const list = await stored(workflow);
         if (!list) return { error: `Workflow "${workflow}" not found` };
+        const unowned = await ownerGate(workflow, parsed.data.enabled ?? true);
+        if (unowned) return { error: unowned };
         const automation: Automation = {
           id: `a-${randomUUID().slice(0, 8)}`,
           name: parsed.data.name,
@@ -333,6 +351,8 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         const current = list.find((a) => a.id === id);
         if (!current) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
         const p = parsed.data;
+        const unowned = await ownerGate(workflow, p.enabled ?? current.enabled);
+        if (unowned) return { error: unowned };
         const automation: Automation = {
           id,
           name: p.name ?? current.name,

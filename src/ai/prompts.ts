@@ -11,6 +11,10 @@ export interface AiDeps {
   workspace: WorkspaceStore;
   registry: StepRegistry;
   store: RunStore;
+  /** The chat's actor (`ChatMeta.actor`): the runs the builder launches are
+   *  billed to it, and a workflow it publishes with no owner adopts it
+   *  (plans/mothership-cost-control.md §2). Optional. */
+  actor?: string;
   /** Local directory for cassettes (`run_step` record/replay). Optional:
    *  without it, cassette modes report an error instead of recording. */
   dataDir?: string;

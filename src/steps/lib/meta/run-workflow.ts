@@ -29,6 +29,9 @@ export default defineStep({
     // (RUN_CONTROL_SPEC §2.2 tree linkage).
     return requireAuthoring(ctx.services).runWorkflow(cfg.name, cfg.input, cfg.params, cfg.version, {
       parentRunId: ctx.runId,
+      // Billed like the run that launched it (the principal rule, §2).
+      ...(ctx.actor ? { actor: ctx.actor } : {}),
+      ...(ctx.principal ? { principal: ctx.principal } : {}),
     });
   },
 });
