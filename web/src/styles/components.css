@@ -566,11 +566,51 @@ body.is-resizing-events * {
 
 /* ─── secrets dialog ──────────────────────────────────────────── */
 
+/* Only the list scrolls: header, filter and the add form stay put however
+   many secrets there are. */
+.secrets-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.secrets-dialog > * {
+  flex-shrink: 0;
+}
+.secret-search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.secret-search input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+}
+.secret-search input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.secret-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.secrets-dialog > .secret-list {
+  flex: 1 1 auto;
+  min-height: 60px;
+  max-height: 320px;
+}
 .secret-list {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
-  max-height: 220px;
   overflow-y: auto;
   margin-bottom: var(--sp-3);
 }
@@ -580,6 +620,7 @@ body.is-resizing-events * {
   padding: var(--sp-2) 0;
 }
 .secret-row {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
