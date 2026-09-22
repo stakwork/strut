@@ -1,11 +1,21 @@
 # Mothership cost control — per-step and per-workflow LLM spend
 
-> **Status (2026-09-22): proposed, audited against all four codebases.**
-> Nothing built. Spans four repos: strut, hive, stakgraph `mcp` (the host
-> that embeds strut at `/lab`) and stakgraph `gateway` (the "Agent
-> Mothership": Bifrost + our macaroon plugin). The gateway needs **no
-> changes** for v1 — every gateway citation below was re-read on
-> `stakgraph@8989934a`. Hive citations are `hive@5525f68b0`.
+> **Status (2026-09-22): proposed, revision 2, audited against all four
+> codebases.** Nothing built. Spans four repos: strut, hive, stakgraph
+> `mcp` (the host that embeds strut at `/lab`) and stakgraph `gateway`
+> (the "Agent Mothership": Bifrost + our macaroon plugin). The gateway
+> needs **no changes** for v1 — every gateway citation below was re-read
+> on `stakgraph@8989934a`. Hive citations are `hive@5525f68b0`; the
+> issuer (§4.2) was re-read on `hive@7cd0c2a40`.
+>
+> **What changed in revision 2.** Revision 1 gave strut its own ed25519
+> key and had hive's org key sign a second UA per user binding that user
+> to strut's key. This revision replaces it with a **standing
+> invocation**: hive mints one long-lived macaroon per user, signed with
+> the *user's* key exactly as every macaroon is today, and strut only
+> attenuates. No strut key, no second UA, no new issuer code in hive,
+> and nothing in strut changes when user keys move off hive. Rationale
+> under "Why the delegation is sound".
 
 ## Problem
 
@@ -34,48 +44,82 @@ Two things make strut different from hive's other agents:
 | --- | --- |
 | Step attribution | **The step IS the agent name.** Strut narrows its macaroon per step, appending `<workflow>.<step>` to the `agents` lineage. The gateway bills the last entry, signature-bound — not a self-reported tag |
 | Workflow attribution | `x-bf-dim-session-id: <workflow>`. Already filterable and groupable in the gateway; no gateway change |
-| Who signs | **Delegated user authorization.** Hive's org key signs a long-lived UA binding the hive `user_id` to **strut's own ed25519 key**. Strut signs a fresh invocation per run and narrows per step. No strut → hive callback, ever |
+| Who signs | **Session delegation.** Hive mints, once per user and deployment, a UA plus a **standing invocation** — org key and user key, exactly as every hive macaroon is signed today — living 60 days, `agents: ["strut-agent"]`, and pushes the macaroon to strut. Strut appends keyless HMAC links per run and per step. **Strut holds no signing key.** No strut → hive callback, ever |
 | How strut gets it | **Hive pushes**, at moments it already calls strut with the user present (embed URL, chat dispatch, benchmark run) |
-| Renewal | UA lives 60 days; a **hive reconciler cron renews it inside the last 15**. Renewal needs no user — the org key signs, and the key bound is strut's |
+| Renewal | Both layers live 60 days; a **hive reconciler cron re-mints inside the last 15**. Phase 1: the user's custodial key signs, no user present. Phase 2 (user-held keys): the same mint needs one device signature every ~45 days — that is the point of phase 2, not a gap |
+| Delegation ceiling | The standing invocation's `max_cost_usd` is a **cumulative cap on everything that user spends through strut**, enforced by the gateway on the delegation's own run id. Default **$10,000**, hive-side `STRUT_DELEGATION_MAX_COST_USD`. Alerting as it nears is later UX |
 | Automations | **The workflow owner pays** |
-| Grouping in the Mothership UI | No name prefix. Strut sends `x-bf-dim-root-agent: strut-agent` so its steps can be grouped under one node (UI work, later) |
+| Grouping in the Mothership UI | One root. Strut sends `x-bf-dim-root-agent: strut-agent` on every call so its steps can be grouped under one node (UI work, later). Chat is billed as the leaf `strut-assistant` under that root |
 | Users in strut | An **opaque `actor` string**. Strut stores and forwards it; it never interprets it. No accounts, no login. The host says who it is: `createStrut({ resolveActor(c) })` |
 | Strut core | Knows two generic hooks: `llmAuth(ctx) → {apiKey, baseUrl, headers}` and `resolveActor(c) → string \| undefined`. Macaroons live in one opt-in module, `src/mothership.ts` |
-| Where delegations live | A **second `FileSecretStore` instance** writing `mothership.json` beside `secrets.json` — same encryption, never on the services bag, never in the Secrets list |
+| Where delegations live | A **second `FileSecretStore` instance** writing `mothership.json` beside `secrets.json` — same encryption, never on the services bag, never in the Secrets list. The value is the macaroon itself plus the user's virtual key |
 | Windowed quotas | Gateway-side, keyed by name and user — `agent_budgets` (per step, `1d`/`1w`) and the Bifrost customer budget (per user, daily). Independent of token lifetime |
 
 ## Design in one paragraph
 
-Hive signs, once per user and deployment, a certificate that says "whoever
-holds strut's key may act as user U, for agents `strut-agent` and
-`strut-assistant`, until exp", and pushes it to strut with that user's virtual
-key and the gateway URL. When a run starts, strut picks the **principal** (the
-person who launched it, else the workflow's owner), signs an invocation for
-that run with its own key, and before each `agent`/`llm` step appends one
-keyless HMAC link that adds the step's name to the agent lineage. The model
-client is built with the gateway as `baseUrl`, the virtual key as `apiKey`,
-and `x-macaroon` + `x-bf-dim-session-id` as headers. The gateway verifies the
-chain, bills the call to (user, step, workflow, run), and enforces whatever
-caps the operator configured. Everything upstream of `resolveModel` is
-unchanged; with no delegation on file, strut calls providers directly, as today.
+Hive signs, once per user and deployment, a macaroon that says "user U may
+run agent `strut-agent`, up to $10,000, until exp" — an org-signed UA plus a
+user-signed invocation whose `run_id` names the delegation — and pushes it
+to strut with that user's virtual key and the gateway URL. When a run
+starts, strut picks the **principal** (the person who launched it, else the
+workflow's owner) and appends one keyless HMAC link for the run: its id,
+its cap, eight hours. Before each `agent`/`llm` step it appends a second
+link that adds the step's name to the agent lineage. The model client is
+built with the gateway as `baseUrl`, the virtual key as `apiKey`, and
+`x-macaroon` + `x-bf-dim-session-id` as headers. The gateway verifies the
+chain, bills the call to (user, step, workflow, run), enforces the run's
+cap and the delegation's ceiling, and whatever windowed caps the operator
+configured. Everything upstream of `resolveModel` is unchanged; with no
+delegation on file, strut calls providers directly, as today.
 
 ## Why the delegation is sound
 
-A UA is a certificate: the org signs `{user_id, user_pubkey, agents, exp}`.
-The gateway trusts the **org signature** (the org key is in its trust
-registry) and takes the user's public key from the UA itself
-(`auth/go/verify.go:205-213`); it keeps no independent record of user keys. So
-the same `user_id` can hold two valid UAs — one bound to hive's per-user key,
-one bound to strut's — like one person with SSH certs for two machines. Spend
-from both lands under the same user; `revoke_user_before:<user_id>` kills both.
+The protocol has three layers and three nouns: the org authorizes a user,
+the user signs an invocation, the invocation attenuates to sub-agents by
+HMAC (`gateway/auth/README.md`). There is no "session" or "delegation"
+object. `plans/cryptographic-identity.md` says a session or an overnight
+workflow *is* an invocation with longer caveats, and lists "per-session —
+one signature covers a session's worth of invocations, attenuated
+thereafter via HMAC" (`:485`) and "Yubikey + session delegation — user
+touches device once per login, software key signs invocations after"
+(`:471`) as intended custody modes. The standing invocation is exactly
+that, and strut is the software that acts after — except it needs no key,
+because attenuation is keyless.
 
-It is not a new kind of trust: hive already generates and holds every user's
-private key and signs on their behalf. What changes is which box signs. The
-pushed UA is useless without strut's private key, which never leaves strut.
+What this buys over a strut-held key (revision 1):
 
-**Residual risk:** a compromised strut box can spend as any user whose UA it
-holds, until exp or revocation. Bounded by the agent list (two names) and the
-user's daily customer budget.
+- **No fourth key.** The identity doc's rule is "no platform-held signing
+  key, no system identity" (`:81`). A strut key bound to a user id by an
+  org signature is precisely that, laundered through a UA that claims to
+  be the user's.
+- **Nothing in strut changes when key custody moves.** Phase 2 replaces
+  hive's custodial user key with the user's device (`:515-522`); the
+  standing invocation is then device-signed and strut attenuates the same
+  bytes the same way. With a strut key, phase 2 would still need the org
+  to re-bind each user to strut, and phase 3 (org multisig) would turn
+  that into a signing ceremony per user per 60 days.
+- **The user signs the sentence.** "strut may spend up to $10,000 on my
+  behalf until this date" — one key touch, one ceiling, one expiry, one
+  revocation handle.
+
+**What the delegation's `run_id` does.** Every invocation carries a
+`run_id` (required wire field). The accumulator charges every distinct run
+id in the chain, leaf and ancestors (`accumulator.go:59`), and the cap walk
+enforces every layer (`capwalk.go:22`). So with the delegation as the
+parent run: `cost:run:<delegationId>` sums every strut call for that user
+and the ceiling caps it; `kill:<delegationId>` halts every strut run for
+that user at once (`revocation.go:31`); `meta:run:<strutRun>` carries a
+`parent` link to the delegation so the operator UI can walk up
+(`accumulator.go:35`). An empty `run_id` would skip all of that — both
+walks drop the layer (`capwalk.go:220`, `accumulator.go:244`) and nothing
+validates the field today — but that is an unvalidated gap, not a feature,
+and a non-empty check is the obvious hardening. We use a UUID.
+
+**Residual risk:** the stored macaroon is a bearer credential. Whoever
+reads it can spend as that user through `strut-agent` until exp,
+revocation, or the ceiling. Same file, same encryption, same blast radius
+as revision 1 (which needed the UA *and* the key from the same file).
+Bounded by the ceiling and the user's daily customer budget.
 
 ## 1. The seam in strut core (`src/llm.ts`)
 
@@ -166,8 +210,9 @@ No principal, or no delegation for it → direct provider keys, as today
 ## 3. `src/mothership.ts` (opt-in, lazy-imports `gatekey`)
 
 `gatekey` is on npm (0.1.1; hive already depends on `^0.1.1`) and exports
-everything needed: `signInvocation`, `invocationSigBytes`, `attenuate`,
-`ed25519PublicKey`, `verify`. Source is `stakgraph/gateway/auth/ts`.
+what is needed: `decodeMacaroon`, `encodeMacaroon`, `invocationSigBytes`,
+`attenuate`, `attenuationSigBytes`, and `verify` for tests. **Strut never
+signs.** Source is `stakgraph/gateway/auth/ts`.
 
 **Wiring.** `createMothership({ dataDir, store?, runCapDefault? }) →
 { llmAuth, mount(app) }`. The host passes `llmAuth` to `createStrut` and
@@ -175,90 +220,100 @@ calls `mount(strut.app)` to add the routes below (mutations behind
 `requireApiKey`, which `auth.ts` exports). Core never imports the module.
 
 **Store.** A `DelegationStore` interface owned by this module —
-`getKey/setKey`, `get/put/delete(actor)`, `list() → {actor, exp}[]` — with
+`get/put/delete(actor)`, `list() → {actor, exp, delegationId}[]` — with
 one implementation over any `SecretStore`, defaulting to a **second
 `FileSecretStore` instance** writing `dataDir/mothership.json`
 (`FileSecretStore` gains an optional filename). Why a separate instance and
 not a reserved prefix in the main store: the main store is on the services
 bag, so any step — including an LLM-authored custom one — can
-`ctx.services.secrets.get()` strut's private key and every user's virtual
-key; a prefix rule would have to be remembered by every present and future
+`ctx.services.secrets.get()` every user's macaroon and virtual key; a
+prefix rule would have to be remembered by every present and future
 `SecretStore` consumer. A separate file is hidden from the Secrets list by
 construction. Same AES-256-GCM under `STRUT_SECRET_KEY`, no new crypto,
-nothing new to back up. Names inside the file: `KEY` for the private key,
-`D_<hex(actor)>` for delegations (actors carry `-`, which secret names
-refuse). The value is JSON `{ orgId, userAuthorization, apiKey, baseUrl,
-exp }`, `exp` copied out of the UA on `PUT` so `list()` is one decrypt per
-entry — dozens at most, daily. Tests inject a `MemorySecretStore`. Both mcp
-modes (fs and graph workspace) are file-backed at `dataDir`, so the key
-survives restarts everywhere it matters.
+nothing new to back up. Names inside the file: `D_<hex(actor)>` (actors
+carry `-`, which secret names refuse). The value is JSON `{ macaroon,
+delegationId, apiKey, baseUrl, exp }` — `delegationId` is the standing
+invocation's `run_id` and `exp` the earlier of the UA's and the
+invocation's, both copied out on `PUT` so `list()` is one decrypt per
+entry — dozens at most, daily. Nothing else lives in the file: a wiped
+volume loses only the delegations, and hive's next push repairs it. Tests
+inject a `MemorySecretStore`. Both mcp modes (fs and graph workspace) are
+file-backed at `dataDir`, so the file survives restarts everywhere it
+matters.
 
-**Key.** An ed25519 keypair, generated on first use, private half in the
-store. `GET /llm/delegation-key → { alg: "ed25519", key }`.
+**Delegations.** `PUT /llm/delegations/:actor` with `{ macaroon, apiKey,
+baseUrl }`. Strut decodes the macaroon and checks its shape — `v: 1`, an
+`invocation`, an **empty** `attenuations` list, `agents` containing
+`strut-agent`, `max_steps: 0`, a positive `max_cost_usd`, parseable `exp`s
+— and rejects anything else with a 400. It cannot check signatures: it has
+no org pubkey, and the gateway is the verifier. `GET /llm/delegations`
+lists `{ actor, exp, delegationId }` and nothing else — what hive's
+reconciler diffs against. `DELETE` removes one.
 
-**Delegations.** `PUT /llm/delegations/:actor` with
-`{ orgId, userAuthorization, apiKey, baseUrl }`. `GET /llm/delegations`
-lists `{ actor, exp }` and nothing else — what hive's reconciler diffs
-against. `DELETE` removes one. A wiped volume means a new key and dead UAs;
-hive's next push repairs it, because it reads the key before every mint.
-
-**Per run** (cached by `runId`; re-signed on resume or near exp — the
-gateway's `cost:run:<id>` is keyed by run id, so the cap survives a re-sign
-*while that key lives*: its TTL is the macaroon's exp + 1h, floor 1h,
-ceiling 7d (`internal/auth/ttl.go:25`), so a run resumed more than ~9h
+**Per run** (cached by `runId`; re-linked on resume or within an hour of
+the link's exp — the gateway's `cost:run:<id>` is keyed by run id, so the
+cap survives a re-link *while that key lives*: its TTL is the link's exp +
+1h, floor 1h, ceiling 7d (`ttl.go:25`), so a run resumed more than ~9h
 after its last call starts the cap from $0 again. Accepted for v1):
 
 ```ts
-signInvocation({ agents: ["strut-agent"], run_id: runId,
-                 max_cost_usd: runCap, max_steps: 0, iat, exp, nonce }, strutPrivkey)
+const run = attenuate(invocationSigBytes(m.invocation), {
+  agents: ["strut-agent"], run_id: runId,
+  max_cost_usd: runCap, max_steps: 0,
+  exp: min(now + 8h, m.invocation.exp), nonce,
+});
 ```
 
-Hive's defaults are $100 / 2000 / 8h, sized for one coding-agent session. A
-strut run is a different kind of thing, so each number is chosen on strut's
-own terms — the dollar figure happens to land in the same place.
-
+- An attenuation **replaces** the effective caveats, it does not inherit
+  (`verify.go:315-322`): every field is restated, each ≤ its parent.
 - **`max_steps: 0` — no call-count cap.** The gateway's "steps" are **LLM
   calls**, and a run's call count scales with loop iterations and tool-loop
   turns; no number is right for every workflow. Strut already bounds loops
   where the author can see them (the `agent` step's own `maxSteps`, default
-  40). The field is required by the wire type, so it is sent as `0`, which
-  the gateway reads as "no cap" (`capwalk.go:92`).
+  40). The narrowing check rejects a child value greater than its parent
+  (`verify.go:351`), and any positive number is greater than the standing
+  invocation's `0` — so every link restates `0`, which the gateway reads
+  as "no cap" (`capwalk.go:41`).
 - **`max_cost_usd` is the real run cap.** `runCap` resolves as: the
   workflow's `maxRunCostUsd` → `STRUT_RUN_MAX_COST_USD` → a built-in default
   of **$100**. The override lives on `WorkflowMetadata`, beside `category`
   and `automations`: it is operating policy, so changing it publishes no
   version and re-fires no checks. Only this module reads it — without the
   Mothership nothing enforces it, so the UI shows the field only when the
-  module is enabled. **A resolved cap that is not
-  a positive number is an error** — `0` would mean "uncapped" to the gateway
-  (`capwalk.go:89`), and that must never happen by way of an empty env var.
+  module is enabled. **A resolved cap that is not a positive number is an
+  error** — `0` would mean "uncapped" to the gateway, and that must never
+  happen by way of an empty env var. **A cap above the delegation's
+  ceiling is also an error** — the gateway would reject the link
+  (`verify.go:347`, `ErrAttenuationWidened`), so strut checks first and
+  fails the step with "workflow cap $X exceeds the delegation ceiling $Y".
+  Never clamp silently.
 - **`exp`: 8h**, for strut's own reason: the header is fixed when a step
-  builds its model client, so the macaroon must outlive the longest single
-  step. It does not bound the run — strut re-signs. Must be ≤ the UA's
-  `exp` (`verify.go:247`).
+  builds its model client, so the link must outlive the longest single
+  step. It does not bound the run — strut re-links. It must be ≤ the
+  standing invocation's exp (`verify.go:357`), so links get shorter in the
+  delegation's last hours; the reconciler's 15-day renewal window means
+  nobody meets that.
+- `agents` must include every parent entry (`verify.go:342`); the
+  standing invocation has only `strut-agent`.
 - **Timestamps are `toISOString()`.** The verifier orders `exp` values as
-  strings (`verify.go:247`, `:355`), which only works for same-format
+  strings (`verify.go:247`, `:357`), which only works for same-format
   RFC 3339 UTC — never hand-format one.
 
-**Per step:**
+**Per step:** a second link off the run link:
 
 ```ts
-attenuate(invocationSigBytes(inv), {
+attenuate(attenuationSigBytes(run), {
   agents: ["strut-agent", stepAgentName(ctx.path)],
-  run_id, max_cost_usd: runCap, max_steps: 0, exp, nonce,   // restated — see below
-})
+  run_id: runId, max_cost_usd: runCap, max_steps: 0,   // restated
+  exp: run.caveats.exp, nonce,
+});
 ```
 
-- An attenuation **replaces** the effective caveats, it does not inherit
-  (`verify.go:315-322`): every field must be restated, each ≤ its parent.
-- So the link **must restate `max_steps: 0`**: the narrowing check rejects a
-  child value greater than its parent (`verify.go:349`), and any positive
-  number is greater than 0.
-- And it must restate the **same `runCap`**, not a placeholder. The gateway
-  dedupes chain layers by `run_id`, leaf first (`capLayers`,
-  `capwalk.go:216-225`); with the step on the run's own `run_id`, the
-  **link's** `max_cost_usd` is the one enforced and the invocation's is
-  shadowed.
+- **Same `run_id` as the run link.** The gateway dedupes chain layers by
+  `run_id`, leaf first (`capLayers`, `capwalk.go:205-225`), so the enforced
+  chain is [run, delegation]: the run's cap and the ceiling. The step
+  link's `max_cost_usd` is the one enforced for the run — restate the same
+  `runCap`, not a placeholder.
 - `stepAgentName`: per path segment drop the `#n` iteration suffix
   **and** the `NNN-` tool-call prefix, then join with `.` →
   `digest.loop.summarize`. The prefix matters: a step granted as an
@@ -268,21 +323,36 @@ attenuate(invocationSigBytes(inv), {
   routes split the path on it (`server.go:353`). Workflow names are not
   validated on publish (step names are, `workspace.ts:986`), so the
   function also maps anything outside `[A-Za-z0-9_.-]` to `_`.
-- v1 keeps the step layer on the run's own `run_id`: one strut run is one
+- Step names need not be in the UA: attenuation may add names freely
+  (`narrowAttenuation` checks child ⊇ parent, never against the UA).
+- On the wire: UA + invocation + two links per call. Trivial.
+- v1 keeps the step link on the run's own `run_id`: one strut run is one
   gateway run, steps are told apart by agent name.
 
-**Chat:** `agents: ["strut-assistant"]`, `run_id: <chatId>.<turn>`, no
-attenuation, `session-id: <chatId>`. Same `max_steps: 0`; the cap per turn is
-the env fallback (a chat has no workflow to override it).
+**Chat:** one link off the invocation, `agents: ["strut-agent",
+"strut-assistant"]`, `run_id: <chatId>.<turn>`, same `max_steps: 0`, cap =
+the env fallback (a chat has no workflow to override it), `session-id:
+<chatId>`. Billed as `strut-assistant` — the last entry — under the same
+root as everything else.
+
+**Ceiling exhaustion.** When `cost:run:<delegationId>` reaches the ceiling,
+every call gets a 402 `run_cost_exceeded` whose message names the
+*delegation's* run id, not the strut run's (`capwalk.go:126`). Strut
+recognises its own delegation id in that message and fails the step with
+"authorization for <actor> is exhausted — re-authorize from hive", not
+"run over cap". The counter's TTL is 7d, refreshed on every write
+(`ttl.go:25`, `accumulator.go:48`): a delegation idle for a week restarts
+from $0. Accepted for v1 — the ceiling is a backstop, not an accounting
+truth, and the daily customer budget is the tight bound.
 
 **Returned to the hook:** `apiKey` = the virtual key, `baseUrl` = gateway
 root, headers `x-macaroon`, `x-bf-dim-session-id: <top-level workflow>` and
-`x-bf-dim-root-agent: strut-agent` (`strut-assistant` for chat).
+`x-bf-dim-root-agent: strut-agent`.
 
 **Why `root-agent` and not a `strut.` name prefix.** Strut adds many agent
 names to a list that holds hive's dozen, and the Mothership UI will want to
 fold them under one node. The grouping key already exists, signature-bound:
-every step's lineage starts with `strut-agent`. The gateway just logs only
+every strut lineage starts with `strut-agent`. The gateway just logs only
 the leaf. Sending the root as a plain dim costs nothing, lands in the log
 from day one, and leaves step names clean; when the gateway later stamps
 `root-agent` from the verified claims, it overwrites with the same value and
@@ -300,31 +370,46 @@ without splitting that history.
    that sets it explicitly needs the two names added. Side effect: the
    names also surface in the prompts-UI agent dropdowns
    (`lib/utils/hive-agent.ts` derives from the list); acceptable.
-2. `mintStrutDelegation({ workspaceId, userId, strutPubkey, ttlSeconds })`
-   **in `macaroon-issuer.ts`** — it must live there: `fetchAndDecryptOrgPrivkey`
-   and `randomNonceHex` are module-private, and `mintInvocationMacaroon`
-   (`:154`) builds the UA inline with `user_pubkey` hardwired to the user's
-   own key. The library call is fine as is — `signUserAuthorizationSingle`
-   takes any pubkey. UA fields: `user_id`, `user_pubkey`, `agents` (both
-   names), `iat`, `exp` ≈ 60 days, `nonce`; no `budget` block (hive emits
-   none today). Org key path unchanged: workspace → `sourceControlOrgId` →
-   `ensureMacaroonOrgKeys`.
+2. **No new issuer code.** `mintInvocationMacaroon`
+   (`macaroon-issuer.ts:154`) already takes `runId`, `maxCostUsd`,
+   `maxSteps` and `ttlSeconds` (`:161-164`) with no ceiling on the TTL,
+   and mints UA + invocation with the same lifetime and
+   `agents: [agentName]` on both. The standing invocation is one call:
+
+   ```ts
+   const minted = await mintInvocationMacaroon({
+     workspaceId, userId,
+     agentName: "strut-agent",
+     maxCostUsd: STRUT_DELEGATION_MAX_COST_USD,  // 10_000; env-overridable
+     maxSteps: 0,                                // 0 survives the destructuring default
+     ttlSeconds: STRUT_DELEGATION_TTL_SECONDS,   // 60 days
+   });
+   // minted.token → the macaroon; minted.runId → delegationId; minted.expiresAt → exp
+   ```
+
+   Two new constants in `constants.ts`, the ceiling read from
+   `STRUT_DELEGATION_MAX_COST_USD` when set. Org key path unchanged:
+   workspace → `sourceControlOrgId` → `ensureMacaroonOrgKeys`. Phase 2
+   changes the inside of this function (a device signs the invocation),
+   not its callers.
 3. Push it from `strut/embed-url/route.ts`, `strutTools.ts` (chat dispatch)
    and the workflow-benchmark route
-   (`api/workspaces/[slug]/workflow-benchmarks/run/route.ts:416`): read the
-   delegation key, skip if the stored UA has more than half its life left,
-   else mint and `PUT`. A failed push never blocks the embed. The push is
-   **more than the UA**: it also needs the user's virtual key and the
-   gateway URL, and the swarm must already trust the org and hold the
-   catalog — today all of that only happens inside `getBifrostForLLM`
-   (`orchestrator.ts:93`). So the push runs behind the same gates
-   (`BIFROST_ENABLED`, workspace + user present, not the public viewer) and
-   calls the same trust-register / catalog-seed / `reconcileBifrostVK`
-   building blocks first. Two `reconcileBifrostVK` traps: it throws when
-   the user has no `WorkspaceMember` row (owners only get one lazily via
-   `/access`), and it ignores `leftAt`. Note `strutTools.ts` also runs with
-   no live session (`api/cron/automations`, `canvas-strut-autoturn`) — the
-   user is attributed, not present; the push still works, the org signs.
+   (`api/workspaces/[slug]/workflow-benchmarks/run/route.ts:416`):
+   `GET /llm/delegations`, skip if the stored one has more than half its
+   life left, else mint and `PUT { macaroon, apiKey, baseUrl }`. A failed
+   push never blocks the embed. The push is **more than the macaroon**: it
+   also needs the user's virtual key and the gateway URL, and the swarm
+   must already trust the org and hold the catalog — today all of that
+   only happens inside `getBifrostForLLM` (`orchestrator.ts:93`). So the
+   push runs behind the same gates (`BIFROST_ENABLED`, workspace + user
+   present, not the public viewer) and calls the same trust-register /
+   catalog-seed / `reconcileBifrostVK` building blocks first. Two
+   `reconcileBifrostVK` traps: it throws when the user has no
+   `WorkspaceMember` row (owners only get one lazily via `/access`), and
+   it ignores `leftAt`. Note `strutTools.ts` also runs with no live session
+   (`api/cron/automations`, `canvas-strut-autoturn`) — the user is
+   attributed, not present; the push still works in phase 1, the custodial
+   key signs.
 4. Actor: `POST /mint-token` body gains `sub: buildBifrostName(userId,
    login)`; server-side calls send `x-strut-actor` with the same value. The
    actor string **must equal** the macaroon `user_id` so strut's spend
@@ -336,16 +421,18 @@ without splitting that history.
    kill-switch, `vercel.json` entry). Desired state lives on
    `WorkspaceMember`, which already holds the pushed-to-gateway VK fields
    (`bifrostVkValue`, `bifrostSyncedAt`, …): add `strutDelegationExp` and
-   `strutDelegationKey` (the strut pubkey it was bound to). Per workspace
-   the cron reads strut's delegation key and `GET /llm/delegations`, then
-   re-mints and `PUT`s any row that is **missing, within 15 days of exp, or
-   bound to an old key** (a wiped strut volume heals here, with nobody
-   visiting). No user is needed: the org key signs. Leaving a workspace is
-   a **soft delete** (`leftAt` set by `removeWorkspaceMember`,
-   `services/workspace.ts:1354`; nothing revokes any Bifrost state today),
-   so the cron `DELETE`s the delegation for every member with `leftAt` set
-   and clears the two columns. So the 60-day exp is a backstop for hive
-   being down, not a thing people ever meet.
+   `strutDelegationId`. **Never the token** — hive keeps no copy of a
+   bearer it may not be able to re-mint in phase 2. Per workspace the cron
+   reads `GET /llm/delegations`, then re-mints and `PUT`s any row that is
+   **missing or within 15 days of exp** (a wiped strut volume heals here,
+   with nobody visiting). Leaving a workspace is a **soft delete** (`leftAt`
+   set by `removeWorkspaceMember`, `services/workspace.ts:1354`; nothing
+   revokes any Bifrost state today), so the cron `DELETE`s the delegation
+   for every member with `leftAt` set and clears the two columns.
+   `kill:<strutDelegationId>` is the operational stop for one user's strut
+   activity (1h, renewable); a permanent targeted revoke needs the
+   invocation nonce and is later work. So the 60-day exp is a backstop for
+   hive being down, not a thing people ever meet.
 
 ## 5. mcp (the host)
 
@@ -379,7 +466,7 @@ passes `llmAuth` + `resolveActor`, then `mount`s its routes.
   mcp Dockerfile, or mcp itself — so `secrets.json` on that volume is
   encrypted with strut's fixed dev passphrase (`secret-store.ts:75`),
   obfuscated only. Not new (provider keys are in there today), but
-  `mothership.json` adds a signing key and every user's virtual key.
+  `mothership.json` adds every user's standing macaroon and virtual key.
   **Fix: at mcp boot, `process.env.STRUT_SECRET_KEY ??= process.env.API_TOKEN`**
   before `createLabStrut`. The passphrase is only scrypt input
   (`secret-store.ts:104`), so any string works, and `API_TOKEN` is already
@@ -387,8 +474,8 @@ passes `llmAuth` + `resolveActor`, then `mount`s its routes.
   the lab strut (they can register a step that reads any secret), so this
   raises the floor without adding a second secret to manage. Cost: rotating
   `API_TOKEN` makes both files unreadable — `mothership.json` self-heals
-  (new key, hive re-pushes), `secrets.json` needs its provider keys
-  re-entered. Acceptable; the token effectively never rotates.
+  (hive re-pushes), `secrets.json` needs its provider keys re-entered.
+  Acceptable; the token effectively never rotates.
 
 ## 6. Reading it back
 
@@ -399,33 +486,41 @@ passes `llmAuth` + `resolveActor`, then `mount`s its routes.
 | A workflow's steps, ranked | `GET /_plugin/spend/by-agent?session_id=<wf>&window=24h` |
 | A workflow's users | `GET /_plugin/spend/by-user?session_id=<wf>` |
 | One run | `GET /_plugin/runs/<runId>` (`/state` for live cost + caps) |
+| One user's strut authorization | `GET /_plugin/runs/<delegationId>` (`/state` for spent-of-ceiling) |
 
 v1 reads these in the Mothership UI (hive's Gateway tab). Caps: a daily cap
 per step is an `agent_budgets` entry; a per-run cap is the workflow's
 `maxRunCostUsd` (§3); a per-user daily cap is the customer budget hive
-already sets.
+already sets; a per-user lifetime-of-delegation cap is the ceiling.
 
 ## Non-goals (v1)
 
 - **Enforced per-workflow caps.** `session-id` is observed, not capped.
-- **Per-step caps per run.** Would need the step layer on its own `run_id`.
+- **Per-step caps per run.** Would need the step link on its own `run_id`.
 - **Setting caps from strut.** `agent_budgets` is config-file only today
   (`/_plugin/agents/<name>/budget` is GET-only, `budgets.go:92`).
 - **Spend badges in the strut UI.** Needs a read credential for `/_plugin/*`;
   the provisioning token is far too powerful to hand over.
+- **Alerting as a delegation nears its ceiling.** The number is one read
+  away (`/_plugin/runs/<delegationId>/state`); where to surface it is
+  later UX.
+- **Targeted revocation of one delegation.** Needs the invocation nonce
+  stored hive-side; `kill:<delegationId>` and `revoke_user_before` cover v1.
 - **Any user model in strut** beyond the opaque actor. **Non-LLM spend** (Exa).
 - **Callbacks from strut to hive.**
 - **Actor renames.** A GitHub login change alters `{login}-{id}` and
   orphans `owner`; a transfer endpoint exists for the manual fix. Deferred.
 - **Cap continuity across a long pause.** `cost:run` expires ~9h after the
-  last call (§3); a run resumed later restarts its cap. Deferred.
+  last call (§3); a run resumed later restarts its cap. The delegation's
+  counter likewise restarts after a week idle. Deferred.
 
 ## Step order
 
 1. strut: the `llmAuth` seam (§1). Ship and test with a static hook.
 2. strut: actor plumbing and the principal rule (§2).
 3. strut: `src/mothership.ts` (§3).
-4. hive: agent names, `mintStrutDelegation`, the push, the actor (§4).
+4. hive: agent names, the push (calling `mintInvocationMacaroon`), the
+   actor, the reconciler (§4).
 5. mcp: bump, enable, `labAuth` (§5).
 6. End-to-end check in shadow mode (below).
 7. Later: mcp lab code that calls the AI SDK's default `anthropic()`
@@ -436,32 +531,43 @@ already sets.
    `eval/steps/reflect.ts:117`, plus `concepts/services.ts:84` and the
    `harvey` subprocess that inherits `ANTHROPIC_API_KEY`. Each moves to
    `resolveModel` with its step context. Also: a writable budget endpoint on
-   the gateway; badges in the strut UI; the gateway stamping `root-agent`
-   from verified claims and the Mothership UI folding strut's steps under
-   one `strut-agent` node (→ workflows → steps).
+   the gateway; badges in the strut UI; ceiling alerts; the gateway
+   stamping `root-agent` from verified claims and the Mothership UI folding
+   strut's steps under one `strut-agent` node (→ workflows → steps).
 
 ## Validation
 
-- **Unit:** a macaroon strut builds (UA fixture + invocation + one step link)
-  passes `gatekey`'s `verify` with the step as the billed agent; a link that
-  widens `max_cost_usd`, drops `strut-agent`, or carries a positive
-  `max_steps` under a `0` parent fails. Cap resolution: workflow override →
-  env → default, and a non-positive result throws. `stepAgentName` never
-  emits `/`, and `wf/agent/003-llm` → `wf.agent.llm`. Principal rule, one
-  case per trigger; `principal` read back from `run.start` on resume. No
-  delegation → the hook returns `undefined` and the provider is called
-  directly. The delegation file is not visible through
-  `ctx.services.secrets` or `GET /secrets`. `resolveActor` returning
-  `undefined` → no owner stamp, no actor on the run.
+- **Unit:** a macaroon strut builds — a UA + standing-invocation fixture
+  signed with fixture org and user keys, a run link, a step link — passes
+  `gatekey`'s `verify` with the step as the billed agent and a three-layer
+  chain that dedupes to two run ids; a link that widens `max_cost_usd`,
+  drops `strut-agent`, carries a positive `max_steps` under a `0` parent,
+  or outlives the invocation fails. `runCap` above the ceiling fails
+  before any call, with both numbers in the message. A 402 naming the
+  delegation id maps to the exhausted-authorization error; one naming the
+  run id does not. Cap resolution: workflow override → env → default, and
+  a non-positive result throws. `stepAgentName` never emits `/`, and
+  `wf/agent/003-llm` → `wf.agent.llm`. Principal rule, one case per
+  trigger; `principal` read back from `run.start` on resume. No delegation
+  → the hook returns `undefined` and the provider is called directly. The
+  delegation file is not visible through `ctx.services.secrets` or
+  `GET /secrets`. `PUT` rejects a macaroon that already carries
+  attenuations, lacks `strut-agent`, has a positive `max_steps`, or a zero
+  ceiling. `resolveActor` returning `undefined` → no owner stamp, no actor
+  on the run.
 - **End to end** (gateway ships with `enforce_macaroons: false`, so this is
   safe to run against a live swarm): open strut from hive, run a workflow with
   two agent steps, then fire it from an automation. Both runs appear under the
   user; each step has its own `/agents/<name>/spend`; the session summary
-  equals their sum. **Shadow mode hides verification failures** — a bad
-  chain is logged and let through, so also grep the plugin log for
-  `FAIL` lines (`enforcement.go:301`) before calling the pass green.
+  equals their sum; `/_plugin/runs/<delegationId>` equals the sum of both
+  runs. **Shadow mode hides verification failures** — a bad chain is
+  logged and let through, so also grep the plugin log for `FAIL` lines
+  (`enforcement.go:301`) before calling the pass green.
 - **Enforcement:** with the flags on, a run past `max_cost_usd` gets a 402
-  `run_cost_exceeded` and the step fails with that message, not a retry loop.
+  `run_cost_exceeded` and the step fails with that message, not a retry
+  loop. Then set `STRUT_DELEGATION_MAX_COST_USD` to a few dollars on a test
+  workspace, re-push, run past it, and check the step fails with the
+  exhausted-authorization message and names the actor.
 
 ## Open questions
 
