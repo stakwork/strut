@@ -22,6 +22,14 @@ export function CloseIcon({ size = 14, ...rest }: IconProps) {
   );
 }
 
+export function StopIcon({ size = 10, ...rest }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true" {...rest}>
+      <rect x="4" y="4" width="16" height="16" rx="3" />
+    </svg>
+  );
+}
+
 export function CopyIcon({ size = 13, ...rest }: IconProps) {
   return (
     <svg

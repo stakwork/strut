@@ -761,6 +761,12 @@ and the child env is scrubbed by construction).
   and persists each part; close the browser and it keeps running.
   Watch/reattach via `GET /chat/:id/stream` (SSE tail), load the
   transcript via `GET /chat/:id`, list sessions via `GET /chats`.
+  `POST /chat/:id/cancel` stops the live turn (the flyout's stop square,
+  shown only while the chat is working): the agent stream is aborted, what
+  streamed so far is persisted — a tool call cut off before its result gets
+  a stopped result, so the next turn never re-feeds a dangling call — and
+  the turn ends `chat.end { stopped: true }`, status `done` (the turn
+  callback carries `stopped: true` too). Queued notifications still drain.
   Each chat lives in `chats/<id>/` with the deliberate **two-file
   split** (borrowed from `mcp/src/repo/session.ts`): `messages.jsonl`
   is the lossless, **replayable** conversation (re-fed to the agent

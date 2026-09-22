@@ -89,6 +89,9 @@ export interface ChatEvent {
   isError?: boolean;
   /** chat.error */
   error?: { message: string };
+  /** chat.end: the turn was stopped (`POST /chat/:id/cancel`); what streamed
+   *  before the stop is in the transcript. */
+  stopped?: true;
 }
 
 /** A stored conversation message. Kept opaque (the AI SDK's `ModelMessage`
@@ -335,7 +338,8 @@ export class MemoryChatStore implements ChatStore {
   }
 
   async loadMessages(chatId: string): Promise<StoredMessage[]> {
-    return this.messages.get(chatId) ?? [];
+    // A copy: the caller may append to the store while holding this.
+    return [...(this.messages.get(chatId) ?? [])];
   }
 
   async appendEvent(chatId: string, event: ChatEvent): Promise<void> {

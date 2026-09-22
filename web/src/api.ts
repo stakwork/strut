@@ -680,6 +680,11 @@ export const getChat = (chatId: string) =>
 /** List chat sessions (newest first). */
 export const listChats = () => fetchJSON<ChatMeta[]>("/chats");
 
+/** Stop a chat's live turn (409 when nothing is running). The turn ends
+ *  with `chat.end`, so an attached stream finishes as usual. */
+export const cancelChat = (chatId: string) =>
+  fetchJSON<{ ok: boolean }>(`/chat/${chatId}/cancel`, { method: "POST" });
+
 /**
  * Reattach to a chat turn (live or completed) and stream its events. Tails
  * the server's append-only log from the start of the turn, so callers see
