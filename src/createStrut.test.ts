@@ -4,6 +4,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { z } from "zod";
 
 import { createStrut } from "./createStrut.js";
@@ -1119,5 +1120,143 @@ describe("actors and the principal rule", () => {
     );
     const owners = Object.fromEntries((await call("GET", "/workflows")).json.map((w: any) => [w.name, w.owner]));
     assert.deepEqual(owners, { a: "alice-1", b: "alice-1", c: "bob-2", wf: "alice-1" });
+  });
+});
+
+// ── Run callbacks (`POST …/run { callback }`, src/callback.ts) ─────────────
+
+describe("run callbacks", () => {
+  let tempDir: string;
+  beforeEach(async () => {
+    tempDir = join(tmpdir(), `strut-run-callback-${randomUUID()}`);
+    await mkdir(tempDir, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const echo = defineStep({
+    type: "echo",
+    input: z.object({ value: z.any() }),
+    output: z.any(),
+    async run(cfg) {
+      return cfg.value;
+    },
+  });
+  const boom = defineStep({
+    type: "boom",
+    input: z.object({}),
+    output: z.any(),
+    async run() {
+      throw new Error("kaboom");
+    },
+  });
+
+  /** A stand-in host: collects what strut posts. */
+  async function callbackHost(): Promise<{ url: string; posts: any[]; close: () => void }> {
+    const posts: any[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => {
+        posts.push({ path: req.url, body: JSON.parse(body) });
+        res.writeHead(204).end();
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    return { url: `http://127.0.0.1:${port}/hook?token=s3cret`, posts, close: () => server.close() };
+  }
+
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(cond(), "condition never held");
+  }
+
+  const boot = async () => {
+    const store = new MemoryRunStore();
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      registry: await createRegistry([echo, boom]),
+      store,
+      serveUi: false,
+      enableChat: false,
+      scheduler: false,
+    });
+    await strut.workspace.publishWorkflow("ok", "v1", {
+      steps: [{ id: "e", type: "echo", config: { value: { hi: "there" } } }],
+    });
+    await strut.workspace.publishWorkflow("bad", "v1", { steps: [{ id: "b", type: "boom", config: {} }] });
+    const run = async (path: string, body: unknown) => {
+      const res = await strut.app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: res.status, json: (await res.json()) as any };
+    };
+    return { store, run };
+  };
+
+  it("POST …/run { callback } posts the result to the host, recording only the URL's origin", async () => {
+    const host = await callbackHost();
+    try {
+      const { store, run } = await boot();
+      const res = await run("/workflows/ok/run", { input: {}, callback: { url: host.url } });
+      assert.equal(res.status, 202);
+      assert.equal(res.json.callback, true, "the host's proof this server honors callbacks");
+      const runId = res.json.runId as string;
+      await until(() => host.posts.length === 1);
+      const { path, body } = host.posts[0]!;
+      assert.equal(path, "/hook?token=s3cret");
+      assert.equal(typeof body.durationMs, "number");
+      delete body.durationMs;
+      assert.deepEqual(body, { event: "run.end", workflow: "ok", runId, status: "success", output: { hi: "there" } });
+
+      // The URL is the host's credential: the record carries its origin, never the URL.
+      const events = await store.getRunEvents("ok", runId);
+      assert.deepEqual(events.find((e) => e.type === "run.start")!.callback, { origin: new URL(host.url).origin });
+      assert.ok(!JSON.stringify(events).includes("s3cret"));
+      assert.ok(!JSON.stringify(await store.getRunSummary("ok", runId)).includes("s3cret"));
+
+      // The versioned twin honors it too.
+      const pinned = await run("/workflows/ok/v1/run", { input: {}, callback: { url: host.url } });
+      assert.equal(pinned.json.callback, true);
+      await until(() => host.posts.length === 2);
+      assert.equal(host.posts[1]!.body.runId, pinned.json.runId);
+    } finally {
+      host.close();
+    }
+  });
+
+  it("a failed run posts status: error with the message", async () => {
+    const host = await callbackHost();
+    try {
+      const { run } = await boot();
+      const { json } = await run("/workflows/bad/run", { input: {}, callback: { url: host.url } });
+      await until(() => host.posts.length === 1);
+      const { body } = host.posts[0]!;
+      assert.equal(body.event, "run.end");
+      assert.equal(body.runId, json.runId);
+      assert.equal(body.status, "error");
+      assert.match(body.error.message, /kaboom/);
+      assert.equal(body.output, undefined);
+    } finally {
+      host.close();
+    }
+  });
+
+  it("a bad callback is a 400 and launches nothing; null means none", async () => {
+    const { store, run } = await boot();
+    for (const callback of [{}, { url: "nope" }, { url: "ftp://host/x" }, "https://host/x"]) {
+      assert.equal((await run("/workflows/ok/run", { input: {}, callback })).status, 400, JSON.stringify(callback));
+    }
+    assert.deepEqual(await store.listRuns("ok"), []);
+    const res = await run("/workflows/ok/run", { input: {}, callback: null });
+    assert.equal(res.status, 202);
+    assert.equal(res.json.callback, undefined);
+    for (let i = 0; i < 200 && !(await store.getRunSummary("ok", res.json.runId)); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
   });
 });

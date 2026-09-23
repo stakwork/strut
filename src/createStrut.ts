@@ -56,7 +56,8 @@ import { attachAudioWebSocket } from "./audio/ws.js";
 // Static import is safe: notifier depends only on chat-store, never the AI
 // SDK (which stays lazy-loaded inside launchChatTurn).
 import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
-import { callbackOrigin, createTurnCallbacks, finalAssistantText, parseCallback } from "./ai/turn-callback.js";
+import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
+import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -1578,6 +1579,8 @@ export async function createStrut<TServices = unknown>(
     params?: Record<string, unknown>;
     paramOverrides?: Record<string, Record<string, unknown>>;
     runId?: string;
+    /** Where to POST the result when the run settles (src/callback.ts). */
+    callback?: { url: string } | null;
   }
 
   /**
@@ -1604,10 +1607,16 @@ export async function createStrut<TServices = unknown>(
        *  original launch; otherwise the principal rule decides (§2). */
       actor?: string;
       principal?: string;
+      /** Where to POST the result when the run settles (`POST …/run
+       *  { callback }`). Lives here, in the launch closure, and is never
+       *  persisted: it is the host's credential. */
+      callback?: { url: string };
     },
   ): string {
     const runId = body.runId ?? generateRunId();
     const { controller, untrack } = trackRun(flow.name, runId);
+    const launchedAt = Date.now();
+    const callback = extra?.callback;
     void (async () => {
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
@@ -1629,14 +1638,51 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.automation ? { automation: extra.automation } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
+        ...(callback ? { callback: { origin: callbackOrigin(callback.url) } } : {}),
       });
     })()
-      .catch((err) => {
-        console.error(`[run ${runId}] launch failed:`, err);
-      })
+      .then(
+        (res) => {
+          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt);
+        },
+        // runWorkflow finalizes its own errors into a resolved result; a
+        // rejection is an unexpected throw (e.g. a store write failure).
+        // Logged — and the host that asked still hears it, as an error.
+        (err) => {
+          console.error(`[run ${runId}] launch failed:`, err);
+          if (callback) {
+            const message = err instanceof Error ? err.message : String(err);
+            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt);
+          }
+        },
+      )
       .finally(untrack);
     return runId;
   }
+
+  /** Tell the host that asked (`POST …/run { callback }`) how a run ended:
+   *  one POST, detached from the run's teardown and never awaited — a slow
+   *  or dead host holds nothing up, and `postCallback` retries then warns,
+   *  never throws. The payload mirrors the run's summary, minus the stack. */
+  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number): void {
+    void postCallback(
+      url,
+      {
+        event: "run.end",
+        workflow,
+        runId: res.runId,
+        status: res.status,
+        ...(res.output !== undefined ? { output: res.output } : {}),
+        ...(res.error ? { error: { message: res.error.message } } : {}),
+        durationMs: Date.now() - launchedAt,
+      },
+      { tag: `[run ${res.runId}] callback run.end` },
+    );
+  }
+
+  /** A run body's `callback`, validated; absent or `null` = none. */
+  const runCallbackOf = (body: RunBody): { url: string } | undefined =>
+    body.callback == null ? undefined : parseCallback(body.callback);
 
   // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2).
   claimsRoutes(app, { claims: claimsAuthoring, verifier });
@@ -1708,30 +1754,45 @@ export async function createStrut<TServices = unknown>(
     return c.json(result);
   });
 
+  // `callback: { url }` asks for the result to be POSTed there when the run
+  // settles (postRunCallback): validated BEFORE anything launches, and the
+  // 202 carries `callback: true` — the host's proof this server honors it.
   app.post("/workflows/:name/run", async (c) => {
     const name = c.req.param("name");
     const body = await c.req.json<RunBody>();
+    let callback: { url: string } | undefined;
+    try {
+      callback = runCallbackOf(body);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
     let flow;
     try {
       flow = await workspace.getWorkflow(name);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-    const runId = launchDetached(flow, body, { actor: await resolveActor(c) });
-    return c.json({ runId }, 202);
+    const runId = launchDetached(flow, body, { actor: await resolveActor(c), ...(callback ? { callback } : {}) });
+    return c.json({ runId, ...(callback ? { callback: true } : {}) }, 202);
   });
 
   app.post("/workflows/:name/:version/run", async (c) => {
     const { name, version } = c.req.param();
     const body = await c.req.json<RunBody>();
+    let callback: { url: string } | undefined;
+    try {
+      callback = runCallbackOf(body);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
     let flow;
     try {
       flow = await workspace.getWorkflowVersion(name, version);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-    const runId = launchDetached(flow, body, { version, actor: await resolveActor(c) });
-    return c.json({ runId }, 202);
+    const runId = launchDetached(flow, body, { version, actor: await resolveActor(c), ...(callback ? { callback } : {}) });
+    return c.json({ runId, ...(callback ? { callback: true } : {}) }, 202);
   });
 
   // ── Chat (AI workflow builder) ───────────────────────────────────────────

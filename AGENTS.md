@@ -57,6 +57,7 @@ strut/
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server
+│   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses) — every one recordable by cassette.ts + secret-safe
@@ -640,6 +641,23 @@ and the child env is scrubbed by construction).
   `streamRun(name, runId)` reattaches to the tail — so callers see the
   same `(onEvent, → RunResult)` interface as before.
 
+- **Run callbacks — a host hears the result without tailing**
+  (`src/callback.ts`; createStrut's `postRunCallback`). `POST
+  /workflows/:name/run { …, callback: { url } }` (and the `/:version/run`
+  twin) validates the URL — http(s), else 400 and nothing launches — and
+  the 202 carries `callback: true`, the host's proof this server honors
+  it. When the run settles strut POSTs, once, `{ event: "run.end",
+  workflow, runId, status: "success" | "error" | "cancelled", output?,
+  error?: { message }, durationMs }` — detached from the run's teardown,
+  with the chat callback's delivery rules (a few retries; a 4xx is the
+  host refusing it). The URL is the host's credential: it lives in the
+  launch closure and is never persisted — `run.start` records `callback:
+  { origin }` only, so no read endpoint (events, stream, summary) can leak
+  it. Same crash posture as the chat: a restart drops it, and a run
+  resumed afterwards (by hand or boot-time auto-resume) posts nothing —
+  the host's fallback is `GET /workflows/:name/runs/:runId`. The web UI
+  never sends one.
+
 - **Run control** (`RUN_CONTROL_SPEC.md`, `src/run-control.ts` +
   `src/journal.ts`). Every launch site registers a `RunController`
   (createStrut's `trackRun` — superseding the old `activeRuns` set); nested
@@ -902,7 +920,8 @@ and the child env is scrubbed by construction).
   dashed text notice).
 
 - **Turn-end callbacks — how a HOST dispatches the builder**
-  (`src/ai/turn-callback.ts`). A turn takes seconds or hours, and one
+  (`src/ai/turn-callback.ts`; the URL check + poster are `src/callback.ts`,
+  shared with run callbacks). A turn takes seconds or hours, and one
   dispatch can produce SEVERAL turns (the detached-run / verify wake-ups
   above), so a host app does not tail or poll: `POST /chat { …, callback:
   { url } }` stores the URL on `ChatMeta.callback` — on the CHAT, so
