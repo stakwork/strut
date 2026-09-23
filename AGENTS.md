@@ -1153,6 +1153,29 @@ with that move.
    regardless via `/steps`).
 7. Write tests; run `npm test` and `cd web && npx tsc --noEmit && npx vite build`.
 
+## When changing how LLM calls or tools are built
+
+`npm test` is offline: it never streams from a real provider, and never goes
+through the gateway prod uses. So a change to what reaches the model
+(tools on the `agent` step or the chat builder, especially provider-native
+ones like `web_fetch`/`web_search` or the text editor; `llm.ts` / aieo
+wiring; `llmAuth` / Mothership headers; provider or model routing) can pass
+every test and still break in prod. Bifrost re-renders
+non-Claude-Code streams, and a malformed frame kills a chat turn. Validate
+such a change end to end:
+
+1. `docker compose -f docker-compose.yml -f docker-compose.gateway.yml up --build`
+2. `STRUT_TEST_GATEWAY=1 npm run test:gateway`: add a check to
+   `scripts/gateway-smoke.ts` that exercises the new tool (a chat turn or a
+   workflow run that calls it) instead of only running the existing ones.
+3. When a stream fails, narrow it down without strut in the way:
+   `scripts/gateway-stream.mts` (aieo + strut's real tools, prints the full
+   TypeValidationError), then `scripts/gateway-raw-sse.sh` (raw frames), each
+   `direct` vs through the gateway, to tell a strut bug from a gateway bug.
+
+See "Running" for the commands, the debug affordances, and the VK
+provider-routing gotcha.
+
 ## When adding an API endpoint
 
 1. Add the route in `src/createStrut.ts` (inside the `createStrut()`
