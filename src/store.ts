@@ -609,7 +609,14 @@ export class MemoryRunStore implements RunStore {
   }
 }
 
-/** Generate a timestamp-based run ID. */
+let lastRunId = 0;
+
+/** A run id: the launch time in ms, which sorts naturally and reads as a
+ *  timestamp. Unique within this process — two launches in the same
+ *  millisecond would otherwise share a run directory, an events log, and
+ *  (for the git/* steps) a worktree dir. */
 export function generateRunId(): string {
-  return Date.now().toString();
+  const now = Date.now();
+  lastRunId = now > lastRunId ? now : lastRunId + 1;
+  return lastRunId.toString();
 }

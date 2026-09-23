@@ -170,6 +170,10 @@ export {
 // Auth: the deployment-key middleware and the default actor resolver.
 export { requireApiKey, apiKeyMatches, actorFromHeader } from "./auth.js";
 
+// Actor secrets (plans/code-change.md §3.2): per-actor credentials a host
+// pushes, resolved for a run's principal by the ordinary secrets boundary.
+export { actorSecretStore, ACTOR_SECRETS_FILE, type ActorSecretStore } from "./actor-secrets.js";
+
 // Standard capabilities — the http + secrets + artifacts + shell services adapter steps build on.
 export {
   standardServices,
@@ -187,6 +191,7 @@ export {
   type HttpResponse,
   type SecretsCapability,
   type SecretReadable,
+  type ActorSecretReadable,
   type FetchLike,
 } from "./capabilities.js";
 

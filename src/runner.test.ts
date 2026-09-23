@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { flow, step, defineStep, withMessages, type StepRegistry, type RunEvent } from "./core.js";
+import { flow, step, defineStep, withMessages, type Step, type StepRegistry, type RunEvent } from "./core.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import foreachStep from "./steps/core/foreach.js";
@@ -684,5 +684,68 @@ describe("step.end carries a step's session marker as `messages`", () => {
     assert.equal(ends.length, 2);
     for (const e of ends) assert.deepEqual(e.messages, session);
     assert.deepEqual(result.output, [{ result: "done 1" }, { result: "done 2" }]);
+  });
+});
+
+// ── ctx.onRunEnd ───────────────────────────────────────────────────────────
+
+const mk = (name: string, input: z.ZodTypeAny, ...steps: Step[]) => flow(name, { input, steps });
+
+describe("ctx.onRunEnd", () => {
+  /** A step that registers a disposer recording its name + the info it got. */
+  function disposerStep(log: string[]) {
+    return defineStep({
+      type: "alloc",
+      input: z.object({ name: z.string(), fail: z.boolean().default(false), throwOnDispose: z.boolean().default(false) }),
+      output: z.any(),
+      async run(cfg, ctx) {
+        ctx.onRunEnd?.((info) => {
+          if (cfg.throwOnDispose) throw new Error(`dispose ${cfg.name} failed`);
+          log.push(`dispose:${cfg.name}:${info.workflow}`);
+        });
+        log.push(`run:${cfg.name}`);
+        if (cfg.fail) throw new Error("step failed");
+        return cfg.name;
+      },
+    });
+  }
+
+  it("runs every registered disposer once, newest first, before the bag's onRunEnd — on success", async () => {
+    const log: string[] = [];
+    const registry = { alloc: disposerStep(log) } as StepRegistry;
+    const wf = mk("wf", z.object({}), step("a", "alloc", { name: "a" }), step("b", "alloc", { name: "b" }));
+    const res = await runWorkflow(wf, {}, registry, {
+      services: { onRunEnd: async (id: string, info: { workflow: string }) => void log.push(`bag:${info.workflow}`) },
+    });
+    assert.equal(res.status, "success");
+    assert.deepEqual(log, ["run:a", "run:b", "dispose:b:wf", "dispose:a:wf", "bag:wf"]);
+  });
+
+  it("runs disposers on error too, and a throwing disposer neither masks the result nor blocks the others", async () => {
+    const log: string[] = [];
+    const registry = { alloc: disposerStep(log) } as StepRegistry;
+    const wf = mk(
+      "wf",
+      z.object({}),
+      step("a", "alloc", { name: "a", throwOnDispose: true }),
+      step("b", "alloc", { name: "b", fail: true }),
+    );
+    const res = await runWorkflow(wf, {}, registry, {});
+    assert.equal(res.status, "error");
+    assert.match(res.error!.message, /step failed/);
+    // b registered its disposer before throwing; a's disposer throws and is skipped, not fatal.
+    assert.deepEqual(log, ["run:a", "run:b", "dispose:b:wf"]);
+  });
+
+  it("subflow steps register into the parent run's list", async () => {
+    const log: string[] = [];
+    const registry = { alloc: disposerStep(log) } as StepRegistry;
+    const child = mk("child", z.object({}), step("c", "alloc", { name: "c" }));
+    const parent = mk("parent", z.object({}), step("sub", "subflow", { workflow: "child", input: {} }));
+    const res = await runWorkflow(parent, {}, registry, {
+      workspace: { getWorkflow: async () => child } as never,
+    });
+    assert.equal(res.status, "success", JSON.stringify(res));
+    assert.deepEqual(log, ["run:c", "dispose:c:parent"]);
   });
 });
