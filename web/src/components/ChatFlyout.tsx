@@ -430,9 +430,16 @@ export function ChatFlyout(props: {
     replaceUrl(url);
   }, [chatId, elicitation]);
 
-  // Auto-scroll on new content
+  // Auto-scroll on new content — only while the reader is at the bottom, so
+  // scrolling up to read earlier messages isn't yanked back by a live turn.
+  // Sending, loading a chat, or scrolling back down re-pins.
+  const pinned = useRef(true);
+  const onMessagesScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }, []);
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && pinned.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [entries, elicitation]);
@@ -549,6 +556,7 @@ export function ChatFlyout(props: {
     setLoading(false);
     setShowHistory(false);
     setExpanded({});
+    pinned.current = true;
     setChatId(id);
     storage.save(CHAT_ID_KEY, id);
     try {
@@ -638,6 +646,7 @@ export function ChatFlyout(props: {
     if (!text || loading) return;
     if (dictRef.current) stopDictation();
 
+    pinned.current = true;
     setEntries((prev) => [...prev, { kind: "user", content: text }]);
     setInput("");
     setLoading(true);
@@ -744,7 +753,7 @@ export function ChatFlyout(props: {
           )}
         </div>
       ) : (
-      <div class="chat-messages" ref={scrollRef}>
+      <div class="chat-messages" ref={scrollRef} onScroll={onMessagesScroll}>
         {entries.length === 0 && (
           <div class="chat-empty">Describe the workflow you want to build.</div>
         )}
