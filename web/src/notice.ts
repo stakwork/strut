@@ -6,6 +6,8 @@
 // This pulls one apart so the chat can show a person the headline and let
 // them open the rest piece by piece. Anything unrecognized is kept in
 // `notes` — a format drift shows up as text, never as a lost line.
+// `[elicitation-response]` (src/ai/elicitation.ts) is the third of the
+// family: the user's answer to the builder's question, as the model read it.
 
 export type ClaimStatus = "supported" | "refuted" | "unknown" | "stale";
 
@@ -33,9 +35,19 @@ export interface LedgerClaim {
 export type Ledger = Record<string, LedgerClaim[]>;
 
 export interface ParsedNotice {
-  kind: "run" | "verify";
+  kind: "run" | "verify" | "elicitation";
   /** First line, prefix removed. */
   headline: string;
+  /** `[elicitation-response]` only. */
+  elicitationId?: string;
+  action?: "accept" | "decline" | "cancel";
+  /** Who answered, when the request carried an actor. */
+  by?: string;
+  /** A secret's NAME (URL mode); `secretStored` says whether it was saved. */
+  secretName?: string;
+  secretStored?: boolean;
+  /** A form answer's content (parsed JSON). */
+  content?: unknown;
   workflow?: string;
   runId?: string;
   /** `[run-notification]` only. */
@@ -54,7 +66,7 @@ export interface ParsedNotice {
   notes: string[];
 }
 
-const PREFIXES = { "[run-notification]": "run", "[verify-notification]": "verify" } as const;
+const PREFIXES = { "[run-notification]": "run", "[verify-notification]": "verify", "[elicitation-response]": "elicitation" } as const;
 
 export function isNotice(text: string): boolean {
   return Object.keys(PREFIXES).some((p) => text.startsWith(p));
@@ -78,6 +90,31 @@ export function parseNotice(text: string): ParsedNotice | null {
   if (!prefix) return null;
   const [first = "", ...rest] = text.slice(prefix.length).split("\n");
   const notice: ParsedNotice = { kind: PREFIXES[prefix], headline: first.trim(), notes: [] };
+
+  if (notice.kind === "elicitation") {
+    // "<id> accept by <actor> — secret NAME stored (value not shown)" / "<id> decline"
+    const m = /^(\S+) (accept|decline|cancel)(?: by (\S+))?(?: — secret (\S+) (stored|not stored)\b.*)?$/.exec(notice.headline);
+    if (m) {
+      notice.elicitationId = m[1];
+      notice.action = m[2] as ParsedNotice["action"];
+      if (m[3]) notice.by = m[3];
+      if (m[4]) {
+        notice.secretName = m[4];
+        notice.secretStored = m[5] === "stored";
+      }
+    }
+    if (notice.action === "accept" && !notice.secretName && rest[0] !== undefined) {
+      try {
+        notice.content = JSON.parse(rest[0]);
+      } catch {
+        notice.notes.push(rest[0]);
+      }
+      for (const line of rest.slice(1)) if (line.trim()) notice.notes.push(line);
+    } else {
+      for (const line of rest) if (line.trim()) notice.notes.push(line);
+    }
+    return notice;
+  }
 
   const ran = /^Workflow "(.+)" run (\S+) finished: (\w+)(?: in (.+?))?\.$/.exec(notice.headline);
   const verified = /^Run (\S+) of "(.+)" was verified against its claims\b/.exec(notice.headline);
@@ -151,6 +188,7 @@ export function countLedger(ledger: Ledger): LedgerCounts {
 
 /** One word for the card's dot: the worst thing a person should know. */
 export function noticeTone(n: ParsedNotice): "ok" | "error" | "warning" | "pending" | "neutral" {
+  if (n.kind === "elicitation") return n.action === "accept" ? "ok" : n.action === "decline" ? "warning" : "neutral";
   if (n.runStatus === "error") return "error";
   const c = n.ledger ? countLedger(n.ledger) : null;
   if (c?.refuted) return "error";

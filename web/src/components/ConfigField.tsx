@@ -43,7 +43,7 @@ export function ConfigField(props: {
   onChange: (v: unknown) => void;
 }) {
   const { field, value, onChange } = props;
-  const label = `${humanize(field.name)}${field.required ? "" : " (optional)"}`;
+  const label = `${field.label ?? humanize(field.name)}${field.required ? "" : " (optional)"}`;
   // Hooks run unconditionally; only string fields carry a `suggest`.
   const suggestions = useSuggestions(field.kind === "string" ? field.suggest : undefined);
 
@@ -57,9 +57,38 @@ export function ConfigField(props: {
         >
           {!field.required && <option value="">--</option>}
           {field.enumValues.map((v) => (
-            <option key={v} value={v}>{v}</option>
+            <option key={v} value={v}>{field.enumLabels?.[v] ?? v}</option>
           ))}
         </select>
+      </div>
+    );
+  }
+
+  // A checkbox list: the value is the picked subset, in `enumValues` order.
+  if (field.kind === "multi" && field.enumValues) {
+    const picked = new Set<string>(
+      Array.isArray(value) ? (value as string[]) : Array.isArray(field.default) ? (field.default as string[]) : [],
+    );
+    return (
+      <div class="flyout-field">
+        <label title={field.description}>{label}</label>
+        <div class="flyout-multi">
+          {field.enumValues.map((v) => (
+            <label key={v} class="flyout-checkbox-label">
+              <input
+                type="checkbox"
+                checked={picked.has(v)}
+                onChange={(e) => {
+                  const next = new Set(picked);
+                  if ((e.target as HTMLInputElement).checked) next.add(v);
+                  else next.delete(v);
+                  onChange(field.enumValues!.filter((x) => next.has(x)));
+                }}
+              />
+              {field.enumLabels?.[v] ?? v}
+            </label>
+          ))}
+        </div>
       </div>
     );
   }

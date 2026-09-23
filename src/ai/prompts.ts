@@ -2,6 +2,7 @@ import type { StepRegistry, RunResult } from "../core.js";
 import type { WorkspaceStore } from "../workspace.js";
 import type { RunStore } from "../store.js";
 import type { SecretInfo } from "../secret-store.js";
+import type { ElicitationRequest } from "./elicitation.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { lsSteps } from "./stepHelpers.js";
 
@@ -112,6 +113,13 @@ export interface AiDeps {
     runId: string,
     action: "cancel" | "pause" | "resume",
   ) => Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
+  /** Elicitation (plans/elicitation.md): record a question on the chat —
+   *  `ask_user` (a form) or `request_secret` (a link to strut's secret page;
+   *  the value never reaches a model). The host keeps ONE open elicitation
+   *  per chat (a new one replaces it; the replaced id comes back), and the
+   *  agent's stopWhen ends the turn on the call. Optional: without it
+   *  neither tool is offered. */
+  openElicitation?: (req: ElicitationRequest) => Promise<{ elicitationId: string; url?: string; replaced?: string }>;
 }
 
 // ── System prompt ──────────────────────────────────────────────────────────
@@ -221,7 +229,7 @@ Authoring custom steps (create_step / edit_step):
     });
 - External capabilities come from ctx.services — a deployment-provided bag. The STANDARD capabilities (always injected by the standard server — do NOT read engine source to discover them, this is the complete contract):
     - ctx.services.http(url, { method?, headers?, body?, query? }) — a fetch-like transport. Returns a PLAIN object { status, ok, headers, body } (body is parsed JSON when JSON). Use this for ALL network/API calls — NOT the global fetch. (It returns a serializable object so the call can be recorded/replayed by run_step's cassette, and it keeps secrets out of your code path.)
-    - ctx.services.secrets.get("ENV_NAME") — read an API key / token. Use this for ALL credentials — NOT process.env. (Secrets read this way are automatically scrubbed from recorded cassettes.) Call list_secrets to see which credential NAMES already exist; reference an existing name, and if the one you need is missing, tell the user to add it in the Secrets dialog (you can never see the value).
+    - ctx.services.secrets.get("ENV_NAME") — read an API key / token. Use this for ALL credentials — NOT process.env. (Secrets read this way are automatically scrubbed from recorded cassettes.) Call list_secrets to see which credential NAMES already exist; reference an existing name, and if the one you need is missing, call request_secret (when offered; else tell the user to add it in the Secrets dialog). You can never see a value — never ask the user to paste one into this chat.
     - ctx.services.artifacts — per-run file storage, keyed by ctx.runId (retained after the run; one run cannot reach another's files). dir(runId) → absolute path of the run's dir, created on demand; write(runId, relPath, content) → absolute path written (subdirs created); read(runId, relPath) → Uint8Array (Buffer.from(bytes).toString() for text); list(runId) → sorted relative paths. Use it for scratchpad/store-retrieve patterns and files later steps or humans need; put RELATIVE paths in step output. An agent step with cwd at dir(runId) sees the same files, and so does an exec step (its cwd defaults to that dir). Every file in it is served by the strut server at GET /artifacts/<runId>/<relPath> (video/audio/images/pdf/text with the right content-type, anything else as a download) — so a workflow that produces a file for a human should end with a pack step returning e.g. { clip: "/artifacts/{{ $runId }}/clip.mp4" }, and when you report a run's result to the user, give that path as a link on the server's URL.
     - ctx.services.shell({ cmd, args?, cwd, stdin?, env?, timeoutMs?, maxOutputChars? }) — run a program (no shell; args verbatim) and get a PLAIN { code, signal, stdout, stderr, truncated, timedOut, durationMs }. Use this — NOT child_process — when a step wraps a CLI. The child env is scrubbed (no server keys); pass credentials via env explicitly. Never throws on a non-zero exit: check code. For a plain "run this command/script" workflow step you don't need a custom step at all — use the built-in exec step.
   So a typical REST adapter is: const key = await ctx.services.secrets.get("STRIPE_KEY"); const res = await ctx.services.http("https://api.stripe.com/v1/charges", { query: { customer: cfg.customer }, headers: { authorization: \`Bearer \${key}\` } }); return { charges: res.body.data };
@@ -234,7 +242,9 @@ Tools:
 - list_steps("<path>"): browse step types as a filesystem (steps, steps/core, steps/lib/<ns>, steps/custom).
 - search_steps("keywords"): keyword search across all step types.
 - get_step("<type>", source?): the step's description (with a YAML example) + JSON Schema of its config (input: each field's meaning, default, enum) and of its result (output — what {{ id.field }} can reference; absent when untyped). Always call before using a type. source: true adds a lib/custom step's TypeScript — only when authoring or editing a step, never just to use one.
-- list_secrets(): NAMES of credentials in the deployment's secret store (never values). Call before authoring a step that needs auth — reference an existing name in ctx.services.secrets.get("NAME"), or tell the user to add a missing one.
+- list_secrets(): NAMES of credentials in the deployment's secret store (never values). Call before authoring a step that needs auth — reference an existing name in ctx.services.secrets.get("NAME"), or request_secret a missing one.
+- ask_user(message, requestedSchema) (when offered): ask the user a STRUCTURED question when you cannot proceed without their answer — a choice (string with enum, or oneOf [{ const, title }]), yes/no (boolean), a number/integer, a short text (string; minLength/maxLength/pattern/format email|uri|date|date-time), or a multi-select (array whose items have enum|anyOf; minItems/maxItems). requestedSchema is { type: "object", properties: { <name>: <one of those> }, required?: [...] } — FLAT, no nested objects. YOUR TURN ENDS AT THIS CALL: write nothing after it. The answer arrives as the next message, "[elicitation-response] <elicitationId> accept|decline|cancel" (accept carries the content as JSON on the next line). decline = don't ask this again; cancel = the user dismissed it, asking once more later is fine. Only the newest question is open (a new ask replaces it); an answer naming a replaced id is still the user's answer to that question. NEVER collect a password, API key, token, private key or any credential this way, nor in prose — that is request_secret.
+- request_secret(name, reason) (when offered): ask the user to add secret NAME (letters, digits, underscore) through a strut page that writes the secret store directly — you never see the value and it never enters this chat. Call list_secrets first; request a name only when it is missing (or must be replaced). YOUR TURN ENDS AT THIS CALL, like ask_user. The next message says "secret NAME stored" (then use it via ctx.services.secrets.get("NAME")) or that it was declined.
 - create_step / edit_step: author or revise a custom step (see above).
 - bash(command, timeoutMs?): BUILD-TIME shell in the workspace dir (when offered) — probe an API's real response shape with curl before authoring a step, clone a repo into scratch/ to study a format, check a CLI exists, inspect a run's file outputs under artifacts/<runId>/. Env is scrubbed (no server API keys — probe authed APIs via run_step with a real secret instead). NEVER a substitute for ctx.services.http/secrets/shell inside a step: a step that uses the global fetch, process.env, or child_process directly is wrong — it breaks cassette record/replay and secret scrubbing. To run a CLI or a script from a WORKFLOW, use the exec step (cmd + args; or cmd: uv, args: [run] + an inline Python script with a PEP 723 dependency header — uv installs the packages on the fly).
 - graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the strut graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. Nodes carry their type as a label plus :Node:Data_Bank and {ref_id, node_key, namespace} — filter on namespace. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
@@ -295,7 +305,7 @@ function renderModels(m: AiDeps["models"]): string {
   const keys = Object.entries(m.keyNames)
     .map(([p, k]) => `${p}: ${k}`)
     .join(", ");
-  return `LLM providers with a key configured on this deployment: ${configured} (default model: ${m.default}). In agent/llm steps only use \`model:\` values from these providers — an alias (sonnet, opus, haiku, gemini, gpt, kimi, glm, grok), a full id, or "provider/id" (OpenRouter models as "openrouter/org/model"). For any other provider, tell the user to add its key under Secrets (${keys}).\n\n`;
+  return `LLM providers with a key configured on this deployment: ${configured} (default model: ${m.default}). In agent/llm steps only use \`model:\` values from these providers — an alias (sonnet, opus, haiku, gemini, gpt, kimi, glm, grok), a full id, or "provider/id" (OpenRouter models as "openrouter/org/model"). For any other provider, request_secret its key (${keys}) — or, without that tool, tell the user to add it under Secrets.\n\n`;
 }
 
 /**

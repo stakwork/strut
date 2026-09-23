@@ -428,10 +428,17 @@ export const listSteps = () => fetchJSON<StepsResponse>("/steps");
 
 export interface FieldDesc {
   name: string;
-  kind: "string" | "number" | "boolean" | "enum" | "json";
+  /** `multi` (a checkbox list over `enumValues`) is the UI's own — the
+   *  builder's multi-select questions (./elicitation); zodToFields never
+   *  emits it. */
+  kind: "string" | "number" | "boolean" | "enum" | "multi" | "json";
   required: boolean;
   default?: unknown;
   enumValues?: string[];
+  /** Display text per enum value (a question's `oneOf` titles). */
+  enumLabels?: Record<string, string>;
+  /** Overrides the humanized `name` as the field's label. */
+  label?: string;
   /** The field's `.describe()` text — shown as a hint. */
   description?: string;
   /** Free-text field with a suggestion catalog ("llm-models" → listLlmModels). */
@@ -619,6 +626,43 @@ export interface ChatCallbacks {
 
 export type ChatStatus = "live" | "done" | "error";
 
+// The builder's open question (plans/elicitation.md) — the server's
+// ElicitationRecord as `meta.elicitation`. ACP's shapes: `mode`, `message`,
+// a flat `requestedSchema` for a form; for a secret, the NAME and the
+// relative link (this app is the page it opens). Never a value.
+export interface ElicitationOption {
+  const: string;
+  title?: string;
+  description?: string;
+}
+export interface ElicitationProperty {
+  type: "string" | "number" | "integer" | "boolean" | "array";
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: string[];
+  oneOf?: ElicitationOption[];
+  items?: { type?: "string"; enum?: string[]; anyOf?: ElicitationOption[] };
+  minItems?: number;
+  maxItems?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  format?: "email" | "uri" | "date" | "date-time";
+  minimum?: number;
+  maximum?: number;
+}
+export interface ElicitationSchema {
+  type: "object";
+  properties: Record<string, ElicitationProperty>;
+  required?: string[];
+}
+export type Elicitation = { elicitationId: string; toolCallId: string; turn: number; createdAt: string; message: string } & (
+  | { mode: "form"; requestedSchema: ElicitationSchema }
+  | { mode: "url"; name: string; url: string; exists: boolean }
+);
+export type ElicitationAction = "accept" | "decline" | "cancel";
+
 export interface ChatMeta {
   id: string;
   title?: string;
@@ -627,6 +671,8 @@ export interface ChatMeta {
   createdAt: string;
   updatedAt: string;
   currentTurn: number;
+  /** The builder is waiting on this question; the flyout shows its form. */
+  elicitation?: Elicitation;
 }
 
 /** A normalized fine-grained chat event (matches the server's `ChatEvent`). */
@@ -696,6 +742,29 @@ export const listChats = () => fetchJSON<ChatMeta[]>("/chats");
  *  with `chat.end`, so an attached stream finishes as usual. */
 export const cancelChat = (chatId: string) =>
   fetchJSON<{ ok: boolean }>(`/chat/${chatId}/cancel`, { method: "POST" });
+
+/** Answer the builder's open question: a form's content with `accept`, or
+ *  `decline` / `cancel` for either kind. The server validates, records who
+ *  answered, and starts the next turn — `queued` when one is live (it
+ *  follows that turn; the idle poll notices). 404 once the question is
+ *  closed. A secret is never accepted here: see storeElicitedSecret. */
+export const answerElicitation = (
+  chatId: string,
+  elicitationId: string,
+  body: { action: ElicitationAction; content?: Record<string, unknown> },
+) =>
+  fetchJSON<{ chatId: string; turn?: number; queued?: true }>(`/chat/${chatId}/elicitations/${encodeURIComponent(elicitationId)}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+/** URL mode's completion: the value goes straight into the secret store
+ *  under the NAME the server recorded; the chat hears "stored". */
+export const storeElicitedSecret = (chatId: string, elicitationId: string, value: string) =>
+  fetchJSON<{ chatId: string; turn?: number; queued?: true }>(`/chat/${chatId}/elicitations/${encodeURIComponent(elicitationId)}/secret`, {
+    method: "POST",
+    body: JSON.stringify({ value }),
+  });
 
 /**
  * Reattach to a chat turn (live or completed) and stream its events. Tails

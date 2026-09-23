@@ -148,6 +148,17 @@ describe("turn callback helpers", () => {
     }
   });
 
+  it("an open elicitation rides on turn.end, and the turn is settled", async () => {
+    const { posts, flush, end } = setup();
+    const elicitation = { elicitationId: "e1", mode: "url" as const, message: "to post alerts", name: "SLACK_BOT_TOKEN", url: "?chat=c1&elicit=e1" };
+    await end(2, { text: "The builder needs the secret SLACK_BOT_TOKEN: to post alerts", elicitation });
+    await flush();
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0]!.payload.elicitation, elicitation);
+    assert.equal(posts[0]!.payload.settled, true);
+    assert.equal(posts[0]!.payload.text, "The builder needs the secret SLACK_BOT_TOKEN: to post alerts");
+  });
+
   it("callbackOrigin drops the path and the signed query", () => {
     assert.equal(callbackOrigin(URL_), "https://hive.example");
     assert.equal(callbackOrigin("nope"), "(invalid url)");
