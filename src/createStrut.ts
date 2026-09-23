@@ -1215,6 +1215,46 @@ export async function createStrut<TServices = unknown>(
     });
   });
 
+  // Every version, newest first, with how often each one ran — the Versions
+  // tab. A run is attributed by the content hash it recorded (summary, else
+  // `run.start` for runs that predate the summary stamp); identical content
+  // published twice goes to the newest twin that existed when the run started.
+  app.get("/workflows/:name/versions", async (c) => {
+    const name = c.req.param("name");
+    const meta = await workspace.getWorkflowMetadata(name);
+    if (!meta) return c.json({ error: `Workflow "${name}" not found` }, 404);
+    const versions = Object.entries(meta.versions)
+      .map(([version, info]) => ({ version, createdAt: info.createdAt, description: info.description }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const hashes = new Map<string, string | null>();
+    for (const v of versions) hashes.set(v.version, await workspace.getWorkflowHash(name, v.version));
+    const stats = new Map<string, { runs: number; success: number; error: number; lastRunAt?: string }>();
+    let unattributed = 0;
+    for (const runId of await store.listRuns(name)) {
+      const summary = await store.getRunSummary(name, runId);
+      if (!summary) continue; // in flight — counted once it finishes
+      let hash = summary.workflowHash;
+      if (!hash) {
+        const start = (await store.getRunEvents(name, runId)).find((e) => e.type === "run.start");
+        hash = (start as { workflowHash?: string } | undefined)?.workflowHash;
+      }
+      const twins = hash ? versions.filter((v) => hashes.get(v.version) === hash) : [];
+      const v = twins.find((t) => t.createdAt <= summary.startedAt) ?? twins[twins.length - 1];
+      if (!v) { unattributed++; continue; }
+      const s = stats.get(v.version) ?? { runs: 0, success: 0, error: 0 };
+      s.runs++;
+      if (summary.status === "success") s.success++;
+      if (summary.status === "error") s.error++;
+      if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
+      stats.set(v.version, s);
+    }
+    return c.json({
+      active: meta.active,
+      versions: versions.map((v) => ({ ...v, ...(stats.get(v.version) ?? { runs: 0, success: 0, error: 0 }) })),
+      unattributed,
+    });
+  });
+
   app.get("/workflows/:name/flow", async (c) => {
     const name = c.req.param("name");
     // ?version= pins a historical version (the UI's version picker);

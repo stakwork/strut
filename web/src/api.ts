@@ -254,6 +254,30 @@ export const createWorkflowYaml = (
     body: JSON.stringify({ name, yaml: yamlStr, description, category }),
   });
 
+export interface WorkflowVersionStats {
+  version: string;
+  createdAt: string;
+  description?: string;
+  /** Finished runs that executed this version's content, by status. */
+  runs: number;
+  success: number;
+  error: number;
+  lastRunAt?: string;
+}
+
+/** Every version, newest first, with its run counts (the Versions tab).
+ *  `unattributed` = finished runs that recorded no version hash. */
+export const getWorkflowVersions = (name: string) =>
+  fetchJSON<{ active: string; versions: WorkflowVersionStats[]; unattributed: number }>(`/workflows/${name}/versions`);
+
+/** Make a stored version the active one — what Run, schedules and the
+ *  canvas use. A rollback publishes nothing. */
+export const setActiveWorkflowVersion = (name: string, version: string) =>
+  fetchJSON<{ ok: boolean }>(`/workflows/${name}/active`, {
+    method: "PUT",
+    body: JSON.stringify({ version }),
+  });
+
 /** Set or clear a workflow's sidebar category (metadata-only, no new version). */
 export const setWorkflowCategory = (name: string, category: string | null) =>
   fetchJSON<{ ok: boolean }>(`/workflows/${name}/category`, {
