@@ -120,6 +120,7 @@ strut/
         ├── api.ts         # typed fetch wrapper for all API endpoints (+ run SSE tail; chat: sendChat/streamChat/getChat reattach)
         ├── flow-to-canvas.ts  # Flow → CanvasData; STEP_COLORS → categories; childRefForStep/stepWorkflow (container nav)
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
+        ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
@@ -325,7 +326,11 @@ the owner — so an automation's spend lands on the owner) on `run.start` and
 the summary, and hands both to every step as `ctx.actor` / `ctx.principal`. A
 resume reads the principal back from the log rather than re-deriving it. The
 chat's actor is whoever last spoke to it; the builder's runs are billed to
-them. `WorkflowMetadata.maxRunCostUsd` (`PUT /workflows/:name/run-cap`, the
+them. `ChatMeta.createdBy` is who STARTED the chat (the first speaker with
+an actor, never re-stamped — the chat twin of `owner`), shown in the chat
+history list. The UI shows an actor id's first `-` segment
+(`web/src/actor.ts`); storage and the wire keep the whole id.
+`WorkflowMetadata.maxRunCostUsd` (`PUT /workflows/:name/run-cap`, the
 topbar's cap chip) is the run's cap when routed; nothing else reads it.
 
 **The module.** `createMothership({ dataDir })` → `{ llmAuth, mount(strut) }`.

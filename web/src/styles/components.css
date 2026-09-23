@@ -2592,6 +2592,15 @@ body.is-resizing-flyout * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.chat-history-user {
+  font-size: 11px;
+  color: var(--text-dim);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .chat-mic-error {
   padding: var(--sp-1) var(--sp-4);
   color: var(--danger);

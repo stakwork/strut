@@ -119,6 +119,46 @@ describe("chat endpoints", () => {
     assert.equal(meta!.currentTurn, 0);
   });
 
+  it("POST /chat stamps who started the chat; later speakers move `actor` but never `createdBy`", async () => {
+    const strut = await makeStrut({ resolveActor: (c) => c.req.header("x-test-actor") || undefined });
+    const post = (body: object, actor?: string) =>
+      strut.app.request("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(actor ? { "x-test-actor": actor } : {}) },
+        body: JSON.stringify(body),
+      });
+
+    // Started without an actor: nobody is stamped yet.
+    const { chatId: orphan } = (await (await post({ message: "hello" })).json()) as { chatId: string };
+    assert.equal((await chatStore.getMeta(orphan))!.createdBy, undefined);
+    await settled(orphan);
+
+    // Started with one: that actor, for good.
+    const { chatId } = (await (await post({ message: "start" }, "alice-1")).json()) as { chatId: string };
+    let meta = (await chatStore.getMeta(chatId))!;
+    assert.equal(meta.createdBy, "alice-1");
+    assert.equal(meta.actor, "alice-1");
+    await settled(chatId);
+
+    // Someone else speaks: they are the actor now; alice still started it.
+    assert.equal((await post({ chatId, message: "me too" }, "bob-2")).status, 202);
+    meta = (await chatStore.getMeta(chatId))!;
+    assert.equal(meta.createdBy, "alice-1");
+    assert.equal(meta.actor, "bob-2");
+    await settled(chatId);
+
+    // The first identified speaker adopts an unstamped chat (chats that
+    // predate the stamp), and the list carries the stamp.
+    assert.equal((await post({ chatId: orphan, message: "again" }, "carol-3")).status, 202);
+    assert.equal((await chatStore.getMeta(orphan))!.createdBy, "carol-3");
+    await settled(orphan);
+    const list = (await (await strut.app.request("/chats")).json()) as { id: string; createdBy?: string }[];
+    assert.deepEqual(
+      Object.fromEntries(list.map((c) => [c.id, c.createdBy])),
+      { [orphan]: "carol-3", [chatId]: "alice-1" },
+    );
+  });
+
   it("GET /chat/:id returns the transcript + meta; 404 when missing", async () => {
     const strut = await makeStrut();
     await chatStore.createChat({ id: "c1", title: "t" });
