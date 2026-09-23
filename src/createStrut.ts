@@ -2160,6 +2160,13 @@ export async function createStrut<TServices = unknown>(
             instructions: await buildSystem(deps),
             tools: buildTools(deps),
             maxOutputTokens: llm.maxOutputTokens,
+            // Anthropic's automatic prompt caching (the request's top-level
+            // `cache_control`): each step reads the conversation so far and
+            // writes only what the last step added. Other providers cache on
+            // their own (xai, openai) or through aieo's model settings.
+            ...(llm.provider === "anthropic"
+              ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } } }
+              : {}),
             // The turn ends on an ask (plans/elicitation.md): the tool's
             // result is in, and the answer arrives as the next turn's message.
             stopWhen: [({ steps }) => stepAsked(steps[steps.length - 1]), isStepCount(chatMaxSteps)],

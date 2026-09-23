@@ -477,6 +477,37 @@ describe("chat endpoints", () => {
     }
   });
 
+  it("a chat turn on anthropic asks for automatic prompt caching", async () => {
+    // A stand-in provider: record the request, refuse it (400, not retried).
+    const bodies: any[] = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      const strut = await makeStrut();
+      const res = await strut.app.request("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "hi" }),
+      });
+      const { chatId } = (await res.json()) as { chatId: string };
+      await settled(chatId);
+      assert.equal(bodies.length, 1);
+      assert.deepEqual(bodies[0].cache_control, { type: "ephemeral" });
+    } finally {
+      server.close();
+    }
+  });
+
   it("POST /chat with a bad callback is a 400 and creates nothing", async () => {
     const strut = await makeStrut();
     for (const callback of [{}, { url: "nope" }, { url: "ftp://host/x" }, "https://host/x"]) {
