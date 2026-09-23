@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "preact/hooks";
 import * as api from "../api";
+import { displayActor } from "../actor";
 import * as storage from "../storage";
 import { formatJson } from "../helpers";
 import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon } from "../icons";
@@ -7,6 +8,7 @@ import { startDictation, dictationSupported, type Dictation } from "../dictation
 import { isNotice } from "../notice";
 import { ToolResultView } from "./ToolResultView";
 import { NoticeView } from "./NoticeView";
+import { ElicitationForm } from "./ElicitationForm";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { Markdown } from "./Markdown";
 import { WalkView } from "./WalkView";
@@ -37,9 +39,17 @@ const CHAT_URL_PARAM = "chat";
 function setChatUrlParam(id: string | null) {
   const url = new URL(location.href);
   if (id) url.searchParams.set(CHAT_URL_PARAM, id);
-  else url.searchParams.delete(CHAT_URL_PARAM);
+  else {
+    url.searchParams.delete(CHAT_URL_PARAM);
+    url.searchParams.delete(ELICIT_URL_PARAM);
+  }
   replaceUrl(url);
 }
+
+// The builder's open question rides along as ?elicit=<id> — the link a host
+// shows for a secret opens this app on that chat with the form up (the form
+// itself is whatever the SERVER says is open, so a stale id is harmless).
+const ELICIT_URL_PARAM = "elicit";
 
 // Server-initiated wake-up messages (a detached run finished; a run was
 // verified against its claims) are stored as user-role messages with a
@@ -311,6 +321,9 @@ export function ChatFlyout(props: {
   const [showHistory, setShowHistory] = useState(false);
   const [chats, setChats] = useState<api.ChatMeta[]>([]);
   const [copied, setCopied] = useState(false);
+  // The builder's open question (plans/elicitation.md): what `meta.elicitation`
+  // last said — read on load, after each turn, and by the idle poll.
+  const [elicitation, setElicitation] = useState<api.Elicitation | null>(null);
 
   // ── Model picker ─────────────────────────────────────────────────────
   // The catalog is the server's (aieo's aliases + which providers have a
@@ -406,13 +419,23 @@ export function ChatFlyout(props: {
   // closes so a reload doesn't unexpectedly reopen the panel.
   useEffect(() => { setChatUrlParam(chatId); }, [chatId]);
   useEffect(() => () => setChatUrlParam(null), []);
+  // …and the open question: set while it is open, dropped once answered or
+  // closed (so a host's mirrored URL never re-opens a dead form).
+  useEffect(() => {
+    const url = new URL(location.href);
+    const next = chatId && elicitation ? elicitation.elicitationId : null;
+    if (url.searchParams.get(ELICIT_URL_PARAM) === next) return;
+    if (next) url.searchParams.set(ELICIT_URL_PARAM, next);
+    else url.searchParams.delete(ELICIT_URL_PARAM);
+    replaceUrl(url);
+  }, [chatId, elicitation]);
 
   // Auto-scroll on new content
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [entries]);
+  }, [entries, elicitation]);
 
   // Build the incremental stream callbacks. Each `step.finish` starts a fresh
   // bubble; tool calls/results also drive the canvas (workflow created/ran).
@@ -505,6 +528,14 @@ export function ChatFlyout(props: {
     setLoading(true);
     try {
       await api.streamChat(id, turn, streamCallbacks(ac.signal), ac.signal);
+      // The turn may have ended on a question — show its form.
+      if (!ac.signal.aborted) {
+        try {
+          setElicitation((await api.getChat(id)).meta.elicitation ?? null);
+        } catch {
+          // Server briefly unreachable — the idle poll picks it up.
+        }
+      }
     } finally {
       if (streamRef.current === ac) streamRef.current = null;
     }
@@ -523,6 +554,7 @@ export function ChatFlyout(props: {
     try {
       const { meta, messages } = await api.getChat(id);
       setEntries(transcriptToEntries(messages));
+      setElicitation(meta.elicitation ?? null);
       seenTurn.current = meta.currentTurn;
       if (meta.status === "live" && meta.currentTurn >= 0) {
         await attach(id, meta.currentTurn);
@@ -532,6 +564,7 @@ export function ChatFlyout(props: {
       storage.remove(CHAT_ID_KEY);
       setChatId(null);
       setEntries([]);
+      setElicitation(null);
     }
   }, [detach, attach]);
 
@@ -551,6 +584,7 @@ export function ChatFlyout(props: {
     const t = setInterval(async () => {
       try {
         const { meta, messages } = await api.getChat(chatId);
+        setElicitation(meta.elicitation ?? null);
         if (meta.currentTurn > seenTurn.current) {
           seenTurn.current = meta.currentTurn;
           setEntries(transcriptToEntries(messages));
@@ -573,6 +607,7 @@ export function ChatFlyout(props: {
     storage.remove(CHAT_ID_KEY);
     setChatId(null);
     setEntries([]);
+    setElicitation(null);
     setExpanded({});
     setShowHistory(false);
     seenTurn.current = -1;
@@ -606,6 +641,8 @@ export function ChatFlyout(props: {
     setEntries((prev) => [...prev, { kind: "user", content: text }]);
     setInput("");
     setLoading(true);
+    // A typed message closes the open question server-side.
+    setElicitation(null);
 
     try {
       const { chatId: id, turn } = await api.sendChat(text, chatId ?? undefined, model ?? undefined);
@@ -691,6 +728,11 @@ export function ChatFlyout(props: {
                   <span class="chat-history-live" title="Working" aria-label="Working" />
                 )}
                 <span class="chat-history-title">{ch.title || "Untitled chat"}</span>
+                {ch.createdBy && (
+                  <span class="chat-history-user" title={`Started by ${ch.createdBy}`}>
+                    {displayActor(ch.createdBy)}
+                  </span>
+                )}
                 {ch.model && (
                   <span class="chat-history-model" title={ch.model}>
                     {ch.model.split("/").slice(1).join("/") || ch.model}
@@ -802,6 +844,19 @@ export function ChatFlyout(props: {
           <div class="chat-msg chat-msg-assistant">
             <div class="chat-msg-text chat-thinking">Thinking...</div>
           </div>
+        )}
+        {elicitation && chatId && (
+          <ElicitationForm
+            key={elicitation.elicitationId}
+            chatId={chatId}
+            elicitation={elicitation}
+            onAnswered={() => {
+              setElicitation(null);
+              // The transcript now holds the answer; the next turn is live
+              // (or queued behind one — the idle poll notices it).
+              loadChat(chatId);
+            }}
+          />
         )}
       </div>
       )}

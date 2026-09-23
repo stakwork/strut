@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { SecretsCapability } from "../../capabilities.js";
 import { resolveModel, createWebTools, stepAuth } from "../../llm.js";
-import { accessedNodesOf, defineStep, type StepContext, type StepRegistry, withAccessedNodes } from "../../core.js";
+import { accessedNodesOf, defineStep, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMessages } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
 import { globToRegExp } from "../../closure.js";
 import { usageFromResult, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
@@ -36,8 +36,12 @@ import os from "node:os";
  * google | openrouter | xai), lazy-loaded. Needs the provider's key in env
  * (ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY /
  * XAI_API_KEY) and `git` + `rg` on PATH for the repo tools. Output: { result, object?, steps, usage, cost }
- * (+ `messages`, the full session, only when `returnMessages` is set — it's huge
- * and persisted per step, so it's off by default). `usage` is the aggregated
+ * (+ `messages` in the OUTPUT only when `returnMessages` is set). The full
+ * session — system prompt, task prompt, every generated turn — is ALWAYS
+ * recorded on the step's `step.end` event as `messages` (`buildSession` +
+ * `withMessages`, the marker the runner lifts; invisible to templates and
+ * downstream steps), so every agent transcript is in the run log without
+ * bloating the data flow. `usage` is the aggregated
  * token counts across the whole agent loop
  * and `cost` is its dollar cost at the provider's rates (see ../../pricing.ts).
  */
@@ -591,15 +595,33 @@ export { maskSecretValues };
 export function maskDeep(value: unknown, values: string[]): unknown {
   if (!values.length) return value;
   if (typeof value === "string") return maskSecretValues(value, values);
-  // Rebuilding a container drops its non-enumerable provenance marker
-  // (`withAccessedNodes`) — carry it over; node refs are ids, not secrets.
-  if (Array.isArray(value)) return withAccessedNodes(value.map((x) => maskDeep(x, values)), accessedNodesOf(value) ?? []);
+  // Rebuilding a container drops its non-enumerable markers — carry them over.
+  if (Array.isArray(value)) return carryMarkers(value.map((x) => maskDeep(x, values)), value, values);
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) out[k] = maskDeep(v, values);
-    return withAccessedNodes(out, accessedNodesOf(value) ?? []);
+    return carryMarkers(out, value, values);
   }
   return value;
+}
+
+/** Re-attach the markers a rebuilt container lost: node refs as they are
+ *  (ids, not secrets); a session masked like everything else — a tool result
+ *  echoing `$KEY` sits inside it too. */
+function carryMarkers<T>(rebuilt: T, original: unknown, values: string[]): T {
+  const session = messagesOf(original);
+  return withMessages(
+    withAccessedNodes(rebuilt, accessedNodesOf(original) ?? []),
+    session ? (maskDeep(session, values) as unknown[]) : undefined,
+  );
+}
+
+/** The transcript recorded for an agent session (`RunEvent.messages`): the
+ *  system prompt, the task prompt as the model saw it (cwd preamble included),
+ *  then every generated turn — AI SDK model messages, the shape a log store
+ *  holds. Self-contained on purpose: a reader needs nothing else. */
+export function buildSession(system: string, prompt: string, turns: unknown[]): unknown[] {
+  return [{ role: "system", content: system }, { role: "user", content: prompt }, ...turns];
 }
 
 /**
@@ -647,6 +669,7 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
             : { strutToolPath: path };
         const out = await (orig as (i: unknown, o: unknown) => Promise<unknown>)(input, optsWithPath);
         const nodes = accessedNodesOf(out);
+        const messages = messagesOf(out); // a sub-agent's session
         await emit({
           type: "step.end",
           path,
@@ -654,6 +677,7 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
           output: summarizeForEvent(out),
           durationMs: Date.now() - startedAt,
           ...(nodes ? { nodes } : {}),
+          ...(messages ? { messages } : {}),
         });
         return out;
       } catch (e) {
@@ -727,7 +751,7 @@ export default defineStep({
       .boolean()
       .default(false)
       .describe(
-        "include the FULL tool-loop session (`messages`) in the output. Off by default — the session is huge and the runner persists every step's output, so returning it bloats events.jsonl/run.json and buries `result`. Turn on only for a fork/sub-agent that needs the transcript.",
+        "ALSO include the full session (`messages`) in the OUTPUT. The session is always recorded on this step's step.end event; this puts it in the data flow too, where it bloats run.json, templates and a parent agent's tool result — turn on only for a fork/sub-agent that needs the transcript as data.",
       ),
   }),
   output: z.any(),
@@ -1104,11 +1128,17 @@ export default defineStep({
     // Total LLM turns across the whole session — the nudge continuation
     // (finalAnswer mode, below) folds its turns in.
     let stepsUsed = steps.length;
-    // The full session is HUGE and the runner persists every step's output, so we
-    // only include it when explicitly asked (a future fork/sub-agent). Off by
-    // default keeps the explore step's persisted output to `{ result, steps, … }`.
+    // The generated turns so far; the nudge / forced continuations below
+    // append theirs (and the user turns that drove them), so `messages` is the
+    // whole conversation after the task prompt.
     const messages = resumedFromStreamError ? bankedMessages : (res.responseMessages ?? []);
-    const maybeMessages = cfg.returnMessages ? { messages } : {};
+    /** The step's output with the whole session recorded on its `step.end`
+     *  (`withMessages` — the runner lifts it; templates, a parent agent's tool
+     *  result and run.json never see it) and, only on request, in the output. */
+    const finish = (out: Record<string, unknown>) => {
+      const session = buildSession(cfg.system, basePrompt, messages);
+      return withMessages(cfg.returnMessages ? { ...out, messages: session } : out, session);
+    };
 
     // Token usage + cost across the WHOLE agent loop (v7 `usage` aggregates every
     // step). `provider` drives the rate table.
@@ -1150,28 +1180,26 @@ export default defineStep({
             prepareStep,
             onStepEnd,
           });
+          const nudge = {
+            role: "user" as const,
+            content:
+              "Your last message ended your run and was parsed as your FINAL structured answer, but it left " +
+              `required field(s) empty or filler: ${bad.join(", ")}. That answer is what the harness harvests — ` +
+              "an empty field there wastes the whole run. If work remains (something you still had to publish, " +
+              "create, or verify), continue it with tool calls now. Then finish with a complete structured answer " +
+              "that fills EVERY required field with real values: never a placeholder, never an empty string.",
+          };
           const nudged = await nudger.stream({
-            messages: [
-              // responseMessages holds only generated turns — the task leads.
-              { role: "user", content: basePrompt },
-              ...(messages as any[]),
-              {
-                role: "user",
-                content:
-                  "Your last message ended your run and was parsed as your FINAL structured answer, but it left " +
-                  `required field(s) empty or filler: ${bad.join(", ")}. That answer is what the harness harvests — ` +
-                  "an empty field there wastes the whole run. If work remains (something you still had to publish, " +
-                  "create, or verify), continue it with tool calls now. Then finish with a complete structured answer " +
-                  "that fills EVERY required field with real values: never a placeholder, never an empty string.",
-              },
-            ] as any,
+            // responseMessages holds only generated turns — the task leads.
+            messages: [{ role: "user", content: basePrompt }, ...(messages as any[]), nudge] as any,
           });
           let nudgeError: unknown;
           await nudged.consumeStream({ onError: (e: unknown) => { nudgeError = e; } });
           if (nudgeError) throw nudgeError;
           const nudgedSteps = (await nudged.steps) ?? [];
           stepsUsed += nudgedSteps.length;
-          messages.push(...(((await nudged.responseMessages) ?? []) as any[]));
+          // The recorded session keeps the nudge that drove these turns.
+          messages.push(nudge, ...(((await nudged.responseMessages) ?? []) as any[]));
           const nu = usageFromResult(await nudged.usage);
           usage = addUsage(usage, nu);
           cost += costOf(nu);
@@ -1192,7 +1220,7 @@ export default defineStep({
         }
       }
       console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps, structured)`);
-      return { result: text, object, steps: stepsUsed, ...maybeMessages, usage, cost };
+      return finish({ result: text, object, steps: stepsUsed, usage, cost });
     }
 
     // finalAnswer / text mode: extract the final_answer tool output, else last text.
@@ -1243,28 +1271,26 @@ export default defineStep({
             prepareStep,
             onStepEnd,
           });
+          const nudge = {
+            role: "user" as const,
+            content:
+              "You stopped by sending a message without any tool call — that ends your run, and you have NOT called final_answer. " +
+              "If the task is genuinely complete, verify your deliverables now and call final_answer. Otherwise continue the work " +
+              "with tool calls. Do not stop again without calling final_answer.\n\n" +
+              cfg.finalAnswer,
+          };
           const nudged = await nudger.stream({
-            messages: [
-              // The session's own user prompt first — responseMessages holds
-              // only the generated turns, and the continuation needs the task.
-              { role: "user", content: preamble ? `${preamble}\n\n${cfg.prompt}` : cfg.prompt },
-              ...(messages as any[]),
-              {
-                role: "user",
-                content:
-                  "You stopped by sending a message without any tool call — that ends your run, and you have NOT called final_answer. " +
-                  "If the task is genuinely complete, verify your deliverables now and call final_answer. Otherwise continue the work " +
-                  "with tool calls. Do not stop again without calling final_answer.\n\n" +
-                  cfg.finalAnswer,
-              },
-            ] as any,
+            // The session's own user prompt first — responseMessages holds
+            // only the generated turns, and the continuation needs the task.
+            messages: [{ role: "user", content: basePrompt }, ...(messages as any[]), nudge] as any,
           });
           let nudgeError: unknown;
           await nudged.consumeStream({ onError: (e: unknown) => { nudgeError = e; } });
           if (nudgeError) throw nudgeError;
           const nudgedSteps = (await nudged.steps) ?? [];
           stepsUsed += nudgedSteps.length;
-          messages.push(...(((await nudged.responseMessages) ?? []) as any[]));
+          // The recorded session keeps the nudge that drove these turns.
+          messages.push(nudge, ...(((await nudged.responseMessages) ?? []) as any[]));
           for (const step of nudgedSteps) {
             for (const item of step.content) {
               if (item.type === "text" && item.text?.trim()) lastText = item.text.trim();
@@ -1289,20 +1315,20 @@ export default defineStep({
         try {
           // Streamed for the same severed-connection reason as the main loop —
           // this single turn emits the ENTIRE final answer.
+          const forcedPrompt = {
+            role: "user" as const,
+            content: `You have used your entire exploration budget — do NOT call any tools. Using everything you learned above, produce the final answer NOW.\n\n${cfg.finalAnswer}`,
+          };
           const forced = streamText({
             model,
             ...(providerOptions ? { providerOptions } : {}),
-            messages: [
-              ...(messages as any[]),
-              {
-                role: "user",
-                content: `You have used your entire exploration budget — do NOT call any tools. Using everything you learned above, produce the final answer NOW.\n\n${cfg.finalAnswer}`,
-              },
-            ],
+            messages: [...(messages as any[]), forcedPrompt],
           });
           let forcedError: unknown;
           await forced.consumeStream({ onError: (e: unknown) => { forcedError = e; } });
           if (forcedError) throw forcedError;
+          // The recorded session keeps this turn too.
+          messages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
           const ft = ((await forced.text) ?? "").trim();
           if (ft) {
             final = ft;
@@ -1322,6 +1348,6 @@ export default defineStep({
     }
 
     console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps)`);
-    return { result: final, steps: stepsUsed, ...maybeMessages, usage, cost };
+    return finish({ result: final, steps: stepsUsed, usage, cost });
   },
 });

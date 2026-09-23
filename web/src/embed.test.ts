@@ -9,6 +9,10 @@ test("deepLinkParams keeps only the deep-link keys", () => {
   );
 });
 
+test("deepLinkParams carries the builder's open question", () => {
+  assert.deepEqual(deepLinkParams("?chat=c1&elicit=e1"), { chat: "c1", elicit: "e1" });
+});
+
 test("deepLinkParams drops empty values", () => {
   assert.deepEqual(deepLinkParams("?wf=&run=5"), { run: "5" });
   assert.deepEqual(deepLinkParams(""), {});

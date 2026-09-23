@@ -55,11 +55,11 @@ describe("formatRunNotification", () => {
 
 function harness(maxAutoTurns = 10) {
   const chatStore = new MemoryChatStore();
-  const launched: { chatId: string; turn: number; messages: StoredMessage[] }[] = [];
+  const launched: { chatId: string; turn: number; messages: StoredMessage[]; trigger: "human" | "notification" }[] = [];
   const notifier = createChatNotifier({
     chatStore,
     maxAutoTurns,
-    startTurn: (chatId, turn, messages) => launched.push({ chatId, turn, messages }),
+    startTurn: (chatId, turn, messages, trigger) => launched.push({ chatId, turn, messages, trigger }),
   });
   return { chatStore, launched, notifier };
 }
@@ -174,5 +174,55 @@ describe("createChatNotifier", () => {
     // The queued one arrives when the launched turn ends.
     await notifier.turnEnded(id);
     assert.equal(launched.length, 2);
+  });
+});
+
+// ── Human answers (plans/elicitation.md) ───────────────────────────────────
+
+describe("createChatNotifier · human answers", () => {
+  it("a notification launches as `notification` and reports the turn", async () => {
+    const { chatStore, launched, notifier } = harness();
+    const id = await makeChat(chatStore);
+    assert.deepEqual(await notifier.deliver(id, `${NOTIFICATION_PREFIX} run done`), { turn: 1 });
+    assert.equal(launched[0]!.trigger, "notification");
+    assert.equal((await chatStore.getMeta(id))?.autoTurns, 1);
+  });
+
+  it("a human answer launches as `human` and resets the auto-turn counter", async () => {
+    const { chatStore, launched, notifier } = harness();
+    const id = await makeChat(chatStore);
+    await chatStore.setMeta(id, { autoTurns: 4 });
+    assert.deepEqual(await notifier.deliver(id, "[elicitation-response] e1 accept\n{}", { human: true }), { turn: 1 });
+    assert.equal(launched.length, 1);
+    assert.equal(launched[0]!.trigger, "human");
+    assert.equal(launched[0]!.messages.at(-1)!.content, "[elicitation-response] e1 accept\n{}");
+    assert.equal((await chatStore.getMeta(id))?.autoTurns, 0);
+  });
+
+  it("a human answer wakes a chat parked at the cap", async () => {
+    const { chatStore, launched, notifier } = harness(2);
+    const id = await makeChat(chatStore);
+    await chatStore.setMeta(id, { autoTurns: 2 });
+    assert.deepEqual(await notifier.deliver(id, "w"), {}); // parked: appended, no turn
+    assert.equal(launched.length, 0);
+    assert.deepEqual(await notifier.deliver(id, "[elicitation-response] e1 decline", { human: true }), { turn: 1 });
+    assert.equal(launched.length, 1);
+    assert.equal(launched[0]!.trigger, "human");
+  });
+
+  it("an answer during a live turn queues, and the drain launches one human turn with everything", async () => {
+    const { chatStore, launched, notifier } = harness();
+    const id = await makeChat(chatStore);
+    await chatStore.setMeta(id, { autoTurns: 3 });
+    notifier.turnStarted(id);
+    assert.deepEqual(await notifier.deliver(id, `${NOTIFICATION_PREFIX} run done`), { queued: true });
+    assert.deepEqual(await notifier.deliver(id, "[elicitation-response] e1 cancel", { human: true }), { queued: true });
+    assert.equal(launched.length, 0);
+    await notifier.turnEnded(id);
+    assert.equal(launched.length, 1);
+    assert.equal(launched[0]!.trigger, "human");
+    const texts = launched[0]!.messages.slice(-2).map((m) => m.content);
+    assert.deepEqual(texts, [`${NOTIFICATION_PREFIX} run done`, "[elicitation-response] e1 cancel"]);
+    assert.equal((await chatStore.getMeta(id))?.autoTurns, 0);
   });
 });

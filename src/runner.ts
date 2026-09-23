@@ -8,6 +8,7 @@ import type {
   RunResult,
   StepCounts,
 } from "./core.js";
+import { messagesOf } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, generateRunId, tallyStep } from "./store.js";
@@ -87,6 +88,10 @@ export interface RunOptions<TServices = unknown> {
    *  only carries them. */
   actor?: string;
   principal?: string;
+  /** The launch asked for the result to be posted to a host (`POST …/run
+   *  { callback }`). The runner records the URL's ORIGIN on `run.start` and
+   *  nothing more; the launcher keeps the URL and does the posting. */
+  callback?: { origin: string };
 }
 
 /** What `services.onRunEnd(runId, info)` is told about the settled run. */
@@ -101,6 +106,13 @@ const SKIP = Symbol("strut.skip");
 
 function isSkipped(v: unknown): boolean {
   return v === SKIP;
+}
+
+/** A step's model session, lifted from its output marker (`withMessages`)
+ *  onto `step.end` as `messages` — the output itself stays slim. */
+function transcriptOf(output: unknown): { messages?: unknown[] } {
+  const messages = messagesOf(output);
+  return messages ? { messages } : {};
 }
 
 /** Flatten an Error's `cause` chain into one readable string (`""` when there
@@ -148,10 +160,11 @@ export async function runWorkflow<TServices = unknown>(
   const wfName = workflow.name;
   const startedAt = new Date().toISOString();
   // On every summary this run can write (see `RunSummary.automation`).
-  const automationStamp = {
+  const summaryStamp = {
     ...(opts?.automation ? { automation: opts.automation } : {}),
     ...(opts?.actor ? { actor: opts.actor } : {}),
     ...(opts?.principal ? { principal: opts.principal } : {}),
+    ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
   };
   // Default services to an empty object so steps can destructure freely.
   const services = (opts?.services ?? ({} as TServices)) as TServices;
@@ -192,7 +205,7 @@ export async function runWorkflow<TServices = unknown>(
       status: "error",
       input,
       error,
-      ...automationStamp,
+      ...summaryStamp,
       stepCounts,
     });
     return { runId, status: "error", error };
@@ -220,6 +233,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.verify ? { verify: opts.verify } : {}),
       ...(opts?.actor ? { actor: opts.actor } : {}),
       ...(opts?.principal ? { principal: opts.principal } : {}),
+      ...(opts?.callback ? { callback: opts.callback } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
@@ -256,7 +270,7 @@ export async function runWorkflow<TServices = unknown>(
       status: "success",
       input: parsedInput,
       output,
-      ...automationStamp,
+      ...summaryStamp,
       stepCounts,
     });
     return { runId, status: "success", output };
@@ -284,7 +298,7 @@ export async function runWorkflow<TServices = unknown>(
       status: cancelled ? "cancelled" : "error",
       input: parsedInput,
       ...(cancelled ? {} : { error }),
-      ...automationStamp,
+      ...summaryStamp,
       stepCounts,
     });
     return cancelled ? { runId, status: "cancelled" } : { runId, status: "error", error };
@@ -585,6 +599,7 @@ async function executeStep(
         stepType: step.type,
         output,
         durationMs,
+        ...transcriptOf(output),
       });
 
       return output;
@@ -780,6 +795,7 @@ async function executeLoop(
       output: current,
       durationMs: Date.now() - startTime,
       iteration: i,
+      ...transcriptOf(current),
     });
 
     if (delayMs > 0 && i < maxIterations - 1) {
@@ -914,6 +930,7 @@ async function executeForeach(
       output,
       durationMs: Date.now() - startTime,
       iteration: i,
+      ...transcriptOf(output),
     });
 
     results[i] = output;

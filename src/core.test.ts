@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { flow, step, defineStep, withAccessedNodes, accessedNodesOf } from "./core.js";
+import { flow, step, defineStep, withAccessedNodes, accessedNodesOf, withMessages, messagesOf } from "./core.js";
 
 // ── step() ─────────────────────────────────────────────────────────────────
 
@@ -216,5 +216,26 @@ describe("withAccessedNodes()", () => {
     assert.equal(accessedNodesOf(null), undefined);
     // node_type is optional and dropped when empty.
     assert.deepEqual(accessedNodesOf(withAccessedNodes({}, [{ ref_id: "a", node_type: "" }])), [{ ref_id: "a" }]);
+  });
+});
+
+// ── Transcript marker (withMessages / messagesOf) ──────────────────────────
+
+describe("withMessages()", () => {
+  it("marks an output with a non-enumerable session, invisible to JSON and spreads", () => {
+    const session = [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }];
+    const out = withMessages({ result: "ok" }, session);
+    assert.equal(messagesOf(out), session);
+    assert.deepEqual(Object.keys(out), ["result"]);
+    assert.equal(JSON.stringify(out), '{"result":"ok"}');
+    assert.equal(messagesOf({ ...out }), undefined);
+    assert.deepEqual(out, { result: "ok" });
+  });
+
+  it("leaves primitives and empty sessions unmarked", () => {
+    assert.equal(withMessages("text", [{ role: "user", content: "hi" }]), "text");
+    assert.equal(messagesOf(withMessages({}, [])), undefined);
+    assert.equal(messagesOf(withMessages({}, undefined)), undefined);
+    assert.equal(messagesOf(null), undefined);
   });
 });

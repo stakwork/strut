@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { coreRegistry } from "../registry.js";
-import { withAccessedNodes, accessedNodesOf, defineStep, type StepContext, type StepRegistry } from "../../core.js";
+import { withAccessedNodes, withMessages, messagesOf, accessedNodesOf, defineStep, type StepContext, type StepRegistry } from "../../core.js";
 import agent, {
   repoTree,
   textEdit,
   buildRegistryTools,
   expandAgentTools,
   wrapToolsWithEmit,
+  buildSession,
   maskSecretValues,
   maskDeep,
   wrapToolsWithMask,
@@ -306,6 +307,23 @@ describe("wrapToolsWithEmit (per-call nested run events)", () => {
     const plainEnd = events.find((e) => e.type === "step.end" && e.path.endsWith("-plain"));
     assert.ok(!("nodes" in plainEnd), "unmarked results emit no nodes field");
   });
+
+  it("lifts a sub-agent's session onto step.end as `messages`, leaving the model-facing result slim", async () => {
+    const events: any[] = [];
+    const session = [
+      { role: "system", content: "s" },
+      { role: "user", content: "p" },
+      { role: "assistant", content: "x".repeat(4000) },
+    ];
+    const tools: Record<string, any> = {
+      agent: { execute: async () => withMessages({ result: "done", steps: 3 }, session) },
+    };
+    wrapToolsWithEmit(tools, makeCtx(events));
+    const out = await tools.agent.execute({});
+    assert.equal(JSON.stringify(out), '{"result":"done","steps":3}', "the parent model sees no transcript");
+    const end = events.find((e) => e.type === "step.end" && e.path.endsWith("-agent"));
+    assert.deepEqual(end.messages, session, "the whole session is on the event, untruncated");
+  });
 });
 
 describe("maskDeep keeps the provenance marker", () => {
@@ -317,6 +335,24 @@ describe("maskDeep keeps the provenance marker", () => {
     const arr = maskDeep(withAccessedNodes(["sk-123"], refs), ["sk-123"]) as any;
     assert.deepEqual(arr, ["[MASKED_SECRET]"]);
     assert.deepEqual(accessedNodesOf(arr), refs);
+  });
+
+  it("carries `_messages` too, masked", () => {
+    const session = [{ role: "assistant", content: "the key is sk-123" }];
+    const obj = maskDeep(withMessages({ result: "sk-123" }, session), ["sk-123"]) as any;
+    assert.deepEqual(obj, { result: "[MASKED_SECRET]" });
+    assert.deepEqual(messagesOf(obj), [{ role: "assistant", content: "the key is [MASKED_SECRET]" }]);
+  });
+});
+
+describe("buildSession", () => {
+  it("prepends the system + task prompts to the generated turns", () => {
+    const turns = [{ role: "assistant", content: "hi" }];
+    assert.deepEqual(buildSession("be brief", "do it", turns), [
+      { role: "system", content: "be brief" },
+      { role: "user", content: "do it" },
+      { role: "assistant", content: "hi" },
+    ]);
   });
 });
 

@@ -21,6 +21,11 @@ import { truncateToolMessages } from "../chat-store.js";
  * At the cap the notification is still appended to the transcript (the next
  * human turn sees it) but NO turn is launched — an autonomous loop parks
  * instead of running unbounded.
+ *
+ * A person's answer to the builder's question (an elicitation,
+ * plans/elicitation.md) takes the same door with `human: true`: it queues
+ * behind a live turn like a notification — so a form never sees a 409 —
+ * but it resets `autoTurns` (a parked chat wakes) and launches as `human`.
  */
 
 export const NOTIFICATION_PREFIX = "[run-notification]";
@@ -83,8 +88,11 @@ export interface ChatNotifier {
   /** The turn finished — drain any notifications queued during it into one
    *  wake-up turn. Called from `launchChatTurn`'s finally. */
   turnEnded(chatId: string): Promise<void>;
-  /** Deliver one notification: queue if a turn is live, else wake now. */
-  deliver(chatId: string, text: string): Promise<void>;
+  /** Deliver one message: queue if a turn is live, else wake now.
+   *  `human: true` = a person answered (an elicitation): `autoTurns` resets
+   *  and the turn launches as `human`. Returns the launched turn, `queued`
+   *  when it waits on the live one, or neither when the chat parked. */
+  deliver(chatId: string, text: string, opts?: { human?: boolean }): Promise<{ turn?: number; queued?: true }>;
   /** Is a turn for this chat running in THIS process? The authoritative
    *  liveness check — `meta.status === "live"` on disk can be stale after a
    *  crash/restart (see `createStrut`'s `reconcileStaleChat`). */
@@ -97,13 +105,17 @@ export function createChatNotifier(opts: {
    *  message before the chat parks (notifications append, turns stop). */
   maxAutoTurns: number;
   /** Launch an agent turn — `createStrut` passes `launchChatTurn`. Receives
-   *  the truncated model-message copy, exactly like a human-triggered turn. */
-  startTurn: (chatId: string, turn: number, modelMessages: StoredMessage[]) => void;
+   *  the truncated model-message copy, exactly like a human-triggered turn,
+   *  and the trigger: `human` when a person's answer is among the messages. */
+  startTurn: (chatId: string, turn: number, modelMessages: StoredMessage[], trigger: "human" | "notification") => void;
 }): ChatNotifier {
+  type Queued = { text: string; human: boolean };
   const live = new Set<string>();
-  const queues = new Map<string, string[]>();
+  const queues = new Map<string, Queued[]>();
 
-  async function launch(chatId: string, texts: string[]): Promise<void> {
+  /** Append the messages and launch the turn; the launched turn, or
+   *  undefined when nothing launched (chat gone, or parked at the cap). */
+  async function launch(chatId: string, items: Queued[]): Promise<number | undefined> {
     // Claim liveness synchronously so a deliver() racing in during the awaits
     // below queues instead of double-launching.
     live.add(chatId);
@@ -111,35 +123,40 @@ export function createChatNotifier(opts: {
       const meta = await opts.chatStore.getMeta(chatId);
       if (!meta) {
         live.delete(chatId); // chat was deleted — drop silently
-        return;
+        return undefined;
       }
-      const msgs: StoredMessage[] = texts.map((t) => ({ role: "user", content: t }));
+      const msgs: StoredMessage[] = items.map((i) => ({ role: "user", content: i.text }));
       // Always record the notification in the transcript, even when parked —
       // the next human-triggered turn replays it to the model.
       await opts.chatStore.appendMessages(chatId, msgs);
 
+      // A person's answer among the messages makes this a human turn: the
+      // runaway counter resets and the cap does not apply.
+      const human = items.some((i) => i.human);
       const autoTurns = meta.autoTurns ?? 0;
-      if (autoTurns >= opts.maxAutoTurns) {
+      if (!human && autoTurns >= opts.maxAutoTurns) {
         console.warn(
           `[chat ${chatId}] auto-turn cap (${opts.maxAutoTurns}) reached — notification appended, turn NOT launched; waiting for a human message.`,
         );
         live.delete(chatId);
-        return;
+        return undefined;
       }
 
       const turn = meta.currentTurn + 1;
       await opts.chatStore.setMeta(chatId, {
         status: "live",
         currentTurn: turn,
-        autoTurns: autoTurns + 1,
+        autoTurns: human ? 0 : autoTurns + 1,
       });
       const prior = await opts.chatStore.loadMessages(chatId);
       // startTurn (launchChatTurn) re-claims liveness idempotently and calls
       // turnEnded when the turn finishes, which drains anything queued since.
-      opts.startTurn(chatId, turn, truncateToolMessages(prior));
+      opts.startTurn(chatId, turn, truncateToolMessages(prior), human ? "human" : "notification");
+      return turn;
     } catch (err) {
       live.delete(chatId);
       console.error(`[chat ${chatId}] failed to launch notification turn:`, err);
+      return undefined;
     }
   }
 
@@ -161,14 +178,16 @@ export function createChatNotifier(opts: {
       }
     },
 
-    async deliver(chatId, text) {
+    async deliver(chatId, text, o) {
+      const item: Queued = { text, human: !!o?.human };
       if (live.has(chatId)) {
         const q = queues.get(chatId) ?? [];
-        q.push(text);
+        q.push(item);
         queues.set(chatId, q);
-        return;
+        return { queued: true };
       }
-      await launch(chatId, [text]);
+      const turn = await launch(chatId, [item]);
+      return turn === undefined ? {} : { turn };
     },
   };
 }

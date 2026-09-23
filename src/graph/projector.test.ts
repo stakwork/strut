@@ -261,6 +261,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     for (const e of sampleEvents("h")) await store.append(WF, RUN, e);
     const chats = new MemoryChatStore();
     await chats.createChat({ id: "c1", title: "Deliver", model: "claude" });
+    await chats.setMeta("c1", { createdBy: "evanfeenstra-s8fhs8efhs8ehf" });
     await chats.appendMessages("c1", [
       { role: "user", content: "run the delivery" },
       { role: "assistant", content: [{ type: "tool-call", toolName: "run_workflow", input: { name: WF } }] },
@@ -285,6 +286,8 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     // Idempotent.
     await projectChats(backend, chats);
     assert.equal(await count("StrutChat"), 1);
+    const [chatNode] = await backend.bolt.run(`MATCH (c:StrutChat) RETURN c.created_by AS created_by`);
+    assert.equal(chatNode!["created_by"], "evanfeenstra-s8fhs8efhs8ehf", "who started the chat is projected whole");
     assert.equal(await count("StrutTurn"), 2);
     assert.equal(await edges("IN_CHAT"), 2);
   });

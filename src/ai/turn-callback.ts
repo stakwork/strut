@@ -1,4 +1,8 @@
 import type { ChatStore } from "../chat-store.js";
+import { postCallback } from "../callback.js";
+import type { ElicitationCallback } from "./elicitation.js";
+
+export { callbackOrigin, parseCallback } from "../callback.js";
 
 /**
  * Turn-end callbacks — how a HOST that dispatched a chat turn (`POST /chat
@@ -24,7 +28,8 @@ import type { ChatStore } from "../chat-store.js";
  * All of it is in-process, the notifier's crash posture: a restart drops the
  * pending state and the callback with it (the host's fallback is `GET
  * /chat/:id`). Delivery is best-effort with a few retries and never blocks or
- * fails the turn. The URL is the credential (the host signs it), so only its
+ * fails the turn (`postCallback`, src/callback.ts — shared with run
+ * callbacks). The URL is the credential (the host signs it), so only its
  * origin is ever logged or returned by a read endpoint.
  */
 
@@ -48,6 +53,12 @@ export interface TurnCallbackPayload {
   /** The auto-turn cap is reached: notifications append to the transcript but
    *  start no turn until a human message arrives. */
   parked: boolean;
+  /** `turn.end`: the builder asked and is waiting (plans/elicitation.md) —
+   *  present whenever an elicitation is open when the turn ends; when THIS
+   *  turn asked, `text` is the question. A form question goes to the host's
+   *  agent or UI; a secret question is a relative link (`url`) the host shows
+   *  its user. Never carries a value. */
+  elicitation?: ElicitationCallback;
 }
 
 export interface TurnCallbacks {
@@ -67,32 +78,8 @@ export interface TurnCallbacks {
     text?: string;
     error?: { message: string };
     stopped?: true;
+    elicitation?: ElicitationCallback;
   }): Promise<void>;
-}
-
-/** Validate a `POST /chat` callback: `{ url }` with an http(s) URL. */
-export function parseCallback(raw: unknown): { url: string } {
-  const url = (raw as { url?: unknown } | null)?.url;
-  if (typeof url !== "string" || !url) throw new Error("callback.url (string) is required");
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("callback.url is not a valid URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("callback.url must be http(s)");
-  }
-  return { url };
-}
-
-/** The part of a callback URL that is safe to log or return. */
-export function callbackOrigin(url: string): string {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return "(invalid url)";
-  }
 }
 
 /** The final assistant text of a turn's response messages. */
@@ -125,9 +112,6 @@ export function createTurnCallbacks(opts: {
   retryDelaysMs?: number[];
   timeoutMs?: number;
 }): TurnCallbacks {
-  const doFetch = opts.fetch ?? fetch;
-  const retryDelaysMs = opts.retryDelaysMs ?? [1_000, 5_000, 30_000];
-  const timeoutMs = opts.timeoutMs ?? 10_000;
   /** Outstanding `expect()`s per chat. */
   const pending = new Map<string, number>();
   /** Chats whose host was last told `settled: false` → the turn it came from. */
@@ -135,35 +119,13 @@ export function createTurnCallbacks(opts: {
 
   const isSettled = (chatId: string) => !pending.get(chatId) && !opts.isLive(chatId);
 
-  async function post(url: string, payload: TurnCallbackPayload): Promise<void> {
-    const tag = `[chat ${payload.chatId}] callback ${payload.event} turn ${payload.turn} → ${callbackOrigin(url)}`;
-    for (let attempt = 0; ; attempt++) {
-      let failure: string;
-      try {
-        const res = await doFetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        if (res.ok) return;
-        failure = `HTTP ${res.status}`;
-        // The host refused it — a retry would be refused the same way.
-        if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
-          console.warn(`${tag} rejected (${failure}) — not retrying.`);
-          return;
-        }
-      } catch (err) {
-        failure = err instanceof Error ? err.message : String(err);
-      }
-      const delay = retryDelaysMs[attempt];
-      if (delay === undefined) {
-        console.warn(`${tag} failed (${failure}) — giving up after ${attempt + 1} attempts.`);
-        return;
-      }
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
+  const post = (url: string, payload: TurnCallbackPayload) =>
+    postCallback(url, payload, {
+      tag: `[chat ${payload.chatId}] callback ${payload.event} turn ${payload.turn}`,
+      fetch: opts.fetch,
+      retryDelaysMs: opts.retryDelaysMs,
+      timeoutMs: opts.timeoutMs,
+    });
 
   /** Posts are chained per chat so the host sees them in order (a `settled`
    *  never overtakes the `turn.end` it follows). Detached: a slow or dead

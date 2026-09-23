@@ -167,6 +167,7 @@ export function App() {
     if (localParams && Object.keys(localParams).length > 0) tabs.push("params");
     if (wfClaims?.enabled) tabs.push("claims");
     if (!viewingOld) tabs.push("automations");
+    tabs.push("versions");
     return tabs;
   }, [selectedWf, localParams, wfClaims, viewingOld]);
   const activeTab: WorkflowTab | null = workflowTabs.includes(wfTab) ? wfTab : (workflowTabs[0] ?? null);
@@ -329,11 +330,14 @@ export function App() {
   const [mothership, setMothership] = useState(false);
   useEffect(() => { api.getMothership().then(setMothership); }, []);
 
+  // Switching workflows closes panels; switching versions does not (the
+  // Versions tab stays open while you browse).
+  useEffect(() => { setPanel(null); }, [selectedWf]);
+
   // Load workflow + its runs when selected
   useEffect(() => {
     setRunDrill([]);
     setLoadError(false);
-    setPanel(null);
     setWfClaims(null);
     if (selectedWf) api.getClaims({ kind: "workflow", name: selectedWf }).then(setWfClaims).catch(() => setWfClaims(null));
     if (!selectedWf) {
@@ -611,8 +615,10 @@ export function App() {
 
   const handlePublish = useCallback(async () => {
     if (!selectedWf || !localSteps || !activeVersion) return;
-    const num = parseInt(activeVersion.replace(/^v/, ""), 10);
-    const nextVersion = `v${(isNaN(num) ? 1 : num) + 1}`;
+    // Next after the HIGHEST version, not the active one: after a rollback
+    // the active version is not the newest, and active+1 would overwrite.
+    const nums = (selectedEntry?.versions ?? [activeVersion]).map((v) => parseInt(v.replace(/^v/, ""), 10) || 0);
+    const nextVersion = `v${Math.max(0, ...nums) + 1}`;
     const hasParams = localParams != null && Object.keys(localParams).length > 0;
     const yamlStr = yaml.dump(
       { name: selectedWf, steps: localSteps, ...(hasParams ? { params: localParams } : {}) },
@@ -626,7 +632,24 @@ export function App() {
     setLocalSteps(steps);
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
-  }, [selectedWf, localSteps, localParams, activeVersion, refreshWorkflows]);
+  }, [selectedWf, selectedEntry, localSteps, localParams, activeVersion, refreshWorkflows]);
+
+  // Roll back (or forward) to a stored version: it becomes what Run,
+  // schedules and the canvas use. Nothing is published, so unsaved canvas
+  // edits would be lost — ask first.
+  const handleActivateVersion = useCallback(async (version: string) => {
+    if (!selectedWf) return;
+    if (isDirty && !confirm("Discard your unpublished changes and switch the active version?")) return;
+    await api.setActiveWorkflowVersion(selectedWf, version);
+    await refreshWorkflows();
+    setViewVersion(null);
+    const flow = await api.getWorkflowFlow(selectedWf);
+    const steps = flow.steps as StepData[];
+    setPublishedSteps(steps);
+    setLocalSteps(steps);
+    setWfParams(flow.params ?? null);
+    setLocalParams(flow.params ?? null);
+  }, [selectedWf, isDirty, refreshWorkflows, setViewVersion]);
 
   // Clicking a node (body) always opens its flyout — leaf I/O, or a
   // container's aggregate I/O. Drilling into children is the arrow's job.
@@ -994,7 +1017,7 @@ export function App() {
           {workflowTabs.length > 0 && (
             <button
               class={`btn${panel === "workflow" ? " is-active" : ""}`}
-              title="Params, claims and schedules"
+              title="Params, claims, schedules and versions"
               onClick={() => { setPanel((p) => (p === "workflow" ? null : "workflow")); setInfoStep(null); closeFlyout(); }}
             >Workflow{wfClaims?.enabled && <span class={`claims-dot claims-dot-${claimsTone(wfClaims)}`} />}</button>
           )}
@@ -1124,6 +1147,10 @@ export function App() {
           loadBindings={loadInputBindings}
           // A change may be a schedule (sidebar badge) or a "Run now" (a new run).
           onAutomationsChanged={() => { void refreshWorkflows(); void refreshRuns(selectedWf); }}
+          viewVersion={viewVersion}
+          onViewVersion={(v) => { setViewVersion(v); closeFlyout(); }}
+          onActivateVersion={handleActivateVersion}
+          runs={runs}
         />
       )}
 
