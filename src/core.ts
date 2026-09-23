@@ -209,6 +209,10 @@ export interface RunEvent {
    *  person even if the workflow's owner has changed since. */
   actor?: string;
   principal?: string;
+  /** On `run.start`: the ORIGIN of the URL the launch asked to have the
+   *  result POSTed to (`POST …/run { callback }`, src/callback.ts). The URL
+   *  itself is the host's credential and never leaves the launch site. */
+  callback?: { origin: string };
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its
@@ -234,6 +238,12 @@ export interface RunEvent {
    *  `_nodes` marker on `step.end`, exempt from any truncation. The graph
    *  projector turns them into `ACCESSED` edges. */
   nodes?: AccessedNode[];
+  /** On an `agent` step's `step.end` (and a sub-agent's tool-call
+   *  `step.end`): the whole session — system prompt, task prompt, every
+   *  generated turn — as AI SDK model messages, untruncated. Lifted from
+   *  the output's `withMessages` marker; never part of the output itself,
+   *  so templates, parent agents and run.json stay slim. */
+  messages?: unknown[];
 }
 
 // ── Provenance convention: which graph nodes did a step touch? ─────────────
@@ -275,6 +285,31 @@ export function accessedNodesOf(output: unknown): AccessedNode[] | undefined {
   if (output === null || typeof output !== "object") return undefined;
   const v = (output as Record<string, unknown>)[ACCESSED_NODES_KEY];
   return Array.isArray(v) && v.length > 0 ? (v as AccessedNode[]) : undefined;
+}
+
+// ── Transcript marker: what did an agent step's model see and say? ─────────
+
+const MESSAGES_KEY = "_messages";
+
+/**
+ * Mark a step's output with the model session behind it (`RunEvent.messages`).
+ * Same mechanism as `withAccessedNodes`: a NON-enumerable own property, so it
+ * rides along in-process — to the runner, which lifts it onto the `step.end`
+ * event — but never reaches `{{ }}` templates, a parent agent's tool result,
+ * or a JSON serializer. Empty lists and non-object outputs are left unmarked.
+ */
+export function withMessages<T>(output: T, messages: unknown[] | undefined): T {
+  if (output === null || typeof output !== "object" || !messages?.length) return output;
+  Object.defineProperty(output, MESSAGES_KEY, { value: messages, enumerable: false, configurable: true, writable: true });
+  return output;
+}
+
+/** The session a step output was marked with (see `withMessages`), else
+ *  undefined. */
+export function messagesOf(output: unknown): unknown[] | undefined {
+  if (output === null || typeof output !== "object") return undefined;
+  const v = (output as Record<string, unknown>)[MESSAGES_KEY];
+  return Array.isArray(v) && v.length > 0 ? v : undefined;
 }
 
 /** Result of running a workflow. */

@@ -30,7 +30,7 @@ server without a rebuild (proposed).
 
 ```
 strut/
-├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions
+├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions; CALLBACKS.md is the client how-to for `POST …/run { callback }`
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend on a bare `docker run`
 ├── docker-compose.yml     # test/local compose: that image on the graph backend + a neo4j:5 container (named volumes for neo4j data, /data/workspace, /data/models, uv cache)
@@ -57,6 +57,7 @@ strut/
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server
+│   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses) — every one recordable by cassette.ts + secret-safe
@@ -469,7 +470,10 @@ and the child env is scrubbed by construction).
   `step.end` event as `nodes`, untruncated, and the projector writes one
   `ACCESSED` edge per ref the graph holds (`StrutToolCall → any node`). Every
   `graph/*` (and mcp `jarvis/*`) node-touching step does this; a step that
-  reports nothing gets no edges — never inferred from prose.
+  reports nothing gets no edges — never inferred from prose. The same
+  marker mechanism carries an agent step's transcript: `withMessages(output,
+  session)` → `step.end.messages` (lifted by the runner for steps and by
+  `wrapToolsWithEmit` for tool calls; `messagesOf` reads it).
   `server.ts` is a thin wrapper (`getApp`/`startServer`) over
   `createStrut()` — graph workspace by default, file stores for the rest.
 
@@ -649,6 +653,23 @@ and the child env is scrubbed by construction).
   `api.runWorkflow` hides the two steps — it POSTs to launch, then
   `streamRun(name, runId)` reattaches to the tail — so callers see the
   same `(onEvent, → RunResult)` interface as before.
+
+- **Run callbacks — a host hears the result without tailing**
+  (`src/callback.ts`; createStrut's `postRunCallback`). `POST
+  /workflows/:name/run { …, callback: { url } }` (and the `/:version/run`
+  twin) validates the URL — http(s), else 400 and nothing launches — and
+  the 202 carries `callback: true`, the host's proof this server honors
+  it. When the run settles strut POSTs, once, `{ event: "run.end",
+  workflow, runId, status: "success" | "error" | "cancelled", output?,
+  error?: { message }, durationMs }` — detached from the run's teardown,
+  with the chat callback's delivery rules (a few retries; a 4xx is the
+  host refusing it). The URL is the host's credential: it lives in the
+  launch closure and is never persisted — `run.start` records `callback:
+  { origin }` only, so no read endpoint (events, stream, summary) can leak
+  it. Same crash posture as the chat: a restart drops it, and a run
+  resumed afterwards (by hand or boot-time auto-resume) posts nothing —
+  the host's fallback is `GET /workflows/:name/runs/:runId`. The web UI
+  never sends one.
 
 - **Run control** (`RUN_CONTROL_SPEC.md`, `src/run-control.ts` +
   `src/journal.ts`). Every launch site registers a `RunController`
@@ -912,7 +933,8 @@ and the child env is scrubbed by construction).
   dashed text notice).
 
 - **Turn-end callbacks — how a HOST dispatches the builder**
-  (`src/ai/turn-callback.ts`). A turn takes seconds or hours, and one
+  (`src/ai/turn-callback.ts`; the URL check + poster are `src/callback.ts`,
+  shared with run callbacks). A turn takes seconds or hours, and one
   dispatch can produce SEVERAL turns (the detached-run / verify wake-ups
   above), so a host app does not tail or poll: `POST /chat { …, callback:
   { url } }` stores the URL on `ChatMeta.callback` — on the CHAT, so
@@ -1003,11 +1025,18 @@ and the child env is scrubbed by construction).
   name, which may be an alias like `sonnet`/`grok` or slash format like
   `openrouter/moonshotai/kimi-k2.6`), lazy-loaded; needs the provider
   key in env + `git`/`rg` on PATH. Returns
-  `{ result, object?, steps, usage, cost }`. The full session
-  (`messages`) is the seam for a future fork/sub-agent capability, but
-  it's **opt-in** (`returnMessages`, default false): it's huge and the
-  runner persists every step's output, so returning it by default bloats
-  `events.jsonl`/`run.json` and buries `result`. Anything domain-
+  `{ result, object?, steps, usage, cost }`. The full session — system
+  prompt, task prompt (with the cwd preamble the model saw), every
+  generated turn, as AI SDK model messages — is ALWAYS recorded on the
+  step's `step.end` event as `messages` (`buildSession` + `withMessages`,
+  the marker the runner lifts; a sub-agent's rides on its tool-call
+  `step.end` the same way), so every agent transcript is in the run log:
+  pull `GET …/runs/:runId/events` and keep the `step.end` events with
+  `stepType: "agent"`. It is NOT in the output — templates, a parent
+  agent's tool result and `run.json` stay slim — and the builder's
+  `get_run` strips it. `returnMessages` (default false) additionally puts
+  it in the output, for a fork/sub-agent that needs the transcript as
+  data. Anything domain-
   specific lives in the CALLER's prompts, not the step (e.g. mcp's
   `/lab` `gitsee-explore-services` wires `clone → agent`).
   - **`agentTools` — "tools are steps"** (`buildRegistryTools`). Beyond the
