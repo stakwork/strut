@@ -1,9 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { flow, step, defineStep, type StepRegistry, type RunEvent } from "./core.js";
+import { flow, step, defineStep, withMessages, type StepRegistry, type RunEvent } from "./core.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
+import foreachStep from "./steps/core/foreach.js";
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
@@ -624,5 +625,64 @@ describe("runWorkflow - params", () => {
 
     const result = await runWorkflow(wf, {}, makeRegistry());
     assert.deepEqual(result.output, { has: {} });
+  });
+});
+
+// ── Transcript marker (withMessages → step.end.messages) ───────────────────
+
+describe("step.end carries a step's session marker as `messages`", () => {
+  const session = [
+    { role: "system", content: "s" },
+    { role: "user", content: "p" },
+    { role: "assistant", content: "a" },
+  ];
+  /** A step that returns a slim output marked with the session behind it. */
+  const talker = defineStep({
+    type: "talker",
+    input: z.object({ n: z.any().optional() }),
+    output: z.any(),
+    async run(cfg) {
+      return withMessages({ result: `done ${cfg.n ?? ""}`.trim() }, session);
+    },
+  });
+
+  it("lifts the marker onto step.end and keeps it out of the output, the scope and the summary", async () => {
+    const wf = flow("talk", {
+      input: z.object({}),
+      steps: [step("t", "talker", {}), step("after", "echo", { got: "{{ t }}" })],
+    });
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(wf, {}, makeRegistry({ talker }), { store });
+    assert.equal(result.status, "success");
+    const events = await store.getRunEvents("talk", result.runId);
+    const end = events.find((e) => e.type === "step.end" && e.path === "talk/t")!;
+    assert.deepEqual(end.messages, session);
+    assert.equal(JSON.stringify(end.output), '{"result":"done"}');
+    // Downstream steps see the plain output; the summary has no transcript.
+    assert.deepEqual(result.output, { got: { result: "done" } });
+    assert.ok(!JSON.stringify(await store.getRunSummary("talk", result.runId)).includes("assistant"));
+    const after = events.find((e) => e.type === "step.end" && e.path === "talk/after")!;
+    assert.ok(!("messages" in after), "an unmarked output emits no messages field");
+  });
+
+  it("lifts it on foreach iterations too (the body's step.end is the iteration's)", async () => {
+    const wf = flow("talk-each", {
+      input: z.object({ items: z.array(z.number()) }),
+      steps: [
+        step("each", "foreach", {
+          items: "{{ input.items }}",
+          body: step("t", "talker", { n: "{{ $current }}" }),
+        }),
+      ],
+    });
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(wf, { items: [1, 2] }, makeRegistry({ talker, foreach: foreachStep }), { store });
+    assert.equal(result.status, "success");
+    const ends = (await store.getRunEvents("talk-each", result.runId)).filter(
+      (e) => e.type === "step.end" && e.stepType === "talker",
+    );
+    assert.equal(ends.length, 2);
+    for (const e of ends) assert.deepEqual(e.messages, session);
+    assert.deepEqual(result.output, [{ result: "done 1" }, { result: "done 2" }]);
   });
 });

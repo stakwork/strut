@@ -60,6 +60,14 @@ export function slimEvent(e: RunEvent) {
   };
 }
 
+/** An agent step's `step.end` carries its whole session (`messages`) — for
+ *  the events endpoint and a log store, not for the model's context. */
+function withoutTranscript(e: RunEvent): Omit<RunEvent, "messages"> {
+  if (!e.messages) return e;
+  const { messages: _transcript, ...rest } = e;
+  return rest;
+}
+
 /** List a workflow's recent runs (newest first) as slim summaries. */
 export async function listRunSummaries(
   store: Pick<RunStore, "listRuns" | "getRunSummary" | "getRunEvents">,
@@ -99,7 +107,7 @@ export async function readRun(
     workflow: name,
     runId,
     summary,
-    events: fullEvents ? rawEvents : rawEvents.map(slimEvent),
+    events: fullEvents ? rawEvents.map(withoutTranscript) : rawEvents.map(slimEvent),
   };
 }
 

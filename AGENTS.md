@@ -460,7 +460,10 @@ and the child env is scrubbed by construction).
   `step.end` event as `nodes`, untruncated, and the projector writes one
   `ACCESSED` edge per ref the graph holds (`StrutToolCall → any node`). Every
   `graph/*` (and mcp `jarvis/*`) node-touching step does this; a step that
-  reports nothing gets no edges — never inferred from prose.
+  reports nothing gets no edges — never inferred from prose. The same
+  marker mechanism carries an agent step's transcript: `withMessages(output,
+  session)` → `step.end.messages` (lifted by the runner for steps and by
+  `wrapToolsWithEmit` for tool calls; `messagesOf` reads it).
   `server.ts` is a thin wrapper (`getApp`/`startServer`) over
   `createStrut()` — graph workspace by default, file stores for the rest.
 
@@ -969,11 +972,18 @@ and the child env is scrubbed by construction).
   name, which may be an alias like `sonnet`/`grok` or slash format like
   `openrouter/moonshotai/kimi-k2.6`), lazy-loaded; needs the provider
   key in env + `git`/`rg` on PATH. Returns
-  `{ result, object?, steps, usage, cost }`. The full session
-  (`messages`) is the seam for a future fork/sub-agent capability, but
-  it's **opt-in** (`returnMessages`, default false): it's huge and the
-  runner persists every step's output, so returning it by default bloats
-  `events.jsonl`/`run.json` and buries `result`. Anything domain-
+  `{ result, object?, steps, usage, cost }`. The full session — system
+  prompt, task prompt (with the cwd preamble the model saw), every
+  generated turn, as AI SDK model messages — is ALWAYS recorded on the
+  step's `step.end` event as `messages` (`buildSession` + `withMessages`,
+  the marker the runner lifts; a sub-agent's rides on its tool-call
+  `step.end` the same way), so every agent transcript is in the run log:
+  pull `GET …/runs/:runId/events` and keep the `step.end` events with
+  `stepType: "agent"`. It is NOT in the output — templates, a parent
+  agent's tool result and `run.json` stay slim — and the builder's
+  `get_run` strips it. `returnMessages` (default false) additionally puts
+  it in the output, for a fork/sub-agent that needs the transcript as
+  data. Anything domain-
   specific lives in the CALLER's prompts, not the step (e.g. mcp's
   `/lab` `gitsee-explore-services` wires `clone → agent`).
   - **`agentTools` — "tools are steps"** (`buildRegistryTools`). Beyond the
