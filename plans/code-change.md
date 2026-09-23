@@ -77,8 +77,11 @@ set(actor, name, value), delete(actor, name), list(actor) }` over any
 `A_<hex(actor)>_<NAME>` (actors carry `-`, which secret names refuse; the
 same trick `mothership.ts` uses). The standard server keeps it in a THIRD
 encrypted `FileSecretStore` file, `actor-secrets.json`, beside
-`secrets.json` and `mothership.json`; memory when runs are in memory;
-injectable via `createStrut({ actorSecretStore })`.
+`secrets.json` and `mothership.json` — wherever the deployment's
+`secrets.json` lives, whatever the workspace backend (mcp's lab runs a
+graph workspace with file secret stores under its `dataDir`); memory only
+when the deployment secret store is; injectable via
+`createStrut({ actorSecretStore })`.
 
 **Resolution is invisible to steps.** `SecretsCapability` gains an optional
 `forPrincipal(principal)`. The runner, once per run, binds the bag's
