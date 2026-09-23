@@ -252,6 +252,37 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     }
   });
 
+  it("the agent step asks Anthropic for automatic prompt caching, with `cacheTtl` as the lifetime", async () => {
+    // A stand-in Anthropic endpoint: record each request body, refuse it (400
+    // is not retried), so the step fails right after the request we inspect.
+    const { createServer } = await import("node:http");
+    const bodies: any[] = [];
+    const server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const ctx = {
+        runId: "r1", path: "wf/a", scope: {}, input: undefined, emit: async () => {},
+        services: { llmAuth: async () => ({ apiKey: "k", baseUrl: `http://127.0.0.1:${port}` }) },
+      };
+      for (const [cfg, ttl] of [[{}, "5m"], [{ cacheTtl: "1h" }, "1h"]] as const) {
+        const input = agent.input.parse({ system: "s", prompt: "hi", cwd: process.cwd(), model: "sonnet", ...cfg });
+        await assert.rejects(() => agent.run(input, ctx as any));
+        assert.deepEqual(bodies.at(-1).cache_control, { type: "ephemeral", ttl });
+      }
+    } finally {
+      server.close();
+    }
+  });
+
   it("stepAuth: builds the step context from a StepContext, or nothing without a hook on the bag", async () => {
     const { stepAuth } = await import("./llm.js");
     const hook = async () => undefined;

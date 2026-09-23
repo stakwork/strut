@@ -130,6 +130,7 @@ export {
   addUsage,
   coerceUsage,
   usageFromResult,
+  usageFromSteps,
   usageForCost,
 } from "./pricing.js";
 

@@ -28,30 +28,107 @@ export function emptyUsage(): TokenUsage {
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 /**
- * Normalize a Vercel AI SDK `LanguageModelUsage` (the `.usage` on a generate
- * result — all steps in v7) into a flat {@link TokenUsage}. Prefers the
- * `inputTokenDetails` breakdown (noCache / cacheRead / cacheWrite); falls back
- * to the flat `inputTokens` + pre-v7 `cachedInputTokens` when details are
- * absent, treating the remainder as non-cached input.
+ * Normalize a Vercel AI SDK `LanguageModelUsage` into a flat {@link TokenUsage}.
+ * Prefers the `inputTokenDetails` breakdown (noCache / cacheRead / cacheWrite);
+ * falls back to the flat `inputTokens` + pre-v7 `cachedInputTokens` when
+ * details are absent, treating the remainder as non-cached input.
+ *
+ * When the SDK reports no cache activity, the provider's own usage is searched
+ * too (see {@link rawCacheTokens}) — pass a STEP's usage and
+ * `providerMetadata` for that: only per-step usage keeps `raw`, a run's total
+ * (`result.usage`) drops it. Use {@link usageFromSteps} for a whole run.
  */
-export function usageFromResult(usage: unknown): TokenUsage {
+export function usageFromResult(usage: unknown, providerMetadata?: unknown): TokenUsage {
   if (!usage || typeof usage !== "object") return emptyUsage();
   const u = usage as Record<string, any>;
   const details = (u.inputTokenDetails ?? {}) as Record<string, any>;
 
-  const cacheReadTokens = num(details.cacheReadTokens ?? u.cachedInputTokens);
-  const cacheWriteTokens = num(details.cacheWriteTokens);
+  let cacheReadTokens = num(details.cacheReadTokens ?? u.cachedInputTokens);
+  let cacheWriteTokens = num(details.cacheWriteTokens);
   // Non-cached input: the detailed noCacheTokens when present, else the flat
   // total input minus what we already accounted as cache read/write.
-  const inputTokens =
+  let inputTokens =
     details.noCacheTokens != null
       ? num(details.noCacheTokens)
       : Math.max(0, num(u.inputTokens) - cacheReadTokens - cacheWriteTokens);
+
+  if (!cacheReadTokens && !cacheWriteTokens) {
+    const found = rawCacheTokens(u.raw, providerMetadata);
+    if (found.read || found.write) {
+      cacheReadTokens = found.read;
+      cacheWriteTokens = found.write;
+      // OpenAI convention: the prompt total INCLUDES the cached part. A total
+      // smaller than the cache counts can only be Anthropic's (cache excluded).
+      const total = num(u.inputTokens);
+      const rest = total - cacheReadTokens - cacheWriteTokens;
+      inputTokens = rest >= 0 ? rest : total;
+    }
+  }
+
   const outputTokens = num(u.outputTokens);
   const totalTokens =
     num(u.totalTokens) || inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens;
 
   return { inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, totalTokens };
+}
+
+/** Sum per-step usage over a run's `steps` — the accurate way to total a run
+ *  (each step keeps its raw provider usage; the run's `usage` does not). */
+export function usageFromSteps(steps: unknown): TokenUsage {
+  let total = emptyUsage();
+  for (const s of Array.isArray(steps) ? steps : []) {
+    total = addUsage(total, usageFromResult(s?.usage, s?.providerMetadata));
+  }
+  return total;
+}
+
+// Where a provider (or a gateway re-rendering it) puts cache counts in its raw
+// usage. The SDK's OpenAI-compatible parsers read only the first of each list,
+// and the names drift between OpenRouter direct and Bifrost — so every
+// spelling seen is tried, first positive wins.
+const RAW_CACHE_READ = [
+  "prompt_tokens_details.cached_tokens",
+  "prompt_tokens_details.cache_read_tokens",
+  "prompt_tokens_details.cached_read_tokens",
+  "prompt_tokens_details.cache_read_input_tokens",
+  "input_tokens_details.cached_tokens",
+  "cache_read_input_tokens",
+  "cache_read_tokens",
+  "cached_tokens",
+];
+const RAW_CACHE_WRITE = [
+  "prompt_tokens_details.cache_write_tokens",
+  "prompt_tokens_details.cached_write_tokens",
+  "prompt_tokens_details.cache_creation_tokens",
+  "prompt_tokens_details.cache_creation_input_tokens",
+  "input_tokens_details.cache_write_tokens",
+  "cache_creation_input_tokens",
+  "cache_write_tokens",
+];
+// OpenRouter's provider also copies the read count into its metadata (older
+// provider versions kept it ONLY there).
+const META_CACHE_READ = ["openrouter.usage.promptTokensDetails.cachedTokens"];
+
+function at(obj: unknown, path: string): number {
+  let v: any = obj;
+  for (const k of path.split(".")) v = v && typeof v === "object" ? v[k] : undefined;
+  return num(v);
+}
+const firstPositive = (obj: unknown, paths: string[]): number => {
+  for (const p of paths) {
+    const n = at(obj, p);
+    if (n > 0) return n;
+  }
+  return 0;
+};
+
+/** Cache counts from a provider's raw usage, then its metadata — whatever the
+ *  field is called. Zeros when nothing is found. */
+export function rawCacheTokens(raw: unknown, providerMetadata?: unknown): { read: number; write: number } {
+  return {
+    read: firstPositive(raw, RAW_CACHE_READ) || firstPositive(providerMetadata, META_CACHE_READ),
+    write: firstPositive(raw, RAW_CACHE_WRITE),
+  };
 }
 
 /** Sum two normalized usages (e.g. across multiple LLM calls in one run). */

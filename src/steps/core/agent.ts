@@ -4,7 +4,7 @@ import { resolveModel, createWebTools, stepAuth } from "../../llm.js";
 import { accessedNodesOf, defineStep, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMessages } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
 import { globToRegExp } from "../../closure.js";
-import { usageFromResult, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
+import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve, dirname, isAbsolute, sep } from "node:path";
 import os from "node:os";
@@ -747,6 +747,12 @@ export default defineStep({
       .optional()
       .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`)"),
     maxSteps: z.number().int().positive().default(40).describe("cap on tool-loop turns before the agent must answer"),
+    cacheTtl: z
+      .enum(["5m", "1h"])
+      .default("5m")
+      .describe(
+        "anthropic prompt-cache lifetime. 1h costs 2x per cache write (vs 1.25x) but survives gaps over 5 minutes between turns — use it when a tool call can run long (a sub-agent granted via agentTools, a slow build or test run), or the session re-writes its whole context after the wait",
+      ),
     returnMessages: z
       .boolean()
       .default(false)
@@ -772,10 +778,10 @@ export default defineStep({
     // Anthropic-only extras: the provider-defined text
     // editor (the model is specially trained on its schema; we supply the
     // execute that performs the edit inside cfg.cwd), and EPHEMERAL PROMPT
-    // CACHING at the call level (the provider auto-inserts the cache
-    // breakpoints across the static prefix — system + tool schemas — that the
-    // loop resends every step). Big win for multi-step agents (and the future
-    // fork: the shared prefix is a cache hit across all forks). Other
+    // CACHING at the call level (the request's top-level `cache_control`:
+    // Anthropic's automatic caching moves the breakpoint to the end of the
+    // conversation every step, so each step reads everything before it and
+    // writes only what the last step added). `cacheTtl` picks the lifetime. Other
     // providers fall back to the generic editor tool. (Web search/fetch
     // are NOT provider-gated — see the web tools after model resolution.)
     let textEditorTool: any;
@@ -785,7 +791,7 @@ export default defineStep({
       textEditorTool = anthropic.tools.textEditor_20250728({
         execute: async (input: TextEditInput) => textEdit(input, [cfg.cwd, os.tmpdir()]),
       });
-      providerOptions = { anthropic: { cacheControl: { type: "ephemeral" } } };
+      providerOptions = { anthropic: { cacheControl: { type: "ephemeral", ttl: cfg.cacheTtl } } };
     }
 
     // ── secretsEnv: resolve named secrets → bash subprocess env ────────────
@@ -999,7 +1005,7 @@ export default defineStep({
       bankedSteps.push(sf);
       // Per-step in v7 (v6 made these cumulative, so banking them duplicated history).
       bankedMessages.push(...((sf.response?.messages ?? []) as any[]));
-      bankedUsage = addUsage(bankedUsage, usageFromResult(sf.usage));
+      bankedUsage = addUsage(bankedUsage, usageFromResult(sf.usage, sf.providerMetadata));
       // A length finish means the generation was TRUNCATED at the output
       // cap — a cut-off tool call never executes, so the loop dies with no
       // error. Make the cause loud instead of silent.
@@ -1140,12 +1146,11 @@ export default defineStep({
       return withMessages(cfg.returnMessages ? { ...out, messages: session } : out, session);
     };
 
-    // Token usage + cost across the WHOLE agent loop (v7 `usage` aggregates every
-    // step). `provider` drives the rate table.
-    // Mutable so a forced final-answer turn (below) can be folded in.
-    let usage = resumedFromStreamError
-      ? bankedUsage
-      : usageFromResult(res.usage);
+    // Token usage + cost across the WHOLE agent loop: the per-step sum banked
+    // by onStepEnd, across resume attempts (per step, because only a step's
+    // usage keeps the provider's raw counts — pricing.ts). `provider` drives
+    // the rate table. Mutable so a forced final-answer turn (below) can be folded in.
+    let usage = bankedUsage;
     let cost = costOf(usage);
     console.log(
       `[agent] tokens in:${usage.inputTokens} cacheRead:${usage.cacheReadTokens} cacheWrite:${usage.cacheWriteTokens} out:${usage.outputTokens} → $${cost.toFixed(4)}`,
@@ -1200,7 +1205,7 @@ export default defineStep({
           stepsUsed += nudgedSteps.length;
           // The recorded session keeps the nudge that drove these turns.
           messages.push(nudge, ...(((await nudged.responseMessages) ?? []) as any[]));
-          const nu = usageFromResult(await nudged.usage);
+          const nu = usageFromSteps(nudgedSteps);
           usage = addUsage(usage, nu);
           cost += costOf(nu);
           // The continuation may have done real work (a publish) before
@@ -1297,7 +1302,7 @@ export default defineStep({
             }
           }
           final = extractFinal(nudgedSteps);
-          const nu = usageFromResult(await nudged.usage);
+          const nu = usageFromSteps(nudgedSteps);
           usage = addUsage(usage, nu);
           cost += costOf(nu);
         } catch (e) {
@@ -1332,7 +1337,7 @@ export default defineStep({
           const ft = ((await forced.text) ?? "").trim();
           if (ft) {
             final = ft;
-            const fu = usageFromResult(await forced.usage);
+            const fu = usageFromSteps(await forced.steps);
             usage = addUsage(usage, fu);
             cost += costOf(fu);
           }
