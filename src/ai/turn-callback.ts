@@ -1,5 +1,6 @@
 import type { ChatStore } from "../chat-store.js";
 import { postCallback } from "../callback.js";
+import type { ElicitationCallback } from "./elicitation.js";
 
 export { callbackOrigin, parseCallback } from "../callback.js";
 
@@ -52,6 +53,12 @@ export interface TurnCallbackPayload {
   /** The auto-turn cap is reached: notifications append to the transcript but
    *  start no turn until a human message arrives. */
   parked: boolean;
+  /** `turn.end`: the builder asked and is waiting (plans/elicitation.md) —
+   *  present whenever an elicitation is open when the turn ends; when THIS
+   *  turn asked, `text` is the question. A form question goes to the host's
+   *  agent or UI; a secret question is a relative link (`url`) the host shows
+   *  its user. Never carries a value. */
+  elicitation?: ElicitationCallback;
 }
 
 export interface TurnCallbacks {
@@ -71,6 +78,7 @@ export interface TurnCallbacks {
     text?: string;
     error?: { message: string };
     stopped?: true;
+    elicitation?: ElicitationCallback;
   }): Promise<void>;
 }
 

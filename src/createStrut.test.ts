@@ -475,6 +475,39 @@ describe("createStrut", () => {
     assert.equal(ver2.active, v1);
   });
 
+  it("counts runs per workflow version and rolls back via PUT /active", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    await ws.publishWorkflow("ver-flow", "v1", { steps: [{ id: "g", type: "log", config: { message: "one" } }] });
+    await ws.publishWorkflow("ver-flow", "v2", { steps: [{ id: "g", type: "log", config: { message: "two" } }] });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false });
+
+    // Explicit runIds: generated ones are millisecond timestamps and collide.
+    await strut.run("ver-flow", {}, { runId: "1" });
+    await strut.run("ver-flow", {}, { runId: "2" });
+    const act = await strut.app.request("/workflows/ver-flow/active", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: "v1" }),
+    });
+    assert.equal(act.status, 200);
+    await strut.run("ver-flow", {}, { runId: "3" });
+
+    const res = await strut.app.request("/workflows/ver-flow/versions");
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      active: string;
+      versions: Array<{ version: string; runs: number; success: number }>;
+      unattributed: number;
+    };
+    assert.equal(body.active, "v1");
+    assert.deepEqual(body.versions.map((v) => v.version).sort(), ["v1", "v2"]);
+    const by = Object.fromEntries(body.versions.map((v) => [v.version, v]));
+    assert.equal(by.v2.runs, 2);
+    assert.equal(by.v2.success, 2);
+    assert.equal(by.v1.runs, 1);
+    assert.equal(body.unattributed, 0);
+  });
+
   it("launches a run detached over HTTP, returning a runId immediately", async () => {
     const ws = new WorkspaceManager(tempDir);
     await ws.publishWorkflow("echo-flow", "v1", {

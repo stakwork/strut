@@ -159,10 +159,11 @@ export async function runWorkflow<TServices = unknown>(
   const wfName = workflow.name;
   const startedAt = new Date().toISOString();
   // On every summary this run can write (see `RunSummary.automation`).
-  const automationStamp = {
+  const summaryStamp = {
     ...(opts?.automation ? { automation: opts.automation } : {}),
     ...(opts?.actor ? { actor: opts.actor } : {}),
     ...(opts?.principal ? { principal: opts.principal } : {}),
+    ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
   };
   // Default services to an empty object so steps can destructure freely.
   const services = (opts?.services ?? ({} as TServices)) as TServices;
@@ -199,7 +200,7 @@ export async function runWorkflow<TServices = unknown>(
       status: "error",
       input,
       error,
-      ...automationStamp,
+      ...summaryStamp,
     });
     return { runId, status: "error", error };
   }
@@ -263,7 +264,7 @@ export async function runWorkflow<TServices = unknown>(
       status: "success",
       input: parsedInput,
       output,
-      ...automationStamp,
+      ...summaryStamp,
     });
     return { runId, status: "success", output };
   } catch (err) {
@@ -290,7 +291,7 @@ export async function runWorkflow<TServices = unknown>(
       status: cancelled ? "cancelled" : "error",
       input: parsedInput,
       ...(cancelled ? {} : { error }),
-      ...automationStamp,
+      ...summaryStamp,
     });
     return cancelled ? { runId, status: "cancelled" } : { runId, status: "error", error };
   } finally {

@@ -832,6 +832,14 @@ body.is-resizing-flyout * {
   justify-content: flex-end;
   gap: var(--sp-3);
 }
+.flyout-footer-runs {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .flyout-footer-error {
   flex: 1;
   font-size: 12px;
@@ -1520,6 +1528,51 @@ body.is-resizing-flyout * {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* The builder's open question (plans/elicitation.md; ElicitationForm): a
+   form at the end of the transcript — or, for a secret, a password field
+   whose value goes to the store and never into the chat. A solid accent
+   border, unlike the dashed server notices: this one wants a person. */
+.chat-ask {
+  align-self: stretch;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  font-size: 12px;
+}
+.chat-ask-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.chat-ask-title { font-weight: 600; color: var(--text); }
+.chat-ask-name { font-family: var(--font-mono); font-size: 11px; }
+.chat-ask-message {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+.chat-ask-hint,
+.chat-ask-error { font-size: 11px; line-height: 1.4; }
+.chat-ask-hint { color: var(--text-dim); }
+.chat-ask-error { color: var(--danger); }
+.chat-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+.flyout-multi {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 /* A notice we can parse renders as a card (see NoticeView): one closed line
@@ -2547,6 +2600,15 @@ body.is-resizing-flyout * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.chat-history-user {
+  font-size: 11px;
+  color: var(--text-dim);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .chat-mic-error {
   padding: var(--sp-1) var(--sp-4);
   color: var(--danger);
@@ -2829,3 +2891,7 @@ body.is-resizing-flyout * {
 }
 .auto-token { display: flex; align-items: center; gap: 2px; }
 .flyout-field .auto-token-input { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
+
+/* ─── versions (Workflow flyout tab) ─────────────────────────── */
+.version-name { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: 13px; font-weight: 600; color: var(--text); }
+.auto-card.is-active-version { border-color: var(--accent); }

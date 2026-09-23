@@ -9,6 +9,7 @@
 
 import { useState } from "preact/hooks";
 import * as api from "../api";
+import { displayActor } from "../actor";
 
 export function OwnerEditor(props: {
   workflow: string;
@@ -34,7 +35,7 @@ export function OwnerEditor(props: {
     try {
       const r = await api.claimWorkflows(all ? undefined : [props.workflow]);
       const taken = r.skipped.filter((s) => s.owner && s.owner !== r.actor).length;
-      setResult(`Claimed ${r.claimed.length} for ${r.actor}${taken ? `; ${taken} owned by others` : ""}.`);
+      setResult(`Claimed ${r.claimed.length} for ${displayActor(r.actor)}${taken ? `; ${taken} owned by others` : ""}.`);
       await props.onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -47,16 +48,16 @@ export function OwnerEditor(props: {
     <span class="cat-anchor">
       <button
         class={`cat-chip${props.owner ? "" : " is-empty"}`}
-        title={props.owner ? "Owner — scheduled runs are billed to them" : "No owner — scheduled runs have nobody to bill"}
+        title={props.owner ? `Owner (${props.owner}) — scheduled runs are billed to them` : "No owner — scheduled runs have nobody to bill"}
         onClick={toggle}
       >
-        {props.owner ?? "unowned"}
+        {props.owner ? displayActor(props.owner) : "unowned"}
       </button>
       {open && (
         <div class="cat-popover">
           <div class="cat-popover-text">
             {props.owner
-              ? <>Owned by <b>{props.owner}</b>. Its scheduled runs are billed to them.</>
+              ? <>Owned by <b title={props.owner}>{displayActor(props.owner)}</b>. Its scheduled runs are billed to them.</>
               : <>No owner. Scheduled runs of this workflow have nobody to bill.</>}
           </div>
           {result && <div class="cat-popover-text">{result}</div>}

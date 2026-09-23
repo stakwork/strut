@@ -328,6 +328,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       summary: "?string",
       status: "?string",
       model: "?string",
+      created_by: "?string",
       created_at: "datetime",
       last_active_at: "?datetime",
       turn_count: "?int",
