@@ -61,6 +61,10 @@ export interface ChatMeta {
    *  message (plans/mothership-cost-control.md §2). Chat turns, and the runs
    *  the builder launches, are billed to it. */
   actor?: string;
+  /** Who started this chat: the actor of the first human message that
+   *  carried one, never changed after (the chat twin of a workflow's
+   *  `owner`). The history list shows it. */
+  createdBy?: string;
 }
 
 export type ChatEventType =

@@ -627,6 +627,10 @@ export interface ChatMeta {
   createdAt: string;
   updatedAt: string;
   currentTurn: number;
+  /** Who started the chat (the first speaker with an actor) and who spoke
+   *  last. Whole actor ids — `displayActor` shortens them for the UI. */
+  createdBy?: string;
+  actor?: string;
 }
 
 /** A normalized fine-grained chat event (matches the server's `ChatEvent`). */

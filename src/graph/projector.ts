@@ -394,6 +394,7 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
         summary: preview(turns[0] ? (turns[0].data["user_text_preview"] as string) : undefined),
         status: meta.status,
         model: meta.model,
+        created_by: meta.createdBy,
         created_at: meta.createdAt,
         last_active_at: meta.updatedAt,
         turn_count: turns.length,

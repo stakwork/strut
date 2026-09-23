@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "preact/hooks";
 import * as api from "../api";
+import { displayActor } from "../actor";
 import * as storage from "../storage";
 import { formatJson } from "../helpers";
 import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon } from "../icons";
@@ -691,6 +692,11 @@ export function ChatFlyout(props: {
                   <span class="chat-history-live" title="Working" aria-label="Working" />
                 )}
                 <span class="chat-history-title">{ch.title || "Untitled chat"}</span>
+                {ch.createdBy && (
+                  <span class="chat-history-user" title={`Started by ${ch.createdBy}`}>
+                    {displayActor(ch.createdBy)}
+                  </span>
+                )}
                 {ch.model && (
                   <span class="chat-history-model" title={ch.model}>
                     {ch.model.split("/").slice(1).join("/") || ch.model}

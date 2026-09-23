@@ -2183,6 +2183,8 @@ export async function createStrut<TServices = unknown>(
         ...(pickedModel ? { model: pickedModel } : {}),
         ...(callback !== undefined ? { callback: callback ?? undefined } : {}),
         ...(actor ? { actor } : {}),
+        // The first identified speaker started the chat; nobody re-stamps it.
+        ...(actor && !meta!.createdBy ? { createdBy: actor } : {}),
       });
 
       // Lossless on disk (transcript); truncated copy re-fed to the model.
