@@ -96,7 +96,7 @@ export function StepEditFlyout(props: {
   });
 
   const handleSave = () => {
-    if (!id) { setError("Step must have an id"); return; }
+    if (!id) { setError("Tool must have an id"); return; }
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(id)) {
       setError("ID must match [a-zA-Z_][a-zA-Z0-9_]*");
       return;
@@ -132,7 +132,7 @@ export function StepEditFlyout(props: {
       <FlyoutResizer />
       <div class="flyout-header">
         <div>
-          <div class="flyout-eyebrow">Edit Step</div>
+          <div class="flyout-eyebrow">Edit Tool</div>
           <div class="flyout-title">{props.step.type}</div>
         </div>
         <button class="flyout-close" onClick={props.onClose} aria-label="Close"><CloseIcon /></button>
@@ -287,7 +287,7 @@ export function StepEditFlyout(props: {
             ) : source?.source ? (
               <pre class="flyout-source-code">{source.source}</pre>
             ) : (
-              <div class="flyout-source-empty">No source available for this step.</div>
+              <div class="flyout-source-empty">No source available for this tool.</div>
             )
           )}
         </div>

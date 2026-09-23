@@ -123,7 +123,7 @@ export function WorkflowFlyout(props: {
           <div class="flyout-section">
             <span class="flyout-meta-value">
               How this workflow should behave. Status is computed from evidence on the active version — runs are verified
-              automatically. A step's own claims are on that step.
+              automatically. A tool's own claims are on that tool.
             </span>
           </div>
           <ClaimsPanel subject={{ kind: "workflow", name: props.workflow }} onOpenRun={props.onOpenRun} onLoaded={props.onClaimsLoaded} />

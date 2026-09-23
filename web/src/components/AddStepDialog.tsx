@@ -36,7 +36,7 @@ export function AddStepDialog(props: {
   return (
     <div class="dialog-backdrop" onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
       <div class="dialog add-step-dialog">
-        <div class="dialog-title">Add Step</div>
+        <div class="dialog-title">Add Tool</div>
         <div class="add-step-search">
           <input
             ref={inputRef}
@@ -44,7 +44,7 @@ export function AddStepDialog(props: {
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search step types..."
+            placeholder="Search tools..."
           />
         </div>
         <div class="add-step-list">
@@ -58,7 +58,7 @@ export function AddStepDialog(props: {
             <StepGroup label="Custom" items={custom} onSelect={props.onSelect} />
           )}
           {filtered.length === 0 && (
-            <div class="add-step-empty">No matching step types</div>
+            <div class="add-step-empty">No matching tools</div>
           )}
         </div>
       </div>

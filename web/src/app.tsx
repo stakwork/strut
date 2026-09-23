@@ -542,7 +542,7 @@ export function App() {
 
   const handleCancelRun = useCallback(async () => {
     if (!selectedWf || !selectedRun) return;
-    if (!confirm("Cancel this run? Any nested runs it launched are cancelled too — each stops at its next step boundary (the in-flight step finishes and is journaled).")) return;
+    if (!confirm("Cancel this run? Any nested runs it launched are cancelled too — each stops before its next tool (the in-flight tool finishes and is journaled).")) return;
     try { await api.cancelRun(selectedWf, selectedRun); } catch (e) { alert(`Cancel failed: ${(e as Error).message}`); }
     await refreshRuns(selectedWf);
   }, [selectedWf, selectedRun, refreshRuns]);
@@ -566,7 +566,7 @@ export function App() {
   // dependents, and later loop iterations re-execute; upstream replays free.
   const handleRerunFrom = useCallback(async (path: string) => {
     if (!selectedWf || !selectedRun) return;
-    if (!confirm(`Re-run from "${path}"?\n\nThis step, everything downstream of it, and later iterations of an enclosing loop re-execute. Completed work upstream replays from the journal at zero cost.`)) return;
+    if (!confirm(`Re-run from "${path}"?\n\nThis tool, everything downstream of it, and later iterations of an enclosing loop re-execute. Completed work upstream replays from the journal at zero cost.`)) return;
     try { await api.resumeRun(selectedWf, selectedRun, path); } catch (e) { alert(`Re-run failed: ${(e as Error).message}`); return; }
     setFlyoutStepId(null);
     setFlyoutStepIndex(null);
@@ -885,7 +885,7 @@ export function App() {
         <div class={`sidebar-section${stepsOpen ? "" : " is-collapsed"}`}>
           <div class="section-title section-title-toggle" onClick={toggleStepsSection}>
             <span class={`cat-caret${stepsOpen ? " is-open" : ""}`}>▸</span>
-            <span>Steps</span>
+            <span>Tools</span>
             <span class="cat-count">
               {stepQuery.trim() ? `${matchedSteps.length} / ${stepTypes.length}` : stepTypes.length}
             </span>
@@ -895,8 +895,8 @@ export function App() {
               class="sidebar-search"
               type="search"
               value={stepQuery}
-              placeholder="Filter steps…"
-              aria-label="Filter steps"
+              placeholder="Filter tools…"
+              aria-label="Filter tools"
               onInput={(e) => setStepQuery((e.target as HTMLInputElement).value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setStepQuery("");
@@ -906,9 +906,9 @@ export function App() {
           )}
           {stepsOpen && (
             <div class="sidebar-scroll">
-              {stepTypes.length === 0 && <div class="empty-sidebar">No step types</div>}
+              {stepTypes.length === 0 && <div class="empty-sidebar">No tools</div>}
               {stepTypes.length > 0 && matchedSteps.length === 0 && (
-                <div class="empty-sidebar">No matching steps</div>
+                <div class="empty-sidebar">No matching tools</div>
               )}
               {stepGroups.map((g) => (
                 <div key={g.label}>
