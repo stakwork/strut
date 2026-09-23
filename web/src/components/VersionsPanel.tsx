@@ -12,6 +12,18 @@ import { ago } from "./ClaimsPanel";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
+/** When a version was published: relative within a day, then the date. */
+const published = (iso: string) => {
+  const d = new Date(iso);
+  if (Date.now() - d.getTime() < 24 * 3600 * 1000) return ago(secs(iso));
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
 export function VersionsPanel(props: {
   workflow: string;
@@ -64,7 +76,7 @@ export function VersionsPanel(props: {
                 {active && <span class="badge badge-accent">active</span>}
                 {v.version === shown && !active && <span class="badge">viewing</span>}
               </span>
-              <span class="auto-meta">{ago(secs(v.createdAt))}</span>
+              <span class="auto-meta" title={new Date(v.createdAt).toLocaleString()}>{published(v.createdAt)}</span>
             </div>
             {v.description && <div class="auto-hint">{v.description}</div>}
             <div class="auto-meta">
