@@ -2145,7 +2145,18 @@ export async function createStrut<TServices = unknown>(
           return c.json({ error: "model must be a non-empty string" }, 400);
         }
         try {
-          pickedModel = (await resolveModel({ model: body.model.trim(), secrets: secretsCap })).name;
+          pickedModel = (
+            await resolveModel({
+              model: body.model.trim(),
+              secrets: secretsCap,
+              // Through the gateway the key is the actor's grant, not ours —
+              // same auth the turn will use (a strut behind the Mothership
+              // may hold no provider keys at all).
+              ...(opts.llmAuth
+                ? { llmAuth: opts.llmAuth, auth: { kind: "chat" as const, chatId: chatId ?? "new", turn: 0, ...(actor ? { actor, principal: actor } : {}) } }
+                : {}),
+            })
+          ).name;
         } catch (err) {
           return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
         }

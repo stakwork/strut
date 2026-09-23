@@ -19,14 +19,10 @@ import {
   bytesToHex,
   decodeMacaroon,
   ecdsaPublicKey,
-  ed25519PublicKey,
   encodeMacaroon,
   invocationSigBytes,
-  signInvocation,
-  signUserAuthorizationSingle,
   verify,
   type Attenuation,
-  type Macaroon,
   type Policy,
 } from "gatekey";
 
@@ -44,6 +40,7 @@ import { createStrut } from "./createStrut.js";
 import { WorkspaceManager, type WorkspaceStore } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import type { LlmAuthContext } from "./llm.js";
+import { mintDelegation, type MintOptions } from "./test-util/mint-delegation.js";
 
 // ── Fixture: what hive mints — an org-signed UA + a user-signed standing invocation ──
 
@@ -53,24 +50,8 @@ orgPriv[0] = 1; // keep the scalar well inside the secp256k1 order
 const userPriv = randomBytes(32);
 const policy: Policy = { type: "single", key: { alg: "ecdsa-secp256k1-sha256", key: bytesToHex(ecdsaPublicKey(orgPriv)) } };
 const hex16 = () => randomBytes(16).toString("hex");
-
-function mint(o: { ceiling?: number; maxSteps?: number; agents?: string[]; ttlMs?: number; attenuations?: Attenuation[] } = {}) {
-  const now = new Date();
-  const iat = now.toISOString();
-  const exp = new Date(now.getTime() + (o.ttlMs ?? 60 * 86_400_000)).toISOString();
-  const agents = o.agents ?? [STRUT_AGENT];
-  const delegationId = randomUUID();
-  const ua = signUserAuthorizationSingle(
-    { user_id: ACTOR, user_pubkey: { alg: "ed25519", key: bytesToHex(ed25519PublicKey(userPriv)) }, agents, iat, exp, nonce: hex16() },
-    orgPriv,
-  );
-  const inv = signInvocation(
-    { agents, run_id: delegationId, max_cost_usd: o.ceiling ?? 10_000, max_steps: o.maxSteps ?? 0, iat, exp, nonce: hex16() },
-    userPriv,
-  );
-  const m: Macaroon = { v: 1, org_id: "org_test", user_authorization: ua, invocation: inv, attenuations: o.attenuations ?? [] };
-  return { macaroon: encodeMacaroon(m), delegationId, exp, m };
-}
+const mint = (o: Omit<MintOptions, "actor" | "orgPriv" | "userPriv"> = {}) =>
+  mintDelegation({ actor: ACTOR, orgPriv, userPriv, ...o });
 
 /** A workspace stub: only what the hook reads (a workflow's run cap). */
 const workspaceWith = (caps: Record<string, number | undefined>): WorkspaceStore =>
