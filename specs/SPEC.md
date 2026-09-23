@@ -799,7 +799,7 @@ The engine ships with an HTTP server (Hono) that exposes all operations. Set `ST
 
 `params` (optional) shallow-merges over the workflow's `params:` defaults for that one run — the per-trial override surface (see §11.1).
 
-`callback` (optional, `{ url }`, http(s) only — else 400 and nothing launches) asks for the result to be POSTed to that URL when the run settles, so a caller need not tail or poll: `{ event: "run.end", workflow, runId, status: "success" | "error" | "cancelled", output?, error?: { message }, durationMs }`, once, with a few retries. The 202 then carries `callback: true`. The URL is never persisted (`run.start` records its origin only) and a restart drops it — the fallback is `GET /workflows/:name/runs/:runId`.
+`callback` (optional, `{ url }`, http(s) only — else 400 and nothing launches) asks for the result to be POSTed to that URL when the run settles, so a caller need not tail or poll: `{ event: "run.end", workflow, runId, status: "success" | "error" | "cancelled", output?, error?: { message }, durationMs }`, once, with a few retries. The 202 then carries `callback: true`. The URL is never persisted (`run.start` records its origin only) and a restart drops it — the fallback is `GET /workflows/:name/runs/:runId`. Client how-to with an example: `CALLBACKS.md`.
 
 ### 12.2 Steps
 

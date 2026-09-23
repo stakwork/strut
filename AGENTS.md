@@ -30,7 +30,7 @@ server without a rebuild (proposed).
 
 ```
 strut/
-├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions
+├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions; CALLBACKS.md is the client how-to for `POST …/run { callback }`
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend on a bare `docker run`
 ├── docker-compose.yml     # test/local compose: that image on the graph backend + a neo4j:5 container (named volumes for neo4j data, /data/workspace, /data/models, uv cache)
