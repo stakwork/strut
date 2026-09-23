@@ -3,7 +3,7 @@ import { stepHashesFor } from "./closure.js";
 import type { Flow, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
 import type { ClaimsReader } from "./graph/claims.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
-import { MemoryRunStore, generateRunId, stepRunKey, type RunStore } from "./store.js";
+import { MemoryRunStore, countSteps, generateRunId, stepRunKey, type RunStore } from "./store.js";
 import {
   withCassette,
   loadCassette,
@@ -221,6 +221,7 @@ export async function persistRunUnder(store: RunStore, key: string, result: RunS
     input: result.events.find((e) => e.type === "run.start")?.input,
     ...(result.output !== undefined ? { output: result.output } : {}),
     ...(result.error ? { error: result.error } : {}),
+    stepCounts: countSteps(result.events),
   };
   await store.finalize(key, result.runId, summary);
   return key;

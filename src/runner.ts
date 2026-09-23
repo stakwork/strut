@@ -6,11 +6,12 @@ import type {
   RunEvent,
   RunOrigin,
   RunResult,
+  StepCounts,
 } from "./core.js";
 import { messagesOf } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import type { RunStore } from "./store.js";
-import { MemoryRunStore, generateRunId } from "./store.js";
+import { MemoryRunStore, countSteps, generateRunId, tallyStep } from "./store.js";
 import { RunController, isCancelledError } from "./run-control.js";
 
 // ── Runner ─────────────────────────────────────────────────────────────────
@@ -169,6 +170,9 @@ export async function runWorkflow<TServices = unknown>(
   const services = (opts?.services ?? ({} as TServices)) as TServices;
 
   const onEvent = opts?.onEvent;
+  // `RunSummary.stepCounts`, kept as events are emitted. A resume continues
+  // the same log, so it starts from what that log already counted.
+  const stepCounts: StepCounts = opts?.resume ? countSteps(await store.getRunEvents(wfName, runId)) : {};
   const emit = async (event: Partial<RunEvent> & { type: RunEvent["type"] }) => {
     const full: RunEvent = {
       ts: new Date().toISOString(),
@@ -177,6 +181,7 @@ export async function runWorkflow<TServices = unknown>(
       ...event,
     };
     await store.append(wfName, runId, full);
+    tallyStep(stepCounts, full);
     await onEvent?.(full);
   };
 
@@ -201,6 +206,7 @@ export async function runWorkflow<TServices = unknown>(
       input,
       error,
       ...summaryStamp,
+      stepCounts,
     });
     return { runId, status: "error", error };
   }
@@ -265,6 +271,7 @@ export async function runWorkflow<TServices = unknown>(
       input: parsedInput,
       output,
       ...summaryStamp,
+      stepCounts,
     });
     return { runId, status: "success", output };
   } catch (err) {
@@ -292,6 +299,7 @@ export async function runWorkflow<TServices = unknown>(
       input: parsedInput,
       ...(cancelled ? {} : { error }),
       ...summaryStamp,
+      stepCounts,
     });
     return cancelled ? { runId, status: "cancelled" } : { runId, status: "error", error };
   } finally {

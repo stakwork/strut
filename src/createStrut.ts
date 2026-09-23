@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Flow, StepRegistry, RunEvent, RunResult } from "./core.js";
 import type { RunStore } from "./store.js";
-import { FileRunStore, MemoryRunStore, generateRunId, summarizeFromEvents } from "./store.js";
+import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
 import {
   FileChatStore,
@@ -43,6 +43,7 @@ import { createAutomations, type Automations } from "./scheduler.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { stepHashesFor } from "./closure.js";
+import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -920,6 +921,7 @@ export async function createStrut<TServices = unknown>(
       input: start?.input,
       ...(status === "success" ? { output: last.output } : {}),
       ...(status === "error" && last.error ? { error: last.error } : {}),
+      stepCounts: countSteps(events),
     });
   };
 
@@ -1011,9 +1013,20 @@ export async function createStrut<TServices = unknown>(
   /** Resolve a control request target: its live controller (if any) and
    *  whether the run exists at all. */
   const findRun = async (name: string, runId: string) => {
-    const controller = controllers.get(`${name}/${runId}`) ?? null;
-    const summary = await store.getRunSummary(name, runId);
+    const key = `${name}/${runId}`;
     const events = await store.getRunEvents(name, runId);
+    // A run whose log already ends in a terminal event is only tearing down
+    // (`onRunEnd`) until its controller is released. Wait for that, briefly,
+    // so a finished run never reads as live — a control request in that
+    // window would otherwise "resume in memory" a run that has ended and
+    // append a stray marker to its log.
+    const last = events[events.length - 1];
+    if (last && isTerminalEvent(last)) {
+      const deadline = Date.now() + 2000;
+      while (controllers.has(key) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    }
+    const controller = controllers.get(key) ?? null;
+    const summary = await store.getRunSummary(name, runId);
     return { controller, summary, exists: controller != null || events.length > 0 };
   };
 
@@ -1469,6 +1482,13 @@ export async function createStrut<TServices = unknown>(
     const def = registry[type];
     if (!def) return c.json({ error: `Step type "${type}" not found` }, 404);
     return c.json({ type, fields: zodToFields(def.input) });
+  });
+
+  // Where a step type is used and how its executions went (step-stats.ts).
+  app.get("/steps/:type{.+}/stats", async (c) => {
+    const type = c.req.param("type");
+    if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
+    return c.json(await stepStats(workspace, store, type));
   });
 
   // Source code for a step. In-code steps (injected via createRegistry) carry

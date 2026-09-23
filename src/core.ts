@@ -341,7 +341,17 @@ export interface RunSummary {
   /** Content hash of the workflow version the run executed (as on
    *  `run.start`) — on the summary so "runs per version" is a summary scan. */
   workflowHash?: string;
+  /** Executions per step type in this run's whole log (subflows included —
+   *  they log inline), so step usage is a scan of summaries, never of event
+   *  logs (`step-stats.ts`). Always written by the runner; absent only on
+   *  summaries written before it existed. See `countSteps`. */
+  stepCounts?: StepCounts;
 }
+
+/** Keyed by `stepType` as emitted — a step an agent called as a tool is
+ *  `tool:<type>`. `step.end` = success, `step.error` = error (once per
+ *  execution, after retries); `step.replayed` is not an execution. */
+export type StepCounts = Record<string, { success: number; error: number; lastAt: string }>;
 
 /** A step definition with erased generics, for use in the registry.
  *

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "preact/hooks";
+import { searchSteps } from "../step-search";
 
 // ── Add Step Dialog (searchable) ────────────────────────────────────────────
 
@@ -18,10 +19,7 @@ export function AddStepDialog(props: {
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  const q = query.toLowerCase().trim();
-  const filtered = q
-    ? props.stepTypes.filter((s) => s.type.toLowerCase().includes(q) || s.description?.toLowerCase().includes(q))
-    : props.stepTypes;
+  const filtered = searchSteps(props.stepTypes, query);
 
   // Group by source
   const core = filtered.filter((s) => s.source === "core");
