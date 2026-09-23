@@ -5,6 +5,11 @@
 > MCP's locked 2026-07-28 release candidate. We copy its field names and its
 > secret rule; what we add is the transport, because strut's chat is a
 > detached job with no connection to hold a request open on.
+>
+> **Revised after review (same day):** answers are stamped with who answered,
+> never checked against the chat's actor (the store is deployment-global);
+> answers go through the notifier's queue, so a form never sees a 409; the
+> callback's `text` carries the question when a turn ends on an ask.
 
 ## Problem
 
@@ -32,9 +37,10 @@ host can't render it as anything but text.
 | Shapes | **ACP's.** `mode: "form" \| "url"`, `message`, `requestedSchema` (restricted flat JSON Schema), `action: "accept" \| "decline" \| "cancel"`, `content`, `elicitationId`. No homemade question kinds |
 | Secrets | **Never form mode** (ACP: MUST NOT). A secret is a URL-mode elicitation: the value is typed into a strut page that writes the secret store directly. The model, the transcript, the events log and the callback carry the NAME only |
 | Who builds the URL | **The server**, never the model. `request_secret({ name, reason })` takes no URL, so the model cannot send a user to an arbitrary address |
-| Transport | **The tool returns at once; the answer arrives as the next turn's user message.** No dangling tool call, no transcript surgery. `stopWhen: hasToolCall(…)` ends the turn after the ask |
+| Transport | **The tool returns at once; the answer arrives as the next turn's user message.** No dangling tool call, no transcript surgery. `stopWhen: hasToolCall(…)` ends the turn after the ask; the answer goes through the notifier's queue, like a run notification, so it never collides with a live turn |
 | Pending state | **One open elicitation per chat**, on `ChatMeta` — persisted, so it survives a restart. A new ask replaces it; a human message closes it |
-| Hosts | **Carried on the turn callback.** Form questions go to the host (its agent or its UI). Secret questions are a link the host shows its user; the value never passes through the host |
+| Who answered | **Recorded, never enforced.** The request's actor is stamped on the response; it is not compared with the chat's. The secret store is deployment-global, so a per-chat gate would guard one door beside an open one — and lock out the right person on a string mismatch. The binding is the deployment's auth, as for `PUT /secrets` |
+| Hosts | **Carried on the turn callback.** Form questions go to the host (its agent or its UI). Secret questions are a link the host shows its user; the value never passes through the host. When a turn ends on an ask, the callback's `text` is the question, so a host that only reads text still sees it |
 
 ## Design in one paragraph
 
@@ -47,9 +53,11 @@ ends right there, a complete tool call with its result. The turn callback
 reports the open elicitation to a host. The answer comes back through one of
 two endpoints: a form answer through `POST /chat/:id/elicitations/:eid`, a
 secret through `POST /chat/:id/elicitations/:eid/secret`, which writes the
-store itself. Either way the server clears the pending record, appends a
+store itself. Either way the server clears the pending record and hands a
 user-role `[elicitation-response]` message (for a secret: the name and
-"stored", never the value), and launches the next turn like `POST /chat` does.
+"stored", never the value) to the notifier's `deliver`, which launches the
+next turn — or, when a turn is live, queues it behind that turn — exactly as
+a `[run-notification]` arrives.
 
 ## Shapes
 
@@ -101,7 +109,7 @@ then falls back to telling the user in prose, as today.
 ```ts
 // ChatMeta
 elicitation?: {
-  elicitationId: string;
+  elicitationId: string;            // crypto-random (16 bytes, base64url) — see "Endpoints"
   toolCallId: string;               // ACP's scope binding: sessionId (the chat) + toolCallId
   turn: number;                     // the turn that asked
   createdAt: string;
@@ -135,35 +143,53 @@ Both are behind `requireApiKey`, like `PUT /secrets/:name`.
   `elicitation/complete`, done by the server itself.
 
 Both endpoints return **404** when `:eid` is not the chat's open elicitation
-(already answered, replaced, or closed), and **409** while a turn is live —
-the same rule as `POST /chat`. On success they clear `ChatMeta.elicitation`,
-append the response message, reset `autoTurns` (a person answered), and
-launch the next turn with trigger `human`. They reply `{ chatId, turn }`
-(202).
+(already answered, replaced, or closed). On success they clear
+`ChatMeta.elicitation` and hand the response message to the notifier's
+`deliver` with a new `{ human: true }` option: `autoTurns` resets to 0 (a
+person answered, so a parked chat wakes) and the turn launches with trigger
+`human`. If a turn is live — a run notification woke the chat while the form
+was on screen — the answer queues and drains into that turn's follow-up, the
+way a notification that lands mid-turn does; a drain that includes an answer
+launches as `human`. So there is **no 409** for an answer, and nothing is
+factored out of `POST /chat` (which keeps its 409: a typed message is not a
+queued answer). They reply 202 `{ chatId, turn? }` — `turn` when a turn
+launched at once, absent when the answer queued; the flyout's idle poll
+notices the turn either way.
 
-**Identity binding (ACP: state bound to the verified user).** When the
-request has an actor (`resolveActor`) and the chat has one (`meta.actor`) and
-they differ, the answer is a 403. Without actors this adds nothing; the
-deployment's auth in front of the UI is the binding, as it is for
-`PUT /secrets`.
+**Who answered is recorded, never checked.** The request's actor
+(`resolveActor`), when there is one, is stamped on the response message as
+`by <actor>` — the model and the transcript see who answered, as a run
+records who launched it. It is not compared with `meta.actor`. The secret
+store is deployment-global (AGENTS.md "Secrets"): every member of the trust
+domain can already write any name through `PUT /secrets/:name` and read any
+name from a step they author, so a per-chat 403 would guard one door beside
+an open one — and a string mismatch between a host's dispatch actor and its
+login actor (plans/mothership-cost-control.md §2, "The actor string") would
+lock the right person out of their own link. The binding is the deployment's
+auth in front of the UI (mcp's JWT gate, or `STRUT_API_KEY`), exactly as for
+`PUT /secrets`, plus the id: with the deployment key unset, the link IS the
+authorization to write one named secret, so `elicitationId` is crypto-random
+(16 bytes, base64url), never a counter or a timestamp. A real per-user check
+arrives with per-user secrets, if ever.
 
 ### The response message
 
 ```
-[elicitation-response] <elicitationId> accept
+[elicitation-response] <elicitationId> accept by alice-42
 {"repo":"stakwork/strut","branch":"main"}
 ```
 
 ```
-[elicitation-response] <elicitationId> accept — secret SLACK_BOT_TOKEN stored (value not shown)
+[elicitation-response] <elicitationId> accept by alice-42 — secret SLACK_BOT_TOKEN stored (value not shown)
 ```
 
 ```
 [elicitation-response] <elicitationId> decline
 ```
 
-A user-role message in the `[run-notification]` family: the model reads it
-as the answer to the tool call it made, by id. The web flyout renders it as a
+`by <actor>` is present when the request carried an actor. A user-role
+message in the `[run-notification]` family: the model reads it as the answer
+to the tool call it made, by id. The web flyout renders it as a
 small notice card, not a user bubble (`web/src/notice.ts`, with a test that
 runs the parser against the server's formatter, like the other notices).
 
@@ -180,6 +206,16 @@ It is present when the turn ended with an elicitation open. `settled` does
 not change meaning: nothing inside strut will wake the chat, so an open
 elicitation is `settled: true`. The field tells the host why it is waiting.
 
+**`text` is the question.** A turn that ends on an ask has no final answer —
+`finalAssistantText` would return whatever the model said earlier in the
+turn, or nothing. So when `elicitation` is present, `text` is rendered from
+it: the `message`, then for a form one line per field (`repo (string,
+required)`, `env: staging | production`), for a secret the name and reason.
+A host that predates the field — or anything that only reads `text` — still
+shows the question, and a prose reply through `POST /chat` closes the
+elicitation and answers it. The feature degrades to "the builder asked",
+never to silence.
+
 ## Lifecycle and edge cases
 
 - **The model keeps talking after asking.** Prevented by `stopWhen`: the
@@ -190,11 +226,16 @@ elicitation is `settled: true`. The field tells the host why it is waiting.
   disappears. A late answer to the closed elicitation gets a 404.
 - **The model asks again before an answer.** The new ask replaces the open
   one; the old id is dead. One open elicitation per chat keeps the UI and the
-  callback to one thing.
+  callback to one thing. A second call in the same step replaces the first
+  before the turn even ends; its result names the id it replaced, so the
+  model knows which one is live.
 - **A run or verify notification arrives while an elicitation is open.** It
   wakes the chat exactly as today. The elicitation stays open, and the model
-  knows it asked. Nothing needs queuing, because there is no dangling tool
-  call to protect.
+  knows it asked. An answer submitted during that turn queues behind it and
+  starts the follow-up turn (see "Endpoints"); the form never sees a 409. If
+  the woken model asked again, the queued answer names a replaced id — the
+  prompt says an answer to a replaced id is still the user's answer to that
+  question.
 - **Restart.** The pending record is on `meta.json`, so the form is still
   there after a restart and an answer still works. (Unlike the notifier's
   in-memory queue.)
@@ -224,7 +265,10 @@ grepping every one of those files for it.
   shows). That link opens the chat flyout on that chat, with the secret form
   on top.
 - **Deep links.** `elicit` joins the params that `web/src/embed.ts` reports
-  to an embedding host, so the host's URL stays in sync.
+  to an embedding host, so the host's URL stays in sync. The UI drops it once
+  the elicitation is answered or closed, and on load ignores an `elicit` that
+  is not `meta.elicitation.elicitationId` — a host reload with a stale param
+  must not re-open a dead form.
 
 ## Hosts (Hive)
 
@@ -237,7 +281,10 @@ link. What Hive does with them:
   with a new optional `answer: { elicitationId, action, content? }` (or a
   small `answer_strut` tool). Hive calls `POST /chat/:id/elicitations/:eid`.
   `answer` has no way to express a secret, so the canvas agent can't supply
-  one even if it tries.
+  one even if it tries. Hive checks `elicitation` on the callback before it
+  treats a `settled: true` turn as final; until it does, `text` carries the
+  question (above), the canvas agent sees it as prose, and its prose reply
+  through `dispatch_strut` closes the elicitation the ordinary way.
 - **Secret elicitations.** The fan-out posts a card: "Strut needs
   `SLACK_BOT_TOKEN`: <reason>", showing the **full URL**
   (`<labBase>/?chat=…&elicit=…`) and an Open button. That is everything ACP
@@ -245,9 +292,11 @@ link. What Hive does with them:
   The user types the value into strut's page. Neither Hive's server nor
   either model sees it. The canvas agent hears "SLACK_BOT_TOKEN stored" on
   the next turn end.
-- **Identity binding** comes from the lab sitting behind Hive's auth (mcp's
-  JWT gate), plus the actor check above: the lab request carries the viewing
-  user as its actor, and it must match the chat's.
+- **Identity** comes from the lab sitting behind Hive's auth (mcp's JWT
+  gate): only a signed-in member reaches the page, and mcp's `resolveActor`
+  stamps that member on the response as `by`. Strut does not compare it with
+  the chat's actor (see "Who answered" above), so Hive's dispatch actor and
+  its JWT `sub` need not be the same string for the link to work.
 
 A native Hive secret form is possible later (Hive server → strut's `/secret`
 endpoint, server to server), but it would put Hive's server in the value's
@@ -269,21 +318,32 @@ path, and the link needs no Hive UI at all. Start with the link.
 ## Steps
 
 1. `src/ai/elicitation.ts`: the schema-subset validator (model schema +
-   submitted content), the secret-name heuristic, and the
-   `[elicitation-response]` formatter. Pure; unit-tested.
+   submitted content — content validation may lean on `z.fromJSONSchema`,
+   zod 4.6, with `zodToFields` then serving the UI; the subset check stays
+   hand-written either way), the secret-name heuristic, `newElicitationId()`
+   (crypto-random), the `[elicitation-response]` formatter, and the
+   callback `text` rendering of an open elicitation. Pure; unit-tested.
 2. `ChatMeta.elicitation` in `chat-store.ts` (both impls). `POST /chat`
-   clears it.
-3. The two tools in `ai/tools.ts` (`AiDeps` gains `openElicitation(chatId,
-   record)` and the secret store's `list()` for `exists`). Add
+   clears it. Clearing is `setMeta({ elicitation: undefined })`: both stores
+   spread the patch, so a test asserts the key reads as absent afterwards on
+   both (JSON drops it on disk; the memory store keeps an `undefined` slot).
+3. The two tools in `ai/tools.ts` (`AiDeps` gains `openElicitation(record)` —
+   the chat id is in the per-turn closure, `toolCallId` comes from the tool's
+   execute options — and the secret store's `list()` for `exists`). Add
    `hasToolCall("ask_user", "request_secret")` to the chat agent's `stopWhen`.
    Prompt: the ACP secret rule, "call `list_secrets` first; if the name is
-   missing, `request_secret`", and the decline/cancel meaning.
-4. The two endpoints in `createStrut.ts`, sharing a `resumeWithMessage(chatId,
-   text)` helper factored out of `POST /chat` (append the user message, reset
-   `autoTurns`, launch the turn).
-5. `elicitation` on the turn callback payload.
-6. Web: the form in `ChatFlyout` (JSON Schema → `FieldDesc`), the secret form,
-   `?elicit=` handling, `elicit` in `embed.ts`, the notice card.
+   missing, `request_secret`", the decline/cancel meaning, and "an answer to
+   a replaced id is still the answer".
+4. `notifier.deliver(chatId, text, { human: true })` in `ai/notifier.ts`
+   (reset `autoTurns`, launch as `human`; `startTurn` gains the trigger), then
+   the two endpoints in `createStrut.ts` on top of it. Nothing is factored
+   out of `POST /chat`.
+5. `elicitation` on the turn callback payload; `text` is the rendered
+   question when the turn ended on an ask.
+6. Web: the form in `ChatFlyout` (JSON Schema → `FieldDesc`, plus a
+   multi-select kind — `FieldDesc` has none today), the secret form,
+   `?elicit=` handling (stale ids ignored, dropped once closed), `elicit` in
+   `embed.ts`, the notice card.
 7. The no-leak test: a sentinel secret through the whole flow, then grep the
    chat dir, the events, the callback bodies and captured logs.
 8. AGENTS.md: a short "Elicitation" entry under Key concepts, and the tool
