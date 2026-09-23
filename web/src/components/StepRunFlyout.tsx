@@ -32,6 +32,8 @@ export function StepRunFlyout(props: {
 }) {
   const { step } = props;
   const disp = props.events;
+  // LLM steps (agent, llm) report their dollar cost in the output.
+  const cost = (disp.end?.output as { cost?: unknown } | null | undefined)?.cost;
   const status = disp.error ? "error" : disp.skipped ? "skipped" : disp.end ? "success" : "running";
 
   return (
@@ -56,6 +58,12 @@ export function StepRunFlyout(props: {
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Duration</span>
                 <span class="flyout-meta-value">{disp.end.durationMs}ms</span>
+              </div>
+            )}
+            {typeof cost === "number" && (
+              <div class="flyout-meta-row">
+                <span class="flyout-meta-label">Cost</span>
+                <span class="flyout-meta-value">${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</span>
               </div>
             )}
             {props.onRerunFrom && (

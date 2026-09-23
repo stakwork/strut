@@ -8,6 +8,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tailJsonl } from "./store.js";
+import type { ElicitationRecord } from "./ai/elicitation.js";
 
 /**
  * Chat persistence — the server-side store that makes the AI builder a
@@ -65,6 +66,11 @@ export interface ChatMeta {
    *  carried one, never changed after (the chat twin of a workflow's
    *  `owner`). The history list shows it. */
   createdBy?: string;
+  /** The open elicitation — the builder's question awaiting an answer
+   *  (plans/elicitation.md; `ai/elicitation.ts`). One per chat, persisted so
+   *  it survives a restart. A new ask replaces it; `POST /chat` (a typed
+   *  message) and an answer clear it. */
+  elicitation?: ElicitationRecord;
 }
 
 export type ChatEventType =

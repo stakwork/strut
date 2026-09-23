@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../core.js";
 import type { StrutCapabilities } from "../../capabilities.js";
 import { resolveModel, stepAuth } from "../../llm.js";
+import { usageFromResult, usageForCost } from "../../pricing.js";
 
 const EXAMPLE = `- id: summarize
   type: llm
@@ -25,14 +26,14 @@ export async function toSdkSchema(schema: unknown): Promise<unknown> {
 
 export default defineStep({
   type: "llm",
-  description: `One LLM call over a prompt — summarize, classify, extract, draft. Judgment, not arithmetic: have it return what it found (a label, a quote, a timestamp exactly as written in the source — hh:mm:ss, mm:ss, or seconds) and do conversion and math in code (exec or a custom step); set schema so numeric fields arrive typed. Output: { text }, or the structured object itself when schema is set. Needs the provider's key in the secret store or env (ANTHROPIC_API_KEY, OPENAI_API_KEY, …). For multi-step work with tools, use the agent step.\n\n${EXAMPLE}`,
+  description: `One LLM call over a prompt — summarize, classify, extract, draft. Judgment, not arithmetic: have it return what it found (a label, a quote, a timestamp exactly as written in the source — hh:mm:ss, mm:ss, or seconds) and do conversion and math in code (exec or a custom step); set schema so numeric fields arrive typed. Output: { text, usage, cost }, or the structured object itself (plus usage, cost) when schema is set. Needs the provider's key in the secret store or env (ANTHROPIC_API_KEY, OPENAI_API_KEY, …). For multi-step work with tools, use the agent step.\n\n${EXAMPLE}`,
   input: z.object({
     prompt: z.string().describe("the full prompt; templates resolve first"),
     schema: z
       .any()
       .optional()
       .describe(
-        "JSON Schema for STRUCTURED output — the step returns the object itself, so put timestamps/numbers/labels in typed fields (in code, a Zod schema also works); omit for free-form { text }",
+        "JSON Schema for STRUCTURED output — the step returns the object itself (plus usage, cost), so put timestamps/numbers/labels in typed fields (in code, a Zod schema also works); omit for free-form { text, usage, cost }",
       ),
     provider: z
       .string()
@@ -57,7 +58,7 @@ export default defineStep({
     // comes through the secrets boundary (secret store → env). The output
     // cap is a provider-derived infra constant (pricing.ts) — without it the
     // SDK's 4096 default truncates a long answer.
-    const { model, maxOutputTokens } = await resolveModel({
+    const { model, maxOutputTokens, provider, modelId } = await resolveModel({
       model: cfg.model ?? process.env["STRUT_LLM_MODEL"],
       provider: cfg.provider ?? process.env["STRUT_LLM_PROVIDER"],
       secrets: ctx?.services?.secrets,
@@ -65,23 +66,17 @@ export default defineStep({
       ...stepAuth(ctx),
     });
 
-    if (cfg.schema) {
-      // Structured output
-      const result = await generateText({
-        model,
-        prompt: cfg.prompt,
-        output: Output.object({ schema: (await toSdkSchema(cfg.schema)) as any }),
-        maxOutputTokens,
-      });
-      return result.output;
-    } else {
-      // Free-form text
-      const result = await generateText({
-        model,
-        prompt: cfg.prompt,
-        maxOutputTokens,
-      });
-      return { text: result.text };
-    }
+    const result = await generateText({
+      model,
+      prompt: cfg.prompt,
+      ...(cfg.schema ? { output: Output.object({ schema: (await toSdkSchema(cfg.schema)) as any }) } : {}),
+      maxOutputTokens,
+    });
+    // Token usage + dollar cost at aieo's rates, like the agent step's output.
+    const { computeSessionCost } = await import("aieo");
+    const usage = usageFromResult(result.usage);
+    const cost = computeSessionCost(provider, usageForCost(usage), modelId);
+    // Structured: the object's own fields win a name clash with usage/cost.
+    return cfg.schema ? { usage, cost, ...(result.output as object) } : { text: result.text, usage, cost };
   },
 });

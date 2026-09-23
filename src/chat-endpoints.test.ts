@@ -8,7 +8,9 @@ import { randomUUID } from "node:crypto";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
-import { MemoryChatStore, type ChatEvent } from "./chat-store.js";
+import { MemoryChatStore, type ChatEvent, type ChatMeta } from "./chat-store.js";
+import { MemorySecretStore } from "./secret-store.js";
+import { secretUrl, type ElicitationRecord } from "./ai/elicitation.js";
 import http from "node:http";
 
 /**
@@ -574,6 +576,343 @@ describe("chat endpoints", () => {
     } finally {
       stuck.close();
       host.close();
+    }
+  });
+
+  // ── Elicitation (plans/elicitation.md) ───────────────────────────────
+
+  const JSON_ = (body: unknown) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const FORM: ElicitationRecord = {
+    elicitationId: "e-form",
+    toolCallId: "t1",
+    turn: 0,
+    createdAt: "2026-09-22T00:00:00.000Z",
+    message: "Which repo?",
+    mode: "form",
+    requestedSchema: { type: "object", properties: { repo: { type: "string" }, env: { type: "string", enum: ["staging", "production"] } }, required: ["repo"] },
+  };
+  const SECRET: ElicitationRecord = {
+    elicitationId: "e-secret",
+    toolCallId: "t2",
+    turn: 0,
+    createdAt: "2026-09-22T00:00:00.000Z",
+    message: "to post alerts",
+    mode: "url",
+    name: "SLACK_BOT_TOKEN",
+    url: "?chat=c&elicit=e-secret",
+    exists: false,
+  };
+
+  /** A chat parked on an open question, one finished turn behind it. */
+  async function askedChat(record: ElicitationRecord, extra: Partial<ChatMeta> = {}): Promise<string> {
+    const id = `c-${randomUUID().slice(0, 8)}`;
+    await chatStore.createChat({ id });
+    await chatStore.appendMessages(id, [{ role: "user", content: "hi" }]);
+    await chatStore.setMeta(id, { status: "done", currentTurn: 0, elicitation: record, ...extra });
+    return id;
+  }
+  const lastMessage = async (id: string) => (await chatStore.loadMessages(id)).at(-1)!.content;
+
+  it("answering a form closes the question, records the answer, and launches a human turn", async () => {
+    const strut = await makeStrut();
+    const id = await askedChat(FORM, { autoTurns: 4 });
+    const res = await strut.app.request(`/chat/${id}/elicitations/e-form`, JSON_({ action: "accept", content: { repo: "stakwork/strut", env: "staging" } }));
+    assert.equal(res.status, 202);
+    assert.deepEqual(await res.json(), { chatId: id, turn: 1 });
+    const meta = (await chatStore.getMeta(id))!;
+    assert.equal(meta.elicitation, undefined);
+    assert.equal(meta.currentTurn, 1);
+    assert.equal(meta.autoTurns, 0, "a person answered");
+    assert.equal(await lastMessage(id), '[elicitation-response] e-form accept\n{"repo":"stakwork/strut","env":"staging"}');
+    await settled(id);
+    // The question is closed: a second answer is a 404.
+    assert.equal((await strut.app.request(`/chat/${id}/elicitations/e-form`, JSON_({ action: "decline" }))).status, 404);
+  });
+
+  it("an answer is checked — the action, the content by field, and which door a secret takes — and a refused one leaves the question open", async () => {
+    const strut = await makeStrut();
+    const form = await askedChat(FORM);
+    const secret = await askedChat(SECRET);
+    const answer = (id: string, eid: string, body: unknown) => strut.app.request(`/chat/${id}/elicitations/${eid}`, JSON_(body));
+    const error = async (res: Response) => ((await res.json()) as { error: string }).error;
+
+    let res = await answer(form, "e-form", { action: "nope" });
+    assert.equal(res.status, 400);
+    res = await answer(form, "e-form", { action: "accept", content: { env: "staging" } });
+    assert.equal(res.status, 400);
+    assert.match(await error(res), /content\.repo: is required/);
+    res = await answer(form, "e-form", { action: "accept", content: { repo: "a/b", env: "dev" } });
+    assert.equal(res.status, 400);
+    assert.match(await error(res), /content\.env: must be one of staging \| production/);
+    assert.equal((await answer(form, "e-other", { action: "cancel" })).status, 404);
+    assert.equal((await answer("nope", "e-form", { action: "cancel" })).status, 404);
+    // A secret is never accepted through the form door…
+    res = await answer(secret, "e-secret", { action: "accept" });
+    assert.equal(res.status, 400);
+    assert.match(await error(res), /\/secret/);
+    // …and a form never through the secret door.
+    res = await strut.app.request(`/chat/${form}/elicitations/e-form/secret`, JSON_({ value: "x" }));
+    assert.equal(res.status, 400);
+    assert.equal((await strut.app.request(`/chat/${secret}/elicitations/e-secret/secret`, JSON_({}))).status, 400);
+
+    assert.equal((await chatStore.getMeta(form))!.elicitation?.elicitationId, "e-form");
+    assert.equal((await chatStore.getMeta(secret))!.elicitation?.elicitationId, "e-secret");
+    assert.equal((await chatStore.getMeta(form))!.currentTurn, 0, "nothing launched");
+  });
+
+  it("declining a secret records the NAME and stores nothing", async () => {
+    const secrets = new MemorySecretStore();
+    const strut = await makeStrut({ secretStore: secrets });
+    const id = await askedChat(SECRET);
+    const res = await strut.app.request(`/chat/${id}/elicitations/e-secret`, JSON_({ action: "decline" }));
+    assert.equal(res.status, 202);
+    assert.equal(await lastMessage(id), "[elicitation-response] e-secret decline — secret SLACK_BOT_TOKEN not stored");
+    assert.equal(await secrets.get("SLACK_BOT_TOKEN"), undefined);
+    await settled(id);
+  });
+
+  it("a secret goes into the store under the recorded name — and nowhere else: transcript, events, meta, callbacks, logs, responses", async () => {
+    const secrets = new MemorySecretStore();
+    const strut = await makeStrut({ secretStore: secrets });
+    const host = await callbackHost();
+    const logs: string[] = [];
+    const orig = { log: console.log, warn: console.warn, error: console.error };
+    for (const k of ["log", "warn", "error"] as const) console[k] = (...a: unknown[]) => void logs.push(a.map(String).join(" "));
+    try {
+      // A dispatched chat with a callback; its first turn fails at once (no key).
+      const first = await strut.app.request("/chat", JSON_({ message: "post to slack", callback: { url: host.url } }));
+      const { chatId } = (await first.json()) as { chatId: string };
+      await settled(chatId);
+      await until(() => host.posts.length === 1);
+      await chatStore.setMeta(chatId, { elicitation: { ...SECRET, url: secretUrl(chatId, "e-secret") } });
+
+      const SENTINEL = "xoxb-sentinel-9f8e7d6c5b4a";
+      const res = await strut.app.request(`/chat/${chatId}/elicitations/e-secret/secret`, JSON_({ value: SENTINEL }));
+      assert.equal(res.status, 202);
+      const responseBody = await res.text();
+      assert.equal(await secrets.get("SLACK_BOT_TOKEN"), SENTINEL);
+      assert.equal(await lastMessage(chatId), "[elicitation-response] e-secret accept — secret SLACK_BOT_TOKEN stored (value not shown)");
+      await settled(chatId);
+      await until(() => host.posts.length === 2);
+      assert.equal(host.posts[1].body.trigger, "human");
+      assert.equal(host.posts[1].body.elicitation, undefined);
+      assert.equal(host.posts[1].body.settled, true);
+
+      const everything = [
+        responseBody,
+        JSON.stringify(await chatStore.loadMessages(chatId)),
+        JSON.stringify(chatStore.events.get(chatId) ?? []),
+        JSON.stringify(await chatStore.getMeta(chatId)),
+        JSON.stringify(host.posts),
+        await (await strut.app.request(`/chat/${chatId}`)).text(),
+        await (await strut.app.request("/chats")).text(),
+        await (await strut.app.request(`/chat/${chatId}/stream?turn=1`)).text(),
+        logs.join("\n"),
+      ].join("\n");
+      assert.ok(!everything.includes(SENTINEL), "the secret value leaked");
+      assert.ok(everything.includes("SLACK_BOT_TOKEN"), "the name is what everything carries");
+    } finally {
+      Object.assign(console, orig);
+      host.close();
+    }
+  });
+
+  it("the answer endpoints are gated by STRUT_API_KEY, and the actor is recorded — never checked against the chat's", async () => {
+    const saved = process.env["STRUT_API_KEY"];
+    process.env["STRUT_API_KEY"] = "k";
+    try {
+      const strut = await makeStrut();
+      const id = await askedChat(FORM, { actor: "bob-7" });
+      assert.equal((await strut.app.request(`/chat/${id}/elicitations/e-form`, JSON_({ action: "cancel" }))).status, 401);
+      const res = await strut.app.request(`/chat/${id}/elicitations/e-form`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer k", "x-strut-actor": "alice-42" },
+        body: JSON.stringify({ action: "cancel" }),
+      });
+      assert.equal(res.status, 202);
+      assert.equal(await lastMessage(id), "[elicitation-response] e-form cancel by alice-42");
+      await settled(id);
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_API_KEY"];
+      else process.env["STRUT_API_KEY"] = saved;
+    }
+  });
+
+  it("a typed message closes the open question", async () => {
+    const strut = await makeStrut();
+    const id = await askedChat(FORM);
+    assert.equal((await strut.app.request("/chat", JSON_({ chatId: id, message: "forget it, use the default" }))).status, 202);
+    assert.equal((await chatStore.getMeta(id))!.elicitation, undefined);
+    await settled(id);
+    assert.equal((await strut.app.request(`/chat/${id}/elicitations/e-form`, JSON_({ action: "accept", content: { repo: "a/b" } }))).status, 404);
+  });
+
+  it("an answer during a live turn queues (no 409) and the follow-up launches as a human turn", async () => {
+    const stuck = await stuckProvider();
+    const host = await callbackHost();
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${stuck.port}`;
+    try {
+      const strut = await makeStrut();
+      const res = await strut.app.request("/chat", JSON_({ message: "go", callback: { url: host.url } }));
+      const { chatId } = (await res.json()) as { chatId: string };
+      await until(() => (chatStore.events.get(chatId) ?? []).some((e) => e.type === "text-delta"));
+      // A question left open by an earlier turn, while this (notification-style) turn runs.
+      await chatStore.setMeta(chatId, { elicitation: FORM });
+
+      const answer = await strut.app.request(`/chat/${chatId}/elicitations/e-form`, JSON_({ action: "accept", content: { repo: "a/b" } }));
+      assert.equal(answer.status, 202);
+      assert.deepEqual(await answer.json(), { chatId, queued: true });
+      assert.equal((await chatStore.getMeta(chatId))!.elicitation, undefined, "closed at once");
+
+      // End the live turn: the drain launches the follow-up as a human turn.
+      await strut.app.request(`/chat/${chatId}/cancel`, { method: "POST" });
+      await until(() => host.posts.length === 1);
+      assert.equal(host.posts[0].body.settled, false, "the follow-up is already live");
+      assert.equal(host.posts[0].body.elicitation, undefined);
+      for (let i = 0; i < 200 && (await chatStore.getMeta(chatId))!.currentTurn < 1; i++) await new Promise((r) => setTimeout(r, 25));
+      assert.equal((await chatStore.getMeta(chatId))!.currentTurn, 1, "the drain launched the follow-up");
+      assert.equal((await chatStore.loadMessages(chatId)).some((m) => m.content === '[elicitation-response] e-form accept\n{"repo":"a/b"}'), true);
+      await strut.app.request(`/chat/${chatId}/cancel`, { method: "POST" });
+      await settled(chatId);
+      await until(() => host.posts.length === 2);
+      assert.equal(host.posts[1].body.trigger, "human");
+      assert.equal(host.posts[1].body.turn, 1);
+    } finally {
+      stuck.close();
+      host.close();
+    }
+  });
+
+  /** A stand-in provider whose FIRST reply is one tool call and every later
+   *  reply plain text — so a loop that does not stop on the ask shows up as
+   *  a second request. */
+  async function toolCallProvider(name: string, input: object): Promise<{ port: number; calls: () => number; close: () => void }> {
+    let calls = 0;
+    const server = http.createServer((_req, res) => {
+      calls++;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const ev = (type: string, data: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+      ev("message_start", {
+        message: { id: "m1", type: "message", role: "assistant", model: "claude-sonnet-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } },
+      });
+      if (calls === 1) {
+        ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_1", name, input: {} } });
+        ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } });
+        ev("content_block_stop", { index: 0 });
+        ev("message_delta", { delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 5 } });
+      } else {
+        ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "went on" } });
+        ev("content_block_stop", { index: 0 });
+        ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } });
+      }
+      ev("message_stop", {});
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return { port: (server.address() as { port: number }).port, calls: () => calls, close: () => server.close() };
+  }
+
+  it("a turn that calls ask_user ends on it: the question is on the chat, the host hears it as a field and as text", async () => {
+    const requestedSchema = { type: "object", properties: { repo: { type: "string", title: "Repository" }, env: { type: "string", enum: ["staging", "production"] } }, required: ["repo"] };
+    const fake = await toolCallProvider("ask_user", { message: "Which repo?", requestedSchema });
+    const host = await callbackHost();
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    try {
+      const strut = await makeStrut();
+      const res = await strut.app.request("/chat", JSON_({ message: "deploy it", callback: { url: host.url } }));
+      const { chatId } = (await res.json()) as { chatId: string };
+      await settled(chatId);
+      const meta = (await chatStore.getMeta(chatId))!;
+      assert.equal(meta.status, "done");
+      const open = meta.elicitation!;
+      assert.equal(open.mode, "form");
+      assert.equal(open.message, "Which repo?");
+      assert.equal(open.toolCallId, "toolu_1");
+      assert.equal(open.turn, 0);
+      assert.match(open.elicitationId, /^[A-Za-z0-9_-]{22}$/);
+      assert.deepEqual(open.mode === "form" && open.requestedSchema, requestedSchema);
+
+      // The turn stopped on the ask: one provider request, and the transcript
+      // holds the complete call with its result.
+      assert.equal(fake.calls(), 1);
+      const transcript = JSON.stringify(await chatStore.loadMessages(chatId));
+      assert.ok(transcript.includes('"status":"asked"'), transcript);
+      assert.ok(transcript.includes(open.elicitationId));
+
+      await until(() => host.posts.length === 1);
+      const { body } = host.posts[0];
+      assert.equal(body.settled, true);
+      assert.deepEqual(body.elicitation, { elicitationId: open.elicitationId, mode: "form", message: "Which repo?", requestedSchema });
+      assert.equal(body.text, 'Which repo?\n- repo "Repository" (string, required)\n- env (staging | production)');
+
+      // The flyout's poll sees it too.
+      const got = (await (await strut.app.request(`/chat/${chatId}`)).json()) as { meta: ChatMeta };
+      assert.equal(got.meta.elicitation?.elicitationId, open.elicitationId);
+    } finally {
+      fake.close();
+      host.close();
+    }
+  });
+
+  it("a turn that calls request_secret ends on it with a relative link, and the link's answer stores the value", async () => {
+    const secrets = new MemorySecretStore();
+    const fake = await toolCallProvider("request_secret", { name: "SLACK_BOT_TOKEN", reason: "to post alerts" });
+    const host = await callbackHost();
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    try {
+      const strut = await makeStrut({ secretStore: secrets });
+      const res = await strut.app.request("/chat", JSON_({ message: "post to slack", callback: { url: host.url } }));
+      const { chatId } = (await res.json()) as { chatId: string };
+      await settled(chatId);
+      const open = (await chatStore.getMeta(chatId))!.elicitation!;
+      assert.equal(open.mode, "url");
+      assert.equal(fake.calls(), 1);
+      if (open.mode !== "url") throw new Error("unreachable");
+      assert.equal(open.name, "SLACK_BOT_TOKEN");
+      assert.equal(open.exists, false);
+      assert.equal(open.url, `?chat=${chatId}&elicit=${open.elicitationId}`);
+
+      await until(() => host.posts.length === 1);
+      const { body } = host.posts[0];
+      assert.deepEqual(body.elicitation, { elicitationId: open.elicitationId, mode: "url", message: "to post alerts", name: "SLACK_BOT_TOKEN", url: open.url });
+      assert.ok((body.text as string).startsWith("The builder needs the secret SLACK_BOT_TOKEN: to post alerts"), body.text);
+
+      // The page the link opens posts the value; it lands under the recorded name.
+      const done = await strut.app.request(`/chat/${chatId}/elicitations/${open.elicitationId}/secret`, JSON_({ value: "xoxb-1" }));
+      assert.equal(done.status, 202);
+      assert.equal(await secrets.get("SLACK_BOT_TOKEN"), "xoxb-1");
+      assert.equal(await lastMessage(chatId), `[elicitation-response] ${open.elicitationId} accept — secret SLACK_BOT_TOKEN stored (value not shown)`);
+      await settled(chatId);
+      // The follow-up turn asked nothing (the fake's second reply is text): the host hears no elicitation.
+      await until(() => host.posts.length === 2);
+      assert.equal(host.posts[1].body.elicitation, undefined);
+      assert.equal(host.posts[1].body.text, "went on");
+    } finally {
+      fake.close();
+      host.close();
+    }
+  });
+
+  it("a refused ask (a credential-looking field) does not end the turn: the model reads the error and goes on", async () => {
+    const fake = await toolCallProvider("ask_user", { message: "Token?", requestedSchema: { type: "object", properties: { apiKey: { type: "string" } } } });
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    try {
+      const strut = await makeStrut();
+      const res = await strut.app.request("/chat", JSON_({ message: "connect" }));
+      const { chatId } = (await res.json()) as { chatId: string };
+      await settled(chatId);
+      assert.equal((await chatStore.getMeta(chatId))!.elicitation, undefined);
+      assert.equal(fake.calls(), 2, "the loop went on to a second model call");
+      const transcript = JSON.stringify(await chatStore.loadMessages(chatId));
+      assert.ok(transcript.includes("looks like a credential"), transcript);
+      assert.ok(transcript.includes("went on"));
+    } finally {
+      fake.close();
     }
   });
 

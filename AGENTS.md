@@ -79,9 +79,11 @@ strut/
 │   │   │                  #                   graph_walk (graph/walk as a chat tool; same gate),
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
 │   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts),
-│   │   │                  #                   list_automations / set_automation / delete_automation (schedules; when deps.automations is wired)
+│   │   │                  #                   list_automations / set_automation / delete_automation (schedules; when deps.automations is wired),
+│   │   │                  #                   ask_user / request_secret (the builder asks the user — plans/elicitation.md; when deps.openElicitation is wired)
 │   │   ├── walk-tool.ts   # graph_walk (OFF for now: `GRAPH_WALK_TOOL_ENABLED` in prompts.ts): an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
+│   │   ├── elicitation.ts # the builder asks the user (plans/elicitation.md), the PURE half: ACP's flat schema subset + validator (model schema, submitted content), the secret-looking-field guard, crypto-random ids, `stepAsked` (the chat's stop condition), the `[elicitation-response]` formatter, the question as callback text
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
 │   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)
 │   ├── audio/             # speech-to-text over sherpa-onnx (plans/local-desktop-and-stt.md §4). Streaming dictation is the product surface; workflows learn AROUND it (hotword lists, "dream cycles" §4.8), no STT step in v1
@@ -107,7 +109,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 950 unit tests across 50 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1062 unit tests across 52 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -123,13 +125,15 @@ strut/
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
+        ├── elicitation.ts # the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[] for ConfigField + form helpers (pure; tested)
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat to the host named by ?embed_origin
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
         │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
         │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
         │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
-        │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage)
+        │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage; renders the open question's form)
+        │   ├── ElicitationForm.tsx   # the builder's question at the end of the transcript: a form (Submit / Decline / ✕) or, for a secret, a password field posting to the /secret endpoint — the page a host's link opens (?chat=&elicit=)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc
         │   ├── CreateDialog.tsx      # new-workflow dialog
         │   ├── EventsPanel.tsx       # bottom run-events panel
@@ -153,7 +157,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 910 tests, ~3s
+npm test                    # 1062 tests, ~3s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -915,7 +919,7 @@ and the child env is scrubbed by construction).
   the 202 carries `callback: true` (the host's proof this server honors
   the field; an older one ignores it and would never call back). Every turn
   end POSTs `{ event: "turn.end", chatId, turn, status, trigger: "human" |
-  "notification", text?, error?, settled, parked }` from `launchChatTurn`'s
+  "notification", text?, error?, settled, parked, elicitation? }` from `launchChatTurn`'s
   `finally`, AFTER the notifier's drain — so the chat is no longer live when
   the host hears (it may reply at once without a 409), unless queued
   notifications already launched the next turn. `settled: false` = something
@@ -932,6 +936,49 @@ and the child env is scrubbed by construction).
   fallback is `GET /chat/:id`). The URL is the credential (the host signs
   it): logs and read endpoints (`GET /chat/:id`, `/chats`) carry its origin
   only.
+
+- **Elicitation — the builder asks the user, and secrets never touch a
+  model** (`plans/elicitation.md`; `src/ai/elicitation.ts` pure, the rest
+  in `ai/tools.ts` + `createStrut.ts`). Shapes are ACP's elicitation RFD:
+  `mode: form | url`, `message`, a FLAT `requestedSchema` (string / number /
+  integer / boolean, enum | oneOf selects, array-of-enum multi-selects — no
+  nested objects), `action: accept | decline | cancel`, `content`,
+  `elicitationId`. Two chat tools: `ask_user({ message, requestedSchema })`
+  is form mode; `request_secret({ name, reason })` is URL mode for ONE
+  secret — the server builds a RELATIVE link to its own page
+  (`?chat=<id>&elicit=<eid>`), and the model, transcript, events, callback
+  and logs only ever carry the NAME (`ask_user` refuses a field whose name
+  or title looks like a credential). **Transport:** the tool records the
+  question on `ChatMeta.elicitation` (ONE per chat; a new ask replaces it,
+  the replaced id comes back; persisted, so it survives a restart) and
+  returns `{ elicitationId, status: "asked" }`; the agent's `stopWhen` ends
+  the turn on a tool RESULT that asked (`stepAsked` — a refused ask does not
+  end the turn, so the model can retry), a complete call with its result.
+  The answer arrives as the next turn's user message,
+  `[elicitation-response] <id> accept|decline|cancel [by <actor>]` (+ the
+  content as JSON, or `— secret NAME stored (value not shown)`), through
+  `POST /chat/:id/elicitations/:eid { action, content? }` or
+  `…/:eid/secret { value }` (the name comes from the server's record, never
+  the request; both behind `requireApiKey`; 404 once the question is
+  closed). Both hand the message to `notifier.deliver(…, { human: true })`:
+  `autoTurns` resets, the turn launches as `human`, or QUEUES behind a live
+  one — so a form never sees a 409 (`POST /chat` keeps its 409, and closes
+  the open question). Who answered is RECORDED (`by`), never checked against
+  the chat's actor: the secret store is deployment-global, so the
+  deployment's auth in front of the UI is the binding, as for `PUT
+  /secrets`; the id is crypto-random because with the key unset the link is
+  the authorization to write one named secret. **Hosts:** `turn.end`
+  carries `elicitation` whenever a question is open, and when THIS turn
+  asked it `text` IS the question — a host that only reads text still sees
+  it and a prose reply through `POST /chat` answers it. **UI:** the flyout
+  renders `meta.elicitation` as `ElicitationForm` (fields via
+  `web/src/elicitation.ts` → `ConfigField`, which gained a `multi` kind);
+  the response renders as a notice card (`notice.ts`); `elicit` joins the
+  embed deep-link params, set while open and dropped once closed. Tests: the
+  pure module, the notifier's human path, the endpoints, a sentinel-secret
+  no-leak test over transcript/events/meta/callbacks/logs/responses, and a
+  fake provider proving the turn stops on an ask and goes on after a
+  refused one (`chat-endpoints.test.ts`).
 
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
