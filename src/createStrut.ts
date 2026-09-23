@@ -57,6 +57,21 @@ import { attachAudioWebSocket } from "./audio/ws.js";
 // SDK (which stays lazy-loaded inside launchChatTurn).
 import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
 import { callbackOrigin, createTurnCallbacks, finalAssistantText, parseCallback } from "./ai/turn-callback.js";
+// Pure (node:crypto only): the ask/answer shapes behind the two elicitation
+// tools and endpoints — plans/elicitation.md.
+import {
+  ELICITATION_ACTIONS,
+  callbackElicitation,
+  formatElicitationResponse,
+  newElicitationId,
+  renderElicitationText,
+  secretUrl,
+  stepAsked,
+  validateContent,
+  type ElicitationAction,
+  type ElicitationRecord,
+  type ElicitationRequest,
+} from "./ai/elicitation.js";
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -1752,8 +1767,9 @@ export async function createStrut<TServices = unknown>(
     const notifier = createChatNotifier({
       chatStore,
       maxAutoTurns: chatMaxAutoTurns,
-      startTurn: (chatId, turn, modelMessages) =>
-        launchChatTurn(chatId, turn, modelMessages, "notification"),
+      // `human` when a person's elicitation answer is among the messages.
+      startTurn: (chatId, turn, modelMessages, trigger) =>
+        launchChatTurn(chatId, turn, modelMessages, trigger),
     });
 
     // The verify pass settled for a run this chat launched: wake it with the
@@ -1771,7 +1787,9 @@ export async function createStrut<TServices = unknown>(
     if (verifier) {
       verifyWaker = createVerifyWaker({
         verifier,
-        deliver: (chatId, text) => notifier.deliver(chatId, text),
+        deliver: async (chatId, text) => {
+          await notifier.deliver(chatId, text);
+        },
         expect: (chatId) => callbacks.expect(chatId),
       });
       verifySettled = (r) => void verifyWaker!.settled(r);
@@ -1867,6 +1885,24 @@ export async function createStrut<TServices = unknown>(
             automations,
             // cancel_run / pause_run / resume_run over the live controllers.
             controlRun: controlRunForChat,
+            // ask_user / request_secret (plans/elicitation.md): record the
+            // question on the chat — one open at a time, the newest replaces
+            // — with the secret page's RELATIVE link when it asks for one.
+            openElicitation: async (req: ElicitationRequest) => {
+              const prev = (await chatStore.getMeta(chatId))?.elicitation;
+              const elicitationId = newElicitationId();
+              const base = { elicitationId, toolCallId: req.toolCallId, turn, createdAt: new Date().toISOString(), message: req.message };
+              const record: ElicitationRecord =
+                req.mode === "form"
+                  ? { ...base, mode: "form", requestedSchema: req.requestedSchema }
+                  : { ...base, mode: "url", name: req.name, exists: req.exists, url: secretUrl(chatId, elicitationId) };
+              await chatStore.setMeta(chatId, { elicitation: record });
+              return {
+                elicitationId,
+                ...(record.mode === "url" ? { url: record.url } : {}),
+                ...(prev ? { replaced: prev.elicitationId } : {}),
+              };
+            },
             publishingEnabled: !registryWasInjected,
             getRegistry: async () => {
               if (registryWasInjected) return registry;
@@ -1941,7 +1977,9 @@ export async function createStrut<TServices = unknown>(
             instructions: await buildSystem(deps),
             tools: buildTools(deps),
             maxOutputTokens: llm.maxOutputTokens,
-            stopWhen: isStepCount(chatMaxSteps),
+            // The turn ends on an ask (plans/elicitation.md): the tool's
+            // result is in, and the answer arrives as the next turn's message.
+            stopWhen: [({ steps }) => stepAsked(steps[steps.length - 1]), isStepCount(chatMaxSteps)],
             onEnd: () => {
               registry = deps.registry;
             },
@@ -2065,9 +2103,14 @@ export async function createStrut<TServices = unknown>(
           }
           // Tell the dispatching host — AFTER the drain, so the chat is no
           // longer live when it hears (or the follow-up turn already is, and
-          // this one reports `settled: false`).
+          // this one reports `settled: false`). The builder's open question
+          // rides along (plans/elicitation.md); when THIS turn asked it,
+          // `text` IS the question, so a host that only reads text still
+          // sees it. (An answer the drain just delivered has cleared it.)
           try {
-            await callbacks.turnEnded({ chatId, turn, trigger, ...outcome });
+            const asked = (await chatStore.getMeta(chatId))?.elicitation;
+            if (asked && asked.turn === turn && outcome.status === "done") outcome.text = renderElicitationText(asked);
+            await callbacks.turnEnded({ chatId, turn, trigger, ...outcome, ...(asked ? { elicitation: callbackElicitation(asked) } : {}) });
           } catch (err) {
             console.error(`[chat ${chatId}] turn callback failed:`, err);
           }
@@ -2175,11 +2218,14 @@ export async function createStrut<TServices = unknown>(
 
       const turn = (meta!.currentTurn ?? -1) + 1;
       // A human message resets the consecutive-auto-turn counter (the
-      // notification runaway guard) — see `ai/notifier.ts`.
+      // notification runaway guard) — see `ai/notifier.ts` — and closes the
+      // builder's open question, if any: the model reads the typed text
+      // instead, and a late answer to that question is a 404.
       await chatStore.setMeta(chatId, {
         status: "live",
         currentTurn: turn,
         autoTurns: 0,
+        elicitation: undefined,
         ...(pickedModel ? { model: pickedModel } : {}),
         ...(callback !== undefined ? { callback: callback ?? undefined } : {}),
         ...(actor ? { actor } : {}),
@@ -2244,6 +2290,92 @@ export async function createStrut<TServices = unknown>(
       if (!ac) return c.json({ error: `Chat "${chatId}" has no turn in progress` }, 409);
       ac.abort();
       return c.json({ ok: true });
+    });
+
+    // ── Elicitation answers (plans/elicitation.md) ─────────────────────
+    //
+    // The builder asked (ask_user / request_secret) and its turn ended on
+    // the call; the answer comes back here and starts the next turn through
+    // the notifier — queued behind a live one, so a form never sees a 409.
+    // Who answered is RECORDED (`by`), never checked against the chat's
+    // actor: the secret store is deployment-global, so the deployment's auth
+    // in front of the UI is the binding, exactly as for PUT /secrets.
+
+    /** The chat's open elicitation `:eid`, or the error response. */
+    async function openElicitationOf(c: Context): Promise<{ meta: ChatMeta; open: ElicitationRecord } | Response> {
+      const chatId = c.req.param("chatId") ?? "";
+      const eid = c.req.param("eid") ?? "";
+      const meta = await chatStore.getMeta(chatId);
+      if (!meta) return c.json({ error: `Chat "${chatId}" not found` }, 404);
+      const open = meta.elicitation;
+      if (!open || open.elicitationId !== eid) {
+        return c.json({ error: `No open elicitation "${eid}" on chat "${chatId}" — answered, replaced by a newer question, or closed by a message` }, 404);
+      }
+      return { meta, open };
+    }
+
+    /** Close the question and hand the response to the chat as a HUMAN
+     *  message: the next turn launches now, or queues behind a live one. */
+    async function answerElicitation(chatId: string, text: string) {
+      await chatStore.setMeta(chatId, { elicitation: undefined });
+      const r = await notifier.deliver(chatId, text, { human: true });
+      return { chatId, ...(r.turn !== undefined ? { turn: r.turn } : {}), ...(r.queued ? { queued: true as const } : {}) };
+    }
+
+    // A form answer — or a decline / cancel of either kind of question.
+    app.post("/chat/:chatId/elicitations/:eid", requireApiKey, async (c) => {
+      const found = await openElicitationOf(c);
+      if (found instanceof Response) return found;
+      const { meta, open } = found;
+      const body = await c.req.json<{ action?: unknown; content?: unknown }>().catch(() => ({}) as { action?: unknown; content?: unknown });
+      const action = body.action;
+      if (typeof action !== "string" || !(ELICITATION_ACTIONS as readonly string[]).includes(action)) {
+        return c.json({ error: "action must be accept | decline | cancel" }, 400);
+      }
+      if (action === "accept" && open.mode === "url") {
+        return c.json(
+          { error: `"${open.name}" is a secret: accept it through POST /chat/${meta.id}/elicitations/${open.elicitationId}/secret { value }, never here` },
+          400,
+        );
+      }
+      let content: Record<string, unknown> | undefined;
+      if (action === "accept" && open.mode === "form") {
+        try {
+          content = validateContent(open.requestedSchema, body.content);
+        } catch (err) {
+          return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+        }
+      }
+      const by = await resolveActor(c);
+      const text = formatElicitationResponse({
+        elicitationId: open.elicitationId,
+        action: action as ElicitationAction,
+        ...(by ? { by } : {}),
+        ...(content ? { content } : {}),
+        ...(open.mode === "url" ? { secret: { name: open.name } } : {}),
+      });
+      return c.json(await answerElicitation(meta.id, text), 202);
+    });
+
+    // URL mode's completion: the value goes straight into the store under
+    // the NAME the server recorded — never one from the request — and the
+    // chat hears "stored". Nothing else ever carries the value.
+    app.post("/chat/:chatId/elicitations/:eid/secret", requireApiKey, async (c) => {
+      if (secretsInjected) {
+        return c.json({ error: "secrets are managed by an injected capability" }, 501);
+      }
+      const found = await openElicitationOf(c);
+      if (found instanceof Response) return found;
+      const { meta, open } = found;
+      if (open.mode !== "url") return c.json({ error: "this question is a form, not a secret — answer it through POST /chat/:id/elicitations/:eid" }, 400);
+      const body = await c.req.json<{ value?: unknown }>().catch(() => ({ value: undefined }));
+      if (typeof body.value !== "string" || body.value.length === 0) {
+        return c.json({ error: "value (non-empty string) is required" }, 400);
+      }
+      await secretStore.set(open.name, body.value);
+      const by = await resolveActor(c);
+      const text = formatElicitationResponse({ elicitationId: open.elicitationId, action: "accept", ...(by ? { by } : {}), secret: { name: open.name } });
+      return c.json(await answerElicitation(meta.id, text), 202);
     });
 
     // Full chat transcript + meta (for reload / reattach).

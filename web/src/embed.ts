@@ -10,8 +10,10 @@
 
 const ORIGIN_STORAGE = "strut/embedOrigin";
 
-/** The params that make up a deep link. Never `key` or `embed_origin`. */
-export const DEEP_LINK_PARAMS = ["wf", "run", "v", "chat"] as const;
+/** The params that make up a deep link. Never `key` or `embed_origin`.
+ *  `elicit` is the builder's open question (plans/elicitation.md) — the
+ *  link a host shows for a secret. */
+export const DEEP_LINK_PARAMS = ["wf", "run", "v", "chat", "elicit"] as const;
 
 /** The message posted to the host after each change. */
 export interface LocationMessage {

@@ -15,6 +15,8 @@ import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
 import { modelEvaluate } from "../evaluate.js";
 import { resolveEvaluationModel } from "../llm.js";
 import { graphWalkTool } from "./walk-tool.js";
+import { secretLikeProperty, validateRequestedSchema } from "./elicitation.js";
+import { isValidSecretName } from "../secret-store.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
 // the run-history reads. The chat tools layer their own policy on top (no
@@ -62,6 +64,85 @@ function runControlTools(controlRun: ControlRun) {
       "resume",
       "Resume a run you paused with pause_run (in-memory; the run continues from where it parked). For a run cut off by a crash/restart, tell the user to use the UI's durable resume instead.",
     ),
+  };
+}
+
+// ── Elicitation ────────────────────────────────────────────────────────────
+//
+// The builder asks the user (plans/elicitation.md). Each tool records the
+// open question on the chat and RETURNS AT ONCE; the agent's stopWhen ends
+// the turn on the call, and the answer arrives as the next turn's
+// `[elicitation-response]` user message — no dangling tool call, nothing to
+// hold a connection open on. A secret is never a form (ACP: MUST NOT): the
+// server builds a link to its own secret page, and the model, transcript,
+// events and callback carry the NAME only.
+
+function elicitationTools(deps: AiDeps) {
+  const open = deps.openElicitation!;
+  const ENDS = "Your turn ends here — write nothing more. The answer arrives as the next message.";
+  return {
+    ask_user: tool({
+      description:
+        "Ask the user a STRUCTURED question you cannot proceed without: a choice, yes/no, a number, a short text, a multi-select. `requestedSchema` is a FLAT object of primitives (string with optional enum | oneOf [{ const, title }] | minLength | maxLength | pattern | format email|uri|date|date-time; number | integer with minimum | maximum; boolean; array whose items carry enum | anyOf, with minItems | maxItems; each with title | description | default) — nested objects are refused. YOUR TURN ENDS AT THIS CALL. The answer arrives as the next message: \"[elicitation-response] <elicitationId> accept\" + the content as JSON, or decline (don't ask again) / cancel (dismissed; asking later is fine). NEVER collect a password, API key, token or any credential this way — call request_secret.",
+      inputSchema: z.object({
+        message: z.string().describe("The question, shown above the form."),
+        requestedSchema: z
+          .object({
+            type: z.literal("object"),
+            properties: z
+              .record(z.string(), z.any())
+              .describe("field name → its primitive schema (see the tool description)"),
+            required: z.array(z.string()).optional().describe("Names of the fields the user must fill."),
+          })
+          .describe("ACP's restricted flat subset — no nested objects."),
+      }),
+      execute: async ({ message, requestedSchema }, { toolCallId }) => {
+        let schema;
+        try {
+          schema = validateRequestedSchema(coerceJsonArg(requestedSchema));
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+        const secretish = secretLikeProperty(schema);
+        if (secretish) {
+          return {
+            error: `"${secretish}" looks like a credential. Never collect a secret with ask_user — call request_secret({ name, reason }) instead; the user types it into a page that writes the secret store, and you never see it.`,
+          };
+        }
+        const r = await open({ mode: "form", message, requestedSchema: schema, toolCallId });
+        return { elicitationId: r.elicitationId, status: "asked", ...(r.replaced ? { replaced: r.replaced } : {}), note: ENDS };
+      },
+    }),
+
+    request_secret: tool({
+      description:
+        "Ask the user to add a secret by NAME through a strut page that writes the secret store directly — you never see the value, and it never enters this chat. Call list_secrets first; request a name only when it is missing (or must be replaced). YOUR TURN ENDS AT THIS CALL, like ask_user. The next message says \"secret NAME stored\" (then read it in a step via ctx.services.secrets.get(\"NAME\")) or that the user declined.",
+      inputSchema: z.object({
+        name: z.string().describe("The secret-store NAME, e.g. SLACK_BOT_TOKEN — letters, digits, underscore."),
+        reason: z.string().describe("Why the workflow needs it, shown to the user — one sentence."),
+      }),
+      execute: async ({ name, reason }, { toolCallId }) => {
+        if (!deps.secrets) {
+          return {
+            error: "This deployment's secrets are managed outside strut (an injected capability), so there is no page to collect one. Tell the user which NAME to add where their deployment keeps secrets.",
+          };
+        }
+        if (!isValidSecretName(name)) {
+          return { error: `invalid secret name "${name}" — use letters, digits, underscore (not starting with a digit)` };
+        }
+        const exists = (await deps.secrets.list()).some((s) => s.name === name);
+        const r = await open({ mode: "url", message: reason, name, exists, toolCallId });
+        return {
+          elicitationId: r.elicitationId,
+          status: "asked",
+          name,
+          exists,
+          ...(r.url ? { url: r.url } : {}),
+          ...(r.replaced ? { replaced: r.replaced } : {}),
+          note: "Your turn ends here — write nothing more. The next message says whether the secret was stored.",
+        };
+      },
+    }),
   };
 }
 
@@ -893,6 +974,10 @@ export function buildTools(deps: AiDeps): ToolSet {
     // server does): the builder can stop/park a live run it launched, not
     // just launch it. Same code path as the HTTP control endpoints.
     ...(deps.controlRun ? runControlTools(deps.controlRun) : {}),
+
+    // Elicitation — only when the host wires `deps.openElicitation` (the
+    // chat does; embedders/tests without it get neither tool).
+    ...(deps.openElicitation ? elicitationTools(deps) : {}),
 
     // Build-time shell — only offered when the host wires `deps.shell` (the
     // standard server does; embedders/tests without it get no bash tool).

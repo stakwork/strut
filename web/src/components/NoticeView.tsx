@@ -90,6 +90,51 @@ export function NoticeView(props: {
   onOpenRun?: (workflow: string, runId: string) => void;
 }) {
   const n = parseNotice(props.text);
+  const key = (k: string) => `${props.prefix}:${k}`;
+  const isOpen = (k: string) => !!props.expanded[key(k)];
+  const open = isOpen("card");
+
+  // The user's answer to the builder's question (plans/elicitation.md): what
+  // they chose — or that they declined — and, for a secret, its NAME and
+  // that it was stored. The value is not in the message, by construction.
+  if (n?.kind === "elicitation" && n.action) {
+    const title = n.action === "accept" ? "Answered" : n.action === "decline" ? "Declined" : "Dismissed";
+    return (
+      <div class={`chat-notice-card${open ? " is-open" : ""}`}>
+        <button type="button" class="chat-notice-head" onClick={() => props.onToggle(key("card"))} aria-expanded={open}>
+          <span class={`chat-tool-dot ${DOT[noticeTone(n)]}`} />
+          <span class="chat-notice-main">
+            <span class="chat-notice-title">{title}</span>
+            <span class="chat-notice-subject">{n.secretName ? `secret ${n.secretName}` : "the builder's question"}</span>
+            <span class="chat-notice-meta">
+              {n.secretName && <span class="claim-dim">{n.secretStored ? "stored" : "not stored"}</span>}
+              {n.by && <span class="claim-dim">by {n.by}</span>}
+            </span>
+          </span>
+          <span class={`chat-tool-chev${open ? " is-open" : ""}`} aria-hidden="true" />
+        </button>
+        {open && (
+          <div class="chat-notice-body">
+            {n.content !== undefined && (
+              <ToolResultView
+                label="Answer"
+                result={{ output: n.content, isError: false }}
+                open={isOpen("content")}
+                onToggle={() => props.onToggle(key("content"))}
+              />
+            )}
+            <ToolResultView
+              label="Raw message"
+              result={{ output: props.text, isError: false }}
+              open={isOpen("raw")}
+              onToggle={() => props.onToggle(key("raw"))}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Not a shape we know — show it as written.
   if (!n || !n.runId) {
     return (
@@ -98,10 +143,6 @@ export function NoticeView(props: {
       </div>
     );
   }
-
-  const key = (k: string) => `${props.prefix}:${k}`;
-  const isOpen = (k: string) => !!props.expanded[key(k)];
-  const open = isOpen("card");
   const title = n.kind === "verify" ? "Verified" : `Run ${n.runStatus === "success" ? "finished" : n.runStatus === "error" ? "failed" : n.runStatus}`;
   const canOpenRun = !!props.onOpenRun && !!n.workflow && !n.workflow.includes(":");
 

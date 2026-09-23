@@ -1,6 +1,14 @@
 # Elicitation — the builder asks the user, and secrets never touch a model
 
-> **Status (2026-09-22): proposed.** Shapes follow the ACP elicitation RFD
+> **Status (2026-09-22): implemented** — `src/ai/elicitation.ts`, the tools
+> in `ai/tools.ts`, the endpoints + wiring in `createStrut.ts`, the human
+> path in `ai/notifier.ts`, `ElicitationForm` + `elicitation.ts` in the web
+> app. One refinement over the text below: the agent stops on a tool RESULT
+> that asked (`stepAsked`), not on any call (`hasToolCall`), so a refused
+> ask — a schema outside the subset, a credential-looking field — lets the
+> model read the error and try again instead of ending the turn.
+>
+> Shapes follow the ACP elicitation RFD
 > (https://agentclientprotocol.com/rfds/elicitation), itself adapted from
 > MCP's locked 2026-07-28 release candidate. We copy its field names and its
 > secret rule; what we add is the transport, because strut's chat is a
@@ -37,7 +45,7 @@ host can't render it as anything but text.
 | Shapes | **ACP's.** `mode: "form" \| "url"`, `message`, `requestedSchema` (restricted flat JSON Schema), `action: "accept" \| "decline" \| "cancel"`, `content`, `elicitationId`. No homemade question kinds |
 | Secrets | **Never form mode** (ACP: MUST NOT). A secret is a URL-mode elicitation: the value is typed into a strut page that writes the secret store directly. The model, the transcript, the events log and the callback carry the NAME only |
 | Who builds the URL | **The server**, never the model. `request_secret({ name, reason })` takes no URL, so the model cannot send a user to an arbitrary address |
-| Transport | **The tool returns at once; the answer arrives as the next turn's user message.** No dangling tool call, no transcript surgery. `stopWhen: hasToolCall(…)` ends the turn after the ask; the answer goes through the notifier's queue, like a run notification, so it never collides with a live turn |
+| Transport | **The tool returns at once; the answer arrives as the next turn's user message.** No dangling tool call, no transcript surgery. A stop condition on a tool RESULT that asked (`stepAsked`) ends the turn after the ask — a refused ask does not, so the model can retry; the answer goes through the notifier's queue, like a run notification, so it never collides with a live turn |
 | Pending state | **One open elicitation per chat**, on `ChatMeta` — persisted, so it survives a restart. A new ask replaces it; a human message closes it |
 | Who answered | **Recorded, never enforced.** The request's actor is stamped on the response; it is not compared with the chat's. The secret store is deployment-global, so a per-chat gate would guard one door beside an open one — and lock out the right person on a string mismatch. The binding is the deployment's auth, as for `PUT /secrets` |
 | Hosts | **Carried on the turn callback.** Form questions go to the host (its agent or its UI). Secret questions are a link the host shows its user; the value never passes through the host. When a turn ends on an ask, the callback's `text` is the question, so a host that only reads text still sees it |
@@ -48,8 +56,9 @@ Two chat tools. `ask_user({ message, requestedSchema })` is ACP form mode;
 `request_secret({ name, reason })` is URL mode for one secret. Each checks its
 arguments, writes `ChatMeta.elicitation` (the open request, with a fresh
 `elicitationId`), and returns `{ elicitationId, status: "asked" }`. The agent's
-`stopWhen` includes `hasToolCall("ask_user", "request_secret")`, so the turn
-ends right there, a complete tool call with its result. The turn callback
+`stopWhen` includes `stepAsked` — the last step's tool results include one
+with `status: "asked"` — so the turn ends right there, a complete tool call
+with its result (a refused ask returns `{ error }` and the loop goes on). The turn callback
 reports the open elicitation to a host. The answer comes back through one of
 two endpoints: a form answer through `POST /chat/:id/elicitations/:eid`, a
 secret through `POST /chat/:id/elicitations/:eid/secret`, which writes the
@@ -219,8 +228,12 @@ never to silence.
 ## Lifecycle and edge cases
 
 - **The model keeps talking after asking.** Prevented by `stopWhen`: the
-  step that called the tool is the turn's last. The tool description also
+  step whose tool result asked is the turn's last. The tool description also
   says "your turn ends here; the answer arrives as the next message".
+- **The model asks badly.** A schema outside the subset, or a field that
+  looks like a credential, is a tool ERROR result, not an ask: nothing is
+  recorded and the turn does not end, so the model reads the error and
+  asks again properly (or calls `request_secret`).
 - **The user types a message instead of answering.** `POST /chat` clears
   `ChatMeta.elicitation`, and the model sees the user's text. The form
   disappears. A late answer to the closed elicitation gets a 404.
@@ -330,7 +343,7 @@ path, and the link needs no Hive UI at all. Start with the link.
 3. The two tools in `ai/tools.ts` (`AiDeps` gains `openElicitation(record)` —
    the chat id is in the per-turn closure, `toolCallId` comes from the tool's
    execute options — and the secret store's `list()` for `exists`). Add
-   `hasToolCall("ask_user", "request_secret")` to the chat agent's `stopWhen`.
+   `stepAsked` (a tool result with `status: "asked"`) to the chat agent's `stopWhen`.
    Prompt: the ACP secret rule, "call `list_secrets` first; if the name is
    missing, `request_secret`", the decline/cancel meaning, and "an answer to
    a replaced id is still the answer".

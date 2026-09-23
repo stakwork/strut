@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 // The server's own formatters: the card parses what they write, so a format
 // change that would blind the card fails here.
 import { formatRunNotification } from "../../src/ai/notifier.js";
+import { formatElicitationResponse } from "../../src/ai/elicitation.js";
 import { STILL_VERIFYING } from "../../src/ai/verify-waker.js";
 import { formatLedgerLines, formatVerifyNotification, type Ledger } from "../../src/ledger.js";
 import { countLedger, isNotice, lastVerifyLabel, noticeTone, parseNotice } from "./notice";
@@ -106,5 +107,44 @@ describe("ledger summaries", () => {
     assert.deepEqual(lastVerifyLabel({ skipped: "cannot-launch", reason: "step_config is not JSON" }), { label: "skipped · cannot-launch", tone: "error", detail: "step_config is not JSON" });
     assert.equal(lastVerifyLabel({ skipped: "policy" }).tone, "dim");
     assert.equal(lastVerifyLabel(undefined).label, "did not fire");
+  });
+});
+
+// ── [elicitation-response] ─────────────────────────────────────────────────
+
+describe("elicitation responses", () => {
+  it("parses an accepted form answer: who answered and the content", () => {
+    const text = formatElicitationResponse({ elicitationId: "e1", action: "accept", by: "alice-42", content: { repo: "a/b", env: "staging" } });
+    assert.ok(isNotice(text));
+    const n = parseNotice(text)!;
+    assert.equal(n.kind, "elicitation");
+    assert.equal(n.elicitationId, "e1");
+    assert.equal(n.action, "accept");
+    assert.equal(n.by, "alice-42");
+    assert.deepEqual(n.content, { repo: "a/b", env: "staging" });
+    assert.equal(n.secretName, undefined);
+    assert.equal(noticeTone(n), "ok");
+  });
+
+  it("parses a stored secret by name only", () => {
+    const n = parseNotice(formatElicitationResponse({ elicitationId: "e2", action: "accept", secret: { name: "SLACK_BOT_TOKEN" } }))!;
+    assert.equal(n.action, "accept");
+    assert.equal(n.by, undefined);
+    assert.equal(n.secretName, "SLACK_BOT_TOKEN");
+    assert.equal(n.secretStored, true);
+    assert.equal(n.content, undefined);
+  });
+
+  it("parses a declined secret and a cancelled form", () => {
+    const d = parseNotice(formatElicitationResponse({ elicitationId: "e3", action: "decline", by: "bob", secret: { name: "K" } }))!;
+    assert.equal(d.action, "decline");
+    assert.equal(d.secretName, "K");
+    assert.equal(d.secretStored, false);
+    assert.equal(noticeTone(d), "warning");
+    const c = parseNotice(formatElicitationResponse({ elicitationId: "e4", action: "cancel" }))!;
+    assert.equal(c.action, "cancel");
+    assert.equal(c.by, undefined);
+    assert.equal(noticeTone(c), "neutral");
+    assert.deepEqual(c.notes, []);
   });
 });
