@@ -1,0 +1,52 @@
+# Overlay: strut behind OUR LLM gateway (stakgraph-gateway = Bifrost + the
+# governance plugin), with the Mothership on. strut holds NO provider keys —
+# every LLM call must go through the gateway with a delegated macaroon, so a
+# passing test proves the gateway path.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gateway.yml up --build
+#   STRUT_TEST_GATEWAY=1 npm run test:gateway
+#
+# Provider keys (ANTHROPIC_API_KEY, XAI_API_KEY, …) go in ./.env; only the
+# gateway reads them. The gateway is built from ${STAKGRAPH_DIR:-../stakgraph}/gateway.
+# Swap in another gateway build (e.g. the v1.6.2 negative control) without
+# rebuilding it:
+#   GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
+#     -f docker-compose.gateway.yml up -d --no-deps --no-build gateway
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-stakgraph-gateway:dev}
+    build:
+      context: ${STAKGRAPH_DIR:-../stakgraph}/gateway
+    ports:
+      - "${STRUT_GATEWAY_PORT:-8181}:8181"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BIFROST_ADMIN_USER: ${BIFROST_ADMIN_USER:-admin}
+      BIFROST_ADMIN_PASS: ${BIFROST_ADMIN_PASS:-bifrost-dev-password}
+      BIFROST_PROVISIONING_TOKEN: dev-provisioning-token
+      # No BIFROST_PLUGIN_REDIS_URL: the plugin runs in observability mode
+      # (verify + log, no enforcement state) — all this test needs.
+    volumes:
+      - strut-gateway-data:/app/data   # config.db (VKs) + logs.db
+
+  strut:
+    depends_on:
+      gateway:
+        condition: service_healthy
+    # No ./.env: provider keys must not reach strut.
+    env_file: !reset []
+    environment:
+      STRUT_API_KEY: ${STRUT_API_KEY:-strut-dev-key}
+      STRUT_SECRET_KEY: ${STRUT_SECRET_KEY:-strut-dev-secret-key}
+      STRUT_MOTHERSHIP: "1"
+      STRUT_MOTHERSHIP_REQUIRED: "1"
+    volumes:
+      # Its own workspace, so no secrets.json from the plain compose (which
+      # may hold pasted provider keys) is in reach.
+      - strut-gw-workspace:/data/workspace
+
+volumes:
+  strut-gateway-data:
+  strut-gw-workspace:

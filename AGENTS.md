@@ -194,6 +194,38 @@ cd strut && npm run dev        # serves API + UI on :3000
 docker compose up --build      # http://localhost:3000 (STRUT_HOST_PORT=3100 when `npm run dev` has 3000)
 # Same image on the fs backend, no Neo4j:
 docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs strut
+
+# Through OUR LLM gateway (stakgraph-gateway: Bifrost + the governance plugin,
+# built from ${STAKGRAPH_DIR:-../stakgraph}/gateway) with the Mothership on.
+# strut gets NO provider keys (only the gateway reads ./.env) and its own
+# workspace volume, so anything that works went through the gateway.
+docker compose -f docker-compose.yml -f docker-compose.gateway.yml up --build
+STRUT_TEST_GATEWAY=1 npm run test:gateway   # scripts/gateway-smoke.ts: VK + minted
+  # delegation, then an anthropic chat with web_fetch, an agent+llm run, an xai
+  # chat, and the calls in the gateway log under their session dims
+# Negative control — a v1.6.2 build (stakgraph before the v2.2.2 bump, tagged
+# stakgraph-gateway:v1.6.2), whose re-rendered Anthropic stream drops web_fetch
+# blocks: the chat dies with `Type validation failed … content_block_start`
+# (the agent step skips the bad chunk and survives):
+GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
+  -f docker-compose.gateway.yml up -d --no-deps --no-build gateway
+STRUT_TEST_GATEWAY=1 STRUT_TEST_GATEWAY_EXPECT_BROKEN=1 npm run test:gateway
+
+# Debugging the gateway path:
+#  - dashboard http://localhost:8181 (admin / bifrost-dev-password);
+#    `docker compose -f docker-compose.yml -f docker-compose.gateway.yml logs -f gateway`
+#    (PreLLMHook provider=… model=… lines, macaroon shadow-mode WARNs)
+#  - a VK: curl -u admin:bifrost-dev-password localhost:8181/api/governance/virtual-keys \
+#      -H content-type:application/json -d '{"name":"dev","provider_configs":[{"provider":"anthropic",
+#      "weight":1,"key_ids":["*"],"allowed_models":["*"]}]}'   (deny-by-default: both lists)
+#    Allow one provider per model family: governance load-balances a model over
+#    every allowed provider serving it, and via openrouter claude loses web_fetch.
+#  - delegations: curl -H "authorization: Bearer strut-dev-key" localhost:3000/llm/delegations
+#  - raw frames, no AI SDK: scripts/gateway-raw-sse.sh <base> <body.json>
+#    (VK=… for the gateway's /anthropic, ANTHROPIC_API_KEY direct)
+#  - through aieo + strut's real tools, printing part counts or the full
+#    TypeValidationError: npx tsx scripts/gateway-stream.mts <baseUrl|direct> \
+#      <model> <text|tool|thinking|editor|websearch|webfetch>   (VK=… for a gateway)
 ```
 
 ## Environment
@@ -207,6 +239,7 @@ docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs 
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
 | `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
+| `STRUT_MOTHERSHIP` | (unset) | `1` = the default server (`src/server.ts`) builds `createMothership({ dataDir })`, passes its `llmAuth` to `createStrut` and mounts `/llm/delegations` — every LLM call of an actor with a delegation goes through the gateway. See "Mothership cost control". |
 | `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` = every LLM call must have someone to bill: a call with no principal, or no delegation on file for it, is a step error instead of a direct provider call, and an enabled automation on an ownerless workflow is refused when scheduled and when it fires (`lastFireError`). Set it wherever the Mothership is mounted. |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
@@ -352,7 +385,10 @@ the gateway URL: `PUT /llm/delegations/:actor { macaroon, apiKey, baseUrl }`
 file, `mothership.json` beside `secrets.json`: never on the services bag (no
 step can read another user's macaroon), never in the Secrets list. Tests:
 `src/mothership.test.ts` verifies the built chain with gatekey's own
-verifier — the TS mirror of the gateway's Go one.
+verifier — the TS mirror of the gateway's Go one. The default server builds it when
+`STRUT_MOTHERSHIP=1`; `docker-compose.gateway.yml` + `npm run test:gateway`
+run the whole path locally (see "Running"). A chat's model pick is validated
+through the same hook, so a strut behind the gateway needs no provider keys.
 
 ## Lib step credentials
 
@@ -1200,6 +1236,29 @@ with that move.
    distinct node color (optional; the Add Step dialog discovers the type
    regardless via `/steps`).
 7. Write tests; run `npm test` and `cd web && npx tsc --noEmit && npx vite build`.
+
+## When changing how LLM calls or tools are built
+
+`npm test` is offline: it never streams from a real provider, and never goes
+through the gateway prod uses. So a change to what reaches the model
+(tools on the `agent` step or the chat builder, especially provider-native
+ones like `web_fetch`/`web_search` or the text editor; `llm.ts` / aieo
+wiring; `llmAuth` / Mothership headers; provider or model routing) can pass
+every test and still break in prod. Bifrost re-renders
+non-Claude-Code streams, and a malformed frame kills a chat turn. Validate
+such a change end to end:
+
+1. `docker compose -f docker-compose.yml -f docker-compose.gateway.yml up --build`
+2. `STRUT_TEST_GATEWAY=1 npm run test:gateway`: add a check to
+   `scripts/gateway-smoke.ts` that exercises the new tool (a chat turn or a
+   workflow run that calls it) instead of only running the existing ones.
+3. When a stream fails, narrow it down without strut in the way:
+   `scripts/gateway-stream.mts` (aieo + strut's real tools, prints the full
+   TypeValidationError), then `scripts/gateway-raw-sse.sh` (raw frames), each
+   `direct` vs through the gateway, to tell a strut bug from a gateway bug.
+
+See "Running" for the commands, the debug affordances, and the VK
+provider-routing gotcha.
 
 ## When adding an API endpoint
 

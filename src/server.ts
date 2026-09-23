@@ -23,13 +23,21 @@ let strutInstance: Strut | null = null;
  *  module doesn't kick off filesystem I/O at module-load time. */
 async function getDefault(): Promise<Strut> {
   if (!strutInstance) {
+    // STRUT_MOTHERSHIP=1 routes every LLM call through the stakgraph gateway
+    // with a per-actor macaroon (src/mothership.ts); delegations arrive via
+    // PUT /llm/delegations/:actor.
+    const dataDir = process.env["STRUT_WORKSPACE"] ?? "./workspace";
+    const mothership =
+      process.env["STRUT_MOTHERSHIP"] === "1"
+        ? (await import("./mothership.js")).createMothership({ dataDir })
+        : null;
+    const llmAuth = mothership ? { llmAuth: mothership.llmAuth } : {};
     if (graphWorkspaceRequested()) {
       const { graphWorkspaceFromEnv } = await import("./graph/wiring.js");
       // dataDir keeps its file default (STRUT_WORKSPACE / ./workspace): runs,
       // chats, secrets, artifacts, cassettes, and the materialized custom
       // steps stay local. Explicit file stores, since a non-file workspace
       // would otherwise default to memory.
-      const dataDir = process.env["STRUT_WORKSPACE"] ?? "./workspace";
       const { backend, workspace } = await graphWorkspaceFromEnv(process.env, { dataDir });
       strutInstance = await createStrut({
         workspace,
@@ -39,10 +47,12 @@ async function getDefault(): Promise<Strut> {
         store: new FileRunStore(dataDir),
         chatStore: new FileChatStore(dataDir),
         secretStore: new FileSecretStore(dataDir),
+        ...llmAuth,
       });
     } else {
-      strutInstance = await createStrut();
+      strutInstance = await createStrut(llmAuth);
     }
+    mothership?.mount(strutInstance);
   }
   return strutInstance;
 }
