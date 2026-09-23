@@ -64,7 +64,7 @@ function specOf(d: CheckDraft): api.ClaimCheckSpec {
     if (!d.description.trim()) throw new Error("Say what to look at, and why code cannot check it.");
     return { ...common, description: d.description.trim() };
   }
-  if (!d.type.trim()) throw new Error("A step check needs a step type (e.g. exec).");
+  if (!d.type.trim()) throw new Error("A tool check needs a tool (e.g. exec).");
   let config: unknown = {};
   if (d.config.trim()) {
     try {
@@ -101,14 +101,14 @@ function CheckEditor(props: { draft: CheckDraft; onChange: (d: CheckDraft) => vo
   return (
     <div class="claim-check-editor">
       <div class="claim-kind">
-        <label><input type="radio" checked={d.kind === "step"} onChange={() => set({ kind: "step" })} /> A step runs it</label>
+        <label><input type="radio" checked={d.kind === "step"} onChange={() => set({ kind: "step" })} /> A tool runs it</label>
         <label><input type="radio" checked={d.kind === "external"} onChange={() => set({ kind: "external", when: "run" })} /> A person / outside system</label>
       </div>
       {d.kind === "step" ? (
         <>
           <div class="flyout-field">
-            <label>Step type</label>
-            <input type="text" list="claim-step-types" value={d.type} placeholder="exec, llm, subflow, or a custom step" onInput={(e) => set({ type: (e.target as HTMLInputElement).value })} />
+            <label>Tool</label>
+            <input type="text" list="claim-step-types" value={d.type} placeholder="exec, llm, subflow, or a custom tool" onInput={(e) => set({ type: (e.target as HTMLInputElement).value })} />
             <datalist id="claim-step-types">{props.stepTypes.map((t) => <option key={t} value={t} />)}</datalist>
           </div>
           <div class="flyout-field">
@@ -216,7 +216,7 @@ export function ClaimsPanel(props: {
 
   if (!data) return error ? <div class="claim-error">{error}</div> : <div class="flyout-source-empty">Loading…</div>;
   if (!data.enabled) return null;
-  if (data.note && data.claims.length === 0) return <div class="flyout-source-empty">Built-in steps carry no claims — claims attach to custom steps and workflows.</div>;
+  if (data.note && data.claims.length === 0) return <div class="flyout-source-empty">Built-in tools carry no claims — claims attach to custom tools and workflows.</div>;
 
   const runLink = (run?: api.ClaimRunRef) => {
     if (!run?.runId) return null;
@@ -265,7 +265,7 @@ export function ClaimsPanel(props: {
       ))}
 
       {data.claims.length === 0 && editing !== "new" && (
-        <div class="flyout-source-empty">No claims yet — nothing says how this {props.subject.kind} should behave, so no run can be verified.</div>
+        <div class="flyout-source-empty">No claims yet — nothing says how this {props.subject.kind === "step" ? "tool" : props.subject.kind} should behave, so no run can be verified.</div>
       )}
 
       {data.claims.map((c) => (

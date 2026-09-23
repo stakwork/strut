@@ -67,7 +67,7 @@ export function CreateDialog(props: {
         <div class="dialog-field">
           <label>Workflow (YAML)</label>
           <textarea value={yamlStr} onInput={(e) => { setYamlStr((e.target as HTMLTextAreaElement).value); setError(""); }} rows={16} />
-          <div class="dialog-hint">Define name and steps. Types: http, log, if, loop, subflow, llm. Use depends: to set DAG edges.</div>
+          <div class="dialog-hint">Define a name and a steps list of tools. Tools: http, log, if, loop, subflow, llm. Use depends: to set DAG edges.</div>
         </div>
         {error && <div style="color:var(--danger);font-size:12px;margin-bottom:8px;">{error}</div>}
         <div class="dialog-actions">

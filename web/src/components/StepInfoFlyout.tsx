@@ -51,7 +51,7 @@ export function StepInfoFlyout(props: {
       <FlyoutResizer />
       <div class="flyout-header">
         <div>
-          <div class="flyout-eyebrow">Step Type</div>
+          <div class="flyout-eyebrow">Tool</div>
           <div class="flyout-title">
             {props.entry.type}
             <span class="param-type-tag">{props.entry.source}</span>
@@ -114,7 +114,7 @@ export function StepInfoFlyout(props: {
           <div class="flyout-section-title">Config</div>
           {fields == null && <div class="flyout-source-empty">Loading…</div>}
           {fields != null && fields.length === 0 && (
-            <div class="flyout-source-empty">This step takes no config.</div>
+            <div class="flyout-source-empty">This tool takes no config.</div>
           )}
           {fields != null && fields.map((f) => (
             <div class="schema-field" key={f.name}>
@@ -151,7 +151,7 @@ export function StepInfoFlyout(props: {
             ) : source?.source ? (
               <pre class="flyout-source-code">{source.source}</pre>
             ) : (
-              <div class="flyout-source-empty">No source available for this step.</div>
+              <div class="flyout-source-empty">No source available for this tool.</div>
             )
           )}
         </div>

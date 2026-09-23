@@ -81,7 +81,7 @@ export function SecretsDialog(props: { onClose: () => void }) {
       <div class="dialog secrets-dialog">
         <div class="dialog-title">Secrets</div>
         <div class="dialog-hint" style="margin-bottom:12px;">
-          Deployment-wide credentials read by steps via{" "}
+          Deployment-wide credentials read by tools via{" "}
           <code>ctx.services.secrets.get("NAME")</code>. Values are write-only —
           they're never shown again after saving.
         </div>

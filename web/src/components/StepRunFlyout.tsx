@@ -42,7 +42,7 @@ export function StepRunFlyout(props: {
         <FlyoutResizer />
         <div class="flyout-header">
           <div>
-            <div class="flyout-eyebrow">Step Results</div>
+            <div class="flyout-eyebrow">Tool Results</div>
             <div class="flyout-title">{step.id} <span style="color:var(--text-dim);font-weight:400;">({step.type})</span></div>
           </div>
           <button class="flyout-close" onClick={props.onClose} aria-label="Close"><CloseIcon /></button>
