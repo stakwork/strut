@@ -46,7 +46,7 @@ Strut already has the missing transport: `POST /workflows/:name/run
 | Git primitives | **Engine-shipped lib steps under `git/`**: `git/checkout` and `git/diff` now; `git/apply`, `git/push`, `github/create-pr` for landing. Generic — any coding workflow composes them; the lab seeds YAML only |
 | Per-run cleanup for steps | **`ctx.onRunEnd(fn)`** — a run-scoped disposer any step can register, run by the runner's `finally` beside the services bag's `onRunEnd`. `git/checkout` removes its worktree with it on success, error and cancel |
 | Credentials | **Actor secrets**: a per-actor store in strut, pushed by hive before a dispatch (the Mothership delegation pattern), resolved for the run's principal by the ordinary `secrets.get(NAME)` boundary. A run persists its `input` on `run.start`, so a token never rides in `input` |
-| Which strut hive calls | **The org's default workspace swarm** — the same one the org strut view embeds (`resolveOrgSwarmWorkspaceForUser`). Strut has no tenancy, so one strut is one trust domain, which the org-wide embed already assumes. The choice lives in ONE hive function so it can change |
+| Which strut hive calls | **The org's default workspace swarm** for now — the same one the org strut view embeds (`resolveOrgSwarmWorkspaceForUser`). Strut has no tenancy, so one strut is one trust domain, which the org-wide embed already assumes. Built so the answer can change (per-swarm struts, or struts and gateways rolled up into each other): ONE resolver consulted at dispatch, and every later operation reads the target back from the row — §5 "Keeping the target a policy" |
 | Where the workflow lives | **mcp's lab**, `mcp/src/lab/code/`, seeded like every other experiment (category `code`, publisher `code-seed`). Phase 1 seeds one YAML and no custom steps |
 | Hive tracking row | **A new `StrutRun` table.** `AgentRun` is the swarm `/repo/agent` inline-or-webhook arbitration row with a chat-text result; `StakworkRun` is shaped around a stakwork project id and its status mapping. `StrutRun` is one row per launch: token hash, workflow + strut run id for reconciliation, a `kind` that picks the completion handler, the run's `output` verbatim |
 | Callback endpoint | **One.** Strut's body is fixed (`run.end`, `workflow`, `runId`, `status`, `output`, `error`, `durationMs`); only `output` varies and it is whatever the workflow's last step packs. The row's `kind` routes to a handler that validates `output` with its own zod schema. Routing comes from the row, never the payload |
@@ -208,18 +208,46 @@ is an `error` run with a plain message; a stopped run is `cancelled`.
 ERROR, CANCELLED, LOST }`:
 
 ```
-id, tokenHash, workspaceId, userId, kind, workflow, strutRunId?,
+id, tokenHash, workspaceId, swarmId, userId, kind, workflow, strutRunId?,
 status, output Json?, error?, durationMs?, conversationId?, proposalId?,
 createdAt, settledAt?, updatedAt
-@@unique([workflow, strutRunId])  @@index([status, createdAt])
+@@unique([swarmId, workflow, strutRunId])  @@index([status, createdAt])
 ```
 
+**Keeping the target a policy.** "Which strut" must never leak past
+dispatch, so hive can move to per-swarm struts — or to struts and
+gateways rolled up into each other — without touching this again:
+
+- `resolveStrutTarget({ workspaceId, purpose })` → `{ swarmId, labBase,
+  swarmApiKey, actor }` is the ONE place the policy lives. Today it returns
+  the org default for every purpose; later it can return the workspace's
+  own swarm for one purpose, or read a per-workspace setting during a
+  gradual migration. Prior work: move the two existing call sites onto it —
+  the benchmarks route (which resolves the task's workspace swarm) and the
+  embed + `dispatch_strut` (which resolve the org default).
+- **The row records where the run lives** (`swarmId`). Reconcile, cancel
+  and the "open in strut" link build their URL from the row, never by
+  re-running the policy — rows dispatched under an old policy keep working.
+- **The unique key includes the swarm**: strut run ids are millisecond
+  timestamps, so two struts can hand out the same id.
+- **The handle is opaque**: `(swarmId, workflow, strutRunId)` is stored and
+  compared, never parsed. A rolled-up strut must keep it stable (the leaf
+  run id, or a composite hive never inspects) and pass callbacks through;
+  a chained gateway takes the delegation at its entry point. Both fit.
+- **Pushes are per target and idempotent**: delegations already are (per
+  workspace member, before each dispatch); the actor's `GITHUB_TOKEN` push
+  is `ensureStrutActorSecret(target, actor)` before every dispatch, never
+  once per user.
+- The workflow exists on every target by construction (seeded by the mcp
+  lab, which every swarm runs), so a target switch needs no strut deploy.
+
 **`src/services/strut-runs.ts`**: `dispatchStrutRun`, `completeStrutRun`,
-`reconcileStrutRuns`; one handler per `kind` beside it. Dispatch: create the
-row, `ensureStrutDelegation` + push the actor's `GITHUB_TOKEN`, `POST
-{lab}/workflows/<name>/run { input, callback: { url } }` with `x-api-token`
-+ `x-strut-actor`, refuse a 202 without `callback: true`, store
-`strutRunId`. The target swarm comes from one function (the org default).
+`reconcileStrutRuns`; one handler per `kind` beside it. Dispatch: resolve
+the target, create the row with its `swarmId`, `ensureStrutDelegation` +
+`ensureStrutActorSecret` on that target, `POST
+{labBase}/workflows/<name>/run { input, callback: { url } }` with
+`x-api-token` + `x-strut-actor`, refuse a 202 without `callback: true`,
+store `strutRunId`.
 
 **`POST /api/strut-runs/webhook?id=&token=`** (`access: "webhook"`): rate
 limit, constant-time token compare against the row, idempotent claim
@@ -268,7 +296,8 @@ identity check (the token's login must be the approver) and its rate limits.
    AGENTS.md.
 2. **mcp**: bump the pinned strut; `lab/code/` seeder + YAML; run it from
    the strut UI on a swarm with a request-bin callback.
-3. **Hive**: `StrutRun`, the webhook + cron, `dispatchStrutRun`, the
+3. **Hive**: `resolveStrutTarget` (and the two existing call sites moved
+   onto it), `StrutRun`, the webhook + cron, `dispatchStrutRun`, the
    actor-secret push, the tool rewrite, the card, abort. Behind the existing
    `code_change` org gate.
 4. **Phase 2** as §6.
