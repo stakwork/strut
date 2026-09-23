@@ -1013,9 +1013,20 @@ export async function createStrut<TServices = unknown>(
   /** Resolve a control request target: its live controller (if any) and
    *  whether the run exists at all. */
   const findRun = async (name: string, runId: string) => {
-    const controller = controllers.get(`${name}/${runId}`) ?? null;
-    const summary = await store.getRunSummary(name, runId);
+    const key = `${name}/${runId}`;
     const events = await store.getRunEvents(name, runId);
+    // A run whose log already ends in a terminal event is only tearing down
+    // (`onRunEnd`) until its controller is released. Wait for that, briefly,
+    // so a finished run never reads as live — a control request in that
+    // window would otherwise "resume in memory" a run that has ended and
+    // append a stray marker to its log.
+    const last = events[events.length - 1];
+    if (last && isTerminalEvent(last)) {
+      const deadline = Date.now() + 2000;
+      while (controllers.has(key) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    }
+    const controller = controllers.get(key) ?? null;
+    const summary = await store.getRunSummary(name, runId);
     return { controller, summary, exists: controller != null || events.length > 0 };
   };
 

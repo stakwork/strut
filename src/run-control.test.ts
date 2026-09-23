@@ -981,7 +981,7 @@ describe("crash hardening", () => {
 // ── HTTP endpoints: cancel / pause / resume ────────────────────────────────
 
 describe("run control endpoints", () => {
-  async function makeServer(steps: Record<string, unknown>) {
+  async function makeServer(steps: Record<string, unknown>, services?: Record<string, unknown>) {
     const dir = join(tmpdir(), `strut-test-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     const workspace = new WorkspaceManager(dir);
@@ -995,6 +995,7 @@ describe("run control endpoints", () => {
       serveUi: false,
       enableChat: false,
       autoResume: false, // exercised explicitly via strut.autoResumeStaleRuns()
+      ...(services ? { services } : {}),
     });
     const store = strut.store as FileRunStore;
     const cleanup = () => rm(dir, { recursive: true, force: true });
@@ -1026,6 +1027,32 @@ describe("run control endpoints", () => {
       await sleep(10);
     }
   }
+
+  it("a run that has finished but is still tearing down never reads as live", async () => {
+    // A slow `onRunEnd` holds the controller registered after the summary is
+    // written — the window a control request used to see as "live".
+    const { strut, workspace, store, cleanup } = await makeServer({}, {
+      onRunEnd: () => sleep(300),
+    });
+    await workspace.publishWorkflow("settling", "v1", { steps: [{ id: "a", type: "value", config: { result: 1 } }] });
+    const launch = await strut.app.request("/workflows/settling/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: {} }),
+    });
+    const { runId } = (await launch.json()) as { runId: string };
+    assert.equal((await waitForSummary(store, "settling", runId)).status, "success");
+
+    const resume = await strut.app.request(`/workflows/settling/runs/${runId}/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(resume.status, 400); // completed — not an "in-memory resume"
+    const types = (await store.getRunEvents("settling", runId)).map((e) => e.type);
+    assert.equal(types.includes("run.resumed"), false);
+    await cleanup();
+  });
 
   it("POST cancel stops a live run tree; 404 unknown; 409 terminal", async () => {
     const gate = createGateStep();
