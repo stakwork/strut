@@ -13,6 +13,8 @@ import { defineStep, flow, step } from "./core.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
+import { FileSecretStore, MemorySecretStore } from "./secret-store.js";
+import type { StrutCapabilities } from "./capabilities.js";
 
 // ── createRegistry ─────────────────────────────────────────────────────────
 
@@ -725,6 +727,61 @@ describe("createStrut", () => {
     assert.equal(health.dataDir, join(tempDir, "data"));
     const meta = await strut.app.request("/workflows/nope");
     assert.equal(meta.status, 404);
+  });
+
+  it("actor secrets default to a file beside a FILE deployment secret store, whatever the workspace kind", async () => {
+    // The mcp lab host: a GRAPH workspace (stood in for by a pathless one)
+    // with file stores under dataDir — and no `actorSecretStore` passed. A
+    // credential hive pushes must outlive the process, so the default follows
+    // the deployment secret store's kind, not the workspace's.
+    const dataDir = join(tempDir, "data");
+    const boot = () =>
+      createStrut({
+        workspace: pathlessWorkspace(new WorkspaceManager(tempDir)),
+        dataDir,
+        store: new MemoryRunStore(),
+        secretStore: new FileSecretStore(dataDir),
+        serveUi: false,
+        enableChat: false,
+        stt: false,
+      });
+    const put = (strut: Awaited<ReturnType<typeof boot>>) =>
+      strut.app.request("/actors/hive-user-1/secrets/GITHUB_TOKEN", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: "ghp_survives" }),
+      });
+
+    const first = await boot();
+    assert.equal((await put(first)).status, 200);
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(join(dataDir, "actor-secrets.json"), "utf8");
+    assert.ok(!raw.includes("ghp_survives"), "encrypted at rest, beside secrets.json");
+
+    // A second instance over the same dataDir — a restart — still has it.
+    const second = await boot();
+    const listed = (await (await second.app.request("/actors/hive-user-1/secrets")).json()) as {
+      secrets: { name: string }[];
+    };
+    assert.deepEqual(listed.secrets.map((x) => x.name), ["GITHUB_TOKEN"]);
+    const svc = second.services as unknown as StrutCapabilities;
+    assert.equal(await svc.secrets.forPrincipal!("hive-user-1").get("GITHUB_TOKEN"), "ghp_survives");
+    assert.equal(await svc.secrets.get("GITHUB_TOKEN"), undefined, "never the deployment's");
+
+    // And with an in-memory deployment store, actor secrets stay in memory:
+    // nothing is written under dataDir for them.
+    const memDir = join(tempDir, "mem");
+    const mem = await createStrut({
+      workspace: pathlessWorkspace(new WorkspaceManager(tempDir)),
+      dataDir: memDir,
+      store: new MemoryRunStore(),
+      secretStore: new MemorySecretStore(),
+      serveUi: false,
+      enableChat: false,
+      stt: false,
+    });
+    assert.equal((await put(mem)).status, 200);
+    await assert.rejects(readFile(join(memDir, "actor-secrets.json"), "utf8"), "memory store writes no file");
   });
 
   it("dataDir defaults to the file workspace root and is overridable", async () => {

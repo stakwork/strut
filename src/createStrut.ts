@@ -138,8 +138,12 @@ export interface StrutOptions<TServices = unknown> {
 
   /** Per-actor secrets (actor-secrets.ts; plans/code-change.md §3.2), the
    *  store behind `/actors/:actor/secrets` and the runner's per-principal
-   *  binding of `ctx.services.secrets`. Defaults like `secretStore`: an
-   *  encrypted `actor-secrets.json` under dataDir, memory otherwise. */
+   *  binding of `ctx.services.secrets`. Defaults by the resolved
+   *  `secretStore`'s kind (NOT the workspace's): when that is a
+   *  `FileSecretStore` — passed or defaulted — an encrypted
+   *  `actor-secrets.json` under dataDir beside `secrets.json`; memory
+   *  otherwise. So a graph-workspace host that keeps its deployment
+   *  secrets on disk keeps actor secrets across restarts too. */
   actorSecretStore?: SecretStore;
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
@@ -470,9 +474,15 @@ export async function createStrut<TServices = unknown>(
     opts.services != null &&
     typeof (opts.services as Record<string, unknown>)["secrets"] === "object";
   // Per-actor secrets, in their own encrypted file — never in `/secrets`.
+  // Defaults follow the DEPLOYMENT secret store's kind, not the workspace's:
+  // a graph-workspace host that keeps `secrets.json` on disk (mcp's lab)
+  // gets `actor-secrets.json` beside it, so a pushed credential survives a
+  // restart. Memory only when the deployment's secrets are in memory too.
   const actorSecrets: ActorSecretStore = actorSecretStore(
     opts.actorSecretStore ??
-      (fileBacked ? new FileSecretStore(dataDir, ACTOR_SECRETS_FILE) : new MemorySecretStore()),
+      (secretStore instanceof FileSecretStore
+        ? new FileSecretStore(dataDir, ACTOR_SECRETS_FILE)
+        : new MemorySecretStore()),
   );
   // Auto-provide the standard capabilities (http + secrets) every adapter step
   // builds on, with the consumer's bag spread on top so they can override or
