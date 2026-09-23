@@ -3,6 +3,7 @@ import * as api from "../api";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { CloseIcon } from "../icons";
 import { StepTypeEntry } from "./AddStepDialog";
+import { relativeTime } from "../automation-form";
 
 // ── Step Info Flyout (read-only catalog view) ──────────────────────────────
 //
@@ -14,7 +15,9 @@ import { StepTypeEntry } from "./AddStepDialog";
 export function StepInfoFlyout(props: {
   entry: StepTypeEntry;
   onClose: () => void;
+  onOpenWorkflow: (name: string) => void;
 }) {
+  const [stats, setStats] = useState<api.StepStatsResponse | null | "error">(null);
   const [fields, setFields] = useState<api.FieldDesc[] | null>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [source, setSource] = useState<api.StepSourceResponse | null>(null);
@@ -24,6 +27,8 @@ export function StepInfoFlyout(props: {
     setFields(null);
     setSourceOpen(false);
     setSource(null);
+    setStats(null);
+    api.getStepStats(props.entry.type).then(setStats).catch(() => setStats("error"));
     api.getStepSchema(props.entry.type)
       .then((resp) => setFields(resp.fields))
       .catch(() => setFields([]));
@@ -55,6 +60,49 @@ export function StepInfoFlyout(props: {
         <button class="flyout-close" onClick={props.onClose} aria-label="Close"><CloseIcon /></button>
       </div>
       <div class="flyout-body">
+        <div class="flyout-section">
+          <div class="flyout-section-title">Usage</div>
+          {stats == null && <div class="flyout-source-empty">Loading…</div>}
+          {stats === "error" && <div class="flyout-source-empty">Could not load usage.</div>}
+          {stats != null && stats !== "error" && (
+            <>
+              <div class="step-stats">
+                <div class="step-stat">
+                  <span class="step-stat-num">{stats.workflows.length}</span>
+                  <span class="step-stat-label">{stats.workflows.length === 1 ? "workflow" : "workflows"}</span>
+                </div>
+                <div class="step-stat">
+                  <span class="step-stat-num">{stats.runs.total}</span>
+                  <span class="step-stat-label">{stats.runs.total === 1 ? "run" : "runs"}</span>
+                </div>
+                <div class="step-stat">
+                  <span class="step-stat-num is-ok">{stats.runs.success}</span>
+                  <span class="step-stat-label">succeeded</span>
+                </div>
+                <div class="step-stat">
+                  <span class={`step-stat-num${stats.runs.error ? " is-error" : ""}`}>{stats.runs.error}</span>
+                  <span class="step-stat-label">failed</span>
+                </div>
+              </div>
+              {stats.runs.lastAt && (
+                <div class="schema-field-default">last run {relativeTime(stats.runs.lastAt)}</div>
+              )}
+              {stats.workflows.length > 0 && (
+                <div class="step-stat-workflows">
+                  {stats.workflows.map((w) => (
+                    <button type="button" class="step-stat-wf" key={w.name}
+                      title={w.direct ? `Open ${w.name}` : `Open ${w.name} (uses it through a subflow)`}
+                      onClick={() => props.onOpenWorkflow(w.name)}>
+                      {w.name}
+                      {!w.direct && <span class="param-type-tag">via subflow</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         {props.entry.description && (
           <div class="flyout-section">
             <div class="flyout-section-title">Description</div>

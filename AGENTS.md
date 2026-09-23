@@ -51,6 +51,7 @@ strut/
 │   ├── scheduler.ts       # automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire) + the in-process tick loop. `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
 │   ├── automations-routes.ts # the Automations flyout's HTTP door: GET /automations[?workflow=], POST /automations/preview, POST/PATCH/DELETE /workflows/:name/automations[/:id], POST …/:id/fire (Run now). Mutations + fire behind requireApiKey
 │   ├── closure.ts         # what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (nested subflows via the workspace, agentTools grants; templated/missing child → unresolvable), stepHashesFor → run.start.stepHashes
+│   ├── step-stats.ts      # GET /steps/:type/stats — the Step Info flyout's Usage: workflows whose active version can run the type (direct, or via subflow) + execution counts summed from their runs' `RunSummary.stepCounts` (written at finalize; older summaries backfilled from the log on first read) and the `step:<type>` bucket
 │   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + messages.jsonl + events.jsonl) + truncateToolMessages
 │   ├── workspace.ts       # WorkspaceStore interface + FileWorkspaceStore (alias WorkspaceManager): versioning, _metadata.json, YAML loading
@@ -121,6 +122,7 @@ strut/
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
+        ├── step-search.ts # searchSteps: the one step-type matcher (sidebar Steps filter + Add Step picker) — every word must hit the type or description, name hits rank first
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat to the host named by ?embed_origin
         ├── components/

@@ -11,6 +11,7 @@ import "./styles/base.css";
 import "./styles/components.css";
 import { deepEqual, normalizeSteps, statusTone } from "./helpers";
 import { load as loadPref, save as savePref } from "./storage";
+import { searchSteps } from "./step-search";
 import { ChatFlyout } from "./components/ChatFlyout";
 import { CategoryEditor } from "./components/CategoryEditor";
 import { RunCapEditor } from "./components/RunCapEditor";
@@ -97,6 +98,7 @@ export function App() {
   // which step type's read-only info flyout is open.
   const [stepsOpen, setStepsOpen] = useState<boolean>(() => loadPref("stepsOpen", false));
   const [infoStep, setInfoStep] = useState<StepTypeEntry | null>(null);
+  const [stepQuery, setStepQuery] = useState("");
   const [publishedSteps, setPublishedSteps] = useState<StepData[] | null>(null);
   const [localSteps, setLocalSteps] = useState<StepData[] | null>(null);
   // The workflow `localSteps` were actually loaded for. Until this matches
@@ -763,13 +765,15 @@ export function App() {
     await refreshWorkflows();
   }, [selectedWf, refreshWorkflows]);
 
-  // Sidebar Steps catalog: grouped by tier, in the same order as the Add
-  // Step picker. Clicking an item toggles its read-only info flyout.
+  // Sidebar Steps catalog: filtered by the section's search box (the Add
+  // Step picker's matcher), grouped by tier in the same order as that picker.
+  // Clicking an item toggles its read-only info flyout.
+  const matchedSteps = useMemo(() => searchSteps(stepTypes, stepQuery), [stepTypes, stepQuery]);
   const stepGroups = useMemo(() => [
-    { label: "Core", steps: stepTypes.filter((s) => s.source === "core") },
-    { label: "Library", steps: stepTypes.filter((s) => s.source === "lib") },
-    { label: "Custom", steps: stepTypes.filter((s) => s.source === "custom") },
-  ].filter((g) => g.steps.length > 0), [stepTypes]);
+    { label: "Core", steps: matchedSteps.filter((s) => s.source === "core") },
+    { label: "Library", steps: matchedSteps.filter((s) => s.source === "lib") },
+    { label: "Custom", steps: matchedSteps.filter((s) => s.source === "custom") },
+  ].filter((g) => g.steps.length > 0), [matchedSteps]);
 
   const toggleStepsSection = useCallback(() => {
     setStepsOpen((prev) => {
@@ -859,11 +863,30 @@ export function App() {
           <div class="section-title section-title-toggle" onClick={toggleStepsSection}>
             <span class={`cat-caret${stepsOpen ? " is-open" : ""}`}>▸</span>
             <span>Steps</span>
-            <span class="cat-count">{stepTypes.length}</span>
+            <span class="cat-count">
+              {stepQuery.trim() ? `${matchedSteps.length} / ${stepTypes.length}` : stepTypes.length}
+            </span>
           </div>
+          {stepsOpen && stepTypes.length > 0 && (
+            <input
+              class="sidebar-search"
+              type="search"
+              value={stepQuery}
+              placeholder="Filter steps…"
+              aria-label="Filter steps"
+              onInput={(e) => setStepQuery((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setStepQuery("");
+                if (e.key === "Enter" && matchedSteps.length === 1) openStepInfo(matchedSteps[0]!);
+              }}
+            />
+          )}
           {stepsOpen && (
             <div class="sidebar-scroll">
               {stepTypes.length === 0 && <div class="empty-sidebar">No step types</div>}
+              {stepTypes.length > 0 && matchedSteps.length === 0 && (
+                <div class="empty-sidebar">No matching steps</div>
+              )}
               {stepGroups.map((g) => (
                 <div key={g.label}>
                   <div class="steps-group-label">{g.label}</div>
@@ -1075,7 +1098,8 @@ export function App() {
 
       {/* Step info flyout — read-only catalog view of a step type. */}
       {infoStep && (
-        <StepInfoFlyout key={infoStep.type} entry={infoStep} onClose={() => setInfoStep(null)} />
+        <StepInfoFlyout key={infoStep.type} entry={infoStep} onClose={() => setInfoStep(null)}
+          onOpenWorkflow={(name) => { setSelectedWf(name); setSelectedRun(null); setEvents([]); }} />
       )}
 
       {/* Workflow flyout — params (edits → Publish, a new version), claims

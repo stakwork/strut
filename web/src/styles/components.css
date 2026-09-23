@@ -236,6 +236,20 @@ body.is-resizing-events * {
 .section-title-toggle:hover {
   color: var(--text-muted);
 }
+.sidebar-search {
+  margin: var(--sp-1) var(--sp-4) var(--sp-1);
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px var(--sp-2);
+  border-radius: var(--r-sm);
+}
+.sidebar-search:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .steps-group-label {
   padding: var(--sp-1) var(--sp-4);
   margin-top: var(--sp-1);
@@ -1331,6 +1345,54 @@ body.is-resizing-flyout * {
 }
 
 /* ─── step info flyout (catalog) ─────────────────────────────── */
+
+.step-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.step-stat {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.step-stat-num {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.step-stat-num.is-ok { color: var(--ok); }
+.step-stat-num.is-error { color: var(--danger); }
+.step-stat-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.step-stat-workflows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--sp-2);
+}
+.step-stat-wf {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.step-stat-wf:hover { background: var(--surface-2); }
 
 .step-info-desc {
   font-size: 12px;

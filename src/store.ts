@@ -1,6 +1,6 @@
 import { mkdir, writeFile, appendFile, readdir, readFile, open, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { RunEvent, RunSummary } from "./core.js";
+import type { RunEvent, RunSummary, StepCounts } from "./core.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -266,6 +266,25 @@ export interface PartialRunSummary {
  * events array so it is equally usable on a live tail, a stale run's log,
  * or in tests. Returns null for an empty log (no such run).
  */
+/** Add one event to a `StepCounts` tally (a no-op for anything but an
+ *  executed step's end or error). */
+export function tallyStep(counts: StepCounts, event: RunEvent): void {
+  if (event.type !== "step.end" && event.type !== "step.error") return;
+  const type = event.stepType;
+  if (!type) return;
+  const c = (counts[type] ??= { success: 0, error: 0, lastAt: event.ts });
+  if (event.type === "step.end") c.success++;
+  else c.error++;
+  if (event.ts > c.lastAt) c.lastAt = event.ts;
+}
+
+/** `RunSummary.stepCounts` for a whole log. */
+export function countSteps(events: RunEvent[]): StepCounts {
+  const counts: StepCounts = {};
+  for (const e of events) tallyStep(counts, e);
+  return counts;
+}
+
 export function summarizeFromEvents(
   workflow: string,
   runId: string,

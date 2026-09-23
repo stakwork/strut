@@ -303,7 +303,17 @@ export interface RunSummary {
   /** Who launched the run and who was billed for it (see `StepContext`). */
   actor?: string;
   principal?: string;
+  /** Executions per step type in this run's whole log (subflows included —
+   *  they log inline), so step usage is a scan of summaries, never of event
+   *  logs (`step-stats.ts`). Always written by the runner; absent only on
+   *  summaries written before it existed. See `countSteps`. */
+  stepCounts?: StepCounts;
 }
+
+/** Keyed by `stepType` as emitted — a step an agent called as a tool is
+ *  `tool:<type>`. `step.end` = success, `step.error` = error (once per
+ *  execution, after retries); `step.replayed` is not an execution. */
+export type StepCounts = Record<string, { success: number; error: number; lastAt: string }>;
 
 /** A step definition with erased generics, for use in the registry.
  *

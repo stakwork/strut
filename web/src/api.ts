@@ -455,6 +455,17 @@ export interface StepSourceResponse {
 export const getStepSource = (type: string) =>
   fetchJSON<StepSourceResponse>(`/steps/${encodeURIComponent(type)}/source`);
 
+export interface StepStatsResponse {
+  type: string;
+  /** Workflows whose active version can run the step; `direct` = named in its
+   *  own YAML, otherwise reached through a subflow. */
+  workflows: Array<{ name: string; direct: boolean }>;
+  runs: { total: number; success: number; error: number; lastAt: string | null };
+}
+
+export const getStepStats = (type: string) =>
+  fetchJSON<StepStatsResponse>(`/steps/${encodeURIComponent(type)}/stats`);
+
 // ── Runs ───────────────────────────────────────────────────────────────────
 
 export interface RunSummary {
