@@ -3,11 +3,13 @@ import type {
   Step,
   StepContext,
   StepRegistry,
+  RunEndInfo,
   RunEvent,
   RunOrigin,
   RunResult,
   StepCounts,
 } from "./core.js";
+export type { RunEndInfo } from "./core.js";
 import { messagesOf } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import type { RunStore } from "./store.js";
@@ -94,13 +96,6 @@ export interface RunOptions<TServices = unknown> {
   callback?: { origin: string };
 }
 
-/** What `services.onRunEnd(runId, info)` is told about the settled run. */
-export interface RunEndInfo {
-  /** The flow's name — the run-store key the run was written under. */
-  workflow: string;
-  origin?: RunOrigin;
-}
-
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
 const SKIP = Symbol("strut.skip");
 
@@ -134,6 +129,16 @@ function causeChain(err: Error): string {
   return parts.join(" <- ");
 }
 
+/** The run's view of the services bag: `secrets` bound to the principal when
+ *  the capability supports it (`forPrincipal`, capabilities.ts), else the
+ *  bag itself. */
+function bindPrincipal<TServices>(services: TServices, principal: string | undefined): TServices {
+  if (!principal || services == null || typeof services !== "object") return services;
+  const secrets = (services as { secrets?: { forPrincipal?: (p: string) => unknown } }).secrets;
+  if (typeof secrets?.forPrincipal !== "function") return services;
+  return { ...(services as object), secrets: secrets.forPrincipal(principal) } as TServices;
+}
+
 /** Everything the execution tree threads through unchanged — bundled so the
  *  recursive executors don't each grow another positional parameter. */
 interface Exec {
@@ -147,6 +152,10 @@ interface Exec {
   journal?: Record<string, unknown>;
   actor?: string;
   principal?: string;
+  /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
+   *  run, shared by every frame (subflow, loop body, an agent's tool-call
+   *  steps), drained newest-first in `runWorkflow`'s `finally`. */
+  disposers: Array<(info: RunEndInfo) => unknown>;
 }
 
 export async function runWorkflow<TServices = unknown>(
@@ -167,7 +176,11 @@ export async function runWorkflow<TServices = unknown>(
     ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
   };
   // Default services to an empty object so steps can destructure freely.
-  const services = (opts?.services ?? ({} as TServices)) as TServices;
+  // With a principal and an actor-aware secrets capability, this run's
+  // `secrets` is bound to that principal (plans/code-change.md §3.2): a
+  // shallow per-run view, so the consumer's bag object is never mutated and
+  // a step's `secrets.get(NAME)` needs to know nothing about actors.
+  const services = bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal);
 
   const onEvent = opts?.onEvent;
   // `RunSummary.stepCounts`, kept as events are emitted. A resume continues
@@ -254,6 +267,7 @@ export async function runWorkflow<TServices = unknown>(
     journal: opts?.journal,
     actor: opts?.actor,
     principal: opts?.principal,
+    disposers: [],
   };
 
   try {
@@ -313,14 +327,22 @@ export async function runWorkflow<TServices = unknown>(
     // it never names what gets disposed. Guarded so a teardown failure can't mask
     // the run's real result. (Hard kills (SIGKILL) still skip this — identical to
     // any in-process `finally`; that case is handled out-of-band.)
+    // The second argument names WHICH run settled — what a post-run
+    // consumer (the verify pass, plans/claims.md §4) needs and a teardown
+    // hook can ignore.
+    const info: RunEndInfo = { workflow: wfName, ...(opts?.origin ? { origin: opts.origin } : {}) };
+    // Step-registered disposers (`ctx.onRunEnd`) first, newest first, each
+    // guarded — a step's worktree or browser is gone before the consumer's
+    // per-run teardown looks. A disposer that throws never blocks the rest.
+    for (const dispose of exec.disposers.splice(0).reverse()) {
+      try {
+        await dispose(info);
+      } catch (teardownErr) {
+        console.error(`[runner] ctx.onRunEnd disposer failed for run ${runId}:`, teardownErr);
+      }
+    }
     try {
-      // The second argument names WHICH run settled — what a post-run
-      // consumer (the verify pass, plans/claims.md §4) needs and a teardown
-      // hook can ignore.
-      await (services as { onRunEnd?: (id: string, info: RunEndInfo) => unknown })?.onRunEnd?.(runId, {
-        workflow: wfName,
-        ...(opts?.origin ? { origin: opts.origin } : {}),
-      });
+      await (services as { onRunEnd?: (id: string, info: RunEndInfo) => unknown })?.onRunEnd?.(runId, info);
     } catch (teardownErr) {
       console.error(`[runner] onRunEnd hook failed for run ${runId}:`, teardownErr);
     }
@@ -714,6 +736,9 @@ async function dispatchStep(
         // Same run, same principal — a subflow's steps inherit these unchanged.
         ...(exec.actor ? { actor: exec.actor } : {}),
         ...(exec.principal ? { principal: exec.principal } : {}),
+        // One disposer list per run (`Exec.disposers`), whatever frame the
+        // step runs in; drained in runWorkflow's `finally`.
+        onRunEnd: (fn) => void exec.disposers.push(fn),
       };
 
       if (exec.controller) {

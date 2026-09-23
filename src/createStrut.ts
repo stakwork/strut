@@ -42,6 +42,7 @@ import { automationsRoutes } from "./automations-routes.js";
 import { createAutomations, type Automations } from "./scheduler.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
+import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
@@ -134,6 +135,12 @@ export interface StrutOptions<TServices = unknown> {
    *  `process.env` as fallback. Pass your own `services.secrets` to bypass
    *  entirely (then the `/secrets` endpoints return 501). */
   secretStore?: SecretStore;
+
+  /** Per-actor secrets (actor-secrets.ts; plans/code-change.md §3.2), the
+   *  store behind `/actors/:actor/secrets` and the runner's per-principal
+   *  binding of `ctx.services.secrets`. Defaults like `secretStore`: an
+   *  encrypted `actor-secrets.json` under dataDir, memory otherwise. */
+  actorSecretStore?: SecretStore;
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -462,6 +469,11 @@ export async function createStrut<TServices = unknown>(
   const secretsInjected =
     opts.services != null &&
     typeof (opts.services as Record<string, unknown>)["secrets"] === "object";
+  // Per-actor secrets, in their own encrypted file — never in `/secrets`.
+  const actorSecrets: ActorSecretStore = actorSecretStore(
+    opts.actorSecretStore ??
+      (fileBacked ? new FileSecretStore(dataDir, ACTOR_SECRETS_FILE) : new MemorySecretStore()),
+  );
   // Auto-provide the standard capabilities (http + secrets) every adapter step
   // builds on, with the consumer's bag spread on top so they can override or
   // extend any capability. The default `secrets` capability reads the secret
@@ -472,7 +484,10 @@ export async function createStrut<TServices = unknown>(
   // STRUT_MODEL_DIR. Nothing loads until a stream or transcribe call.
   const stt: SttService | null = opts.stt === false ? null : (opts.stt ?? createStt({ dataDir }));
   const services = {
-    ...(standardServices({ secretStore }) as unknown as Record<string, unknown>),
+    ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
+      string,
+      unknown
+    >),
     // Per-run artifact files, rooted in the local data dir. A consumer bag
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
@@ -1463,6 +1478,53 @@ export async function createStrut<TServices = unknown>(
     const existed = await secretStore.delete(name);
     if (!existed) return c.json({ error: `secret "${name}" not found` }, 404);
     return c.json({ ok: true, name });
+  });
+
+  // ── Actor secrets (plans/code-change.md §3.2) ────────────────────────────
+  //
+  // A host pushes a PERSON's credential here (hive: the user's GitHub token,
+  // before it dispatches a run as that actor), and a run launched as that
+  // principal reads it through the ordinary `ctx.services.secrets.get(NAME)`.
+  // Separate file, separate routes, never in `/secrets` or `list_secrets`.
+
+  app.get("/actors/:actor/secrets", requireApiKey, async (c) => {
+    if (secretsInjected) {
+      return c.json({ error: "secrets are managed by an injected capability" }, 501);
+    }
+    const actor = c.req.param("actor");
+    if (!actor) return c.json({ error: "actor is required" }, 400);
+    return c.json({ actor, secrets: await actorSecrets.list(actor) });
+  });
+
+  app.put("/actors/:actor/secrets/:name", requireApiKey, async (c) => {
+    if (secretsInjected) {
+      return c.json({ error: "secrets are managed by an injected capability" }, 501);
+    }
+    const { actor, name } = c.req.param();
+    if (!actor) return c.json({ error: "actor is required" }, 400);
+    if (!name || !isValidSecretName(name)) {
+      return c.json(
+        { error: `invalid secret name "${name}" — use letters, digits, underscore (not starting with a digit)` },
+        400,
+      );
+    }
+    const body = await c.req.json<{ value?: unknown }>().catch(() => ({ value: undefined }));
+    if (typeof body.value !== "string" || body.value.length === 0) {
+      return c.json({ error: "value (non-empty string) is required" }, 400);
+    }
+    await actorSecrets.set(actor, name, body.value);
+    return c.json({ ok: true, actor, name });
+  });
+
+  app.delete("/actors/:actor/secrets/:name", requireApiKey, async (c) => {
+    if (secretsInjected) {
+      return c.json({ error: "secrets are managed by an injected capability" }, 501);
+    }
+    const { actor, name } = c.req.param();
+    if (!actor || !name) return c.json({ error: "actor and secret name are required" }, 400);
+    const existed = await actorSecrets.delete(actor, name);
+    if (!existed) return c.json({ error: `secret "${name}" not found for actor` }, 404);
+    return c.json({ ok: true, actor, name });
   });
 
   // ── Steps ────────────────────────────────────────────────────────────────

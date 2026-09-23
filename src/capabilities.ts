@@ -36,12 +36,23 @@ import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js"
  *  secrets — without touching any adapter. */
 export interface SecretsCapability {
   get(name: string): Promise<string | undefined>;
+  /** The same boundary bound to one principal (plans/code-change.md §3.2):
+   *  `get(name)` resolves that actor's secret first, then whatever this
+   *  capability resolves. The runner calls it once per run with the run's
+   *  principal, so a step never does — it just reads `secrets.get(NAME)`.
+   *  Absent when the deployment has no actor secrets. */
+  forPrincipal?(principal: string): SecretsCapability;
 }
 
 /** The narrow read surface a secrets capability needs from a backing store —
  *  satisfied by `SecretStore` (secret-store.ts) without importing it here. */
 export interface SecretReadable {
   get(name: string): Promise<string | undefined>;
+}
+
+/** The read surface of an actor-secret store (actor-secrets.ts). */
+export interface ActorSecretReadable {
+  get(actor: string, name: string): Promise<string | undefined>;
 }
 
 /**
@@ -51,28 +62,49 @@ export interface SecretReadable {
  *     `envFallback` so unset secrets still resolve from `process.env`.
  *
  * The store path is async-aware: a managed secret wins, then the env fallback.
+ * With `actors`, the capability can be bound to a principal
+ * (`forPrincipal`): that actor's secret wins over everything above.
  */
 export function secretsCapability(
   source: Record<string, string | undefined> | SecretReadable = process.env,
-  opts: { envFallback?: Record<string, string | undefined> } = {},
+  opts: { envFallback?: Record<string, string | undefined>; actors?: ActorSecretReadable } = {},
 ): SecretsCapability {
+  let base: SecretsCapability;
   if (typeof (source as SecretReadable).get === "function") {
     const store = source as SecretReadable;
     const fallback = opts.envFallback;
-    return {
+    base = {
       async get(name: string) {
         const v = await store.get(name);
         if (v !== undefined) return v;
         return fallback?.[name];
       },
     };
+  } else {
+    const flat = source as Record<string, string | undefined>;
+    base = {
+      async get(name: string) {
+        return flat[name];
+      },
+    };
   }
-  const flat = source as Record<string, string | undefined>;
-  return {
-    async get(name: string) {
-      return flat[name];
+  const actors = opts.actors;
+  if (!actors) return base;
+  const withActors: SecretsCapability = {
+    get: base.get,
+    forPrincipal(principal: string): SecretsCapability {
+      const bound: SecretsCapability = {
+        async get(name: string) {
+          const v = await actors.get(principal, name);
+          return v !== undefined ? v : base.get(name);
+        },
+        // Re-binding replaces the principal rather than stacking.
+        forPrincipal: (p) => (p === principal ? bound : withActors.forPrincipal!(p)),
+      };
+      return bound;
     },
   };
+  return withActors;
 }
 
 // ── http ─────────────────────────────────────────────────────────────────
@@ -320,6 +352,11 @@ export interface StrutCapabilities {
    *  transcribe through it without importing sherpa. Optional because a
    *  bare in-code bag may not carry one. */
   stt?: SttService;
+  /** The deployment's local data directory — where artifacts, cassettes and
+   *  the git cache/worktrees (`git/*` steps) live. Set by the standard
+   *  server; a bare in-code bag may not carry one (steps fall back to the OS
+   *  temp dir). */
+  dataDir?: string;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
@@ -332,14 +369,20 @@ export function standardServices(
     fetchImpl?: FetchLike;
     secretsSource?: Record<string, string | undefined>;
     secretStore?: SecretReadable;
+    /** Per-actor secrets (actor-secrets.ts): lets the runner bind `secrets`
+     *  to a run's principal. */
+    actorSecretStore?: ActorSecretReadable;
+    dataDir?: string;
   } = {},
 ): StrutCapabilities {
+  const actors = opts.actorSecretStore;
   const secrets = opts.secretStore
-    ? secretsCapability(opts.secretStore, { envFallback: process.env })
-    : secretsCapability(opts.secretsSource);
+    ? secretsCapability(opts.secretStore, { envFallback: process.env, ...(actors ? { actors } : {}) })
+    : secretsCapability(opts.secretsSource, actors ? { actors } : {});
   return {
     http: httpCapability(opts.fetchImpl),
     secrets,
     shell: shellCapability(),
+    ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
   };
 }

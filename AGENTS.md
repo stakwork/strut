@@ -61,6 +61,7 @@ strut/
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+│   ├── actor-secrets.ts   # per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses) — every one recordable by cassette.ts + secret-safe
 │   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
 │   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models. Also the `llmAuth` seam (plans/mothership-cost-control.md §1): a host hook that returns {apiKey, baseUrl, headers} per call, consulted before the client is built; `stepAuth(ctx)` builds a step's call context
@@ -69,6 +70,7 @@ strut/
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
+│   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd; the token reaches git through the child env + an inline credential helper ONLY) and git/diff (stage all, one unified diff, caps, gitleaks when on PATH). _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
 │   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus three strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, walk gathers context for a goal hop by hop with a decision model (jev via experimental_evaluate, or a wrapped LLM) judging relevance/next/enough — plans/graph-walk.md); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
 │   ├── ai/                # AI workflow-builder backend (used by POST /chat)
@@ -111,7 +113,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1062 unit tests across 52 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1087 unit tests across 60 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -161,7 +163,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1062 tests, ~3s
+npm test                    # 1087 tests, ~4s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -327,6 +329,24 @@ instead of baked into env at deploy time.
   (names + metadata only — never values) so it can reference existing
   credentials when authoring steps and prompt the user to add missing ones. It
   has no write access; adding/removing secrets stays a human action.
+
+- **Actor secrets — a PERSON's credential, not the deployment's**
+  (`src/actor-secrets.ts`, plans/code-change.md §3.2). A host that knows who
+  a run is for (hive: the user's GitHub token) pushes it per actor —
+  `PUT /actors/:actor/secrets/:name { value }`, `DELETE …`, `GET
+  /actors/:actor/secrets` (names + timestamps; all behind `requireApiKey`,
+  501 when `secrets` was injected) — into a THIRD encrypted file,
+  `actor-secrets.json`. Steps see nothing new: the runner binds the run's
+  `ctx.services.secrets` to its **principal** once per run
+  (`SecretsCapability.forPrincipal`; a shallow per-run view, the shared bag
+  is never mutated), so `secrets.get("GITHUB_TOKEN")` resolves that actor's
+  value first, then the deployment's, then env — for the `secretsEnv` of
+  `agent`/`exec`, every lib step's `cfg.token ?? secrets.get(NAME)`, and
+  cassette scrubbing alike. An automation runs as the owner and reads the
+  owner's; the builder's runs read the chat actor's; an `agentTools` step
+  reads the run's. Never listed by `GET /secrets`, the Secrets dialog or
+  `list_secrets`. A run's `input` is persisted on `run.start`, so this is
+  how a per-user credential reaches a workflow without ever being in it.
 
 - **No OAuth.** This is a paste-a-key / service-account store by design. For
   Google Drive, paste a **service-account JSON** as `GOOGLE_SERVICE_ACCOUNT_JSON`
@@ -528,6 +548,17 @@ and the child env is scrubbed by construction).
     services bag dispose per-run resources keyed by `runId` (e.g. mcp `/lab`'s
     gitsee browser + booted docker stack). A hard `SIGKILL` still skips it
     (in-process `finally`), so that case stays out-of-band.
+  - **`ctx.onRunEnd(fn)`** — the same hook for a STEP (plans/code-change.md
+    §3.1): a run-scoped disposer list (`Exec.disposers`, one per run, shared
+    by subflow frames and an agent's tool-call steps), drained newest-first
+    in that same `finally`, each guarded, BEFORE the bag's `onRunEnd`. For a
+    lib/custom step that allocates something that must not outlive the run
+    and cannot reach the consumer's bag — `git/checkout` removes its worktree
+    with it. Absent outside the runner, like `registry`.
+  - **`services.dataDir`** — the deployment's data dir on the standard bag
+    (set by `createStrut`), for steps that keep local blobs of their own
+    beside artifacts and cassettes (`git/*`'s cache + worktrees). A bare
+    in-code bag may lack it; steps fall back to the OS temp dir.
 
 - **`ctx.registry`** — the step registry, populated by the runner in
   `dispatchStep`. Lets a step that orchestrates OTHER steps look them up by

@@ -79,6 +79,23 @@ export interface StepContext<TServices = unknown> {
   /** Who this run's spend is billed to: the actor, else the workflow's
    *  owner (§2, the principal rule). What `llmAuth` receives. */
   principal?: string;
+  /** Register a run-scoped disposer: the runner calls every registered `fn`
+   *  in its `finally` when the run settles — success, error AND cancel —
+   *  newest first, each guarded, BEFORE the services bag's own `onRunEnd`.
+   *  For a step that allocates something that must not outlive the run (a
+   *  git worktree, a browser, a booted stack) and cannot reach the consumer's
+   *  services hook. Subflow frames and an agent's tool-call steps share the
+   *  run's list. Optional (absent outside the runner, like `registry`);
+   *  a hard kill skips it like any in-process `finally`. */
+  onRunEnd?: (fn: (info: RunEndInfo) => unknown) => void;
+}
+
+/** What a run's teardown hooks (`ctx.onRunEnd`, `services.onRunEnd`) are told
+ *  about the settled run. */
+export interface RunEndInfo {
+  /** The flow's name — the run-store key the run was written under. */
+  workflow: string;
+  origin?: RunOrigin;
 }
 
 /** Error handling options for a step. */
