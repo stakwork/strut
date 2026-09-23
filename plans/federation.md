@@ -1,7 +1,9 @@
 # Federated struts — chains, roll-ups, a shared library, long horizons
 
 > **Status (2026-09-23): design only, nothing built.** Every claim about
-> current behaviour was re-read on `strut@596d2b4`, `hive@a64a61e47` and
+> current behaviour was re-read on `strut@596d2b4`, `hive@a64a61e47` (the
+> deep-link citations on `hive@59a7e6b81`, the merge of
+> [stakwork/hive#5334](https://github.com/stakwork/hive/pull/5334)) and
 > `stakgraph@28973f61` (mcp + gateway); citations are `file:line` on those
 > commits. Companion plans this builds on and does not reopen:
 > `mothership-cost-control.md` (actors, the principal rule, delegations),
@@ -375,10 +377,11 @@ peer, from the credential, never from the forwarded name.
   construction). The live tail is the proxied SSE. Deep link: `peer` joins
   `DEEP_LINK_PARAMS` (`web/src/embed.ts:16`), mirrored to the host like
   `wf`/`run` (`web/src/app.tsx:180-190`), so hive can open "run X on
-  workspace Y" inside the org strut's frame. Hive's own deep-link mirror
-  exists only on the unmerged `strut-deep-links` branch
-  (`hive-strut-deep-links`, `StrutView.tsx:36-41,129-149`) and needs the
-  one extra param when it lands.
+  workspace Y" inside the org strut's frame. Hive's side already mirrors
+  `wf`/`run`/`v`/`chat` ([stakwork/hive#5334](https://github.com/stakwork/hive/pull/5334),
+  merged as `hive@59a7e6b81`: `StrutView.tsx:18,36-52,135-140`) and needs
+  `peer` added to its `DEEP_LINK_PARAMS` — the same one-line addition
+  `elicit` still needs there.
 - **What is live and what is cached.** Lists and summaries: a few seconds
   of memo in the client. Events and tails: live. The durable copy of a
   peer's history is the central's projection (§2.4), which is also what
@@ -783,9 +786,10 @@ the resolved swarm; dispatch-through (§2.2) is for workflows, not for hive.
   and does not check `swarm.status` (`hive/src/lib/helpers/org-workspace.ts:82-85`);
   the selector's per-workspace path uses `getWorkspaceSwarmAccess`, which
   does.
-- Hive's `strut-deep-links` branch (`a9835652`, unmerged) has the
-  `embed_origin` handling `web/src/embed.ts` expects; master does not, and
-  the branch lacks `elicit`.
+- Hive's deep-link mirror ([stakwork/hive#5334](https://github.com/stakwork/hive/pull/5334),
+  `hive@59a7e6b81`) carries `wf`/`run`/`v`/`chat` but not `elicit`
+  (`StrutView.tsx:18`), so a host link to an open builder question does
+  not survive a reload yet; `peer` joins the same list in milestone 2.
 - The installed `gatekey` 0.1.1 lacks upstream's `Claims.chain`
   (`node_modules/gatekey` vs `gateway/auth/ts/src/types.ts:216-251`);
   `mothership.test.ts` decodes the chain by hand for that reason. Not
