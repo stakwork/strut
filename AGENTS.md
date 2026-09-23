@@ -125,8 +125,9 @@ strut/
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat to the host named by ?embed_origin
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
-        │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
+        │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate / Versions (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
         │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
+        │   ├── VersionsPanel.tsx     # the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing)
         │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc

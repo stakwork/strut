@@ -832,6 +832,14 @@ body.is-resizing-flyout * {
   justify-content: flex-end;
   gap: var(--sp-3);
 }
+.flyout-footer-runs {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .flyout-footer-error {
   flex: 1;
   font-size: 12px;
@@ -2829,3 +2837,7 @@ body.is-resizing-flyout * {
 }
 .auto-token { display: flex; align-items: center; gap: 2px; }
 .flyout-field .auto-token-input { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
+
+/* ─── versions (Workflow flyout tab) ─────────────────────────── */
+.version-name { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: 13px; font-weight: 600; color: var(--text); }
+.auto-card.is-active-version { border-color: var(--accent); }

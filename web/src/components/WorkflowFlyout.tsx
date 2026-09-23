@@ -5,6 +5,7 @@ import { FlyoutResizer } from "./FlyoutResizer";
 import { ClaimsPanel, claimsSummary } from "./ClaimsPanel";
 import { ParamsPanel } from "./ParamsPanel";
 import { AutomationsPanel } from "./AutomationsPanel";
+import { VersionsPanel } from "./VersionsPanel";
 import type { InputBinding } from "../run-inputs";
 
 // ── Workflow Flyout ─────────────────────────────────────────────────────────
@@ -12,16 +13,17 @@ import type { InputBinding } from "../run-inputs";
 // Everything about the selected workflow that is not a step, one tab each:
 // its params (the tunable knobs — versioned content, so edits go through
 // Publish), its claims (the contract + evidence, computed on the active
-// version) and its automations (schedules — metadata, never a version). One
-// flyout means one topbar button, and the three exclude each other by
+// version), its automations (schedules — metadata, never a version) and its
+// versions (run counts + rollback). One
+// flyout means one topbar button, and the tabs exclude each other by
 // construction. Which tabs exist is the caller's call: a workflow with no
 // params has no Params tab, a filesystem workspace has no Claims tab, the
 // history view has no Automate tab. Deleting the workflow lives at the
 // bottom, out of the way.
 
-export type WorkflowTab = "params" | "claims" | "automations";
+export type WorkflowTab = "params" | "claims" | "automations" | "versions";
 
-const LABEL: Record<WorkflowTab, string> = { params: "Params", claims: "Claims", automations: "Automate" };
+const LABEL: Record<WorkflowTab, string> = { params: "Params", claims: "Claims", automations: "Automate", versions: "Versions" };
 
 /** The claims dot: what needs attention, at a glance — refuted > a to-do >
  *  unverified (or no claims at all) > every claim supported. */
@@ -59,11 +61,19 @@ export function WorkflowFlyout(props: {
   automations: api.Automation[];
   loadBindings: () => Promise<InputBinding[]>;
   onAutomationsChanged: () => void;
+  // Versions
+  viewVersion: string | null;
+  onViewVersion: (version: string | null) => void;
+  onActivateVersion: (version: string) => Promise<void>;
+  /** Every run of the workflow, all versions — the footer's totals. */
+  runs: api.RunSummary[];
 }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const scheduled = props.automations.filter((a) => a.enabled).length;
+  const ok = props.runs.filter((r) => r.status === "success").length;
+  const failed = props.runs.filter((r) => r.status === "error").length;
 
   const del = async () => {
     if (!confirm(`Delete "${props.workflow}"?\n\nEvery version, schedule and run goes with it.`)) return;
@@ -129,9 +139,23 @@ export function WorkflowFlyout(props: {
         />
       )}
 
+      {props.tab === "versions" && (
+        <VersionsPanel
+          workflow={props.workflow}
+          viewVersion={props.viewVersion}
+          onView={props.onViewVersion}
+          onActivate={props.onActivateVersion}
+        />
+      )}
+
       {/* The automation editor brings its own action bar; the footer yields to it. */}
       {!editing && (
         <div class="flyout-footer">
+          <span class="flyout-footer-runs" title="All runs, every version">
+            {props.runs.length === 0 ? "No runs" : `${props.runs.length} run${props.runs.length === 1 ? "" : "s"}`}
+            {ok > 0 && <span class="badge badge-ok">{ok} ok</span>}
+            {failed > 0 && <span class="badge badge-danger">{failed} failed</span>}
+          </span>
           {deleteError && <span class="flyout-footer-error">{deleteError}</span>}
           <button class="btn btn-danger" disabled={deleting} onClick={del}>Delete workflow</button>
         </div>

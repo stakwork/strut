@@ -303,6 +303,9 @@ export interface RunSummary {
   /** Who launched the run and who was billed for it (see `StepContext`). */
   actor?: string;
   principal?: string;
+  /** Content hash of the workflow version the run executed (as on
+   *  `run.start`) — on the summary so "runs per version" is a summary scan. */
+  workflowHash?: string;
 }
 
 /** A step definition with erased generics, for use in the registry.
