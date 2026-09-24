@@ -4,6 +4,8 @@ import { resolveModel, createWebTools, stepAuth } from "../../llm.js";
 import { accessedNodesOf, defineStep, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMessages } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
 import { globToRegExp } from "../../closure.js";
+import { parseStepRef } from "../../step-ref.js";
+import { resolveStep } from "../registry.js";
 import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve, dirname, isAbsolute, sep } from "node:path";
@@ -923,6 +925,9 @@ export default defineStep({
     // Registry-backed tools (the "tools are steps" model). Merged ON TOP of the
     // (filtered) built-ins — explicitly requested, so not subject to toolFilter.
     // Needs the runner-populated ctx.registry; absent (in-code/test) → no-op.
+    // A pinned grant (`clip/shout@v1`) is loaded once here so the sync
+    // lookup below finds it (src/step-ref.ts).
+    if (ctx?.registry) for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(ctx.registry, name);
     Object.assign(tools, buildRegistryTools(cfg.agentTools, ctx?.registry, ctx, tool));
 
     // Output mode: schema (structured) vs finalAnswer (terminal tool) vs text.

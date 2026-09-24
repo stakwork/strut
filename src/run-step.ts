@@ -3,6 +3,8 @@ import { stepHashesFor } from "./closure.js";
 import type { Flow, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
 import type { ClaimsReader } from "./graph/claims.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
+import { baseType } from "./step-ref.js";
+import { resolveStep } from "./steps/registry.js";
 import { MemoryRunStore, countSteps, generateRunId, stepRunKey, type RunStore } from "./store.js";
 import {
   withCassette,
@@ -73,7 +75,7 @@ export async function runSingleStep(
   opts: RunStepOptions = {},
 ): Promise<RunStepResult> {
   const runId = generateRunId();
-  if (!registry[type]) {
+  if (!(await resolveStep(registry, type).catch(() => null))) {
     return {
       runId,
       status: "error",
@@ -202,7 +204,7 @@ export async function runStep(
 /** Copy a finished single-step run (events + summary) into `store` under
  *  `step:<type>`. Returns the key. */
 export async function persistStepRun(store: RunStore, type: string, result: RunStepResult): Promise<string> {
-  return persistRunUnder(store, stepRunKey(type), result);
+  return persistRunUnder(store, stepRunKey(baseType(type)), result);
 }
 
 /** Copy a finished in-memory single-step run into `store` under any key —

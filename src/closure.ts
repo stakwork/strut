@@ -17,6 +17,7 @@
  */
 import type { Flow, Step } from "./core.js";
 import { hasTemplates } from "./expr.js";
+import { baseType } from "./step-ref.js";
 import type { SubflowResolver } from "./runner.js";
 
 const BODY_STEPS = new Set(["loop", "foreach"]);
@@ -42,7 +43,8 @@ export function globToRegExp(pattern: string): RegExp {
 }
 
 export interface FlowClosure {
-  /** Step types named anywhere in the closure (built-in and custom alike). */
+  /** Step types named anywhere in the closure (built-in and custom alike),
+   *  pins stripped: `clip/shout@v1` reaches `clip/shout`. */
   types: Set<string>;
   /** `agentTools` entries granted anywhere in the closure, verbatim. */
   agentTools: Set<string>;
@@ -59,7 +61,7 @@ export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: Subflow
   const visitFlow = async (steps: readonly Step[]): Promise<void> => {
     const children: Array<{ workflow: string; version?: string }> = [];
     walkSteps(steps, (s) => {
-      out.types.add(s.type);
+      out.types.add(baseType(s.type));
       const cfg = (s.config ?? {}) as Record<string, unknown>;
       const tools = cfg["agentTools"];
       if (Array.isArray(tools)) {

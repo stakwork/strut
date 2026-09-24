@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
+import type { AnyStepDef, RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
 import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
@@ -15,7 +15,8 @@ import {
   type SubjectInput,
 } from "./claims-authoring.js";
 import { CLAIMS_OFF } from "./claims-schemas.js";
-import { stepLoadError } from "./steps/registry.js";
+import { resolveStep, stepLoadError } from "./steps/registry.js";
+import { baseType } from "./step-ref.js";
 import type { CassetteMode } from "./cassette.js";
 import type { SecretInfo } from "./secret-store.js";
 import { lsSteps, searchSteps, readStepSource } from "./ai/stepHelpers.js";
@@ -527,9 +528,14 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
 
     async getStep(type, opts) {
       const d = await explorerDeps();
-      const def = d.registry[type];
+      let def: AnyStepDef | undefined;
+      try {
+        def = (await resolveStep(d.registry, type))?.def;
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
       if (!def) return { error: `Step type "${type}" not found` };
-      const recentRuns = (await store.listRuns(stepRunKey(type))).length;
+      const recentRuns = (await store.listRuns(stepRunKey(baseType(type)))).length;
       return {
         type,
         description: def.description,
@@ -578,7 +584,11 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // runnable here — the run's own `ctx.registry` is a start-of-run
       // snapshot and would not contain it (EVOLVE_SPEC §5.3.1).
       const registry = await deps.getRegistry();
-      if (!registry[type]) return { error: `Step type "${type}" not found` };
+      try {
+        if (!(await resolveStep(registry, type))) return { error: `Step type "${type}" not found` };
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
       if (args.cassette && !deps.dataDir) {
         return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
       }

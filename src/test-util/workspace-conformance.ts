@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -260,6 +260,11 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(versions.active, v2.version);
       assert.deepEqual(new Set(versions.versions), new Set([v1.version, v2.version]));
       assert.ok((await ws.getStepVersionSource("my-step", v1.version)).includes('"one"'));
+      // A pin (`my-step@v1`) loads the archived version as a file + its hash.
+      const pinned = await ws.materializeStepVersion("my-step", v1.version);
+      assert.equal(pinned.hash, contentHash(STEP_SRC("my-step", "one")));
+      assert.ok((await readFile(pinned.path, "utf-8")).includes('"one"'));
+      await assert.rejects(ws.materializeStepVersion("my-step", "v99"), /not found/);
       // Active step hashes follow the active pointer (run.start.stepHashes).
       const h2 = (await ws.getActiveStepHashes())["my-step"];
       assert.equal(h2, contentHash(STEP_SRC("my-step", "two")));

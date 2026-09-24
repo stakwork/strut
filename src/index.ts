@@ -101,6 +101,10 @@ export {
   type StepSource,
   type StepSources,
   type RegistryBundle,
+  resolveStep,
+  withStepVersions,
+  type ResolvedStep,
+  type StepVersionLoader,
 } from "./steps/registry.js";
 
 // Workspace
@@ -259,6 +263,7 @@ export {
 // What a flow can execute (nested subflows, agentTools grants) and the step
 // hashes a launch records on `run.start` (plans/claims.md §3–§4).
 export { walkSteps, flowClosure, closureIncludes, stepHashesFor, globToRegExp, type FlowClosure } from "./closure.js";
+export { parseStepRef, baseType, formatStepRef, type StepRef } from "./step-ref.js";
 
 // Authoring — the workspace's author/test/inspect operations as one
 // injectable service: what the meta/* steps are plumbing over. Auto-provided

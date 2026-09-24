@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { Flow, StepRegistry, RunEvent, RunResult } from "./core.js";
+import type { AnyStepDef, Flow, StepRegistry, RunEvent, RunResult } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -19,7 +19,8 @@ import {
 } from "./chat-store.js";
 import { FileWorkspaceStore, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
-import { buildRegistry } from "./steps/registry.js";
+import { buildRegistry, resolveStep } from "./steps/registry.js";
+import { parseStepRef } from "./step-ref.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
 import { resolveModel, listModelOptions, createWebTools, type LlmAuth } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
@@ -559,10 +560,12 @@ export async function createStrut<TServices = unknown>(
   // Mutable closure state — `app` handlers read through these.
   let registry: StepRegistry = opts.registry ?? {};
   let stepSources: StepSources = {};
+  // `type@vN` pins load through the workspace's version archive (src/step-ref.ts).
+  const loadStepVersion = (name: string, version: string) => workspace.materializeStepVersion(name, version);
 
   async function rebuildRegistry(): Promise<void> {
     if (registryWasInjected) return; // consumer owns the registry
-    const bundle = await buildRegistry(await workspace.materializeCustomSteps());
+    const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
     registry = bundle.registry;
     stepSources = bundle.sources;
   }
@@ -1597,9 +1600,16 @@ export async function createStrut<TServices = unknown>(
     return c.json({ core: allSteps, workspace: workspaceSteps });
   });
 
+  // `type@vN` resolves to that version's schema — the step editor asks with
+  // the reference as written, so a pinned step's form is the pinned shape.
   app.get("/steps/:type{.+}/schema", async (c) => {
     const type = c.req.param("type");
-    const def = registry[type];
+    let def: AnyStepDef | undefined;
+    try {
+      def = (await resolveStep(registry, type))?.def;
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 404);
+    }
     if (!def) return c.json({ error: `Step type "${type}" not found` }, 404);
     return c.json({ type, fields: zodToFields(def.input) });
   });
@@ -1616,6 +1626,14 @@ export async function createStrut<TServices = unknown>(
   // boundary (core / lib / custom). `source` is null when none is available.
   app.get("/steps/:type{.+}/source", async (c) => {
     const type = c.req.param("type");
+    const ref = parseStepRef(type);
+    if (ref.version) {
+      try {
+        return c.json({ type, source: await workspace.getStepVersionSource(ref.type, ref.version), origin: "custom" });
+      } catch (e) {
+        return c.json({ error: (e as Error).message }, 404);
+      }
+    }
     const def = registry[type];
     if (!def) return c.json({ error: `Step type "${type}" not found` }, 404);
     if (def.source) {
@@ -2170,7 +2188,7 @@ export async function createStrut<TServices = unknown>(
             publishingEnabled: !registryWasInjected,
             getRegistry: async () => {
               if (registryWasInjected) return registry;
-              const bundle = await buildRegistry(await workspace.materializeCustomSteps());
+              const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
               registry = bundle.registry;
               stepSources = bundle.sources;
               return bundle.registry;

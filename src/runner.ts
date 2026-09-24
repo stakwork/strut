@@ -12,6 +12,8 @@ import type {
 export type { RunEndInfo } from "./core.js";
 import { messagesOf } from "./core.js";
 import { resolveConfig } from "./expr.js";
+import { baseType, parseStepRef } from "./step-ref.js";
+import { resolveStep } from "./steps/registry.js";
 import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, generateRunId, tallyStep } from "./store.js";
 import { RunController, isCancelledError } from "./run-control.js";
@@ -556,7 +558,7 @@ async function executeStep(
   // NOT in the journal executes live below.
   if (exec.journal && hasOwn(exec.journal, path)) {
     const output = exec.journal[path];
-    await exec.emit({ type: "step.replayed", path, stepType: step.type, output });
+    await exec.emit({ type: "step.replayed", path, stepType: baseType(step.type), output });
     return output;
   }
 
@@ -571,7 +573,7 @@ async function executeStep(
         await exec.emit({
           type: "step.retry",
           path,
-          stepType: step.type,
+          stepType: baseType(step.type),
           iteration: attempt,
         });
         await sleep(retryDelay);
@@ -602,12 +604,14 @@ async function executeStep(
         : resolvedConfig;
 
       const subflow = step.type === "subflow" ? await describeSubflow(step, scope, exec) : undefined;
+      const stepVersion = await describePin(step, exec);
       await exec.emit({
         type: "step.start",
         path,
-        stepType: step.type,
+        stepType: baseType(step.type),
         input: startInput,
         ...(subflow ? { subflow } : {}),
+        ...(stepVersion ? { stepVersion } : {}),
       });
 
       // Execute based on step type
@@ -618,7 +622,7 @@ async function executeStep(
       await exec.emit({
         type: "step.end",
         path,
-        stepType: step.type,
+        stepType: baseType(step.type),
         output,
         durationMs,
         ...transcriptOf(output),
@@ -661,7 +665,7 @@ async function executeStep(
             await exec.emit({
               type: "step.error",
               path,
-              stepType: step.type,
+              stepType: baseType(step.type),
               error: {
                 message: lastError.message,
                 stack: lastError.stack,
@@ -674,7 +678,7 @@ async function executeStep(
         await exec.emit({
           type: "step.error",
           path,
-          stepType: step.type,
+          stepType: baseType(step.type),
           error: {
             message: lastError.message,
             stack: lastError.stack,
@@ -710,8 +714,8 @@ async function dispatchStep(
       return executeSubflow(step, scope, exec, path);
 
     default: {
-      // Look up in registry
-      const def = exec.registry[step.type];
+      // Look up in registry (a `type@vN` pin loads that version — src/step-ref.ts)
+      const def = (await resolveStep(exec.registry, step.type))?.def;
       if (!def) {
         throw new Error(`Unknown step type: "${step.type}"`);
       }
@@ -787,7 +791,7 @@ async function executeLoop(
       await exec.emit({
         type: "step.replayed",
         path: iterPath,
-        stepType: rawBody.type,
+        stepType: baseType(rawBody.type),
         output: current,
         iteration: i,
       });
@@ -802,12 +806,14 @@ async function executeLoop(
     // Resolve the body step's config with this iteration's scope
     const resolvedBodyConfig = resolveConfig(rawBody.config, iterScope) as Record<string, unknown>;
 
+    const stepVersion = await describePin(rawBody, exec);
     await exec.emit({
       type: "step.start",
       path: iterPath,
-      stepType: rawBody.type,
+      stepType: baseType(rawBody.type),
       iteration: i,
       input: resolvedBodyConfig,
+      ...(stepVersion ? { stepVersion } : {}),
     });
 
     const startTime = Date.now();
@@ -816,7 +822,7 @@ async function executeLoop(
     await exec.emit({
       type: "step.end",
       path: iterPath,
-      stepType: rawBody.type,
+      stepType: baseType(rawBody.type),
       output: current,
       durationMs: Date.now() - startTime,
       iteration: i,
@@ -926,7 +932,7 @@ async function executeForeach(
       await exec.emit({
         type: "step.replayed",
         path: iterPath,
-        stepType: rawBody.type,
+        stepType: baseType(rawBody.type),
         output,
         iteration: i,
       });
@@ -937,12 +943,14 @@ async function executeForeach(
     const iterScope = { ...scope, $current: items[i], $index: i };
     const resolvedBodyConfig = resolveConfig(rawBody.config, iterScope) as Record<string, unknown>;
 
+    const stepVersion = await describePin(rawBody, exec);
     await exec.emit({
       type: "step.start",
       path: iterPath,
-      stepType: rawBody.type,
+      stepType: baseType(rawBody.type),
       iteration: i,
       input: resolvedBodyConfig,
+      ...(stepVersion ? { stepVersion } : {}),
     });
 
     const startTime = Date.now();
@@ -951,7 +959,7 @@ async function executeForeach(
     await exec.emit({
       type: "step.end",
       path: iterPath,
-      stepType: rawBody.type,
+      stepType: baseType(rawBody.type),
       output,
       durationMs: Date.now() - startTime,
       iteration: i,
@@ -1004,6 +1012,18 @@ async function executeForeach(
 /** Which child a `subflow` step is about to run (`RunEvent.subflow`). Never
  *  throws: a bad reference fails in `executeSubflow`, with its own message.
  *  The hash needs more than a `SubflowResolver` — a full workspace has it. */
+/** `step.start.stepVersion` for a PINNED step (`type@vN`): the label and
+ *  content hash of the version that will run — the twin of `subflow`, and
+ *  the record verify reads instead of `run.start.stepHashes` (which is the
+ *  ACTIVE version's). Undefined for a bare type. A pin the registry cannot
+ *  honor throws here, before the step starts. */
+async function describePin(step: Step, exec: Exec): Promise<RunEvent["stepVersion"]> {
+  if (!parseStepRef(step.type).version) return undefined;
+  const r = await resolveStep(exec.registry, step.type);
+  if (!r) throw new Error(`Unknown step type: "${step.type}"`);
+  return r.version && r.hash ? { version: r.version, hash: r.hash } : undefined;
+}
+
 async function describeSubflow(step: Step, scope: Record<string, unknown>, exec: Exec): Promise<RunEvent["subflow"]> {
   try {
     const workflow = resolveConfig(step.config["workflow"], scope);

@@ -343,6 +343,10 @@ export interface WorkspaceStore extends SubflowResolver {
    *  version a run executed (plans/claims.md §3). */
   getActiveStepHashes(): Promise<Record<string, string>>;
   getStepVersionSource(name: string, version: string): Promise<string>;
+  /** One archived version as an importable file + its content hash — what
+   *  a PINNED reference (`type@vN`, src/step-ref.ts) loads through
+   *  `resolveStep`. Throws when the step or version does not exist. */
+  materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string }>;
   setActiveStepVersion(name: string, version: string): Promise<void>;
   deleteStep(name: string): Promise<boolean>;
   deleteStepsByPublisher(publisher: string): Promise<string[]>;
@@ -879,6 +883,19 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return readFile(this.stepVersionPath(name, version), "utf-8");
   }
 
+  /** The archive IS the importable file (`steps/_history/<name>/<vid>.ts`
+   *  sits under the ESM-scoped `steps/`). */
+  async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string }> {
+    validateStepName(name);
+    const meta = await this.readStepMetadata(join(this.root, "steps", "custom"));
+    const info = meta?.steps[name]?.versions[version];
+    if (!info) throw new Error(`Version "${version}" of step "${name}" not found`);
+    const path = this.stepVersionPath(name, version);
+    await ensureEsmScope(join(this.root, "steps"));
+    const hash = info.hash ?? contentHash(await readFile(path, "utf-8"));
+    return { path, hash };
+  }
+
   /**
    * Switch a step's active version. Copies the archived version's source
    * into the flat `custom/<name>.ts` the registry loads, and updates the
@@ -1053,6 +1070,9 @@ export function validateStepName(name: string): void {
   }
   if (name.includes("//") || name.endsWith("/") || name.startsWith("/")) {
     throw new Error(`Invalid step name "${name}": malformed path`);
+  }
+  if (name.includes("@")) {
+    throw new Error(`Invalid step name "${name}": "@" is reserved for version pins (type@vN)`);
   }
   const segments = name.split("/");
   for (const seg of segments) {
