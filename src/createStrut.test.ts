@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
-import { defineStep, flow, step } from "./core.js";
+import { defineStep, flow, step, withMessages } from "./core.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
@@ -1242,6 +1242,15 @@ describe("run callbacks", () => {
     },
   });
 
+  const talker = defineStep({
+    type: "talker",
+    input: z.object({ said: z.string() }),
+    output: z.any(),
+    async run(cfg) {
+      return withMessages({ ok: true }, [{ role: "user", content: cfg.said }]);
+    },
+  });
+
   /** A stand-in host: collects what strut posts. */
   async function callbackHost(): Promise<{ url: string; posts: any[]; close: () => void }> {
     const posts: any[] = [];
@@ -1267,7 +1276,7 @@ describe("run callbacks", () => {
     const store = new MemoryRunStore();
     const strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),
-      registry: await createRegistry([echo, boom]),
+      registry: await createRegistry([echo, boom, talker]),
       store,
       serveUi: false,
       enableChat: false,
@@ -1285,7 +1294,16 @@ describe("run callbacks", () => {
       });
       return { status: res.status, json: (await res.json()) as any };
     };
-    return { store, run };
+    await strut.workspace.publishWorkflow("chatty", "v1", {
+      steps: [
+        {
+          id: "each",
+          type: "foreach",
+          config: { items: ["one", "two"], body: { id: "say", type: "talker", config: { said: "{{ $current }}" } } },
+        },
+      ],
+    });
+    return { store, run, app: strut.app };
   };
 
   it("POST …/run { callback } posts the result to the host, recording only the URL's origin", async () => {
@@ -1314,6 +1332,42 @@ describe("run callbacks", () => {
       assert.equal(pinned.json.callback, true);
       await until(() => host.posts.length === 2);
       assert.equal(host.posts[1]!.body.runId, pinned.json.runId);
+    } finally {
+      host.close();
+    }
+  });
+
+  it("links each agent transcript instead of inlining it; the link serves the bare messages", async () => {
+    const host = await callbackHost();
+    try {
+      const { run, app, store } = await boot();
+      const { json } = await run("/workflows/chatty/run", { input: {}, callback: { url: host.url } });
+      await until(() => host.posts.length === 1);
+      const { body } = host.posts[0]!;
+      assert.equal(body.status, "success", JSON.stringify(body));
+      const paths = (await store.getRunEvents("chatty", json.runId))
+        .filter((e) => e.type === "step.end" && e.messages)
+        .map((e) => e.path);
+      assert.equal(paths.length, 2);
+      assert.deepEqual(body.transcripts.map((t: any) => t.step), paths);
+      assert.ok(!JSON.stringify(body).includes('"role"'), "no transcript content in the callback");
+      for (const [i, t] of body.transcripts.entries()) {
+        assert.equal(t.stepType, "talker");
+        const res = await app.request(t.url);
+        assert.equal(res.status, 200, t.url);
+        assert.deepEqual(await res.json(), [{ role: "user", content: ["one", "two"][i] }]);
+      }
+      assert.equal((await app.request(`/workflows/chatty/runs/${json.runId}/transcripts/nope`)).status, 404);
+
+      // The run read endpoints link the same sessions instead of inlining them.
+      const served = (await (await app.request(`/workflows/chatty/runs/${json.runId}/events`)).json()) as any[];
+      assert.ok(!served.some((e) => "messages" in e));
+      assert.deepEqual(
+        served.filter((e) => e.transcript).map((e) => e.transcript),
+        body.transcripts.map((t: any) => t.url),
+      );
+      const sse = await (await app.request(`/workflows/chatty/runs/${json.runId}/stream`)).text();
+      assert.ok(!sse.includes('"messages"') && sse.includes('"transcript"'));
     } finally {
       host.close();
     }
