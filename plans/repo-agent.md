@@ -390,15 +390,49 @@ chars, keyed `turn-<agent>-<session>-turn-<n>`.
 log.
 
 **Who breaks.** Hive's evals sessions route, the legal cascade (mcp's
-benchmark router, `/api/sessions…`) and the session viewer iframe read the
+benchmark router, `/api/sessions…`) and the sessions viewer (the
+`mcp/benchmark` app served at `/sessions`, which hive iframes) read the
 jarvis labels; strut-run sessions are invisible to them.
 
-**The fix.** Outside the agent step. mcp already has `buildExternalTurns`
-(`turns.ts`) for agents that run in another process — hive uses it to
-record its own agents — so the lab can project a strut run's agent
-`step.end.messages` into the jarvis shapes after `onRunEnd`. The
-alternative, teaching strut's projector the jarvis labels, puts mcp's
-schema in strut; prefer the lab.
+**The fix.** Outside the agent step, and no change to the viewer: it is
+already decoupled from repo_agent. It reads `AgentSession` / `Turn`
+through the router, and the router has an out-of-process ingest door
+(`benchmark/ingest.ts`) that hive already uses to record its own Jamie
+agent (`hive/src/services/stakgraph-session-ingest.ts`, the working
+example): `POST /api/sessions` (`session_id`, `source`, `agent_name`,
+`repo`, `parent_session_id`, `spawn_tool_call_id`, `start_time`), `POST
+/api/sessions/:id/turns` (`turns[]` of `turn_type`, `content`, `tool`,
+`tool_call_id`, `timestamp`, `concepts`), `POST /api/sessions/:id/end`
+(`status`), `POST /api/sessions/:id/concepts`. `source` is the facet the
+UI filters on. Strut records everything those need, so the work is ONE
+projector over the run log:
+
+| Viewer field | From the strut run log |
+| --- | --- |
+| `session_id` | `<runId>:<stepPath>` — one session per agent step execution (a loop iteration is its own) |
+| `source` / `agent_name` / `repo` | `"strut"` / `<workflow>/<stepPath>` / the run's `git/checkout` output `url`, when there is one |
+| `parent_session_id`, `spawn_tool_call_id` | a sub-agent's session rides on its tool-call `step.end.messages`; the parent is the enclosing agent step, the spawn id the tool call's path |
+| `user_input` | the task prompt (and, with §4.1, only the NEW prompt; prior turns are already in the parent session's chain) |
+| `reasoning` → `response` | each assistant text part; the last one retyped `response` at the end, mcp's rule |
+| `tool_call` (`tool`, `tool_call_id`) | each assistant tool-call part of `step.end.messages` |
+| `tool_result` | each tool result, cut to 100 chars, mcp's rule |
+| `concepts` | the tool-call event's `nodes` (`withAccessedNodes`) where the ref is a `Concept` |
+| model, tokens, cost, status | the step's config `model`, its output `usage` / `cost`, and `step.end` / `step.error` / the run's `cancelled` |
+
+Place it in mcp's lab, on `onRunEnd`, calling the same writers the
+router's handlers call (`turns.ts`: `buildExternalTurns`, the session
+upsert) in-process — no HTTP, no `authMiddleware`. Turn node keys are
+deterministic and the writes are upserts, so re-projecting a resumed run
+is safe. The alternative, teaching strut's projector the jarvis labels,
+puts mcp's session schema in strut beside strut's own
+`StrutAgentSession`; prefer the lab.
+
+Liveness: mcp emits turns while the run is going; strut's transcript
+lands on `step.end`, so the first cut is post-hoc. The tool-call events
+are live already, and assistant text is live once §4.2 exists, so the
+same projector can move to streaming turns later. The chat builder's
+turns (`chats/<id>/messages.jsonl`) can go in the same way if the builder
+belongs in that view.
 
 ## 5. Decided in strut's favour (no work)
 
