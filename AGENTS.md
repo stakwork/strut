@@ -38,6 +38,7 @@ strut/
 ├── src/
 │   ├── core.ts            # flow(), step(), defineStep(), services bag, all types
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
+│   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
 │   ├── runner.ts          # execution engine: DAG (topological), retry, onError, control flow, journal replay
 │   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md)
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation
@@ -599,6 +600,18 @@ and the child env is scrubbed by construction).
   prompt variants as 100 **runs** (logged in `run.json`) rather than
   100 workflow versions — promote a winner by editing the `params`
   default and publishing one new version.
+
+- **`input:` = the declared run payload (optional).** A YAML workflow may
+  declare a top-level `input:` block — `name: { type: string|number|boolean|json,
+  required?, default?, description? }`, required unless it has a `default` or
+  says `required: false` (`src/input-block.ts`). `flowFromYaml` turns it into
+  the flow's Zod `input` schema (the runner already validates against it
+  before any step runs; unknown keys are dropped) and keeps it on
+  `Flow.inputBlock`, which `GET /workflows/:name/flow` returns as `input` and
+  the Run popover builds its form from. Absent: `z.any()` as before, and the
+  popover infers the form from `{{ input.* }}` references (`web/src/run-inputs.ts`).
+  A bad block fails the publish (`assertValidWorkflowYaml`, every backend), so
+  it never hides a workflow behind a load error.
 
 - **DAG execution via `depends`**. Steps have an optional `depends`
   field (`string | string[]`). If set, the step waits for those

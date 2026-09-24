@@ -72,6 +72,19 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       await assert.rejects(() => ws.getWorkflow("nope"), /not found/);
     });
 
+    it("a declared input block round-trips through a steps-form publish and builds the flow's schema", async () => {
+      const input = { url: { type: "string" as const }, limit: { type: "number" as const, default: 10 } };
+      await ws.publishWorkflow("wf", "v1", { steps, input });
+      const flow = await ws.getWorkflow("wf");
+      assert.deepEqual(flow.inputBlock, input);
+      assert.equal(flow.input.safeParse({}).success, false);
+      assert.deepEqual(flow.input.parse({ url: "x" }), { url: "x", limit: 10 });
+      await assert.rejects(
+        () => ws.publishWorkflow("wf", "v2", { steps, input: { n: { type: "number" as const, default: "x" } } }),
+        /is not a number/,
+      );
+    });
+
     it("versions, active switching, content dedup, category, params", async () => {
       await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "old" } });
       const first = await ws.publishWorkflowByContent("wf", await ws.getWorkflowSource("wf", "v1"));

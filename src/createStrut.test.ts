@@ -510,6 +510,48 @@ describe("createStrut", () => {
     assert.equal(body.unattributed, 0);
   });
 
+  it("returns a declared input block from the flow endpoint and validates runs against it", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    const steps = [{ id: "g", type: "log", config: { message: "{{ input.url }}" } }];
+    const input = { url: { type: "string" as const }, limit: { type: "number" as const, default: 10 } };
+    await ws.publishWorkflow("typed", "v1", { steps, input });
+    await ws.publishWorkflow("open", "v1", { steps });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false });
+
+    const flowOf = async (name: string) => (await (await strut.app.request(`/workflows/${name}/flow`)).json()) as { input?: unknown };
+    assert.deepEqual((await flowOf("typed")).input, input);
+    assert.equal("input" in (await flowOf("open")), false);
+
+    const missing = await strut.run("typed", {});
+    assert.equal(missing.status, "error");
+    assert.match(missing.error!.message, /^Input validation failed/);
+    assert.deepEqual((await strut.store.getRunEvents("typed", missing.runId)).map((e) => e.type), ["run.error"]);
+
+    const ok = await strut.run("typed", { url: "x", stray: 1 });
+    assert.equal(ok.status, "success", JSON.stringify(ok.error));
+    const start = (await strut.store.getRunEvents("typed", ok.runId)).find((e) => e.type === "run.start");
+    assert.deepEqual(start?.input, { url: "x", limit: 10 });
+
+    // The steps form carries the block too.
+    const res = await strut.app.request("/workflows", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "posted", steps, input }),
+    });
+    assert.equal(res.status, 201, await res.clone().text());
+    assert.deepEqual((await flowOf("posted")).input, input);
+
+    // A bad block is refused with the message, not a 500.
+    const bad = await strut.app.request("/workflows", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "bad", yaml: "name: bad\ninput:\n  n: { type: number, default: x }\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n" }),
+    });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { error: string }).error, /default "x" is not a number/);
+    assert.equal((await strut.app.request("/workflows/bad/flow")).status, 404);
+  });
+
   it("launches a run detached over HTTP, returning a runId immediately", async () => {
     const ws = new WorkspaceManager(tempDir);
     await ws.publishWorkflow("echo-flow", "v1", {

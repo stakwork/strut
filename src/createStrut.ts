@@ -18,6 +18,7 @@ import {
   truncateToolMessages,
 } from "./chat-store.js";
 import { FileWorkspaceStore, type WorkspaceStore } from "./workspace.js";
+import type { InputBlock } from "./input-block.js";
 import { buildRegistry } from "./steps/registry.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
 import { resolveModel, listModelOptions, createWebTools, type LlmAuth } from "./llm.js";
@@ -676,6 +677,7 @@ export async function createStrut<TServices = unknown>(
     const body = await c.req.json<{
       name: string;
       steps?: any[];
+      input?: InputBlock;
       params?: Record<string, unknown>;
       yaml?: string;
       description?: string;
@@ -685,17 +687,27 @@ export async function createStrut<TServices = unknown>(
     if (!body.name) return c.json({ error: "name is required" }, 400);
 
     let result;
-    if (body.yaml) {
-      result = await workspace.createWorkflow(body.name, body.yaml, body.description, body.category);
-    } else if (body.steps) {
-      result = await workspace.createWorkflow(
-        body.name,
-        { steps: body.steps, ...(body.params != null ? { params: body.params } : {}) },
-        body.description,
-        body.category,
-      );
-    } else {
-      return c.json({ error: "either steps or yaml is required" }, 400);
+    try {
+      if (body.yaml) {
+        result = await workspace.createWorkflow(body.name, body.yaml, body.description, body.category);
+      } else if (body.steps) {
+        result = await workspace.createWorkflow(
+          body.name,
+          {
+            steps: body.steps,
+            ...(body.input != null ? { input: body.input } : {}),
+            ...(body.params != null ? { params: body.params } : {}),
+          },
+          body.description,
+          body.category,
+        );
+      } else {
+        return c.json({ error: "either steps or yaml is required" }, 400);
+      }
+    } catch (err) {
+      // What the workspace refuses (an unquoted template, a bad `input:`
+      // block) is the author's to fix — hand the message back, not a 500.
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
 
     await adoptWorkflow(result.name, await resolveActor(c));
@@ -1332,6 +1344,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({
         name: flow.name,
         steps: flow.steps,
+        ...(flow.inputBlock != null ? { input: flow.inputBlock } : {}),
         ...(flow.params != null ? { params: flow.params } : {}),
         ...(flow.promotes != null ? { promotes: flow.promotes } : {}),
       });
@@ -1358,6 +1371,7 @@ export async function createStrut<TServices = unknown>(
     const body = await c.req.json<{
       version: string;
       steps?: any[];
+      input?: InputBlock;
       params?: Record<string, unknown>;
       yaml?: string;
       description?: string;
@@ -1365,17 +1379,25 @@ export async function createStrut<TServices = unknown>(
 
     if (!body.version) return c.json({ error: "version is required" }, 400);
 
-    if (body.yaml) {
-      await workspace.publishWorkflow(name, body.version, body.yaml, body.description);
-    } else if (body.steps) {
-      await workspace.publishWorkflow(
-        name,
-        body.version,
-        { steps: body.steps, ...(body.params != null ? { params: body.params } : {}) },
-        body.description,
-      );
-    } else {
-      return c.json({ error: "either steps or yaml is required" }, 400);
+    try {
+      if (body.yaml) {
+        await workspace.publishWorkflow(name, body.version, body.yaml, body.description);
+      } else if (body.steps) {
+        await workspace.publishWorkflow(
+          name,
+          body.version,
+          {
+            steps: body.steps,
+            ...(body.input != null ? { input: body.input } : {}),
+            ...(body.params != null ? { params: body.params } : {}),
+          },
+          body.description,
+        );
+      } else {
+        return c.json({ error: "either steps or yaml is required" }, 400);
+      }
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
 
     await adoptWorkflow(name, await resolveActor(c));

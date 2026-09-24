@@ -1,8 +1,9 @@
 // Which `input.*` keys a workflow needs at run time, inferred from its steps.
 //
-// The Run popover asks the user for these before launching. A YAML workflow
-// declares no input schema (every YAML flow parses input as `z.any()`), so the
-// keys are read off the `{{ … }}` templates in step configs — across ALL
+// The Run popover asks the user for these before launching. A workflow with a
+// declared `input:` block is the easy case (`bindingsFromInputBlock`); one
+// without declares no schema (its input parses as `z.any()`), so the keys are
+// read off the `{{ … }}` templates in step configs — across ALL
 // steps, not just the first. AI-authored workflows routinely lead with an
 // `artifacts/dir` step that references no input at all, and a first-step-only
 // scan produced an empty form for them while the real inputs sat in step 3.
@@ -15,7 +16,7 @@
 // Only text inside `{{ … }}` counts: prose that happens to say "input.url"
 // (an agent prompt explaining the workflow to itself) is not a reference.
 
-import type { FieldDesc } from "./api";
+import type { FieldDesc, InputFieldDef } from "./api";
 import type { StepData } from "./flow-to-canvas";
 
 export interface InputBinding {
@@ -75,6 +76,21 @@ function* allSteps(steps: StepData[]): Generator<StepData> {
     if (body && typeof body === "object" && typeof body.type === "string") yield* allSteps([body as StepData]);
     if (step.options?.onError) yield* allSteps([step.options.onError]);
   }
+}
+
+/** The popover's fields from a declared `input:` block — the block's order,
+ *  its types as the widget kinds, required unless defaulted or opted out. */
+export function bindingsFromInputBlock(block: Record<string, InputFieldDef>): InputBinding[] {
+  return Object.entries(block).map(([name, f]) => ({
+    inputKey: name,
+    field: {
+      name,
+      kind: f.type,
+      required: f.required !== false && f.default === undefined,
+      ...(f.default !== undefined ? { default: f.default } : {}),
+      ...(f.description ? { description: f.description } : {}),
+    },
+  }));
 }
 
 /** Distinct step types in the flow — the schemas the popover wants to fetch. */

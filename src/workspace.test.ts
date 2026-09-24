@@ -225,6 +225,27 @@ steps:
       assert.equal(flow.params, undefined);
     });
 
+    it("builds the input schema from a declared `input:` block and keeps the block; none = any input", async () => {
+      const input = { url: { type: "string" as const }, limit: { type: "number" as const, default: 10 } };
+      await ws.publishWorkflow("typed", "v1", { steps: SAMPLE_STEPS, input });
+      const flow = await ws.getWorkflow("typed");
+      assert.deepEqual(flow.inputBlock, input);
+      assert.equal(flow.input.safeParse({}).success, false);
+      assert.deepEqual(flow.input.parse({ url: "x", stray: 1 }), { url: "x", limit: 10 });
+      assert.match(await ws.getWorkflowSource("typed", "v1"), /^input:/m);
+
+      await ws.publishWorkflow("open", "v1", { steps: SAMPLE_STEPS });
+      const open = await ws.getWorkflow("open");
+      assert.equal(open.inputBlock, undefined);
+      assert.deepEqual(open.input.parse({ anything: 1 }), { anything: 1 });
+    });
+
+    it("rejects a bad input block at publish, so it never hides the workflow", async () => {
+      const bad = "name: bad\ninput:\n  n: { type: number, default: x }\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n";
+      await assert.rejects(() => ws.publishWorkflow("bad", "v1", bad), /default "x" is not a number/);
+      await assert.rejects(() => ws.getWorkflow("bad"), /not found/);
+    });
+
     it("resolves param-to-param references at load (shared value factored into one param)", async () => {
       await ws.publishWorkflow("podcfg", "v1", {
         steps: SAMPLE_STEPS,

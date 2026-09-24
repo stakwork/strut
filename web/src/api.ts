@@ -216,9 +216,20 @@ export interface PromoteSpec {
   label?: string;
 }
 
+/** One field of a workflow's declared `input:` block, as written. */
+export interface InputFieldDef {
+  type: "string" | "number" | "boolean" | "json";
+  /** Required unless it has a `default` or says `required: false`. */
+  required?: boolean;
+  default?: unknown;
+  description?: string;
+}
+
 export interface FlowDef {
   name: string;
   steps: { id: string; type: string; config: Record<string, any>; options?: any }[];
+  /** The declared `input:` block. Absent = any object is accepted. */
+  input?: Record<string, InputFieldDef>;
   /** Tunable default knobs (prompts, thresholds, …), overridable per run. */
   params?: Record<string, unknown>;
   /** Declared "promote a run output → a target param default" mappings. */
