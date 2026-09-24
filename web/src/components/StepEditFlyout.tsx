@@ -1,5 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
-import { baseType } from "../step-ref";
+import { baseType, formatStepRef, parseStepRef } from "../step-ref";
 import * as api from "../api";
 import { StepData } from "../flow-to-canvas";
 import { ConfigField } from "./ConfigField";
@@ -11,6 +11,11 @@ import yaml from "js-yaml";
 
 // ── Step Edit Flyout ───────────────────────────────────────────────────────
 
+/** `v10` before `v9` — labels are `vN`, so sort numerically, newest first. */
+function byVersionDesc(a: string, b: string): number {
+  return (parseInt(b.slice(1), 10) || 0) - (parseInt(a.slice(1), 10) || 0);
+}
+
 export function StepEditFlyout(props: {
   step: StepData;
   allSteps: StepData[];
@@ -20,6 +25,14 @@ export function StepEditFlyout(props: {
   onOpenRun?: (workflow: string, runId: string) => void;
 }) {
   const [id, setId] = useState(props.step.id);
+  // The step TYPE is fixed for this node; its VERSION is this workflow's
+  // choice: undefined = the step's active version (what every unpinned
+  // workflow runs), "vN" = pinned there until changed here (src/step-ref.ts).
+  const stepType = baseType(props.step.type);
+  const [pin, setPin] = useState<string | undefined>(parseStepRef(props.step.type).version);
+  const typeRef = formatStepRef({ type: stepType, version: pin });
+  // null = not a versioned (custom) step → no picker.
+  const [versions, setVersions] = useState<{ active: string; versions: string[] } | null>(null);
   const [config, setConfig] = useState<Record<string, any>>({ ...props.step.config });
   const [depends, setDepends] = useState<string[]>(() => {
     if (props.step.depends == null) return [];
@@ -37,12 +50,17 @@ export function StepEditFlyout(props: {
   const [claims, setClaims] = useState<api.ClaimsResponse | null>(null);
   const [claimsOpen, setClaimsOpen] = useState(false);
 
-  // Fetch schema for this step type
+  // Fetch schema for this step reference — a pin's schema is that version's.
   useEffect(() => {
-    api.getStepSchema(props.step.type).then((resp) => {
+    api.getStepSchema(typeRef).then((resp) => {
       setFields(resp.fields);
     }).catch(() => setFields([]));
-  }, [props.step.type]);
+  }, [typeRef]);
+
+  useEffect(() => {
+    setVersions(null);
+    api.getStepVersions(stepType).then((r) => setVersions({ active: r.active, versions: r.versions })).catch(() => setVersions(null));
+  }, [stepType]);
 
   // Lazily fetch source the first time the section is expanded (per type).
   useEffect(() => {
@@ -61,16 +79,16 @@ export function StepEditFlyout(props: {
         if (s.todos > 0 || s.refuted > 0) setClaimsOpen(true);
       })
       .catch(() => setClaims(null));
-  }, [props.step.type]);
+  }, [typeRef]);
 
   const toggleSource = () => {
     const next = !sourceOpen;
     setSourceOpen(next);
     if (next && source === null && !sourceLoading) {
       setSourceLoading(true);
-      api.getStepSource(props.step.type)
+      api.getStepSource(typeRef)
         .then(setSource)
-        .catch(() => setSource({ type: props.step.type, source: null, origin: null }))
+        .catch(() => setSource({ type: typeRef, source: null, origin: null }))
         .finally(() => setSourceLoading(false));
     }
   };
@@ -78,6 +96,7 @@ export function StepEditFlyout(props: {
   // Reset state when step changes
   useEffect(() => {
     setId(props.step.id);
+    setPin(parseStepRef(props.step.type).version);
     setConfig({ ...props.step.config });
     const deps = props.step.depends == null ? [] : Array.isArray(props.step.depends) ? [...props.step.depends] : [props.step.depends];
     setDepends(deps);
@@ -109,7 +128,7 @@ export function StepEditFlyout(props: {
     }
     const updated: StepData = {
       id,
-      type: props.step.type,
+      type: typeRef,
       config: cleanConfig,
       options: props.step.options,
     };
@@ -120,7 +139,7 @@ export function StepEditFlyout(props: {
   };
 
   // Build YAML preview
-  const previewObj: Record<string, any> = { id, type: props.step.type, config };
+  const previewObj: Record<string, any> = { id, type: typeRef, config };
   if (depends.length > 0) previewObj.depends = depends;
   if (when != null && hasGateDep) previewObj.when = when;
   const yamlPreview = yaml.dump(previewObj, { lineWidth: 120, noRefs: true });
@@ -134,7 +153,10 @@ export function StepEditFlyout(props: {
       <div class="flyout-header">
         <div>
           <div class="flyout-eyebrow">Edit Tool</div>
-          <div class="flyout-title">{props.step.type}</div>
+          <div class="flyout-title">
+            {stepType}
+            {pin && <span class="badge badge-pin" title="Pinned to this version in this workflow">@{pin}</span>}
+          </div>
         </div>
         <button class="flyout-close" onClick={props.onClose} aria-label="Close"><CloseIcon /></button>
       </div>
@@ -148,6 +170,26 @@ export function StepEditFlyout(props: {
             onInput={(e) => { setId((e.target as HTMLInputElement).value); setError(""); }}
           />
         </div>
+
+        {/* Version pin — this workflow's choice, not the step's active pointer. */}
+        {versions && (
+          <div class="flyout-field">
+            <label>Version</label>
+            <select value={pin ?? ""} onInput={(e) => { const v = (e.target as HTMLSelectElement).value; setPin(v || undefined); setError(""); }}>
+              <option value="">Active ({versions.active}) — follows step edits</option>
+              {[...versions.versions].sort(byVersionDesc).map((v) => (
+                <option key={v} value={v}>{v}{v === versions.active ? " (active)" : ""} — pinned</option>
+              ))}
+            </select>
+            <div class="flyout-field-note">
+              {!pin
+                ? "Runs whatever version of this tool is active; editing the tool changes this workflow too."
+                : pin === versions.active
+                  ? `Pinned to ${pin}, which is also the active version. This workflow stays on ${pin} if the tool is edited.`
+                  : `Pinned to ${pin} · active is ${versions.active}. This workflow keeps running ${pin} until you change it here.`}
+            </div>
+          </div>
+        )}
 
         {/* Config fields from schema */}
         {fields.length > 0 && (

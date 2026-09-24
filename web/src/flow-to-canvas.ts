@@ -1,5 +1,5 @@
 import { createElement } from "preact";
-import { baseType } from "./step-ref";
+import { baseType, parseStepRef } from "./step-ref";
 import type {
   CanvasData,
   CanvasNode,
@@ -81,6 +81,25 @@ const STATUS_ERROR = "#ef4444";
 const STATUS_RUNNING = "#f59e0b";
 const STATUS_PENDING = "#6b7689";
 const STATUS_SKIPPED = "#4b5563";
+
+const PIN_COLOR = "#f5c56b";
+
+/** A pushpin, drawn only when the node's step is pinned to a version. */
+function renderPinIndicator(ctx: SlotContext): unknown {
+  const pinned = ctx.node.customData?.["pinned"] as string | undefined;
+  if (!pinned) return null;
+  const { region } = ctx;
+  const s = Math.min(region.width, region.height) * 0.42;
+  const cx = region.x + region.width / 2;
+  const cy = region.y + region.height / 2;
+  // Head (a rounded bar), a neck, and the needle — a pushpin seen from the side.
+  return createElement("g", { pointerEvents: "none", transform: `translate(${cx} ${cy}) rotate(-35)` },
+    createElement("title", null, `pinned to ${pinned}`),
+    createElement("rect", { x: -s * 0.55, y: -s, width: s * 1.1, height: s * 0.5, rx: s * 0.15, fill: PIN_COLOR }),
+    createElement("rect", { x: -s * 0.8, y: -s * 0.5, width: s * 1.6, height: s * 0.28, rx: s * 0.1, fill: PIN_COLOR }),
+    createElement("line", { x1: 0, y1: -s * 0.22, x2: 0, y2: s, stroke: PIN_COLOR, strokeWidth: Math.max(1.2, s * 0.22), strokeLinecap: "round" }),
+  );
+}
 
 function renderStatusIndicator(ctx: SlotContext): unknown {
   const status = ctx.node.customData?.status as string | undefined;
@@ -220,7 +239,8 @@ function buildStepCategory(type: string, colors: { fill: string; stroke: string 
       // instead of a static "DEFAULT" label.
       value: (ctx: SlotContext) => {
         const raw = (ctx.node.customData?.["stepType"] as string | undefined) ?? type;
-        return fitHeaderLabel(raw.toUpperCase(), ctx.region.width, HEADER_FONT_SIZE);
+        // A pinned `type@vN` shows its bare type here; the pin is the glyph below.
+        return fitHeaderLabel(baseType(raw).toUpperCase(), ctx.region.width, HEADER_FONT_SIZE);
       },
       color: colors.stroke,
       fontSize: HEADER_FONT_SIZE,
@@ -232,6 +252,11 @@ function buildStepCategory(type: string, colors: { fill: string; stroke: string 
       kind: "custom",
       render: renderStatusIndicator,
     },
+    // Version pin: a pinned step (`type@vN`, customData.pinned) shows a pin
+    // in the bottom-right corner — it does not follow the step's active
+    // version. Leaves only: containers (core steps) cannot be pinned, and
+    // their bottom-right carries the status.
+    ...(isContainer ? {} : { bottomRight: { kind: "custom", render: renderPinIndicator } }),
   };
 
   // Container steps render their label (e.g. a subflow's workflow name) via a
@@ -457,7 +482,7 @@ export function flowToCanvas(
       y: pos.y,
       width: w,
       height: h,
-      customData: { stepId: s.id, stepIndex: i, status, stepType: s.type },
+      customData: { stepId: s.id, stepIndex: i, status, stepType: s.type, pinned: parseStepRef(s.type).version },
     };
     if (ref) node.ref = ref;
     nodes.push(node);
