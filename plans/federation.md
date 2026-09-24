@@ -19,6 +19,13 @@
 > > workflow-building agents who have a vast library to learn from and to
 > > contribute to. Central strut instances may have the highest-level view,
 > > which enables vision mapping over extremely long time horizons.
+>
+> **Revised the same day:** library distribution moved from strut-to-strut
+> pull to **export to git, seed from git** (§2.3, §8). A workflow carries
+> the repo and path it was seeded from, an export is a PR to that file
+> authored with the actor's token, and the next reseed on every strut is
+> the distribution. Read-through, the roll-up, cost and dispatch-through
+> are unchanged.
 
 ## Problem
 
@@ -62,7 +69,7 @@ two processes.
 | Actor across the chain | The same opaque string everywhere: hive derives it from the global `User` (`{login}-{id}`, `hive/src/services/bifrost/reconciler.ts:676-682`), so it is valid on every strut in every org. Forwarded as `x-strut-actor` on peer calls; the peer's own `resolveActor` decides whether to honor it (§3) |
 | Cost | **Bill where the run executes**, against the delegation hive already pushes per target. Roll spend up by reading, through one new field, `RunSummary.costUsd` (§5) |
 | Secrets | **Never cross a boundary.** A dispatch-through run reads the executing leaf's own deployment and actor secrets, pushed there by hive (§6) |
-| Library | **Pull-only.** A pull is `publishWorkflowByContent(…, { reactivateKnown: false })` — the seeder's exact semantics — stamped `publisher: "peer:<id>"`. `WorkflowMetadata.visibility` (`private` \| `org` \| `public`, default `org`) says who may pull (§8) |
+| Library | **Git is the hub.** A workflow's origin is `WorkflowMetadata.source: { repo, path }`, set by the seeder beside `category` and `owner`; a strut seeds from several repos; an **export** is a PR to the file the workflow came from (else `STRUT_HOME_REPO` + a directory convention), authored with the actor's `GITHUB_TOKEN`, never a push to the default branch. Distribution is the next reseed everywhere. No strut-to-strut copy and no `visibility` flag: the repo is the visibility (§2.3, §8) |
 | Roll-up store | The existing projector over a remote `RunStore`, each peer into its **own graph namespace** on the central's Neo4j — uniqueness is already per `(node_key, namespace)`, so no schema change and no id rewriting. Summaries only: never events, transcripts, artifacts, secrets (§9) |
 | Dispatch-through | A lib step, `strut/run-workflow`, later. The child runs on the peer under the peer's secrets and delegation; the parent's log records the handle; cancel propagates cooperatively. **Hive keeps dispatching directly** (§2.2) |
 | Leaf independence | Nothing on a leaf ever awaits a peer: reads are initiated by the reader, the library is pulled, automations need no peer. A central being down costs a stale library, never a broken leaf (§10) |
@@ -78,9 +85,12 @@ store: the run list and drill-down, the SSE tail, `step-stats`, the
 projector, the builder's `list_workflows` / `get_workflow`. The read routes
 of `createStrut` are mounted a second time under `/peers/:id` over the
 remote stores, the web UI grows a peer selector, and `peer` joins the
-deep-link params. The builder gets `search_library` and `pull_workflow`;
-a pull is the boot seeder's own publish call with the origin stamped as
-provenance. A central strut is any strut with many peers whose automations
+deep-link params. Workflows come from git and go back to git: the seeder
+stamps each one with the repo and path it came from, and the builder's
+`export_workflow` opens a PR against that file (or the deployment's home
+repo) with the actor's token; the next reseed on every swarm is the
+distribution. `search_library` reads peers for the track record a repo
+cannot hold. A central strut is any strut with many peers whose automations
 project their run summaries into its graph — one namespace per peer — and
 run reflection workflows over the result. A run always executes, bills, and
 reads secrets on the strut that holds the workflow; a strut that wants work
@@ -116,11 +126,12 @@ do not know about each other unless someone pushes one as the other's peer.
 | --- | --- | --- | --- |
 | **(a) Read-through** | `WorkspaceStore` / `RunStore` (`src/workspace.ts:251-344`, `src/store.ts:162-185`) as a remote impl; `createStrut`'s read routes mounted twice | "Any strut could view runs and workflows from other struts"; the org-wide list; the drill-down for (b); the source of (c) and (d) | `storage-conformance.test.ts` mirror cases (§Validation) |
 | **(b) Dispatch-through** | A lib step over the remote client + `POST …/run`, `…/cancel` | An org or central workflow that fans work out to leaves | Offline against an in-process peer; `gateway-smoke.ts` for billing on the leaf |
-| **(c) Library sync** | `publishWorkflowByContent` / `publishStep` with `reactivateKnown: false` (`src/workspace.ts:191-201`) — the seeder's own call | A library to learn from and contribute to; templates, params winners, retired steps flowing down | The seeder semantics, replayed against a remote source |
+| **(c) Library via git** | The seeder (`publishWorkflowByContent` / `publishStep` with `reactivateKnown: false`, `src/workspace.ts:191-201`) generalized to several repos, plus `git/checkout` → `git/push` → `github/create-pr` (`plans/code-change.md` §3.3, §6) for the way back | A library to learn from and contribute to; templates, params winners, retired steps flowing down; review in git | A seed + export round trip against a local bare repo |
 | **(d) Summary roll-up** | `projectRuns` — "a post-hoc consumer of any `RunStore`" (`src/graph/projector.ts:1-13`) — over a remote store | The long-horizon view; step regressions and params winners across the fleet | Projector tests over a remote store; a live graph case |
 
-**(a) is the mechanism; (b), (c), (d) are consumers of it.** Order: (a)
-first, then (c) and (d) which need nothing but reads, (b) last because it is
+**(a) is the mechanism for everything that reads a strut; (c) rides git,
+not a peer.** (b) and (d) are consumers of (a). Order: (a) first, (c)
+beside it (it needs only the git steps), (d) next, (b) last because it is
 the only one that makes a strut act on another. Each ships alone (§Step
 order).
 
@@ -213,54 +224,80 @@ A lib step under `src/steps/lib/strut/`:
   being that run's child; the org run's own callback fires when it ends.
   Opaque and stable either way, which is all `code-change.md` requires.
 
-### 2.3 Library sync — pull, never push
+### 2.3 Library — export to git, seed from git
 
-The boot seeder is already a library sync with one source (the mcp source
-tree): content-hash reconciliation, `reactivateKnown: false` so a local edit
+The boot seeder is already a library sync with one source, the mcp source
+tree: content-hash reconciliation, `reactivateKnown: false` so a local edit
 stays active until the template itself changes, `RETIRED_STEPS` for
-removals (`mcp/src/lab/seed-opts.ts:13,26-34`). Generalizing the source
-from "a directory in the image" to "a peer" is the whole mechanism:
+removals (`mcp/src/lab/seed-opts.ts:13,26-34`). What it lacks is the way
+back — "porting an edit back into the committed template is the only way
+to spread it" (`seed-opts.ts:9-11`) — and more than one source. Both are
+one small addition: a workflow remembers the file it came from, and a tool
+writes it back there as a PR. **Git is the hub; struts never copy from each
+other.**
 
-```
-pull(peer, name, { as? }):
-  flow      = peer.workspace.getWorkflow(name)                 // active version
-  closure   = flowClosure(flow, peer.workspace)                // src/closure.ts — subflows, agentTools grants
-  for each custom step type in closure the local registry lacks:
-      publishStep(type, peer.getStepSource(type).code, desc, "peer:<id>", { reactivateKnown: false })
-  publishWorkflowByContent(as ?? name, peer.getWorkflowSource(name, active), desc, category,
-                           "peer:<id>", { reactivateKnown: false })
-  claims    = peer.claims({ kind: "workflow", name })          // → the additive `claims` publish arg, when the local layer is on
-  → { name, version, changed, steps: [...], claims: n, originHash }
-```
-
-- **Provenance is the publisher stamp** — `peer:<id>` on the workflow and
-  on every step it brought. Whether a copy is current is a hash comparison
-  (`getWorkflowHash` here vs there), so no new field.
-- **Name rules.** Same name + same content: a no-op (the seeder's). Same
-  name + `peer:<id>` stamp + different content: a re-pull publishes the
-  next `vN` and activates it, and a local edit made since stays active only
-  if the origin did not change — the seeder's rule, stated at
-  `src/workspace.ts:191-201`. Same name + any other stamp or unstamped
-  (a seeded baseline): **refused** unless `as: <newName>`. A pull never
-  overwrites something it did not bring.
-- **The meta surface treats a pulled workflow like a seeded one.** The
-  authoring capability edits, runs and reads runs of `ai`-stamped workflows
-  only (`src/authoring.ts:9-27`), so an evolve loop that wants to improve a
-  pulled template must fork it under a new name — exactly what it does with
-  a seeded baseline today. The chat tools, which a person supervises, can
-  edit it in place; that edit is a local version with the seeder's survival
-  rule above.
-- **Claims come along, checks resolve locally.** A check names a step type
-  (`plans/claims.md` §Nodes); pulling the closure first is what makes the
-  pulled checks runnable. A check whose closure still does not resolve is
-  the `unknown` case the ledger already shows.
-- **Down-sync is the same call from the other side**: a leaf's automation
-  pulls `visibility: public` (or org) templates from the org strut's library
-  on a schedule. Retirement flows the same way: a library entry marked
-  retired is soft-deleted on pull like `RETIRED_STEPS`.
-- **No push.** A leaf never needs write access on a central, a central
-  never needs a route to a leaf, and "contribute" becomes "mark it
-  pullable" (§8).
+- **Origin.** `WorkflowMetadata.source?: { repo, path, transformed? }`
+  beside `category`, `owner`, `automations` (`src/workspace.ts:154-166`):
+  `repo` a plain URL, `path` the file inside it. Set by the seeder, never
+  by a publish, cleared by nothing; a workflow forked under a new name has
+  no origin until its first export sets one. The same field on a custom
+  step (`StepInfo`). One optional JSON-string attribute on `StrutWorkflow`
+  and `StrutStep` (add-only, the AGENTS.md convention); the file store
+  keeps it in `_metadata.json`. **A URL and a path are identity enough**:
+  content hash already reconciles, so there is no repo id and nothing to
+  register anywhere.
+- **Seeding from repos.** `STRUT_SEED_REPOS`, a JSON list of `{ repo,
+  ref?, path? }`, seeded at boot with the lab's semantics; and a lib step
+  `strut/seed { repo, ref?, path? }` — `git/checkout` (the deployment's
+  `GITHUB_TOKEN` for a private repo; the bare cache under `<dataDir>/repos`)
+  then publish everything under the convention — so a deployment reseeds on
+  a schedule with an ordinary automation. The convention: `workflows/<name>.yaml`
+  and `steps/<type>.ts` under `path` (default: the repo root); one file per
+  workflow, the template, never versions. A file removed from the repo
+  retires, on the next reseed, only the workflow or step whose `source`
+  names that file — `RETIRED_STEPS` generalized, and a local creation is
+  never touched. The mcp lab keeps seeding from the image and stamps
+  `source` with the stakgraph repo and each file's path. The mcp lab and a
+  company repo are then two sources on one strut, and a workflow's origin
+  says which.
+- **Export.** `export_workflow({ name, repo?, path?, message? })` — a chat
+  tool, with `meta/export-workflow` as its twin so a reflection can promote
+  (§9). Target: the workflow's `source`; without one, `STRUT_HOME_REPO`
+  (one default per deployment, a plain URL) at the convention path;
+  explicit `repo` and `path` override both. It is a run of a seeded
+  workflow, `strut-export`: `git/checkout` → `strut/export-files` (the
+  YAML as published, plus the source of every custom step in the closure —
+  `flowClosure`, `src/closure.ts` — that has no origin of its own or whose
+  origin is this repo) → `git/diff` → `git/push` to a branch
+  `strut/export/<name>-<hash>` → `github/create-pr`. The `git/*` steps and
+  `github/create-pr` are `plans/code-change.md` §3.3 and §6. **Always a PR,
+  never a push to the default branch**, authored with the actor's
+  `GITHUB_TOKEN` — the actor secret hive pushes before a dispatch, resolved
+  through `secrets.get` like any other (§6), so review stays in git. The
+  result is the PR URL; a first export sets `source`, so the next one goes
+  to the same file.
+- **The round trip.** Merge the PR; the next reseed on every strut that
+  seeds from that repo sees a new file hash, publishes the next `vN` and
+  activates it — on the exporting strut the hash equals its active version,
+  so a no-op. Because `reactivateKnown` is false, a local edit made
+  elsewhere in the meantime stays active on that strut until the file
+  changes again: the seeder's rule, now with a way in.
+- **Transformed seeds.** The harvey seeder expands `@@include` and rewrites
+  tool names at seed time (`mcp/src/lab/harvey/seed.ts:82-124`), so the
+  published YAML is not the file. A seeder that transforms records
+  `source.transformed: true`, and the export tool refuses those with a
+  message naming the file — until `plans/workspace-files-and-includes.md`
+  makes includes round-trip.
+- **Visibility is the repo.** A private company repo is org-private; a
+  public repo is public; a workflow never exported is workspace-private.
+  No flag on the workflow, nothing for a peer to enforce, and the org
+  already decides who may merge.
+- **Leaf independence holds.** Git unreachable means an export fails and a
+  scheduled reseed errors; nothing else changes.
+- **Gone from the earlier draft of this plan:** strut-to-strut
+  `pull_workflow`, the `peer:<id>` publisher stamp, a `visibility` flag,
+  and a qualification gate. Read-through (§2.1) stays, for the track record
+  a repo cannot hold.
 
 ### 2.4 Summary roll-up — the projector over a peer
 
@@ -334,9 +371,9 @@ lab (register a step that reads any secret). So:
   behaviour, unchanged for every existing deployment. mcp passes a hook that
   maps the JWT scope. Standalone deployments that want peers can set
   `STRUT_PEER_KEY`, a read-only twin of `STRUT_API_KEY`; nothing else in
-  strut learns a new kind of auth. A `peer`-scoped caller may read; what it
-  may read of the library is `visibility`'s job (§8). The gated routes
-  (`requireApiKey`, `src/auth.ts:38-46`) already refuse it.
+  strut learns a new kind of auth. A `peer`-scoped caller may read and
+  nothing else; the gated routes (`requireApiKey`, `src/auth.ts:38-46`)
+  already refuse it.
 - **Milestone 2 may ship before the scope exists.** The org strut is one of
   the org's own swarms, and hive already holds every key in the org; hive
   pushing full tokens to it adds no new class of exposure (one swarm holding
@@ -483,14 +520,23 @@ Confirmed, and made a rule:
   (`specs/EVOLVE_SPEC.md` §4.3), `GET /secrets` and `GET /actors/:actor/secrets`
   return names only (`src/createStrut.ts:1446-1451,1490-1497`), and
   `mothership.json` / `peers.json` have no read route at all.
+- **An export is authored with the actor's `GITHUB_TOKEN`, on the strut
+  where the export runs.** On a swarm that is the actor secret hive pushes
+  per target (`ensureStrutActorSecret`); on a central it is the operator
+  actor's, pushed the same way. The token reaches git as `git/checkout`
+  already handles it — the scrubbed child env and an inline credential
+  helper, never the log or the repository (`plans/code-change.md` §3.3) —
+  and the PR is authored by that person, which is what makes the review
+  in git mean something.
 - **What a central strut is not allowed to hold:** any swarm's `API_TOKEN`
-  (admin of that lab); any actor secret (it runs nobody's coding
-  workflows); any user's delegation *for a leaf* (a leaf's mothership file
-  is the leaf's); raw transcripts or artifacts of peer runs (summaries
-  only, §2.4). What it does hold: read tokens per peer; its own provider
-  keys or its own delegations for the operator actors that own its
-  reflection automations (their spend is the owner's, the principal rule);
-  its own graph.
+  (admin of that lab); any user's actor secrets other than its own
+  operators' (it runs nobody's coding workflows); any user's delegation
+  *for a leaf* (a leaf's mothership file is the leaf's); raw transcripts or
+  artifacts of peer runs (summaries only, §2.4). What it does hold: read
+  tokens per peer; its own provider keys or its own delegations for the
+  operator actors that own its reflection automations (their spend is the
+  owner's, the principal rule), and those operators' `GITHUB_TOKEN` for the
+  PRs a reflection opens; its own graph.
 - **Finding.** The lab passes `store`, `chatStore` and `secretStore` as
   file stores in graph mode but not `actorSecretStore`
   (`mcp/src/lab/createLabStrut.ts:225-232`), and strut's default follows
@@ -536,66 +582,57 @@ pushes the delegation (`:124-129`), returns `{ url, workspaceSlug }`
 
 ## 8. The builder's learning loop
 
-Three verbs — **search, pull, contribute** — over the peers the builder's
-strut has, plus the visibility rule that keeps org IP where it belongs.
+Three verbs — **search, learn, contribute** — with git carrying the
+artifacts and peers carrying the track record.
 
-**Search.** `search_library({ query, peer? })`: for each peer (or one),
-`listWorkflows` + a word matcher over name, description and category —
-the rule `web/src/step-search.ts` applies to step types (every word must
-hit), applied to workflows, server-side beside `searchSteps`
-(`src/ai/stepHelpers.ts:177`) — ranked, returning per hit `{ peer, name, description, category, activeHash,
-runs: { total, success, lastAt }, claims: { supported, refuted, unknown } }`
-from the peer's summaries, claims and versions endpoints. The builder reads
-descriptions and claim ledgers before it reads YAML; a hit with a supported
-contract on many runs outranks a bare description. `get_workflow` and
-`get_step` gain `peer?` so the YAML and step sources can be read where they
-are. Graph hybrid search across peers is not v1: the central's projection
-(§2.4) is where cross-fleet semantic search belongs, one graph, later.
+**Search.** The library is already local: every workflow a deployment
+seeds from its repos is in `list_workflows` (`src/ai/prompts.ts:254-257`),
+with `source` saying where it came from. What a repo cannot hold is how a
+workflow *performs*, so `search_library({ query, peer? })` reads peers: for
+each (or one), `listWorkflows` + a word matcher over name, description and
+category — the rule `web/src/step-search.ts` applies to step types (every
+word must hit), applied to workflows, server-side beside `searchSteps`
+(`src/ai/stepHelpers.ts:177`) — ranked, returning per hit `{ peer, name,
+source, activeHash, runs: { total, success, lastAt }, claims: { supported,
+refuted, unknown } }` from the peer's summaries, claims and versions
+endpoints. A hit with a supported contract on many runs outranks a bare
+description, and `activeHash` says whether the peer runs the version this
+strut holds or a local edit the repo has not seen. `get_workflow` and
+`get_step` gain `peer?` for reading such an edit where it is. Graph hybrid
+search across peers is not v1: the central's projection (§2.4) is where
+cross-fleet semantic search belongs, one graph, later.
 
-**Pull.** `pull_workflow({ peer, name, as? })` = §2.3, returning what it
-published and the claims it brought. The prompt gains one section,
-"Library": search before authoring; a pulled workflow is a baseline with
-provenance — cite the peer and hash when you build on it; to change it,
-`edit_workflow` publishes a local version (a person is in the loop), while
-an in-run author (`meta/*`) must fork under a new name, as with seeded
-baselines. `meta/search-library` and `meta/pull-workflow` are the twins so
-an evolve loop can start from the org's best-known version of a template.
+**Learn.** The prompt gains one section, "Library": search before
+authoring; a seeded workflow is a baseline with an origin — build on it
+and cite it; `edit_workflow` (a person in the loop) publishes a local
+version that survives reseeds until the file changes (§2.3); an in-run
+author (`meta/*`) forks under a new name, as with seeded baselines today
+(`src/authoring.ts:9-27`); and when a local version is worth keeping,
+export it. `meta/search-library` is the twin so an evolve loop can start
+from the version of a template that performs best across the org.
 
-**Contribute** is pull-only from the other side (§2.3): the org strut's
-library automation pulls what qualifies; a person on the org strut curates
-(category, retire). What qualifies is read from the leaf, never asserted
-by it: `visibility` is `org` or `public`; the active version has at least
-one claim and every active claim is `supported` on that version with
-evidence from ≥ 3 runs (`buildLedger`, `src/ledger.ts:63`); no `agentTools`
-grant outside core, lib and the steps it brings; and — the fixed point that
-carries over from `plans/claims.md` §4.1 — evidence that is `asserted`-only
-does not count. An `ai`-stamped candidate qualifies exactly like a
-human-published one; its stamp travels with it, so the receiving strut's
-meta surface treats it the same way. Hill-climbing a contract to get pulled
-is the train-set problem `EVOLVE_SPEC` §7 answers with held-out validation,
-which the central can run (§9). Who approves: the org strut's owner of the
-library automation, by leaving it enabled, and anyone with the key, by
-retiring an entry. No inbox, no review UI in v1; the sidebar's `publisher`
-stamp and the ledger are the review.
+**Contribute** = `export_workflow` (§2.3). The tool result is the PR, and
+the PR body carries what a reviewer needs and the model would otherwise
+assert: the claim ledger for the active version (`buildLedger`,
+`src/ledger.ts:63`), run counts and success rate from this strut's
+summaries, and — when peers exist — the same for every peer running the
+same hash. Asserted-only evidence is labelled as such (`plans/claims.md`
+§4.1, fixed point 3). **No qualification gate in strut**: what qualifies is
+the reviewer's call, in git, with the evidence in front of them. An
+`ai`-stamped candidate exports the same way, its stamp in the PR body; and
+`meta/export-workflow` is how the central's reflection (§9) promotes a
+fleet-wide winner — one PR, human-merged, which is EVOLVE_SPEC §2's
+"promote to a reviewable artifact" as the loop's last beat. Hill-climbing
+a contract to get merged is the train-set problem EVOLVE_SPEC §7 answers
+with held-out validation, which the central can run.
 
-**Visibility.** `WorkflowMetadata.visibility?: "private" | "org" |
-"public"`, metadata-only like `category`, `owner`, `automations`
-(`src/workspace.ts:154-166`), one optional attribute on `StrutWorkflow`
-(add-only schema change, the AGENTS.md convention), settable by the owner
-or the key (`PUT /workflows/:name/visibility`, a chat tool
-`set_workflow_visibility`, the Workflow flyout). Default **`org`**: the
-workspace's swarm is in an org, and the org's struts are the only peers
-hive pushes to each other — a workspace's workflow is not public unless the
-owner says so, and is invisible to the org only when the owner says that.
-Enforcement is on the *serving* strut, by caller scope (§3): a
-`peer`-scoped caller sees source, versions and claims of `org` and `public`
-workflows only (`private` ones list as name + description, no source, no
-pull); a `full` caller (hive, the UI, the deployment) sees everything as
-today; `public` workflows are additionally served by `GET /library` with no
-credential — the one unauthenticated read strut gains, the Stakwork-level
-library's feed. Runs and summaries are not governed by the flag: they are
+**Org IP.** Where a workflow may go is which repo it is exported to.
+`STRUT_HOME_REPO` per deployment is the company repo for a swarm in that
+org — private by construction, and the org already decides who may merge;
+a public library is a public repo a person names explicitly in the export;
+a workflow nobody exports stays on its workspace. Runs and summaries are
 governed by who holds a token, which is the org boundary hive draws when it
-pushes peers.
+pushes peers (§3). Nothing in strut needs a visibility flag.
 
 ## 9. The central strut and long horizons
 
@@ -650,10 +687,13 @@ over extremely long time horizons" is this report read as a series: the
 monthly one reads the weekly ones; the quarterly one is a claim ledger over
 the year, not a fresh look at a million runs.
 
-**What flows back down.** Two things only, both pulls: the library (a
-promoted template, a params default worth adopting, a retired step); and
-the report, which a leaf's builder can `search_library` for and read like
-any other document — no new channel. A leaf that ignores the central loses
+**What flows back down.** Merged PRs, by reseed: a promoted template, a
+params default worth adopting, a retired step. The central's reflection
+opens the PR through `meta/export-workflow` (§2.3), a person merges it,
+and every strut that seeds from that repo picks it up on its next reseed —
+no channel from the central to a leaf exists or is needed. The report
+itself stays where it was made, readable through the peer view; its
+actionable findings are the PRs. A leaf that ignores the central loses
 nothing it has.
 
 ## 10. What not to do
@@ -676,6 +716,9 @@ nothing it has.
 - **Nothing that makes a leaf depend on a central.** No push from leaves,
   no registration with a central, no central-issued ids, no library that
   must be reachable for a workflow to run.
+- **No strut-to-strut writes.** An artifact moves between struts through
+  a repo and a reviewed PR (§2.3); read-through is the only strut-to-strut
+  channel, and it reads.
 - **No gateway chaining** (§5).
 - **No new server kind** (§1).
 
@@ -683,7 +726,9 @@ nothing it has.
 
 - Cross-fleet hybrid search from a leaf (search is per peer, name and
   description); it belongs on the central's graph.
-- A review inbox for contributions; approval is curation on the org strut.
+- Strut-to-strut copying of workflows or steps; git is the only way an
+  artifact moves (§2.3). Likewise any review UI in strut: the PR is the
+  review.
 - The reverse edge from a child run to its cross-strut caller
   (`launchedBy`).
 - An org-wide per-user spend cap (needs a shared counter, §5).
@@ -707,11 +752,14 @@ nothing it has.
    struts", and the org-wide view in hive.
 3. **mcp: `lab:read`** and **strut: `resolveScope`** (§3). Small, and the
    precondition for a peer that is not one of the org's own swarms.
-4. **Library pull** (§2.3, §8). `pull_workflow` / `search_library` chat
-   tools and `meta/*` twins; `visibility` (metadata, schema attribute,
-   route, tool, flyout field); `GET /library`; the org library automation
-   with the qualification rule. Useful alone: the builder learns from the
-   org.
+4. **Library via git** (§2.3, §8). `source` on workflows and steps
+   (metadata, schema attribute, the seeders setting it); `STRUT_SEED_REPOS`
+   + `strut/seed`; `strut/export-files` + the seeded `strut-export`
+   workflow; `export_workflow` / `search_library` chat tools and their
+   `meta/*` twins; the PR body with the ledger. The last two steps wait on
+   `plans/code-change.md` phase 2 (`git/push`, `github/create-pr`). Useful
+   alone: an edit made on any swarm reaches every swarm through one
+   reviewed PR.
 5. **Roll-up projection + the first reflection** (§2.4, §9). The
    projector over a remote store into a per-peer namespace; the projection
    automation; one weekly reflection workflow producing the report and its
@@ -722,8 +770,9 @@ nothing it has.
    Gateway tab: `dims` on the delegation push, the filter key in the
    plugin.
 
-1 and 2 are independent. 3 gates cross-org peers, not 4 or 5 within an
-org. 6 depends on 2 only.
+1, 2 and 4 are independent of each other; 4's export half waits on
+`code-change.md` phase 2, its seeding half does not. 3 gates cross-org
+peers, nothing within an org. 6 depends on 2 only.
 
 ## Validation
 
@@ -740,15 +789,25 @@ org. 6 depends on 2 only.
   summary, events, versions and source responses at `/…` and at
   `/peers/p/…`; a peer id not on file is a 404; the token is never in any
   response; write routes do not exist under `/peers`.
-- **Scope.** With a `peer`-scoped caller: `private` workflows list without
-  source and refuse `/:version` and pulls; `org` ones serve; gated routes
-  401. With no `resolveScope`: byte-identical behaviour to today's suite.
-- **Pull.** Against an in-process peer: a first pull publishes the closure
-  (steps first) and the workflow, stamped; an identical re-pull is a no-op;
-  a local edit survives a re-pull until the origin changes (the seeder
-  case, `workspace.test.ts`'s `reactivateKnown` cases replayed remotely);
-  same name under another stamp is refused without `as`; claims arrive and
-  their checks resolve.
+- **Scope.** With a `peer`-scoped caller: every read route serves, every
+  gated route is 401, and no write route exists under `/peers`. With no
+  `resolveScope`: byte-identical behaviour to today's suite.
+- **Seed + export, offline against a local bare repo** (the `git/*`
+  tests' fixture). `strut/seed` publishes the convention's files with
+  `source` set and stamps nothing else; an identical reseed is a no-op; a
+  local edit survives a reseed until the file changes (`workspace.test.ts`'s
+  `reactivateKnown` cases, driven from a repo); a file removed from the
+  repo retires only the workflow whose `source` names it, never a local
+  creation. `export_workflow` pushes a branch whose files equal the
+  published YAML and the closure's step sources; never touches the default
+  branch; reads the actor's token through `secrets.get` (a run without one
+  fails naming `GITHUB_TOKEN`); targets `source`, else `STRUT_HOME_REPO`,
+  else the explicit arguments, in that order; refuses a `transformed` seed
+  with the file named; and sets `source` on a first export. Round trip:
+  export → fast-forward merge in the fixture → reseed is a no-op on the
+  exporter and a new active version on a second strut seeded from the same
+  repo. `github/create-pr` is asserted through a cassette, and the PR body
+  carries the ledger.
 - **Projection.** `projector` tests over a remote store: nodes land in the
   peer's namespace, `run_id` unchanged, `costUsd` carried; two peers with
   colliding run ids project without conflict; `skipSettled` skips on the
@@ -777,6 +836,10 @@ per target. Two things are added beside it, not to it: a third push,
 `ensureStrutPeers(target)`, for the org strut; and an optional `dims` on the
 delegation push. Hive continues to dispatch code-change runs directly to
 the resolved swarm; dispatch-through (§2.2) is for workflows, not for hive.
+Phase 2's `git/push` and `github/create-pr` gain a second consumer, the
+export (§2.3) — one more reason to land them as the generic lib steps that
+plan already describes, and the actor-secret push it specifies is exactly
+what puts the exporting person's token on the swarm.
 
 ## Findings along the way
 
@@ -797,11 +860,18 @@ the resolved swarm; dispatch-through (§2.2) is for workflows, not for hive.
 
 ## Open questions
 
-- **`private` and hive.** Should a `full`-scoped caller that is another
-  swarm's strut (milestone 2 before the read scope) be able to pull a
-  `private` workflow? Proposed: yes, because it holds the swarm key and the
-  flag is about peers — but that is exactly why the read scope should land
-  before a central exists.
+- **Reseed cadence.** Boot only (the lab today) or a scheduled
+  `strut/seed`? Proposed: both, the schedule being an ordinary automation a
+  deployment adds; a reseed while a run of that workflow is in flight
+  publishes a version, which is what any publish does today.
+- **Includes.** An export of a `transformed` seed is refused until
+  `workspace-files-and-includes.md` lands; whether the export should
+  instead write the expanded YAML over a file with includes is that plan's
+  question, not this one's.
+- **A step with two homes.** A custom step used by workflows from two
+  repos is exported with the workflow that exports it first, which sets
+  its `source`; a later export from the other repo leaves it alone.
+  Proposed, not decided.
 - **Namespace per peer vs per org on the central.** Per peer is decided for
   runs (collisions). For the library view, "the same template on forty
   swarms" is one `content_hash` across forty namespaces; if that query
