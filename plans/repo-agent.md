@@ -1,11 +1,21 @@
 # Repo agent — mcp's `POST /repo/agent` as a strut workflow
 
-> **Status (2026-09-23): assessment, nothing built.** Every numbered
-> section under §4 is one work item, to be taken one at a time. §5 records
-> what was decided in strut's favour and needs no work. §6 is the open
-> unknown. Companion: `plans/code-change.md` (the first repo_agent surface
-> moved to strut, and the foundations this reuses: `git/checkout`, actor
-> secrets, callbacks, `ctx.onRunEnd`).
+> **Status (2026-09-24): milestone 1 defined, nothing built.** §7 is the
+> first cut: mcp's *default* repo agent (the code-graph explorer) as a
+> seeded lab workflow on every workspace strut, multi-repo from the start,
+> dispatched by hive's `repo_agent` tool to the workspace's own swarm. The
+> engine work is three small changes (two in `git/checkout`, one in the
+> agent's repo map); everything else is a seeded YAML, two lab steps and
+> hive plumbing. The numbered sections under
+> §4 are the later work items, one at a time; §5 records what was decided
+> in strut's favour and needs no work; §6 is the open unknown. Current
+> behaviour was re-read on `strut@c8ccb3c`, `hive@1b54276` (master) and
+> `stakgraph@de9928c` (main); citations are `file:line` on those.
+> Companion: `plans/code-change.md` (the first repo_agent surface moved to
+> strut, and the foundations this reuses: `git/checkout`, actor secrets,
+> callbacks, `ctx.onRunEnd`). `plans/federation.md` owns the question of
+> who dispatches across struts; this plan's workflow is the same under any
+> answer.
 
 ## 1. The idea
 
@@ -18,27 +28,34 @@ sub-agents, skills, spreadsheets, PR creation. It is exposed as `POST
 `tool_call` events on `GET /events/:request_id`.
 
 The repo engine as a strut workflow is the same loop as ONE `agent` step,
-with the repository from `git/checkout` and the result from `pack`:
+with the repositories from `git/checkout` and the result from `pack`:
 
 ```yaml
 name: repo-agent
-# Input:  { repo, prompt, messages? }
+# Input:  { repos: ["https://github.com/stakwork/hive", …], prompt, messages? }
 # Output: { result, object, usage, cost, steps }
 steps:
-  - id: checkout
-    type: git/checkout
-    config: { repo: "{{ input.repo }}" }
+  - id: checkouts
+    type: foreach
+    config:
+      items: "{{ input.repos }}"
+      concurrency: 4
+      body:
+        id: checkout
+        type: git/checkout
+        config: { repo: "{{ $current }}", tokenSecret: GH_TOKEN }
 
   - id: run
     type: agent
     config:
-      cwd: "{{ checkout.path }}"
+      cwd: "{{ checkouts[0].root }}"        # the run's worktree root: <owner>/<name>/ per repo (§7.1)
       system: "{{ params.system }}"
       prompt: "{{ input.prompt }}"
-      messages: "{{ input.messages }}"      # §4.1
+      messages: "{{ input.messages }}"      # §4.1, later
       model: "{{ params.model }}"
       maxSteps: "{{ params.maxSteps }}"
       agentTools: "{{ params.tools }}"      # §4.6
+      secretsEnv: [GH_TOKEN]                # `gh` in bash — read-only by the TOKEN, not by a blocklist (§4.6)
 
   - id: result
     type: pack
@@ -52,16 +69,25 @@ steps:
 params:
   model: claude-sonnet-5
   maxSteps: 200
-  tools: ["stakgraph/*", "concepts/*"]
+  tools:
+    - graph/graph-search       # Concepts and every other jarvis node
+    - graph/graph-get
+    - graph/graph-neighbors
+    - graph/get-ontology
+    - stakgraph/search         # the code graph: symbols by keyword / meaning (§4.6)
+    - stakgraph/code           # bodies by ref_id or name + node_type
   system: |
     ...
 ```
 
 Seeded by mcp's lab beside `code-change-propose`. mcp's `mode: "graph"` and
 `mode: "workflow"` are the same shape with a different `system` and `tools`
-(sibling workflows, or params variants). A caller dispatches it exactly as
-hive dispatches code-change: actor secret pushed, `POST …/run { input,
-callback }`, one `run.end` back; a per-request model is a per-run `params`
+(sibling workflows, or params variants); the graph mode is multi-turn and
+waits on §4.1. A caller dispatches it as hive dispatches code-change —
+actor secret pushed, `POST …/run { input }` — and in milestone 1 reads the
+result by polling the run summary, the way it polls `/progress` today (§7.3);
+the callback shape (`{ callback }`, one `run.end` back) is available
+whenever the caller goes async. A per-request model is a per-run `params`
 override; the actor is billed through the Mothership.
 
 What strut already does better than repo_agent, for the record: dollar
@@ -77,7 +103,7 @@ hive's graph chat is single-turn, so a run is the right unit:
 
 | Client | Sends | Reads |
 | --- | --- | --- |
-| hive `repo_agent` tool (askTools, askToolsMulti) | repo_url, prompt, pat, Bifrost key/baseUrl/headers; no `toolsConfig` | polls `/progress` (120 × 5 s), `result.content`; aborts by request_id |
+| hive `repo_agent` tool (askTools, askToolsMulti — one tool per workspace) | repo_url, prompt, pat, Bifrost key/baseUrl/headers; no `toolsConfig` | polls `/progress` (120 × 5 s, `askTools.ts:247-248`), `result.content`; aborts by request_id |
 | hive diagrams create/edit | `skills: {mermaid}`, `subAgents`, `model: opus`, `learn_concepts` | `.content` |
 | hive workflow explorer | `mode: "workflow"`, `stakwork_run_step`, stakworkApiKey; webhook when a canvas conversation exists | `.content` |
 | hive graph chat | `mode: "graph"`, **`sessionId`** (reused across turns), `propose_concept_change`, webhook | `result.content`, `result.reflection`; Pusher nudge keyed by sessionId |
@@ -100,11 +126,13 @@ nodes (§4.11).
 | --- | --- |
 | The unit | One workflow run per turn. A session is a chain of runs (§4.1) |
 | The agent | Strut's core `agent` step, extended per §4; never mcp's loop wrapped |
-| Tools | `agentTools` over seeded lab steps (§4.6); the built-ins for files and bash |
-| The repository | `git/checkout`: a fresh, isolated, credential-free worktree per run (§5.2) |
+| Which strut | **The workspace's own swarm strut.** Not a choice: the code graph and jarvis live on that swarm's Neo4j, so an org strut could not run this without holding the swarm's key or double-hopping every tool call. Hive resolves it once at dispatch — a `repo_agent` purpose on the `workspace` row of `POLICY` (`hive/src/services/strut-target.ts`), the row `benchmark` already uses. Whether hive or a peer strut is the dispatcher is `plans/federation.md`'s question; the workflow and its input are the same either way |
+| The repositories | **Multi-repo from the start.** One `git/checkout` per repo through a `foreach`; siblings under the run's worktree root laid out `<owner>/<name>` so a code-graph `file` is a path under `cwd` (§7.1). A fresh, isolated, credential-free worktree per run per repo (§5.2) |
+| Tools | The built-ins for files and bash; the four **graph reads** for Concepts and any other jarvis node; **`stakgraph/search` + `stakgraph/code`** as two seeded lab steps over the services bag (§4.6). No `stakgraph_map`, no `workflows/*`, no `concepts/*` tools: the graph reads cover concepts, the filesystem covers the rest |
+| GitHub | **The agent uses `gh` and `git` in bash; typed `github/*` steps are for workflows, not agents.** What makes the agent read-only is the TOKEN: a read-only installation token, pushed by hive as the actor secret `GH_TOKEN`, used by checkout and bash alike. The user's write-capable token never enters this workflow (§4.6, §7.3) |
 | Asking the user | Strut's elicitation shape, not mcp's `ask_clarifying_questions` tool (§5.1) |
 | Result | Strut's: `{ result, object, usage, cost, steps }` from `pack` (§5.3) |
-| Run reads | The run stream is not public: behind the deployment key (§4.10) |
+| Run reads | On a swarm every `/lab` route is already behind the swarm key (mcp's `labAuth`); gating them on a standalone strut is a later item (§4.10) |
 | Everything else in the contract | Kept as strut has it (§5.4) |
 
 ## 3. Why the gaps matter
@@ -112,11 +140,12 @@ nodes (§4.11).
 The loop is not the problem. The `agent` step has no way to continue a
 conversation, shows no assistant text while it runs, cannot be stopped
 mid-generation, has no protection against outgrowing the context window,
-runs without thinking, and explores the filesystem where repo_agent
-explores the code graph. Each of those is a shortcoming of the step on its
-own, repo agent or not; the repo agent is the workload that makes them
+and runs without thinking. Each of those is a shortcoming of the step on
+its own, repo agent or not; the repo agent is the workload that makes them
 visible. §4 takes them one at a time. Each section states what mcp does,
-what strut does, who breaks, and the smallest fix.
+what strut does, who breaks, and the smallest fix. **None of them blocks
+milestone 1**: a single-turn, read-only investigation bounded by the
+caller's ten-minute budget rarely meets any of them.
 
 ## 4. The work items
 
@@ -183,11 +212,12 @@ Watching a long run, you see the calls and none of the reasoning.
 half of it goes dark. The events panel has the same blind spot.
 
 **The fix.** One non-terminal run event type, e.g. `step.note`, emitted
-from the agent's `onStepEnd` with the step's text at the agent's path. Per
-step, not per token: that is what mcp's non-stream mode delivers and what
-hive consumes (only the mcp web UI used deltas). `RunEventType` is a
-closed union: the journal, `countSteps` and the summary ignore it; the
-events panel renders it as a line. Hive's hook maps it to `text`.
+from the agent's `onStepEnd` (`src/steps/core/agent.ts:1004`) with the
+step's text at the agent's path. Per step, not per token: that is what
+mcp's non-stream mode delivers and what hive consumes (only the mcp web UI
+used deltas). `RunEventType` is a closed union: the journal, `countSteps`
+and the summary ignore it; the events panel renders it as a line. Hive's
+hook maps it to `text`.
 
 ### 4.3 Cancel reaches the model call and bash
 
@@ -196,12 +226,12 @@ goes into the LLM fetch, clone, git and jarvis calls (not into bash, which
 runs to its 60 s timeout). Registering a second run on the same key aborts
 the first.
 
-**strut.** The step checkpoints in `prepareStep`, i.e. BETWEEN tool calls.
-Nothing aborts an in-flight generation, and a drafting turn can run for
-minutes. The bash tool's `runShell` has no cancel poll, so a cancelled run
-waits for the command's 10-minute timeout. The `exec` step already does
-this right: it polls `ctx.control.state` while the child runs and SIGTERMs
-the process group (`runProcess`).
+**strut.** The step checkpoints in `prepareStep` (`agent.ts:1029-1030`),
+i.e. BETWEEN tool calls. Nothing aborts an in-flight generation, and a
+drafting turn can run for minutes. The bash tool's `runShell` has no
+cancel poll, so a cancelled run waits for the command's 10-minute timeout.
+The `exec` step already does this right: it polls `ctx.control.state`
+while the child runs and SIGTERMs the process group (`runProcess`).
 
 **Who breaks.** Hive's Stop button: the cancel is acknowledged, the run
 keeps burning tokens until the next tool boundary.
@@ -262,39 +292,97 @@ result under strut's `cacheControl` (keeping `cacheTtl`). Expose it as a
 `thinking: "thinking" | "fast"` knob on the step. Default to thinking on
 sonnet / opus like mcp: the repo agent is the reason this exists, and a
 workflow that wants a cheap agent says `fast`. The `llm` step and the chat
-builder can take the same option later.
+builder can take the same option later. Small enough to ride along with
+milestone 1 if wanted; not required by it.
 
-### 4.6 The code-graph tools
+### 4.6 The tools
 
 **mcp.** When a caller sends no `toolsConfig` (hive's `repo_agent` tool
-sends none) `get_tools` returns EVERY default tool: `stakgraph_search`,
-`stakgraph_map`, `stakgraph_code` (the Neo4j code graph), `vector_search`
-(embeddings), `list_workflows` / `learn_workflow` / `read_workflow_json`
-(Workflow nodes), the jarvis reads when `JARVIS_URL` is set,
-`repo_overview` backed by the `stakgraph overview` CLI, `recent_commits` /
-`recent_contributions` (gitsee). Diagrams and the repo_agent tool add
-`learn_concepts` (`list_concepts`, `learn_concept`). The default repo
-agent is a code-graph explorer.
+sends none) `get_tools` (`mcp/src/repo/tools.ts:536`) registers every
+default tool: `repo_overview`, `file_summary`, `recent_commits`,
+`recent_contributions`, `fulltext_search`, `bash`, the editor, `web_search`,
+`final_answer`, `list_workflows` / `learn_workflow` / `read_workflow_json`
+(Workflow nodes), `vector_search`, `stakgraph_search` / `stakgraph_map` /
+`stakgraph_code` (`:1013-1066`), the jarvis reads when `JARVIS_URL` is
+set, `list_concepts` / `learn_concept` with `learn_concepts`. Bash gets the
+requesting user's PAT as `GH_TOKEN` (`:749-760`) and a regex blocklist on
+`git push`, `git remote` and `gh pr|api|repo|release` (`:154-157`) — the
+tool description hive shows Jamie promises read-only GitHub inspection
+through `gh` (issues, PR threads, CI status, other repos).
 
 **strut.** The built-ins are a filesystem explorer: `repo_overview` from
-`git ls-files`, ripgrep, bash, the editor, web, and `file_summary` when the
-stakgraph CLI is on PATH. `jarvis/*` is seeded in the lab (12 steps) and
-grantable; the code graph, concepts and Workflow nodes are not.
+`git ls-files` — across every git repo directly under `cwd`
+(`src/steps/core/agent.ts:149-170`), so a parent of several checkouts
+works; ripgrep; bash; the editor; web; and `file_summary`, the stakgraph
+AST CLI, registered when `stakgraph` is on PATH (`:873-876`) — it is on
+the swarm image, and so is `gh` (`mcp/Dockerfile:105-109`). Registry steps
+are grantable through `agentTools`, named by their type with the slash
+replaced (`toolNameFor`, `agent.ts:362`). The lib ships `graph/*` over the
+swarm's own Neo4j (`src/steps/lib/graph/`): reads (`graph-search`,
+`graph-get`, `graph-neighbors`, `get-ontology`, …) and writes.
 
-**Who breaks.** Every hive client, silently: the workflow version would be
-a different, weaker agent on the same prompt.
+**Who breaks.** Every hive client, silently: without the code graph the
+workflow version would be a different, weaker agent on the same prompt.
 
-**The fix.** No engine change. Seed the tools as lab steps and grant them
-with `agentTools` — the code-change plan's §3.4 line. The lab strut runs
-inside mcp, so the steps call the same functions `tools.ts` calls today:
-`stakgraph/search`, `stakgraph/map`, `stakgraph/code`,
-`stakgraph/vector-search`, `stakgraph/overview` (the CLI, preferred over
-the file tree when on PATH), `concepts/list`, `concepts/learn`,
-`workflows/list`, `workflows/learn`, `workflows/read-json`,
-`repo/recent-commits`. Each marks its output with `withAccessedNodes`, so
-the projector draws the `ACCESSED` edges. Then `params.tools:
-["stakgraph/*", "concepts/*"]`, and the graph and workflow modes are a
-different list.
+**Decided.** Three sources, and no more:
+
+1. **The filesystem, for reading.** Concept docs already list the key
+   files; with every repo checked out the agent reads them with bash and
+   the editor's `view`, ripgreps from there, and asks `file_summary` for a
+   file's structure. No `toolFilter`: the worktree is throwaway and
+   credential-free, so a local edit is invisible and harmless.
+2. **The graph reads, for Concepts and every other jarvis node** —
+   `graph/graph-search` (hybrid), `graph/graph-get` (the node with its
+   docs), `graph/graph-neighbors`, `graph/get-ontology`. Granted BY NAME,
+   never `graph/*`: the glob would hand a read-only investigator the
+   write steps. This replaces `list_concepts` / `learn_concept` and the
+   jarvis reads: searching Concepts through the general graph search is
+   the direction, not a concept-specific tool.
+3. **Two lab steps for the code graph, `stakgraph/search` and
+   `stakgraph/code`** (§7.2) — mcp's `stakgraph_search` and
+   `stakgraph_code` by another route, and under the same tool names, so
+   mcp's descriptions carry over. The graph covers every repo in the
+   workspace, and `include_patterns` (`stakwork/hive/**`) scopes a search
+   to one of them.
+
+Not carried over: `stakgraph_map` (the subtree map; ripgrep on a symbol
+name and `file_summary` get most of the way), `vector_search`, the
+Workflow-node tools, `recent_commits` / `recent_contributions` (`git log`
+on the checkout), skills, spreadsheets. If runs show the agent flailing on
+"who calls this" questions, the next step is not the map tool but the
+**code family in strut's own `graph/search`** (`src/graph/search.ts`): it
+filters `n.namespace = $namespace` (`:569`) and stakgraph's code nodes
+have no namespace; neighbours filter on `Domain_*` labels the code nodes
+lack; and code embeddings live under `embeddings` from BGE-small
+(`mcp/src/vector/index.ts:4-5`, 384 dims) rather than `text_embeddings`
+from MiniLM — same width, different model, so the vectors do not compare.
+A contained change (visibility for label-less `Data_Bank` nodes, the
+fulltext leg routed to stakgraph's `nameBodyFileIndex`, the vector leg
+skipped or BGE-embedded) would make the graph reads cover code too and
+retire the two lab steps. Only with evidence.
+
+**GitHub: `gh`, on a read-only token.** Remaking `gh` as agent tools is a
+losing race, and each remade tool is a schema the model has to learn; in
+bash the model already knows the CLI. Typed `github/*` steps stay what
+they are — workflow steps, where recorded config, typed outputs, cassettes
+and error codes matter. The only question is the credential, and the
+answer is to make the TOKEN read-only rather than the tool: a GitHub App
+installation token scoped to the workspace's repositories with read-only
+permissions (contents, metadata, pull requests, issues, checks, actions),
+one-hour expiry, pushed by hive before each dispatch as the actor secret
+`GH_TOKEN` (§7.3). `git/checkout` takes it as `tokenSecret`; the agent
+lists it in `secretsEnv` (`agent.ts:730`, secret NAMES, masked out of tool
+output); `gh` reads `GH_TOKEN` first. Read-only by construction, no
+blocklist, and the user's write token never enters the workflow. Local git
+needs no token at all: log, blame, show and diff work on the checkout.
+
+**If the mint is blocked** (§7.4): never the user's write token in bash —
+that is mcp's posture, and the regex blocklist is the thing
+`plans/code-change.md` §2 rejected. The interim is ONE generic GET-only
+`github/api` lib step (path + query through `ctx.services.http`, token via
+`secrets`) granted as an agent tool: issues, PR threads, review comments,
+checks and runs without the token reaching the child env. Not a remake of
+`gh`'s subcommands.
 
 ### 4.7 MCP servers
 
@@ -332,13 +420,12 @@ crosses a process.
 
 **Who breaks.** Hive's diagrams and task workflows.
 
-**The fix.** A lib step, `strut/run`: launch a workflow on another strut
-(`POST {base}/workflows/:name/run`, key by secret name, actor forwarded)
-and wait for it (poll the run summary, or tail the stream). Granted with
-`agentTools`, it IS the remote sub-agent tool: the name and description
-come from the target workflow. This is the federation plan's "chain"
-primitive, so it is worth building once for both. Once §4.10 gates run
-reads, the caller needs the key anyway.
+**The fix.** A lib step that launches a workflow on another strut and
+waits for it, granted with `agentTools`: it IS the remote sub-agent tool,
+its name and description from the target workflow. Who holds the
+credential for that call — a peer token, a forwarded attenuated
+delegation, or hive as the broker — is `plans/federation.md`'s decision;
+the step is the same shape under each.
 
 ### 4.9 Image attachments
 
@@ -358,7 +445,7 @@ becomes `[{ type: "text" }, { type: "image", image: url }]` content parts
 `ctx.services.http` first). Record only the URL in the session. The
 smallest item here.
 
-### 4.10 The run stream is public
+### 4.10 Run reads on a standalone strut
 
 **Today.** With `STRUT_API_KEY` set, only mutations are gated. `GET
 /workflows/:name/runs`, `/runs/:runId`, `/runs/:runId/events`,
@@ -366,16 +453,21 @@ smallest item here.
 transcripts included. mcp scopes a per-request `events_token` JWT to the
 one request.
 
-**Decided.** Not public.
+**On a swarm this does not matter.** mcp's `labAuth` gates every `/lab`
+route behind the swarm's `API_TOKEN` (Basic, `x-api-token`, or a minted
+JWT; `mcp/src/lab/mount.ts`), UI assets excepted. The run log of a
+repo-agent run on a swarm is as private as the rest of the lab. So this is
+not in milestone 1.
 
-**The fix.** `requireApiKey` on the run read family: the stream, and with
-it the events, the summary and the list, which expose the same log. The
-web UI already attaches the key to every request once it has one
+**Decided.** Still not public on a standalone strut (`src/server.ts`, the
+Dockerfile image). `requireApiKey` on the run read family: the stream, and
+with it the events, the summary and the list, which expose the same log.
+The web UI already attaches the key to every request once it has one
 (`apiFetch`, header-based, so the SSE reattach needs no change) and hive's
 embed hands it over as `?key=`; `apiKeyMatches` already accepts `?key=`
 for the WebSocket. Dev mode (key unset) stays open, as everywhere. The
 same question then applies to `GET /artifacts/:runId/*` and the chat
-reads; decide them together.
+reads; decide them together, when a standalone strut runs this workflow.
 
 ### 4.11 The `AgentSession` / `Turn` readers
 
@@ -410,13 +502,13 @@ projector over the run log:
 | Viewer field | From the strut run log |
 | --- | --- |
 | `session_id` | `<runId>:<stepPath>` — one session per agent step execution (a loop iteration is its own) |
-| `source` / `agent_name` / `repo` | `"strut"` / `<workflow>/<stepPath>` / the run's `git/checkout` output `url`, when there is one |
+| `source` / `agent_name` / `repo` | `"strut"` / `<workflow>/<stepPath>` / the run's `git/checkout` outputs (`url` of each; several for a multi-repo run) |
 | `parent_session_id`, `spawn_tool_call_id` | a sub-agent's session rides on its tool-call `step.end.messages`; the parent is the enclosing agent step, the spawn id the tool call's path |
 | `user_input` | the task prompt (and, with §4.1, only the NEW prompt; prior turns are already in the parent session's chain) |
 | `reasoning` → `response` | each assistant text part; the last one retyped `response` at the end, mcp's rule |
 | `tool_call` (`tool`, `tool_call_id`) | each assistant tool-call part of `step.end.messages` |
 | `tool_result` | each tool result, cut to 100 chars, mcp's rule |
-| `concepts` | the tool-call event's `nodes` (`withAccessedNodes`) where the ref is a `Concept` |
+| `concepts` | the tool-call event's `nodes` (`withAccessedNodes`) where the ref is a `Concept` — the graph reads and the two stakgraph steps all mark theirs |
 | model, tokens, cost, status | the step's config `model`, its output `usage` / `cost`, and `step.end` / `step.error` / the run's `cancelled` |
 
 Place it in mcp's lab, on `onRunEnd`, calling the same writers the
@@ -447,20 +539,22 @@ for runs; if a repo-agent run ever has to ask, it gets the same shape on a
 run (a paused run carrying the question), not a port of the tool. No hive
 client enables the tool.
 
-### 5.2 The repository
+### 5.2 The repositories
 
-mcp keeps one shared clone per repo under `/tmp`, the PAT in the remote
-URL, `GH_TOKEN` in the bash env, and `/tmp` as cwd for multi-repo. Edits
-and installed dependencies persist across turns and across users, and the
-agent can push. Strut's `git/checkout` is a fresh detached worktree per
-run, credential-free, removed at run end; several checkouts in one run
-land as siblings under the run's worktree root, so multi-repo is cwd = the
-parent. Turn N+1 gets turn N's edits as a diff (`git/diff` → the next run's
-`git/apply`, the code-change pattern) or after they land. Cold dependencies
-per run are the price; a warm cache is an environment concern (ENV_SPEC),
-not the step's. The agent cannot use `gh`; handing it `GITHUB_TOKEN`
-through `secretsEnv` would reopen the push path the code-change plan
-closed, so it stays closed.
+mcp keeps one shared clone per repo under `/tmp/<owner>/<repo>`
+(`mcp/src/repo/clone.ts:78`), the PAT in the remote URL, `GH_TOKEN` in the
+bash env, and `/tmp` as cwd for multi-repo. Edits and installed
+dependencies persist across turns and across users, and the agent can
+push. Strut's `git/checkout` is a fresh detached worktree per run per
+repo, credential-free, removed at run end; a multi-repo run is a `foreach`
+of checkouts landing as siblings under the run's worktree root, and the
+agent's cwd is that root (§7.1). Turn N+1 gets turn N's edits as a diff
+(`git/diff` → the next run's `git/apply`, the code-change pattern) or
+after they land. Cold dependencies per run are the price; a warm cache is
+an environment concern (ENV_SPEC), not the step's. The agent CAN use `gh`
+— on a read-only token that cannot push, open a PR or write anything
+(§4.6); the user's write token is what stays out of bash, which is the
+push path `plans/code-change.md` closed and keeps closed.
 
 ### 5.3 The result
 
@@ -485,13 +579,171 @@ The Stakwork workflow definitions that call `/repo/agent` are not on disk
 anywhere under `~/code/sphinx`; what they send is inferred from the vars
 hive passes (`repo2graph_url`, `subAgents`, `mcpServers`, `agentName`,
 `sessionId = taskId`, Bifrost key / baseUrl / headers, `replayUrl` for
-evals). Inventory them before any client cutover: they decide whether
-§4.7, §4.8 and §4.9 are needed at all, and whether anything sends
-`ask_clarifying_questions`, `jsonSchema` or `skills`.
+evals). Inventory them before any client cutover beyond hive's `repo_agent`
+tool: they decide whether §4.7, §4.8 and §4.9 are needed at all, and
+whether anything sends `ask_clarifying_questions`, `jsonSchema` or
+`skills`.
 
-## 7. Order
+## 7. Milestone 1 — the first cut
 
-§4.6 and §4.10 need no engine change and unblock a first seeded workflow
-that hive's `repo_agent` tool could dispatch today. Then §4.1 (graph chat),
-§4.2 (the events hook), §4.3, §4.4, §4.5 in the step. §4.7, §4.8, §4.9 and
-§4.11 wait on §6.
+The default repo agent, on every workspace strut, dispatched by Jamie.
+Three repos, in this order; each part is small.
+
+### 7.1 strut: three small changes
+
+- **`root` in the output.** Each checkout returns its own `path`
+  (`src/steps/lib/git/checkout.ts:137`) and the expression language has no
+  dirname (`ARRAY_METHODS` is map / filter / find / join / includes /
+  slice, `src/expr.ts:180`), so the `foreach`'s outputs cannot yield the
+  parent. The step also returns `root`, the run's worktree root
+  (`worktreeRoot(dataDir, runId)`, `:75`), and the agent reads it off any
+  checkout: `cwd: "{{ checkouts[0].root }}"`.
+- **The worktree dir is `<root>/<owner>/<name>`**, not `<root>/<name>`
+  (`join(wtRoot, r.name)`, `:76`). Two reasons: two repos with the same
+  name from different owners no longer collide in one run; and the layout
+  mirrors mcp's `/tmp/<owner>/<repo>`, which the code graph's `file`
+  property is relative to — so a `stakgraph_search` hit's
+  `stakwork/hive/src/foo.ts` is exactly that path under `cwd`, no
+  translation.
+- **`repo_overview` walks one level deeper.** Its `listRepos` takes the
+  IMMEDIATE subdirs of `cwd` that hold a `.git` (`agent.ts:55-61`), and
+  `getRepoMap` runs `git ls-files` in each, prefixed (`:153-170`). Under
+  `<owner>/<name>` the immediate subdirs are owner dirs, so it would find
+  nothing and fall back to "No tracked files found". The fix is a few
+  lines: when an immediate subdir is not a repo, look one level further
+  and prefix with `<owner>/<name>` — the tree then reads exactly like the
+  graph's paths. Ripgrep and bash need nothing; they already recurse.
+- Concurrency is safe: one bare cache and one lock per repo, so
+  `concurrency: 4` in the `foreach` is fine; the default is sequential.
+- Optional: §4.5 thinking. Nothing else in the engine.
+
+### 7.2 mcp: two lab steps and the seeded workflow
+
+- **Why the services bag.** A seeded step is published as source and
+  materialized under `<lab-workspace>/steps/_graph` (`graphMaterializeDir`,
+  `src/graph/wiring.ts:37`), so a relative import of mcp code cannot
+  resolve; the lab's rule is that a seeded step may value-import only
+  `strut` (`mcp/src/lab/AGENTS.md:334,383`). The gitsee, harvey and gaia
+  steps reach mcp through `ctx.services` with a type-only import, and so
+  do these: `services.stakgraph = { search, getCode }` in
+  `createLabStrut.ts` beside `harvey` and `gaia`, over the two functions
+  `mcp/src/tools/stakgraph` already exports (`search.ts`, `get_code.ts`),
+  the ones `tools.ts` calls.
+- **`stakgraph/search`.** Inline zod input mirroring `SearchSchema`:
+  `query`, `method` (hybrid | fulltext | vector), `node_types`, `limit`,
+  `max_tokens`, `language`, `skip_node_types`, `include_patterns`,
+  `exclude_patterns`. Output: the list mcp returns, one entry per hit —
+  `{ name, node_type, file, lines, ref_id, description }`
+  (`tools.ts:1041-1050`) — marked `withAccessedNodes` with each hit's
+  `ref_id` + `node_type`, so the projector draws the `ACCESSED` edges.
+- **`stakgraph/code`.** Input mirroring `GetCodeSchema` (`GetMapSchema` +
+  `depth`): `ref_id`, or `name` + `node_type`, and `depth` (default 0).
+  Output `{ text }`, the snippets, marked with the node it was asked about.
+- **Names.** `toolNameFor` makes them `stakgraph_search` and
+  `stakgraph_code` — mcp's names, so mcp's tool descriptions and any
+  prompt that cites them carry over unchanged.
+- **`repo-agent.yaml`** (§1) seeded beside `code-change-propose` under
+  `lab/code/`, category `code`. `params.system` is mcp's default system
+  prompt adapted to the tool set: start from Concepts (`graph_graph_search`
+  with type Concept, `graph_graph_get` for docs and key files), read those
+  files, ripgrep from there, `stakgraph_search` / `stakgraph_code` for
+  symbol lookups across repos, `gh` for anything on GitHub. `params.tools`
+  is the list in §1. The graph and workflow modes are later params
+  variants or sibling workflows.
+
+### 7.3 hive: the cutover
+
+- **Target.** `POLICY.repo_agent = "workspace"`
+  (`hive/src/services/strut-target.ts`) — the row `benchmark` uses; the
+  resolver, the row's `swarmId` and every "keep the target a policy" rule
+  of `plans/code-change.md` §5 apply unchanged.
+- **Delegation.** `ensureStrutDelegation` on THAT swarm must not fail
+  silently: today the push is gated per workspace slug by
+  `BIFROST_ENABLED`, never throws, and the dispatcher discards its result,
+  so a workspace swarm that never received the delegation refuses the
+  first LLM call with a Mothership error (the root cause behind
+  stakwork/hive#5345). Either the gate opens for every workspace that has
+  a swarm, or a skipped or failed push fails the tool call with the reason.
+- **The read-only token.** Hive holds only user OAuth tokens today
+  (`getUserAppTokens`, `hive/src/lib/githubApp.ts`; `env.example` has
+  `GITHUB_CLIENT_ID` / `_SECRET` / `GITHUB_APP_SLUG` and no app private
+  key), which are read AND write as the user. The mint is new but small:
+  the app's private key in env, an app JWT, `POST
+  /app/installations/:id/access_tokens { permissions: { contents: read,
+  metadata: read, pull_requests: read, issues: read, checks: read,
+  actions: read }, repositories: [the workspace's] }`. One hour of
+  validity against a ten-minute tool budget, so push-before-dispatch is
+  enough: `ensureStrutActorSecret(target, actor, "GH_TOKEN", token)`, the
+  same push code-change uses for `GITHUB_TOKEN`.
+- **The tool keeps its shape.** `repo_agent` in `askTools.ts` /
+  `askToolsMulti.ts` (one tool per workspace already) swaps endpoints:
+  `POST {lab}/workflows/repo-agent/run { input: { repos, prompt } }` with
+  `x-api-token` + `x-strut-actor` → `202 { runId }`; poll `GET
+  {lab}/workflows/repo-agent/runs/:runId` until the summary exists, on the
+  same 120 × 5 s loop it runs today (`askTools.ts:247-252`); return
+  `output.result`. Abort becomes `POST …/runs/:runId/cancel`. `repos` is
+  the workspace's `Repository` rows. No `StrutRun` row and no callback in
+  this cut; the async shape code-change uses can follow.
+- **Bifrost.** The tool stops sending the Bifrost key / baseUrl / headers:
+  strut routes the call through the swarm's gateway from the delegation.
+
+### 7.4 If the token mint is blocked
+
+Ship without `gh`: drop the GitHub-inspection sentence from the tool's
+description and grant the GET-only `github/api` step of §4.6 instead.
+Never the user's write token in bash.
+
+### 7.5 Deliberately left out
+
+- Multi-turn (§4.1): hive's graph chat stays on mcp's `/repo/agent` until
+  then.
+- Assistant text in the stream (§4.2), cancel mid-generation (§4.3), the
+  context guard (§4.4): a ten-minute read-only run rarely meets them.
+- `stakgraph_map`, semantic code search through strut's `graph/search`
+  (the code family, §4.6): only with evidence from runs.
+- MCP servers, remote sub-agents, attachments (§4.7–4.9): §6 first.
+- The sessions viewer (§4.11): the run log holds everything it needs, so
+  it can come at any time.
+- A `StrutRun` row + callback for repo_agent: when hive wants the tool
+  async.
+
+### 7.6 Validation
+
+- **strut**, offline against the `git/*` tests' local bare fixture: `root`
+  on the output; two repos of the same name under different owners in one
+  run land in distinct dirs and are both removed by `ctx.onRunEnd`;
+  `getRepoMap` over a `<owner>/<name>` layout lists both repos with the
+  two-segment prefix (`agent.test.ts`, no model needed).
+- **mcp**: a smoke (`lab/*/smoke.ts` pattern) running `stakgraph/search`
+  and `stakgraph/code` against a swarm's graph; the seeded workflow run
+  from the strut UI on a swarm with two repos, the events panel showing
+  the checkouts, the graph reads and the stakgraph calls with their
+  `ACCESSED` edges projected.
+- **hive**: `strut-target.test.ts` gains the `repo_agent` row; the tool's
+  unit test against a fake lab (202, then a summary); a dispatch to a
+  workspace whose delegation push is gated fails with the reason instead
+  of dispatching.
+
+## 8. Findings along the way
+
+- Three seeded lab steps value-import mcp code: `gitsee/score-setup`,
+  `gitsee/boot-and-exercise` and `eval/reflect` import `../../cost.js`,
+  and each is in its seeder's list (`mcp/src/lab/gitsee/seed.ts:40,46`,
+  `eval/seed.ts:38`). The lab's own rule forbids it (§7.2), the path cannot
+  resolve from the materialize dir, and strut's loader logs a warning and
+  skips a step whose import fails (`src/steps/registry.ts:172-173`).
+  Unless something not found here copies that module in, those three are
+  silently absent on swarms. Check a lab's boot log.
+- Hive's `repo_agent` tool appends "PLEASE BE AS FAST AS POSSIBLE …" to
+  every prompt (`askTools.ts`); with the model and `maxSteps` in `params`,
+  that belongs in a per-run `params` override, not in the prompt.
+
+## 9. Order
+
+1. **Milestone 1** (§7): strut's three small changes → mcp's services
+   entry, two steps and the YAML → hive's row, the loud push, the token
+   and the tool cutover, behind the existing capability gate.
+2. **§4.1** for hive's graph chat; then **§4.2, §4.3, §4.4** in the step;
+   **§4.5** whenever.
+3. **§4.7, §4.8, §4.9** and **§4.11** wait on §6. **§4.10** when a
+   standalone strut runs this workflow.
