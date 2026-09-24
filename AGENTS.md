@@ -735,7 +735,9 @@ and the child env is scrubbed by construction).
   the 202 carries `callback: true`, the host's proof this server honors
   it. When the run settles strut POSTs, once, `{ event: "run.end",
   workflow, runId, status: "success" | "error" | "cancelled", output?,
-  error?: { message }, durationMs }` — detached from the run's teardown,
+  error?: { message }, transcripts?: [{ step, stepType, url }], durationMs }`
+  — each agent session as a LINK (`GET …/runs/:runId/transcripts/<step
+  path>` serves its bare `messages` array), never inline — detached from the run's teardown,
   with the chat callback's delivery rules (a few retries; a 4xx is the
   host refusing it). The URL is the host's credential: it lives in the
   launch closure and is never persisted — `run.start` records `callback:
@@ -1105,8 +1107,10 @@ and the child env is scrubbed by construction).
   step's `step.end` event as `messages` (`buildSession` + `withMessages`,
   the marker the runner lifts; a sub-agent's rides on its tool-call
   `step.end` the same way), so every agent transcript is in the run log:
-  pull `GET …/runs/:runId/events` and keep the `step.end` events with
-  `stepType: "agent"`. It is NOT in the output — templates, a parent
+  over HTTP, `GET …/runs/:runId/events` (and the SSE `/stream`) replace
+  it with a `transcript` link, `GET …/runs/:runId/transcripts/<step path>`,
+  which serves the bare `messages` array — sessions run to megabytes, and
+  the UI's reattach replays the whole log. It is NOT in the output — templates, a parent
   agent's tool result and `run.json` stay slim — and the builder's
   `get_run` strips it. `returnMessages` (default false) additionally puts
   it in the output, for a fork/sub-agent that needs the transcript as

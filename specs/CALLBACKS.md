@@ -35,6 +35,13 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
   "runId": "1790179200000",
   "status": "success",
   "output": { "summary": "Looks good. Two nits inline." },
+  "transcripts": [
+    {
+      "step": "review-pr/review",
+      "stepType": "agent",
+      "url": "/workflows/review-pr/runs/1790179200000/transcripts/review-pr/review"
+    }
+  ],
   "durationMs": 48213
 }
 ```
@@ -47,6 +54,7 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
 | `status`     | `"success"`, `"error"` or `"cancelled"`                      |
 | `output`     | the workflow's output (its last step's) — on success only    |
 | `error`      | `{ "message": "..." }` — on error only                       |
+| `transcripts`| one link per agent session the run recorded — only when it recorded any (see §3) |
 | `durationMs` | wall time from launch to finish                              |
 
 Reply with any `2xx`. Strut retries a failed delivery a few times over about
@@ -54,15 +62,36 @@ half a minute; a `4xx` reply is taken as "refused" and not retried.
 
 ## 3. Fetch more if you need it
 
-The callback carries the result, not the log. For everything else, use the
-`runId`:
+The callback carries the result, not the log. Agent transcripts can run to
+megabytes each, so it carries **links** to them, never their content. Each
+`transcripts[].url` is relative to the strut you launched on and returns that
+session as a bare JSON array of AI SDK model messages (system prompt, task,
+every turn). You don't have to parse it:
+
+```ts
+import { put } from "@vercel/blob";
+
+for (const t of body.transcripts ?? []) {
+  const res = await fetch(new URL(t.url, STRUT_URL));
+  await put(`runs/${body.runId}/${encodeURIComponent(t.step)}.json`, res.body!, {
+    access: "private",
+    contentType: "application/json",
+  });
+}
+```
+
+`step` is the step's path in the run: `review-pr/review` for a top-level
+agent step, `review-pr/each#2/review` inside a foreach, and
+`review-pr/review/003-agent` for a sub-agent that step called.
+
+For everything else, use the `runId`:
 
 ```bash
 # the run summary (same fields as the callback, plus timestamps)
 curl http://localhost:3000/workflows/review-pr/runs/1790179200000
 
-# the full event log — every step's input/output, and each agent step's
-# complete model transcript in its step.end event's `messages`
+# the full event log: every step's input and output; an agent step's
+# step.end carries a `transcript` link (the same URLs as above)
 curl http://localhost:3000/workflows/review-pr/runs/1790179200000/events
 ```
 

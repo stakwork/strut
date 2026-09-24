@@ -825,7 +825,8 @@ Runs are scoped to workflows. Run IDs are millisecond timestamps.
 | ------ | ----------------------------------------- | ---------------------------------------------- |
 | GET    | `/workflows/:name/runs`                   | List runs for a workflow (newest first)         |
 | GET    | `/workflows/:name/runs/:runId`            | Get run summary (run.json)                      |
-| GET    | `/workflows/:name/runs/:runId/events`     | Get all events as JSON array                    |
+| GET    | `/workflows/:name/runs/:runId/events`     | Get all events as JSON array (agent sessions as `transcript` links) |
+| GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | One agent session: its bare `messages` array |
 
 ### 12.4 Automations
 

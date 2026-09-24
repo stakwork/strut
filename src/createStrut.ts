@@ -752,10 +752,36 @@ export async function createStrut<TServices = unknown>(
     return c.json(partial);
   });
 
+  /** Where one agent session of a run is served (the route below). Relative
+   *  to this server; each path segment encoded (`#` in foreach paths). */
+  const transcriptUrl = (workflow: string, runId: string, stepPath: string): string =>
+    `/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(runId)}/transcripts/` +
+    stepPath.split("/").map(encodeURIComponent).join("/");
+
+  /** An event as the run read endpoints serve it: an agent session (can be
+   *  megabytes) becomes a `transcript` link to fetch, never inline. */
+  const withTranscriptLink = (workflow: string, e: RunEvent) => {
+    if (!e.messages) return e;
+    const { messages: _, ...rest } = e;
+    return { ...rest, transcript: transcriptUrl(workflow, e.runId, e.path) };
+  };
+
   app.get("/workflows/:name/runs/:runId/events", async (c) => {
     const { name, runId } = c.req.param();
     const events = await store.getRunEvents(name, runId);
-    return c.json(events);
+    return c.json(events.map((e) => withTranscriptLink(name, e)));
+  });
+
+  // One agent session from a run, by step path (`wf/review`, a sub-agent's
+  // `wf/review/003-agent`): the `messages` of that path's last `step.end`,
+  // as a bare JSON array. What the run callback's `transcripts` point at, so
+  // a host copies each transcript byte-for-byte without parsing `/events`.
+  app.get("/workflows/:name/runs/:runId/transcripts/:path{.+}", async (c) => {
+    const { name, runId, path } = c.req.param();
+    const events = await store.getRunEvents(name, runId);
+    const end = events.filter((e) => e.type === "step.end" && e.path === path && e.messages).pop();
+    if (!end) return c.json({ error: `No transcript at "${path}" in run "${runId}"` }, 404);
+    return c.json(end.messages);
   });
 
   // Reattach to a run (live or completed) — SSE tail of its event log.
@@ -773,7 +799,7 @@ export async function createStrut<TServices = unknown>(
         // while a live controller exists (§5.2 tail terminality).
         stillLive: () => controllers.has(`${name}/${runId}`),
       })) {
-        await stream.writeSSE({ data: JSON.stringify(event) });
+        await stream.writeSSE({ data: JSON.stringify(withTranscriptLink(name, event)) });
       }
       if (ac.signal.aborted) return;
       const summary = await store.getRunSummary(name, runId);
@@ -1812,19 +1838,42 @@ export async function createStrut<TServices = unknown>(
    *  or dead host holds nothing up, and `postCallback` retries then warns,
    *  never throws. The payload mirrors the run's summary, minus the stack. */
   function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number): void {
-    void postCallback(
-      url,
-      {
-        event: "run.end",
-        workflow,
-        runId: res.runId,
-        status: res.status,
-        ...(res.output !== undefined ? { output: res.output } : {}),
-        ...(res.error ? { error: { message: res.error.message } } : {}),
-        durationMs: Date.now() - launchedAt,
-      },
-      { tag: `[run ${res.runId}] callback run.end` },
-    );
+    const durationMs = Date.now() - launchedAt;
+    void (async () => {
+      const transcripts = await transcriptLinks(workflow, res.runId).catch(() => []);
+      await postCallback(
+        url,
+        {
+          event: "run.end",
+          workflow,
+          runId: res.runId,
+          status: res.status,
+          ...(res.output !== undefined ? { output: res.output } : {}),
+          ...(res.error ? { error: { message: res.error.message } } : {}),
+          ...(transcripts.length ? { transcripts } : {}),
+          durationMs,
+        },
+        { tag: `[run ${res.runId}] callback run.end` },
+      );
+    })();
+  }
+
+  /** Every agent session a run recorded, as links to fetch — never the
+   *  sessions themselves, which can run to megabytes each. `url` is relative
+   *  to this server; one entry per step path (a retried step's last try). */
+  async function transcriptLinks(
+    workflow: string,
+    runId: string,
+  ): Promise<Array<{ step: string; stepType?: string; url: string }>> {
+    const byPath = new Map<string, string | undefined>();
+    for (const e of await store.getRunEvents(workflow, runId)) {
+      if (e.type === "step.end" && e.messages) byPath.set(e.path, e.stepType);
+    }
+    return [...byPath].map(([step, stepType]) => ({
+      step,
+      ...(stepType ? { stepType } : {}),
+      url: transcriptUrl(workflow, runId, step),
+    }));
   }
 
   /** A run body's `callback`, validated; absent or `null` = none. */
