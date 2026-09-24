@@ -15,7 +15,7 @@
 // Only text inside `{{ … }}` counts: prose that happens to say "input.url"
 // (an agent prompt explaining the workflow to itself) is not a reference.
 
-import type { FieldDesc } from "./api";
+import type { FieldDesc, InputFieldDef } from "./api";
 import type { StepData } from "./flow-to-canvas";
 
 export interface InputBinding {
@@ -75,6 +75,24 @@ function* allSteps(steps: StepData[]): Generator<StepData> {
     if (body && typeof body === "object" && typeof body.type === "string") yield* allSteps([body as StepData]);
     if (step.options?.onError) yield* allSteps([step.options.onError]);
   }
+}
+
+/**
+ * The Run popover's fields, taken from a declared `input:` contract rather
+ * than inferred from templates. `kind` is the contract type, so ConfigField
+ * submits a number as a number. Key order is the contract's order.
+ */
+export function bindingsFromContract(contract: Record<string, InputFieldDef>): InputBinding[] {
+  return Object.entries(contract).map(([name, field]) => ({
+    inputKey: name,
+    field: {
+      name,
+      kind: field.type,
+      required: field.required,
+      ...(field.default !== undefined ? { default: field.default } : {}),
+      ...(field.description ? { description: field.description } : {}),
+    },
+  }));
 }
 
 /** Distinct step types in the flow — the schemas the popover wants to fetch. */

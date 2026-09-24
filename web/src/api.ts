@@ -216,9 +216,20 @@ export interface PromoteSpec {
   label?: string;
 }
 
+/** One field of a workflow's declared `input:` contract. `required` is always
+ *  present; `default` and `description` are omitted when the YAML has none. */
+export interface InputFieldDef {
+  type: "string" | "number" | "boolean" | "json";
+  required: boolean;
+  default?: unknown;
+  description?: string;
+}
+
 export interface FlowDef {
   name: string;
   steps: { id: string; type: string; config: Record<string, any>; options?: any }[];
+  /** Declared run inputs. Absent = open input (the caller sends any object). */
+  input?: Record<string, InputFieldDef>;
   /** Tunable default knobs (prompts, thresholds, …), overridable per run. */
   params?: Record<string, unknown>;
   /** Declared "promote a run output → a target param default" mappings. */

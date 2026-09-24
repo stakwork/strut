@@ -2188,6 +2188,10 @@ body.is-resizing-flyout * {
   gap: var(--sp-1);
 }
 .run-popover-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -2195,6 +2199,37 @@ body.is-resizing-flyout * {
   color: var(--text-muted);
   margin-bottom: var(--sp-2);
   flex-shrink: 0;
+}
+.run-popover-raw-toggle {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 1px var(--sp-2);
+  cursor: pointer;
+}
+.run-popover-raw-toggle:hover { border-color: var(--border-strong); }
+.run-popover-raw-toggle:focus-visible { outline: 2px solid var(--accent, var(--border-strong)); outline-offset: 1px; }
+.run-popover-raw {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-2);
+  color: var(--text);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+.run-popover-raw-error {
+  font-size: 12px;
+  color: var(--danger, #c44);
+  margin-top: var(--sp-1);
 }
 /* The scrollable middle: inputs + params. Title and actions stay pinned above
    and below it. `min-height: 0` lets this flex child actually shrink + scroll. */

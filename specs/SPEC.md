@@ -680,7 +680,7 @@ steps:
     depends: [profile, orders]           # waits for both
 ```
 
-YAML workflows accept any input (equivalent to `z.any()`). The engine parses the YAML at load time and constructs a `Flow` object.
+A YAML workflow may declare a top-level `input:` block — the fields a caller sends — parallel to `params:`. Each field has `type` (`string`, `number`, `boolean`, or `json`), `required` (`true` or `false`), and optionally `default` and `description`. A sent value overrides a default; an omitted optional uses its default; a missing required field or a wrong type fails the run before any step, with `Input validation failed`. Extra keys are ignored. A workflow with no `input:` block accepts any object (equivalent to `z.any()`). The contract is what the author wrote — it is never inferred by scanning `{{ input.* }}` templates. `GET /workflows/:name/flow` returns it as `input` when declared, and omits the key otherwise.
 
 #### `params` — tunable defaults (the experiment surface)
 

@@ -38,6 +38,63 @@ describe("validateWorkflowYaml", () => {
   const msgs = (r: ValidationResult) => ({ errors: r.errors.map((e) => e.message), warnings: r.warnings.map((w) => w.message) });
   const has = (xs: string[], re: RegExp) => xs.some((m) => re.test(m));
 
+  it("errors on an invalid input block and warns on an undeclared ref without failing", async () => {
+    const bad = await v(`
+name: bad
+input:
+  n:
+    type: number
+    required: false
+    default: "nope"
+steps:
+  - id: a
+    type: log
+    config: { message: hi }
+`);
+    assert.equal(bad.ok, false);
+    assert.ok(has(bad.errors.map((e) => e.message), /not a number/));
+
+    const warned = await v(`
+name: partial
+input:
+  city:
+    type: string
+    required: true
+steps:
+  - id: top
+    type: log
+    config: { message: "{{ input.city }} {{ input.missing }}" }
+  - id: each
+    type: loop
+    config:
+      until: "false"
+      maxIterations: 1
+      body: { id: body, type: log, config: { message: "{{ input.nested }}" } }
+    options:
+      onError: { id: oops, type: log, config: { message: "{{ input.failed }}" } }
+`);
+    assert.equal(warned.ok, true);
+    assert.deepEqual(
+      warned.warnings.map((w) => [w.path, w.message.includes("missing") || w.message.includes("nested") || w.message.includes("failed")]),
+      [
+        ["steps[0]", true],
+        ["steps[1].config.body", true],
+        ["steps[1].options.onError", true],
+      ],
+    );
+    assert.equal(warned.warnings.some((w) => w.message.includes("city")), false);
+
+    const open = await v(`
+name: open
+steps:
+  - id: a
+    type: log
+    config: { message: "{{ input.anything }}" }
+`);
+    assert.equal(open.ok, true);
+    assert.deepEqual(open.warnings, []);
+  });
+
   it("accepts a well-formed workflow (with if-gate, subflow, loop, onError)", async () => {
     const r = await v(`
 name: good

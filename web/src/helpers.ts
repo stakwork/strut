@@ -2,6 +2,7 @@
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 import { StepData } from "./flow-to-canvas";
+import type { InputFieldDef } from "./api";
 
 /** Normalize a step list so that semantically-equal lists compare equal,
  *  regardless of key order or whether `depends` is a string vs single-item array. */
@@ -57,6 +58,24 @@ export function eventTone(t: string) { return t.includes("error") ? "error" : t.
 export function formatJson(v: unknown): string {
   if (typeof v === "string") return v;
   try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+/** The object the canvas dumps on Publish. `input` is written back when the
+ *  loaded flow declared one, so a steps edit does not drop the contract.
+ *  `promotes` is intentionally not republished here. */
+export function canvasPublishDump(
+  name: string,
+  steps: StepData[],
+  params: Record<string, unknown> | null,
+  input: Record<string, InputFieldDef> | null,
+): { name: string; steps: StepData[]; input?: Record<string, InputFieldDef>; params?: Record<string, unknown> } {
+  const hasParams = params != null && Object.keys(params).length > 0;
+  return {
+    name,
+    steps,
+    ...(input ? { input } : {}),
+    ...(hasParams ? { params } : {}),
+  };
 }
 
 /** Field/param key → space-separated words for display (the CSS uppercases it),

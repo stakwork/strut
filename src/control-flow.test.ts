@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { flow, step, defineStep, type StepRegistry, type RunEvent, type Flow } from "./core.js";
+import { flowFromYaml } from "./workspace.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import ifStep from "./steps/core/if.js";
@@ -996,6 +997,29 @@ describe("subflow step", () => {
     });
     assert.equal(result.status, "success");
     assert.deepEqual(result.output, { received: "hello" });
+  });
+
+  it("a child YAML contract fails the subflow step and does not rewrite the parent error", async () => {
+    const child = flowFromYaml(
+      "child",
+      "v1",
+      "name: child\ninput:\n  city:\n    type: string\n    required: true\nsteps:\n  - id: a\n    type: echo\n    config: {}\n",
+    );
+    const parent = flow("parent", {
+      input: z.object({}),
+      steps: [step("sub", "subflow", { workflow: "child", input: {} })],
+    });
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(parent, {}, makeRegistry(), {
+      runId: "parent-run",
+      store,
+      workspace: makeResolver({ child }),
+    });
+    assert.equal(result.status, "error");
+    assert.ok(!result.error!.message.startsWith("Input validation failed"), result.error!.message);
+    const types = (await store.getRunEvents("parent", "parent-run")).map((e) => e.type);
+    assert.ok(types.includes("run.start"), "the parent run started before the child failed");
+    assert.ok(types.includes("step.error"));
   });
 
   it("child flow validates its own input", async () => {

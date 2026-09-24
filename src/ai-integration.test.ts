@@ -428,6 +428,17 @@ describe("AI list_workflows / get_workflow tools", () => {
     assert.match(edit.error, /unknown root "nope"/);
     assert.equal((await tools.get_workflow.execute({ name: "fine" })).activeVersion, "v1");
 
+    const warned = await tools.create_workflow.execute({
+      name: "contracted",
+      yaml:
+        "name: contracted\ninput:\n  city:\n    type: string\n    required: true\nsteps:\n" +
+        "  - id: a\n    type: echo\n    config: { message: \"{{ input.missing }}\" }\n",
+    });
+    assert.equal(warned.ok, true);
+    assert.equal(warned.warnings.length, 1);
+    assert.match(warned.warnings[0].message, /input\.missing/);
+    assert.equal(warned.warnings[0].path, "steps[0]");
+
     const clean = await tools.edit_workflow.execute({
       name: "fine",
       yaml: "name: fine\nsteps:\n  - id: a\n    type: echo\n    config: { message: y }\n",

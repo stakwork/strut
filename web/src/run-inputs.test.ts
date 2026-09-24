@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveInputBindings, refsInExpr, stepTypesIn } from "./run-inputs";
+import { bindingsFromContract, deriveInputBindings, refsInExpr, stepTypesIn } from "./run-inputs";
+import { seedInputValues, valueMatchesField, valuesMatchingContract } from "./components/RunInputPopover";
+import { recentRunInput } from "./storage";
 import type { FieldDesc } from "./api";
 import type { StepData } from "./flow-to-canvas";
 
@@ -164,6 +166,61 @@ describe("deriveInputBindings", () => {
       { id: "b", type: "pack", config: { y: "{{ input.k || 1 }}", z: ["{{ input.k }}"] } },
     ];
     assert.deepEqual(keys(deriveInputBindings(steps, schemaFor)), ["k"]);
+  });
+
+  it("maps a declared contract to form fields without inferring extras", () => {
+    const bindings = bindingsFromContract({
+      city: { type: "string", required: true, description: "where" },
+      count: { type: "number", required: false, default: 3 },
+      payload: { type: "json", required: true },
+    });
+    assert.deepEqual(
+      bindings.map((b) => [b.inputKey, b.field.kind, b.field.required, b.field.default, b.field.description]),
+      [
+        ["city", "string", true, undefined, "where"],
+        ["count", "number", false, 3, undefined],
+        ["payload", "json", true, undefined, undefined],
+      ],
+    );
+  });
+
+  it("accepts a recent-run value only when it matches the contract type", () => {
+    assert.equal(valueMatchesField("number", 3), true);
+    assert.equal(valueMatchesField("number", "3"), false);
+    assert.equal(valueMatchesField("number", NaN), false);
+    assert.equal(valueMatchesField("boolean", false), true);
+    assert.equal(valueMatchesField("json", { a: [1] }), true);
+    assert.equal(valueMatchesField("string", 1), false);
+
+    const bindings = bindingsFromContract({
+      count: { type: "number", required: false, default: 3 },
+      city: { type: "string", required: true },
+    });
+    const store: Record<string, string> = {};
+    const g = globalThis as { localStorage?: Storage };
+    const prior = g.localStorage;
+    g.localStorage = {
+      getItem: (k) => store[k] ?? null,
+      setItem: (k, v) => {
+        store[k] = v;
+      },
+      removeItem: (k) => {
+        delete store[k];
+      },
+      clear: () => {},
+      key: () => null,
+      length: 0,
+    } as Storage;
+    try {
+      recentRunInput.set("wf", { count: "3", city: "Lima" });
+      const seeded = seedInputValues("wf", bindings, true);
+      assert.equal(seeded.count, 3, "a stale string falls back to the contract default");
+      assert.equal(seeded.city, "Lima");
+      const kept = valuesMatchingContract(bindings, { count: "3" as unknown as number, city: "Lima" });
+      assert.deepEqual(kept, { city: "Lima" });
+    } finally {
+      g.localStorage = prior;
+    }
   });
 
   it("returns nothing for a flow without input references", () => {

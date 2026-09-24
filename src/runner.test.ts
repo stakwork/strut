@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { flow, step, defineStep, withMessages, type Step, type StepRegistry, type RunEvent } from "./core.js";
+import { flowFromYaml } from "./workspace.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import foreachStep from "./steps/core/foreach.js";
@@ -179,6 +180,49 @@ describe("runWorkflow - input validation", () => {
 
     assert.equal(result.status, "error");
     assert.ok(result.error?.message.includes("Input validation failed"));
+  });
+
+  it("a YAML contract fails a missing required field before any step, with no run.start", async () => {
+    const wf = flowFromYaml(
+      "contract",
+      "v1",
+      "name: contract\ninput:\n  city:\n    type: string\n    required: true\nsteps:\n  - id: a\n    type: log\n    config:\n      message: hi\n",
+    );
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(wf, {}, makeRegistry(), { runId: "missing", store });
+    assert.equal(result.status, "error");
+    assert.match(result.error!.message, /^Input validation failed/);
+    const types = eventTypes(store, "contract", "missing");
+    assert.deepEqual(types, ["run.error"]);
+  });
+
+  it("journals the stripped contract input, and a no-block workflow keeps extras", async () => {
+    const declared = flowFromYaml(
+      "contract",
+      "v1",
+      `name: contract
+input:
+  city:
+    type: string
+    required: true
+steps:
+  - id: a
+    type: echo
+    config:
+      seen: "{{ input }}"
+`,
+    );
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(declared, { city: "Lima", extra: 1 }, makeRegistry(), { runId: "stripped", store });
+    assert.equal(result.status, "success", JSON.stringify(result.error));
+    const start = (await store.getRunEvents("contract", "stripped")).find((e) => e.type === "run.start");
+    assert.deepEqual(start?.input, { city: "Lima" });
+
+    const open = flowFromYaml("open", "v1", "name: open\nsteps:\n  - id: a\n    type: echo\n    config:\n      message: hi\n");
+    const kept = await runWorkflow(open, { extra: 1 }, makeRegistry(), { runId: "open", store });
+    assert.equal(kept.status, "success");
+    const openStart = (await store.getRunEvents("open", "open")).find((e) => e.type === "run.start");
+    assert.deepEqual(openStart?.input, { extra: 1 });
   });
 
   it("emits run.error event on input validation failure", async () => {

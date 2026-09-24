@@ -143,6 +143,7 @@ steps:
 
 Rules:
 - "params" (optional, top level) are the workflow's tunable knobs with their defaults — prompts, thresholds, model names, padding/size limits. Reference them as {{ params.name }}. Put anything a user might want to vary between runs there instead of hard-coding it in a step: run_workflow(params) overrides them per run without publishing a version.
+- "input" (optional, top level) DECLARES the run's payload. Each field is { type: string|number|boolean|json, required: true|false, default?, description? }. A missing required field or a wrong type fails the run before any step. A sent value overrides a default. Omit the block to accept any object. Do not invent the block by scanning templates — write only the fields the caller must send. A step that reads {{ input.name }} for a name you did not declare warns at publish and does not fail it.
 - Step ids must be unique, alphanumeric + underscores only.
 - Steps run sequentially by default (each depends on the previous).
 - Use "depends" to control ordering. depends: [] means run immediately (parallel).

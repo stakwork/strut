@@ -9,7 +9,7 @@ import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
 import "./styles/base.css";
 import "./styles/components.css";
-import { deepEqual, normalizeSteps, statusTone } from "./helpers";
+import { canvasPublishDump, deepEqual, normalizeSteps, statusTone } from "./helpers";
 import { load as loadPref, save as savePref } from "./storage";
 import { searchSteps } from "./step-search";
 import { ChatFlyout } from "./components/ChatFlyout";
@@ -30,7 +30,7 @@ import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
-import { deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
+import { bindingsFromContract, deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
 
 // A nested run-execution the user has drilled into. `pathPrefix` is the
 // original event-path prefix this child lives under (e.g. `wf/subflowId`),
@@ -118,6 +118,9 @@ export function App() {
   // a param and publishing = a new workflow version (params live in the YAML).
   const [wfParams, setWfParams] = useState<Record<string, unknown> | null>(null);
   const [localParams, setLocalParams] = useState<Record<string, unknown> | null>(null);
+  // The declared `input:` contract, kept beside params so a canvas publish
+  // writes it back. Null = the loaded workflow declares none (open input).
+  const [localInput, setLocalInput] = useState<api.FlowDef["input"] | null>(null);
   // Which workflow-level flyout is open — the Workflow flyout (params /
   // claims / automations as tabs) or Promote — so they exclude each other by
   // construction. `wfTab` remembers the tab across open/close.
@@ -346,6 +349,7 @@ export function App() {
       setLoadedWf(null);
       setWfParams(null);
       setLocalParams(null);
+      setLocalInput(null);
       setRuns([]);
       setFlyoutStepId(null);
       setFlyoutStepIndex(null);
@@ -358,6 +362,7 @@ export function App() {
       setLoadedWf(selectedWf);
       setWfParams(flow.params ?? null);
       setLocalParams(flow.params ?? null);
+      setLocalInput(flow.input ?? null);
     }).catch(() => {
       setPublishedSteps(null);
       setLocalSteps(null);
@@ -580,6 +585,9 @@ export function App() {
   // run-inputs.ts). A type whose schema fails to load still contributes its
   // refs, as untyped fields.
   const loadInputBindings = useCallback(async (): Promise<InputBinding[]> => {
+    // A declared contract is the form. Do not guess fields from templates —
+    // the automations editor uses this same loader.
+    if (localInput) return bindingsFromContract(localInput);
     if (!localSteps) return [];
     const schemas = new Map<string, api.FieldDesc[]>();
     await Promise.all(
@@ -592,18 +600,21 @@ export function App() {
       }),
     );
     return deriveInputBindings(localSteps, (type) => schemas.get(type));
-  }, [localSteps]);
+  }, [localSteps, localInput]);
 
   const handleRun = useCallback(async () => {
     if (!selectedWf || !localSteps || localSteps.length === 0) return;
     const bindings = await loadInputBindings();
     const hasParams = localParams != null && Object.keys(localParams).length > 0;
-    if (bindings.length === 0 && !hasParams) {
+    // A declared contract always opens the form, even when it lists no
+    // fields — that is how the raw-JSON escape hatch stays reachable.
+    // No contract and nothing inferred: run with an empty input, as before.
+    if (bindings.length === 0 && !hasParams && !localInput) {
       await submitRun({});
     } else {
       setRunBindings(bindings);
     }
-  }, [selectedWf, localSteps, submitRun, localParams, loadInputBindings]);
+  }, [selectedWf, localSteps, submitRun, localParams, localInput, loadInputBindings]);
 
   const handleCreate = useCallback(async (name: string, yamlStr: string, desc: string, category?: string) => {
     // Server auto-suffixes on collision; navigate to the resolved name.
@@ -619,9 +630,8 @@ export function App() {
     // the active version is not the newest, and active+1 would overwrite.
     const nums = (selectedEntry?.versions ?? [activeVersion]).map((v) => parseInt(v.replace(/^v/, ""), 10) || 0);
     const nextVersion = `v${Math.max(0, ...nums) + 1}`;
-    const hasParams = localParams != null && Object.keys(localParams).length > 0;
     const yamlStr = yaml.dump(
-      { name: selectedWf, steps: localSteps, ...(hasParams ? { params: localParams } : {}) },
+      canvasPublishDump(selectedWf, localSteps, localParams, localInput ?? null),
       { lineWidth: 120, noRefs: true },
     );
     await api.publishWorkflowYaml(selectedWf, nextVersion, yamlStr);
@@ -632,7 +642,8 @@ export function App() {
     setLocalSteps(steps);
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
-  }, [selectedWf, selectedEntry, localSteps, localParams, activeVersion, refreshWorkflows]);
+    setLocalInput(flow.input ?? null);
+  }, [selectedWf, selectedEntry, localSteps, localParams, localInput, activeVersion, refreshWorkflows]);
 
   // Roll back (or forward) to a stored version: it becomes what Run,
   // schedules and the canvas use. Nothing is published, so unsaved canvas
@@ -649,6 +660,7 @@ export function App() {
     setLocalSteps(steps);
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
+    setLocalInput(flow.input ?? null);
   }, [selectedWf, isDirty, refreshWorkflows, setViewVersion]);
 
   // Clicking a node (body) always opens its flyout — leaf I/O, or a
@@ -988,6 +1000,7 @@ export function App() {
                   workflow={selectedWf}
                   bindings={runBindings}
                   params={localParams}
+                  contract={localInput != null}
                   onSubmit={submitRun}
                   onClose={() => setRunBindings(null)}
                 />

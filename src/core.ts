@@ -148,10 +148,12 @@ export interface Flow {
   steps: Step[];
   /** Tunable default knobs (prompts, thresholds, sample sizes, …) exposed
    *  to step configs via `{{ params.* }}`. Distinct from `input`: `input`
-   *  is the per-run subject (validated, no defaults); `params` are the
+   *  is the per-run subject (validated against this schema); `params` are the
    *  experiment surface (all defaults, sparsely overridden per run via
-   *  `RunOptions.params`). Override precedence: run override > these
-   *  defaults. Omit for workflows with no knobs. */
+   *  `RunOptions.params`). A YAML `input:` block builds the schema (required
+   *  fields, types, defaults); no block leaves `z.any()`. Override
+   *  precedence for params: run override > these defaults. Omit for
+   *  workflows with no knobs. */
   params?: Record<string, unknown>;
   /** Declared "promote a run output → a target param default" mappings.
    *  Resolved against a run's output by the UI to offer one-click promotion

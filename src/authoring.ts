@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import yaml from "js-yaml";
 import type { RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
@@ -21,6 +22,8 @@ import type { SecretInfo } from "./secret-store.js";
 import { lsSteps, searchSteps, readStepSource } from "./ai/stepHelpers.js";
 import { stepSchemas } from "./ai/schemaHelpers.js";
 import { validateWorkflowYaml, type ValidationResult } from "./validate.js";
+import { undeclaredInputRefs, type UndeclaredInputRef } from "./input-contract.js";
+import { inputContractFromYaml } from "./workspace.js";
 
 /**
  * The AUTHORING core — the workspace's author/test/inspect operations, shared
@@ -62,6 +65,22 @@ export function slimEvent(e: RunEvent) {
 
 /** An agent step's `step.end` carries its whole session (`messages`) — for
  *  the events endpoint and a log store, not for the model's context. */
+/** Undeclared `{{ input.name }}` refs for an authoring publish. No `input:`
+ *  block → none (open input). A block that does not parse → none here; the
+ *  publish already failed on it. Warns do not fail the publish. */
+function inputWarningsOf(source: string): UndeclaredInputRef[] {
+  let contract;
+  try {
+    contract = inputContractFromYaml(source);
+  } catch {
+    return [];
+  }
+  if (!contract) return [];
+  const data = yaml.load(source) as { steps?: unknown } | null;
+  const steps = Array.isArray(data?.steps) ? data.steps : [];
+  return undeclaredInputRefs(steps as never, contract);
+}
+
 function withoutTranscript(e: RunEvent): Omit<RunEvent, "messages"> {
   if (!e.messages) return e;
   const { messages: _transcript, ...rest } = e;
@@ -661,12 +680,18 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           category,
           AI_PUBLISHER,
         );
+        // Same scan validateWorkflowYaml runs: warn, do not fail. An invalid
+        // block already threw inside the publish (flowFromYaml is not called
+        // here — publishWorkflowByContent only checks unquoted templates), so
+        // a bad contract surfaces as the error below, not as a warning.
+        const warnings = inputWarningsOf(yaml);
         return {
           ok: true,
           name,
           version: result.version,
           changed: result.changed,
           created: !entry,
+          ...(warnings.length ? { warnings } : {}),
           ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor), ...(await publishChecks("workflow", name)) } : {}),
         };
       } catch (err) {

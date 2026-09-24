@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
 import { readFile } from "node:fs/promises";
+import yaml from "js-yaml";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,7 +18,14 @@ import {
   generateChatId,
   truncateToolMessages,
 } from "./chat-store.js";
-import { FileWorkspaceStore, type WorkspaceStore } from "./workspace.js";
+import { FileWorkspaceStore, assertValidWorkflowYaml, inputContractFromYaml, type WorkspaceStore } from "./workspace.js";
+import {
+  InputContractError,
+  parseInputContract,
+  undeclaredInputRefs,
+  warnUndeclaredInputRefs,
+  type InputContract,
+} from "./input-contract.js";
 import { buildRegistry } from "./steps/registry.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
 import { resolveModel, listModelOptions, createWebTools, type LlmAuth } from "./llm.js";
@@ -525,6 +533,30 @@ export async function createStrut<TServices = unknown>(
     if (actor) return actor;
     return (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.owner;
   };
+  /** A bad `input:` block (or the unquoted-template check that runs with it)
+   *  is a 400, not an unhandled 500. Other publish failures still propagate. */
+  const isInputPublishError = (err: unknown): boolean =>
+    err instanceof InputContractError ||
+    (err instanceof Error && err.message.startsWith("Workflow YAML has an unquoted template")) ||
+    (err instanceof Error && err.message.startsWith("Invalid workflow YAML"));
+  /** After a successful publish, warn (do not fail) when a step reads an
+   *  `{{ input.name }}` the contract does not declare. The 201 body stays
+   *  `{ ok, workflow, version }` — the web client never reads warnings.
+   *  Logs the step path and the field name only. */
+  const warnPublishedInputRefs = async (name: string, version: string) => {
+    try {
+      const source = await workspace.getWorkflowSource(name, version);
+      const contract = inputContractFromYaml(source);
+      if (!contract) return;
+      const data = yaml.load(source) as { steps?: unknown } | null;
+      const steps = Array.isArray(data?.steps) ? data.steps : [];
+      warnUndeclaredInputRefs(name, undeclaredInputRefs(steps as never, contract));
+    } catch (err) {
+      // A contract that does not parse was already a 400. Anything else
+      // (a missing file) must not turn a successful publish into a 500.
+      if (err instanceof InputContractError) console.warn(`[input] ${name}: ${err.message}`);
+    }
+  };
   /** A workflow with no owner is adopted by the first actor who publishes it. */
   const adoptWorkflow = async (name: string, actor: string | undefined) => {
     if (!actor) return;
@@ -677,6 +709,7 @@ export async function createStrut<TServices = unknown>(
       name: string;
       steps?: any[];
       params?: Record<string, unknown>;
+      input?: InputContract;
       yaml?: string;
       description?: string;
       category?: string;
@@ -685,21 +718,32 @@ export async function createStrut<TServices = unknown>(
     if (!body.name) return c.json({ error: "name is required" }, 400);
 
     let result;
-    if (body.yaml) {
-      result = await workspace.createWorkflow(body.name, body.yaml, body.description, body.category);
-    } else if (body.steps) {
-      result = await workspace.createWorkflow(
-        body.name,
-        { steps: body.steps, ...(body.params != null ? { params: body.params } : {}) },
-        body.description,
-        body.category,
-      );
-    } else {
-      return c.json({ error: "either steps or yaml is required" }, 400);
+    try {
+      if (body.yaml) {
+        assertValidWorkflowYaml(body.yaml);
+        result = await workspace.createWorkflow(body.name, body.yaml, body.description, body.category);
+      } else if (body.steps) {
+        result = await workspace.createWorkflow(
+          body.name,
+          {
+            steps: body.steps,
+            ...(body.params != null ? { params: body.params } : {}),
+            ...("input" in body ? { input: parseInputContract(body.input) } : {}),
+          },
+          body.description,
+          body.category,
+        );
+      } else {
+        return c.json({ error: "either steps or yaml is required" }, 400);
+      }
+    } catch (err) {
+      if (isInputPublishError(err)) return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      throw err;
     }
 
     await adoptWorkflow(result.name, await resolveActor(c));
     await rebuildRegistry();
+    await warnPublishedInputRefs(result.name, result.version);
 
     return c.json(
       {
@@ -1329,9 +1373,14 @@ export async function createStrut<TServices = unknown>(
       const flow = version
         ? await workspace.getWorkflowVersion(name, version)
         : await workspace.getWorkflow(name);
+      // The contract comes off the stored YAML, not the Zod schema: a
+      // declared `json` field and a missing block are the same once unwrapped.
+      const source = await workspace.getWorkflowSource(name, version ?? (await workspace.getWorkflowMetadata(name))!.active);
+      const input = inputContractFromYaml(source);
       return c.json({
         name: flow.name,
         steps: flow.steps,
+        ...(input != null ? { input } : {}),
         ...(flow.params != null ? { params: flow.params } : {}),
         ...(flow.promotes != null ? { promotes: flow.promotes } : {}),
       });
@@ -1359,27 +1408,39 @@ export async function createStrut<TServices = unknown>(
       version: string;
       steps?: any[];
       params?: Record<string, unknown>;
+      input?: InputContract;
       yaml?: string;
       description?: string;
     }>();
 
     if (!body.version) return c.json({ error: "version is required" }, 400);
 
-    if (body.yaml) {
-      await workspace.publishWorkflow(name, body.version, body.yaml, body.description);
-    } else if (body.steps) {
-      await workspace.publishWorkflow(
-        name,
-        body.version,
-        { steps: body.steps, ...(body.params != null ? { params: body.params } : {}) },
-        body.description,
-      );
-    } else {
-      return c.json({ error: "either steps or yaml is required" }, 400);
+    try {
+      if (body.yaml) {
+        assertValidWorkflowYaml(body.yaml);
+        await workspace.publishWorkflow(name, body.version, body.yaml, body.description);
+      } else if (body.steps) {
+        await workspace.publishWorkflow(
+          name,
+          body.version,
+          {
+            steps: body.steps,
+            ...(body.params != null ? { params: body.params } : {}),
+            ...("input" in body ? { input: parseInputContract(body.input) } : {}),
+          },
+          body.description,
+        );
+      } else {
+        return c.json({ error: "either steps or yaml is required" }, 400);
+      }
+    } catch (err) {
+      if (isInputPublishError(err)) return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      throw err;
     }
 
     await adoptWorkflow(name, await resolveActor(c));
     await rebuildRegistry();
+    await warnPublishedInputRefs(name, body.version);
 
     return c.json({ ok: true, workflow: name, version: body.version, active: body.version }, 201);
   });

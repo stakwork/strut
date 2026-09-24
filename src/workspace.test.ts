@@ -4,7 +4,7 @@ import { readFile, rm, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { WorkspaceManager } from "./workspace.js";
+import { flowFromYaml, inputContractFromYaml, WorkspaceManager } from "./workspace.js";
 
 const SAMPLE_YAML = `name: deploy
 steps:
@@ -23,6 +23,34 @@ const SAMPLE_STEPS = [
   { id: "kick", type: "http", config: { url: "/deploy", method: "POST" } },
   { id: "done", type: "log", config: { message: "deployed" } },
 ];
+
+describe("flowFromYaml input contract", () => {
+  const yaml = (input: string) => `name: t\n${input}steps:\n  - id: a\n    type: log\n    config:\n      message: "{{ input.city }}"\n`;
+
+  it("builds a schema only when the block is present, and does not scan steps", () => {
+    const open = flowFromYaml("t", "v1", yaml(""));
+    assert.deepEqual(open.input.parse({ anything: 1 }), { anything: 1 });
+
+    const declared = flowFromYaml("t", "v1", yaml("input:\n  city:\n    type: string\n    required: true\n"));
+    assert.equal(declared.input.safeParse({}).success, false);
+    assert.deepEqual(declared.input.parse({ city: "Lima", extra: true }), { city: "Lima" });
+  });
+
+  it("uses an omitted optional's default and lets a sent value override it", () => {
+    const flow = flowFromYaml(
+      "t",
+      "v1",
+      yaml("input:\n  city:\n    type: string\n    required: false\n    default: Paris\n"),
+    );
+    assert.deepEqual(flow.input.parse({}), { city: "Paris" });
+    assert.deepEqual(flow.input.parse({ city: "Lima" }), { city: "Lima" });
+  });
+
+  it("fails a wrong type", () => {
+    const flow = flowFromYaml("t", "v1", yaml("input:\n  n:\n    type: number\n    required: true\n"));
+    assert.equal(flow.input.safeParse({ n: "3" }).success, false);
+  });
+});
 
 describe("WorkspaceManager", () => {
   let tempDir: string;
@@ -217,6 +245,48 @@ steps:
       const src = await ws.getWorkflowSource("knobs", "v1");
       assert.match(src, /params:/);
       assert.match(src, /systemPrompt/);
+    });
+
+    it("round-trips an input contract through a steps-form publish and load", async () => {
+      const input = {
+        city: { type: "string" as const, required: true, description: "where" },
+        count: { type: "number" as const, required: false, default: 3 },
+        payload: { type: "json" as const, required: false },
+      };
+      await ws.publishWorkflow("contract", "v1", { steps: SAMPLE_STEPS, input });
+
+      const src = await ws.getWorkflowSource("contract", "v1");
+      assert.deepEqual(inputContractFromYaml(src), input);
+      assert.equal("default" in inputContractFromYaml(src)!.payload, false);
+
+      const flow = await ws.getWorkflow("contract");
+      assert.deepEqual(flow.input.parse({ city: "Lima" }), { city: "Lima", count: 3 });
+      assert.equal(flow.input.safeParse({}).success, false);
+      // Unknown keys are stripped; a no-block workflow still keeps them.
+      assert.deepEqual(flow.input.parse({ city: "Lima", extra: 1 }), { city: "Lima", count: 3 });
+    });
+
+    it("keeps z.any() — extras included — when the workflow declares no input block", async () => {
+      await ws.publishWorkflow("open", "v1", { steps: SAMPLE_STEPS });
+      const flow = await ws.getWorkflow("open");
+      assert.equal(inputContractFromYaml(await ws.getWorkflowSource("open", "v1")), null);
+      assert.deepEqual(flow.input.parse({ extra: 1, city: "Lima" }), { extra: 1, city: "Lima" });
+    });
+
+    it("rejects an invalid input block at publish, before it can hide the workflow", async () => {
+      const bad = `name: bad
+input:
+  city:
+    type: date
+    required: true
+steps:
+  - id: a
+    type: log
+    config:
+      message: hi
+`;
+      await assert.rejects(() => ws.publishWorkflow("bad", "v1", bad), /invalid type/);
+      await assert.rejects(() => ws.getWorkflow("bad"), /not found/);
     });
 
     it("omits params on the Flow when the workflow declares none", async () => {
@@ -720,6 +790,17 @@ params:
       });
       const flow = await ws.getWorkflow("opt");
       assert.deepEqual(flow.promotes, [{ from: "bestPrompt", to: "target.system" }]);
+    });
+
+    it("setParam preserves a declared input contract", async () => {
+      await ws.publishWorkflow("target", "v1", {
+        steps: [{ id: "run", type: "log", config: { message: "{{ input.city }}" } }],
+        input: { city: { type: "string", required: true } },
+        params: { system: "old" },
+      });
+      await ws.setParam("target", "system", "new");
+      const src = await ws.getWorkflowSource("target", "v2");
+      assert.deepEqual(inputContractFromYaml(src), { city: { type: "string", required: true } });
     });
 
     it("setParam overwrites one param + publishes the next version", async () => {

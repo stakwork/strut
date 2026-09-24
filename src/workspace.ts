@@ -10,6 +10,12 @@ import type { SubflowResolver } from "./runner.js";
 import { readStepSourceFromDisk, type StepSource } from "./steps/registry.js";
 import { contentHash, nextVersionLabel } from "./version.js";
 import { evaluateExpr } from "./expr.js";
+import {
+  InputContractError,
+  inputSchemaFromContract,
+  parseInputContract,
+  type InputContract,
+} from "./input-contract.js";
 
 // Match a `{{ params.<path> }}` reference (and ONLY a params reference) so we can
 // resolve param-to-param references at load time without touching `{{ input.* }}`
@@ -50,6 +56,11 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
         `e.g. pull_number: "{{ input.pull_number }}".`,
     );
   }
+  // A declared `input:` block must already be valid here. getWorkflow maps
+  // any load throw to 404, so a typo that reaches disk hides the workflow.
+  // Publish is the first place it fails; load re-checks with the same rules.
+  const data = parsed as { input?: unknown } | null;
+  if (data && typeof data === "object" && "input" in data) parseInputContract(data.input);
 }
 
 /**
@@ -89,7 +100,9 @@ function resolveParamSelfReferences(params: Record<string, unknown>): Record<str
 
 /** Parse a stored workflow version's YAML into a runnable `Flow` — the one
  *  loader every `WorkspaceStore` backend shares (param self-references are
- *  resolved once here, at load). */
+ *  resolved once here, at load). A declared `input:` block becomes the Zod
+ *  schema the runner parses; absent, the flow keeps `z.any()` (open input).
+ *  The contract is never inferred from step templates. */
 export function flowFromYaml(name: string, version: string, raw: string): Flow {
   const data = yaml.load(raw) as any;
   if (!data || !data.steps) {
@@ -97,7 +110,7 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
   }
   return {
     name: data.name ?? name,
-    input: z.any(),
+    input: data.input != null ? inputSchemaFromContract(parseInputContract(data.input)) : z.any(),
     steps: data.steps,
     // Resolve param-to-param references (`{{ params.* }}` nested inside another
     // param) once at load, so a shared value can be factored into one knob.
@@ -106,18 +119,34 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
   };
 }
 
+/** The `input:` block on a stored workflow version, read off the parsed YAML
+ *  (not the Zod schema — a declared `json` field and a missing block are
+ *  indistinguishable once unwrapped). Null when the version declares none. */
+export function inputContractFromYaml(raw: string): InputContract | null {
+  const data = yaml.load(raw) as { input?: unknown } | null;
+  if (!data || typeof data !== "object" || !("input" in data)) return null;
+  return parseInputContract(data.input);
+}
+
+/** What a steps-form publish carries. `input` is the declared contract; omit
+ *  it and the published YAML has no `input:` block (open input). */
+export interface WorkflowContent {
+  steps: any[];
+  params?: Record<string, unknown>;
+  promotes?: unknown[];
+  input?: InputContract;
+}
+
 /** Render publish content (a steps object or raw YAML) to the YAML string
  *  that gets stored — shared by every backend so hashes agree. */
-export function renderWorkflowYaml(
-  name: string,
-  content: { steps: any[]; params?: Record<string, unknown>; promotes?: unknown[] } | string,
-): string {
+export function renderWorkflowYaml(name: string, content: WorkflowContent | string): string {
   return typeof content === "string"
     ? content
     : yaml.dump(
         {
           name,
           steps: content.steps,
+          ...(content.input != null ? { input: content.input } : {}),
           ...(content.params != null ? { params: content.params } : {}),
           ...(content.promotes != null ? { promotes: content.promotes } : {}),
         },
@@ -269,7 +298,7 @@ export interface WorkspaceStore extends SubflowResolver {
   getWorkflowMetadata(name: string): Promise<WorkflowMetadata | null>;
   createWorkflow(
     name: string,
-    content: { steps: any[]; params?: Record<string, unknown> } | string,
+    content: WorkflowContent | string,
     description?: string,
     category?: string,
     publisher?: string,
@@ -277,7 +306,7 @@ export interface WorkspaceStore extends SubflowResolver {
   publishWorkflow(
     name: string,
     version: string,
-    content: { steps: any[]; params?: Record<string, unknown>; promotes?: unknown[] } | string,
+    content: WorkflowContent | string,
     description?: string,
     category?: string,
     publisher?: string,
@@ -447,7 +476,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
    */
   async createWorkflow(
     name: string,
-    content: { steps: any[]; params?: Record<string, unknown> } | string,
+    content: WorkflowContent | string,
     description?: string,
     category?: string,
     publisher?: string,
@@ -480,7 +509,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   async publishWorkflow(
     name: string,
     version: string,
-    content: { steps: any[]; params?: Record<string, unknown>; promotes?: unknown[] } | string,
+    content: WorkflowContent | string,
     description?: string,
     category?: string,
     publisher?: string,

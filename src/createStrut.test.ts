@@ -510,6 +510,151 @@ describe("createStrut", () => {
     assert.equal(body.unattributed, 0);
   });
 
+  it("returns a declared input contract on the flow, and omits it when absent", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    const contract = {
+      city: { type: "string", required: true, description: "where" },
+      count: { type: "number", required: false, default: 3 },
+      payload: { type: "json", required: true },
+    };
+    await ws.publishWorkflow("contracted", "v1", {
+      steps: [{ id: "g", type: "log", config: { message: "{{ input.city }}" } }],
+      input: contract,
+    });
+    await ws.publishWorkflow("contracted", "v2", {
+      steps: [{ id: "g", type: "log", config: { message: "no contract" } }],
+    });
+    await ws.publishWorkflow("open", "v1", {
+      steps: [{ id: "g", type: "log", config: { message: "{{ input.city }}" } }],
+    });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false });
+
+    const active = await strut.app.request("/workflows/contracted/flow?version=v1");
+    assert.equal(active.status, 200);
+    const v1 = (await active.json()) as { input?: Record<string, unknown>; params?: unknown };
+    assert.deepEqual(v1.input, contract);
+    assert.equal("params" in v1, false);
+    // A declared json field is its own shape, not a missing block.
+    assert.deepEqual(v1.input!.payload, { type: "json", required: true });
+    assert.equal("default" in (v1.input!.payload as object), false);
+    assert.equal("description" in (v1.input!.city as object), true);
+
+    const current = (await (await strut.app.request("/workflows/contracted/flow")).json()) as { input?: unknown };
+    assert.equal("input" in current, false);
+
+    const open = (await (await strut.app.request("/workflows/open/flow")).json()) as { input?: unknown };
+    assert.equal("input" in open, false);
+  });
+
+  it("fails a contract run before any step and returns 400 for an invalid input block", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    await ws.publishWorkflow("needs", "v1", {
+      steps: [{ id: "g", type: "log", config: { message: "hi" } }],
+      input: { city: { type: "string", required: true } },
+    });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false });
+
+    const result = await strut.run("needs", {});
+    assert.equal(result.status, "error");
+    assert.match(result.error!.message, /^Input validation failed/);
+    const events = await strut.store.getRunEvents("needs", result.runId);
+    assert.deepEqual(events.map((e) => e.type), ["run.error"]);
+
+    const sent = await strut.run("needs", { city: "Lima", extra: 1 });
+    assert.equal(sent.status, "success");
+    const start = (await strut.store.getRunEvents("needs", sent.runId)).find((e) => e.type === "run.start");
+    assert.deepEqual(start?.input, { city: "Lima" });
+
+    const bad = await strut.app.request("/workflows", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "broken",
+        yaml: "name: broken\ninput:\n  __proto__:\n    type: string\n    required: true\nsteps:\n  - id: g\n    type: log\n    config:\n      message: hi\n",
+      }),
+    });
+    assert.equal(bad.status, 400);
+    const body = (await bad.json()) as { error: string };
+    assert.match(body.error, /not allowed/);
+    // The bad block never landed, so the flow route is a not-found, not a hidden workflow.
+    const hidden = await strut.app.request("/workflows/broken/flow");
+    assert.equal(hidden.status, 404);
+
+    const mismatch = await strut.app.request("/workflows/needs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: "v2",
+        steps: [{ id: "g", type: "log", config: { message: "hi" } }],
+        input: { n: { type: "number", required: false, default: "nope" } },
+      }),
+    });
+    assert.equal(mismatch.status, 400);
+    assert.match(((await mismatch.json()) as { error: string }).error, /not a number/);
+  });
+
+  it("warns on an undeclared input ref without failing the publish", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false });
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      const res = await strut.app.request("/workflows", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "partial",
+          yaml:
+            "name: partial\ninput:\n  city:\n    type: string\n    required: true\nsteps:\n" +
+            "  - id: top\n    type: log\n    config:\n      message: \"{{ input.city }} {{ input.missing }}\"\n" +
+            "  - id: each\n    type: loop\n    config:\n      until: \"false\"\n      maxIterations: 1\n" +
+            "      body:\n        id: body\n        type: log\n        config:\n          message: \"{{ input.nested }}\"\n" +
+            "    options:\n      onError:\n        id: oops\n        type: log\n        config:\n          message: \"{{ input.failed }}\"\n",
+        }),
+      });
+      assert.equal(res.status, 201, await res.clone().text());
+      const body = (await res.json()) as { ok: boolean; warnings?: unknown };
+      assert.equal(body.ok, true);
+      assert.equal("warnings" in body, false);
+    } finally {
+      console.warn = orig;
+    }
+    const logged = warnings.filter((w) => w.includes("[input]"));
+    assert.equal(logged.length, 3);
+    assert.ok(logged.some((w) => w.includes("steps[0]") && w.includes('"missing"')));
+    assert.ok(logged.some((w) => w.includes("steps[1].config.body") && w.includes('"nested"')));
+    assert.ok(logged.some((w) => w.includes("steps[1].options.onError") && w.includes('"failed"')));
+    for (const w of logged) {
+      assert.equal(w.includes("where"), false);
+      assert.equal(w.includes("{{"), false);
+    }
+  });
+
+  it("round-trips an input contract through a steps-object publish", async () => {
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      store: new MemoryRunStore(),
+      serveUi: false,
+      enableChat: false,
+    });
+    const input = { city: { type: "string", required: true } };
+    const res = await strut.app.request("/workflows", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "kept",
+        steps: [{ id: "g", type: "log", config: { message: "hi" } }],
+        input,
+      }),
+    });
+    assert.equal(res.status, 201);
+    const flow = (await (await strut.app.request("/workflows/kept/flow")).json()) as { input?: unknown };
+    assert.deepEqual(flow.input, input);
+  });
+
   it("launches a run detached over HTTP, returning a runId immediately", async () => {
     const ws = new WorkspaceManager(tempDir);
     await ws.publishWorkflow("echo-flow", "v1", {

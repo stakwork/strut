@@ -17,6 +17,7 @@ import { walkSteps } from "./closure.js";
 import type { Step, StepRegistry } from "./core.js";
 import { TemplateError, exprRoots, hasTemplates, templateExprs } from "./expr.js";
 import { assertValidWorkflowYaml } from "./workspace.js";
+import { InputContractError, parseInputContract, undeclaredInputRefs } from "./input-contract.js";
 
 export interface ValidationIssue {
   /** Where: `steps[2].config.url`, `steps[0].depends`, … */
@@ -88,7 +89,6 @@ export function validateWorkflowYaml(source: string, opts: ValidateOptions): Val
   if (data.params != null && (typeof data.params !== "object" || Array.isArray(data.params))) {
     errors.push({ path: "params", message: "`params` must be a mapping of knob → default." });
   }
-
   const steps = data.steps as Step[];
   const ids = new Set<string>();
 
@@ -167,6 +167,24 @@ export function validateWorkflowYaml(source: string, opts: ValidateOptions): Val
       extraRoots: [],
     });
   });
+
+  // A declared contract is validated here so a typo fails at publish, not
+  // later as a 404 from getWorkflow. No block → open input, no warning.
+  // An undeclared `{{ input.name }}` warns and does not fail the publish —
+  // the contract is never inferred by scanning templates.
+  if ("input" in data) {
+    try {
+      const contract = parseInputContract(data.input);
+      for (const ref of undeclaredInputRefs(steps, contract)) {
+        warnings.push({ path: ref.path, message: ref.message });
+      }
+    } catch (e) {
+      errors.push({
+        path: "input",
+        message: e instanceof InputContractError || e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
 
   return done(data.name, steps);
 

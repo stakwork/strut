@@ -131,6 +131,14 @@ describe("authoring capability (the meta surface)", () => {
 
   it("publishWorkflow stamps publisher 'ai'; run + run-history are closed over the stamped set", async () => {
     // Candidate: published through the meta surface → stamped.
+    const undeclared = (await authoring.publishWorkflow(
+      "cand-contract",
+      "name: cand-contract\ninput:\n  city:\n    type: string\n    required: true\nsteps:\n  - id: say\n    type: log\n    config:\n      message: \"{{ input.missing }}\"\n",
+    )) as any;
+    assert.equal(undeclared.ok, true);
+    assert.equal(undeclared.warnings.length, 1);
+    assert.match(undeclared.warnings[0].message, /input\.missing/);
+
     const pub = (await authoring.publishWorkflow("cand-flow", logFlow("cand-flow", "v1"))) as any;
     assert.equal(pub.ok, true, JSON.stringify(pub));
     assert.equal(pub.version, "v1");
