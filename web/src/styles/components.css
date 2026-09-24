@@ -415,6 +415,20 @@ body.is-resizing-events * {
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+.badge-pin {
+  background: rgba(245, 197, 107, 0.15);
+  color: #f5c56b;
+  margin-left: var(--sp-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  vertical-align: middle;
+}
+.flyout-field-note {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
 .badge-accent {
   background: rgba(110, 168, 255, 0.15);
   color: var(--accent);

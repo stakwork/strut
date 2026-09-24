@@ -716,7 +716,12 @@ and the child env is scrubbed by construction).
   (stats, claims, colors are pin-blind); the executed version is
   `step.start.stepVersion: { version, hash }`, the twin of
   `step.start.subflow`, which verify prefers over `run.start.stepHashes`
-  (still "what was active at launch"). `closure.types` strips pins.
+  (still "what was active at launch"). `closure.types` strips pins. **UI:**
+  a pinned node shows a pin in its bottom-right corner (`renderPinIndicator`,
+  header = the bare type); the step editor (`StepEditFlyout`) has a
+  **Version** select for custom steps — *Active (vN)* writes a bare type,
+  *vN — pinned* writes `type@vN` for THIS workflow's step only (a workflow
+  edit → Publish), with a note when the pin differs from the active version.
 
 - **Custom steps are loaded as `.ts` via dynamic `import()`**
   (`registry.ts:loadStepFile`), so the **host process must run with a
