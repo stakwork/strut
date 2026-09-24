@@ -979,16 +979,18 @@ export default defineStep({
     const costOf = (u: TokenUsage) => computeSessionCost(resolved.provider, usageForCost(u), resolved.modelId);
 
     // Web tools — web_search + web_fetch on EVERY provider (aieo: native on
-    // anthropic; Exa search + guarded HTTP fetch elsewhere). Built here, not
-    // with the other built-ins, because the native ones need the resolved
-    // key. Subject to toolFilter like any built-in, and the shims get the
-    // same mask + emit wrapping so their calls show up as run events (the
-    // native ones have no execute and are skipped by both wrappers).
+    // anthropic; Exa search + guarded HTTP fetch elsewhere — and everywhere
+    // when the call is routed through a gateway, see createWebTools). Built
+    // here, not with the other built-ins, because the native ones need the
+    // resolved key. Subject to toolFilter like any built-in, and the shims
+    // get the same mask + emit wrapping so their calls show up as run events
+    // (the native ones have no execute and are skipped by both wrappers).
     const web = await createWebTools({
       provider: resolved.provider,
       apiKey: resolved.apiKey,
       secrets: (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets,
       searchMaxUses: 3,
+      routed: resolved.routed,
     });
     const webTools: Record<string, any> = {};
     for (const [name, t] of Object.entries(web.tools)) {

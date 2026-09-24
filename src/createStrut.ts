@@ -2117,7 +2117,8 @@ export async function createStrut<TServices = unknown>(
           // deployment default, key via the secrets boundary. Everything
           // provider-shaped keys off the RESOLVED provider: the web tools
           // (web_search + web_fetch — native on anthropic, Exa/HTTP shims
-          // elsewhere) and the output cap (without which the SDK's 4096
+          // elsewhere, and the shims everywhere when the call is routed
+          // through a gateway) and the output cap (without which the SDK's 4096
           // default truncates a create_step call MID-JSON). A missing key
           // throws here and lands in the stream as chat.error, naming it.
           const meta = await chatStore.getMeta(chatId);
@@ -2136,6 +2137,7 @@ export async function createStrut<TServices = unknown>(
             apiKey: llm.apiKey,
             secrets: secretsCap,
             searchMaxUses: 5,
+            routed: llm.routed,
           });
 
           const deps = {

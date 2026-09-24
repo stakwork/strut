@@ -4,23 +4,28 @@
  * up`. strut there holds NO provider keys, so everything passing here went
  * through the gateway. Opt-in: `STRUT_TEST_GATEWAY=1 npm run test:gateway`.
  *
- * Checks: (a) an Anthropic chat turn that calls the native web_fetch,
- * (b) a workflow run with an agent step (web_fetch + bash) and an llm step,
- * (c) an xai chat turn (OpenAI-compatible route), (d) the gateway's log has
- * the calls under their session dims (the workflow name, the chat id).
+ * Checks: (a) an Anthropic chat turn that calls web_fetch, (a2) one that
+ * calls web_search and then another tool — so the model's NEXT request
+ * carries the search in its history, (b) a workflow run with an agent step
+ * (web_fetch + bash) and an llm step, (c) an xai chat turn (OpenAI-compatible
+ * route), (d) the gateway's log has the calls under their session dims (the
+ * workflow name, the chat id).
  *
- * Negative control: point the compose's gateway at a transports/v1.6.2 build
- * and set STRUT_TEST_GATEWAY_EXPECT_BROKEN=1 — (a) must then die with
- * `Type validation failed: Value: {"type":"content_block_start"…` (a headless
- * frame from Bifrost's re-rendered Anthropic stream); (c) must still pass.
- * (b) is only reported: the agent step skips the bad chunk and succeeds.
+ * Routed through a gateway, strut never uses Anthropic's server-executed web
+ * tools (`createWebTools({ routed })` → aieo's Exa + HTTP shims), because
+ * Bifrost cannot re-render their `server_tool_use` blocks faithfully — so
+ * this passes on every gateway build. To probe a gateway's handling of the
+ * native tools directly, without strut in the way: scripts/gateway-stream.mts
+ * (`webfetch` dies on a v1.6.2 build, `websearch-tool` on v2.2.2 and upstream
+ * latest).
  *
  * Env: STRUT_URL (http://localhost:3000), GATEWAY_URL (http://localhost:8181,
  * as this script sees it), GATEWAY_INNER_URL (http://gateway:8181, as strut
  * sees it — what the delegation records), STRUT_API_KEY (strut-dev-key),
  * BIFROST_ADMIN_USER/PASS (admin / bifrost-dev-password),
  * STRUT_TEST_GATEWAY_MODEL (claude-sonnet-5), STRUT_TEST_GATEWAY_XAI_MODEL
- * (xai/grok-4.7; "off" skips c).
+ * (xai/grok-4.7; "off" skips c). (a2) needs EXA_API_KEY in ./.env — the
+ * compose overlay hands it to strut.
  */
 import { randomBytes } from "node:crypto";
 import { mintDelegation } from "../src/test-util/mint-delegation.js";
@@ -38,7 +43,6 @@ const KEY = env("STRUT_API_KEY", "strut-dev-key");
 const ADMIN = "Basic " + Buffer.from(`${env("BIFROST_ADMIN_USER", "admin")}:${env("BIFROST_ADMIN_PASS", "bifrost-dev-password")}`).toString("base64");
 const MODEL = env("STRUT_TEST_GATEWAY_MODEL", "claude-sonnet-5");
 const XAI_MODEL = env("STRUT_TEST_GATEWAY_XAI_MODEL", "xai/grok-4.7");
-const EXPECT_BROKEN = process.env["STRUT_TEST_GATEWAY_EXPECT_BROKEN"] === "1";
 
 const tag = Date.now().toString(36);
 const ACTOR = `smoke-${tag}`;
@@ -102,13 +106,6 @@ const errorsOf = (events: Ev[]) =>
     .filter((e) => e.type === "chat.error" || e.type === "run.error" || e.type === "step.error" || e.status === "error")
     .map((e) => JSON.stringify(e.error ?? e));
 
-/** Assert a turn/run died of THE bug; print the whole error so it is recognisable. */
-function expectBug(name: string, events: Ev[]) {
-  const errs = errorsOf(events);
-  for (const e of errs) console.log(`    ${e}`);
-  check(`${name} fails with the headless content_block_start frame`, errs.some((e) => e.includes("Type validation failed") && e.includes("content_block_start")), errs.length ? "" : "no error at all");
-}
-
 // ── setup ──────────────────────────────────────────────────────────────────
 
 await waitFor(`${GATEWAY}/v1/models`, (s) => s === 200 || s === 401, "gateway");
@@ -151,19 +148,36 @@ await json(
   }),
   "PUT delegation",
 );
-console.log(`actor ${ACTOR}, workflow ${WORKFLOW}, gateway ${GATEWAY_INNER} (from strut)${EXPECT_BROKEN ? " — EXPECTING THE v1.6.2 BUG" : ""}`);
+console.log(`actor ${ACTOR}, workflow ${WORKFLOW}, gateway ${GATEWAY_INNER} (from strut)`);
 
 const FETCH_PROMPT =
   "Use your web_fetch tool on https://example.com/ (do not guess, do not use any other tool) and reply with the page's <title> text only.";
 
-// ── (a) anthropic chat turn with native web_fetch ──────────────────────────
+// ── (a) anthropic chat turn with web_fetch (routed: aieo's HTTP shim) ──────
 
 const a = await chatTurn(MODEL, FETCH_PROMPT);
-if (EXPECT_BROKEN) expectBug("(a) anthropic chat", a.events);
-else {
+{
   const errs = errorsOf(a.events);
   check("(a) anthropic chat: web_fetch called", a.events.some((e) => e.type === "tool-input" && e.toolName === "web_fetch"));
   check("(a) anthropic chat: ends with chat.end, no chat.error", a.events.some((e) => e.type === "chat.end") && !errs.length, errs.join(" | "));
+}
+
+// ── (a2) anthropic chat: web_search, then another tool ─────────────────────
+// The swarm38 turn of 2026-09-24: with Anthropic's native web_search the
+// model's NEXT request carries the search as a `server_tool_use` block, which
+// the gateway re-renders WITHOUT its `input` → 400 `server_tool_use.input:
+// Field required`, chat.error. Routed, strut offers the Exa shim instead — a
+// plain tool call the gateway forwards untouched.
+
+const a2 = await chatTurn(
+  MODEL,
+  "Use your web_search tool to find the capital of Australia. Then call your list_steps tool once. Then reply with the city in one word.",
+);
+{
+  const errs = errorsOf(a2.events);
+  check("(a2) anthropic chat: web_search called (needs EXA_API_KEY in ./.env)", a2.events.some((e) => e.type === "tool-input" && e.toolName === "web_search"));
+  check("(a2) anthropic chat: a tool call after the search", a2.events.some((e) => e.type === "tool-input" && e.toolName === "list_steps"));
+  check("(a2) anthropic chat: ends with chat.end, no chat.error", a2.events.some((e) => e.type === "chat.end") && !errs.length, errs.join(" | "));
 }
 
 // ── (b) workflow: agent (web_fetch + bash) → llm ───────────────────────────
@@ -193,20 +207,15 @@ const { runId } = await json(
   "launch run",
 );
 const b = await sse(`${STRUT}/workflows/${WORKFLOW}/runs/${runId}/stream`);
-if (EXPECT_BROKEN) {
-  // Not asserted: the agent step drains its stream with consumeStream, which
-  // skips an unparseable chunk instead of failing, so on v1.6.2 the run still
-  // succeeds (without that frame's block). Only the chat turn dies of it.
-  const errs = errorsOf(b);
-  console.log(`  (b) under the bug: run ${b.some((e) => e.type === "run.end") ? "ended ok" : "failed"}${errs.length ? ` — ${errs[0]}` : ""}`);
-} else {
+{
   const end = b.find((e) => e.type === "step.end" && e.path === `${WORKFLOW}/research`);
   const result = String(end?.output?.result ?? "");
   const errs = errorsOf(b);
   check("(b) run: run.end, no errors", b.some((e) => e.type === "run.end") && !errs.length, errs.join(" | "));
   check("(b) run: agent's tool:bash step event", b.some((e) => e.type === "step.end" && e.stepType === "tool:bash"));
-  // Anthropic's web_fetch is provider-executed (no `execute`), so it gets no
-  // tool:* run event — the fetched title in the result is the proof.
+  // Routed, web_fetch is aieo's HTTP shim — a client tool, so it gets a
+  // tool:* run event like bash (Anthropic's own would not: no `execute`).
+  check("(b) run: agent's tool:web_fetch step event", b.some((e) => e.type === "step.end" && e.stepType === "tool:web_fetch"));
   check("(b) run: agent fetched the page", /example domain/i.test(result), JSON.stringify(result).slice(0, 120));
   const llm = b.find((e) => e.type === "step.end" && e.path === `${WORKFLOW}/summarize`);
   check("(b) run: llm step answered", /example domain/i.test(String(llm?.output?.text ?? "")));
@@ -233,6 +242,7 @@ for (let i = 0; i < 10; i++) {
 }
 check(`(d) gateway log: session ${WORKFLOW}`, logs.includes(WORKFLOW));
 check(`(d) gateway log: chat session ${a.chatId}`, logs.includes(a.chatId));
+check(`(d) gateway log: chat session ${a2.chatId}`, logs.includes(a2.chatId));
 if (cChat) check(`(d) gateway log: chat session ${cChat}`, logs.includes(cChat));
 
 if (failures.length) {

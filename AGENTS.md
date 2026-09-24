@@ -207,13 +207,20 @@ docker compose -f docker-compose.yml -f docker-compose.gateway.yml up --build
 STRUT_TEST_GATEWAY=1 npm run test:gateway   # scripts/gateway-smoke.ts: VK + minted
   # delegation, then an anthropic chat with web_fetch, an agent+llm run, an xai
   # chat, and the calls in the gateway log under their session dims
-# Negative control — a v1.6.2 build (stakgraph before the v2.2.2 bump, tagged
-# stakgraph-gateway:v1.6.2), whose re-rendered Anthropic stream drops web_fetch
-# blocks: the chat dies with `Type validation failed … content_block_start`
-# (the agent step skips the bad chunk and survives):
+# The gateway mangles Anthropic's SERVER-EXECUTED tools (Bifrost re-renders
+# both directions): v2.2.2 and upstream latest drop `server_tool_use.input`
+# from a web_search already in the history, so the model's next request is a
+# 400 (`…server_tool_use.input: Field required`); v1.6.2 (tagged
+# stakgraph-gateway:v1.6.2) emitted headless `content_block_start` frames for
+# web_fetch. So a ROUTED call never uses them — `createWebTools({ routed })`
+# hands out aieo's Exa + HTTP shims, plain tool calls the gateway forwards
+# untouched — and the smoke test passes on every build. Probe a gateway's
+# native handling directly, with strut's tools but no strut server (a few
+# times: a search the model routes through code execution keeps its query):
+VK=… npx tsx scripts/gateway-stream.mts http://localhost:8181 sonnet websearch-tool
+# Swap in another gateway build without rebuilding it:
 GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
   -f docker-compose.gateway.yml up -d --no-deps --no-build gateway
-STRUT_TEST_GATEWAY=1 STRUT_TEST_GATEWAY_EXPECT_BROKEN=1 npm run test:gateway
 
 # Debugging the gateway path:
 #  - dashboard http://localhost:8181 (admin / bifrost-dev-password);
@@ -228,8 +235,11 @@ STRUT_TEST_GATEWAY=1 STRUT_TEST_GATEWAY_EXPECT_BROKEN=1 npm run test:gateway
 #  - raw frames, no AI SDK: scripts/gateway-raw-sse.sh <base> <body.json>
 #    (VK=… for the gateway's /anthropic, ANTHROPIC_API_KEY direct)
 #  - through aieo + strut's real tools, printing part counts or the full
-#    TypeValidationError: npx tsx scripts/gateway-stream.mts <baseUrl|direct> \
-#      <model> <text|tool|thinking|editor|websearch|webfetch>   (VK=… for a gateway)
+#    error (a TypeValidationError names the bad frame; an APICallError the
+#    rejected request): npx tsx scripts/gateway-stream.mts <baseUrl|direct> \
+#      <model> <text|tool|thinking|editor|websearch|webfetch|websearch-tool|webfetch-tool>
+#    (VK=… for a gateway; the `-tool` cases make a SECOND request carrying the
+#    native tool's block in history — the request-path round trip)
 ```
 
 ## Environment
@@ -252,7 +262,7 @@ STRUT_TEST_GATEWAY=1 STRUT_TEST_GATEWAY_EXPECT_BROKEN=1 npm run test:gateway
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
 | `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
-| `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder); anthropic uses its native tool. Store or env, like provider keys |
+| `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
@@ -414,6 +424,13 @@ verifier — the TS mirror of the gateway's Go one. The default server builds it
 `STRUT_MOTHERSHIP=1`; `docker-compose.gateway.yml` + `npm run test:gateway`
 run the whole path locally (see "Running"). A chat's model pick is validated
 through the same hook, so a strut behind the gateway needs no provider keys.
+A routed call (`ResolvedModel.routed`: the grant carried a `baseUrl`) never
+uses Anthropic's server-executed web tools — `createWebTools` hands out
+aieo's Exa + HTTP shims instead, because Bifrost drops `server_tool_use.input`
+on the request path (2026-09-24, swarm38: every builder turn that searched
+and then called a tool died with `…server_tool_use.input: Field required`).
+So a swarm behind the gateway needs `EXA_API_KEY` for `web_search`; without
+it the builder and the agent step have `web_fetch` only.
 
 ## Lib step credentials
 
@@ -893,7 +910,8 @@ and the child env is scrubbed by construction).
   `createWebSearch`/`createWebFetch` — native on anthropic, an Exa-backed
   search (`EXA_API_KEY`, store or env) and a guarded HTTP fetch elsewhere;
   `createWebTools` in `src/llm.ts`, shared with the agent step) and the
-  output-token cap.
+  output-token cap. Routed through a gateway (`ResolvedModel.routed`), the
+  shims serve every provider — see "Mothership cost control".
   `GET /llm/models` lists aieo's aliases with per-provider availability
   (never values) plus the default; the step editor offers the same
   catalog as a datalist on `model` fields whose Zod schema carries
@@ -1122,8 +1140,9 @@ and the child env is scrubbed by construction).
   files, sandboxed to `cwd` (the anthropic provider-defined text-editor
   tool, with a generic-`tool()` fallback for other providers; pure handler
   `textEdit()` is unit-tested offline); + `web_search` + `web_fetch` on
-  every provider (aieo: native on anthropic; elsewhere an Exa-backed search
-  that needs `EXA_API_KEY` and a guarded HTTP fetch — no key); +
+  every provider (aieo: native on anthropic; elsewhere — and everywhere when
+  routed through a gateway — an Exa-backed search that needs `EXA_API_KEY`
+  and a guarded HTTP fetch — no key); +
   `file_summary`, an AST structural summary that's only registered when the
   `stakgraph` CLI is on PATH), filterable via `toolFilter`, and returns one
   of three shapes: a
@@ -1325,7 +1344,11 @@ such a change end to end:
 1. `docker compose -f docker-compose.yml -f docker-compose.gateway.yml up --build`
 2. `STRUT_TEST_GATEWAY=1 npm run test:gateway`: add a check to
    `scripts/gateway-smoke.ts` that exercises the new tool (a chat turn or a
-   workflow run that calls it) instead of only running the existing ones.
+   workflow run that calls it) instead of only running the existing ones. A
+   provider-executed tool must also survive the REQUEST path: have the turn
+   call another tool afterwards, so the next request carries the tool's
+   block through the gateway (`websearch-tool` in `gateway-stream.mts` is the
+   shape; a routed strut avoids the native pair for exactly this reason).
 3. When a stream fails, narrow it down without strut in the way:
    `scripts/gateway-stream.mts` (aieo + strut's real tools, prints the full
    TypeValidationError), then `scripts/gateway-raw-sse.sh` (raw frames), each

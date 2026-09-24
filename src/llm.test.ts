@@ -148,6 +148,22 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.ok("web_search" in oenv.tools, "env Exa key through the same boundary");
   });
 
+  it("createWebTools: routed through a gateway → the shims on anthropic too, never the server-executed pair", async () => {
+    // Bifrost cannot round-trip a `server_tool_use` block (the next request
+    // is a 400 `server_tool_use.input: Field required`), so a routed call
+    // gets ordinary client tools: the HTTP fetch, and Exa search iff keyed.
+    const r = await createWebTools({ provider: "anthropic", apiKey: "k", routed: true });
+    assert.deepEqual(Object.keys(r.tools), ["web_fetch"], "no Exa key → no web_search; the native one is not a fallback");
+    assert.equal(typeof r.tools["web_fetch"].execute, "function", "the HTTP shim, not Anthropic's web_fetch");
+
+    const re = await createWebTools({ provider: "anthropic", apiKey: "k", routed: true, secrets: await withStore({ EXA_API_KEY: "exa-secret" }) });
+    assert.deepEqual(Object.keys(re.tools).sort(), ["web_fetch", "web_search"]);
+    assert.equal(typeof re.tools["web_search"].execute, "function", "the Exa shim");
+
+    const direct = await createWebTools({ provider: "anthropic", apiKey: "k", routed: false });
+    assert.equal(direct.tools["web_search"].execute, undefined, "called directly, the native pair as before");
+  });
+
   it("the agent and llm steps' `model` field is marked for the model catalog", () => {
     for (const step of [agent, llm]) {
       const f = zodToFields(step.input).find((x) => x.name === "model");
@@ -193,6 +209,11 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     assert.deepEqual(seen, [{ kind: "step", provider: "openai", runId: "r1", workflow: "wf", stepPath: "wf/s", principal: "alice" }]);
     assert.equal(r.apiKey, "vk-user", "the grant's key, not the store's");
     assert.equal(r.provider, "openai");
+    assert.equal(r.routed, true, "a baseUrl in the grant = the call goes through a gateway");
+
+    // A grant that only re-keys the call (no baseUrl) still calls the provider directly.
+    const keyed = await resolveModel({ model: "gpt", secrets, llmAuth: async () => ({ apiKey: "vk-user" }), auth: { kind: "step" } });
+    assert.equal(keyed.routed, false);
   });
 
   it("`undefined` from the hook means the provider is called directly, with the boundary's key", async () => {
@@ -201,6 +222,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const secrets = secretsCapability(store, { envFallback: process.env });
     const r = await resolveModel({ model: "gpt", secrets, llmAuth: async () => undefined, auth: { kind: "step", runId: "r1" } });
     assert.equal(r.apiKey, "from-store");
+    assert.equal(r.routed, false);
   });
 
   it("no `auth` context → the hook is never consulted (a call site that opted out)", async () => {

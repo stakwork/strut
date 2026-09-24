@@ -85,6 +85,10 @@ export interface ResolvedModel {
    *  mid-JSON), with strut's `STRUT_MAX_OUTPUT_TOKENS` override on top. An
    *  infra constant, never step/workflow config. */
   maxOutputTokens: number;
+  /** True when an `llmAuth` grant sent this call through a gateway (it
+   *  returned a `baseUrl`). `createWebTools` reads it: a routed call never
+   *  uses Anthropic's server-executed web tools (see `routed` there). */
+  routed: boolean;
 }
 
 /** Name → everything a caller needs to run. Throws on an unknown provider,
@@ -118,6 +122,7 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
     model: grant?.explainError ? await explaining(r.model, grant.explainError) : r.model,
     contextLimit: r.contextLimit,
     maxOutputTokens: strutOutputCap() ?? r.maxOutputTokens,
+    routed: !!grant?.baseUrl,
   };
 }
 
@@ -262,24 +267,40 @@ export async function createWebTools(opts: {
   /** Max `web_fetch` calls per run (aieo default 5). */
   fetchMaxUses?: number;
   abortSignal?: AbortSignal;
+  /** The call goes through a gateway (`ResolvedModel.routed`): aieo's
+   *  client-side shims on every provider — Exa search (`EXA_API_KEY`, else
+   *  no `web_search`) and the guarded HTTP fetch — never Anthropic's
+   *  server-executed pair. Those ride the request and the stream as
+   *  `server_tool_use` blocks the gateway must re-render faithfully, and
+   *  ours (Bifrost) does not: the v2.2.2 build drops `server_tool_use.input`
+   *  from a web_search already in the history, so the model's NEXT request
+   *  is a 400 (`…server_tool_use.input: Field required`) and the chat turn
+   *  dies; the v1.6.2 build emitted headless `content_block_start` frames
+   *  for web_fetch. A shim is an ordinary tool call, forwarded untouched.
+   *  Probe a gateway's native handling with scripts/gateway-stream.mts
+   *  (`websearch-tool`, `webfetch`); lift this once it passes. */
+  routed?: boolean;
 }): Promise<WebTools> {
   const aieo = await import("aieo");
-  // The Exa key only matters where the search shim runs (everything but
-  // anthropic, whose tool is native) — don't touch the secret store otherwise.
+  // The Exa key only matters where the search shim runs (routed, or
+  // everything but anthropic, whose tool is native) — don't touch the secret
+  // store otherwise.
   const searchApiKey =
-    aieo.resolveSearchBackend(opts.provider) === "exa"
+    opts.routed || aieo.resolveSearchBackend(opts.provider) === "exa"
       ? await opts.secrets?.get("EXA_API_KEY")
       : undefined;
   const ws = aieo.createWebSearch({
     provider: opts.provider,
     apiKey: opts.apiKey,
     searchApiKey,
+    ...(opts.routed ? { backend: "exa" as const } : {}),
     maxUses: opts.searchMaxUses,
     abortSignal: opts.abortSignal,
   });
   const wf = aieo.createWebFetch({
     provider: opts.provider,
     apiKey: opts.apiKey,
+    ...(opts.routed ? { backend: "http" as const } : {}),
     maxUses: opts.fetchMaxUses,
     abortSignal: opts.abortSignal,
   });

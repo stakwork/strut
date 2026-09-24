@@ -42,6 +42,10 @@ services:
       STRUT_SECRET_KEY: ${STRUT_SECRET_KEY:-strut-dev-secret-key}
       STRUT_MOTHERSHIP: "1"
       STRUT_MOTHERSHIP_REQUIRED: "1"
+      # Not a provider key: the search shim calls Exa directly (never an LLM
+      # call), and a routed call uses it in place of Anthropic's web_search
+      # (createWebTools `routed`). Interpolated from ./.env; empty = no search.
+      EXA_API_KEY: ${EXA_API_KEY:-}
     volumes:
       # Its own workspace, so no secrets.json from the plain compose (which
       # may hold pasted provider keys) is in reach.
