@@ -3,6 +3,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerStrutResolver } from "../strut-resolver.js";
 import type { AnyStepDef, StepRegistry } from "../core.js";
+import { parseStepRef } from "../step-ref.js";
 
 /** Where a registered step type came from. */
 export type StepSource = "core" | "lib" | "custom";
@@ -15,6 +16,79 @@ export type StepSources = Record<string, StepSource>;
 export interface RegistryBundle {
   registry: StepRegistry;
   sources: StepSources;
+}
+
+/** Where a PINNED step version's importable source lives, and the content
+ *  hash of that version — `WorkspaceStore.materializeStepVersion`. */
+export type StepVersionLoader = (name: string, version: string) => Promise<{ path: string; hash: string }>;
+
+export interface ResolvedStep {
+  def: AnyStepDef;
+  /** Set when the reference pinned a version (`type@vN`): the label and the
+   *  content hash of the version that will run. */
+  version?: string;
+  hash?: string;
+}
+
+/** The registry's pin support, hung on the registry record as a
+ *  NON-ENUMERABLE property: `Object.keys(registry)` (the /steps listing,
+ *  `agentTools` globs) never sees it, and a registry built without a loader
+ *  (an in-code `createRegistry`, a test fake) simply cannot pin. */
+const PINS: unique symbol = Symbol.for("strut.pins");
+interface Pins {
+  load: StepVersionLoader;
+  cache: Map<string, Promise<ResolvedStep>>;
+}
+type PinnableRegistry = StepRegistry & { [PINS]?: Pins };
+
+/**
+ * Look a step reference up: a bare type is the registry entry (the active
+ * version, as always); `type@vN` loads that version through the registry's
+ * loader — once per registry, cached forever, since a published version is
+ * immutable. Null when the bare type is unknown. A pin the registry cannot
+ * honor (no loader, a core/lib type, a version that does not exist) THROWS
+ * with the reason — silently running the active version instead would be
+ * exactly the substitution a pin exists to prevent.
+ */
+export async function resolveStep(registry: StepRegistry, ref: string): Promise<ResolvedStep | null> {
+  const { type, version } = parseStepRef(ref);
+  if (!version) {
+    const def = registry[ref];
+    return def ? { def } : null;
+  }
+  const pins = (registry as PinnableRegistry)[PINS];
+  if (!pins) throw new Error(`Cannot pin "${ref}": this registry has no step versions (only workspace custom steps are versioned)`);
+  let pending = pins.cache.get(ref);
+  if (!pending) {
+    pending = (async () => {
+      const { path, hash } = await pins.load(type, version);
+      const def = await importStepDef(path);
+      // Also answer a plain `registry["type@vN"]` from now on (still hidden
+      // from `Object.keys`): the sync lookups — validate, the agent's tool
+      // building — see a pin that has been resolved once.
+      Object.defineProperty(registry, ref, { value: def, enumerable: false, configurable: true });
+      return { def, version, hash };
+    })();
+    pins.cache.set(ref, pending);
+    // A failed load is not cached: a version published a moment later loads.
+    pending.catch(() => pins.cache.delete(ref));
+  }
+  return pending;
+}
+
+/** Give a registry a version loader (see `resolveStep`). */
+export function withStepVersions(registry: StepRegistry, sources: StepSources, load: StepVersionLoader): StepRegistry {
+  registerStrutResolver(); // an archived version `import "strut"`s like an active one
+  const pins: Pins = {
+    cache: new Map(),
+    load: async (name, version) => {
+      const tier = sources[name];
+      if (tier && tier !== "custom") throw new Error(`Cannot pin "${name}@${version}": "${name}" is a ${tier} step, which has no versions`);
+      return load(name, version);
+    },
+  };
+  Object.defineProperty(registry, PINS, { value: pins, enumerable: false, configurable: true });
+  return registry;
 }
 
 // ── Built-in core steps (always available) ─────────────────────────────────
@@ -175,6 +249,16 @@ async function loadStepFile(filePath: string): Promise<AnyStepDef | null> {
   }
 }
 
+/** Import a step file, throwing on failure — for a PINNED version, whose
+ *  load error is the step's error (the discovery loader above stays quiet:
+ *  a broken active step simply doesn't exist). */
+async function importStepDef(filePath: string): Promise<AnyStepDef> {
+  const mod = await import(pathToFileURL(filePath).href);
+  const def = mod.default ?? mod;
+  if (def && typeof def === "object" && "type" in def && "run" in def) return def as AnyStepDef;
+  throw new Error(`${filePath}: no valid default export — expected \`export default defineStep({ type, input, output, run })\``);
+}
+
 /**
  * Import a step file the way registry discovery does, but return the failure
  * as a MESSAGE instead of a console warning. `null` means the file imports
@@ -219,7 +303,7 @@ export async function stepLoadError(filePath: string): Promise<string | null> {
  * Returns both the registry and a parallel `sources` map so callers can
  * report which tier each step came from without guessing from the name.
  */
-export async function buildRegistry(customDir?: string): Promise<RegistryBundle> {
+export async function buildRegistry(customDir?: string, opts?: { loadVersion?: StepVersionLoader }): Promise<RegistryBundle> {
   // Custom steps `import "strut"`; make that resolve to this strut wherever the workspace lives.
   registerStrutResolver();
   const registry: StepRegistry = { ...CORE_STEPS };
@@ -234,6 +318,9 @@ export async function buildRegistry(customDir?: string): Promise<RegistryBundle>
   if (customDir) {
     await loadStepsFrom(customDir, registry, sources, "custom");
   }
+
+  // `type@vN` references resolve through the workspace's version archive.
+  if (opts?.loadVersion) withStepVersions(registry, sources, opts.loadVersion);
 
   return { registry, sources };
 }

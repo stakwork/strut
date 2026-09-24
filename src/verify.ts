@@ -121,7 +121,8 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
       };
     }
     if (CONTAINER_STEPS.has(type)) return null;
-    const version = start.stepHashes[type];
+    // A pinned step ran the version on its own start event, not the active one.
+    const version = start.event.stepVersion?.hash ?? start.stepHashes[type];
     return {
       subject: { kind: "step", type },
       ...(version ? { version } : {}),

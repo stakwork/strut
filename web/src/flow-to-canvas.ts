@@ -1,4 +1,5 @@
 import { createElement } from "preact";
+import { baseType } from "./step-ref";
 import type {
   CanvasData,
   CanvasNode,
@@ -425,7 +426,8 @@ export function flowToCanvas(
     const s = steps[i]!;
     const pos = nodePositions.get(s.id)!;
     const stepPath = `${flow.name}/${s.id}`;
-    const category = `step-${STEP_COLORS[s.type] ? s.type : "default"}`;
+    const bare = baseType(s.type); // a pinned `type@vN` keeps its type's color; the header shows the pin
+    const category = `step-${STEP_COLORS[bare] ? bare : "default"}`;
     const status = stepStatus(stepPath, runEvents);
 
     const w = s.type === "loop" ? NODE_W + 40 : NODE_W;

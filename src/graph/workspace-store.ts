@@ -617,6 +617,25 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     return v.source;
   }
 
+  /** Written once beside the active-step scratch dir (its own root, so the
+   *  active materialization's sweep never removes it); a version's source
+   *  never changes, so an existing file is the file. */
+  async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string }> {
+    validateStepName(name);
+    const v = (await this.stepVersionRows(name)).find((x) => x.version_label === version);
+    if (!v) throw new Error(`Version "${version}" of step "${name}" not found`);
+    const dir = `${this.materializeDir}-versions`;
+    await ensureEsmScope(dir);
+    const path = join(dir, name, `${version}.ts`);
+    try {
+      await readFile(path, "utf-8");
+    } catch {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, v.source, "utf-8");
+    }
+    return { path, hash: v.content_hash };
+  }
+
   // ── Writes: steps ──────────────────────────────────────────────────────
 
   async publishStep(

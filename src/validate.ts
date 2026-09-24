@@ -15,6 +15,7 @@
 import yaml from "js-yaml";
 import { walkSteps } from "./closure.js";
 import type { Step, StepRegistry } from "./core.js";
+import { parseStepRef } from "./step-ref.js";
 import { TemplateError, exprRoots, hasTemplates, templateExprs } from "./expr.js";
 import { assertValidWorkflowYaml } from "./workspace.js";
 
@@ -187,9 +188,13 @@ export function validateWorkflowYaml(source: string, opts: ValidateOptions): Val
       errors.push({ path: `${p}.type`, message: "`type` is required." });
       return;
     }
-    const def = opts.registry[s.type];
+    // A pin (`type@vN`) is checked by its bare type here — whether the
+    // version exists is the registry's call, at run time (a sync check
+    // cannot load it; `registry["type@vN"]` answers once it has been run).
+    const ref = parseStepRef(s.type);
+    const def = opts.registry[s.type] ?? opts.registry[ref.type];
     if (!def) {
-      errors.push({ path: `${p}.type`, message: `Unknown step type "${s.type}" (call search_steps / list_steps; author it with create_step if it doesn't exist).` });
+      errors.push({ path: `${p}.type`, message: `Unknown step type "${ref.type}" (call search_steps / list_steps; author it with create_step if it doesn't exist).` });
       return;
     }
     const config = (s.config ?? {}) as Record<string, unknown>;

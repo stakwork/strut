@@ -1,4 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
+import { baseType } from "../step-ref";
 import * as api from "../api";
 import { StepData } from "../flow-to-canvas";
 import { ConfigField } from "./ConfigField";
@@ -52,7 +53,7 @@ export function StepEditFlyout(props: {
   useEffect(() => {
     setClaims(null);
     setClaimsOpen(false);
-    api.getClaims({ kind: "step", name: props.step.type })
+    api.getClaims({ kind: "step", name: baseType(props.step.type) })
       .then((r) => {
         setClaims(r);
         // A to-do or a refutation should not hide behind a collapsed row.
@@ -259,7 +260,7 @@ export function StepEditFlyout(props: {
               </button>
               {claimsOpen && (
                 <div class="flyout-toggle-body">
-                  <ClaimsPanel subject={{ kind: "step", name: props.step.type }} onOpenRun={props.onOpenRun} onLoaded={setClaims} />
+                  <ClaimsPanel subject={{ kind: "step", name: baseType(props.step.type) }} onOpenRun={props.onOpenRun} onLoaded={setClaims} />
                 </div>
               )}
             </div>

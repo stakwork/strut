@@ -210,11 +210,17 @@ export interface RunEvent {
   workflowHash?: string;
   /** Content hash of the ACTIVE version of every workspace (custom) step
    *  this run can execute, keyed by step type — recorded on `run.start`, and
-   *  again on `run.resumed` (a resume loads whatever is active THEN). A
-   *  workflow version does not pin its steps, so this is the ONLY record of
-   *  which step version a run executed; without an entry, the verify pass
-   *  writes no evidence for that step (plans/claims.md §3–§4). */
+   *  again on `run.resumed` (a resume loads whatever is active THEN). A bare
+   *  `type` runs the active version, so for those steps this is the ONLY
+   *  record of which version a run executed; a PINNED step (`type@vN`)
+   *  records its own on `step.start.stepVersion` instead. Without either,
+   *  the verify pass writes no evidence for that step (plans/claims.md
+   *  §3–§4). */
   stepHashes?: Record<string, string>;
+  /** On a PINNED step's `step.start` (`type: name@vN`, src/step-ref.ts):
+   *  the version label and the content hash of the version that ran. The
+   *  step twin of `subflow` below; `stepType` stays the bare type. */
+  stepVersion?: { version: string; hash: string };
   /** Cassette mode the run executed under, on `run.start`; absent = live. A
    *  `replay` run is a unit test against a fixture: real evidence, weaker
    *  than live. */

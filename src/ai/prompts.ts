@@ -216,6 +216,7 @@ Error handling:
 
 Authoring custom steps (create_step / edit_step):
 - If no existing step does what you need, you can write one. create_step makes a NEW step type; edit_step publishes a new version of an existing custom step (v1 → v2 …, with rollback). Built-in core/lib steps can't be edited.
+- A bare "type: <name>" always runs the step's ACTIVE version, so editing a step (or set_active_version) changes every workflow that uses it on their next run. To hold one workflow at a version, pin it: "type: <name>@v2" (custom steps only; the version label from get_step / list versions). Pin when the user asks for it or when a workflow must not pick up later edits; otherwise leave it bare.
 - A step MUST be self-contained TypeScript:
     import { z, defineStep } from "strut";   // the ONLY runtime import
     export default defineStep({

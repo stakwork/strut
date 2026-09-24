@@ -39,6 +39,7 @@ strut/
 │   ├── core.ts            # flow(), step(), defineStep(), services bag, all types
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
+│   ├── step-ref.ts        # `type: name@vN` — a PINNED custom-step version (parseStepRef / baseType); a bare type runs the active version. Events keep the bare `stepType`; the pin rides on `step.start.stepVersion`
 │   ├── runner.ts          # execution engine: DAG (topological), retry, onError, control flow, journal replay
 │   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md)
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation
@@ -114,7 +115,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1116 unit tests across 62 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1139 unit tests across 63 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -164,7 +165,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1094 tests, ~4s
+npm test                    # 1139 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -678,6 +679,26 @@ and the child env is scrubbed by construction).
   Endpoints: `GET /steps/:type/versions`, `GET /steps/:type/version/:version`,
   `PUT /steps/:type/active`. Versioning is disabled when the registry
   is injected at construction time.
+
+- **A workflow runs a step's ACTIVE version unless it pins one**
+  (`src/step-ref.ts`). `type: clip/shout` follows the active pointer, so
+  `edit_step` / `PUT /steps/:type/active` changes every workflow that
+  names it on their next run — and rolling a WORKFLOW version back never
+  rolls a step back. `type: clip/shout@v1` holds that workflow at v1 (custom
+  steps only; the `vN` label, never a hash; `@` is reserved in step names).
+  The registry stays a flat record of active defs: `resolveStep(registry,
+  ref)` loads a pin through the loader `buildRegistry(customDir, {
+  loadVersion })` hangs on the registry (`WorkspaceStore.materializeStepVersion`
+  — the `_history` archive on files, a `-versions` scratch dir on the graph),
+  cached per registry (a version is immutable), and a pin the registry
+  cannot honor THROWS before the step starts — never a silent fallback to
+  active. Every lookup site goes through it (runner, `agentTools` grants,
+  `run_step`, `get_step`, `/steps/:type/schema` + `/source` — so the step
+  editor's form is the pinned shape). Events carry the bare `stepType`
+  (stats, claims, colors are pin-blind); the executed version is
+  `step.start.stepVersion: { version, hash }`, the twin of
+  `step.start.subflow`, which verify prefers over `run.start.stepHashes`
+  (still "what was active at launch"). `closure.types` strips pins.
 
 - **Custom steps are loaded as `.ts` via dynamic `import()`**
   (`registry.ts:loadStepFile`), so the **host process must run with a

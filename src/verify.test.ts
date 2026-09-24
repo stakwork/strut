@@ -46,6 +46,20 @@ describe("subjectsOfRun", () => {
     });
   });
 
+  it("a pinned step's subject version is its step.start.stepVersion, not the active hash on run.start", () => {
+    const events = [
+      ev("run.start", "wf", { stepHashes: { "clip/fetch": "active" } }),
+      ev("step.start", "wf/old", { stepType: "clip/fetch", input: {}, stepVersion: { version: "v1", hash: "pinned" } }),
+      ev("step.end", "wf/old", { stepType: "clip/fetch", output: 1 }),
+      ev("step.start", "wf/now", { stepType: "clip/fetch", input: {} }),
+      ev("step.end", "wf/now", { stepType: "clip/fetch", output: 2 }),
+      ev("run.end", "wf", { output: null }),
+    ];
+    const [old, now] = subjectsOfRun("wf", events);
+    assert.deepEqual([old!.subject, old!.version], [{ kind: "step", type: "clip/fetch" }, "pinned"]);
+    assert.deepEqual([now!.subject, now!.version], [{ kind: "step", type: "clip/fetch" }, "active"]);
+  });
+
   it("a foreach yields one subject per iteration; containers and agent tool calls yield none", () => {
     const events = [
       ev("run.start", "wf", { stepHashes: { "clip/cut": "ccc" } }),
