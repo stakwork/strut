@@ -1,5 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { baseType, formatStepRef, parseStepRef } from "../step-ref";
+import { dependsForSave } from "../step-depends";
 import * as api from "../api";
 import { StepData } from "../flow-to-canvas";
 import { ConfigField } from "./ConfigField";
@@ -132,7 +133,8 @@ export function StepEditFlyout(props: {
       config: cleanConfig,
       options: props.step.options,
     };
-    if (depends.length > 0) updated.depends = depends;
+    const savedDepends = dependsForSave(props.step.depends, depends);
+    if (savedDepends) updated.depends = savedDepends;
     // Only persist `when` if there's a gate dep
     if (when != null && hasGateDep) updated.when = when;
     props.onSave(updated);
@@ -140,7 +142,8 @@ export function StepEditFlyout(props: {
 
   // Build YAML preview
   const previewObj: Record<string, any> = { id, type: typeRef, config };
-  if (depends.length > 0) previewObj.depends = depends;
+  const previewDepends = dependsForSave(props.step.depends, depends);
+  if (previewDepends) previewObj.depends = previewDepends;
   if (when != null && hasGateDep) previewObj.when = when;
   const yamlPreview = yaml.dump(previewObj, { lineWidth: 120, noRefs: true });
 
