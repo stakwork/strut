@@ -38,6 +38,14 @@ describe("validateWorkflowYaml", () => {
   const msgs = (r: ValidationResult) => ({ errors: r.errors.map((e) => e.message), warnings: r.warnings.map((w) => w.message) });
   const has = (xs: string[], re: RegExp) => xs.some((m) => re.test(m));
 
+  it("errors on an invalid input block", async () => {
+    const bad = await v("name: bad\ninput:\n  n: { type: number, default: x }\nsteps:\n  - id: a\n    type: echo\n    config: { message: hi }\n");
+    assert.equal(bad.ok, false);
+    assert.ok(has(bad.errors.map((e) => e.message), /default "x" is not a number/));
+    const good = await v("name: good\ninput:\n  url: { type: string }\nsteps:\n  - id: a\n    type: echo\n    config: { message: \"{{ input.url }}\" }\n");
+    assert.equal(good.ok, true, JSON.stringify(good.errors));
+  });
+
   it("accepts a well-formed workflow (with if-gate, subflow, loop, onError)", async () => {
     const r = await v(`
 name: good

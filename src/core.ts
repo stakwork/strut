@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { InputBlock } from "./input-block.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -148,11 +149,15 @@ export interface Flow {
   steps: Step[];
   /** Tunable default knobs (prompts, thresholds, sample sizes, …) exposed
    *  to step configs via `{{ params.* }}`. Distinct from `input`: `input`
-   *  is the per-run subject (validated, no defaults); `params` are the
+   *  is the per-run subject (validated against `input`); `params` are the
    *  experiment surface (all defaults, sparsely overridden per run via
    *  `RunOptions.params`). Override precedence: run override > these
    *  defaults. Omit for workflows with no knobs. */
   params?: Record<string, unknown>;
+  /** The YAML `input:` block as written (`src/input-block.ts`) — what built
+   *  `input` for a YAML flow, kept so the flow endpoint can return it and the
+   *  Run form can be built from it. Absent when the workflow declares none. */
+  inputBlock?: InputBlock;
   /** Declared "promote a run output → a target param default" mappings.
    *  Resolved against a run's output by the UI to offer one-click promotion
    *  of a winning value (e.g. an optimize loop's `bestPrompt`). */

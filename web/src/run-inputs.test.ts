@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveInputBindings, refsInExpr, stepTypesIn } from "./run-inputs";
+import { bindingsFromInputBlock, deriveInputBindings, refsInExpr, stepTypesIn } from "./run-inputs";
 import type { FieldDesc } from "./api";
 import type { StepData } from "./flow-to-canvas";
 
@@ -168,5 +168,23 @@ describe("deriveInputBindings", () => {
 
   it("returns nothing for a flow without input references", () => {
     assert.deepEqual(deriveInputBindings([{ id: "dir", type: "artifacts/dir", config: {} }], schemaFor), []);
+  });
+});
+
+describe("bindingsFromInputBlock", () => {
+  it("maps the declared block to form fields, required unless defaulted or opted out", () => {
+    const b = bindingsFromInputBlock({
+      url: { type: "string", description: "where" },
+      limit: { type: "number", default: 10 },
+      dryRun: { type: "boolean", required: false },
+    });
+    assert.deepEqual(
+      b.map((x) => [x.inputKey, x.field.kind, x.field.required, x.field.default, x.field.description]),
+      [
+        ["url", "string", true, undefined, "where"],
+        ["limit", "number", false, 10, undefined],
+        ["dryRun", "boolean", false, undefined, undefined],
+      ],
+    );
   });
 });

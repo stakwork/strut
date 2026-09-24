@@ -35,6 +35,7 @@ import {
   renderWorkflowYaml,
   validateStepName,
   type PublishByContentOptions,
+  type WorkflowContent,
   type StepListEntry,
   type StepVersionsResult,
   type WorkflowListEntry,
@@ -284,7 +285,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   async createWorkflow(
     name: string,
-    content: { steps: any[]; params?: Record<string, unknown> } | string,
+    content: WorkflowContent | string,
     description?: string,
     category?: string,
     publisher?: string,
@@ -307,7 +308,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
   async publishWorkflow(
     name: string,
     version: string,
-    content: { steps: any[]; params?: Record<string, unknown>; promotes?: unknown[] } | string,
+    content: WorkflowContent | string,
     description?: string,
     category?: string,
     publisher?: string,

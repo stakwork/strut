@@ -30,7 +30,7 @@ import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
-import { deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
+import { bindingsFromInputBlock, deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
 
 // A nested run-execution the user has drilled into. `pathPrefix` is the
 // original event-path prefix this child lives under (e.g. `wf/subflowId`),
@@ -118,6 +118,9 @@ export function App() {
   // a param and publishing = a new workflow version (params live in the YAML).
   const [wfParams, setWfParams] = useState<Record<string, unknown> | null>(null);
   const [localParams, setLocalParams] = useState<Record<string, unknown> | null>(null);
+  // The declared `input:` block, if any — the Run form's source when present,
+  // and written back on Publish so a canvas edit never drops it.
+  const [localInput, setLocalInput] = useState<api.FlowDef["input"] | null>(null);
   // Which workflow-level flyout is open — the Workflow flyout (params /
   // claims / automations as tabs) or Promote — so they exclude each other by
   // construction. `wfTab` remembers the tab across open/close.
@@ -346,6 +349,7 @@ export function App() {
       setLoadedWf(null);
       setWfParams(null);
       setLocalParams(null);
+      setLocalInput(null);
       setRuns([]);
       setFlyoutStepId(null);
       setFlyoutStepIndex(null);
@@ -358,6 +362,7 @@ export function App() {
       setLoadedWf(selectedWf);
       setWfParams(flow.params ?? null);
       setLocalParams(flow.params ?? null);
+      setLocalInput(flow.input ?? null);
     }).catch(() => {
       setPublishedSteps(null);
       setLocalSteps(null);
@@ -575,11 +580,13 @@ export function App() {
   }, [selectedWf, selectedRun, refreshRuns]);
 
   // The inputs this workflow needs at run time — asked for by the Run popover
-  // and by the Automations editor. Inputs are referenced wherever they're
-  // consumed, so every step's schema is consulted — not just the first's (see
-  // run-inputs.ts). A type whose schema fails to load still contributes its
-  // refs, as untyped fields.
+  // and by the Automations editor. A declared `input:` block is the answer;
+  // without one, inputs are referenced wherever they're consumed, so every
+  // step's schema is consulted — not just the first's (see run-inputs.ts). A
+  // type whose schema fails to load still contributes its refs, as untyped
+  // fields.
   const loadInputBindings = useCallback(async (): Promise<InputBinding[]> => {
+    if (localInput) return bindingsFromInputBlock(localInput);
     if (!localSteps) return [];
     const schemas = new Map<string, api.FieldDesc[]>();
     await Promise.all(
@@ -592,7 +599,7 @@ export function App() {
       }),
     );
     return deriveInputBindings(localSteps, (type) => schemas.get(type));
-  }, [localSteps]);
+  }, [localSteps, localInput]);
 
   const handleRun = useCallback(async () => {
     if (!selectedWf || !localSteps || localSteps.length === 0) return;
@@ -621,7 +628,7 @@ export function App() {
     const nextVersion = `v${Math.max(0, ...nums) + 1}`;
     const hasParams = localParams != null && Object.keys(localParams).length > 0;
     const yamlStr = yaml.dump(
-      { name: selectedWf, steps: localSteps, ...(hasParams ? { params: localParams } : {}) },
+      { name: selectedWf, ...(localInput ? { input: localInput } : {}), steps: localSteps, ...(hasParams ? { params: localParams } : {}) },
       { lineWidth: 120, noRefs: true },
     );
     await api.publishWorkflowYaml(selectedWf, nextVersion, yamlStr);
@@ -632,7 +639,8 @@ export function App() {
     setLocalSteps(steps);
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
-  }, [selectedWf, selectedEntry, localSteps, localParams, activeVersion, refreshWorkflows]);
+    setLocalInput(flow.input ?? null);
+  }, [selectedWf, selectedEntry, localSteps, localParams, localInput, activeVersion, refreshWorkflows]);
 
   // Roll back (or forward) to a stored version: it becomes what Run,
   // schedules and the canvas use. Nothing is published, so unsaved canvas
@@ -649,6 +657,7 @@ export function App() {
     setLocalSteps(steps);
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
+    setLocalInput(flow.input ?? null);
   }, [selectedWf, isDirty, refreshWorkflows, setViewVersion]);
 
   // Clicking a node (body) always opens its flyout — leaf I/O, or a

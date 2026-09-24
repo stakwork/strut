@@ -680,7 +680,22 @@ steps:
     depends: [profile, orders]           # waits for both
 ```
 
-YAML workflows accept any input (equivalent to `z.any()`). The engine parses the YAML at load time and constructs a `Flow` object.
+The engine parses the YAML at load time and constructs a `Flow` object. A workflow may declare a top-level `input:` block naming the fields a run's payload carries:
+
+```yaml
+name: fetch-page
+input:
+  url: { type: string, description: "the page to fetch" }
+  limit: { type: number, default: 10 }
+  dryRun: { type: boolean, required: false }
+steps:
+  - id: get
+    type: http
+    config:
+      url: "{{ input.url }}"
+```
+
+Each field has a `type` (`string`, `number`, `boolean`, or `json` — any JSON value) and optionally `required`, `default` and `description`. A field is required unless it has a `default` or says `required: false`. The block becomes the flow's `input` schema (§3.1): a missing required field or a wrong type fails the run before any step (`Input validation failed`), a default fills an omitted field, and keys the block does not name are dropped. `GET /workflows/:name/flow` returns it as `input`; the UI's Run form is built from it. Without the block a YAML workflow accepts any input (equivalent to `z.any()`) and the UI infers its Run form from the `{{ input.* }}` references in the steps.
 
 #### `params` — tunable defaults (the experiment surface)
 
