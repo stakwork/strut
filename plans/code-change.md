@@ -1,10 +1,11 @@
 # Code change — hive's `propose_code_change` as a strut workflow
 
-> **Status (2026-09-23): phase 1, strut half built** (branch
-> `code-change-foundations`): `ctx.onRunEnd`, actor secrets, `git/checkout`
-> + `git/diff`, `services.dataDir` — §3, tested offline against a local
-> origin and smoke-tested over https. Next: the lab workflow (§4), then
-> hive (§5). Phase 2 (§6) lands the PR.
+> **Status (2026-09-23): phase 2, strut half built** (branch
+> `code-change-landing`): `git/apply`, `git/push`, `github/create-pr` — §6,
+> tested offline against a local bare origin with GitHub faked. Phase 1 is
+> merged in all three repos (strut `bdfcdd8`, mcp's `lab/code` seed,
+> stakwork/hive#5336). Next: mcp seeds `code-change-land`, then hive's
+> approval dispatches `code_change_land`.
 
 Three repos take part. This document is the whole plan, kept here because
 the engine pieces are the foundations everything else stands on; the mcp
@@ -285,8 +286,34 @@ checkout), `github/create-pr` (Octokit beside `github/fetch-pr`; token via
 `secrets`, so the PR is authored by the user).
 
 Lab: `code-change-land` = `git/checkout → git/apply → git/push →
-github/create-pr → pack { url, number, branch, headSha }`. A moved base
-fails `git apply` honestly instead of being "fixed" by a model.
+github/create-pr → pack { url, number, branch, base, headSha, filesChanged,
+files, diffSha256 }`. A moved base fails `git apply` honestly instead of
+being "fixed" by a model.
+
+**The contract** the three repos bind on:
+
+```
+Input:  { repo, baseBranch, diff, diffSha256, branch, title, body }
+Output: { url, number, branch, base, headSha, filesChanged, files, diffSha256 }
+```
+
+- Hive chooses the branch (`jamie/<proposalId[:8]>-<strutRunId[-6:]>`) and
+  records it on the claim as `prBranch`; the diff rides in `input` (it is
+  what the user approved, not a secret) and the output echoes only its
+  `sha256`, which hive checks against its own bytes before trusting the PR.
+- The token is the actor secret `GITHUB_TOKEN` only: `git/push` resolves
+  the author from it (`GET /user`), `github/create-pr` opens the PR with it,
+  so both are the approver's. No `token` config on any `git/*` step.
+- Failure codes, not prose: a step's error message STARTS with
+  `patch_conflict:` (does not apply on the base's head), `push_rejected:`
+  (non-fast-forward, protected branch, remote error), `no_push_permission:`
+  (git or GitHub said 401/403) or `pr_create_failed:` (the PR call, after the
+  push). Anything else is a plain failure. Hive's handler feeds these into
+  `completeClaimFromResult`, so a landed PR clears the same hardening as
+  before and `patch_conflict` / `no_push_permission` delete the claim (the
+  user re-approves) while `push_rejected` / `pr_create_failed` keep it.
+- Idempotent: `github/create-pr` returns the open PR for `head` instead of
+  a second one, so a re-run after a crash lands on the same PR.
 
 Hive: approval dispatches `kind: "code_change_land"`; its handler feeds the
 existing `persistLandedPr` / `markClaimRunFailed` path. Hive keeps its

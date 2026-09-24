@@ -69,8 +69,8 @@ strut/
 │   ├── index.ts           # barrel export — createStrut (primary entry), createRegistry, coreRegistry, all types
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
-│   │   ├── lib/           # built-in domain integrations (github/fetch-pr, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
-│   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd; the token reaches git through the child env + an inline credential helper ONLY) and git/diff (stage all, one unified diff, caps, gitleaks when on PATH). _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
+│   │   ├── lib/           # built-in domain integrations (github/fetch-pr, github/create-pr — open a PR or return the open one for that head, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
+│   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
 │   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus three strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, walk gathers context for a goal hop by hop with a decision model (jev via experimental_evaluate, or a wrapped LLM) judging relevance/next/enough — plans/graph-walk.md); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
 │   ├── ai/                # AI workflow-builder backend (used by POST /chat)
@@ -113,7 +113,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1094 unit tests across 60 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1116 unit tests across 62 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -430,9 +430,11 @@ const token = cfg.token ?? (await ctx?.services?.secrets?.get("GITHUB_TOKEN"));
   `secrets`.
 - This also gets the step **cassette scrubbing for free**: every value read
   through `secrets.get()` is scrubbed from recorded fixtures.
-- `github/fetch-pr` (`GITHUB_TOKEN`) and `gdrive/export-file`
+- `github/fetch-pr` / `github/create-pr` (`GITHUB_TOKEN`) and `gdrive/export-file`
   (`GOOGLE_ACCESS_TOKEN` or `GOOGLE_SERVICE_ACCOUNT_JSON`) are the reference
-  examples.
+  examples. The `git/*` steps take it one step further: no `token` config at
+  all, only `tokenSecret` (a NAME, default `GITHUB_TOKEN`) — a step's config
+  is recorded on `step.start`, so only a name may ride in a workflow.
 
 ## Artifacts (per-run files)
 
