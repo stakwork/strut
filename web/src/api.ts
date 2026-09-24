@@ -485,6 +485,11 @@ export interface StepSchemaResponse {
   fields: FieldDesc[];
 }
 
+/** A custom step's version labels + the active one (404 for core/lib steps,
+ *  which have no versions) — the step editor's version pin picker. */
+export const getStepVersions = (type: string) =>
+  fetchJSON<{ type: string; active: string; versions: string[] }>(`/steps/${encodeURIComponent(type)}/versions`);
+
 export const getStepSchema = (type: string) =>
   fetchJSON<StepSchemaResponse>(`/steps/${encodeURIComponent(type)}/schema`);
 
