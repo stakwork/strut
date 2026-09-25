@@ -340,6 +340,41 @@ export function messagesOf(output: unknown): unknown[] | undefined {
   return Array.isArray(v) && v.length > 0 ? v : undefined;
 }
 
+// ── Media marker: what should the model SEE beside a tool-step's output? ────
+
+/** One file a tool-step shows the model beside its output — a screenshot,
+ *  most often. `data` is the raw bytes, or base64 when a string. */
+export interface MediaPart {
+  mediaType: string;
+  data: string | Uint8Array;
+  filename?: string;
+}
+
+const MEDIA_KEY = "_media";
+
+/**
+ * Mark a step's output with media the MODEL should see when the step runs as
+ * an agent tool (`agentTools`): `buildRegistryTools` hands the model the
+ * output as JSON text plus one file part per entry. Same mechanism as
+ * `withAccessedNodes` / `withMessages`: a NON-enumerable own property, so it
+ * rides along in-process but never reaches `{{ }}` templates, the event
+ * log's output preview, `run.json`, or a JSON serializer — the bytes belong
+ * in the run's artifacts; the marker is the model's view of them. Empty lists
+ * and non-object outputs are left unmarked. Returns `output` for chaining.
+ */
+export function withMedia<T>(output: T, media: MediaPart[] | undefined): T {
+  if (output === null || typeof output !== "object" || !media?.length) return output;
+  Object.defineProperty(output, MEDIA_KEY, { value: media, enumerable: false, configurable: true, writable: true });
+  return output;
+}
+
+/** The media a step output was marked with (see `withMedia`), else undefined. */
+export function mediaOf(output: unknown): MediaPart[] | undefined {
+  if (output === null || typeof output !== "object") return undefined;
+  const v = (output as Record<string, unknown>)[MEDIA_KEY];
+  return Array.isArray(v) && v.length > 0 ? (v as MediaPart[]) : undefined;
+}
+
 /** Result of running a workflow. */
 export interface RunResult {
   runId: string;

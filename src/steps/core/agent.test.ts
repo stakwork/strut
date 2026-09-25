@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { coreRegistry } from "../registry.js";
-import { withAccessedNodes, withMessages, messagesOf, accessedNodesOf, defineStep, type StepContext, type StepRegistry } from "../../core.js";
+import { withAccessedNodes, withMessages, withMedia, messagesOf, accessedNodesOf, mediaOf, defineStep, type StepContext, type StepRegistry } from "../../core.js";
 import agent, {
   repoTree,
   textEdit,
@@ -16,6 +16,7 @@ import agent, {
   buildSession,
   maskSecretValues,
   maskDeep,
+  registryToolModelOutput,
   wrapToolsWithMask,
   classifyFinalAnswerStop,
   degenerateSchemaFields,
@@ -112,6 +113,51 @@ describe("agentTools (buildRegistryTools — tools are steps)", () => {
     const tools = buildRegistryTools(["demo/echo"], registry, undefined, fakeTool);
     const out = await (tools["demo_echo"] as any).execute({ wrong: 1 });
     assert.match(String(out), /Error: invalid input for "demo\/echo"/);
+  });
+
+  describe("media (withMedia → toModelOutput)", () => {
+    const shotStep = defineStep({
+      type: "demo/shot",
+      description: "Take a screenshot.",
+      input: z.object({}),
+      output: z.any(),
+      async run() {
+        return withMedia({ path: "shots/1.png" }, [{ mediaType: "image/png", data: "iVBORw0KGgo=" }]);
+      },
+    });
+    const reg = { "demo/shot": shotStep, "demo/echo": echoStep } as StepRegistry;
+
+    it("hands the model the JSON as text plus one file part per media entry; the result itself stays plain", async () => {
+      const tools = buildRegistryTools(["demo/shot"], reg, undefined, fakeTool);
+      const t = tools["demo_shot"] as any;
+      assert.equal(typeof t.toModelOutput, "function");
+      const out = await t.execute({});
+      assert.deepEqual(out, { path: "shots/1.png" });
+      assert.equal(JSON.stringify(out), '{"path":"shots/1.png"}'); // what events / templates see
+      assert.deepEqual(t.toModelOutput({ toolCallId: "c1", input: {}, output: out }), {
+        type: "content",
+        value: [
+          { type: "text", text: '{"path":"shots/1.png"}' },
+          { type: "file", data: { type: "data", data: "iVBORw0KGgo=" }, mediaType: "image/png" },
+        ],
+      });
+    });
+
+    it("carries a filename and sends bytes as base64", () => {
+      const out = withMedia({ ok: true }, [{ mediaType: "image/png", data: new Uint8Array([1, 2, 3]), filename: "a.png" }]);
+      const model = registryToolModelOutput(out) as any;
+      assert.equal(model.type, "content");
+      assert.deepEqual(model.value[1], { type: "file", data: { type: "data", data: "AQID" }, mediaType: "image/png", filename: "a.png" });
+    });
+
+    it("unmarked outputs get the SDK default — text for a string, json otherwise — so existing tools are unchanged", () => {
+      const tools = buildRegistryTools(["demo/echo"], reg, undefined, fakeTool);
+      const t = tools["demo_echo"] as any;
+      assert.deepEqual(t.toModelOutput({ toolCallId: "c1", input: { msg: "hi" }, output: "got:hi" }), { type: "text", value: "got:hi" });
+      assert.deepEqual(registryToolModelOutput({ a: 1, u: undefined }), { type: "json", value: { a: 1 } });
+      assert.deepEqual(registryToolModelOutput([1, "x"]), { type: "json", value: [1, "x"] });
+      assert.deepEqual(registryToolModelOutput(undefined), { type: "json", value: null });
+    });
   });
 
   describe("glob expansion (expandAgentTools)", () => {
@@ -342,6 +388,13 @@ describe("maskDeep keeps the provenance marker", () => {
     const obj = maskDeep(withMessages({ result: "sk-123" }, session), ["sk-123"]) as any;
     assert.deepEqual(obj, { result: "[MASKED_SECRET]" });
     assert.deepEqual(messagesOf(obj), [{ role: "assistant", content: "the key is [MASKED_SECRET]" }]);
+  });
+
+  it("carries `_media` too, untouched (image bytes, not strings)", () => {
+    const media = [{ mediaType: "image/png", data: "iVBORw0KGgo=" }];
+    const obj = maskDeep(withMedia({ path: "sk-123" }, media), ["sk-123"]) as any;
+    assert.deepEqual(obj, { path: "[MASKED_SECRET]" });
+    assert.equal(mediaOf(obj), media);
   });
 });
 

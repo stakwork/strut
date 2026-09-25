@@ -27,6 +27,9 @@ export {
   type AccessedNode,
   withAccessedNodes,
   accessedNodesOf,
+  type MediaPart,
+  withMedia,
+  mediaOf,
 } from "./core.js";
 
 // Runner
