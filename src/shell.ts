@@ -42,11 +42,15 @@ export function minimalEnv(): NodeJS.ProcessEnv {
 }
 
 /** Spawn a child, capture stdout with a timeout + output cap. Exit 1 with no
- *  stderr → "No matches found" (grep/rg/find idiom). */
+ *  stderr → "No matches found" (grep/rg/find idiom). `withStderr` appends a
+ *  non-empty stderr to a SUCCESSFUL result too — for model-authored shell
+ *  lines, where `mkdir /x && … ; echo done` exits 0 and would otherwise hide
+ *  the step that failed. */
 export function capture(
   child: ReturnType<typeof spawn>,
   timeoutMs: number,
   maxBytes: number,
+  withStderr = false,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -79,7 +83,7 @@ export function capture(
     });
     child.on("close", (code) =>
       finish(() => {
-        if (code === 0) resolve(cap(stdout));
+        if (code === 0) resolve(cap(stdout) + (withStderr && stderr ? `\n[stderr]\n${cap(stderr)}` : ""));
         else if (code === 1 && !stderr) resolve(cap(stdout) || "No matches found");
         else reject(new Error(`Command failed (${code}): ${cap(stderr || stdout || "Unknown error")}`));
       }),
@@ -123,6 +127,7 @@ export const runShell = (
     }),
     timeoutMs,
     maxBytes,
+    true,
   );
 
 // ── subprocess: the primitive under ctx.services.shell + the exec step ──────
