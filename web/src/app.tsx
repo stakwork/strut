@@ -26,6 +26,7 @@ import { StepEditFlyout } from "./components/StepEditFlyout";
 import { StepInfoFlyout } from "./components/StepInfoFlyout";
 import { EventsPanel } from "./components/EventsPanel";
 import { EventsResizer } from "./components/EventsResizer";
+import { SidebarResizer } from "./components/SidebarResizer";
 import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
@@ -828,7 +829,7 @@ export function App() {
       <div class="shell-sidebar">
         <div class="sidebar-brand"><span class="brand-dot" /> strut</div>
 
-        <div class="sidebar-section">
+        <div class="sidebar-section" data-section="workflows">
           <div class="section-title">
             Workflows
             <button class="btn" style="float:right;padding:1px 8px;font-size:11px;margin-top:-3px;" onClick={() => setShowCreate(true)}>+</button>
@@ -863,7 +864,9 @@ export function App() {
           </div>
         </div>
 
-        <div class="sidebar-section">
+        <SidebarResizer />
+
+        <div class="sidebar-section" data-section="runs">
           <div class="section-title">
             Runs
             {selectedWf && <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;">{selectedWf}</span>}
@@ -889,9 +892,11 @@ export function App() {
           </div>
         </div>
 
+        {stepsOpen && <SidebarResizer />}
+
         {/* Steps catalog — every registered step type (core / lib / custom).
             Collapsed by default; click a step for its info flyout. */}
-        <div class={`sidebar-section${stepsOpen ? "" : " is-collapsed"}`}>
+        <div class={`sidebar-section${stepsOpen ? "" : " is-collapsed"}`} data-section="tools">
           <div class="section-title section-title-toggle" onClick={toggleStepsSection}>
             <span class={`cat-caret${stepsOpen ? " is-open" : ""}`}>▸</span>
             <span>Tools</span>
@@ -919,17 +924,27 @@ export function App() {
               {stepTypes.length > 0 && matchedSteps.length === 0 && (
                 <div class="empty-sidebar">No matching tools</div>
               )}
-              {stepGroups.map((g) => (
-                <div key={g.label}>
-                  <div class="steps-group-label">{g.label}</div>
-                  {g.steps.map((s) => (
-                    <div key={s.type} class={`list-item ${infoStep?.type === s.type ? "is-active" : ""}`}
-                      onClick={() => openStepInfo(s)}>
-                      <span class="list-item-name">{s.type}</span>
+              {stepGroups.map((g) => {
+                // Shares collapsedCats with workflow categories; the prefix
+                // keeps the keys apart. A filter shows every match regardless.
+                const catKey = `tools:${g.label}`;
+                const collapsed = !stepQuery.trim() && !!collapsedCats[catKey];
+                return (
+                  <div key={g.label}>
+                    <div class="cat-header" onClick={() => toggleCat(catKey)}>
+                      <span class={`cat-caret${collapsed ? "" : " is-open"}`}>▸</span>
+                      <span class="cat-name">{g.label}</span>
+                      <span class="cat-count">{g.steps.length}</span>
                     </div>
-                  ))}
-                </div>
-              ))}
+                    {!collapsed && g.steps.map((s) => (
+                      <div key={s.type} class={`list-item ${infoStep?.type === s.type ? "is-active" : ""}`}
+                        onClick={() => openStepInfo(s)}>
+                        <span class="list-item-name">{s.type}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

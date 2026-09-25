@@ -44,7 +44,7 @@ export function EventsResizer() {
     startY.current = e.clientY;
     startHeight.current = currentPx;
     setDragging(true);
-    document.body.classList.add("is-resizing-events");
+    document.body.classList.add("is-resizing-rows");
 
     const onMove = (ev: PointerEvent) => {
       const delta = startY.current - ev.clientY; // up = larger
@@ -55,7 +55,7 @@ export function EventsResizer() {
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      document.body.classList.remove("is-resizing-events");
+      document.body.classList.remove("is-resizing-rows");
       setDragging(false);
       const shell = getShell();
       if (shell) {
@@ -74,7 +74,7 @@ export function EventsResizer() {
 
   return (
     <div
-      class={`events-resizer ${dragging ? "is-dragging" : ""}`}
+      class={`row-resizer events-resizer ${dragging ? "is-dragging" : ""}`}
       onPointerDown={onPointerDown}
       onDblClick={onDoubleClick}
       title="Drag to resize · double-click to reset"
