@@ -11,6 +11,7 @@ import { readStepSourceFromDisk, type StepSource } from "./steps/registry.js";
 import { contentHash, nextVersionLabel } from "./version.js";
 import { evaluateExpr } from "./expr.js";
 import { inputSchema, parseInputBlock, type InputBlock } from "./input-block.js";
+import { claimsArgSchema, type ClaimsBlock } from "./claims-schemas.js";
 
 // Match a `{{ params.<path> }}` reference (and ONLY a params reference) so we can
 // resolve param-to-param references at load time without touching `{{ input.* }}`
@@ -55,6 +56,32 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   // to 404, so a bad block that reached disk would hide the workflow.
   const input = (parsed as { input?: unknown } | null)?.input;
   if (input != null) parseInputBlock(input);
+  // A `claims:` block is checked for SHAPE here (every backend, no graph
+  // needed) so a malformed contract fails the publish like a bad `input:`;
+  // what it names (step types, the grader deny-list) is the claims layer's
+  // check, at publish where there is one and at boot for seeded files.
+  readClaimsBlock(parsed);
+}
+
+/** The `claims:` block of a parsed workflow YAML, shape-validated; undefined
+ *  when absent or empty. Throws on a malformed block. */
+export function readClaimsBlock(parsed: unknown): ClaimsBlock | undefined {
+  const raw = (parsed as { claims?: unknown } | null)?.claims;
+  if (raw == null) return undefined;
+  const r = claimsArgSchema.safeParse(raw);
+  if (!r.success) {
+    const issues = r.error.issues.map((i) => `${["claims", ...i.path].join(".")}: ${i.message}`).join("; ");
+    throw new Error(
+      `Workflow YAML has an invalid \`claims:\` block — ${issues}. ` +
+        `It is a list of { text, checks: [{ type, config } | { description }] }, the same shape as the publish tools' \`claims\` arg.`,
+    );
+  }
+  return r.data && r.data.length > 0 ? r.data : undefined;
+}
+
+/** The `claims:` block of a workflow YAML string (see `readClaimsBlock`). */
+export function claimsBlockOf(yamlStr: string): ClaimsBlock | undefined {
+  return readClaimsBlock(yaml.load(yamlStr));
 }
 
 /**
@@ -122,6 +149,8 @@ export interface WorkflowContent {
   input?: InputBlock;
   params?: Record<string, unknown>;
   promotes?: unknown[];
+  /** The contract, as a `claims:` block (plans/claims.md §2, door one). */
+  claims?: ClaimsBlock;
 }
 
 export function renderWorkflowYaml(name: string, content: WorkflowContent | string): string {
@@ -134,6 +163,7 @@ export function renderWorkflowYaml(name: string, content: WorkflowContent | stri
           steps: content.steps,
           ...(content.params != null ? { params: content.params } : {}),
           ...(content.promotes != null ? { promotes: content.promotes } : {}),
+          ...(content.claims != null ? { claims: content.claims } : {}),
         },
         { lineWidth: 120, noRefs: true },
       );
@@ -503,12 +533,14 @@ export class FileWorkspaceStore implements WorkspaceStore {
     category?: string,
     publisher?: string,
   ): Promise<void> {
-    const dir = join(this.root, "workflows", name);
-    await mkdir(dir, { recursive: true });
-
+    // Validate BEFORE touching disk: a refused publish must leave nothing
+    // behind — an empty directory would make the next `createWorkflow` of
+    // that name think it is taken and rename it.
     const yamlStr = renderWorkflowYaml(name, content);
     assertValidWorkflowYaml(yamlStr);
 
+    const dir = join(this.root, "workflows", name);
+    await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${version}.yaml`), yamlStr, "utf-8");
 
     // Update metadata

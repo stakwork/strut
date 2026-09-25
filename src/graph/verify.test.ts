@@ -559,6 +559,39 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.ok(!(await ws.listWorkflows()).some((w) => w.name.startsWith("step:")));
   });
 
+  it("a `claims:` block in the YAML is recorded at boot (the seeder's path) and applied by the HTTP publish door, stamped `person`", async () => {
+    const BLOCK = (name: string, checkType = "exec") => `name: ${name}\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\nclaims:\n  - text: the message is logged\n    checks:\n      - type: ${checkType}\n        config: { cmd: "true" }\n`;
+    await ws.publishWorkflowByContent("seeded-block", BLOCK("seeded-block"), "seeded", undefined, "seeder");
+    assert.deepEqual(await statusOf({ kind: "workflow", name: "seeded-block" }), [], "written straight into the store: no door ran");
+
+    const booted = await createStrut({ workspace: ws, store: new MemoryRunStore(), registry, dataDir: dir, serveUi: false, enableChat: false, stt: false });
+    try {
+      assert.deepEqual(await statusOf({ kind: "workflow", name: "seeded-block" }), [["the message is logged", "unknown", false, 1, false]], "recorded at construction");
+      assert.deepEqual(await booted.reconcileClaims(["seeded-block"]), [{ name: "seeded-block", added: 0, existing: 1 }]);
+      const speakers = async (name: string) => (await rows(`MATCH (c:Claim)-[:ABOUT]->(w:StrutWorkflow {name: $name}) WHERE c.belief_valid_to IS NULL RETURN collect(c.speaker_name) AS s`, { name }))[0]!["s"];
+      assert.deepEqual(await speakers("seeded-block"), ["seeder"]);
+
+      const post = (path: string, body: unknown) => booted.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const created = await post("/workflows", { name: "http-block", yaml: BLOCK("http-block") });
+      assert.equal(created.status, 201);
+      assert.equal(((await created.json()) as { claims?: { added: number } }).claims?.added, 1);
+      assert.deepEqual(await speakers("http-block"), ["person"]);
+      const next = await post("/workflows/http-block", { version: "v2", yaml: BLOCK("http-block").replace("message: hi", "message: hi again") });
+      assert.equal(next.status, 201);
+      assert.deepEqual(((await next.json()) as { claims?: { added: number; existing: number } }).claims, { count: 1, added: 0, existing: 1 });
+
+      const refused = await post("/workflows", { name: "http-bad", yaml: BLOCK("http-bad", "no/such-step") });
+      assert.equal(refused.status, 400);
+      assert.match(((await refused.json()) as { error: string }).error, /fix the claims first[\s\S]*no\/such-step/);
+      assert.ok(!(await ws.listWorkflows()).some((w) => w.name === "http-bad"), "nothing was published");
+      const malformed = await post("/workflows", { name: "http-shape", yaml: `name: http-shape\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\nclaims:\n  - text: t\n    checks: []\n` });
+      assert.equal(malformed.status, 400);
+      assert.match(((await malformed.json()) as { error: string }).error, /invalid `claims:` block/);
+    } finally {
+      await booted.close();
+    }
+  });
+
   it("the switch: `claims: false` or STRUT_CLAIMS=0 turns the whole layer off on a graph workspace; on by default; the option wins", async () => {
     assert.ok(strut.claims && strut.verifier, "on by default where the workspace is graph-backed");
     const base = { workspace: ws, store: new MemoryRunStore(), registry, dataDir: dir, serveUi: false, enableChat: false, stt: false } as const;

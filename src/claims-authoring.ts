@@ -35,7 +35,7 @@ import type { StepRegistry } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
 import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type EvidenceRow, type RunWhen, type SubjectRef } from "./graph/claims.js";
 import { ClaimsError, ClaimsWriter, boundedName, type CheckData } from "./graph/claims-writer.js";
-import type { WorkspaceStore } from "./workspace.js";
+import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
 
 // ── Inputs (the tool-facing shapes) ─────────────────────────────────────────
 
@@ -86,6 +86,9 @@ export interface ClaimsAuthoringDeps {
 
 /** The stamp fixed point 2 keys on (`authoring.ts` `AI_PUBLISHER`). */
 const AI_STAMP = "ai";
+/** The speaker of a claim declared in a workflow's `claims:` block when the
+ *  workflow carries no `publisher` to attribute it to. */
+export const YAML_STAMP = "yaml";
 const RUN_WHENS: readonly RunWhen[] = ["run", "publish"];
 const POLICIES: readonly CheckPolicy[] = ["always", "on_change", "sample", "manual"];
 const PAID_STEP_TYPES = ["agent", "llm"];
@@ -119,6 +122,35 @@ export function deniedInClosure(closure: FlowClosure, deny: readonly string[], r
 
 export function toSubjectRef(s: SubjectInput): SubjectRef {
   return s.kind === "workflow" ? { kind: "workflow", name: s.name } : { kind: "step", type: s.name };
+}
+
+/**
+ * One contract from a workflow's `claims:` block and a publish call's
+ * `claims` arg: the block first, then arg entries whose text it does not
+ * already carry (exact, trimmed). Undefined when both are empty, so the
+ * callers' "no contract" paths stay as they were.
+ */
+export function mergeClaimSpecs(
+  block: readonly ClaimSpecInput[] | undefined,
+  arg: readonly ClaimSpecInput[] | undefined,
+): ClaimSpecInput[] | undefined {
+  const out: ClaimSpecInput[] = [];
+  const seen = new Set<string>();
+  for (const c of [...(block ?? []), ...(arg ?? [])]) {
+    const text = typeof c?.text === "string" ? c.text.trim() : "";
+    if (text && seen.has(text)) continue;
+    if (text) seen.add(text);
+    out.push(c);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** What `reconcileWorkflowClaims` did for one workflow. */
+export interface ClaimsReconcileOutcome {
+  name: string;
+  added: number;
+  existing: number;
+  error?: string;
 }
 
 const fail = (e: unknown): { error: string } => {
@@ -160,8 +192,21 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
   const writer = new ClaimsWriter(deps.graph, reader);
   const deny = () => verifyDenyPatterns(deps.env ?? process.env);
 
+  /** What validating a check needs from the deployment, resolved ONCE per
+   *  call (a registry rebuild re-materializes every custom step, so it is
+   *  never done per check): the FRESH registry and the workflow list. */
+  interface NormalizeCtx {
+    registry: StepRegistry;
+    workflows: Array<{ name: string; versions: string[] }>;
+  }
+  async function normalizeCtx(): Promise<NormalizeCtx> {
+    const registry = await deps.getRegistry();
+    const workflows = await deps.workspace.listWorkflows().catch(() => []);
+    return { registry, workflows: workflows.map((w) => ({ name: w.name, versions: w.versions })) };
+  }
+
   /** Validate one spec and apply the write-time defaults. Throws ClaimsError. */
-  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string): Promise<CheckData> {
+  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string, ctx: NormalizeCtx): Promise<CheckData> {
     if (!spec || typeof spec !== "object") throw new ClaimsError("INVALID", `${where}: a check is an object — { type, config } for a step check, { description } for an external one`);
     const when = spec.when ?? "run";
     if (!RUN_WHENS.includes(when)) throw new ClaimsError("INVALID", `${where}: when must be one of ${RUN_WHENS.join(" | ")}`);
@@ -191,7 +236,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       return { ...common, name: spec.name?.trim() || boundedName(description).slice(0, 60), description, policy: spec.policy ?? "on_change" };
     }
 
-    const registry = await deps.getRegistry();
+    const { registry } = ctx;
     if (!registry[spec.type]) throw new ClaimsError("INVALID", `${where}: step type "${spec.type}" not found — a check names a registry step (exec, llm, agent, subflow, or a custom step)`);
     const config = spec.config ?? {};
     if (typeof config !== "object" || Array.isArray(config)) throw new ClaimsError("INVALID", `${where}: config must be an object`);
@@ -215,10 +260,9 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     // The same static check a workflow gets — a check IS a one-step flow whose
     // input is the subject, so `{{ input.* }}` is the only root it can read.
     // Catching a mistyped config here beats a check that silently never runs.
-    const workflows = await deps.workspace.listWorkflows().catch(() => []);
     const v = validateWorkflowYaml(yaml.dump({ name: "check", steps: [{ id: "check", type: spec.type, config }] }), {
       registry,
-      workflows: workflows.map((w) => ({ name: w.name, versions: w.versions })),
+      workflows: ctx.workflows,
       name: "check",
     });
     if (!v.ok) {
@@ -237,9 +281,10 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     };
   }
 
-  async function normalizeClaims(claims: readonly ClaimSpecInput[], actor: ClaimActor): Promise<Array<{ text: string; checks: CheckData[] }>> {
+  async function normalizeClaims(claims: readonly ClaimSpecInput[], actor: ClaimActor, ctx?: NormalizeCtx): Promise<Array<{ text: string; checks: CheckData[] }>> {
     const out: Array<{ text: string; checks: CheckData[] }> = [];
     const seen = new Set<string>();
+    const resolved = ctx ?? (claims.length > 0 ? await normalizeCtx() : undefined);
     for (const [i, c] of claims.entries()) {
       const text = typeof c?.text === "string" ? c.text.trim() : "";
       if (!text) throw new ClaimsError("INVALID", `claims[${i}]: text is empty`);
@@ -249,10 +294,52 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         throw new ClaimsError("INVALID", `claims[${i}] ("${boundedName(text).slice(0, 60)}"): every claim needs at least one check — if code cannot check it, give it an external check ({ description })`);
       }
       const checks: CheckData[] = [];
-      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`));
+      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`, resolved!));
       out.push({ text, checks });
     }
     return out;
+  }
+
+  /**
+   * Door one, part 2 — after the publish. The arg only ever ADDS: a claim
+   * whose text exactly matches an ACTIVE claim already about the subject
+   * is skipped (a republish with the same arg is a no-op); it never edits,
+   * retires or detaches. `count` is the subject's active claims afterwards
+   * — zero carries a warning the author has to answer.
+   */
+  async function applyClaimsArg(
+    subject: SubjectInput,
+    claims: readonly ClaimSpecInput[] | undefined,
+    actor: ClaimActor,
+    ctx?: NormalizeCtx,
+  ): Promise<{ count: number; added: number; existing: number; warning?: string; error?: string }> {
+    const ref = toSubjectRef(subject);
+    let added = 0;
+    let existing = 0;
+    let error: string | undefined;
+    try {
+      const have = new Set((await reader.claimsFor(ref)).map((c) => c.claim_text));
+      for (const c of await normalizeClaims(claims ?? [], actor, ctx)) {
+        if (have.has(c.text)) {
+          existing++;
+          continue;
+        }
+        await writer.addClaim({ subjects: [ref], text: c.text, speaker: actor.publisher, checks: c.checks });
+        added++;
+      }
+    } catch (e) {
+      error = fail(e).error;
+    }
+    const count = (await reader.claimsFor(ref).catch(() => [])).length;
+    return {
+      count,
+      added,
+      existing,
+      ...(error ? { error: `published, but writing claims failed: ${error}` } : {}),
+      ...(count === 0 && !error
+        ? { warning: `This ${subject.kind} has NO claims. State how it should behave — pass \`claims\` when publishing, or call add_claim — before you run it; a ${subject.kind} with no contract cannot be verified.` }
+        : {}),
+    };
   }
 
   /** Did `actor` publish this subject? (The meta surface's ownership rule.) */
@@ -320,6 +407,39 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     reader,
     writer,
 
+    /**
+     * The `claims:` blocks of the workflows already in the workspace, applied
+     * (plans/claims.md §2, door one) — for the publish paths that never pass
+     * through a door: a boot seeder writing templates straight into the
+     * store, a script, an older strut. Reads each workflow's ACTIVE source;
+     * a block is the same contract as the publish arg, so this is
+     * `applyClaimsArg` per workflow — additive and idempotent, a re-run is a
+     * no-op. The speaker is the workflow's `publisher` (a seeder's stamp,
+     * `ai` for a builder-authored one), else `yaml`; never scoped. A block
+     * this deployment cannot honor (a check naming a step it lacks) is an
+     * outcome with `error`, never a throw — one broken template must not
+     * stop the rest. Safe to run at every boot.
+     */
+    async reconcileWorkflowClaims(names?: readonly string[]): Promise<ClaimsReconcileOutcome[]> {
+      const out: ClaimsReconcileOutcome[] = [];
+      const entries = await deps.workspace.listWorkflows();
+      let ctx: NormalizeCtx | undefined;
+      for (const w of entries) {
+        if (names && !names.includes(w.name)) continue;
+        try {
+          const block = claimsBlockOf(await deps.workspace.getWorkflowSource(w.name, w.activeVersion));
+          if (!block) continue;
+          ctx ??= await normalizeCtx();
+          const actor: ClaimActor = { publisher: w.publisher || YAML_STAMP, scoped: false };
+          const r = await applyClaimsArg({ kind: "workflow", name: w.name }, block, actor, ctx);
+          out.push({ name: w.name, added: r.added, existing: r.existing, ...(r.error ? { error: r.error } : {}) });
+        } catch (e) {
+          out.push({ name: w.name, added: 0, existing: 0, error: fail(e).error });
+        }
+      }
+      return out;
+    },
+
     /** Door one, part 1 — validate a publish tool's `claims` arg BEFORE the
      *  publish, so a broken contract blocks it the way a YAML error does. */
     async validateClaimsArg(claims: readonly ClaimSpecInput[] | undefined, actor: ClaimActor): Promise<{ error: string } | null> {
@@ -332,46 +452,8 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       }
     },
 
-    /**
-     * Door one, part 2 — after the publish. The arg only ever ADDS: a claim
-     * whose text exactly matches an ACTIVE claim already about the subject
-     * is skipped (a republish with the same arg is a no-op); it never edits,
-     * retires or detaches. `count` is the subject's active claims afterwards
-     * — zero carries a warning the author has to answer.
-     */
-    async applyClaimsArg(
-      subject: SubjectInput,
-      claims: readonly ClaimSpecInput[] | undefined,
-      actor: ClaimActor,
-    ): Promise<{ count: number; added: number; existing: number; warning?: string; error?: string }> {
-      const ref = toSubjectRef(subject);
-      let added = 0;
-      let existing = 0;
-      let error: string | undefined;
-      try {
-        const have = new Set((await reader.claimsFor(ref)).map((c) => c.claim_text));
-        for (const c of await normalizeClaims(claims ?? [], actor)) {
-          if (have.has(c.text)) {
-            existing++;
-            continue;
-          }
-          await writer.addClaim({ subjects: [ref], text: c.text, speaker: actor.publisher, checks: c.checks });
-          added++;
-        }
-      } catch (e) {
-        error = fail(e).error;
-      }
-      const count = (await reader.claimsFor(ref).catch(() => [])).length;
-      return {
-        count,
-        added,
-        existing,
-        ...(error ? { error: `published, but writing claims failed: ${error}` } : {}),
-        ...(count === 0 && !error
-          ? { warning: `This ${subject.kind} has NO claims. State how it should behave — pass \`claims\` when publishing, or call add_claim — before you run it; a ${subject.kind} with no contract cannot be verified.` }
-          : {}),
-      };
-    },
+    /** Door one, part 2 — after the publish (see `applyClaimsArg` above). */
+    applyClaimsArg: (subject: SubjectInput, claims: readonly ClaimSpecInput[] | undefined, actor: ClaimActor) => applyClaimsArg(subject, claims, actor),
 
     async addClaim(input: { subjects: SubjectInput[]; text: string; checks: CheckSpecInput[] }, actor: ClaimActor): Promise<ClaimsResult<{ id: string; checks: string[] }>> {
       try {
@@ -424,7 +506,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async addCheck(claimId: string, spec: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
         await requireOwnClaim(claimId, actor, "adds checks to");
-        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check"))) };
+        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", await normalizeCtx()))) };
       } catch (e) {
         return fail(e);
       }
@@ -448,7 +530,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
           sampleRate: current.sampleRate,
           ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
         };
-        const next = await normalizeCheck(merged, actor, "check");
+        const next = await normalizeCheck(merged, actor, "check", await normalizeCtx());
         const same = (["name", "description", "step_type", "step_config", "run_when", "policy", "freshness_days", "sample_rate"] as const).every(
           (f) => (next[f] ?? undefined) === (old[f] ?? undefined),
         );

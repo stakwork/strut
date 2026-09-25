@@ -4,7 +4,7 @@ import { readFile, rm, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { WorkspaceManager } from "./workspace.js";
+import { WorkspaceManager, claimsBlockOf } from "./workspace.js";
 
 const SAMPLE_YAML = `name: deploy
 steps:
@@ -244,6 +244,23 @@ steps:
       const bad = "name: bad\ninput:\n  n: { type: number, default: x }\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n";
       await assert.rejects(() => ws.publishWorkflow("bad", "v1", bad), /default "x" is not a number/);
       await assert.rejects(() => ws.getWorkflow("bad"), /not found/);
+    });
+
+    it("rejects a malformed claims: block at publish (shape only — no graph needed), and reads a good one", async () => {
+      const bad = "name: bad\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\nclaims:\n  - text: t\n    checks: []\n";
+      await assert.rejects(() => ws.publishWorkflow("bad", "v1", bad), /invalid `claims:` block — claims\.0\.checks/);
+      await assert.rejects(() => ws.getWorkflow("bad"), /not found/);
+      await assert.rejects(() => ws.publishWorkflow("bad", "v1", "name: bad\nsteps: []\nclaims: { text: t }\n"), /invalid `claims:` block/);
+
+      const good = "name: good\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\nclaims:\n  - text: says hi\n    checks:\n      - type: exec\n        config: { cmd: \"true\" }\n      - description: listen for it\n        policy: manual\n";
+      await ws.publishWorkflow("good", "v1", good);
+      assert.deepEqual(claimsBlockOf(await ws.getWorkflowSource("good", "v1")), [
+        { text: "says hi", checks: [{ type: "exec", config: { cmd: "true" } }, { description: "listen for it", policy: "manual" }] },
+      ]);
+      // The runner never sees it: the flow loads as before.
+      assert.equal((await ws.getWorkflow("good")).steps.length, 1);
+      assert.equal(claimsBlockOf("name: x\nsteps: []\n"), undefined);
+      assert.equal(claimsBlockOf("name: x\nsteps: []\nclaims: []\n"), undefined);
     });
 
     it("resolves param-to-param references at load (shared value factored into one param)", async () => {
@@ -776,6 +793,22 @@ params:
 
     it("setParam throws on an unknown workflow", async () => {
       await assert.rejects(() => ws.setParam("nope", "x", 1), /not found/);
+    });
+  });
+
+  describe("claims block", () => {
+    const CLAIMS = [{ text: "the message is logged", checks: [{ type: "exec", config: { cmd: "true" } }] }];
+
+    it("round-trips through a steps/params publish, like promotes", async () => {
+      await ws.publishWorkflow("contract", "v1", { steps: SAMPLE_STEPS, params: { p: 1 }, claims: CLAIMS });
+      assert.deepEqual(claimsBlockOf(await ws.getWorkflowSource("contract", "v1")), CLAIMS);
+    });
+
+    it("setParam preserves the claims block across versions", async () => {
+      await ws.publishWorkflow("contract", "v1", { steps: SAMPLE_STEPS, params: { p: 1 }, claims: CLAIMS });
+      await ws.setParam("contract", "p", 2);
+      assert.deepEqual(claimsBlockOf(await ws.getWorkflowSource("contract", "v2")), CLAIMS);
+      assert.equal((await ws.getWorkflow("contract")).params?.["p"], 2);
     });
   });
 

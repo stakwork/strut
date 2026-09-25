@@ -17,7 +17,7 @@ import {
   generateChatId,
   truncateToolMessages,
 } from "./chat-store.js";
-import { FileWorkspaceStore, type WorkspaceStore } from "./workspace.js";
+import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
@@ -38,8 +38,8 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
-import { CLAIMS_OFF } from "./claims-schemas.js";
-import { claimsRoutes } from "./claims-routes.js";
+import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
+import { PERSON, claimsRoutes } from "./claims-routes.js";
 import { automationsRoutes } from "./automations-routes.js";
 import { createAutomations, type Automations } from "./scheduler.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
@@ -53,7 +53,7 @@ import type { CassetteMode } from "./cassette.js";
 import type { GraphBackend } from "./graph/backend.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
-import { buildClaimsAuthoring } from "./claims-authoring.js";
+import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
 import { createStt, type SttService } from "./audio/stt.js";
 import { audioRoutes } from "./audio/routes.js";
 import { attachAudioWebSocket } from "./audio/ws.js";
@@ -283,6 +283,13 @@ export interface Strut<TServices = unknown> {
    *  and has fewer than `maxResumes` prior resumes. Runs automatically
    *  after boot when `autoResume` is enabled; callable directly. */
   autoResumeStaleRuns: (opts?: AutoResumeOptions) => Promise<AutoResumeOutcome[]>;
+
+  /** Record the contracts declared as `claims:` blocks in the workspace's
+   *  workflow YAML (plans/claims.md §2, door one) — what a boot seeder's
+   *  templates carry. Runs once at construction where the claims layer
+   *  exists; callable again after seeding more. Idempotent; empty without
+   *  the layer. */
+  reconcileClaims: (names?: readonly string[]) => Promise<ClaimsReconcileOutcome[]>;
 
   /** Run a workflow by name (resolves through the workspace) or by Flow
    *  object. `services` is auto-injected from the instance; pass a
@@ -594,6 +601,24 @@ export async function createStrut<TServices = unknown>(
     : null;
   const claims = claimsAuthoring?.reader ?? null;
 
+  // Contracts that reached the store WITHOUT passing a door — a boot seeder's
+  // templates, a script, an older strut — declared as `claims:` blocks in
+  // their YAML. Recorded here, once per boot, before anything runs. A
+  // template this deployment cannot honor (a check naming a step it lacks)
+  // is a warning, never a failed boot.
+  const reconcileClaims = async (names?: readonly string[]): Promise<ClaimsReconcileOutcome[]> =>
+    claimsAuthoring ? claimsAuthoring.reconcileWorkflowClaims(names) : [];
+  if (claimsAuthoring) {
+    try {
+      for (const o of await reconcileClaims()) {
+        if (o.error) console.warn(`[claims] ${o.name}: ${o.error}`);
+        else if (o.added > 0) console.log(`[claims] ${o.name}: recorded ${o.added} claim(s) from its YAML`);
+      }
+    } catch (err) {
+      console.warn(`[claims] recording the workspace's claims: blocks at boot failed:`, err);
+    }
+  }
+
   // The verify pass (plans/claims.md §4) — only where the claims layer exists.
   // Triggered where `services.onRunEnd` fires — `runWorkflow`'s `finally`,
   // once per TOP-LEVEL run — and NOT at the launch sites: a candidate that a
@@ -676,18 +701,41 @@ export async function createStrut<TServices = unknown>(
     return c.json(decorated);
   });
 
+  // A publish over HTTP carries its contract as the YAML's `claims:` block
+  // (or `claims` beside `steps`) — a PERSON's publish, stamped like the
+  // Claims panel's edits. What the block NAMES is validated before the
+  // publish where a claims layer exists, so a broken contract blocks it the
+  // way a YAML error does; its shape is the workspace's own check. A block
+  // that does not even parse is left to the publish, whose refusal carries
+  // the workspace's fuller message.
+  const httpContract = async (body: { yaml?: string; claims?: ClaimsBlock }): Promise<{ contract?: ClaimsBlock; error?: string }> => {
+    if (!claimsAuthoring) return {};
+    let contract: ClaimsBlock | undefined;
+    try {
+      contract = body.yaml ? claimsBlockOf(body.yaml) : readClaimsBlock({ claims: body.claims });
+    } catch {
+      return {};
+    }
+    if (!contract) return {};
+    const invalid = await claimsAuthoring.validateClaimsArg(contract, PERSON);
+    return invalid ? { error: `Nothing was published — fix the claims first. ${invalid.error}` } : { contract };
+  };
+
   app.post("/workflows", async (c) => {
     const body = await c.req.json<{
       name: string;
       steps?: any[];
       input?: InputBlock;
       params?: Record<string, unknown>;
+      claims?: ClaimsBlock;
       yaml?: string;
       description?: string;
       category?: string;
     }>();
 
     if (!body.name) return c.json({ error: "name is required" }, 400);
+    const { contract, error: contractError } = await httpContract(body);
+    if (contractError) return c.json({ error: contractError }, 400);
 
     let result;
     try {
@@ -700,6 +748,7 @@ export async function createStrut<TServices = unknown>(
             steps: body.steps,
             ...(body.input != null ? { input: body.input } : {}),
             ...(body.params != null ? { params: body.params } : {}),
+            ...(body.claims != null ? { claims: body.claims } : {}),
           },
           body.description,
           body.category,
@@ -715,6 +764,7 @@ export async function createStrut<TServices = unknown>(
 
     await adoptWorkflow(result.name, await resolveActor(c));
     await rebuildRegistry();
+    const applied = contract ? await claimsAuthoring!.applyClaimsArg({ kind: "workflow", name: result.name }, contract, PERSON) : undefined;
 
     return c.json(
       {
@@ -724,6 +774,7 @@ export async function createStrut<TServices = unknown>(
         active: result.version,
         renamed: result.name !== body.name,
         requested: body.name,
+        ...(applied ? { claims: applied } : {}),
       },
       201,
     );
@@ -1376,11 +1427,14 @@ export async function createStrut<TServices = unknown>(
       steps?: any[];
       input?: InputBlock;
       params?: Record<string, unknown>;
+      claims?: ClaimsBlock;
       yaml?: string;
       description?: string;
     }>();
 
     if (!body.version) return c.json({ error: "version is required" }, 400);
+    const { contract, error: contractError } = await httpContract(body);
+    if (contractError) return c.json({ error: contractError }, 400);
 
     try {
       if (body.yaml) {
@@ -1393,6 +1447,7 @@ export async function createStrut<TServices = unknown>(
             steps: body.steps,
             ...(body.input != null ? { input: body.input } : {}),
             ...(body.params != null ? { params: body.params } : {}),
+            ...(body.claims != null ? { claims: body.claims } : {}),
           },
           body.description,
         );
@@ -1405,8 +1460,9 @@ export async function createStrut<TServices = unknown>(
 
     await adoptWorkflow(name, await resolveActor(c));
     await rebuildRegistry();
+    const applied = contract ? await claimsAuthoring!.applyClaimsArg({ kind: "workflow", name }, contract, PERSON) : undefined;
 
-    return c.json({ ok: true, workflow: name, version: body.version, active: body.version }, 201);
+    return c.json({ ok: true, workflow: name, version: body.version, active: body.version, ...(applied ? { claims: applied } : {}) }, 201);
   });
 
   // Set or clear a workflow's grouping category. Metadata-only — no new
@@ -2896,6 +2952,7 @@ export async function createStrut<TServices = unknown>(
     getRegistry: () => registry,
     rebuildRegistry,
     autoResumeStaleRuns,
+    reconcileClaims,
     run,
     stt,
     automations,
