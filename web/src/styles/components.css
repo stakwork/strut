@@ -4,7 +4,7 @@
   --events-height: 220px;
   display: grid;
   grid-template-columns: 260px 1fr;
-  grid-template-rows: 48px 1fr auto;
+  grid-template-rows: var(--header-h) 1fr auto;
   grid-template-areas:
     "sidebar topbar"
     "sidebar canvas"
@@ -178,7 +178,9 @@ body.is-resizing-events * {
 /* ─── sidebar ────────────────────────────────────────────────── */
 
 .sidebar-brand {
-  padding: var(--sp-4);
+  flex: none;
+  height: var(--header-h);
+  padding: 0 var(--sp-4);
   font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -728,22 +730,34 @@ body.is-resizing-flyout * {
   user-select: none !important;
 }
 .flyout-header {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--sp-4) var(--sp-5);
+  gap: var(--sp-3);
+  height: var(--header-h);
+  padding: 0 var(--sp-5);
   border-bottom: 1px solid var(--border);
 }
+/* Fixed height: the title truncates, the actions never wrap. */
+.flyout-header > :first-child { min-width: 0; }
+.flyout-header > :last-child { flex: none; }
+.flyout-header .btn { white-space: nowrap; }
 .flyout-eyebrow {
   color: var(--text-muted);
   font-size: 11px;
+  line-height: 1.2;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 .flyout-title {
   font-size: 15px;
   font-weight: 600;
-  margin-top: 2px;
+  line-height: 1.25;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .flyout-close {
   background: transparent;

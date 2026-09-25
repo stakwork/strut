@@ -38,6 +38,10 @@
   --sp-5: 24px;
   --sp-6: 32px;
 
+  /* Sidebar brand, topbar and flyout headers share one height so their
+     bottom borders run as a single line across the window. */
+  --header-h: 48px;
+
   --r-sm: 4px;
   --r-md: 6px;
   --r-lg: 10px;
