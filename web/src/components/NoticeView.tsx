@@ -1,3 +1,4 @@
+import { displayActor } from "../actor";
 import { countLedger, lastVerifyLabel, noticeTone, parseNotice, type Ledger, type LedgerClaim } from "../notice";
 import { ago } from "./ClaimsPanel";
 import { ToolResultView } from "./ToolResultView";
@@ -108,7 +109,7 @@ export function NoticeView(props: {
             <span class="chat-notice-subject">{n.secretName ? `secret ${n.secretName}` : "the builder's question"}</span>
             <span class="chat-notice-meta">
               {n.secretName && <span class="claim-dim">{n.secretStored ? "stored" : "not stored"}</span>}
-              {n.by && <span class="claim-dim">by {n.by}</span>}
+              {n.by && <span class="claim-dim" title={n.by}>by {displayActor(n.by)}</span>}
             </span>
           </span>
           <span class={`chat-tool-chev${open ? " is-open" : ""}`} aria-hidden="true" />
