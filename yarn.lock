@@ -659,10 +659,10 @@ ai@^7.0.106:
     "@ai-sdk/provider" "4.0.17"
     "@ai-sdk/provider-utils" "5.0.45"
 
-aieo@^0.2.1:
-  version "0.2.1"
-  resolved "https://registry.npmjs.org/aieo/-/aieo-0.2.1.tgz"
-  integrity sha512-6czawAFW35T34Q+8zIXJJxPGJXRLYUEZpOLKYWP6m3OTKfqZXXb35JIBj0iVp1ydvRW2voRNxrJypRP3UNZ66g==
+aieo@^0.2.2:
+  version "0.2.2"
+  resolved "https://registry.yarnpkg.com/aieo/-/aieo-0.2.2.tgz#f138219c050fc1c01c8d1ea8fd7e06d2c5737219"
+  integrity sha512-hVCWmfOT3AKPzjrX3C3kq9ldQiqDc/0DW7MVHEiVRvE6yybsHrZJPLhs7+mipgfsCngrt1WqAFWMXTd6+UAWYA==
   dependencies:
     "@ai-sdk/anthropic" "4.0.56"
     "@ai-sdk/google" "4.0.74"
