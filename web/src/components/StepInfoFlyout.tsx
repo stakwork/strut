@@ -5,6 +5,7 @@ import { CloseIcon } from "../icons";
 import { StepTypeEntry } from "./AddStepDialog";
 import { relativeTime } from "../automation-form";
 import { errorMessage } from "../helpers";
+import { ConfirmButton } from "./ConfirmButton";
 
 // ── Step Info Flyout (read-only catalog view) ──────────────────────────────
 //
@@ -24,7 +25,6 @@ export function StepInfoFlyout(props: {
   const [sourceOpen, setSourceOpen] = useState(false);
   const [source, setSource] = useState<api.StepSourceResponse | null>(null);
   const [sourceLoading, setSourceLoading] = useState(false);
-  const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -69,7 +69,6 @@ export function StepInfoFlyout(props: {
       await props.onDelete();
     } catch (err) {
       setDeleteError(errorMessage(err));
-      setConfirming(false);
       setDeleting(false);
     }
   };
@@ -187,18 +186,9 @@ export function StepInfoFlyout(props: {
 
       {props.entry.source === "custom" && (
         <div class="flyout-footer">
-          {confirming ? (
-            <>
-              <span class="flyout-footer-note">Delete this tool and every version? {usage}</span>
-              <button class="btn" disabled={deleting} onClick={() => setConfirming(false)}>Cancel</button>
-              <button class="btn btn-danger" disabled={deleting} onClick={del}>Delete</button>
-            </>
-          ) : (
-            <>
-              {deleteError && <span class="flyout-footer-error">{deleteError}</span>}
-              <button class="btn btn-danger" onClick={() => setConfirming(true)}>Delete tool</button>
-            </>
-          )}
+          {deleteError && <span class="flyout-footer-error">{deleteError}</span>}
+          <ConfirmButton label="Delete tool" note={`Delete this tool and every version? ${usage}`} confirmLabel="Delete"
+            disabled={deleting} onConfirm={del} />
         </div>
       )}
     </div>

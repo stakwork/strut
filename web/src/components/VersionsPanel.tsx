@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
+import { ConfirmButton } from "./ConfirmButton";
 
 // ── Versions panel (a Workflow flyout tab) ─────────────────────────────────
 //
@@ -30,8 +31,10 @@ export function VersionsPanel(props: {
   /** The version the canvas shows (null = the active one). */
   viewVersion: string | null;
   onView: (version: string | null) => void;
-  /** Make `version` active — the caller confirms, reloads and refreshes. */
+  /** Make `version` active — the caller reloads and refreshes. */
   onActivate: (version: string) => Promise<void>;
+  /** Unpublished canvas edits: activating discards them, so it asks first. */
+  dirty: boolean;
 }) {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getWorkflowVersions>> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,9 +99,10 @@ export function VersionsPanel(props: {
                 <button class="btn" onClick={() => props.onView(active ? null : v.version)}>View</button>
               )}
               {!active && (
-                <button class="btn btn-primary" disabled={busy !== null} onClick={() => void activate(v.version)}>
-                  {busy === v.version ? "Activating…" : "Make active"}
-                </button>
+                <ConfirmButton class="btn btn-primary" label={busy === v.version ? "Activating…" : "Make active"}
+                  disabled={busy !== null} ask={props.dirty}
+                  note={`Discard your unpublished changes and make ${v.version} active?`} confirmLabel="Discard and activate"
+                  onConfirm={() => void activate(v.version)} />
               )}
             </div>
           </div>

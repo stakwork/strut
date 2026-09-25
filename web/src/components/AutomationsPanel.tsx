@@ -20,6 +20,7 @@ import {
   type TriggerForm,
 } from "../automation-form";
 import { errorMessage, humanize } from "../helpers";
+import { ConfirmButton } from "./ConfirmButton";
 
 // ── Automations panel (a Workflow flyout tab) ──────────────────────────────
 //
@@ -152,7 +153,8 @@ export function AutomationsPanel(props: {
                 <button class="btn" disabled={a.running} title={a.running ? "Its previous run is still going" : "Run once, right now"}
                   onClick={() => act(() => api.fireAutomation(props.workflow, a.id))}>Run now</button>
                 <button class="btn" onClick={() => setEditing(a)}>Edit</button>
-                <button class="btn btn-danger" onClick={() => { if (confirm(`Delete "${a.name}"?`)) void act(() => api.deleteAutomation(props.workflow, a.id)); }}>Delete</button>
+                <ConfirmButton label="Delete" note={`Delete "${a.name}"? It won't run again.`} confirmLabel="Delete"
+                  onConfirm={() => void act(() => api.deleteAutomation(props.workflow, a.id))} />
               </div>
             </div>
           ))}
