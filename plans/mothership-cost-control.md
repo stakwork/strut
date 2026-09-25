@@ -105,6 +105,7 @@ Two things make strut different from hive's other agents:
 | Strut core | Knows two generic hooks: `llmAuth(ctx) → {apiKey, baseUrl, headers}` and `resolveActor(c) → string \| undefined`. Macaroons live in one opt-in module, `src/mothership.ts` |
 | Where delegations live | A **second `FileSecretStore` instance** writing `mothership.json` beside `secrets.json` — same encryption, never on the services bag, never in the Secrets list. The value is the macaroon itself plus the user's virtual key |
 | Windowed quotas | Gateway-side, keyed by name and user — `agent_budgets` (per step, `1d`/`1w`) and the Bifrost customer budget (per user, daily). Independent of token lifetime |
+| Presented delegations | The second half, `plans/presented-delegations.md`: an **attenuated** macaroon presented on the request that launches a run, verified by strut against a trust registry of org keys, the actor read off the chain, billed at the *caller's* gateway. Standing = pushed, unattenuated, per person, by a host with the deployment key; presented = per run, by any machine a trusted org signed for — a guest from another org, or `strut/run-workflow` carrying its parent's cap |
 
 ## Design in one paragraph
 
@@ -283,7 +284,7 @@ prefix rule would have to be remembered by every present and future
 construction. Same AES-256-GCM under `STRUT_SECRET_KEY`, no new crypto,
 nothing new to back up. Names inside the file: `D_<hex(actor)>` (actors
 carry `-`, which secret names refuse). The value is JSON `{ macaroon,
-delegationId, apiKey, baseUrl, exp }` — `delegationId` is the standing
+delegationId, apiKey, baseUrl, exp, dims? }` — `delegationId` is the standing
 invocation's `run_id` and `exp` the earlier of the UA's and the
 invocation's, both copied out on `PUT` so `list()` is one decrypt per
 entry — dozens at most, daily. Nothing else lives in the file: a wiped
@@ -293,7 +294,9 @@ file-backed at `dataDir`, so the file survives restarts everywhere it
 matters.
 
 **Delegations.** `PUT /llm/delegations/:actor` with `{ macaroon, apiKey,
-baseUrl }`. Strut decodes the macaroon and checks its shape — `v: 1`, an
+baseUrl, dims? }` — `dims` being plain `x-bf-dim-*` labels strut sends on
+every call for that actor, hive's `workspace` (`plans/org-gateway.md` §4).
+Strut decodes the macaroon and checks its shape — `v: 1`, an
 `invocation`, an **empty** `attenuations` list, `agents` containing
 `strut-agent`, `max_steps: 0`, a positive `max_cost_usd`, parseable `exp`s
 — and rejects anything else with a 400. It cannot check signatures: it has
@@ -575,6 +578,9 @@ already sets; a per-user lifetime-of-delegation cap is the ceiling.
   stored hive-side; `kill:<delegationId>` and `revoke_user_before` cover v1.
 - **Any user model in strut** beyond the opaque actor. **Non-LLM spend** (Exa).
 - **Callbacks from strut to hive.**
+- **A credential presented on the request** — a guest from another org, a
+  dispatch carrying its own grant. v1 knows pushed delegations only; the
+  presented half is `plans/presented-delegations.md`.
 - **Actor renames.** A GitHub login change alters `{login}-{id}` and
   orphans `owner`; a transfer endpoint exists for the manual fix. Deferred.
 - **Cap continuity across a long pause.** `cost:run` expires ~9h after the

@@ -657,13 +657,14 @@ Three repos, in this order; each part is small.
   (`hive/src/services/strut-target.ts`) — the row `benchmark` uses; the
   resolver, the row's `swarmId` and every "keep the target a policy" rule
   of `plans/code-change.md` §5 apply unchanged.
-- **Delegation.** `ensureStrutDelegation` on THAT swarm must not fail
-  silently: today the push is gated per workspace slug by
-  `BIFROST_ENABLED`, never throws, and the dispatcher discards its result,
-  so a workspace swarm that never received the delegation refuses the
-  first LLM call with a Mothership error (the root cause behind
-  stakwork/hive#5345). Either the gate opens for every workspace that has
-  a swarm, or a skipped or failed push fails the tool call with the reason.
+- **Delegation.** Superseded by `plans/org-gateway.md`: one gateway per
+  org, and one delegation per user fanned out to every strut in the org,
+  so a workspace swarm holds the user's authorization before any dispatch
+  (the root cause behind stakwork/hive#5345 was a per-target push gated
+  per workspace slug by `BIFROST_ENABLED`, never throwing, its result
+  discarded). The pre-dispatch check stays as the fast path, and a check
+  that finds no delegation fails the tool call with the reason instead of
+  dispatching into a certain refusal.
 - **The read-only token.** Hive holds only user OAuth tokens today
   (`getUserAppTokens`, `hive/src/lib/githubApp.ts`; `env.example` has
   `GITHUB_CLIENT_ID` / `_SECRET` / `GITHUB_APP_SLUG` and no app private

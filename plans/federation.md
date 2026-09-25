@@ -26,6 +26,15 @@
 > authored with the actor's token, and the next reseed on every strut is
 > the distribution. Read-through, the roll-up, cost and dispatch-through
 > are unchanged.
+>
+> **Revised 2026-09-24:** the gateway topology moved to
+> `plans/org-gateway.md` — **one gateway per org**, every strut in the org
+> billing through it, one delegation per user fanned out across the org.
+> §5 here is now a pointer; the arguments it made against *chaining*
+> gateways stand and argue for consolidation. Nothing else in this plan
+> changes: a run still executes and reads secrets where the workflow
+> lives, dispatch-through still forwards the actor, and read-through, the
+> roll-up and the library are as they were.
 
 ## Problem
 
@@ -66,12 +75,12 @@ two processes.
 | Peer identity | **Assigned by whoever registers the peer** — hive uses `swarmId`. No self-declared strut id (strut has none today and would have to coordinate one). A run's cross-strut handle is `(peer, workflow, runId)` as the reader names the peer: hive's handle, unchanged (§3, §4) |
 | Version identity | `name` + `contentHash` — already the dedup key in both stores (`src/version.ts:9-11`; content-addressed version nodes, `src/graph/workspace-store.ts` header). Same YAML anywhere = same version (§4) |
 | Peer credential | A bearer token the host pushes into a fourth encrypted `FileSecretStore` file, `peers.json` — the delegation and actor-secret pattern. Peers should hold a **read-scoped** token; today's tokens are all-or-nothing, and the fix is a `lab:read` JWT scope in mcp. A central strut never holds a swarm key (§3) |
-| Actor across the chain | The same opaque string everywhere: hive derives it from the global `User` (`{login}-{id}`, `hive/src/services/bifrost/reconciler.ts:676-682`), so it is valid on every strut in every org. Forwarded as `x-strut-actor` on peer calls; the peer's own `resolveActor` decides whether to honor it (§3) |
-| Cost | **Bill where the run executes**, against the delegation hive already pushes per target. Roll spend up by reading, through one new field, `RunSummary.costUsd` (§5) |
+| Actor across the chain | The same opaque string everywhere: hive derives it from the global `User` (`{login}-{id}`, `hive/src/services/bifrost/reconciler.ts:676-682`), so it is valid on every strut in every org. Forwarded as `x-strut-actor` on peer calls; the peer's own `resolveActor` decides whether to honor it. The delegation for that string is on every strut in the org (the fan-out, `plans/org-gateway.md` §3), so a peer bills the forwarded principal without a per-dispatch push (§3) |
+| Cost | **One gateway per org** (`plans/org-gateway.md`): every strut in the org bills through it, under a delegation hive fans out to every strut for every member. A run still executes where the workflow lives; the org gateway's log, split by a `workspace` dim, is the LLM-side truth across the org. `RunSummary.costUsd` stays for strut-side per-run spend (§5) |
 | Secrets | **Never cross a boundary.** A dispatch-through run reads the executing leaf's own deployment and actor secrets, pushed there by hive (§6) |
 | Library | **Git is the hub.** A workflow's origin is `WorkflowMetadata.source: { repo, path }`, set by the seeder beside `category` and `owner`; a strut seeds from several repos; an **export** is a PR to the file the workflow came from (else `STRUT_HOME_REPO` + a directory convention), authored with the actor's `GITHUB_TOKEN`, never a push to the default branch. Distribution is the next reseed everywhere. No strut-to-strut copy and no `visibility` flag: the repo is the visibility (§2.3, §8) |
 | Roll-up store | The existing projector over a remote `RunStore`, each peer into its **own graph namespace** on the central's Neo4j — uniqueness is already per `(node_key, namespace)`, so no schema change and no id rewriting. Summaries only: never events, transcripts, artifacts, secrets (§9) |
-| Dispatch-through | A lib step, `strut/run-workflow`, later. The child runs on the peer under the peer's secrets and delegation; the parent's log records the handle; cancel propagates cooperatively. **Hive keeps dispatching directly** (§2.2) |
+| Dispatch-through | A lib step, `strut/run-workflow`, later. The child runs on the peer under the peer's secrets and its own fanned-out delegation, billed at the org gateway; the parent's log records the handle; cancel propagates cooperatively. **Hive keeps dispatching directly** (§2.2) |
 | Leaf independence | Nothing on a leaf ever awaits a peer: reads are initiated by the reader, the library is pulled, automations need no peer. A central being down costs a stale library, never a broken leaf (§10) |
 
 ## Design in one paragraph
@@ -92,9 +101,10 @@ repo) with the actor's token; the next reseed on every swarm is the
 distribution. `search_library` reads peers for the track record a repo
 cannot hold. A central strut is any strut with many peers whose automations
 project their run summaries into its graph — one namespace per peer — and
-run reflection workflows over the result. A run always executes, bills, and
-reads secrets on the strut that holds the workflow; a strut that wants work
-done elsewhere launches it there through a step and records the handle.
+run reflection workflows over the result. A run always executes and reads
+secrets on the strut that holds the workflow, and bills through the org's
+one gateway (`plans/org-gateway.md`); a strut that wants work done elsewhere
+launches it there through a step and records the handle.
 This is the shape the graph already federates by: a walker on the other
 server, not a shared database (`plans/docs/paper.md:46-48`).
 
@@ -218,7 +228,12 @@ A lib step under `src/steps/lib/strut/`:
 - **Secrets and billing** happen on the peer, for the forwarded principal
   — §5, §6. That is why the step forwards `ctx.principal`, exactly as
   `meta/run-workflow` forwards it within one process
-  (`src/steps/lib/meta/run-workflow.ts:29-35`).
+  (`src/steps/lib/meta/run-workflow.ts:29-35`). The peer's Mothership
+  finds that principal in its own file — the fan-out put it there
+  (`plans/org-gateway.md` §3) — and calls the org gateway stamped with
+  the peer's `workspace`. The child run carries its own cap, not the
+  parent's; the forwarded per-run grant that would bound the tree is
+  deferred (`plans/org-gateway.md` §6).
 - **Hive's handle if hive ever dispatched through an org strut:** the row
   would hold the org strut's `(swarmId, workflow, runId)`, the leaf run
   being that run's child; the org run's own callback fires when it ends.
@@ -388,7 +403,10 @@ macaroon `user_id` is the same string (`hive/src/services/bifrost/macaroon-issue
 Across orgs it still does not collide. A central resolves actors the way
 any strut does — its host's hook; standalone, `x-strut-actor` with the key
 (`src/auth.ts:70-74`). What an actor may *do* on a peer is decided by the
-peer, from the credential, never from the forwarded name.
+peer, from the credential, never from the forwarded name. What a peer
+needs beyond the string is a delegation for it, and with one gateway per
+org that record is the same on every strut in the org — hive fans it out
+per member, so a dispatch pushes nothing (`plans/org-gateway.md` §3, §5).
 
 ## 4. Handles and visibility
 
@@ -424,86 +442,44 @@ peer, from the credential, never from the forwarded name.
   peer's history is the central's projection (§2.4), which is also what
   survives a peer being decommissioned.
 
-## 5. Cost across the chain — no gateway chaining
+## 5. Cost across the chain — one gateway per org
 
-**What exists is already the right shape.** One Bifrost per swarm at
-`:8181` (`hive/src/services/bifrost/resolve.ts:39-54`); one VK per
-(workspace, user) in that swarm's Bifrost (`hive/prisma/schema.prisma:359-367`);
-one org signing key per `SourceControlOrg` (`hive/src/services/bifrost/macaroon-org-keys.ts:63-153`)
-registered in every swarm's trust registry (`hive/src/services/bifrost/trust-reconciler.ts:352-385`);
-one standing delegation per (user, swarm) pushed to that swarm's strut
-(`strut-delegation.ts:301-356`). The gateway's own design says this is the
-model: one macaroon presented directly to each swarm
-(`gateway/plans/cryptographic-identity.md:43-51,589-593`), and a "central
-aggregator" that **imports logs after the fact, not a gateway in the path**
-(`gateway/plans/phases/phase-11-symmetric-recursive-authorization.md:284-286,502-507`).
+**Decided 2026-09-24, in `plans/org-gateway.md`:** the org has ONE
+gateway — the org default swarm's Bifrost — and every strut in the org
+bills through it, always. Hive fans one delegation per user out to every
+strut in the org (same macaroon, same VK, same `baseUrl`, a `workspace`
+dim per target), the per-workspace gate goes, and the gateway's dashboard
+groups the org's spend by `workspace` → user → workflow → step. Strut
+needs one additive field (`dims` on the delegation record); nothing about
+how a run executes, reads secrets, or attenuates its links changes.
 
 So a leaf run launched from an org strut (§2.2) is billed like any run on
-that leaf: the leaf's mothership finds the forwarded principal's delegation
-in its own `mothership.json` (`src/mothership.ts:69-77`), appends its run
-and step links (`:274-294,326-337`), and calls the leaf's gateway with the
-leaf VK. Which macaroon: the one hive pushed to *that* target. Attenuated by
-whom: that leaf's strut. Presented to which gateway: that leaf's. Nothing
-new anywhere — "pushes are per target" is the rule `code-change.md` §5
-already states, and `STRUT_MOTHERSHIP_REQUIRED=1` (set by sphinx-swarm)
-makes a missing delegation a step error rather than a direct call.
+that leaf: the leaf's Mothership finds the forwarded principal in its own
+`mothership.json` (`src/mothership.ts:302`), appends its run and step
+links (`:274-295,332-336`), and calls the org gateway with the VK hive
+pushed — the same one every strut in the org holds for that user.
+`STRUT_MOTHERSHIP_REQUIRED=1` (set by sphinx-swarm) still makes a missing
+delegation a step error rather than a direct call.
 
-**Why not chain gateways** (leaf gateway → org gateway with a further HMAC
-link). The chain math allows it — a link is keyless and an org gateway that
-trusts the same org key would verify the whole chain
-(`gateway/auth/ts/src/attenuate.ts:45-51`, `gateway/auth/go/verify.go:272-328`)
-— and everything around the math does not:
+**Why one gateway rather than chained ones.** The earlier draft of this
+section rejected chaining a leaf gateway into an org gateway on four
+grounds — the plugin reads `x-macaroon` inbound only; a link cannot say
+"via swarm L" without a wire-format bump; a realm per gateway makes a
+chained macaroon `realm_not_permitted`; two Redis stores count one call
+twice — and concluded "gateways stay per swarm". The grounds stand. What
+they argue against is *chaining*; consolidation has none of them, and
+chaining's only payoff, a cap that spans swarms, is what one gateway gives
+by construction. The costs of consolidation (one point of failure for the
+org's LLM traffic, prompts transiting the org swarm's host) are weighed
+in `plans/org-gateway.md` §8.
 
-1. Nothing sends a macaroon outbound. The plugin reads `x-macaroon`
-   inbound only (`gateway/internal/hooks/transport_prehook.go:57-58`);
-   providers are the real APIs with real keys (`gateway/data/config.json:14-65`);
-   the wrapper's only upstreams are the local bifrost-http and plugin
-   server (`gateway/wrapper/main.go:81-93`).
-2. A link cannot say "via swarm L": caveats are a fixed struct, re-marshaled
-   before the HMAC, so any extra field fails `attenuation_invalid`
-   (`gateway/auth/go/types.go:162-170`, `jcs.go:16-26`, `hmac.go:15-23`),
-   and the TS verifier would accept what Go rejects (`auth/ts/src/verify.ts:300`)
-   — a wire-format bump either way.
-3. One `realm_id` per gateway; a macaroon carrying leaf realm budgets hits
-   `realm_not_permitted` at the org gateway (`gateway/internal/auth/enforcement.go:142-185`).
-4. Two gateways, two Redis stores under one fixed `bifrost:` prefix
-   (`gateway/internal/redisclient/client.go:47,158`): the same call counted
-   twice, caps enforced twice on different totals, kills and revocations
-   that do not propagate, two transparency-log leaves per call.
-
-Every one of those is gateway work whose only payoff is a cap that spans
-swarms — which nobody has asked for, and which the per-user daily customer
-budget per swarm and the per-(user, swarm) delegation ceiling already
-bound. **Decided: gateways stay per swarm.** Revisit only if an org-wide
-per-user cap becomes a requirement; the honest version of that is a shared
-Redis with a per-gateway key prefix, not a chain.
-
-**Rolling spend up instead.** Two reads, no gateway change:
-
-- **`RunSummary.costUsd`** (§2.4) — what strut knows from its own steps'
-  reported cost, per run, on the summary. The central's projection carries
-  it; "what did this workflow cost across the org last month" is a query
-  over `StrutRun` nodes. This is the number the reflection loop uses, and it
-  does not need any gateway credential — the mothership plan already ruled
-  the provisioning token out of strut's hands (§Non-goals there).
-- **A `swarm-id` dim for the gateway's own view.** Any `x-bf-dim-*` header
-  passes through and lands on the log row (`gateway/internal/pluginctx/dims.go:41-79`);
-  `root-agent` is such a dim today, unknown to the gateway
-  (`src/mothership.ts:339-351`). Hive knows the swarm id and already pushes
-  the delegation, so `PUT /llm/delegations/:actor` gains an optional `dims`
-  map strut sends on every call (`x-bf-dim-swarm-id`, `x-bf-dim-org-id`
-  when hive wants it — `org-id` is signature-bound and canonicalized from
-  the claims on verified traffic, `dims.go:113-176`). Hive's Gateway tab
-  then groups by swarm with a one-line addition to the plugin's filter list
-  (`gateway/internal/adminapi/observability.go:899-918`; Bifrost's
-  `/api/logs` already accepts any `metadata_<key>`, `logstore_client.go:198-203`).
-  Billing dims then read `org → swarm → workflow (session-id) → step
-  (agent-name)` from one gateway's log, no chain required.
-
-What changes: strut, one summary field and one optional `dims` on the
-delegation record; hive, the `dims` in its push; the gateway, one filter
-key (optional). `src/mothership.ts`'s links do not change, and
-`mothership.test.ts`'s chain assertions stay exactly as they are.
+**What stays in this plan.** `RunSummary.costUsd` (§2.4) — what strut
+knows from its own steps' reported cost, per run, on the summary — so
+the central's projection carries spend and the reflection loop reads it
+without any gateway credential. The org-wide LLM-side truth is now the
+org gateway's log; no cross-swarm aggregator is needed. The `dims`
+mechanism this section once proposed for swarm grouping is the `workspace`
+dim of `plans/org-gateway.md` §4, riding on the delegation record.
 
 ## 6. Secrets across the chain
 
@@ -530,8 +506,9 @@ Confirmed, and made a rule:
   in git mean something.
 - **What a central strut is not allowed to hold:** any swarm's `API_TOKEN`
   (admin of that lab); any user's actor secrets other than its own
-  operators' (it runs nobody's coding workflows); any user's delegation
-  *for a leaf* (a leaf's mothership file is the leaf's); raw transcripts or
+  operators' (it runs nobody's coding workflows); any delegation of
+  another org's users (within an org the fan-out puts every member's on
+  every strut, the org strut included — `plans/org-gateway.md` §3); raw transcripts or
   artifacts of peer runs (summaries only, §2.4). What it does hold: read
   tokens per peer; its own provider keys or its own delegations for the
   operator actors that own its reflection automations (their spend is the
@@ -669,7 +646,7 @@ answer, in order of how mechanically they can be computed:
 | Which steps **regress**: a step type's error share rose org-wide | `stepCounts` summed per type per week — `step-stats.ts` over every peer instead of one workspace | `GET /steps/:type/stats` (`src/step-stats.ts:1-17`) |
 | Which **params keep winning**: an `eval/evolve-loop` or `eval/optimize` run whose `output` names `bestVersion` / `bestPrompt` on several peers, or a promoted default other peers still lack | summaries' `output` (`evolve-loop` output shape, `mcp/src/lab/eval/steps/evolve-loop.ts:581-597`) joined to versions by hash; `promotes` declarations (`src/core.ts:129-140`) | EVOLVE_SPEC §3, §9; the lab's harvey/gaia loops, whose results today live only in their run records |
 | Which **claims went stale or refuted** org-wide, and which contracts most workflows share | projected ledgers | `plans/claims.md` §5 |
-| What the fleet **spends**, by org → swarm → workflow → step | `costUsd` on summaries; the gateway's per-swarm view for the LLM-side truth (§5) | `mothership-cost-control.md` §6 |
+| What the fleet **spends**, by org → swarm → workflow → step | `costUsd` on summaries; the org gateway's log by `workspace` for the LLM-side truth (`plans/org-gateway.md` §4) | `mothership-cost-control.md` §6 |
 
 **The artifact a human reads.** A dated markdown report — `vision/<period>`
 in the central's artifacts (`ctx.services.artifacts`), linked from its run
@@ -719,7 +696,9 @@ nothing it has.
 - **No strut-to-strut writes.** An artifact moves between struts through
   a repo and a reviewed PR (§2.3); read-through is the only strut-to-strut
   channel, and it reads.
-- **No gateway chaining** (§5).
+- **No gateway chaining, and no dual-mode billing** (§5,
+  `plans/org-gateway.md`): one gateway per org, and every strut in the org
+  always uses it.
 - **No new server kind** (§1).
 
 ## Non-goals (v1)
@@ -766,9 +745,10 @@ nothing it has.
    claims. Useful alone: the long view, on the org strut first.
 6. **Dispatch-through** (§2.2). `strut/run-workflow` with control
    propagation; the UI drill-through over `/peers/:id`.
-7. **Gateway dims** (§5), whenever hive wants swarm grouping in its
-   Gateway tab: `dims` on the delegation push, the filter key in the
-   plugin.
+7. **Gateway dims** — folded into `plans/org-gateway.md` (the `workspace`
+   dim on the delegation record: its steps 0 and 4). That plan's rollout is
+   independent of every step above and unblocks `repo_agent` on workspace
+   struts, so it goes first.
 
 1, 2 and 4 are independent of each other; 4's export half waits on
 `code-change.md` phase 2, its seeding half does not. 3 gates cross-org
@@ -816,9 +796,10 @@ peers, nothing within an org. 6 depends on 2 only.
   `step.end`; cancel of the parent cancels the child (`run-control`'s
   cooperative assertions, across the two apps); a peer that refuses the
   actor fails the step with the peer's message. End to end through the
-  compose gateway (`npm run test:gateway`): the child run's calls bill
-  under the *leaf's* delegation with the forwarded principal as `user_id`,
-  and a principal with no delegation on the leaf is a step error — the
+  compose gateway (`npm run test:gateway`): the child run's calls land
+  on the org gateway with the forwarded principal as `user_id` and the
+  leaf's `workspace` dim, and a principal with no delegation on the leaf is
+  a step error — the
   smoke script gains that case.
 - **Costs.** `costUsd` on the summary equals `reportedCost` over the same
   run's events; absent on summaries written before the field.
@@ -831,10 +812,11 @@ peers, nothing within an org. 6 depends on 2 only.
 `(swarmId, workflow, strutRunId)` stays opaque and stable — a peer's run id
 is the id the peer minted, and a rolled-up view names the peer by hive's
 `swarmId` — and `resolveStrutTarget` stays the one place "which strut"
-changes (§7 adds the `embed` purpose there and nowhere else). Pushes stay
-per target. Two things are added beside it, not to it: a third push,
-`ensureStrutPeers(target)`, for the org strut; and an optional `dims` on the
-delegation push. Hive continues to dispatch code-change runs directly to
+changes (§7 adds the `embed` purpose there and nowhere else). Actor-secret
+pushes stay per target; delegations fan out per org (`plans/org-gateway.md`
+§3). Two things are added beside it, not to it: a third push,
+`ensureStrutPeers(target)`, for the org strut; and the `dims` on the
+delegation push (`plans/org-gateway.md` §4). Hive continues to dispatch code-change runs directly to
 the resolved swarm; dispatch-through (§2.2) is for workflows, not for hive.
 Phase 2's `git/push` and `github/create-pr` gain a second consumer, the
 export (§2.3) — one more reason to land them as the generic lib steps that
