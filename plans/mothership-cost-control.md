@@ -283,7 +283,7 @@ prefix rule would have to be remembered by every present and future
 construction. Same AES-256-GCM under `STRUT_SECRET_KEY`, no new crypto,
 nothing new to back up. Names inside the file: `D_<hex(actor)>` (actors
 carry `-`, which secret names refuse). The value is JSON `{ macaroon,
-delegationId, apiKey, baseUrl, exp }` — `delegationId` is the standing
+delegationId, apiKey, baseUrl, exp, dims? }` — `delegationId` is the standing
 invocation's `run_id` and `exp` the earlier of the UA's and the
 invocation's, both copied out on `PUT` so `list()` is one decrypt per
 entry — dozens at most, daily. Nothing else lives in the file: a wiped
@@ -293,7 +293,9 @@ file-backed at `dataDir`, so the file survives restarts everywhere it
 matters.
 
 **Delegations.** `PUT /llm/delegations/:actor` with `{ macaroon, apiKey,
-baseUrl }`. Strut decodes the macaroon and checks its shape — `v: 1`, an
+baseUrl, dims? }` — `dims` being plain `x-bf-dim-*` labels strut sends on
+every call for that actor, hive's `workspace` (`plans/org-gateway.md` §4).
+Strut decodes the macaroon and checks its shape — `v: 1`, an
 `invocation`, an **empty** `attenuations` list, `agents` containing
 `strut-agent`, `max_steps: 0`, a positive `max_cost_usd`, parseable `exp`s
 — and rejects anything else with a 400. It cannot check signatures: it has
