@@ -36,7 +36,7 @@ strut/
 ├── docker-compose.yml     # test/local compose: that image on the graph backend + a neo4j:5 container (named volumes for neo4j data, /data/workspace, /data/models, uv cache)
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
-│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types
+│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the three output markers — withAccessedNodes / withMessages / withMedia (readers accessedNodesOf / messagesOf / mediaOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
 │   ├── step-ref.ts        # `type: name@vN` — a PINNED custom-step version (parseStepRef / baseType); a bare type runs the active version. Events keep the bare `stepType`; the pin rides on `step.start.stepVersion`
@@ -1197,6 +1197,15 @@ and the child env is scrubbed by construction).
     `toolFilter`); unknown types are skipped. This is what lets mcp's `/lab`
     `gitsee-setup-and-run` drive a QA harness (boot/browser/observe/assess) as
     the core `agent` instead of a forked loop.
+    A tool-step the model must SEE — a `browser/screenshot` step's frame —
+    marks its output with `withMedia(output, [{ mediaType, data }])` (the
+    third marker, beside `withAccessedNodes` and `withMessages`; `mediaOf`
+    reads it): `buildRegistryTools` sets the tool's `toModelOutput`
+    (`registryToolModelOutput`), so the model gets the output as JSON text
+    plus one file part per entry, while templates, the event log and
+    `run.json` see only the plain output (non-enumerable; `maskDeep` carries
+    it). The recorded session (`step.end.messages`, the transcript endpoint)
+    keeps what the model saw, file parts included.
     Entries may be **glob patterns** (`expandAgentTools`): `"jarvis/*"` grants
     every registry step in that namespace (matches sorted, deduped; a pattern
     matching nothing warns). `"agent"` itself is grantable — that's the

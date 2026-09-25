@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { flow, step, defineStep, withAccessedNodes, accessedNodesOf, withMessages, messagesOf } from "./core.js";
+import { flow, step, defineStep, withAccessedNodes, accessedNodesOf, withMessages, messagesOf, withMedia, mediaOf } from "./core.js";
 
 // ── step() ─────────────────────────────────────────────────────────────────
 
@@ -237,5 +237,26 @@ describe("withMessages()", () => {
     assert.equal(messagesOf(withMessages({}, [])), undefined);
     assert.equal(messagesOf(withMessages({}, undefined)), undefined);
     assert.equal(messagesOf(null), undefined);
+  });
+});
+
+// ── Media marker (withMedia / mediaOf) ──────────────────────────────────────
+
+describe("withMedia()", () => {
+  it("marks an output with non-enumerable media, invisible to JSON, keys and spreads", () => {
+    const media = [{ mediaType: "image/png", data: "iVBORw0KGgo=", filename: "1.png" }];
+    const out = withMedia({ path: "shots/1.png" }, media);
+    assert.equal(mediaOf(out), media);
+    assert.deepEqual(Object.keys(out), ["path"]);
+    assert.equal(JSON.stringify(out), '{"path":"shots/1.png"}');
+    assert.equal(mediaOf({ ...out }), undefined);
+    assert.deepEqual(out, { path: "shots/1.png" });
+  });
+
+  it("leaves primitives and empty lists unmarked", () => {
+    assert.equal(withMedia("text", [{ mediaType: "image/png", data: "x" }]), "text");
+    assert.equal(mediaOf(withMedia({}, [])), undefined);
+    assert.equal(mediaOf(withMedia({}, undefined)), undefined);
+    assert.equal(mediaOf(null), undefined);
   });
 });

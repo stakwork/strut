@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { SecretsCapability } from "../../capabilities.js";
 import { resolveModel, createWebTools, stepAuth } from "../../llm.js";
-import { accessedNodesOf, defineStep, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMessages } from "../../core.js";
+import type { ToolResultOutput } from "@ai-sdk/provider-utils";
+import { accessedNodesOf, defineStep, mediaOf, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
 import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
@@ -525,6 +526,9 @@ function summarizeForEvent(v: unknown): string {
  * code path. Pure + offline-testable (inject the `tool` factory + a fake
  * registry; no model/network). Unknown step-types are skipped. Returns a record
  * keyed by the sanitized tool name.
+ *
+ * Each tool's `toModelOutput` is `registryToolModelOutput`: a step that marks
+ * its output with `withMedia` shows the model the media beside the JSON.
  */
 export function buildRegistryTools(
   names: string[] | undefined,
@@ -565,9 +569,47 @@ export function buildRegistryTools(
           : { ...base, agentTool: true };
         return def.run(parsed, childCtx);
       },
+      toModelOutput: ({ output }: { output: unknown }) => registryToolModelOutput(output),
     });
   }
   return out;
+}
+
+/**
+ * What the model sees of a registry tool's result. An unmarked output gets
+ * the AI SDK's own default — a string as text, anything else as JSON — so
+ * nothing changes for existing tools. An output marked with `withMedia`
+ * becomes a content result: the same JSON as a text part, then one file part
+ * per media entry (bytes sent as base64), which is how a `browser/screenshot`
+ * step shows the model the frame it took. The `execute` result itself stays
+ * the plain marked object, so the event log, templates and `maskDeep` see
+ * only the JSON; the recorded session (`step.end.messages`) keeps what the
+ * model saw, file parts included.
+ */
+export function registryToolModelOutput(output: unknown): ToolResultOutput {
+  const media = mediaOf(output);
+  if (!media) {
+    return typeof output === "string" ? { type: "text", value: output } : { type: "json", value: toJsonValue(output) };
+  }
+  return {
+    type: "content",
+    value: [
+      { type: "text", text: JSON.stringify(output) },
+      ...media.map((m) => ({
+        type: "file" as const,
+        data: { type: "data" as const, data: typeof m.data === "string" ? m.data : Buffer.from(m.data).toString("base64") },
+        mediaType: m.mediaType,
+        ...(m.filename ? { filename: m.filename } : {}),
+      })),
+    ],
+  };
+}
+
+/** The SDK's own coercion of a tool result to JSON (`undefined` → null). */
+function toJsonValue(value: unknown): Extract<ToolResultOutput, { type: "json" }>["value"] {
+  if (value === undefined) return null;
+  const s = JSON.stringify(value);
+  return s === undefined ? null : JSON.parse(s);
 }
 
 /**
@@ -607,14 +649,17 @@ export function maskDeep(value: unknown, values: string[]): unknown {
   return value;
 }
 
-/** Re-attach the markers a rebuilt container lost: node refs as they are
- *  (ids, not secrets); a session masked like everything else — a tool result
- *  echoing `$KEY` sits inside it too. */
+/** Re-attach the markers a rebuilt container lost: node refs and media as
+ *  they are (ids and image bytes, not secrets); a session masked like
+ *  everything else — a tool result echoing `$KEY` sits inside it too. */
 function carryMarkers<T>(rebuilt: T, original: unknown, values: string[]): T {
   const session = messagesOf(original);
-  return withMessages(
-    withAccessedNodes(rebuilt, accessedNodesOf(original) ?? []),
-    session ? (maskDeep(session, values) as unknown[]) : undefined,
+  return withMedia(
+    withMessages(
+      withAccessedNodes(rebuilt, accessedNodesOf(original) ?? []),
+      session ? (maskDeep(session, values) as unknown[]) : undefined,
+    ),
+    mediaOf(original),
   );
 }
 
