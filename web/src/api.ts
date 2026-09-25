@@ -28,6 +28,13 @@ export function artifactUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
+/** The text of an artifact, for the inline viewer (markdown / text files). */
+export async function fetchArtifactText(path: string): Promise<string> {
+  const res = await fetch(artifactUrl(path));
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.text();
+}
+
 // ── API key ────────────────────────────────────────────────────────────────
 // When the server sets STRUT_API_KEY, gated routes need `Authorization:
 // Bearer`. A host that spawns strut (desktop app) hands the per-launch key to

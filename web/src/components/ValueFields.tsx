@@ -1,6 +1,10 @@
+import { useState } from "preact/hooks";
 import { formatJson, humanize } from "../helpers";
 import { CopyButton } from "./CopyButton";
+import { ArtifactViewer } from "./ArtifactViewer";
 import { artifactUrl, isArtifactPath } from "../api";
+import { artifactKind } from "../artifact-view";
+import { EyeIcon } from "../icons";
 
 // ── Copyable value rendering ────────────────────────────────────────────────
 //
@@ -10,7 +14,9 @@ import { artifactUrl, isArtifactPath } from "../api";
 // `formatJson` returns strings RAW and pretty-prints everything else, and the
 // copy button writes that same text — so copying never yields JSON escapes.
 // A string field holding an artifact path (`/artifacts/<runId>/…`) renders
-// as a link to the served file, opened in a new tab; copy still yields the path.
+// as a link to the served file, opened in a new tab, plus — for a file type
+// the viewer can render (`artifact-view.ts`) — an eye that opens it in a
+// modal (`ArtifactViewer`); copy still yields the path.
 
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -18,6 +24,9 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 export function CopyBlock(props: { value: unknown; label?: string; blockClass?: string }) {
   const text = formatJson(props.value);
+  const artifact = isArtifactPath(props.value) ? props.value : null;
+  const viewable = artifact != null && artifactKind(artifact) != null;
+  const [viewing, setViewing] = useState(false);
   return (
     <div class="flyout-field">
       <div class="flyout-field-head">
@@ -25,10 +34,18 @@ export function CopyBlock(props: { value: unknown; label?: string; blockClass?: 
         <CopyButton value={text} label={props.label ? `Copy ${props.label}` : "Copy"} />
       </div>
       <pre class={props.blockClass ?? "flyout-json"}>
-        {isArtifactPath(props.value)
-          ? <a class="artifact-link" href={artifactUrl(props.value)} target="_blank" rel="noopener">{text}</a>
+        {artifact
+          ? <>
+              <a class="artifact-link" href={artifactUrl(artifact)} target="_blank" rel="noopener">{text}</a>
+              {viewable && (
+                <button class="artifact-view-btn" onClick={() => setViewing(true)} aria-label="View" title="View">
+                  <EyeIcon />
+                </button>
+              )}
+            </>
           : text}
       </pre>
+      {viewing && artifact && <ArtifactViewer path={artifact} onClose={() => setViewing(false)} />}
     </div>
   );
 }
