@@ -372,12 +372,12 @@ describe("chat endpoints", () => {
       const first = await post({ message: "start", model: "opus" });
       assert.equal(first.status, 202);
       const { chatId } = (await first.json()) as { chatId: string };
-      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5");
+      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5-5");
       await settled(chatId);
 
       // No pick on the next turn → the chat keeps its model.
       assert.equal((await post({ chatId, message: "again" })).status, 202);
-      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5");
+      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5-5");
       await settled(chatId);
 
       // A new pick on an existing chat switches it.
