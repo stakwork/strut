@@ -103,7 +103,7 @@ params:
 
 Core steps: `http`, `exec`, `log`, `if`, `loop`, `foreach`, `subflow`, `wait`, `pack`, `llm`, `agent`.
 
-Library steps ship with the engine and load their SDKs only when used: `github/*`, `slack/*`, `x/*`, `gdrive/*`, `html/*`, `graph/*`, and `meta/*` (steps that author and run other workflows).
+Library steps ship with the engine and load their SDKs only when used: `github/*`, `slack/*`, `x/*`, `gdrive/*`, `html/*`, `graph/*`, `hive/*` (claim/release a Hive pod), and `meta/*` (steps that author and run other workflows).
 
 Custom steps are one file each. Drop it in the workspace and it is ready to use:
 
