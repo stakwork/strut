@@ -589,6 +589,83 @@ body.is-resizing-rows * {
   margin-top: var(--sp-1);
 }
 
+/* ─── artifact viewer ─────────────────────────────────────────── */
+
+.artifact-dialog {
+  width: min(960px, 92vw);
+  max-height: 88vh;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.artifact-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.artifact-dialog-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifact-dialog-open {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.artifact-dialog-open:hover { text-decoration: underline; }
+.artifact-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-4);
+}
+.artifact-img {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.artifact-media {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  margin: 0 auto;
+}
+.artifact-audio {
+  display: block;
+  width: 100%;
+}
+.artifact-frame {
+  display: block;
+  width: 100%;
+  height: 74vh;
+  border: 0;
+  background: #fff;
+}
+.artifact-text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+.artifact-status {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.artifact-status.tone-error { color: var(--danger); }
+
 /* ─── secrets dialog ──────────────────────────────────────────── */
 
 /* Only the list scrolls: header, filter and the add form stay put however
@@ -1051,6 +1128,28 @@ body.is-resizing-flyout * {
   text-decoration: none;
 }
 .artifact-link:hover { text-decoration: underline; }
+/* The eye beside an artifact link: opens the file rendered in a modal
+   (ArtifactViewer) instead of raw in a new tab. */
+.artifact-view-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  width: 20px;
+  height: 20px;
+  margin-left: var(--sp-2);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.artifact-view-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
 .flyout-fields {
   display: flex;
   flex-direction: column;
