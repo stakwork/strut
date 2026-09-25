@@ -11,6 +11,9 @@
 // the returned `app` wherever you like (under another Hono router,
 // behind Express, or just call `strut.listen(port)`).
 
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createStrut, type Strut } from "./createStrut.js";
 import { FileRunStore } from "./store.js";
 import { FileChatStore } from "./chat-store.js";
@@ -81,10 +84,27 @@ export async function startServer(port?: number, host?: string): Promise<number>
   return strut.listen(port, host);
 }
 
-// Run directly when invoked as a script.
-const isMain =
-  process.argv[1]?.endsWith("server.ts") ||
-  process.argv[1]?.endsWith("server.js");
-if (isMain) {
+/** True only when THIS file is the process entry — `tsx src/server.ts`,
+ *  `node build/server.js`, or a symlink to either — decided by comparing
+ *  the entry's canonical path with this module's own. A name check
+ *  (`endsWith("server.js")`) once booted the default server inside any HOST
+ *  whose own entry was called `server.js` and imported the barrel, before
+ *  the host's createStrut() ran (EADDRINUSE on :3000, or worse, a healthy
+ *  container serving the wrong strut). */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const canonical = (p: string) => {
+    const abs = path.resolve(p);
+    try {
+      return realpathSync(abs);
+    } catch {
+      return abs;
+    }
+  };
+  return canonical(entry) === canonical(fileURLToPath(import.meta.url));
+}
+
+if (isMainModule()) {
   startServer();
 }
