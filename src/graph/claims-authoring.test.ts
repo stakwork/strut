@@ -188,6 +188,61 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     for (const id of ids[0]!["ids"] as string[]) assert.match(id, /^[a-z0-9]{32}$/);
   });
 
+  it("the `claims:` block: the same contract in the file — applied by the meta twin and the chat tool (merged with the arg by text), recorded at boot for YAML that never passed a door", async () => {
+    const BLOCK = `claims:
+  - text: the answer is bare
+    checks:
+      - type: exec
+        config: { cmd: "true" }
+  - text: nothing is written
+    checks:
+      - description: read the run's events for a write
+`;
+    const WF = (name: string) => `name: ${name}\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n${BLOCK}`;
+    const texts = async (name: string) => (await listed({ kind: "workflow", name })).map((c) => [c.text, c.speaker] as const).sort();
+
+    // The meta twin: block + arg → one contract, deduped by text.
+    const r = await authoring.publishWorkflow("cand-block", WF("cand-block"), undefined, undefined, [
+      { text: "the answer is bare", checks: [EXEC] }, // already in the block → not doubled
+      { text: "the log line is short", checks: [EXEC] },
+    ]);
+    assert.equal(r.error, undefined, r.error);
+    assert.deepEqual([r.claims!.count, r.claims!.added, r.claims!.existing], [3, 3, 0]);
+    assert.deepEqual(await texts("cand-block"), [["nothing is written", "ai"], ["the answer is bare", "ai"], ["the log line is short", "ai"]]);
+    const again = await authoring.publishWorkflow("cand-block", WF("cand-block"));
+    assert.deepEqual([again.claims!.added, again.claims!.existing], [0, 2], "republishing the same file is a no-op");
+
+    // The chat tool, with no `claims` arg at all: the file carries the contract.
+    const tools = buildTools({ workspace: ws, registry, store: new MemoryRunStore(), getRegistry, claims }) as Record<string, { execute: (a: unknown) => Promise<Record<string, unknown>> }>;
+    const viaChat = (await tools["create_workflow"]!.execute({ name: "chat-block", yaml: WF("chat-block") })) as { error?: string; claims?: { added: number; count: number } };
+    assert.equal(viaChat.error, undefined, viaChat.error);
+    assert.deepEqual([viaChat.claims!.added, viaChat.claims!.count], [2, 2]);
+
+    // A seeder writes YAML straight into the store: no door, no claims — until the reconcile.
+    await ws.publishWorkflowByContent("seeded-block", WF("seeded-block"), "seeded", undefined, "seeder");
+    await ws.publishWorkflowByContent("unstamped-block", WF("unstamped-block"));
+    assert.deepEqual(await texts("seeded-block"), []);
+    const first = await claims.reconcileWorkflowClaims();
+    assert.deepEqual(
+      first.map((o) => [o.name, o.added, o.existing, o.error]).sort(),
+      [["cand-block", 0, 2, undefined], ["chat-block", 0, 2, undefined], ["seeded-block", 2, 0, undefined], ["unstamped-block", 2, 0, undefined]],
+    );
+    assert.deepEqual(await texts("seeded-block"), [["nothing is written", "seeder"], ["the answer is bare", "seeder"]], "the speaker is the workflow's publisher");
+    assert.deepEqual(await texts("unstamped-block"), [["nothing is written", "yaml"], ["the answer is bare", "yaml"]], "…else `yaml`");
+    assert.deepEqual(await claims.reconcileWorkflowClaims(["seeded-block"]), [{ name: "seeded-block", added: 0, existing: 2 }], "idempotent, and scoped by name");
+
+    // A block this deployment cannot honor is an outcome, never a throw.
+    await ws.publishWorkflowByContent("broken-block", `name: broken-block\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\nclaims:\n  - text: t\n    checks:\n      - type: no/such-step\n        config: {}\n`);
+    const [broken] = await claims.reconcileWorkflowClaims(["broken-block"]);
+    assert.match(broken!.error!, /no\/such-step/);
+    assert.deepEqual(await texts("broken-block"), []);
+    // A malformed block never reaches the store.
+    await assert.rejects(
+      () => ws.publishWorkflowByContent("bad-block", `name: bad-block\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\nclaims:\n  - text: t\n    checks: []\n`),
+      /invalid `claims:` block/,
+    );
+  });
+
   it("defaults: free code checks fire always; anything presumed paid — llm, agent, a subflow hiding one — fires on_change", async () => {
     await ws.publishWorkflowByContent("judge", "name: judge\nsteps:\n  - id: j\n    type: llm\n    config: { prompt: ok }\n");
     await ws.publishWorkflowByContent("matcher", "name: matcher\nsteps:\n  - id: m\n    type: exec\n    config: { cmd: 'true' }\n");

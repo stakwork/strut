@@ -57,7 +57,10 @@ export const claimsArgSchema = z
   .array(claimSpecSchema)
   .optional()
   .describe(
-    "The contract: claims about how this should behave, each with its checks. Author them IN THE SAME CALL as the code, before the first run. This arg only ever ADDS — a claim whose text exactly matches an active one is skipped, so republishing with the same list is a no-op; reword with edit_claim, remove with retire_claim.",
+    "The contract: claims about how this should behave, each with its checks. Author them IN THE SAME CALL as the code, before the first run. This arg only ever ADDS — a claim whose text exactly matches an active one is skipped, so republishing with the same list is a no-op; reword with edit_claim, remove with retire_claim. A workflow may instead carry the same list as a top-level `claims:` block in its YAML (the contract then travels with the file: seeded, exported, versioned); the two are merged by text.",
   );
+
+/** The `claims:` block of a workflow YAML — the publish arg's shape, in the file. */
+export type ClaimsBlock = NonNullable<z.infer<typeof claimsArgSchema>>;
 
 export const CLAIMS_OFF = "Claims need the graph-backed workspace (this deployment keeps workflows and steps on the filesystem).";

@@ -330,6 +330,29 @@ describe("createStrut", () => {
     assert.equal(missing.status, 404);
   });
 
+  it("POST /workflows: a malformed claims: block is a 400; a good one publishes on a filesystem workspace (no layer to record it) and stays in the file", async () => {
+    const strut = await createStrut({ workspace: new WorkspaceManager(tempDir), store: new MemoryRunStore(), serveUi: false, enableChat: false });
+    const post = (body: unknown) => strut.app.request("/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const yamlWith = (claims: string) => `name: contract\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\nclaims:\n${claims}`;
+
+    const bad = await post({ name: "contract", yaml: yamlWith("  - text: t\n    checks: []\n") });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { error: string }).error, /invalid `claims:` block/);
+
+    const good = await post({ name: "contract", yaml: yamlWith("  - text: says hi\n    checks:\n      - type: exec\n        config: { cmd: \"true\" }\n") });
+    assert.equal(good.status, 201);
+    const body = (await good.json()) as { version: string; renamed: boolean; claims?: unknown };
+    assert.equal(body.renamed, false, "the refused publish left nothing behind, so the name was free");
+    assert.equal(body.claims, undefined, "no claims layer on a filesystem workspace — nothing to report");
+    assert.match(await (await strut.app.request(`/workflows/contract/${body.version}`)).text(), /claims:\n\s+- text: says hi/);
+    assert.deepEqual(await strut.reconcileClaims(), []);
+
+    // The same block beside `steps` is rendered into the YAML.
+    const viaSteps = await post({ name: "contract2", steps: [{ id: "a", type: "log", config: { message: "hi" } }], claims: [{ text: "says hi", checks: [{ type: "exec", config: { cmd: "true" } }] }] });
+    assert.equal(viaSteps.status, 201);
+    assert.match(await (await strut.app.request("/workflows/contract2/v1")).text(), /claims:\n\s+- text: says hi/);
+  });
+
   it("records stepHashes on every launch path, and keeps a single-step run only under step:<type>", async () => {
     const ws = new WorkspaceManager(tempDir);
     await ws.publishStep(

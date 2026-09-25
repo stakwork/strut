@@ -283,6 +283,24 @@ The publish result gains `claims: <count>`; zero returns a warning the
 assistant has to answer. Editing a claim or a check never publishes a
 workflow version; it supersedes the node instead.
 
+**The `claims:` block — the same door, in the file.** A workflow YAML may
+carry its contract as a top-level `claims:` block, the arg's exact shape
+(`readClaimsBlock`, `src/workspace.ts`): shape-checked at every publish
+like `input:` on every backend, so a malformed block fails the publish;
+read where a claims layer exists and merged with the publish call's arg by
+text (`mergeClaimSpecs`) — the chat tools, `meta/publish-workflow` and the
+HTTP publish routes (a PERSON's stamp there) all apply it. The block is
+content — it rides in the version hash like `params` — and it is how a
+contract travels: seeded from a repo, exported to one, versioned with the
+steps. For YAML that reaches the store without passing a door (the lab's
+boot seeder, a script), `createStrut` records every workflow's ACTIVE block
+at boot (`reconcileWorkflowClaims`: additive and idempotent, speaker = the
+workflow's `publisher` else `yaml`, one registry resolve for the pass; a
+block naming a step the deployment lacks is a warning, never a failed
+boot), and `strut.reconcileClaims()` re-runs it. Consequence: a
+YAML-declared claim retired or reworded in the UI comes back at the next
+boot until the YAML changes — the file is the declaration.
+
 **Door two — on their own.** On any subject ref:
 
 - claims: `add_claim(subjects, text, checks)` (one or MORE subjects, at
@@ -934,7 +952,9 @@ number exists).
    Ledger in run results + the `[verify-notification]` through the
    notifier (§5).
 6. Harness wiring (§6) — in the **stakgraph** repo (`mcp/src/lab`), after
-   strut 3–5 are released there: seed the contract claims on `gaia-produce`,
+   strut 3–5 are released there: seed the contract claims on `gaia-produce`
+   (a `claims:` block in its YAML — the boot reconcile records it, so the
+   seeder needs no claims code),
    `meta/attach-claim` in `gaia-evolve-gen`, `meta/verify-run` before
    `canddigest`, the fitness `meta/add-evidence`, per-claim pass rates in
    `gaia/digest-results`. Not needed for step 8.

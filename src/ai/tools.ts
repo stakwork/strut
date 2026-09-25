@@ -6,8 +6,9 @@ import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
 import { runStep, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
-import type { ClaimActor } from "../claims-authoring.js";
+import { mergeClaimSpecs, type ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
+import { claimsBlockOf } from "../workspace.js";
 import { automationDraftSchema, automationInputSchema, triggerSchema } from "../automations.js";
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
@@ -377,7 +378,8 @@ export function buildTools(deps: AiDeps): ToolSet {
       execute: async ({ name, yaml, description, category, ...rest }) => {
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
-        const contract = (rest as { claims?: ClaimsArg }).claims;
+        // The YAML's own `claims:` block and the arg are one contract (merged by text).
+        const contract = claims ? mergeClaimSpecs(claimsBlockOf(yaml), (rest as { claims?: ClaimsArg }).claims) : undefined;
         const invalid = await claims?.validateClaimsArg(contract, actor);
         if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         const { name: finalName, version } = await deps.workspace.createWorkflow(
@@ -439,7 +441,8 @@ export function buildTools(deps: AiDeps): ToolSet {
         }
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
-        const contract = (rest as { claims?: ClaimsArg }).claims;
+        // The YAML's own `claims:` block and the arg are one contract (merged by text).
+        const contract = claims ? mergeClaimSpecs(claimsBlockOf(yaml), (rest as { claims?: ClaimsArg }).claims) : undefined;
         const invalid = await claims?.validateClaimsArg(contract, actor);
         if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
         let result;

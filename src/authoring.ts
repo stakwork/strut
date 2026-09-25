@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import type { AnyStepDef, RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
-import type { WorkspaceStore } from "./workspace.js";
+import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
 import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { stepHashesFor } from "./closure.js";
 import {
+  mergeClaimSpecs,
   toSubjectRef,
   type ClaimsAuthoring,
   type CheckSpecInput,
@@ -651,7 +652,18 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       });
     },
 
-    async publishWorkflow(name, yaml, description, category, contract) {
+    async publishWorkflow(name, yaml, description, category, contractArg) {
+      // The YAML's own `claims:` block is the same contract as the arg
+      // (merged by text) — read only where a claims layer can record it; on
+      // a filesystem workspace the block stays in the file, nothing is dropped.
+      let contract = contractArg;
+      if (claims) {
+        try {
+          contract = mergeClaimSpecs(claimsBlockOf(yaml), contractArg);
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+      }
       const invalid = await claimsGate(contract);
       if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
       const entry = await findWorkflow(name);

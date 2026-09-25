@@ -115,7 +115,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1144 unit tests across 64 files (+ 127 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1151 unit tests across 64 files (+ 219 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -166,7 +166,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1139 tests, ~5s
+npm test                    # 1151 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -977,7 +977,17 @@ and the child env is scrubbed by construction).
   stale | unknown`) is COMPUTED ON READ per (claim, subject) by
   `claimStatus()` and never stored. Authoring: the `claims` arg on the
   publish tools + `add_claim` / `edit_claim` / … and their `meta/*` twins
-  (`src/claims-authoring.ts`). Evidence: every top-level run is verified,
+  (`src/claims-authoring.ts`), or a top-level **`claims:` block in the
+  workflow YAML** — the arg's shape, in the file, shape-checked at every
+  publish like `input:` (`readClaimsBlock`), merged with the arg by text,
+  applied by every door (chat tools, `meta/publish-workflow`, `POST
+  /workflows[/:name]`). It is how a SEEDED template carries its contract:
+  `createStrut` records every workflow's active block at boot
+  (`reconcileWorkflowClaims`, idempotent; speaker = the workflow's
+  `publisher`, else `yaml`) and `strut.reconcileClaims()` re-runs it, so a
+  seeder that writes YAML straight into the store needs no claims code. The
+  block is content: it rides in the version hash, and a claim retired in
+  the UI comes back at the next boot until the YAML drops it. Evidence: every top-level run is verified,
   detached, by `src/verify.ts`, hooked where `services.onRunEnd` fires;
   check runs carry `origin: "verify"` and are never verified. The builder
   reads its contract in tool RESULTS (`src/ledger.ts`): run results list

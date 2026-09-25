@@ -9,6 +9,7 @@ import { z } from "zod";
 import { createStrut, type Strut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import type { AuthoringCapability } from "./authoring.js";
+import { mergeClaimSpecs } from "./claims-authoring.js";
 
 /**
  * The authoring capability (services.authoring) + the meta/* lib steps —
@@ -33,6 +34,26 @@ const echoStep = (type: string, n: number) => `export default {
 
 const logFlow = (name: string, msg: string) =>
   `name: ${name}\nsteps:\n  - id: say\n    type: log\n    config:\n      message: "${msg}"\n`;
+
+describe("mergeClaimSpecs (pure): a YAML claims: block and a publish arg are one contract", () => {
+  const exec = { type: "exec", config: { cmd: "true" } };
+  it("block first, then arg entries the block does not already carry — by exact trimmed text", () => {
+    const block = [{ text: "a", checks: [exec] }, { text: "b", checks: [exec] }];
+    const arg = [{ text: " b ", checks: [{ description: "look" }] }, { text: "c", checks: [exec] }];
+    assert.deepEqual(mergeClaimSpecs(block, arg), [block[0], block[1], arg[1]]);
+  });
+  it("either side alone passes through; both empty is undefined", () => {
+    const one = [{ text: "a", checks: [exec] }];
+    assert.deepEqual(mergeClaimSpecs(undefined, one), one);
+    assert.deepEqual(mergeClaimSpecs(one, undefined), one);
+    assert.equal(mergeClaimSpecs(undefined, undefined), undefined);
+    assert.equal(mergeClaimSpecs([], []), undefined);
+  });
+  it("leaves the layer's own validation to it: an empty text is kept for normalizeClaims to refuse", () => {
+    const bad = [{ text: "", checks: [exec] }];
+    assert.deepEqual(mergeClaimSpecs(bad, bad), [bad[0], bad[0]]);
+  });
+});
 
 describe("authoring capability (the meta surface)", () => {
   let tempDir: string;

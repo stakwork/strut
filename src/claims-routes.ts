@@ -26,7 +26,9 @@ export interface ClaimsRoutesDeps {
   verifier: Verifier | null;
 }
 
-const PERSON: ClaimActor = { publisher: "person", scoped: false };
+/** The HTTP door's actor — a PERSON: unscoped, and stamped as one. Shared
+ *  with the publish routes, which apply a YAML `claims:` block the same way. */
+export const PERSON: ClaimActor = { publisher: "person", scoped: false };
 
 export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   const claims = deps.claims;
