@@ -2,6 +2,7 @@ import { useState } from "preact/hooks";
 import * as api from "../api";
 import { CloseIcon, ClockIcon } from "../icons";
 import { FlyoutResizer } from "./FlyoutResizer";
+import { errorMessage } from "../helpers";
 import { ClaimsPanel, claimsSummary } from "./ClaimsPanel";
 import { ParamsPanel } from "./ParamsPanel";
 import { AutomationsPanel } from "./AutomationsPanel";
@@ -38,7 +39,6 @@ export function claimsTitle(claims: api.ClaimsResponse): string {
   return `${sum.total} claim${sum.total === 1 ? "" : "s"}: ${sum.refuted} refuted, ${sum.open} unverified, ${sum.todos} waiting on someone`;
 }
 
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
 
 export function WorkflowFlyout(props: {
   workflow: string;
@@ -82,7 +82,7 @@ export function WorkflowFlyout(props: {
     try {
       await props.onDelete();
     } catch (err) {
-      setDeleteError(message(err));
+      setDeleteError(errorMessage(err));
       setDeleting(false);
     }
   };

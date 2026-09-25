@@ -4,24 +4,29 @@ import { FlyoutResizer } from "./FlyoutResizer";
 import { CloseIcon } from "../icons";
 import { StepTypeEntry } from "./AddStepDialog";
 import { relativeTime } from "../automation-form";
+import { errorMessage } from "../helpers";
 
 // ── Step Info Flyout (read-only catalog view) ──────────────────────────────
 //
 // Opened from the sidebar's Steps catalog. Shows what a step type IS —
 // description, config schema, source — independent of any workflow. The
 // editable counterpart (StepEditFlyout) covers a step instance's config;
-// this covers the type itself.
+// this covers the type itself. Custom tools can be deleted from here.
 
 export function StepInfoFlyout(props: {
   entry: StepTypeEntry;
   onClose: () => void;
   onOpenWorkflow: (name: string) => void;
+  onDelete: () => Promise<void>;
 }) {
   const [stats, setStats] = useState<api.StepStatsResponse | null | "error">(null);
   const [fields, setFields] = useState<api.FieldDesc[] | null>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [source, setSource] = useState<api.StepSourceResponse | null>(null);
   const [sourceLoading, setSourceLoading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     setFields(null);
@@ -43,6 +48,29 @@ export function StepInfoFlyout(props: {
         .then(setSource)
         .catch(() => setSource({ type: props.entry.type, source: null, origin: null }))
         .finally(() => setSourceLoading(false));
+    }
+  };
+
+  // Allowed even while workflows use it: the inline confirm names them, since
+  // their runs will fail when they reach this tool. Usage covers active
+  // versions only.
+  const users = stats && stats !== "error" ? stats.workflows : null;
+  const usage = users == null
+    ? "Couldn't check which workflows use it."
+    : users.length === 0
+      ? "No workflow uses it."
+      : `Still used by ${users.map((w) => w.direct ? w.name : `${w.name} (via subflow)`).join(", ")} — `
+        + `${users.length === 1 ? "its runs" : "their runs"} will fail when they reach it.`;
+
+  const del = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await props.onDelete();
+    } catch (err) {
+      setDeleteError(errorMessage(err));
+      setConfirming(false);
+      setDeleting(false);
     }
   };
 
@@ -156,6 +184,23 @@ export function StepInfoFlyout(props: {
           )}
         </div>
       </div>
+
+      {props.entry.source === "custom" && (
+        <div class="flyout-footer">
+          {confirming ? (
+            <>
+              <span class="flyout-footer-note">Delete this tool and every version? {usage}</span>
+              <button class="btn" disabled={deleting} onClick={() => setConfirming(false)}>Cancel</button>
+              <button class="btn btn-danger" disabled={deleting} onClick={del}>Delete</button>
+            </>
+          ) : (
+            <>
+              {deleteError && <span class="flyout-footer-error">{deleteError}</span>}
+              <button class="btn btn-danger" onClick={() => setConfirming(true)}>Delete tool</button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

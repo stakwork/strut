@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { ago } from "./ClaimsPanel";
+import { errorMessage } from "../helpers";
 
 // ── Versions panel (a Workflow flyout tab) ─────────────────────────────────
 //
@@ -10,7 +11,6 @@ import { ago } from "./ClaimsPanel";
 // then use that version. Activating publishes nothing: the next Publish still
 // gets a fresh number.
 
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** When a version was published: relative within a day, then the date. */
 const published = (iso: string) => {
@@ -38,7 +38,7 @@ export function VersionsPanel(props: {
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = () =>
-    api.getWorkflowVersions(props.workflow).then(setData, (err) => setError(message(err)));
+    api.getWorkflowVersions(props.workflow).then(setData, (err) => setError(errorMessage(err)));
   useEffect(() => { void refresh(); }, [props.workflow]);
 
   const activate = async (v: string) => {
@@ -48,7 +48,7 @@ export function VersionsPanel(props: {
       await props.onActivate(v);
       await refresh();
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     } finally {
       setBusy(null);
     }

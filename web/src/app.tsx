@@ -1146,7 +1146,8 @@ export function App() {
       {/* Step info flyout — read-only catalog view of a step type. */}
       {infoStep && (
         <StepInfoFlyout key={infoStep.type} entry={infoStep} onClose={() => setInfoStep(null)}
-          onOpenWorkflow={(name) => { setSelectedWf(name); setSelectedRun(null); setEvents([]); }} />
+          onOpenWorkflow={(name) => { setSelectedWf(name); setSelectedRun(null); setEvents([]); }}
+          onDelete={async () => { await api.deleteStep(infoStep.type); setInfoStep(null); await refreshStepTypes(); }} />
       )}
 
       {/* Workflow flyout — params (edits → Publish, a new version), claims

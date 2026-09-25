@@ -19,7 +19,7 @@ import {
   type Repeat,
   type TriggerForm,
 } from "../automation-form";
-import { humanize } from "../helpers";
+import { errorMessage, humanize } from "../helpers";
 
 // ── Automations panel (a Workflow flyout tab) ──────────────────────────────
 //
@@ -49,7 +49,6 @@ const NTH: { value: TriggerForm["nth"]; label: string }[] = [
 
 const DAY_NAME: Record<api.Day, string> = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
 
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
 
 const when = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -77,7 +76,7 @@ export function AutomationsPanel(props: {
       setList(await api.listAutomations(props.workflow));
       setError(null);
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
   }, [props.workflow]);
 
@@ -93,7 +92,7 @@ export function AutomationsPanel(props: {
       await fn();
       setError(null);
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
     await refresh();
     props.onChanged();
@@ -229,7 +228,7 @@ function AutomationEditor(props: {
       } catch (err) {
         if (mine === seq.current) {
           setPreview(null);
-          setPreviewError(message(err));
+          setPreviewError(errorMessage(err));
         }
       }
     }, 250);
@@ -256,7 +255,7 @@ function AutomationEditor(props: {
       else await api.createAutomation(props.workflow, draft);
       props.onSaved();
     } catch (err) {
-      setSaveError(message(err));
+      setSaveError(errorMessage(err));
       setSaving(false);
     }
   };

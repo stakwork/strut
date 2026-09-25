@@ -865,6 +865,7 @@ body.is-resizing-flyout * {
   padding: var(--sp-3) var(--sp-5);
   border-top: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--sp-3);
@@ -881,6 +882,12 @@ body.is-resizing-flyout * {
   flex: 1;
   font-size: 12px;
   color: var(--danger);
+}
+/* An inline confirm's warning: its own line, the buttons below it. */
+.flyout-footer-note {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* ─── topbar extras ──────────────────────────────────────────── */
