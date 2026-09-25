@@ -2,6 +2,8 @@ import { useState } from "preact/hooks";
 import * as api from "../api";
 import { CloseIcon, ClockIcon } from "../icons";
 import { FlyoutResizer } from "./FlyoutResizer";
+import { errorMessage } from "../helpers";
+import { ConfirmButton } from "./ConfirmButton";
 import { ClaimsPanel, claimsSummary } from "./ClaimsPanel";
 import { ParamsPanel } from "./ParamsPanel";
 import { AutomationsPanel } from "./AutomationsPanel";
@@ -38,7 +40,6 @@ export function claimsTitle(claims: api.ClaimsResponse): string {
   return `${sum.total} claim${sum.total === 1 ? "" : "s"}: ${sum.refuted} refuted, ${sum.open} unverified, ${sum.todos} waiting on someone`;
 }
 
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
 
 export function WorkflowFlyout(props: {
   workflow: string;
@@ -65,6 +66,8 @@ export function WorkflowFlyout(props: {
   viewVersion: string | null;
   onViewVersion: (version: string | null) => void;
   onActivateVersion: (version: string) => Promise<void>;
+  /** Unpublished canvas edits — making a version active discards them. */
+  dirty: boolean;
   /** Every run of the workflow, all versions — the footer's totals. */
   runs: api.RunSummary[];
 }) {
@@ -76,13 +79,12 @@ export function WorkflowFlyout(props: {
   const failed = props.runs.filter((r) => r.status === "error").length;
 
   const del = async () => {
-    if (!confirm(`Delete "${props.workflow}"?\n\nEvery version, schedule and run goes with it.`)) return;
     setDeleting(true);
     setDeleteError(null);
     try {
       await props.onDelete();
     } catch (err) {
-      setDeleteError(message(err));
+      setDeleteError(errorMessage(err));
       setDeleting(false);
     }
   };
@@ -145,6 +147,7 @@ export function WorkflowFlyout(props: {
           viewVersion={props.viewVersion}
           onView={props.onViewVersion}
           onActivate={props.onActivateVersion}
+          dirty={props.dirty}
         />
       )}
 
@@ -157,7 +160,8 @@ export function WorkflowFlyout(props: {
             {failed > 0 && <span class="badge badge-danger">{failed} failed</span>}
           </span>
           {deleteError && <span class="flyout-footer-error">{deleteError}</span>}
-          <button class="btn btn-danger" disabled={deleting} onClick={del}>Delete workflow</button>
+          <ConfirmButton label="Delete workflow" note={`Delete "${props.workflow}"? Every version, schedule and run goes with it.`}
+            confirmLabel="Delete" disabled={deleting} onConfirm={del} />
         </div>
       )}
     </div>

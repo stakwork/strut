@@ -1,6 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { ago } from "./ClaimsPanel";
+import { errorMessage } from "../helpers";
+import { ConfirmButton } from "./ConfirmButton";
 
 // ── Versions panel (a Workflow flyout tab) ─────────────────────────────────
 //
@@ -10,7 +12,6 @@ import { ago } from "./ClaimsPanel";
 // then use that version. Activating publishes nothing: the next Publish still
 // gets a fresh number.
 
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** When a version was published: relative within a day, then the date. */
 const published = (iso: string) => {
@@ -30,15 +31,17 @@ export function VersionsPanel(props: {
   /** The version the canvas shows (null = the active one). */
   viewVersion: string | null;
   onView: (version: string | null) => void;
-  /** Make `version` active — the caller confirms, reloads and refreshes. */
+  /** Make `version` active — the caller reloads and refreshes. */
   onActivate: (version: string) => Promise<void>;
+  /** Unpublished canvas edits: activating discards them, so it asks first. */
+  dirty: boolean;
 }) {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getWorkflowVersions>> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = () =>
-    api.getWorkflowVersions(props.workflow).then(setData, (err) => setError(message(err)));
+    api.getWorkflowVersions(props.workflow).then(setData, (err) => setError(errorMessage(err)));
   useEffect(() => { void refresh(); }, [props.workflow]);
 
   const activate = async (v: string) => {
@@ -48,7 +51,7 @@ export function VersionsPanel(props: {
       await props.onActivate(v);
       await refresh();
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -96,9 +99,10 @@ export function VersionsPanel(props: {
                 <button class="btn" onClick={() => props.onView(active ? null : v.version)}>View</button>
               )}
               {!active && (
-                <button class="btn btn-primary" disabled={busy !== null} onClick={() => void activate(v.version)}>
-                  {busy === v.version ? "Activating…" : "Make active"}
-                </button>
+                <ConfirmButton class="btn btn-primary" label={busy === v.version ? "Activating…" : "Make active"}
+                  disabled={busy !== null} ask={props.dirty}
+                  note={`Discard your unpublished changes and make ${v.version} active?`} confirmLabel="Discard and activate"
+                  onConfirm={() => void activate(v.version)} />
               )}
             </div>
           </div>

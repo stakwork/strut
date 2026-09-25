@@ -68,3 +68,7 @@ export function humanize(name: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+/** An API error as a one-liner for the UI: fetchJSON's `/path: ` prefix dropped. */
+export function errorMessage(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
+}

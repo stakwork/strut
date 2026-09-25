@@ -1,10 +1,12 @@
+import { useState } from "preact/hooks";
 import * as api from "../api";
 import { StepData } from "../flow-to-canvas";
-import { formatJson, statusTone } from "../helpers";
+import { errorMessage, formatJson, statusTone } from "../helpers";
 import { CloseIcon } from "../icons";
 import { Markdown, hasMarkdownField } from "./Markdown";
 import { ValueFields } from "./ValueFields";
 import { FlyoutResizer } from "./FlyoutResizer";
+import { ConfirmButton } from "./ConfirmButton";
 import yaml from "js-yaml";
 
 export interface StepRunEvents {
@@ -27,10 +29,20 @@ export function StepRunFlyout(props: {
   events: StepRunEvents;
   onClose: () => void;
   /** When set, offers "Re-run from here" — durable resume with `from` at this
-   *  step (RUN_CONTROL_SPEC §5.2). Only passed for non-live runs. */
-  onRerunFrom?: () => void;
+   *  step (RUN_CONTROL_SPEC §5.2). Only passed for non-live runs. Rejects
+   *  with the server's reason, shown under the button. */
+  onRerunFrom?: () => Promise<void>;
 }) {
   const { step } = props;
+  const [rerunError, setRerunError] = useState<string | null>(null);
+  const rerun = async () => {
+    setRerunError(null);
+    try {
+      await props.onRerunFrom?.();
+    } catch (err) {
+      setRerunError(`Re-run failed: ${errorMessage(err)}`);
+    }
+  };
   const disp = props.events;
   // LLM steps (agent, llm) report their dollar cost in the output.
   const cost = (disp.end?.output as { cost?: unknown } | null | undefined)?.cost;
@@ -69,11 +81,12 @@ export function StepRunFlyout(props: {
             {props.onRerunFrom && (
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Resume</span>
-                <button class="btn" style="padding:2px 10px;font-size:11px;" onClick={props.onRerunFrom}>
-                  Re-run from here
-                </button>
+                <ConfirmButton popover class="btn btn-sm" label="Re-run from here" tone="primary"
+                  note={`Re-run from "${step.id}"? This tool, everything downstream of it, and later iterations of an enclosing loop re-execute. Completed work upstream replays from the journal at zero cost.`}
+                  confirmLabel="Re-run" onConfirm={rerun} />
               </div>
             )}
+            {rerunError && <div class="auto-error">{rerunError}</div>}
             {disp.start?.ts && (
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Started</span>

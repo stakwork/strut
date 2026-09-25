@@ -9,7 +9,7 @@ import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
 import "./styles/base.css";
 import "./styles/components.css";
-import { deepEqual, normalizeSteps, statusTone } from "./helpers";
+import { deepEqual, errorMessage, normalizeSteps, statusTone } from "./helpers";
 import { load as loadPref, save as savePref } from "./storage";
 import { searchSteps } from "./step-search";
 import { ChatFlyout } from "./components/ChatFlyout";
@@ -31,6 +31,8 @@ import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
+import { ConfirmButton } from "./components/ConfirmButton";
+import { useDismiss } from "./use-dismiss";
 import { bindingsFromInputBlock, deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
 
 // A nested run-execution the user has drilled into. `pathPrefix` is the
@@ -546,16 +548,26 @@ export function App() {
   const runIsResumable =
     runControlStatus === "stale" || runControlStatus === "error" || runControlStatus === "cancelled";
 
+  // A failed cancel / pause / resume shows in a popover under the buttons
+  // until dismissed or the next attempt. Stored with its run, so it drops
+  // away when the selection moves on.
+  const [runFailure, setRunFailure] = useState<{ run: string; msg: string } | null>(null);
+  const runControlError = runFailure?.run === selectedRun ? runFailure.msg : null;
+  const runErrorRef = useRef<HTMLDivElement>(null);
+  const dismissRunError = useCallback(() => setRunFailure(null), []);
+  useDismiss(runErrorRef, runControlError != null, dismissRunError);
+
   const handleCancelRun = useCallback(async () => {
     if (!selectedWf || !selectedRun) return;
-    if (!confirm("Cancel this run? Any nested runs it launched are cancelled too — each stops before its next tool (the in-flight tool finishes and is journaled).")) return;
-    try { await api.cancelRun(selectedWf, selectedRun); } catch (e) { alert(`Cancel failed: ${(e as Error).message}`); }
+    setRunFailure(null);
+    try { await api.cancelRun(selectedWf, selectedRun); } catch (e) { setRunFailure({ run: selectedRun, msg: `Cancel failed: ${errorMessage(e)}` }); }
     await refreshRuns(selectedWf);
   }, [selectedWf, selectedRun, refreshRuns]);
 
   const handlePauseRun = useCallback(async () => {
     if (!selectedWf || !selectedRun) return;
-    try { await api.pauseRun(selectedWf, selectedRun); } catch (e) { alert(`Pause failed: ${(e as Error).message}`); }
+    setRunFailure(null);
+    try { await api.pauseRun(selectedWf, selectedRun); } catch (e) { setRunFailure({ run: selectedRun, msg: `Pause failed: ${errorMessage(e)}` }); }
     await refreshRuns(selectedWf);
   }, [selectedWf, selectedRun, refreshRuns]);
 
@@ -563,17 +575,18 @@ export function App() {
   // (stale / error / cancelled) by replaying its journal.
   const handleResumeRun = useCallback(async () => {
     if (!selectedWf || !selectedRun) return;
-    try { await api.resumeRun(selectedWf, selectedRun); } catch (e) { alert(`Resume failed: ${(e as Error).message}`); return; }
+    setRunFailure(null);
+    try { await api.resumeRun(selectedWf, selectedRun); } catch (e) { setRunFailure({ run: selectedRun, msg: `Resume failed: ${errorMessage(e)}` }); return; }
     await refreshRuns(selectedWf);
     setRunEpoch((n) => n + 1); // re-tail: the log continues past its old terminal
   }, [selectedWf, selectedRun, refreshRuns]);
 
   // "Re-run from here" (§5.2 `from` invalidation): the chosen step, its
   // dependents, and later loop iterations re-execute; upstream replays free.
+  // The flyout confirms, and shows why when this rejects.
   const handleRerunFrom = useCallback(async (path: string) => {
     if (!selectedWf || !selectedRun) return;
-    if (!confirm(`Re-run from "${path}"?\n\nThis tool, everything downstream of it, and later iterations of an enclosing loop re-execute. Completed work upstream replays from the journal at zero cost.`)) return;
-    try { await api.resumeRun(selectedWf, selectedRun, path); } catch (e) { alert(`Re-run failed: ${(e as Error).message}`); return; }
+    await api.resumeRun(selectedWf, selectedRun, path);
     setFlyoutStepId(null);
     setFlyoutStepIndex(null);
     await refreshRuns(selectedWf);
@@ -645,10 +658,9 @@ export function App() {
 
   // Roll back (or forward) to a stored version: it becomes what Run,
   // schedules and the canvas use. Nothing is published, so unsaved canvas
-  // edits would be lost — ask first.
+  // edits are lost — the Versions panel asks first.
   const handleActivateVersion = useCallback(async (version: string) => {
     if (!selectedWf) return;
-    if (isDirty && !confirm("Discard your unpublished changes and switch the active version?")) return;
     await api.setActiveWorkflowVersion(selectedWf, version);
     await refreshWorkflows();
     setViewVersion(null);
@@ -659,7 +671,7 @@ export function App() {
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
     setLocalInput(flow.input ?? null);
-  }, [selectedWf, isDirty, refreshWorkflows, setViewVersion]);
+  }, [selectedWf, refreshWorkflows, setViewVersion]);
 
   // Clicking a node (body) always opens its flyout — leaf I/O, or a
   // container's aggregate I/O. Drilling into children is the arrow's job.
@@ -1020,14 +1032,26 @@ export function App() {
           )}
           {/* Run control: cancel/pause a live run tree; resume a paused or
               dead (stale/error/cancelled) one — RUN_CONTROL_SPEC §3–§5. */}
-          {selectedRun && runIsLive && runControlStatus !== "cancelling" && (
-            <button class="btn btn-danger" onClick={handleCancelRun}>Cancel</button>
-          )}
-          {selectedRun && runControlStatus === "running" && (
-            <button class="btn" onClick={handlePauseRun}>Pause</button>
-          )}
-          {selectedRun && (runIsPaused || runIsResumable) && (
-            <button class="btn btn-primary" onClick={handleResumeRun}>Resume</button>
+          {selectedRun && (
+            <span class="run-controls">
+              {runIsLive && runControlStatus !== "cancelling" && (
+                <ConfirmButton popover label="Cancel"
+                  note="Cancel this run? Any nested runs it launched are cancelled too — each stops before its next tool (the in-flight tool finishes and is journaled)."
+                  cancelLabel="Keep running" confirmLabel="Cancel run" onConfirm={handleCancelRun} />
+              )}
+              {runControlStatus === "running" && (
+                <button class="btn" onClick={handlePauseRun}>Pause</button>
+              )}
+              {(runIsPaused || runIsResumable) && (
+                <button class="btn btn-primary" onClick={handleResumeRun}>Resume</button>
+              )}
+              {runControlError && (
+                <div class="anchored-popover" role="alert" ref={runErrorRef}>
+                  <span class="confirm-note run-control-error">{runControlError}</span>
+                  <button class="btn" onClick={dismissRunError}>Dismiss</button>
+                </div>
+              )}
+            </span>
           )}
           {isDirty && !viewingOld && <button class="btn btn-publish" disabled={panel === "workflow" && activeTab === "params" && !paramsValid} onClick={handlePublish}>Publish</button>}
           {isRunView && promotions.length > 0 && (
@@ -1146,7 +1170,8 @@ export function App() {
       {/* Step info flyout — read-only catalog view of a step type. */}
       {infoStep && (
         <StepInfoFlyout key={infoStep.type} entry={infoStep} onClose={() => setInfoStep(null)}
-          onOpenWorkflow={(name) => { setSelectedWf(name); setSelectedRun(null); setEvents([]); }} />
+          onOpenWorkflow={(name) => { setSelectedWf(name); setSelectedRun(null); setEvents([]); }}
+          onDelete={async () => { await api.deleteStep(infoStep.type); setInfoStep(null); await refreshStepTypes(); }} />
       )}
 
       {/* Workflow flyout — params (edits → Publish, a new version), claims
@@ -1174,6 +1199,7 @@ export function App() {
           viewVersion={viewVersion}
           onViewVersion={(v) => { setViewVersion(v); closeFlyout(); }}
           onActivateVersion={handleActivateVersion}
+          dirty={isDirty}
           runs={runs}
         />
       )}

@@ -19,7 +19,8 @@ import {
   type Repeat,
   type TriggerForm,
 } from "../automation-form";
-import { humanize } from "../helpers";
+import { errorMessage, humanize } from "../helpers";
+import { ConfirmButton } from "./ConfirmButton";
 
 // ── Automations panel (a Workflow flyout tab) ──────────────────────────────
 //
@@ -49,7 +50,6 @@ const NTH: { value: TriggerForm["nth"]; label: string }[] = [
 
 const DAY_NAME: Record<api.Day, string> = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
 
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^\/[^:]*: /, "");
 
 const when = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -77,7 +77,7 @@ export function AutomationsPanel(props: {
       setList(await api.listAutomations(props.workflow));
       setError(null);
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
   }, [props.workflow]);
 
@@ -93,7 +93,7 @@ export function AutomationsPanel(props: {
       await fn();
       setError(null);
     } catch (err) {
-      setError(message(err));
+      setError(errorMessage(err));
     }
     await refresh();
     props.onChanged();
@@ -153,7 +153,8 @@ export function AutomationsPanel(props: {
                 <button class="btn" disabled={a.running} title={a.running ? "Its previous run is still going" : "Run once, right now"}
                   onClick={() => act(() => api.fireAutomation(props.workflow, a.id))}>Run now</button>
                 <button class="btn" onClick={() => setEditing(a)}>Edit</button>
-                <button class="btn btn-danger" onClick={() => { if (confirm(`Delete "${a.name}"?`)) void act(() => api.deleteAutomation(props.workflow, a.id)); }}>Delete</button>
+                <ConfirmButton label="Delete" note={`Delete "${a.name}"? It won't run again.`} confirmLabel="Delete"
+                  onConfirm={() => void act(() => api.deleteAutomation(props.workflow, a.id))} />
               </div>
             </div>
           ))}
@@ -229,7 +230,7 @@ function AutomationEditor(props: {
       } catch (err) {
         if (mine === seq.current) {
           setPreview(null);
-          setPreviewError(message(err));
+          setPreviewError(errorMessage(err));
         }
       }
     }, 250);
@@ -256,7 +257,7 @@ function AutomationEditor(props: {
       else await api.createAutomation(props.workflow, draft);
       props.onSaved();
     } catch (err) {
-      setSaveError(message(err));
+      setSaveError(errorMessage(err));
       setSaving(false);
     }
   };

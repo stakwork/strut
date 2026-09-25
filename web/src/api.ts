@@ -520,6 +520,11 @@ export interface StepStatsResponse {
 export const getStepStats = (type: string) =>
   fetchJSON<StepStatsResponse>(`/steps/${encodeURIComponent(type)}/stats`);
 
+/** A custom step and every version of it (404 for core/lib steps). Workflows
+ *  that use it are left as they are — they fail when a run reaches it. */
+export const deleteStep = (type: string) =>
+  fetchJSON<{ ok: boolean; type: string }>(`/steps/${encodeURIComponent(type)}`, { method: "DELETE" });
+
 // ── Runs ───────────────────────────────────────────────────────────────────
 
 export interface RunSummary {
