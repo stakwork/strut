@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import http from "node:http";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -21,6 +21,7 @@ import agent, {
   classifyFinalAnswerStop,
   degenerateSchemaFields,
   isTransientStreamError,
+  buildPreamble,
 } from "./agent.js";
 
 // These tests are OFFLINE: they exercise registration, the input schema, and the
@@ -447,6 +448,33 @@ describe("repo_overview adaptive tree (repoTree)", () => {
     const files = ["a/b/c/d/e/f/g/h/i/j/deep.ts"];
     const { depth } = repoTree(files, { maxLines: 10000, maxDepth: 3 });
     assert.equal(depth, 3, "never deeper than maxDepth even with budget to spare");
+  });
+});
+
+describe("buildPreamble (the working dir, stated in the prompt)", () => {
+  it("lists a non-empty dir, dirs with a slash, dotfiles hidden", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "strut-preamble-"));
+    try {
+      writeFileSync(join(cwd, "b.txt"), "");
+      writeFileSync(join(cwd, ".hidden"), "");
+      mkdirSync(join(cwd, "a"));
+      assert.equal(buildPreamble(cwd), `Working directory (${cwd}) contains:\n- a/\n- b.txt`);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("still states the absolute path of an EMPTY dir", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "strut-preamble-"));
+    try {
+      assert.equal(buildPreamble(cwd), `Working directory (${cwd}) is empty.`);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("says nothing about a dir that does not exist", () => {
+    assert.equal(buildPreamble(join(tmpdir(), "strut-preamble-missing-xyz")), "");
   });
 });
 

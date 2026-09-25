@@ -85,6 +85,16 @@ describe("shell helpers", () => {
     );
   });
 
+  it("runShell surfaces stderr when the line still exits 0", async () => {
+    const out = await runShell("ls /definitely/not/a/path; echo written", dir);
+    assert.match(out, /^written\n\n\[stderr\]\n.*definitely\/not\/a\/path/s);
+  });
+
+  it("runCmd keeps stdout only on success", async () => {
+    const out = await runCmd("sh", ["-c", "echo out; echo err >&2"], dir);
+    assert.equal(out, "out\n");
+  });
+
   it("runCmd passes args without shell interpolation", async () => {
     const out = await runCmd("echo", ["$HOME && rm -rf /"], dir);
     assert.equal(out.trim(), "$HOME && rm -rf /");

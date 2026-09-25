@@ -210,7 +210,7 @@ function isOnPath(bin: string): boolean {
 async function stakgraphSummary(filePath: string, cwd: string): Promise<string> {
   if (!existsSync(join(cwd, filePath))) return "File not found";
   try {
-    return await runShell(`stakgraph "${filePath}"`, cwd, 15000, FILE_SUMMARY_MAX_CHARS);
+    return await runCmd("stakgraph", [filePath], cwd, 15000, FILE_SUMMARY_MAX_CHARS);
   } catch (e) {
     return `Error summarizing file: ${(e as Error).message}`;
   }
@@ -240,14 +240,16 @@ async function fulltextSearch(query: string, cwd: string): Promise<string> {
 
 /** A neutral listing of the working dir's immediate entries, prepended to the
  *  prompt so the agent knows the layout without a first tool call. Any
- *  interpretation of that layout belongs in the caller's `system`/`prompt`. */
-function buildPreamble(cwd: string): string {
+ *  interpretation of that layout belongs in the caller's `system`/`prompt`.
+ *  An empty dir still gets its absolute path: a model told "write report.md
+ *  into your working directory" otherwise guesses one (`/work`). */
+export function buildPreamble(cwd: string): string {
   if (!existsSync(cwd)) return "";
   const entries = readdirSync(cwd, { withFileTypes: true })
     .filter((e) => !e.name.startsWith("."))
     .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
     .sort();
-  if (!entries.length) return "";
+  if (!entries.length) return `Working directory (${cwd}) is empty.`;
   return `Working directory (${cwd}) contains:\n` + entries.map((e) => `- ${e}`).join("\n");
 }
 
