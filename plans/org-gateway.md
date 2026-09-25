@@ -12,7 +12,9 @@
 > (the delegation record, actors, the principal rule), `federation.md`
 > (peers, read-through, dispatch-through, the library — unchanged by this),
 > `repo-agent.md` (the first workflow that needs a delegation on a
-> workspace strut). The owner's goal, verbatim:
+> workspace strut), `presented-delegations.md` (the macaroon presented per
+> run — a guest from another org, or a dispatch carrying its own grant).
+> The owner's goal, verbatim:
 >
 > > The default "org" strut instance runs "system level" workflows that
 > > need to call steps from OTHER strut instances in specific workspaces.
@@ -75,7 +77,7 @@ and the dispatcher discards its result). Three consequences:
 | VK | **One per (user, org)** on the org gateway; the customer stays per user, so the daily customer budget becomes org-wide per user by construction (§3) |
 | Attribution | `x-bf-dim-workspace: <slug>`, sent by strut from the record's `dims`; the gateway's dashboard gains `workspace` as a dimension (§4) |
 | Chaining | Still **no**. With one gateway there is nothing to chain (§8) |
-| Per-run forwarded grant | **Deferred.** Not needed inside an org once every strut shares the gateway and the fan-out; kept as the design for a strut *outside* the org, or when a parent's cap must bound a child's run (§6) |
+| Per-run forwarded grant | **`plans/presented-delegations.md`.** Not needed for *people* inside an org once every strut shares the gateway and the fan-out; it is how `strut/run-workflow` dispatches (a tree under the parent's cap, one lineage) and how a strut *outside* the org runs here and pays for itself (§6) |
 | Dispatch-through | `federation.md` §2.2 as written: forward the actor, tail, cancel cooperatively. Billing lands on the org gateway because the child's own delegation record points there (§6) |
 | Secrets | `federation.md` §6 unchanged: a run reads the deployment and actor secrets of the strut it executes on; nothing crosses (§6) |
 
@@ -277,20 +279,17 @@ every run layer it finds in a chain (`gateway/internal/auth/capwalk.go:22`,
 would bound the tree; today's chains do not, because the child attenuates
 from its own standing record.
 
-**The deferred per-run grant.** The org strut could attenuate its own run
-link once more and send `{ macaroon, apiKey, baseUrl }` with the dispatch
-— phase 11's "cross-swarm sub-agents are HMAC-chained", no issuer round
-trip. The child would hold it in the launch closure like `callback`, its
-`llmAuth` consulting the per-run grant before its standing file, and
-`run.start` recording nothing of it. That gives lineage (org run → child
-run → step in one chain) and the tree cap, and needs no per-user state on
-the child at all. What it costs: a new grant path in `src/mothership.ts`
-(`PUT /llm/delegations` refuses attenuated macaroons by design), a
-credential in a request body between two struts, and a second way a call
-can be authorized. Inside an org, once §3 exists, it buys only the two
-niceties. It is the design for a strut **outside** the org — a
-Stakwork-level central dispatching into a customer org, where a standing
-fan-out is not appropriate — and for the day a tree cap is a requirement.
+**The presented grant.** The org strut can attenuate its own run link
+once more and send it with the dispatch — phase 11's "cross-swarm
+sub-agents are HMAC-chained", no issuer round trip — so the child holds it
+for that run only, its `llmAuth` consulting it before its standing file,
+and the chain reads org run → child run → step under the parent's cap.
+That is `plans/presented-delegations.md`: the macaroon as a run's
+credential, verified by strut against a trust registry of org keys, the
+actor read off the chain, a guest scope — the same mechanism that lets a
+strut *outside* the org run here and pay at its own gateway. Inside an
+org it rides on `strut/run-workflow`; the fan-out above stays for people
+and the UI.
 
 ## 7. What changes, per repo
 
@@ -393,6 +392,9 @@ fan-out is not appropriate — and for the day a tree cap is a requirement.
   fan-out; the pre-dispatch check keeps its "fail with the reason" rule.
 - **`code-change.md`:** nothing. Actor **secrets** stay per target;
   `resolveStrutTarget` stays the one policy; the handle is unchanged.
+- **`presented-delegations.md`** (new): the second half of the delegation
+  model — a run's credential presented on the request, verified here,
+  billed at the caller's gateway. §6's deferred grant lives there.
 
 ## Open questions
 
