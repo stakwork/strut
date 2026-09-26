@@ -368,28 +368,33 @@ describe("chat endpoints", () => {
           body: JSON.stringify(body),
         });
 
+      // Each turn settles (on the provider's 400) BEFORE its assertion: a
+      // failed assertion must not leave a turn in flight when `finally`
+      // closes the provider, or it retries ECONNREFUSED for ~6s and buries
+      // the assertion under the retry trace.
+
       // An alias is accepted and stored in canonical form.
       const first = await post({ message: "start", model: "opus" });
       assert.equal(first.status, 202);
       const { chatId } = (await first.json()) as { chatId: string };
-      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5-5");
       await settled(chatId);
+      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5-5");
 
       // No pick on the next turn → the chat keeps its model.
       assert.equal((await post({ chatId, message: "again" })).status, 202);
-      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5-5");
       await settled(chatId);
+      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-opus-5-5");
 
       // A new pick on an existing chat switches it.
       assert.equal((await post({ chatId, message: "switch", model: "anthropic/claude-haiku-4-5" })).status, 202);
-      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-haiku-4-5");
       await settled(chatId);
+      assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-haiku-4-5");
 
       // No pick at all → the deployment default, canonical.
       const fresh = await post({ message: "default" });
       const { chatId: id2 } = (await fresh.json()) as { chatId: string };
-      assert.equal((await chatStore.getMeta(id2))!.model, "claude-sonnet-5");
       await settled(id2);
+      assert.equal((await chatStore.getMeta(id2))!.model, "claude-sonnet-5");
     } finally {
       dead.close();
     }
