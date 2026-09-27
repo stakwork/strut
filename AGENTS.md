@@ -30,7 +30,7 @@ server without a rebuild (proposed).
 
 ```
 strut/
-├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions; CALLBACKS.md is the client how-to for `POST …/run { callback }`
+├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions; API.md is the client how-to for the HTTP API (every endpoint, response shapes, a worked run); CALLBACKS.md the one for `POST …/run { callback }`
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend on a bare `docker run`
 ├── docker-compose.yml     # test/local compose: that image on the graph backend + a neo4j:5 container (named volumes for neo4j data, /data/workspace, /data/models, uv cache)
@@ -1392,7 +1392,9 @@ provider-routing gotcha.
    catch-all params like `/workflows/:name/:version`.
 2. Add the typed function in `web/src/api.ts`.
 3. Wire it into `web/src/app.tsx`.
-4. The Vite dev proxy in `web/vite.config.ts` only proxies known
+4. Document it in `specs/API.md` — request and response shapes, from the
+   types, not retyped.
+5. The Vite dev proxy in `web/vite.config.ts` only proxies known
    prefixes (`/workflows`, `/steps`, `/secrets`, `/chat`, `/llm`, `/health`). Runs are
    under `/workflows/` and chat reattach under `/chat/` so they're
    already proxied. SSE responses get `cache-control: no-cache` +

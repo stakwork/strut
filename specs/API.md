@@ -1,0 +1,327 @@
+# HTTP API — workflows and runs
+
+How a client publishes a workflow, runs it, follows the run, and reads it
+back. Every shape below is the one the server sends today; the types it is
+lifted from are named so the two can be kept together (`src/core.ts`,
+`src/store.ts`, `src/workspace.ts`, the routes in `src/createStrut.ts`).
+
+Everything is JSON unless a row says otherwise. An error is
+`{ "error": "<message>" }` with a 400 / 404 / 409 / 401 status. Companion
+how-tos: `CALLBACKS.md` (the result pushed to your endpoint),
+`RUN_CONTROL_SPEC.md` (why control is cooperative), `SPEC.md` (the engine).
+
+## Auth
+
+With `STRUT_API_KEY` set, the mutations marked **(key)** below need
+`Authorization: Bearer <STRUT_API_KEY>`; unset (dev mode) they are open.
+Publishing, running and reading are never gated. `x-strut-actor: <id>` names
+who a request is from — honored only alongside a matching key — and is
+recorded on the run (`actor`, `principal`) and on the workflow it publishes
+(`owner`). AGENTS.md "Auth" has the whole model.
+
+## 1. Publish
+
+| Method | Path                | Body                                                                 | Response |
+| ------ | ------------------- | -------------------------------------------------------------------- | -------- |
+| POST   | `/workflows`        | `{ name, steps \| yaml, input?, params?, claims?, description?, category? }` | 201 `{ ok, workflow, version: "v1", active: "v1", renamed, requested, claims? }` |
+| POST   | `/workflows/:name`  | `{ version, steps \| yaml, input?, params?, claims?, description? }`          | 201 `{ ok, workflow, version, active, claims? }` |
+
+- `steps` is an array of step objects (below) and the server writes the YAML;
+  `yaml` is the whole file as text, `input:` / `params:` / `claims:` blocks
+  included. One or the other.
+- A create whose `name` is taken gets a suffixed name: `renamed: true`,
+  `requested` is what you sent, `workflow` is what was stored.
+- `version` is your label (`v2`). A new version becomes active. Reusing a
+  label **overwrites** that version's content; the same content under a new
+  label is a second version with the same `hash`.
+- 400 for what the workspace refuses — a bad `input:` block, or an unquoted
+  template (`message: {{ input.x }}` parses as a YAML mapping; write
+  `message: "{{ input.x }}"`).
+
+A step (`Step` in `src/core.ts`):
+
+```json
+{
+  "id": "review",
+  "type": "llm",
+  "config": { "model": "{{ params.model }}", "prompt": "{{ fetch.markdown }}" },
+  "depends": ["fetch"],
+  "when": true,
+  "options": { "retry": { "max": 3, "delayMs": 1000 }, "onError": { "id": "fallback", "type": "log", "config": {} } }
+}
+```
+
+`depends` omitted = after the previous step; `[]` = start at once; a list =
+wait for all. `when` gates on an `if` step's result. `input` declares the run
+payload (`src/input-block.ts`): `{ "<field>": { "type": "string" | "number" |
+"boolean" | "json", "required"?, "default"?, "description"? } }`, required
+unless it has a default. `params` are the tunable defaults `{{ params.* }}`
+reads.
+
+## 2. Read workflows
+
+| Method | Path                            | Response |
+| ------ | ------------------------------- | -------- |
+| GET    | `/workflows`                    | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, automations?, lastRunAt? }]` |
+| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`) |
+| GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
+| GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
+| GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
+| PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
+| DELETE | `/workflows/:name` **(key)**    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
+
+## 3. Run
+
+| Method | Path                            | Body | Response |
+| ------ | ------------------------------- | ---- | -------- |
+| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback? }` | 202 `{ runId, callback?: true }` |
+| POST   | `/workflows/:name/:version/run` | same | same |
+
+| Field            | Meaning |
+| ---------------- | ------- |
+| `input`          | the run payload, validated against the workflow's `input:` block (unknown keys dropped); `{}` when omitted |
+| `params`         | shallow-merged over the workflow's `params:` defaults for this run only |
+| `paramOverrides` | `{ "<workflow name>": { … } }` — the same, per workflow, reaching subflows |
+| `runId`          | your own id (unique within the workflow); default a millisecond timestamp, e.g. `"1790436489808"` |
+| `callback`       | `{ url }` (http/https) — the result is POSTed there when the run settles; see `CALLBACKS.md`. Any other scheme is a 400 and nothing launches |
+
+The run is **detached**: the 202 comes back before anything executes, the
+run keeps going whether or not you stay connected, and every event is
+appended to a log you can read or tail at any time (§4, §5). 404 when the
+workflow or version does not exist.
+
+Input is validated **inside** the run, so a bad payload is still a 202. The
+run then ends at once with `status: "error"` and a message starting `Input
+validation failed:` — its log holds a single `run.error` and no `run.start`.
+
+```bash
+curl -X POST http://localhost:3000/workflows/hello/run \
+  -H 'Content-Type: application/json' \
+  -d '{ "input": { "name": "World" } }'
+# → 202 { "runId": "1790436489808" }
+```
+
+## 4. Follow a run
+
+`GET /workflows/:name/runs/:runId/stream` is server-sent events. It replays
+the log from its first line, then follows appends until the run's terminal
+event, then sends one `done` frame and closes. The same request serves a
+live run and a finished one (a finished run replays and closes at once), so
+attaching late loses nothing.
+
+```
+data: {"ts":"…","runId":"1790436489808","path":"hello","type":"run.start","input":{"name":"World","pauseMs":3000},"workflowHash":"31054c203d38"}
+
+data: {"ts":"…","runId":"1790436489808","path":"hello/greet","type":"step.start","stepType":"log","input":{"message":"Hello World!"}}
+
+data: {"ts":"…","runId":"1790436489808","path":"hello/greet","type":"step.end","stepType":"log","output":"Hello World!","durationMs":1}
+
+…
+
+data: {"ts":"…","runId":"1790436489808","path":"hello","type":"run.end","output":"Bye World after 3000ms"}
+
+event: done
+data: {"runId":"1790436489808","status":"success","output":"Bye World after 3000ms"}
+```
+
+- Every unnamed frame's `data` is one event (§5.3), an agent session
+  replaced by its `transcript` link.
+- `done` carries `{ runId, status, output?, error? }` (`RunResult`), with
+  `status` one of `success`, `error`, `cancelled`. If the run has no summary
+  yet (it was resumed and is still going) `status` is its live state instead.
+- A resumed run appends past its old terminal event; a tail open at the
+  time keeps following.
+- **An unknown run id never errors: the tail waits for its log to appear.**
+  Launch first, or check `GET …/runs/:runId`, before streaming an id you
+  did not just get from a 202.
+
+```js
+const es = new EventSource(`${BASE}/workflows/hello/runs/${runId}/stream`);
+es.onmessage = (m) => console.log(JSON.parse(m.data));           // each event
+es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close(); });
+```
+
+## 5. Read a run
+
+| Method | Path                                                   | Response |
+| ------ | ------------------------------------------------------ | -------- |
+| GET    | `/workflows/:name/runs`                                | array, newest first, no paging: a summary (§5.1) per finished run, `{ runId, workflow, status }` for one still going (§5.2 states) |
+| GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
+| GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |
+| GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none |
+| GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …] }` — what the run's steps wrote; 501 when the deployment has no artifact store |
+| GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension |
+
+### 5.1 Summary (`RunSummary`, `src/core.ts`)
+
+```json
+{
+  "runId": "1790436489808",
+  "workflow": "hello",
+  "startedAt": "2026-09-26T15:28:09.808Z",
+  "finishedAt": "2026-09-26T15:28:12.815Z",
+  "durationMs": 3007,
+  "status": "success",
+  "input": { "name": "World", "pauseMs": 3000 },
+  "output": "Bye World after 3000ms",
+  "workflowHash": "31054c203d38",
+  "stepCounts": { "log": { "success": 2, "error": 0, "lastAt": "…" }, "wait": { "success": 1, "error": 0, "lastAt": "…" } }
+}
+```
+
+| Field          | Value |
+| -------------- | ----- |
+| `status`       | `success`, `error` or `cancelled` |
+| `input`        | as validated (defaults filled) — the raw body when validation itself failed |
+| `output`       | the workflow's output, its last step's; success only |
+| `error`        | `{ message, stack? }`; error only. A cancelled run has neither |
+| `workflowHash` | content hash of the version that ran — what `GET …/versions` counts by |
+| `stepCounts`   | executions per step type across the whole tree; a tool an agent called is `tool:<type>` |
+| `actor`, `principal` | who launched it and who is billed, when known |
+| `automation`   | `{ id }` when a schedule fired it |
+
+After a durable resume (§6.2) the summary describes the resumed execution:
+`startedAt` is the resume's, and replayed steps are not counted again.
+
+### 5.2 Partial summary (`PartialRunSummary`, `src/store.ts`)
+
+Served for a run with no summary yet. `partial: true` is the discriminator;
+never treat one as a result.
+
+```json
+{
+  "runId": "1790436489808",
+  "workflow": "hello",
+  "partial": true,
+  "status": "running",
+  "eventCount": 4,
+  "steps": { "greet": "Hello World!" },
+  "startedAt": "2026-09-26T15:28:09.809Z",
+  "input": { "name": "World", "pauseMs": 3000 },
+  "lastEventAt": "2026-09-26T15:28:09.812Z",
+  "lastEvent": { "type": "step.start", "path": "hello/pause", "ts": "…" }
+}
+```
+
+| Field       | Value |
+| ----------- | ----- |
+| `status`    | the live state — `running`, `pausing`, `paused`, `cancelling` — or `stale`: no process is running it (it crashed, or the server restarted); resumable (§6.2) |
+| `steps`     | the latest output of each finished top-level step, in completion order |
+| `lastError` | `{ path, message, ts }` — the last `step.error` anywhere, where a dead run stopped |
+| `lastEvent` | `{ type, path, ts }` — how far the log got |
+
+### 5.3 Events (`RunEvent`, `src/core.ts`)
+
+One object per line of the run's append-only log. Common fields:
+
+| Field        | Value |
+| ------------ | ----- |
+| `ts`         | ISO time |
+| `runId`      | the run |
+| `path`       | `<workflow>` for run events; `<workflow>/<stepId>` for a step, nesting through subflows (`wf/sub/child`), `#n` for a loop or foreach iteration (`wf/each#2/review`), `NNN-<tool>` for a tool an agent called (`wf/review/003-agent`) |
+| `type`       | below |
+| `stepType`   | the step's type (`log`, `agent`, `tool:<name>` for an agent's tool call); bare even when the workflow pinned a version |
+| `input`      | on `run.start` the validated payload; on `step.start` the resolved config (a subflow's child input; a foreach's items) |
+| `output`     | on `run.end` / `step.end` / `step.replayed` |
+| `error`      | `{ message, stack? }` on `run.error` / `step.error` |
+| `durationMs` | on `step.end` / `step.error` |
+| `transcript` | on an agent step's `step.end`: the URL of its session (the `messages` never ride in this response) |
+
+| Type              | Meaning |
+| ----------------- | ------- |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify`), `automation`, `callback: { origin }`, `parentRunId` when nested |
+| `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
+| `step.retry`      | an attempt failed and another follows |
+| `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |
+| `run.end`         | terminal, success; `output` |
+| `run.error`       | terminal, failure; `error` |
+| `run.cancelled`   | terminal, cancelled |
+| `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event |
+| `step.replayed`   | on resume: a finished step's journaled `output`, not re-executed |
+
+`step.start.stepVersion: { version, hash }` records a pinned custom step's
+version; `step.start.subflow: { workflow, version?, hash? }` the child a
+subflow step resolved. Tool-call events inside an agent step have their I/O
+truncated for the log; every other input and output is stored whole.
+
+## 6. Control a run
+
+### 6.1 Live: cancel, pause, resume
+
+| Method | Path                                      | Response |
+| ------ | ----------------------------------------- | -------- |
+| POST   | `/workflows/:name/runs/:runId/cancel`     | 202 `{ ok, runId, state }` |
+| POST   | `/workflows/:name/runs/:runId/pause`      | 202 `{ ok, runId, state, quiesced }` |
+| POST   | `/workflows/:name/runs/:runId/resume`     | 202 `{ ok, runId, state, resumed: "in-memory" }` |
+
+404 when there is no such run; 409 when it is not live — already terminal
+(`Run already terminal (success)`) or `stale`.
+
+Control is **cooperative**. A request marks the run (`run.cancelling`,
+`run.paused`, `run.resumed` in the log) and takes effect at the next
+boundary: between steps, between loop or foreach iterations, between retry
+attempts, between an agent's tool calls. A step already executing finishes
+first — cancel a workflow inside a 20 second `wait` and it stays
+`cancelling` for up to 20 seconds, then finalizes as `cancelled`. `state`
+is what the run is doing now (`pausing` → `paused` once every branch has
+reached a boundary, which `quiesced` reports). Cancel and pause apply to
+the whole tree: every nested run launched under this one.
+
+### 6.2 Durable: resume a dead, failed or cancelled run
+
+`POST /workflows/:name/runs/:runId/resume` with no live run replays the
+log's journal — every finished step's output, as `step.replayed` events,
+at zero cost — and re-executes from the first incomplete step, appending
+to the **same** log under the same id.
+
+| Body                  | Effect |
+| --------------------- | ------ |
+| `{}`                  | resume a `stale`, `error` or `cancelled` run |
+| `{ "from": "<path>" }` | re-run a **successful** run from that step (it, its dependents and later iterations are dropped from the journal); `from` on a live run is a 409 |
+| `{ "force": true }`   | resume even though the workflow's content changed since the run started |
+
+Response: 202 `{ ok, runId, resumed: "journal", replaying: <n>, version? }`
+(`version` when a stored version matches the run's hash and is what runs).
+400 for a successful run without `from`; 404 unknown; 409 when the log has
+no `run.start`, when a resume is already in flight, or when the workflow
+changed and no stored version matches its hash (pass `force`).
+
+## 7. Run one step
+
+`POST /steps/:type/run` `{ config?, input?, params?, cassette?: "record" |
+"replay", cassetteName?, keep? }` runs a single step in memory and returns
+`{ runId, status, output?, error?, events, recorded?, kept? }`
+(`RunStepResult`): its events at `__run_step__/step`, `recorded` the number
+of service calls a cassette captured. The run is kept (`kept:
+"step:<type>"`, readable under that key) only with `keep: true` or when
+the step has claims. 404 for an unknown type.
+
+## 8. Steps, automations, health
+
+| Method | Path                            | Description |
+| ------ | ------------------------------- | ----------- |
+| GET    | `/steps`                        | every step type: core, lib and workspace custom, with its source tier |
+| GET    | `/steps/:type/schema`           | Zod-derived field descriptors for a step's config |
+| GET    | `/steps/:type/source`           | source code |
+| GET    | `/steps/:type/versions`         | a custom step's versions + active id |
+| GET    | `/steps/:type/version/:version` | archived source for one version |
+| PUT    | `/steps/:type/active` **(key)** | `{ version }` — switch the active version; rebuilds the registry |
+| POST   | `/steps` **(key)**              | `{ name, code, description?, publisher? }` → `{ version, changed }`; content-hash idempotent |
+| DELETE | `/steps/:name` **(key)**        | delete a custom step |
+| DELETE | `/steps?publisher=X` **(key)**  | delete every step a publisher owns |
+
+Automations launch a workflow on a schedule; the trigger grammar is in
+`SPEC.md` §12.1 and `plans/automations.md`. A scheduled run is an ordinary
+run whose `run.start` and summary carry `origin: "schedule"` and
+`automation: { id }`.
+
+| Method | Path                                      | Description |
+| ------ | ----------------------------------------- | ----------- |
+| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running }]` |
+| POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
+| POST   | `/workflows/:name/automations` **(key)**  | `{ name, trigger, input?, enabled? }` |
+| PATCH  | `/workflows/:name/automations/:id` **(key)** | any subset; `{ enabled: false }` pauses |
+| DELETE | `/workflows/:name/automations/:id` **(key)** | remove |
+| POST   | `/workflows/:name/automations/:id/fire` **(key)** | run now → 202 `{ runId }`; 409 while its previous run is going |
+
+`GET /health` → `{ ok, dataDir, stepCount }`.

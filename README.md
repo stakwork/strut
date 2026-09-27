@@ -166,7 +166,8 @@ Stores, the step registry, and a `services` bag for your steps are all injectabl
 
 ## Going deeper
 
-- [specs/SPEC.md](specs/SPEC.md): the engine design and full HTTP API.
+- [specs/API.md](specs/API.md): the HTTP API, with request and response shapes and a worked run.
+- [specs/SPEC.md](specs/SPEC.md): the engine design.
 - [specs/RUN_CONTROL_SPEC.md](specs/RUN_CONTROL_SPEC.md), [specs/EVAL_SPEC.md](specs/EVAL_SPEC.md), [specs/EVOLVE_SPEC.md](specs/EVOLVE_SPEC.md): run control, evals, and self-evolving workflows.
 - [AGENTS.md](AGENTS.md): environment variables, auth, the Neo4j graph backend, desktop packaging, and how to work on the codebase.
 
