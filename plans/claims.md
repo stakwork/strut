@@ -931,9 +931,21 @@ number exists).
    - `sample` is deterministic in (check, run, path), so re-verifying
      samples the same way; `verify_run` fires `manual` checks and nothing
      else extra; a `denied` skip reason joins the four in §5.
-   - **Gap:** the `llm` step reports no `cost` (it returns the bare object),
-     so an `llm` check is gated by the caps but its own spend is not
-     counted. `agent` steps are. Default per-day cap: $5.
+   - **An `llm` check's spend is counted, like an `agent` check's.** The
+     `llm` step returns `{ text, usage, cost }` — `{ usage, cost, ...object }`
+     with a `schema` — priced by aieo's `computeSessionCost`, so
+     `reportedCost()` counts it and a paid run is persisted under
+     `check:<id>`. Default per-day cap: $5. Two edges:
+     - `computeSessionCost` returns 0 when neither the model nor its
+       provider has a pricing entry, and a check that reports 0 reads as
+       free (not persisted, not counted against the caps). Latent, not
+       live: aieo has a rate for each of its five providers and the
+       resolver throws on any other. Nothing in strut guards it. Strut
+       never calls aieo's `loadModelPricing()`, so there is no per-model
+       entry and the cost is at the provider's default rate.
+     - With a `schema`, the structured object's own fields win a name
+       clash: an output schema that declares `cost` or `usage` overrides
+       the reported values.
    `verify.ts` + check contract + check closure + triggers (incl. the
    verify-origin guard) + `add_evidence` + `meta/verify-run`
    + `meta/add-evidence` (§4, §6); planned slots — open in the pass for
