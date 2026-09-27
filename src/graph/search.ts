@@ -333,6 +333,15 @@ function visibility(alias: string): string {
   ].join(" AND ");
 }
 
+/** GET /v2/nodes/:ref_id's response shape for one node. */
+function envelope(n: HitNode): NodeEnvelope {
+  const p = n.properties;
+  const env = serializeNode(n);
+  delete env.date_added_to_graph;
+  const name = p["name"] ?? p["episode_title"] ?? p["show_title"] ?? p["Data_Bank"];
+  return { name: name === undefined || name === null ? undefined : String(name), ...env };
+}
+
 function asHit(r: Row): Hit {
   const n = r["n"] as HitNode;
   return { node: { labels: n.labels, properties: n.properties }, raw_score: Number(r["score"]) };
@@ -422,13 +431,20 @@ export class GraphReader {
       `MATCH (n:Data_Bank {ref_id: $ref_id}) WHERE ${visibility("n")} RETURN n LIMIT 1`,
       { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES },
     );
-    if (rows.length === 0) return null;
-    const n = rows[0]!["n"] as HitNode;
-    const p = n.properties;
-    const env = serializeNode(n);
-    delete env.date_added_to_graph;
-    const name = p["name"] ?? p["episode_title"] ?? p["show_title"] ?? p["Data_Bank"];
-    return { name: name === undefined || name === null ? undefined : String(name), ...env };
+    return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
+  }
+
+  /** The node of `type` under this `node_key` in a namespace (default: the
+   *  backend's) — an exact lookup, never a search. Same envelope as
+   *  `getNode`; null when absent/hidden. `type` is a resolved schema type. */
+  async getNodeByKey(type: string, node_key: string, namespace?: string): Promise<NodeEnvelope | null> {
+    const rows = await this.bolt.run(
+      `MATCH (n:Data_Bank {node_key: $node_key})
+       WHERE $type IN labels(n) AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}
+       RETURN n LIMIT 1`,
+      { node_key, type, ns: namespace ?? this.bolt.namespace, default_ns: DEFAULT_NAMESPACE, blocked_statuses: BLOCKED_NODE_STATUSES },
+    );
+    return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
   }
 
   /** GET …/connection-counts: `(edge_type, target_type) → count`, scoped to

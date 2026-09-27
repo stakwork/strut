@@ -116,6 +116,31 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.match(await run("graph/graph-get", { ref_id: "nope" }), /node not found/);
   });
 
+  it("graph-get by node_type + name: an exact key lookup, scoped to the namespace", async () => {
+    // A near-namesake a search would rank beside it; the key tells them apart.
+    const other = await run("graph/create-node", { node_type: "StrutWorkflow", namespace: NS, node_data: { name: "harvey-deliver-v2" } });
+    const out = await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver", namespace: NS });
+    assert.equal(out.ref_id, wfRef);
+    assert.equal(out.name, "harvey-deliver");
+    assert.equal(out.properties.description, "Delivers legal memos");
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }]);
+    // The type is resolved like everywhere else, the name like its key: case, spaces and punctuation ignored.
+    assert.equal((await run("graph/graph-get", { node_type: "strutworkflow", name: "Harvey Deliver", namespace: NS })).ref_id, wfRef);
+    assert.equal((await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver-v2", namespace: NS })).ref_id, other.ref_id);
+    // Another namespace (here the deployment's default) does not hold it.
+    assert.match(await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver" }), /node not found: StrutWorkflow "harvey-deliver"/);
+    assert.match(await run("graph/graph-get", { node_type: "StrutWorkflow", name: "nope", namespace: NS }), /node not found/);
+    assert.match(await run("graph/graph-get", { node_type: "Nope", name: "x" }), /unknown node type "Nope"/);
+    // Only types keyed by name; the rest are found by search and read by ref_id.
+    assert.match(await run("graph/graph-get", { node_type: "StrutRun", name: "x" }), /StrutRun is keyed by run_id, not name/);
+    assert.match(await run("graph/graph-get", { name: "harvey-deliver" }), /pass ref_id, or node_type \+ name/);
+    assert.match(await run("graph/graph-get", {}), /pass ref_id, or node_type \+ name/);
+    // The namesake goes, so the tests below see the graph they expect.
+    const bolt = new Bolt(cfg!);
+    await bolt.run(`MATCH (n {ref_id: $ref_id}) DETACH DELETE n`, { ref_id: other.ref_id });
+    await bolt.close();
+  });
+
   it("edit-node merges, deletes, refuses type changes and required removals", async () => {
     assert.deepEqual(await run("graph/edit-node", { ref_id: wfRef, node_data: { category: "smoke" }, properties_to_be_deleted: ["description"] }), {
       status: "Success", ref_id: wfRef, updated: ["category"], deleted: ["description"],
