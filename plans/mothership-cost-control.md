@@ -71,8 +71,8 @@
 ## Problem
 
 Strut's LLM calls go straight to the provider with a deployment-wide key. The
-`agent` step reports its own cost in its output, the `llm` step reports
-nothing, chat turns log tokens to the console. Nobody can answer "what did
+`agent` and `llm` steps report their own cost in their output, chat turns
+log tokens to the console. Nobody can answer "what did
 this step cost over the last 24 hours", "what did this workflow cost", or
 "which person is this spend for" — and nothing can cap any of it.
 

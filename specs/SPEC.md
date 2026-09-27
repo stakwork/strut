@@ -261,7 +261,7 @@ Config:
 ```
 
 - Calls an LLM with the resolved prompt. If `schema` is provided, uses structured output (e.g. `generateObject`).
-- Output: `{ text: string }` (no schema) or the parsed object (with schema).
+- Output: `{ text, usage, cost }` (no schema) or the parsed object plus `usage` and `cost` (with schema; the object's own fields win a name clash).
 
 #### 4.1.7 `pack`
 
