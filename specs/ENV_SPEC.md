@@ -226,7 +226,7 @@ header, not the manifest; never `pip install`, `apt`, or `brew` through
 
 ## 9. Attribution and evals
 
-- `run.json` (SPEC §7.3) gains `env: { version: "v4", lockHash, drift }`.
+- `run.json` (`RunSummary`, API.md §5.1) gains `env: { version: "v4", lockHash, drift }`.
   The journal / event log need nothing: the version is a run-level fact.
 - EVAL_SPEC batches record `env.version` beside `benchmarkRev` and
   `scorerSha256`. A run whose `env.version` differs from the batch's

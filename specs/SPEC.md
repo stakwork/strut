@@ -443,53 +443,15 @@ workflows/<name>/runs/<runId>/run.json     (written at end)
 
 This scoping means listing runs for a workflow is a single `readdir` — no scanning across all workflows.
 
-### 7.2 Event format (JSONL, append-only)
+### 7.2 Events, summary, store
 
-One JSON object per line. Common fields:
-
-```ts
-{
-  ts: "2026-05-26T12:34:56.789Z",
-  runId: "uuid",
-  path: "deploy/fan.left/check",   // slash-separated step path including subflows/branches
-  type: "step.start" | "step.end" | "step.error" | "step.retry" | "run.start" | "run.end" | "run.error",
-  stepType?: "http",
-  input?: any,        // resolved config
-  output?: any,
-  error?: { message: string, stack?: string },
-  durationMs?: number,
-  iteration?: number, // for loop bodies
-}
-```
-
-- `path` uniquely identifies a step instance across subflows, parallel branches, and loop iterations. Loop iterations are appended as `#0`, `#1`, … (e.g. `deploy/wait/check#3`).
-
-### 7.3 `run.json` (final summary)
-
-```ts
-{
-  runId: "uuid",
-  workflow: "deploy",
-  startedAt, finishedAt, durationMs,
-  status: "success" | "error",
-  input: any,
-  output?: any,
-  error?: { message, stack },
-}
-```
-
-### 7.4 Storage interface
-
-Default writer is filesystem. The runner depends on an interface:
-
-```ts
-interface RunStore {
-  append(runId: string, event: object): Promise<void>;
-  finalize(runId: string, summary: object): Promise<void>;
-}
-```
-
-Swap in S3, Postgres, etc. without changing the runner.
+The log's event shape (`RunEvent`: the terminal, control and replay event
+types, what rides on `run.start`) and the final summary (`RunSummary`,
+written to `run.json`) are documented from the client's side in `API.md`
+§5 and defined in `src/core.ts`. The runner writes through `RunStore`
+(`src/store.ts`: `append` / `finalize`, plus `listRuns` / `getRunSummary` /
+`getRunEvents` / `tailEvents`); `FileRunStore` keeps the layout in §7.1,
+`MemoryRunStore` the same records in memory.
 
 ---
 
@@ -796,56 +758,18 @@ Runs are the `RunStore`'s records (full read/write/tail contract, `src/store.ts`
 
 ## 12. HTTP API
 
-The engine ships with an HTTP server (Hono) that exposes all operations. Set `STRUT_PORT` (default: `3000`).
+The engine ships with an HTTP server (Hono) on `STRUT_PORT` (default
+`3000`). Every endpoint — with request and response shapes and a worked
+run — is in `API.md`: publishing (§1–2), running (§3), following a run over
+SSE (§4), reading runs, events and transcripts (§5), cancel / pause / resume
+(§6), single-step runs (§7), steps, automations and health (§8).
 
-### 12.1 Workflows
+### 12.1 Automation triggers
 
-| Method | Path                           | Description                                                      |
-| ------ | ------------------------------ | ---------------------------------------------------------------- |
-| GET    | `/workflows`                   | List all workflows with metadata                                 |
-| GET    | `/workflows/:name`             | Get workflow metadata (versions, active)                         |
-| GET    | `/workflows/:name/flow`        | Get parsed flow structure (JSON) for the active version          |
-| GET    | `/workflows/:name/:version`    | Get workflow YAML source for a specific version                  |
-| POST   | `/workflows/:name`             | Publish new version: `{ version, steps }` or `{ version, yaml }` |
-| PUT    | `/workflows/:name/active`      | Set active version: `{ version }`                                |
-| DELETE | `/workflows/:name`             | Delete: every version, metadata + runs; 409 while a run is live (auth) |
-| POST   | `/workflows/:name/run`         | Run active version: `{ input?, params?, runId?, callback? }`     |
-| POST   | `/workflows/:name/:version/run`| Run specific version: `{ input?, params?, runId?, callback? }`   |
-
-`params` (optional) shallow-merges over the workflow's `params:` defaults for that one run — the per-trial override surface (see §11.1).
-
-`callback` (optional, `{ url }`, http(s) only — else 400 and nothing launches) asks for the result to be POSTed to that URL when the run settles, so a caller need not tail or poll: `{ event: "run.end", workflow, runId, status: "success" | "error" | "cancelled", output?, error?: { message }, durationMs }`, once, with a few retries. The 202 then carries `callback: true`. The URL is never persisted (`run.start` records its origin only) and a restart drops it — the fallback is `GET /workflows/:name/runs/:runId`. Client how-to with an example: `CALLBACKS.md`.
-
-### 12.2 Steps
-
-| Method | Path                            | Description                                                          |
-| ------ | ------------------------------- | -------------------------------------------------------------------- |
-| GET    | `/steps`                        | List all steps (core + lib + workspace custom)                       |
-| GET    | `/steps/:type/schema`           | Zod-derived field descriptors for a step's config                    |
-| GET    | `/steps/:type/source`           | Source code for a step (registry, core, lib, or custom)              |
-| GET    | `/steps/:type/versions`         | List a custom step's versions + active id                            |
-| GET    | `/steps/:type/version/:version` | Archived source for a specific step version                          |
-| PUT    | `/steps/:type/active`           | Switch active version: `{ version }` (auth; rebuilds registry)       |
-| POST   | `/steps`                        | Publish step: `{ name, code, description?, publisher? }` (auth)      |
-| DELETE | `/steps/:name`                  | Delete a single custom step (auth)                                   |
-| DELETE | `/steps?publisher=X`            | Bulk-delete all steps owned by a publisher (auth)                    |
-
-Publishing is content-hash idempotent and returns `{ version, changed }`. The auth-gated mutations require `Authorization: Bearer <STRUT_API_KEY>` when that env var is set (see "Auth" in AGENTS.md).
-
-### 12.3 Runs & Logs
-
-Runs are scoped to workflows. Run IDs are millisecond timestamps.
-
-| Method | Path                                      | Description                                    |
-| ------ | ----------------------------------------- | ---------------------------------------------- |
-| GET    | `/workflows/:name/runs`                   | List runs for a workflow (newest first)         |
-| GET    | `/workflows/:name/runs/:runId`            | Get run summary (run.json)                      |
-| GET    | `/workflows/:name/runs/:runId/events`     | Get all events as JSON array (agent sessions as `transcript` links) |
-| GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | One agent session: its bare `messages` array |
-
-### 12.4 Automations
-
-A workflow can be launched on a schedule (`plans/automations.md`). An automation is `{ id, name, enabled, trigger, input }`, stored as **workflow-level metadata** (in `_metadata.json`, beside `active`) — never in the versioned YAML, so creating, editing or pausing one publishes no version. The trigger is a closed grammar, not cron:
+An automation is `{ id, name, enabled, trigger, input }`, stored as
+**workflow-level metadata** (in `_metadata.json`, beside `active`) — never in
+the versioned YAML, so creating, editing or pausing one publishes no version
+(`plans/automations.md`). The trigger is a closed grammar, not cron:
 
 | `every`    | Fields                                                              |
 | ---------- | ------------------------------------------------------------------- |
@@ -856,23 +780,6 @@ A workflow can be launched on a schedule (`plans/automations.md`). An automation
 | `once`     | `at` (`"YYYY-MM-DDTHH:MM"`)                                         |
 
 Every shape carries an IANA `tz`. `input` is the run's input; its values may be templates over three roots resolved at each fire — `now` (ISO instant), `today` (`YYYY-MM-DD` in the trigger's zone) and `last` (`{ runId, startedAt, finishedAt, output }` of this automation's latest **successful** run; `output` is `{}` before the first). A scheduled run is an ordinary detached run whose `run.start` and `run.json` carry `origin: "schedule"` / `automation: { id }`.
-
-| Method | Path                                       | Description                                                    |
-| ------ | ------------------------------------------ | -------------------------------------------------------------- |
-| GET    | `/automations[?workflow=]`                 | Automations with `summary`, `nextRunAt`, `lastRun`, `running`  |
-| POST   | `/automations/preview`                     | `{ trigger }` → `{ summary, next }` (five fires); writes nothing |
-| POST   | `/workflows/:name/automations`             | Create: `{ name, trigger, input?, enabled? }` (auth)           |
-| PATCH  | `/workflows/:name/automations/:id`         | Edit any subset; `{ enabled }` pauses/resumes (auth)           |
-| DELETE | `/workflows/:name/automations/:id`         | Remove (auth)                                                  |
-| POST   | `/workflows/:name/automations/:id/fire`    | Run now → `{ runId }` 202; 409 while its previous run is going (auth) |
-
-The scheduler is in-process and keeps no state beyond the definitions: a run missed while the server was down is skipped, not replayed (`STRUT_SCHEDULER=0` turns the tick loop off).
-
-### 12.5 Health
-
-| Method | Path      | Description                                    |
-| ------ | --------- | ---------------------------------------------- |
-| GET    | `/health` | Returns workspace path and registered step count |
 
 ---
 
