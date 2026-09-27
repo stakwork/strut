@@ -78,6 +78,11 @@ export interface AiDeps {
    *  the system prompt — so the builder only writes `model:` values a run
    *  can actually use. Optional: without it the prompt says nothing. */
   models?: { default: string; available: string[]; keyNames: Record<string, string> };
+  /** The HOST's section of the system prompt (`StrutOptions.chatSystem`),
+   *  resolved for this turn: what the deployment knows and strut does not.
+   *  Appended verbatim after strut's own rules. Optional: absent → the
+   *  prompt is strut's alone. */
+  hostSystem?: string;
   /** Dispatch-mode `run_workflow` (see `plans/dispatch-run-notifications.md`).
    *  When present, a run still executing after `waitMs` converts to detached:
    *  the tool returns a `{ status: "running", runId }` stub immediately and
@@ -329,8 +334,9 @@ Tools: verify_run (re-verify a run after changing a claim or check; returns the 
 
 export async function buildSystem(deps: AiDeps): Promise<string> {
   const tree = await renderStepsTree(deps);
+  const host = deps.hostSystem?.trim();
   return `${BASE_SYSTEM}
-${deps.claims ? `\n${CLAIMS_SECTION}\n` : ""}
+${deps.claims ? `\n${CLAIMS_SECTION}\n` : ""}${host ? `\n${host}\n` : ""}
 ${renderModels(deps.models)}Available steps:
 ${tree}
 `;

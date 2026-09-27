@@ -513,6 +513,51 @@ describe("chat endpoints", () => {
     }
   });
 
+  it("chatSystem: the host's section rides in the system prompt; a throwing hook never fails the turn", async () => {
+    const bodies: any[] = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const systemOf = (body: any): string => (typeof body.system === "string" ? body.system : JSON.stringify(body.system));
+    try {
+      const seen: unknown[] = [];
+      const strut = await makeStrut({
+        chatSystem: (ctx) => {
+          seen.push(ctx);
+          if (ctx.turn === 1) throw new Error("graph is down");
+          return "HOST-SECTION: what this deployment builds";
+        },
+      });
+      const post = async (body: unknown) =>
+        (await (await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json()) as { chatId: string };
+
+      const { chatId } = await post({ message: "hi" });
+      await settled(chatId);
+      assert.deepEqual(seen, [{ chatId, turn: 0 }]);
+      const system = systemOf(bodies[0]);
+      assert.ok(system.includes("HOST-SECTION: what this deployment builds"));
+      assert.ok(system.indexOf("HOST-SECTION") < system.indexOf("Available steps:"), "strut's steps tree stays last");
+
+      // Turn 1: the hook throws — the model is still called, on strut's prompt alone.
+      await post({ chatId, message: "again" });
+      await settled(chatId);
+      assert.equal(bodies.length, 2);
+      assert.ok(!systemOf(bodies[1]).includes("HOST-SECTION"));
+      assert.ok(systemOf(bodies[1]).includes("Available steps:"));
+    } finally {
+      server.close();
+    }
+  });
+
   it("POST /chat with a bad callback is a 400 and creates nothing", async () => {
     const strut = await makeStrut();
     for (const callback of [{}, { url: "nope" }, { url: "ftp://host/x" }, "https://host/x"]) {

@@ -890,6 +890,20 @@ and the child env is scrubbed by construction).
   prompt is built per-request by `buildSystem(deps)` (pre-seeds the
   steps tree).
 
+- **`chatSystem` — the host's section of the builder's prompt**
+  (`createStrut({ chatSystem })` → `AiDeps.hostSystem`). Strut's prompt
+  knows how to build workflows, never WHAT a deployment builds: a domain
+  convention (what a "janitor" is, which seeded workflow runs one) belongs
+  to the host, not in `BASE_SYSTEM`. The hook is called once per chat turn
+  with `{ chatId, turn, actor? }` and its text is appended verbatim after
+  strut's rules (and the claims section), before the models line and the
+  steps tree — which stays last. mcp renders it from its knowledge graph.
+  Nothing returned, or a throw (one warn line) → the prompt is strut's
+  alone; a turn never fails on it. The text has SYSTEM authority over a
+  builder that can publish steps and run bash, so the host owns where it
+  comes from and how long it is; keep it stable between turns (it sits in
+  the cached prompt prefix).
+
 - **`list_secrets` tool** (`AiDeps.secrets`). The agent can list the
   **names** of available credentials (never values — it's the same
   names-only view as `GET /secrets`) so when it authors a step it

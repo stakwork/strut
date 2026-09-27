@@ -159,6 +159,14 @@ export interface StrutOptions<TServices = unknown> {
    *  `claude-sonnet-5`. */
   chatModel?: string;
 
+  /** The host's section of the builder's system prompt: called once per chat
+   *  turn, its text appended verbatim after strut's own rules (before the
+   *  steps tree). For what the DEPLOYMENT knows and strut does not — the
+   *  kinds of thing built here and their conventions; mcp renders it from
+   *  its knowledge graph. Nothing returned, or a throw (logged) → the prompt
+   *  is strut's alone: a turn never fails on it. Keep it stable between
+   *  turns (it is part of the cached prompt prefix). */
+  chatSystem?: (ctx: { chatId: string; turn: number; actor?: string }) => string | undefined | Promise<string | undefined>;
 
   /** How long the chat agent's `run_workflow` tool waits before a still-
    *  running workflow converts to a DETACHED run (the tool returns a
@@ -2195,6 +2203,11 @@ export async function createStrut<TServices = unknown>(
             searchMaxUses: 5,
             routed: llm.routed,
           });
+          // The host's prompt section (StrutOptions.chatSystem) — never fails the turn.
+          const hostSystem = await Promise.resolve().then(() => opts.chatSystem?.({ chatId, turn, ...(actor ? { actor } : {}) })).catch((err) => {
+            console.warn(`[chat ${chatId}] chatSystem hook failed:`, err instanceof Error ? err.message : err);
+            return undefined;
+          });
 
           const deps = {
             workspace,
@@ -2203,6 +2216,7 @@ export async function createStrut<TServices = unknown>(
             store,
             services,
             ...(actor ? { actor } : {}),
+            ...(hostSystem ? { hostSystem } : {}),
             secrets: secretsInjected ? undefined : secretStore,
             // Build-time bash for the chat builder, cwd'd at the local data
             // dir (scrubbed env — see shell.ts).
