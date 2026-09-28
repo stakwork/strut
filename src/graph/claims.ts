@@ -254,6 +254,12 @@ export interface EvidenceRow {
   };
 }
 
+/** An `EvidenceRow` read from the run side, with the text of the claim it
+ *  is evidence for. */
+export interface RunEvidenceRow extends EvidenceRow {
+  claim_text: string;
+}
+
 // ── Status ──────────────────────────────────────────────────────────────────
 
 export type ClaimStatusValue = "supported" | "refuted" | "stale" | "unknown";
@@ -539,22 +545,68 @@ export class ClaimsReader {
    * versions. Newest first.
    */
   async evidenceFor(claimId: string, subject?: SubjectRef): Promise<EvidenceRow[]> {
-    const rows = await this.graph.bolt.run(
+    const rows = await this.evidenceRows(
       `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e:\`${EVIDENCE_TYPE}\`)
-       WHERE ${LIVE("eb")} AND ${NOT_DELETED("e")}
+       WHERE ${LIVE("eb")} AND ${NOT_DELETED("e")}`,
+      { ns: this.ns, id: claimId },
+    );
+    const out = rows.map(({ claim_text: _, ...e }): EvidenceRow => e).sort(newestFirst);
+    return subject ? out.filter((e) => isVersionOf(e.about, subject)) : out;
+  }
+
+  /**
+   * Every `Evidence` whose source is a run under one run-store key (a
+   * workflow name, or `step:<type>`) — the run view. Keyed by the RUN, not a
+   * claim: a run is checked against the workflow's claims AND the claims of
+   * every step it executed, and this returns both. Superseded and retired
+   * claims keep their evidence, so each row reads the claim text the check
+   * actually tested. `limit` counts runs — the newest with evidence —
+   * `before` pages past a run id, `runId` narrows to one run. Newest run
+   * first; within a run, by path.
+   */
+  async evidenceForRuns(runKey: string, opts: { runId?: string; before?: string; limit?: number } = {}): Promise<RunEvidenceRow[]> {
+    const rows = await this.evidenceRows(
+      `MATCH (r:StrutRun {namespace: $ns, workflow_name: $key})
+       WHERE ($runId IS NULL OR r.run_id = $runId) AND ($before IS NULL OR r.run_id < $before)
+         AND EXISTS {
+           MATCH (:\`${CLAIM_TYPE}\`)-[eb0:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e0:\`${EVIDENCE_TYPE}\`)-[hs0:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
+           WHERE ${LIVE("eb0")} AND ${LIVE("hs0")} AND ${NOT_DELETED("e0")}
+         }
+       WITH r ORDER BY r.run_id DESC LIMIT toInteger($limit)
+       MATCH (c:\`${CLAIM_TYPE}\`)-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e:\`${EVIDENCE_TYPE}\`)-[hr:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
+       WHERE ${LIVE("eb")} AND ${LIVE("hr")} AND ${NOT_DELETED("e")}`,
+      { ns: this.ns, key: runKey, runId: opts.runId ?? null, before: opts.before ?? null, limit: opts.limit ?? 50 },
+    );
+    const runMs = (e: RunEvidenceRow) => Number(e.source?.run_id) || 0;
+    const path = (e: RunEvidenceRow) => e.source?.context?.path ?? "";
+    return rows.sort(
+      (a, b) => runMs(b) - runMs(a) || path(a).localeCompare(path(b)) || a.claim_id.localeCompare(b.claim_id) || (a.check_id ?? "").localeCompare(b.check_id ?? ""),
+    );
+  }
+
+  /** The rows behind both evidence reads: `match` binds `c` (the claim),
+   *  `eb` (its live `EVIDENCED_BY`) and `e`; this adds the check, the
+   *  version, and the source. One row per (claim, evidence) — a check that
+   *  tests two claims writes one node both reach. */
+  private async evidenceRows(match: string, params: Record<string, unknown>): Promise<RunEvidenceRow[]> {
+    const rows = await this.graph.bolt.run(
+      `${match}
        OPTIONAL MATCH (e)-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->(k:\`${CHECK_TYPE}\`) WHERE ${LIVE("pb")}
        OPTIONAL MATCH (e)-[ab:\`${CLAIM_EDGES.ABOUT}\`]->(v) WHERE ${LIVE("ab")} AND (v:StrutStepVersion OR v:StrutWorkflowVersion)
        OPTIONAL MATCH (e)-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src) WHERE ${LIVE("hs")}
-       RETURN ${project("e", EVIDENCE_FIELDS)} AS ev, eb.strength AS strength, eb.ref_id AS edge_ref_id, k.id AS check_id,
+       RETURN ${project("e", EVIDENCE_FIELDS)} AS ev, c.id AS claim_id, c.claim_text AS claim_text,
+              eb.strength AS strength, eb.ref_id AS edge_ref_id, k.id AS check_id,
               v:StrutStepVersion AS v_is_step, v.name AS v_name, v.step_type AS v_step_type, v.content_hash AS v_hash,
               src.ref_id AS src_ref, labels(src) AS src_labels, src.run_id AS src_run_id, src.workflow_name AS src_run_key,
               hs.context AS hs_context, hs.start_time AS hs_start, hs.end_time AS hs_end, hs.post_url AS hs_url`,
-      { ns: this.ns, id: claimId },
+      params,
     );
-    const byId = new Map<string, EvidenceRow>();
+    const byId = new Map<string, RunEvidenceRow>();
     for (const r of rows) {
       const e = compact<Omit<EvidenceRow, "claim_id">>(r["ev"] as Record<string, unknown>);
-      const row: EvidenceRow = byId.get(e.id) ?? { ...e, claim_id: claimId };
+      const claimId = r["claim_id"] as string;
+      const key = `${claimId}|${e.id}`;
+      const row: RunEvidenceRow = byId.get(key) ?? { ...e, claim_id: claimId, claim_text: String(r["claim_text"] ?? "") };
       if (row.strength === undefined && typeof r["strength"] === "number") row.strength = r["strength"] as number;
       if (row.edge_ref_id === undefined && typeof r["edge_ref_id"] === "string") row.edge_ref_id = r["edge_ref_id"] as string;
       if (row.check_id === undefined && typeof r["check_id"] === "string") row.check_id = r["check_id"] as string;
@@ -575,10 +627,9 @@ export class ClaimsReader {
           post_url: r["hs_url"],
         });
       }
-      byId.set(e.id, row);
+      byId.set(key, row);
     }
-    const out = [...byId.values()].sort(newestFirst);
-    return subject ? out.filter((e) => isVersionOf(e.about, subject)) : out;
+    return [...byId.values()];
   }
 
   /** Every active claim on a subject with its active checks and computed

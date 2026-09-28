@@ -1415,6 +1415,10 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
+  // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2). Before
+  // the `/:version` catch-all below: it serves `/workflows/:name/evidence`.
+  claimsRoutes(app, { claims: claimsAuthoring, verifier });
+
   app.get("/workflows/:name/:version", async (c) => {
     const { name, version } = c.req.param();
     try {
@@ -1983,9 +1987,6 @@ export async function createStrut<TServices = unknown>(
   /** A run body's `callback`, validated; absent or `null` = none. */
   const runCallbackOf = (body: RunBody): { url: string } | undefined =>
     body.callback == null ? undefined : parseCallback(body.callback);
-
-  // The Claims panel's HTTP door (plans/claims.md §2 "UI", §4.2).
-  claimsRoutes(app, { claims: claimsAuthoring, verifier });
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.

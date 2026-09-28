@@ -149,6 +149,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
 | GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |
 | GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none |
+| GET    | `/workflows/:name/evidence[?runId=&limit=&before=]`   | what the checks said about the workflow's runs (§5.4) |
 | GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …] }` — what the run's steps wrote; 501 when the deployment has no artifact store |
 | GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension |
 
@@ -243,6 +244,47 @@ One object per line of the run's append-only log. Common fields:
 version; `step.start.subflow: { workflow, version?, hash? }` the child a
 subflow step resolved. Tool-call events inside an agent step have their I/O
 truncated for the log; every other input and output is stored whole.
+
+### 5.4 Evidence (`RunEvidence`, `src/claims-authoring.ts`)
+
+Every run of a workflow is checked against its claims (`plans/claims.md`):
+the workflow's own and those of each custom step it executed. `GET
+/workflows/:name/evidence` returns what those checks recorded, newest run
+first and by step path within a run:
+
+```json
+{
+  "enabled": true,
+  "workflow": "clipper",
+  "evidence": [
+    {
+      "claim": { "id": "…", "text": "end is after start" },
+      "subject": { "kind": "step", "name": "clip/compute-times", "version": "<content hash>" },
+      "verdict": "refutes",
+      "content": "exit 1",
+      "observedAt": 1790436490,
+      "mode": "observed",
+      "check": "…",
+      "checkVersion": "exec",
+      "run": { "name": "clipper", "runId": "1790436489808", "path": "clipper/times" }
+    }
+  ],
+  "next": "1790436489808"
+}
+```
+
+- `verdict` is `supports`, `refutes`, or `open`: an external check's
+  question (`question`), still waiting on someone. `mode` is `observed` (a
+  check measured it) or `asserted` (a model's or a person's word). `by`
+  names who asserted it.
+- `limit` counts **runs**, not rows (default 50, 1–200; out of range is a
+  400). Only runs that produced evidence count. `next` is present when the
+  page is full; pass it as `before` to get older runs. `runId` returns one
+  run.
+- `subject.version` is the version the run executed. A claim that was
+  reworded later still shows the text its check tested.
+- On a workspace without claims (the filesystem backend, `STRUT_CLAIMS=0`)
+  the response is `{ "enabled": false, "evidence": [] }`.
 
 ## 6. Control a run
 
