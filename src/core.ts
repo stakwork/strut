@@ -287,9 +287,10 @@ const ACCESSED_NODES_KEY = "_nodes";
 /**
  * Mark a step's output with the graph nodes it touched. The marker is a
  * NON-enumerable own property of the output value (object or array), so it
- * rides along in-process — to `wrapToolsWithEmit`, which lifts it onto the
- * `step.end` event — but never reaches the model, downstream `{{ }}`
- * expressions, or a JSON serializer. Refs are deduplicated by `ref_id`;
+ * rides along in-process — to the runner and `wrapToolsWithEmit`, which lift
+ * it onto the `step.end` event of a workflow step and of an agent's tool call
+ * — but never reaches the model, downstream `{{ }}` expressions, or a JSON
+ * serializer. Refs are deduplicated by `ref_id`;
  * empty lists and non-object outputs (error strings) are left unmarked.
  * Returns `output` for chaining: `return withAccessedNodes(result, refs)`.
  */

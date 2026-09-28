@@ -10,7 +10,7 @@ import type {
   StepCounts,
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
-import { messagesOf } from "./core.js";
+import { accessedNodesOf, messagesOf, type AccessedNode } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -105,11 +105,15 @@ function isSkipped(v: unknown): boolean {
   return v === SKIP;
 }
 
-/** A step's model session, lifted from its output marker (`withMessages`)
- *  onto `step.end` as `messages` — the output itself stays slim. */
-function transcriptOf(output: unknown): { messages?: unknown[] } {
+/** What a step's output markers put on its `step.end`, the output itself
+ *  staying slim: the model session (`withMessages`) as `messages`, and the
+ *  graph nodes the step touched (`withAccessedNodes`) as `nodes` — the same
+ *  field an agent's tool call carries, so a graph step reads the same in the
+ *  log whether the workflow ran it or an agent called it. */
+function markersOf(output: unknown): { messages?: unknown[]; nodes?: AccessedNode[] } {
   const messages = messagesOf(output);
-  return messages ? { messages } : {};
+  const nodes = accessedNodesOf(output);
+  return { ...(messages ? { messages } : {}), ...(nodes ? { nodes } : {}) };
 }
 
 /** Flatten an Error's `cause` chain into one readable string (`""` when there
@@ -625,7 +629,7 @@ async function executeStep(
         stepType: baseType(step.type),
         output,
         durationMs,
-        ...transcriptOf(output),
+        ...markersOf(output),
       });
 
       return output;
@@ -826,7 +830,7 @@ async function executeLoop(
       output: current,
       durationMs: Date.now() - startTime,
       iteration: i,
-      ...transcriptOf(current),
+      ...markersOf(current),
     });
 
     if (delayMs > 0 && i < maxIterations - 1) {
@@ -963,7 +967,7 @@ async function executeForeach(
       output,
       durationMs: Date.now() - startTime,
       iteration: i,
-      ...transcriptOf(output),
+      ...markersOf(output),
     });
 
     results[i] = output;
