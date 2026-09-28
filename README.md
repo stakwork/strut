@@ -93,7 +93,7 @@ steps:
       text: "*{{ fetch.pr.title }}*\n{{ review.text }}"
 
 params:
-  model: claude-sonnet-5
+  model: claude-sonnet-5-5
   instructions: You are a senior engineer reviewing a pull request. Be concise.
 ```
 

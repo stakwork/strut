@@ -157,7 +157,7 @@ export interface StrutOptions<TServices = unknown> {
    *  (`sonnet`, `gpt`, `kimi`), a full id, or `provider/id` (OpenRouter as
    *  `openrouter/org/model`). A per-chat pick (`POST /chat { model }`, the
    *  flyout's picker) overrides it. Defaults to `STRUT_CHAT_MODEL` or
-   *  `claude-sonnet-5`. */
+   *  `claude-sonnet-5-5`. */
   chatModel?: string;
 
   /** The host's section of the builder's system prompt: called once per
@@ -563,7 +563,7 @@ export async function createStrut<TServices = unknown>(
   const chatMaxSteps =
     opts.chatMaxSteps ?? Number(process.env["STRUT_CHAT_MAX_STEPS"] ?? 100);
   const chatModel =
-    opts.chatModel ?? process.env["STRUT_CHAT_MODEL"] ?? "claude-sonnet-5";
+    opts.chatModel ?? process.env["STRUT_CHAT_MODEL"] ?? "claude-sonnet-5-5";
   const chatRunWaitMs =
     opts.chatRunWaitMs ?? Number(process.env["STRUT_CHAT_RUN_WAIT_MS"] ?? 60_000);
   const chatMaxAutoTurns =
