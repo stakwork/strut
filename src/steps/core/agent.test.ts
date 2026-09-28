@@ -901,7 +901,7 @@ describe("mid-stream socket death is resumed, not lost", () => {
       assert.deepEqual(asked, ["ANTHROPIC_API_KEY"]);
       assert.equal(s.heads[0]?.["x-api-key"], "from-store");
       // The alias resolved to the concrete id on the request.
-      assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-5"'), s.bodies[0]);
+      assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-5-5"'), s.bodies[0]);
     } finally {
       s.close();
     }

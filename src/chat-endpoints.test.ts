@@ -307,9 +307,9 @@ describe("chat endpoints", () => {
       models: { alias: string; name: string; available: boolean; default: boolean }[];
       keyNames: Record<string, string>;
     };
-    assert.equal(body.default, "anthropic/claude-sonnet-5");
+    assert.equal(body.default, "anthropic/claude-sonnet-5-5");
     const by = (alias: string) => body.models.find((m) => m.alias === alias)!;
-    assert.equal(by("sonnet").name, "anthropic/claude-sonnet-5");
+    assert.equal(by("sonnet").name, "anthropic/claude-sonnet-5-5");
     assert.equal(by("sonnet").available, true);
     assert.equal(by("gpt").available, false);
     assert.equal(body.keyNames["openai"], "OPENAI_API_KEY");
@@ -394,7 +394,7 @@ describe("chat endpoints", () => {
       const fresh = await post({ message: "default" });
       const { chatId: id2 } = (await fresh.json()) as { chatId: string };
       await settled(id2);
-      assert.equal((await chatStore.getMeta(id2))!.model, "claude-sonnet-5");
+      assert.equal((await chatStore.getMeta(id2))!.model, "claude-sonnet-5-5");
     } finally {
       dead.close();
     }

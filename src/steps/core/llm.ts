@@ -8,7 +8,7 @@ const EXAMPLE = `- id: summarize
   type: llm
   config:
     prompt: "Summarize this: {{ fetch.body }}"
-    model: claude-sonnet-5`;
+    model: claude-sonnet-5-5`;
 
 /** Normalize a step's `schema` for the AI SDK. A YAML workflow can only write
  *  a plain JSON Schema object, which the SDK accepts only wrapped in

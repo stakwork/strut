@@ -263,7 +263,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` = every LLM call must have someone to bill: a call with no principal, or no delegation on file for it, is a step error instead of a direct provider call, and an enabled automation on an ownerless workflow is refused when scheduled and when it fires (`lastFireError`). Set it wherever the Mothership is mounted. |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
-| `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
+| `STRUT_CHAT_MODEL`   | `claude-sonnet-5-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
 | `STRUT_CHAT_MAX_STEPS` | `30`         | Max agent tool-call iterations per chat turn |
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
 | `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |

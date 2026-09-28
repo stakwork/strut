@@ -68,7 +68,7 @@ describe("llm: model resolution through the secrets boundary", () => {
   it("works with no secrets capability at all (bare env, as in runWorkflow without services)", async () => {
     process.env["ANTHROPIC_API_KEY"] = "k";
     const r = await resolveModel({ model: "sonnet" });
-    assert.equal(r.name, "anthropic/claude-sonnet-5");
+    assert.equal(r.name, "anthropic/claude-sonnet-5-5");
     assert.equal(r.maxOutputTokens, 128_000);
   });
 
@@ -108,7 +108,7 @@ describe("llm: model resolution through the secrets boundary", () => {
     process.env["XAI_API_KEY"] = "env-xai-secret";
     const secrets = await withStore({ OPENAI_API_KEY: "store-openai-secret" });
     const cat = await listModelOptions({ default: "sonnet", secrets });
-    assert.equal(cat.default, "anthropic/claude-sonnet-5");
+    assert.equal(cat.default, "anthropic/claude-sonnet-5-5");
     const by = (alias: string) => cat.models.find((m) => m.alias === alias)!;
     assert.equal(by("gpt").available, true, "store key");
     assert.equal(by("grok").available, true, "env key");
