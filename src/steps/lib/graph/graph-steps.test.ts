@@ -116,6 +116,31 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.match(await run("graph/graph-get", { ref_id: "nope" }), /node not found/);
   });
 
+  it("graph-get by node_type + name: an exact key lookup, scoped to the namespace", async () => {
+    // A near-namesake a search would rank beside it; the key tells them apart.
+    const other = await run("graph/create-node", { node_type: "StrutWorkflow", namespace: NS, node_data: { name: "harvey-deliver-v2" } });
+    const out = await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver", namespace: NS });
+    assert.equal(out.ref_id, wfRef);
+    assert.equal(out.name, "harvey-deliver");
+    assert.equal(out.properties.description, "Delivers legal memos");
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }]);
+    // The type is resolved like everywhere else, the name like its key: case, spaces and punctuation ignored.
+    assert.equal((await run("graph/graph-get", { node_type: "strutworkflow", name: "Harvey Deliver", namespace: NS })).ref_id, wfRef);
+    assert.equal((await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver-v2", namespace: NS })).ref_id, other.ref_id);
+    // Another namespace (here the deployment's default) does not hold it.
+    assert.match(await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver" }), /node not found: StrutWorkflow "harvey-deliver"/);
+    assert.match(await run("graph/graph-get", { node_type: "StrutWorkflow", name: "nope", namespace: NS }), /node not found/);
+    assert.match(await run("graph/graph-get", { node_type: "Nope", name: "x" }), /unknown node type "Nope"/);
+    // Only types keyed by name; the rest are found by search and read by ref_id.
+    assert.match(await run("graph/graph-get", { node_type: "StrutRun", name: "x" }), /StrutRun is keyed by run_id, not name/);
+    assert.match(await run("graph/graph-get", { name: "harvey-deliver" }), /pass ref_id, or node_type \+ name/);
+    assert.match(await run("graph/graph-get", {}), /pass ref_id, or node_type \+ name/);
+    // The namesake goes, so the tests below see the graph they expect.
+    const bolt = new Bolt(cfg!);
+    await bolt.run(`MATCH (n {ref_id: $ref_id}) DETACH DELETE n`, { ref_id: other.ref_id });
+    await bolt.close();
+  });
+
   it("edit-node merges, deletes, refuses type changes and required removals", async () => {
     assert.deepEqual(await run("graph/edit-node", { ref_id: wfRef, node_data: { category: "smoke" }, properties_to_be_deleted: ["description"] }), {
       status: "Success", ref_id: wfRef, updated: ["category"], deleted: ["description"],
@@ -342,6 +367,47 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     ]);
     assert.deepEqual(events[3].output.verdicts, [{ ref_id: wfvRef, relevance: 0.9, kept: true }]);
     assert.deepEqual([events[2].iteration, events[3].iteration], [1, 1]);
+  });
+
+  // Last: it adds nodes the tests above do not expect.
+  it("graph-get children: the nodes it points to along one edge type, with descriptions, sorted by name", async () => {
+    const step = async (step_type: string, description?: string) =>
+      (await run("graph/create-triplet", {
+        source_type: "StrutWorkflowVersion",
+        source_data: { name: "toc", content_hash: "t-1", created_at: "2026-09-01T00:00:00Z" },
+        target_type: "StrutStep",
+        target_data: { step_type, ...(description ? { description } : {}) },
+        edge_type: "USES_STEP",
+        namespace: NS,
+      })) as { status: string; source_ref_id: string; target_ref_id: string };
+    const zeta = await step("zeta/step", "Second by name.");
+    const alpha = await step("alpha/step", `First by name. ${"x".repeat(400)}`);
+    const bare = await step("mid/step");
+    assert.equal(bare.status, "Success", JSON.stringify(bare));
+    const parent = zeta.source_ref_id;
+    assert.equal(alpha.source_ref_id, parent, "one parent, three children");
+
+    const out = await run("graph/graph-get", { ref_id: parent, children: "uses step", namespace: NS });
+    assert.equal(out.ref_id, parent);
+    assert.deepEqual(out.edges, { USES_STEP: 3 });
+    assert.deepEqual(out.children.map((c: any) => c.name), ["alpha/step", "mid/step", "zeta/step"]);
+    assert.deepEqual(out.children[2], { ref_id: zeta.target_ref_id, node_type: "StrutStep", name: "zeta/step", description: "Second by name." });
+    assert.deepEqual(out.children[1], { ref_id: bare.target_ref_id, node_type: "StrutStep", name: "mid/step" }, "no description, no key");
+    assert.equal(out.children[0].description.length, 301, "a long description is cut");
+    assert.ok(!("children_truncated" in out));
+    assert.deepEqual(
+      accessedNodesOf(out),
+      [{ ref_id: parent, node_type: "StrutWorkflowVersion" }, ...out.children.map((c: any) => ({ ref_id: c.ref_id, node_type: "StrutStep" }))],
+      "the node and the children it listed",
+    );
+
+    // Outgoing edges only: the same edge, read from the child's side, lists nothing.
+    const child = await run("graph/graph-get", { ref_id: zeta.target_ref_id, children: "USES_STEP", namespace: NS });
+    assert.deepEqual(child.edges, { USES_STEP: 1 });
+    assert.deepEqual(child.children, []);
+    // An edge type the node has none of; and without the option the envelope is unchanged.
+    assert.deepEqual((await run("graph/graph-get", { ref_id: parent, children: "VERSION_OF" })).children, []);
+    assert.ok(!("children" in (await run("graph/graph-get", { ref_id: parent }))));
   });
 });
 
