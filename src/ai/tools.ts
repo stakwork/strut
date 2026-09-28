@@ -768,17 +768,21 @@ export function buildTools(deps: AiDeps): ToolSet {
           .optional()
           .describe("Optional specific version. Defaults to the active version."),
       }),
-      execute: async ({ name, input, params, version }) => {
+      // A generator: every yield but the last is a PRELIMINARY result (a
+      // `tool-progress` chat event) — the first says the run exists, so the
+      // UI opens it while it executes. Only the last yield reaches the model.
+      execute: async function* ({ name, input, params, version }) {
         let flow;
         try {
           flow = version
             ? await deps.workspace.getWorkflowVersion(name, version)
             : await deps.workspace.getWorkflow(name);
         } catch (err) {
-          return {
+          yield {
             ok: false,
             error: `Workflow not found: ${err instanceof Error ? err.message : String(err)}`,
           };
+          return;
         }
 
         // Generate the runId here (not in the runner) so the detached stub
@@ -806,10 +810,14 @@ export function buildTools(deps: AiDeps): ToolSet {
           ...(deps.actor ? { actor: deps.actor } : {}),
           ...(principal ? { principal } : {}),
         }).finally(() => tracked?.untrack());
+        yield { status: "running", workflow: name, runId };
 
         // No detach seam (tests / non-chat embedders) → await as before.
         const detach = deps.detach;
-        if (!detach) return { ...(await promise), ...contract };
+        if (!detach) {
+          yield { ...(await promise), ...contract };
+          return;
+        }
 
         // Dispatch mode: race the run against the wait window. Fast runs
         // return synchronously (the quick inner-loop path); a run that
@@ -823,10 +831,13 @@ export function buildTools(deps: AiDeps): ToolSet {
             timer = setTimeout(() => res(pending), detach.waitMs);
           }),
         ]).finally(() => clearTimeout(timer));
-        if (winner !== pending) return { ...winner, ...contract };
+        if (winner !== pending) {
+          yield { ...winner, ...contract };
+          return;
+        }
 
         detach.onDetach({ workflow: name, runId, startedAt, promise });
-        return {
+        yield {
           status: "running",
           detached: true,
           runId,

@@ -454,6 +454,15 @@ export function ChatFlyout(props: {
     // step's entry (which may be the same kind with no bubble in between).
     let stepHasTextEntry = false;
     let stepHasToolEntry = false;
+    // run_workflow reports its run twice — at launch (progress) and at the
+    // end (result); open it on the first, so the sidebar and canvas follow
+    // it live, and never yank the view back on the second.
+    const opened = new Set<string>();
+    const openRun = (workflow: unknown, runId: unknown) => {
+      if (typeof workflow !== "string" || typeof runId !== "string" || opened.has(runId)) return;
+      opened.add(runId);
+      props.onWorkflowRan(workflow, runId);
+    };
     return {
       onTextDelta: (delta) => {
         if (signal.aborted) return;
@@ -503,15 +512,14 @@ export function ChatFlyout(props: {
         if (tr.name === "create_workflow" && !tr.isError && tr.output?.ok && tr.output.name) {
           props.onWorkflowCreated(tr.output.name);
         }
-        if (tr.name === "run_workflow" && !tr.isError && input?.name && tr.output?.runId) {
-          props.onWorkflowRan(input.name, tr.output.runId);
-        }
+        if (tr.name === "run_workflow" && !tr.isError) openRun(input?.name, tr.output?.runId);
       },
       onToolProgress: (p) => {
         if (signal.aborted) return;
         const add = (c: ToolCall): ToolCall => ({ ...c, progress: [...(c.progress ?? []), p.output] });
         toolBuf = toolBuf.map((c) => (c.toolCallId === p.toolCallId ? add(c) : c));
         setEntries((prev) => updateCall(prev, p.toolCallId, add).entries);
+        if (p.name === "run_workflow") openRun(p.output?.workflow, p.output?.runId);
       },
       onStepFinish: () => {
         textBuf = "";

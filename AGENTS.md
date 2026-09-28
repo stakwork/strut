@@ -1085,8 +1085,12 @@ and the child env is scrubbed by construction).
   `chatMaxAutoTurns` (env `STRUT_CHAT_MAX_AUTO_TURNS`, default 10) the chat
   PARKS — notifications still append to the transcript but no turn
   launches until a human replies. The seam is `AiDeps.detach` (absent →
-  the tool awaits to completion, unchanged for tests/embedders). The
-  flyout polls `GET /chat/:id` (~4s, idle+open only) to notice
+  the tool awaits to completion, unchanged for tests/embedders). The tool
+  is an async generator: its first yield, `{ status: "running", workflow,
+  runId }`, is a preliminary result (a `tool-progress` chat event) the
+  flyout opens the run on at LAUNCH, so the sidebar and canvas follow it
+  live; only the last yield reaches the model (a direct `execute` caller
+  drains it). The flyout polls `GET /chat/:id` (~4s, idle+open only) to notice
   server-initiated turns and renders `[run-notification]` /
   `[verify-notification]` messages as a collapsed notice card, not a user
   bubble (`web/src/notice.ts` parses the model-facing text —

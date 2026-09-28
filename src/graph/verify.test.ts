@@ -441,8 +441,10 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
       watchVerify: (runId: string) => watched.push(runId),
     }) as unknown as Record<string, { execute: (a: unknown) => Promise<Record<string, any>> }>;
 
-    // run_workflow: the result carries the contract, every runnable check pending.
-    const ran = await tools["run_workflow"]!.execute({ name: "clipper", input: { start: 50, len: -10 } });
+    // run_workflow: the result (its last yield) carries the contract, every
+    // runnable check pending.
+    let ran: Record<string, any> = {};
+    for await (const y of tools["run_workflow"]!.execute({ name: "clipper", input: { start: 50, len: -10 } }) as unknown as AsyncIterable<Record<string, any>>) ran = y;
     assert.equal(ran["status"], "success");
     assert.deepEqual(watched, [ran["runId"]]);
     assert.match(ran["verify"], /pending.*verify-notification/);
