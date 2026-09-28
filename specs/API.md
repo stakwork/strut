@@ -228,6 +228,7 @@ One object per line of the run's append-only log. Common fields:
 | `error`      | `{ message, stack? }` on `run.error` / `step.error` |
 | `durationMs` | on `step.end` / `step.error` |
 | `transcript` | on an agent step's `step.end`: the URL of its session (the `messages` never ride in this response) |
+| `nodes`      | on `step.end`: the graph nodes the step read or wrote, `[{ ref_id, node_type? }]`, never truncated — on a graph step the workflow ran (`graph/graph-get`) and on one an agent called (`tool:graph_graph_get`) alike. Absent when the step touched none |
 
 | Type              | Meaning |
 | ----------------- | ------- |

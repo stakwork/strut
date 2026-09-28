@@ -555,8 +555,10 @@ and the child env is scrubbed by construction).
   marks its output with `withAccessedNodes(output, [{ ref_id, node_type? }])`
   (`core.ts`; a non-enumerable marker — invisible to the model, `{{ }}`
   expressions, and JSON). `wrapToolsWithEmit` lifts it onto the tool call's
-  `step.end` event as `nodes`, untruncated, and the projector writes one
-  `ACCESSED` edge per ref the graph holds (`StrutToolCall → any node`). Every
+  `step.end` event as `nodes`, untruncated — the runner does the same for a
+  graph step the workflow itself ran — and the projector writes one
+  `ACCESSED` edge per ref the graph holds (`StrutToolCall → any node`; a
+  workflow step's `nodes` are in the log only). Every
   `graph/*` (and mcp `jarvis/*`) node-touching step does this; a step that
   reports nothing gets no edges — never inferred from prose. The same
   marker mechanism carries an agent step's transcript: `withMessages(output,

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { flow, step, defineStep, withMessages, type Step, type StepRegistry, type RunEvent } from "./core.js";
+import { flow, step, defineStep, withAccessedNodes, withMessages, type Step, type StepRegistry, type RunEvent } from "./core.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import foreachStep from "./steps/core/foreach.js";
@@ -684,6 +684,59 @@ describe("step.end carries a step's session marker as `messages`", () => {
     assert.equal(ends.length, 2);
     for (const e of ends) assert.deepEqual(e.messages, session);
     assert.deepEqual(result.output, [{ result: "done 1" }, { result: "done 2" }]);
+  });
+});
+
+// ── Provenance marker (withAccessedNodes → step.end.nodes) ─────────────────
+
+describe("step.end carries a step's accessed-nodes marker as `nodes`", () => {
+  /** A graph-reading step: a slim output marked with the node it resolved. */
+  const reader = defineStep({
+    type: "reader",
+    input: z.object({ ref: z.string().default("r1") }),
+    output: z.any(),
+    async run(cfg) {
+      return withAccessedNodes({ ref_id: cfg.ref, name: "n" }, [{ ref_id: cfg.ref, node_type: "Concept" }]);
+    },
+  });
+
+  it("lifts the marker onto a workflow step's step.end and keeps it out of the output and the scope", async () => {
+    const wf = flow("read", {
+      input: z.object({}),
+      steps: [step("r", "reader", {}), step("after", "echo", { got: "{{ r }}" })],
+    });
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(wf, {}, makeRegistry({ reader }), { store });
+    assert.equal(result.status, "success");
+    const events = await store.getRunEvents("read", result.runId);
+    const end = events.find((e) => e.type === "step.end" && e.path === "read/r")!;
+    assert.deepEqual(end.nodes, [{ ref_id: "r1", node_type: "Concept" }]);
+    assert.equal(JSON.stringify(end.output), '{"ref_id":"r1","name":"n"}');
+    assert.deepEqual(result.output, { got: { ref_id: "r1", name: "n" } });
+    const after = events.find((e) => e.type === "step.end" && e.path === "read/after")!;
+    assert.ok(!("nodes" in after), "an unmarked output emits no nodes field");
+  });
+
+  it("lifts it on foreach iterations too", async () => {
+    const wf = flow("read-each", {
+      input: z.object({ refs: z.array(z.string()) }),
+      steps: [
+        step("each", "foreach", {
+          items: "{{ input.refs }}",
+          body: step("r", "reader", { ref: "{{ $current }}" }),
+        }),
+      ],
+    });
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(wf, { refs: ["a", "b"] }, makeRegistry({ reader, foreach: foreachStep }), { store });
+    assert.equal(result.status, "success");
+    const ends = (await store.getRunEvents("read-each", result.runId)).filter(
+      (e) => e.type === "step.end" && e.stepType === "reader",
+    );
+    assert.deepEqual(
+      ends.map((e) => e.nodes),
+      [[{ ref_id: "a", node_type: "Concept" }], [{ ref_id: "b", node_type: "Concept" }]],
+    );
   });
 });
 
