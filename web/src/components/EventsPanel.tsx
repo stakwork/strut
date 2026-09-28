@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "preact/hooks";
+import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import * as api from "../api";
 import { eventTone, statusTone } from "../helpers";
 import { ValueFields } from "./ValueFields";
@@ -32,6 +32,12 @@ function runRefs(evt: api.RunEvent): RunRef[] {
   return out;
 }
 
+/** A run's history replays back-to-back; a live run's tail polls every 250ms.
+ *  A gap this long means the replay is over. */
+const SETTLE_MS = 200;
+
+const isAtBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+
 export function EventsPanel(props: {
   events: api.RunEvent[];
   /** Navigate to another workflow's run (used by run-ref links). */
@@ -39,9 +45,12 @@ export function EventsPanel(props: {
 }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Whether the user is pinned to the bottom (updated on every scroll). New
-  // events only auto-scroll when this is true — scroll up and we leave you be.
-  const stickToBottom = useRef(true);
+  // Opening a run replays its whole log in a quick burst of renders (app.tsx
+  // clears events on every run switch, so the panel mounts per run). Stay pinned to the bottom until that burst goes
+  // quiet or the user scrolls up — then never follow again: a new event
+  // leaves the view where it is, and the pill jumps down on demand.
+  const settling = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
 
   // Auto-expand run.end when it arrives
   useEffect(() => {
@@ -49,19 +58,40 @@ export function EventsPanel(props: {
     if (idx >= 0) setExpanded(idx);
   }, [props.events]);
 
-  // Auto-scroll to the bottom on new events, but only if already at the bottom.
-  useEffect(() => {
+  // Layout effect: the scroll lands in the same commit as the new rows, so no
+  // scroll event ever sees the grown log unpinned and ends the settle early.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (settling.current) el.scrollTop = el.scrollHeight;
+    setAtBottom(isAtBottom(el));
   }, [props.events.length, expanded]);
+
+  useEffect(() => {
+    const t = setTimeout(() => { settling.current = false; }, SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [props.events.length]);
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (!el) return;
+    const bottom = isAtBottom(el);
+    if (!bottom) settling.current = false;
+    setAtBottom(bottom);
+  };
+
+  const jumpToBottom = () => {
+    const el = scrollRef.current;
+    el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
 
   return (
     <div class="shell-events" ref={scrollRef} onScroll={onScroll}>
+      {!atBottom && (
+        <div class="events-jump-anchor">
+          <button class="events-jump" onClick={jumpToBottom} title="Jump to the latest event">↓ Latest</button>
+        </div>
+      )}
       <div class="events-header">Events ({props.events.length})</div>
       <EvolveChart events={props.events} onOpenRun={props.onOpenRun} />
       {props.events.map((evt, i) => {
