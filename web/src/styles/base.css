@@ -25,6 +25,9 @@
   --walk-evidence: #94a3b8;
   --walk-other: #6b7689;
 
+  /* SourceCode: TypeScript type names (the other tokens reuse the colors above). */
+  --code-type: #2dd4bf;
+
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
     Arial, sans-serif;

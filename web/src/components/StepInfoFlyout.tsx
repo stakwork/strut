@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import * as api from "../api";
 import { FlyoutResizer } from "./FlyoutResizer";
+import { SourceCode } from "./SourceCode";
 import { CloseIcon } from "../icons";
 import { StepTypeEntry } from "./AddStepDialog";
 import { relativeTime } from "../automation-form";
@@ -176,7 +177,7 @@ export function StepInfoFlyout(props: {
             sourceLoading ? (
               <div class="flyout-source-empty">Loading…</div>
             ) : source?.source ? (
-              <pre class="flyout-source-code">{source.source}</pre>
+              <SourceCode code={source.source} />
             ) : (
               <div class="flyout-source-empty">No source available for this tool.</div>
             )
