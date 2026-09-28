@@ -124,4 +124,12 @@ describe("chatEventOf", () => {
       isError: true,
     });
   });
+
+  it("a step's end carries the context it left: input (cached reads included) + output, against the window", () => {
+    const usage = { inputTokens: 350_000, outputTokens: 1_234 };
+    assert.deepEqual(chatEventOf({ type: "finish-step", usage }, 1_000_000), { type: "step.finish", context: { used: 351_234, limit: 1_000_000 } });
+    // No usage reported, or no known window → a bare step boundary.
+    assert.deepEqual(chatEventOf({ type: "finish-step", usage: {} }, 1_000_000), { type: "step.finish" });
+    assert.deepEqual(chatEventOf({ type: "finish-step", usage }), { type: "step.finish" });
+  });
 });

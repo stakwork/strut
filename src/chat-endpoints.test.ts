@@ -513,7 +513,57 @@ describe("chat endpoints", () => {
     }
   });
 
-  it("chatSystem: the host's section rides in the system prompt; a throwing hook never fails the turn", async () => {
+  it("chatSystem: the host's section rides in the system prompt, which is rendered once per chat and replayed verbatim", async () => {
+    const bodies: any[] = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const systemOf = (body: any): string => (typeof body.system === "string" ? body.system : body.system.map((b: { text: string }) => b.text).join(""));
+    try {
+      const seen: unknown[] = [];
+      let section = "HOST-SECTION: what this deployment builds";
+      const strut = await makeStrut({
+        chatSystem: (ctx) => {
+          seen.push(ctx);
+          return section;
+        },
+      });
+      const post = async (body: unknown) =>
+        (await (await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json()) as { chatId: string };
+
+      const { chatId } = await post({ message: "hi" });
+      await settled(chatId);
+      assert.deepEqual(seen, [{ chatId, turn: 0 }]);
+      const system = systemOf(bodies[0]);
+      assert.ok(system.includes("HOST-SECTION: what this deployment builds"));
+      assert.ok(system.indexOf("HOST-SECTION") < system.indexOf("Available steps:"), "strut's steps tree stays last");
+      assert.equal(await chatStore.getSystem(chatId), system);
+
+      // The host's section changes between turns: this chat's prompt does
+      // not (the hook is not even asked), a new chat's does.
+      section = "HOST-SECTION v2";
+      await post({ chatId, message: "again" });
+      await settled(chatId);
+      assert.equal(seen.length, 1);
+      assert.equal(systemOf(bodies[1]), system);
+      const other = await post({ message: "new chat" });
+      await settled(other.chatId);
+      assert.ok(systemOf(bodies[2]).includes("HOST-SECTION v2"));
+    } finally {
+      server.close();
+    }
+  });
+
+  it("chatSystem: a throwing hook never fails the turn", async () => {
     const bodies: any[] = [];
     const server = http.createServer((req, res) => {
       let raw = "";
@@ -529,30 +579,18 @@ describe("chat endpoints", () => {
     process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const systemOf = (body: any): string => (typeof body.system === "string" ? body.system : JSON.stringify(body.system));
     try {
-      const seen: unknown[] = [];
       const strut = await makeStrut({
-        chatSystem: (ctx) => {
-          seen.push(ctx);
-          if (ctx.turn === 1) throw new Error("graph is down");
-          return "HOST-SECTION: what this deployment builds";
+        chatSystem: () => {
+          throw new Error("graph is down");
         },
       });
-      const post = async (body: unknown) =>
-        (await (await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json()) as { chatId: string };
-
-      const { chatId } = await post({ message: "hi" });
+      const res = await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: "hi" }) });
+      const { chatId } = (await res.json()) as { chatId: string };
       await settled(chatId);
-      assert.deepEqual(seen, [{ chatId, turn: 0 }]);
-      const system = systemOf(bodies[0]);
-      assert.ok(system.includes("HOST-SECTION: what this deployment builds"));
-      assert.ok(system.indexOf("HOST-SECTION") < system.indexOf("Available steps:"), "strut's steps tree stays last");
-
-      // Turn 1: the hook throws — the model is still called, on strut's prompt alone.
-      await post({ chatId, message: "again" });
-      await settled(chatId);
-      assert.equal(bodies.length, 2);
-      assert.ok(!systemOf(bodies[1]).includes("HOST-SECTION"));
-      assert.ok(systemOf(bodies[1]).includes("Available steps:"));
+      // The model is still called, on strut's prompt alone.
+      assert.equal(bodies.length, 1);
+      assert.ok(!systemOf(bodies[0]).includes("HOST-SECTION"));
+      assert.ok(systemOf(bodies[0]).includes("Available steps:"));
     } finally {
       server.close();
     }
@@ -867,15 +905,20 @@ describe("chat endpoints", () => {
 
   /** A stand-in provider whose FIRST reply is one tool call and every later
    *  reply plain text — so a loop that does not stop on the ask shows up as
-   *  a second request. */
-  async function toolCallProvider(name: string, input: object): Promise<{ port: number; calls: () => number; close: () => void }> {
+   *  a second request. Records each request body; call N reports N×1000
+   *  input tokens. */
+  async function toolCallProvider(name: string, input: object): Promise<{ port: number; calls: () => number; bodies: any[]; close: () => void }> {
     let calls = 0;
-    const server = http.createServer((_req, res) => {
+    const bodies: any[] = [];
+    const server = http.createServer(async (req, res) => {
+      let raw = "";
+      for await (const c of req) raw += c;
+      bodies.push(JSON.parse(raw));
       calls++;
       res.writeHead(200, { "content-type": "text/event-stream" });
       const ev = (type: string, data: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
       ev("message_start", {
-        message: { id: "m1", type: "message", role: "assistant", model: "claude-sonnet-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } },
+        message: { id: "m1", type: "message", role: "assistant", model: "claude-sonnet-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: calls * 1000, output_tokens: 1 } },
       });
       if (calls === 1) {
         ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_1", name, input: {} } });
@@ -892,8 +935,60 @@ describe("chat endpoints", () => {
       res.end();
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-    return { port: (server.address() as { port: number }).port, calls: () => calls, close: () => server.close() };
+    return { port: (server.address() as { port: number }).port, calls: () => calls, bodies, close: () => server.close() };
   }
+
+  it("a tool result is capped where it is made: the model's own turn reads the capped bytes and every later turn replays them unchanged", async () => {
+    const fake = await toolCallProvider("bash", { command: "head -c 5000 /dev/zero | tr '\\0' x" });
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    const prevCap = process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
+    process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"] = "2000";
+    try {
+      const strut = await makeStrut();
+      const { chatId } = (await (await strut.app.request("/chat", JSON_({ message: "look" }))).json()) as { chatId: string };
+      await settled(chatId);
+      assert.equal(fake.calls(), 2, "tool call, then the reply");
+
+      // The turn that ran the tool already read the capped result…
+      const sent = JSON.stringify(fake.bodies[1].messages);
+      assert.ok(sent.includes("[TRUNCATED: 5000 chars, cut to 2000]"), sent.slice(0, 400));
+      assert.ok(!sent.includes("x".repeat(2001)));
+      // …and the transcript holds exactly that.
+      const tool = (await chatStore.loadMessages(chatId)).find((m) => m.role === "tool") as any;
+      assert.equal(tool.content[0].output.value.output.length, 2000);
+
+      // The next turn replays the history byte-identical — system prompt included.
+      await strut.app.request("/chat", JSON_({ chatId, message: "again" }));
+      await settled(chatId);
+      assert.equal(fake.calls(), 3);
+      const before = fake.bodies[1].messages;
+      assert.equal(JSON.stringify(fake.bodies[2].messages.slice(0, before.length)), JSON.stringify(before));
+      assert.deepEqual(fake.bodies[2].system, fake.bodies[0].system);
+    } finally {
+      if (prevCap === undefined) delete process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
+      else process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"] = prevCap;
+      fake.close();
+    }
+  });
+
+  it("every step records how full the context is: on its step.finish event and on the chat", async () => {
+    const fake = await toolCallProvider("bash", { command: "echo hi" });
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    try {
+      const strut = await makeStrut();
+      const { chatId } = (await (await strut.app.request("/chat", JSON_({ message: "look" }))).json()) as { chatId: string };
+      await settled(chatId);
+      // Step 1: 1000 in + 5 out; step 2: 2000 in + 2 out. claude-sonnet-5's window is 1M.
+      const steps = chatStore.events.get(chatId)!.filter((e) => e.type === "step.finish");
+      assert.deepEqual(steps.map((e) => e.context), [{ used: 1005, limit: 1_000_000 }, { used: 2002, limit: 1_000_000 }]);
+      const got = (await (await strut.app.request(`/chat/${chatId}`)).json()) as { meta: ChatMeta };
+      assert.deepEqual(got.meta.context, { used: 2002, limit: 1_000_000 });
+    } finally {
+      fake.close();
+    }
+  });
 
   it("a turn that calls ask_user ends on it: the question is on the chat, the host hears it as a field and as text", async () => {
     const requestedSchema = { type: "object", properties: { repo: { type: "string", title: "Repository" }, env: { type: "string", enum: ["staging", "production"] } }, required: ["repo"] };

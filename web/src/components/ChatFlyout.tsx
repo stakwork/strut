@@ -6,6 +6,7 @@ import { formatJson } from "../helpers";
 import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon } from "../icons";
 import { startDictation, dictationSupported, type Dictation } from "../dictation";
 import { isNotice } from "../notice";
+import { contextMeter } from "../context-meter";
 import { ToolResultView } from "./ToolResultView";
 import { NoticeView } from "./NoticeView";
 import { ElicitationForm } from "./ElicitationForm";
@@ -324,6 +325,9 @@ export function ChatFlyout(props: {
   // The builder's open question (plans/elicitation.md): what `meta.elicitation`
   // last said — read on load, after each turn, and by the idle poll.
   const [elicitation, setElicitation] = useState<api.Elicitation | null>(null);
+  // How full the model's context window is (`meta.context`): read with the
+  // meta, and live from each streamed step's end.
+  const [context, setContext] = useState<api.ChatContext | null>(null);
 
   // ── Model picker ─────────────────────────────────────────────────────
   // The catalog is the server's (aieo's aliases + which providers have a
@@ -521,11 +525,12 @@ export function ChatFlyout(props: {
         setEntries((prev) => updateCall(prev, p.toolCallId, add).entries);
         if (p.name === "run_workflow") openRun(p.output?.workflow, p.output?.runId);
       },
-      onStepFinish: () => {
+      onStepFinish: (ctx) => {
         textBuf = "";
         toolBuf = [];
         stepHasTextEntry = false;
         stepHasToolEntry = false;
+        if (ctx && !signal.aborted) setContext(ctx);
       },
       onFinish: () => {
         if (signal.aborted) return;
@@ -546,7 +551,9 @@ export function ChatFlyout(props: {
       // The turn may have ended on a question — show its form.
       if (!ac.signal.aborted) {
         try {
-          setElicitation((await api.getChat(id)).meta.elicitation ?? null);
+          const { meta } = await api.getChat(id);
+          setElicitation(meta.elicitation ?? null);
+          setContext(meta.context ?? null);
         } catch {
           // Server briefly unreachable — the idle poll picks it up.
         }
@@ -571,6 +578,7 @@ export function ChatFlyout(props: {
       const { meta, messages } = await api.getChat(id);
       setEntries(transcriptToEntries(messages));
       setElicitation(meta.elicitation ?? null);
+      setContext(meta.context ?? null);
       seenTurn.current = meta.currentTurn;
       if (meta.status === "live" && meta.currentTurn >= 0) {
         await attach(id, meta.currentTurn);
@@ -581,6 +589,7 @@ export function ChatFlyout(props: {
       setChatId(null);
       setEntries([]);
       setElicitation(null);
+      setContext(null);
     }
   }, [detach, attach]);
 
@@ -601,6 +610,7 @@ export function ChatFlyout(props: {
       try {
         const { meta, messages } = await api.getChat(chatId);
         setElicitation(meta.elicitation ?? null);
+        setContext(meta.context ?? null);
         if (meta.currentTurn > seenTurn.current) {
           seenTurn.current = meta.currentTurn;
           setEntries(transcriptToEntries(messages));
@@ -624,6 +634,7 @@ export function ChatFlyout(props: {
     setChatId(null);
     setEntries([]);
     setElicitation(null);
+    setContext(null);
     setExpanded({});
     setShowHistory(false);
     seenTurn.current = -1;
@@ -698,7 +709,20 @@ export function ChatFlyout(props: {
       <FlyoutResizer />
       <div class="flyout-header">
         <div>
-          <div class="flyout-eyebrow">AI Builder</div>
+          <div class="flyout-eyebrow chat-eyebrow">
+            {context && chatId && (() => {
+              const m = contextMeter(context);
+              return (
+                <span
+                  class={`chat-context${m.warn ? " is-warn" : ""}`}
+                  title={`Context: ${context.used.toLocaleString()} of ${context.limit.toLocaleString()} tokens, as of the last model call`}
+                >
+                  {m.text}
+                </span>
+              );
+            })()}
+            <span class="chat-eyebrow-label">AI Builder</span>
+          </div>
           <div class="flyout-title">Create Workflow</div>
         </div>
         <div class="chat-header-actions">

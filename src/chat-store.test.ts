@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import {
   FileChatStore,
   MemoryChatStore,
+  capToolOutput,
   truncateToolMessages,
   DEFAULT_TOOL_RESULT_MAX_CHARS,
   toolResultMaxCharsFromEnv,
@@ -176,6 +177,32 @@ describe("FileChatStore", () => {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+describe("capToolOutput", () => {
+  it("cuts a long string to the cap, marker included, and keeps structure", () => {
+    const out = capToolOutput({ type: "json", value: { log: "x".repeat(5000), ok: true, n: 3, list: ["short"] } }, 1000);
+    const log = out.value.log;
+    assert.equal(log.length, 1000);
+    assert.ok(log.endsWith("[TRUNCATED: 5000 chars, cut to 1000]"), log.slice(-60));
+    assert.deepEqual({ ...out.value, log: "" }, { log: "", ok: true, n: 3, list: ["short"] });
+  });
+
+  it("is idempotent: a capped result passes a second time byte-identical", () => {
+    const once = capToolOutput({ type: "text", value: "y".repeat(80_000) }, 50_000);
+    assert.equal(JSON.stringify(capToolOutput(once, 50_000)), JSON.stringify(once));
+    // A cap shorter than the marker still holds the cap (and stays idempotent).
+    const tiny = capToolOutput("z".repeat(100), 10);
+    assert.equal(tiny, "z".repeat(10));
+    assert.equal(capToolOutput(tiny, 10), tiny);
+  });
+
+  it("leaves binary parts whole", () => {
+    const file = { type: "file-data", data: "A".repeat(5000), mediaType: "image/png" };
+    const out = capToolOutput({ type: "content", value: [{ type: "text", text: "t".repeat(5000) }, file] }, 1000);
+    assert.equal(out.value[0]!.text!.length, 1000);
+    assert.equal(out.value[1], file);
+  });
+});
+
 describe("truncateToolMessages", () => {
   it("truncates long strings inside tool messages, leaving others intact", () => {
     const big = "x".repeat(5000);
@@ -190,8 +217,10 @@ describe("truncateToolMessages", () => {
     assert.equal((out[0]!.content as any)[0].text.length, 5000);
     // Tool result truncated + marked.
     const toolText = (out[1]!.content as any)[0].output.value as string;
-    assert.ok(toolText.length < 5000);
+    assert.equal(toolText.length, 4000);
     assert.ok(toolText.includes("[TRUNCATED"));
+    // A no-op on a history whose results were capped at the source.
+    assert.deepEqual(truncateToolMessages(out, 4000), out);
   });
 
   it("leaves short tool content unchanged", () => {

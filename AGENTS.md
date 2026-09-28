@@ -55,7 +55,7 @@ strut/
 │   ├── closure.ts         # what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (nested subflows via the workspace, agentTools grants; templated/missing child → unresolvable), stepHashesFor → run.start.stepHashes
 │   ├── step-stats.ts      # GET /steps/:type/stats — the Step Info flyout's Usage: workflows whose active version can run the type (direct, or via subflow) + execution counts summed from their runs' `RunSummary.stepCounts` (written at finalize; older summaries backfilled from the log on first read) and the `step:<type>` bucket
 │   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
-│   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + messages.jsonl + events.jsonl) + truncateToolMessages
+│   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + system.md + messages.jsonl + events.jsonl) + capToolOutput (the builder's tool-result cap) + truncateToolMessages (the same cap on replay)
 │   ├── workspace.ts       # WorkspaceStore interface + FileWorkspaceStore (alias WorkspaceManager): versioning, _metadata.json, YAML loading
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
@@ -127,6 +127,7 @@ strut/
         ├── flow-to-canvas.ts  # Flow → CanvasData; STEP_COLORS → categories; childRefForStep/stepWorkflow (container nav)
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
+        ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
         ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render (pure; tested)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
@@ -143,7 +144,7 @@ strut/
         │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
         │   ├── VersionsPanel.tsx     # the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing)
         │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
-        │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage; renders the open question's form)
+        │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage; renders the open question's form; the context meter in its header)
         │   ├── ElicitationForm.tsx   # the builder's question at the end of the transcript: a form (Submit / Decline / ✕) or, for a secret, a password field posting to the /secret endpoint — the page a host's link opens (?chat=&elicit=)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc
         │   ├── CreateDialog.tsx      # new-workflow dialog
@@ -266,7 +267,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
 | `STRUT_CHAT_MAX_STEPS` | `30`         | Max agent tool-call iterations per chat turn |
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
-| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on tool RESULTS in the history re-fed to the model on later turns (the turn that ran the tool always sees the full result; disk stays lossless). `0` disables. |
+| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on the builder's tool RESULTS, applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. `0` disables. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
@@ -892,22 +893,25 @@ and the child env is scrubbed by construction).
   threads `ctx.services` (via `AiDeps.services`), so the agent can
   run workflows whose steps reach external systems (Neo4j, the lab's
   `optimizer`, …) — not just service-free core/lib ones. The system
-  prompt is built per-request by `buildSystem(deps)` (pre-seeds the
-  steps tree).
+  prompt is built by `buildSystem(deps)` (pre-seeds the steps tree) on
+  a chat's FIRST turn and replayed verbatim after — see "History is
+  append-only" below.
 
 - **`chatSystem` — the host's section of the builder's prompt**
   (`createStrut({ chatSystem })` → `AiDeps.hostSystem`). Strut's prompt
   knows how to build workflows, never WHAT a deployment builds: a domain
   convention (what a "janitor" is, which seeded workflow runs one) belongs
-  to the host, not in `BASE_SYSTEM`. The hook is called once per chat turn
-  with `{ chatId, turn, actor? }` and its text is appended verbatim after
+  to the host, not in `BASE_SYSTEM`. The hook is called once per CHAT,
+  when its first turn renders the prompt, with `{ chatId, turn, actor? }`,
+  and its text is appended verbatim after
   strut's rules (and the claims section), before the models line and the
-  steps tree — which stays last. mcp renders it from its knowledge graph.
+  steps tree — which stays last. The prompt is then frozen for the chat
+  (it heads the cached prefix), so an edit to the host's section reaches
+  new chats only. mcp renders it from its knowledge graph.
   Nothing returned, or a throw (one warn line) → the prompt is strut's
   alone; a turn never fails on it. The text has SYSTEM authority over a
   builder that can publish steps and run bash, so the host owns where it
-  comes from and how long it is; keep it stable between turns (it sits in
-  the cached prompt prefix).
+  comes from and how long it is.
 
 - **`list_secrets` tool** (`AiDeps.secrets`). The agent can list the
   **names** of available credentials (never values — it's the same
@@ -963,9 +967,9 @@ and the child env is scrubbed by construction).
   callback carries `stopped: true` too). Queued notifications still drain.
   Each chat lives in `chats/<id>/` with the deliberate **two-file
   split** (borrowed from `mcp/src/repo/session.ts`): `messages.jsonl`
-  is the lossless, **replayable** conversation (re-fed to the agent
-  next turn + rendered as transcript — whole `ModelMessage`s, never
-  deltas); `events.jsonl` is the fine-grained **observability** stream
+  is the **replayable** conversation, exactly as the model saw it
+  (re-fed to the agent next turn + rendered as transcript — whole
+  `ModelMessage`s, never deltas); `events.jsonl` is the fine-grained **observability** stream
   the SSE tail follows (text deltas, tool calls/results, step/turn
   boundaries — never re-sent to the model); `meta.json` tracks
   `{ status, currentTurn, … }`. A chat is long-lived across turns, so
@@ -974,11 +978,31 @@ and the child env is scrubbed by construction).
   replays a multi-turn log but stops at the requested turn's terminal
   (race-free, like the run tail). The shared tail engine is
   `tailJsonl` in `store.ts` (used by both `FileRunStore.tailEvents`
-  and `FileChatStore`). `messages.jsonl` stays lossless on disk;
-  `truncateToolMessages` trims long `role:"tool"` results only in the
-  copy re-fed to the model on LATER turns (token hygiene for long
-  autonomous loops; env `STRUT_CHAT_TOOL_RESULT_MAX_CHARS`, default 50000,
-  `0` disables).
+  and `FileChatStore`).
+  **History is append-only — the prompt cache depends on it.** What a
+  turn sends is the previous request plus new messages, byte for byte:
+  a rewritten earlier message misses Anthropic's cache from that point
+  on (the WHOLE conversation once the change sits beyond its 20-block
+  lookback, since the chat has one automatic breakpoint), and on models
+  that bind thinking blocks to the prefix (Opus 5.5, Fable 5.1)
+  invalidates every later block — a 400 on accounts enforced for it. So
+  (1) tool results are capped WHERE THEY ARE MADE: `capToolResults`
+  (`ai/tools.ts`) wraps every builder tool's `toModelOutput` with
+  `capToolOutput` (per string, marker included, idempotent; env
+  `STRUT_CHAT_TOOL_RESULT_MAX_CHARS`, default 50000, `0` disables), so
+  the model reads the capped result in its own turn and `messages.jsonl`
+  records exactly that (the uncapped output is in `events.jsonl`);
+  `truncateToolMessages` applies the same cap on replay, a no-op except
+  for histories recorded before the cap moved. (2) The system prompt is
+  rendered on a chat's first turn and stored (`ChatStore.getSystem` /
+  `setSystem`, `chats/<id>/system.md`), then replayed verbatim: a step
+  published mid-chat never re-renders the steps tree, and the model
+  reads what changed through `list_steps` / `search_steps`.
+  **Context meter:** each `step.finish` event carries `context: { used,
+  limit }` — that model call's input (cached reads included) plus its
+  output, against aieo's window for the model (`ResolvedModel.contextLimit`)
+  — also written to `ChatMeta.context`; the flyout header shows it as
+  `351k / 1M`, amber from 80% (`web/src/context-meter.ts`).
   `chatMaxSteps` (env `STRUT_CHAT_MAX_STEPS`, default 30) bounds the
   per-turn agent loop. The browser (`web/src/api.ts`: `sendChat` +
   `streamChat` + `getChat`) persists the active `chatId` in

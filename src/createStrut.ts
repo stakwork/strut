@@ -15,6 +15,7 @@ import {
   FileChatStore,
   MemoryChatStore,
   generateChatId,
+  capToolOutput,
   truncateToolMessages,
 } from "./chat-store.js";
 import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type WorkspaceStore } from "./workspace.js";
@@ -159,13 +160,14 @@ export interface StrutOptions<TServices = unknown> {
    *  `claude-sonnet-5`. */
   chatModel?: string;
 
-  /** The host's section of the builder's system prompt: called once per chat
-   *  turn, its text appended verbatim after strut's own rules (before the
-   *  steps tree). For what the DEPLOYMENT knows and strut does not — the
-   *  kinds of thing built here and their conventions; mcp renders it from
-   *  its knowledge graph. Nothing returned, or a throw (logged) → the prompt
-   *  is strut's alone: a turn never fails on it. Keep it stable between
-   *  turns (it is part of the cached prompt prefix). */
+  /** The host's section of the builder's system prompt: called once per
+   *  CHAT, when its first turn renders the prompt, and its text appended
+   *  verbatim after strut's own rules (before the steps tree). The prompt is
+   *  then replayed as-is for the chat's life (it heads the cached prefix), so
+   *  an edit reaches new chats only. For what the DEPLOYMENT knows and strut
+   *  does not — the kinds of thing built here and their conventions; mcp
+   *  renders it from its knowledge graph. Nothing returned, or a throw
+   *  (logged) → the prompt is strut's alone: a turn never fails on it. */
   chatSystem?: (ctx: { chatId: string; turn: number; actor?: string }) => string | undefined | Promise<string | undefined>;
 
   /** How long the chat agent's `run_workflow` tool waits before a still-
@@ -2216,11 +2218,6 @@ export async function createStrut<TServices = unknown>(
             searchMaxUses: 5,
             routed: llm.routed,
           });
-          // The host's prompt section (StrutOptions.chatSystem) — never fails the turn.
-          const hostSystem = await Promise.resolve().then(() => opts.chatSystem?.({ chatId, turn, ...(actor ? { actor } : {}) })).catch((err) => {
-            console.warn(`[chat ${chatId}] chatSystem hook failed:`, err instanceof Error ? err.message : err);
-            return undefined;
-          });
 
           const deps = {
             workspace,
@@ -2229,7 +2226,6 @@ export async function createStrut<TServices = unknown>(
             store,
             services,
             ...(actor ? { actor } : {}),
-            ...(hostSystem ? { hostSystem } : {}),
             secrets: secretsInjected ? undefined : secretStore,
             // Build-time bash for the chat builder, cwd'd at the local data
             // dir (scrubbed env — see shell.ts).
@@ -2339,9 +2335,26 @@ export async function createStrut<TServices = unknown>(
             },
           };
 
+          // The system prompt is rendered on the chat's first turn and
+          // replayed verbatim after (ChatStore.getSystem): it heads the cached
+          // prefix, so a new step in the tree or a re-read host section would
+          // otherwise miss the cache for the whole conversation. The host's
+          // section (StrutOptions.chatSystem) is read then — never fails the turn.
+          let system = await chatStore.getSystem(chatId);
+          if (system == null) {
+            const hostSystem = await Promise.resolve()
+              .then(() => opts.chatSystem?.({ chatId, turn, ...(actor ? { actor } : {}) }))
+              .catch((err) => {
+                console.warn(`[chat ${chatId}] chatSystem hook failed:`, err instanceof Error ? err.message : err);
+                return undefined;
+              });
+            system = await buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
+            await chatStore.setSystem(chatId, system);
+          }
+
           const agent = new ToolLoopAgent({
             model: llm.model,
-            instructions: await buildSystem(deps),
+            instructions: system,
             tools: buildTools(deps),
             maxOutputTokens: llm.maxOutputTokens,
             // Anthropic's automatic prompt caching (the request's top-level
@@ -2427,7 +2440,7 @@ export async function createStrut<TServices = unknown>(
                   stepCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
                   break;
                 case "tool-result":
-                  if (!(part as { preliminary?: boolean }).preliminary) setOutput(part.toolCallId, { type: "json", value: part.output });
+                  if (!(part as { preliminary?: boolean }).preliminary) setOutput(part.toolCallId, capToolOutput({ type: "json", value: part.output }));
                   break;
                 case "tool-error":
                   setOutput(part.toolCallId, {
@@ -2442,8 +2455,9 @@ export async function createStrut<TServices = unknown>(
                 case "error":
                   throw part.error;
               }
-              const e = chatEventOf(part);
+              const e = chatEventOf(part, llm.contextLimit);
               if (e) await emit(e);
+              if (e?.context) await chatStore.setMeta(chatId, { context: e.context });
             }
           } catch (err) {
             // A stop can surface as the aborted provider call's throw.
@@ -2618,7 +2632,9 @@ export async function createStrut<TServices = unknown>(
         ...(actor && !meta!.createdBy ? { createdBy: actor } : {}),
       });
 
-      // Lossless on disk (transcript); truncated copy re-fed to the model.
+      // Tool results are capped where they are made, so this is a no-op on
+      // anything recent; it holds a history recorded before then at the size
+      // the model has been reading.
       const modelMessages = truncateToolMessages([...prior, userMsg]);
       launchChatTurn(chatId, turn, modelMessages);
 
@@ -3024,18 +3040,24 @@ function contentTypeFor(path: string): string {
  * One agent stream part → the chat event it persists as (null = not logged).
  * A generator tool's intermediate yields arrive as PRELIMINARY tool-results
  * (graph_walk's hops) and become `tool-progress`; only the last yield is the
- * tool's `tool-output`, and only it reaches messages.jsonl.
+ * tool's `tool-output`, and only it reaches messages.jsonl. A step's end
+ * carries the context it left behind (`ChatContext`) when the provider
+ * reported usage and the model's window is known.
  */
-export function chatEventOf(part: {
-  type: string;
-  text?: string;
-  toolName?: string;
-  toolCallId?: string;
-  input?: unknown;
-  output?: unknown;
-  error?: unknown;
-  preliminary?: boolean;
-}): (Partial<ChatEvent> & { type: ChatEvent["type"] }) | null {
+export function chatEventOf(
+  part: {
+    type: string;
+    text?: string;
+    toolName?: string;
+    toolCallId?: string;
+    input?: unknown;
+    output?: unknown;
+    error?: unknown;
+    preliminary?: boolean;
+    usage?: { inputTokens?: number; outputTokens?: number };
+  },
+  contextLimit?: number,
+): (Partial<ChatEvent> & { type: ChatEvent["type"] }) | null {
   switch (part.type) {
     case "text-delta":
       return part.text ? { type: "text-delta", delta: part.text } : null;
@@ -3056,8 +3078,12 @@ export function chatEventOf(part: {
         output: part.error instanceof Error ? part.error.message : String(part.error),
         isError: true,
       };
-    case "finish-step":
-      return { type: "step.finish" };
+    case "finish-step": {
+      const input = part.usage?.inputTokens;
+      return typeof input === "number" && contextLimit
+        ? { type: "step.finish", context: { used: input + (part.usage?.outputTokens ?? 0), limit: contextLimit } }
+        : { type: "step.finish" };
+    }
     default:
       return null;
   }

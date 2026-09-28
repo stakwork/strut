@@ -208,6 +208,16 @@ for (const impl of chatImpls) {
       assert.equal(await store.getMeta("c1"), null);
     });
 
+    it("system prompt: null until set, then read back verbatim; gone with the chat", async () => {
+      await store.createChat({ id: "c1" });
+      assert.equal(await store.getSystem("c1"), null);
+      const system = "You build workflows.\n\nAvailable steps:\nsteps/\n  core/\n";
+      await store.setSystem("c1", system);
+      assert.equal(await store.getSystem("c1"), system);
+      await store.deleteChat("c1");
+      assert.equal(await store.getSystem("c1"), null);
+    });
+
     it("tailEvents yields one turn's events (history → live) and stops at its terminal", async () => {
       await store.createChat({ id: "c1" });
       await store.appendEvent("c1", cev("c1", 0, "text-delta", { delta: "a" }));
