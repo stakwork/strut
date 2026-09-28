@@ -174,7 +174,9 @@ npm run dev                 # starts Hono server on :3000
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
 # Skipped entirely when STRUT_TEST_NEO4J_URI is unset. Add
 # STRUT_TEST_EMBEDDINGS=1 to also run the real-model parity case (downloads
-# ~90MB of ONNX weights into ~/.cache/strut-models on first run).
+# ~90MB of ONNX weights into ~/.cache/strut-models on first run). One run per
+# database at a time: a second run (another worktree) waits for the first
+# (scripts/test-graph.mjs). One file: `npm run test:graph -- src/graph/claims.test.ts`.
 docker run -d --name strut-neo4j-test -p 7688:7687 -e NEO4J_AUTH=neo4j/struttest neo4j:5
 STRUT_TEST_NEO4J_URI=bolt://localhost:7688 STRUT_TEST_NEO4J_PASSWORD=struttest npm run test:graph
 
