@@ -1506,8 +1506,24 @@ body.is-resizing-flyout * {
   max-height: 420px;
   overflow: auto;
   white-space: pre;
-  color: var(--text-muted);
+  color: var(--text);
 }
+/* SourceCode's TypeScript tokens (@lezer/highlight classHighlighter names). */
+.flyout-source-code .tok-keyword { color: var(--accent); }
+.flyout-source-code .tok-string,
+.flyout-source-code .tok-string2 { color: var(--ok); }
+.flyout-source-code .tok-number,
+.flyout-source-code .tok-bool,
+.flyout-source-code .tok-atom,
+.flyout-source-code .tok-literal { color: var(--warning); }
+.flyout-source-code .tok-typeName,
+.flyout-source-code .tok-className,
+.flyout-source-code .tok-namespace { color: var(--code-type); }
+.flyout-source-code .tok-definition { color: var(--accent-strong); }
+.flyout-source-code .tok-comment { color: var(--text-dim); font-style: italic; }
+.flyout-source-code .tok-operator,
+.flyout-source-code .tok-punctuation,
+.flyout-source-code .tok-meta { color: var(--text-muted); }
 
 .flyout-source-empty {
   margin-top: var(--sp-2);

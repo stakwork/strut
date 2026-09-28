@@ -152,6 +152,7 @@ strut/
         │   ├── Markdown.tsx          # tiny markdown renderer for chat output
         │   ├── RunInputPopover.tsx   # input-payload editor when triggering a run
         │   ├── SecretsDialog.tsx     # manage deployment secrets (write-only values; names+meta listed)
+        │   ├── SourceCode.tsx        # a step's TypeScript source, syntax-highlighted (Lezer's TS parser → `tok-*` spans colored in components.css) — the Source toggle in the step editor + Step Info flyouts
         │   ├── StepEditFlyout.tsx    # edit step (id / type / config / depends / options)
         │   ├── StepRunFlyout.tsx     # view a step's run I/O (leaf: input/output; container: aggregate summary)
         │   ├── WalkView.tsx          # a graph_walk call in the chat: paced hop playback (live) / final state + replay (history), node detail, open run
