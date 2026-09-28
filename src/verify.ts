@@ -343,8 +343,8 @@ export interface VerifierDeps {
   onSettled?: (result: VerifyResult) => void;
 }
 
-const DEFAULT_BUDGET_USD = 1;
-const DEFAULT_BUDGET_USD_PER_DAY = 5;
+const DEFAULT_BUDGET_USD = 10;
+const DEFAULT_BUDGET_USD_PER_DAY = 100;
 const AI_STAMP = "ai";
 const PAID_STEP_TYPES = ["agent", "llm"];
 
