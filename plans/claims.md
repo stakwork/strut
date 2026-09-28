@@ -617,9 +617,9 @@ A check that reports no cost is not persisted at all — its observation IS
 the Evidence `content`, and persisting every `always` check on every
 production run would rebuild the volume problem §3 avoids. On top:
 
-- `STRUT_VERIFY_BUDGET_USD` — per verified run (default 1.00) and
-  `STRUT_VERIFY_BUDGET_USD_PER_DAY` — per subject. Checks that report no
-  cost never count.
+- `STRUT_VERIFY_BUDGET_USD` — per verified run (default 10.00) and
+  `STRUT_VERIFY_BUDGET_USD_PER_DAY` — per subject (default 100.00). Checks
+  that report no cost never count.
 - When a cap is hit, the remaining paid checks are **skipped**, the ledger
   records `lastVerify: { skipped: "budget" }` on each, and a claim with no
   other evidence stays `unknown` — never `supported`.
@@ -935,7 +935,7 @@ number exists).
      `llm` step returns `{ text, usage, cost }` — `{ usage, cost, ...object }`
      with a `schema` — priced by aieo's `computeSessionCost`, so
      `reportedCost()` counts it and a paid run is persisted under
-     `check:<id>`. Default per-day cap: $5. Two edges:
+     `check:<id>`. Default per-day cap: $100. Two edges:
      - `computeSessionCost` returns 0 when neither the model nor its
        provider has a pricing entry, and a check that reports 0 reads as
        free (not persisted, not counted against the caps). Latent, not
