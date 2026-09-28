@@ -168,6 +168,10 @@ Long inputs and missing results:
 - Never silently truncate. If an input genuinely does not fit, narrow it in code first (keyword search over the transcript, keep the windows around the hits) or split it (foreach over chunks, then merge the per-chunk answers). If anything was dropped, the step must FAIL with a message saying what was dropped — a workflow must never quietly continue on a partial input.
 - "Not found" is a failure, not a degenerate answer. Give a locate/extract schema an explicit escape hatch (found: boolean, or nullable fields) so the model can say it found nothing, and have the code step that consumes the result throw when found is false. Never "repair" an empty quote or a start === end span into a deliverable: a run that reports success with a garbage output is worse than one that fails, because nobody notices.
 
+Caps (agent maxSteps, loop/foreach maxIterations, item counts, timeouts, spend ceilings):
+- A cap is a runaway guard, not a budget: it is there so a broken run stops instead of going forever. Set it far above what a healthy run needs — ~10× your honest estimate — so the normal case never touches it. A cap a healthy run can hit quietly degrades the output (an agent forced to answer before it finished, a list cut short).
+- The defaults are already runaway guards: leave a cap unset unless the task needs more room, and never lower one "to be safe" or "to keep costs down".
+
 Branching (if):
 - The "if" step is a GATE. It evaluates "cond" and returns a boolean.
 - Downstream steps branch using "depends: <if-id>" plus "when: true" or "when: false".
