@@ -23,13 +23,29 @@ export function testGraphConfig(): GraphConfig | null {
   };
 }
 
-/** Drop every node, relationship, constraint, and index. */
+/**
+ * Drop every node, relationship, constraint, and index. A constraint's own
+ * index goes with the constraint (dropping it directly throws), and the
+ * drop repeats until both lists come back empty. If they never do, some
+ * other process is writing to this database — a second `test:graph`.
+ */
 export async function wipeGraph(bolt: Bolt): Promise<void> {
   await bolt.run(`MATCH (n) DETACH DELETE n`);
-  const constraints = await bolt.run(`SHOW CONSTRAINTS YIELD name RETURN name`);
-  for (const c of constraints) await bolt.run(`DROP CONSTRAINT \`${c["name"]}\` IF EXISTS`);
-  const indexes = await bolt.run(`SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name`);
-  for (const i of indexes) await bolt.run(`DROP INDEX \`${i["name"]}\` IF EXISTS`);
+  for (let round = 0; round < 5; round++) {
+    const constraints = await bolt.run(`SHOW CONSTRAINTS YIELD name RETURN name`);
+    const indexes = await bolt.run(
+      `SHOW INDEXES YIELD name, type, owningConstraint WHERE type <> 'LOOKUP' AND owningConstraint IS NULL RETURN name`,
+    );
+    if (!constraints.length && !indexes.length) return;
+    for (const c of constraints) await bolt.run(`DROP CONSTRAINT \`${c["name"]}\` IF EXISTS`);
+    for (const i of indexes) {
+      // Claimed by a constraint since the SHOW: the next round drops that.
+      await bolt.run(`DROP INDEX \`${i["name"]}\` IF EXISTS`).catch((e) => {
+        if (!/belongs to constraint/.test(String(e))) throw e;
+      });
+    }
+  }
+  throw new Error(`wipeGraph: the schema keeps coming back — another process is writing to ${bolt.cfg.uri}`);
 }
 
 export interface GraphSnapshot {
