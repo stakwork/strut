@@ -16,6 +16,14 @@ import { buildSystem } from "./ai/prompts.js";
 import { buildTools } from "./ai/tools.js";
 import { stepSchemas, zodToFields } from "./ai/schemaHelpers.js";
 
+/** Every yield of a generator tool (run_workflow); its result is the last. */
+async function yields(it: AsyncIterable<any>): Promise<any[]> {
+  const out = [];
+  for await (const y of it) out.push(y);
+  return out;
+}
+const lastYield = async (it: AsyncIterable<any>) => (await yields(it)).at(-1);
+
 /**
  * End-to-end verification that the AI workflow-builder tools can see
  * steps that were registered in code via `createRegistry([...])`.
@@ -507,7 +515,7 @@ describe("AI list_runs / get_run tools", () => {
     );
     const tools = buildTools(deps) as any;
 
-    const run = await tools.run_workflow.execute({ name: "greeter", input: {} });
+    const run = await lastYield(tools.run_workflow.execute({ name: "greeter", input: {} }));
     assert.equal(run.status, "success");
 
     const { runs } = await tools.list_runs.execute({ name: "greeter" });
@@ -602,10 +610,10 @@ describe("AI run_workflow tool: stringified input coercion", () => {
     const tools = buildTools(deps) as any;
 
     // The model passes input as a JSON STRING (the exact bug from the logs).
-    const res = await tools.run_workflow.execute({
+    const res = await lastYield(tools.run_workflow.execute({
       name: "echo-wf",
       input: '{ "owner": "vercel", "pull_number": 1234 }',
-    });
+    }));
 
     assert.equal(res.status, "success");
     assert.equal(res.output.owner, "vercel");
@@ -696,11 +704,27 @@ describe("run_workflow dispatch mode (auto-detach)", () => {
       detach: { waitMs: 2000, onDetach: (info: unknown) => detached.push(info) },
     } as any) as any;
 
-    const res = await tools.run_workflow.execute({ name: "nap", input: {} });
+    const res = await lastYield(tools.run_workflow.execute({ name: "nap", input: {} }));
     assert.equal(res.status, "success");
     assert.equal(typeof res.runId, "string");
     assert.deepEqual(res.output, { slept: 0 });
     assert.equal(detached.length, 0, "fast run must not detach");
+  });
+
+  it("announces the run at launch — a preliminary yield, before the run finishes", async () => {
+    const { workspace, registry } = await setup(300);
+    const store = new MemoryRunStore();
+    const tools = buildTools({ workspace, registry, store, getRegistry: async () => registry } as any) as any;
+
+    const it = tools.run_workflow.execute({ name: "nap", input: {} })[Symbol.asyncIterator]();
+    const first = (await it.next()).value;
+    assert.deepEqual(first, { status: "running", workflow: "nap", runId: first.runId });
+    assert.equal(await store.getRunSummary("nap", first.runId), null, "not finished yet");
+
+    const rest = await yields({ [Symbol.asyncIterator]: () => it });
+    assert.equal(rest.length, 1);
+    assert.equal(rest[0].status, "success");
+    assert.equal(rest[0].runId, first.runId);
   });
 
   it("a run outliving the wait window returns a detached stub and hands the promise to onDetach", async () => {
@@ -714,7 +738,7 @@ describe("run_workflow dispatch mode (auto-detach)", () => {
       detach: { waitMs: 40, onDetach: (info: any) => detached.push(info) },
     } as any) as any;
 
-    const stub = await tools.run_workflow.execute({ name: "nap", input: {} });
+    const stub = await lastYield(tools.run_workflow.execute({ name: "nap", input: {} }));
     assert.equal(stub.status, "running");
     assert.equal(stub.detached, true);
     assert.equal(stub.workflow, "nap");
@@ -742,7 +766,7 @@ describe("run_workflow dispatch mode (auto-detach)", () => {
       getRegistry: async () => registry,
     } as any) as any;
 
-    const res = await tools.run_workflow.execute({ name: "nap", input: {} });
+    const res = await lastYield(tools.run_workflow.execute({ name: "nap", input: {} }));
     assert.equal(res.status, "success");
     assert.deepEqual(res.output, { slept: 150 });
   });

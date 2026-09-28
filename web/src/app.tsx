@@ -1204,8 +1204,11 @@ export function App() {
             setSelectedWf(name);
           }}
           onWorkflowRan={async (name, runId) => {
-            // Make sure the run's workflow is selected, then surface the new run.
+            // Make sure the run's workflow is selected, then surface the new
+            // run — at launch, so the sidebar and canvas follow it live.
             if (selectedWf !== name) setSelectedWf(name);
+            void pollActiveRuns();
+            void refreshWorkflows();
             await refreshRuns(name);
             setSelectedRun(runId);
           }}
