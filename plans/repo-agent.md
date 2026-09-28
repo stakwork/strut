@@ -258,8 +258,8 @@ is no default step cap; a two-hour watchdog with time-budget nudges at 50 /
 ignores it. A long session grows until the provider answers 400 (context
 too long); that is not a transient error, so the step throws and the run
 ends `error` with the work banked in the log but no result. Separately,
-`maxSteps` defaults to 40, a research budget, not a coding one; the repo
-agent sets it high in params.
+`maxSteps` defaulted to 40, a research budget, not a coding one (now 200,
+a runaway guard); the repo agent sets it high in params.
 
 **Who breaks.** Any long coding session, on any client.
 

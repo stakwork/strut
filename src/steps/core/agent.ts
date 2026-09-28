@@ -795,7 +795,7 @@ export default defineStep({
       .string()
       .optional()
       .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`)"),
-    maxSteps: z.number().int().positive().default(40).describe("cap on tool-loop turns before the agent must answer"),
+    maxSteps: z.number().int().positive().default(200).describe("cap on tool-loop turns before the agent must answer"),
     cacheTtl: z
       .enum(["5m", "1h"])
       .default("5m")

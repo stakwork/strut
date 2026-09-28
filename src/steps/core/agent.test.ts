@@ -41,7 +41,7 @@ describe("core agent step", () => {
       system: "you are a tester",
       prompt: "do the thing",
     });
-    assert.equal(cfg.maxSteps, 40);
+    assert.equal(cfg.maxSteps, 200);
     assert.deepEqual(cfg.toolFilter, []);
   });
 
