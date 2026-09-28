@@ -145,6 +145,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 
 | Method | Path                                                   | Response |
 | ------ | ------------------------------------------------------ | -------- |
+| GET    | `/runs/active`                                         | every run executing in this server process, any workflow: `[{ workflow, runId, state, parentRunId? }]` — `state` a §5.2 live state, `parentRunId` on a nested run. A `stale` run is not listed |
 | GET    | `/workflows/:name/runs`                                | array, newest first, no paging: a summary (§5.1) per finished run, `{ runId, workflow, status }` for one still going (§5.2 states) |
 | GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
 | GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |

@@ -557,6 +557,17 @@ export interface RunEvent {
 export const listRuns = (workflow: string) =>
   fetchJSON<RunSummary[]>(`/workflows/${workflow}/runs`);
 
+/** A run executing right now in the server process (`GET /runs/active`). */
+export interface ActiveRun {
+  workflow: string;
+  runId: string;
+  state: "running" | "pausing" | "paused" | "cancelling";
+  /** Set for a nested run launched by another run. */
+  parentRunId?: string;
+}
+
+export const listActiveRuns = () => fetchJSON<ActiveRun[]>("/runs/active");
+
 export const getRun = (workflow: string, runId: string) =>
   fetchJSON<RunSummary>(`/workflows/${workflow}/runs/${runId}`);
 

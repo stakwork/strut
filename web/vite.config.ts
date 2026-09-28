@@ -39,6 +39,7 @@ export default defineConfig({
       "/health": "http://localhost:3000",
       "/llm": "http://localhost:3000",
       "/actor": "http://localhost:3000",
+      "/runs": "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.
       "/audio": { target: "http://localhost:3000", ws: true, configure: sseConfigure },
     },
