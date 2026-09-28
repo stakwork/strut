@@ -368,6 +368,47 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.deepEqual(events[3].output.verdicts, [{ ref_id: wfvRef, relevance: 0.9, kept: true }]);
     assert.deepEqual([events[2].iteration, events[3].iteration], [1, 1]);
   });
+
+  // Last: it adds nodes the tests above do not expect.
+  it("graph-get children: the nodes it points to along one edge type, with descriptions, sorted by name", async () => {
+    const step = async (step_type: string, description?: string) =>
+      (await run("graph/create-triplet", {
+        source_type: "StrutWorkflowVersion",
+        source_data: { name: "toc", content_hash: "t-1", created_at: "2026-09-01T00:00:00Z" },
+        target_type: "StrutStep",
+        target_data: { step_type, ...(description ? { description } : {}) },
+        edge_type: "USES_STEP",
+        namespace: NS,
+      })) as { status: string; source_ref_id: string; target_ref_id: string };
+    const zeta = await step("zeta/step", "Second by name.");
+    const alpha = await step("alpha/step", `First by name. ${"x".repeat(400)}`);
+    const bare = await step("mid/step");
+    assert.equal(bare.status, "Success", JSON.stringify(bare));
+    const parent = zeta.source_ref_id;
+    assert.equal(alpha.source_ref_id, parent, "one parent, three children");
+
+    const out = await run("graph/graph-get", { ref_id: parent, children: "uses step", namespace: NS });
+    assert.equal(out.ref_id, parent);
+    assert.deepEqual(out.edges, { USES_STEP: 3 });
+    assert.deepEqual(out.children.map((c: any) => c.name), ["alpha/step", "mid/step", "zeta/step"]);
+    assert.deepEqual(out.children[2], { ref_id: zeta.target_ref_id, node_type: "StrutStep", name: "zeta/step", description: "Second by name." });
+    assert.deepEqual(out.children[1], { ref_id: bare.target_ref_id, node_type: "StrutStep", name: "mid/step" }, "no description, no key");
+    assert.equal(out.children[0].description.length, 301, "a long description is cut");
+    assert.ok(!("children_truncated" in out));
+    assert.deepEqual(
+      accessedNodesOf(out),
+      [{ ref_id: parent, node_type: "StrutWorkflowVersion" }, ...out.children.map((c: any) => ({ ref_id: c.ref_id, node_type: "StrutStep" }))],
+      "the node and the children it listed",
+    );
+
+    // Outgoing edges only: the same edge, read from the child's side, lists nothing.
+    const child = await run("graph/graph-get", { ref_id: zeta.target_ref_id, children: "USES_STEP", namespace: NS });
+    assert.deepEqual(child.edges, { USES_STEP: 1 });
+    assert.deepEqual(child.children, []);
+    // An edge type the node has none of; and without the option the envelope is unchanged.
+    assert.deepEqual((await run("graph/graph-get", { ref_id: parent, children: "VERSION_OF" })).children, []);
+    assert.ok(!("children" in (await run("graph/graph-get", { ref_id: parent }))));
+  });
 });
 
 // ── graph/project: the run/chat projector as a step ─────────────────────────

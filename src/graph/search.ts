@@ -110,6 +110,9 @@ export interface NeighborsParams {
   edge_types?: string[];
   node_types?: string[];
   exclude_node_types?: string[];
+  /** Only edges leaving the node (`forward`) or arriving at it (`reverse`);
+   *  applied before `limit`. Default: both. */
+  direction?: "forward" | "reverse";
   limit?: number;
   /** Explicit namespace pins the edge-count map to that partition. */
   namespace?: string;
@@ -518,6 +521,7 @@ export class GraphReader {
       params["imp_edge_types"] = p.edge_types.map((e) => e.replace(/[<>]/g, ""));
       where.push("type(r) IN $imp_edge_types");
     }
+    if (p.direction) where.push(`${p.direction === "forward" ? "startNode(r)" : "endNode(r)"} = source`);
     const limit = p.limit && p.limit > 0 ? `LIMIT $imp_limit` : "";
     if (limit) params["imp_limit"] = int(p.limit!);
     const rows = await this.bolt.run(
