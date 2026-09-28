@@ -10,8 +10,10 @@
  *
  * Reads are open, like the rest of the read surface; every mutation is
  * behind `requireApiKey` (permissive in dev). Where the claims layer is off
- * (a filesystem workspace, or `STRUT_CLAIMS=0`) `GET /claims` answers
+ * (a filesystem workspace, or `STRUT_CLAIMS=0`) the reads answer
  * `{ enabled: false }` — the panel hides itself — and mutations answer 409.
+ * Mounted before `/workflows/:name/:version`: it serves
+ * `/workflows/:name/evidence`.
  */
 import type { Context, Hono } from "hono";
 import { z } from "zod";
@@ -54,6 +56,22 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
     if (!("ok" in listing)) return c.json({ enabled: true, subject: subject.data, claims: [], note: listing.error });
     const verifyCostUsd = deps.verifier ? await deps.verifier.costOf(toSubjectRef(subject.data)).catch(() => 0) : 0;
     return c.json({ enabled: true, subject: listing.subject, claims: listing.claims, ...(verifyCostUsd > 0 ? { verifyCostUsd } : {}) });
+  });
+
+  // What the checks said about a workflow's runs, newest run first: each
+  // run's evidence on the workflow's claims AND on the claims of the steps
+  // it executed. `limit` counts runs, `before` pages past a run id (`next`),
+  // `runId` narrows to one run.
+  app.get("/workflows/:name/evidence", async (c) => {
+    if (!claims) return c.json({ enabled: false, evidence: [] });
+    const limit = Number(c.req.query("limit") ?? 50);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) return c.json({ error: "limit must be an integer from 1 to 200" }, 400);
+    const runId = c.req.query("runId");
+    const before = c.req.query("before");
+    const workflow = c.req.param("name");
+    const evidence = await claims.listRunEvidence(workflow, { ...(runId ? { runId } : {}), ...(before ? { before } : {}), limit });
+    const full = !runId && new Set(evidence.map((e) => e.run.runId)).size === limit;
+    return c.json({ enabled: true, workflow, evidence, ...(full ? { next: evidence.at(-1)!.run.runId } : {}) });
   });
 
   app.post("/claims", requireApiKey, async (c) => {

@@ -535,6 +535,83 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.equal((await http("DELETE", `/claims/${succ.id}`)).status, 400, "already retired");
   });
 
+  it("the run view: GET /workflows/:name/evidence — each run's verdicts on the workflow's AND its steps' claims, newest run first, paged by run", async () => {
+    const get = async (path: string) => {
+      const res = await strut.app.request(path);
+      return { status: res.status, body: (await res.json()) as Record<string, any> };
+    };
+    const view = (body: Record<string, any>) => body["evidence"].map((e: any) => [e.run.runId, e.run.path, e.claim.text, e.subject?.kind, e.verdict]);
+    assert.deepEqual((await get("/workflows/clipper/evidence")).body, { enabled: true, workflow: "clipper", evidence: [] });
+    assert.equal((await get("/workflows/clipper/evidence?limit=0")).status, 400);
+    assert.equal((await get("/workflows/clipper/evidence?limit=abc")).status, 400);
+
+    const onStep = await addClaim(STEP, "end is after start", [compare("{{ input.output.end }}", "-gt", "{{ input.output.start }}", { name: "bounds" })]);
+    const onWf = await addClaim({ kind: "workflow", name: "clipper" }, "the clip starts where asked", [compare("{{ input.output.start }}", "-eq", "{{ input.input.start }}")]);
+    const good = await strut.run("clipper", { start: 5, len: 19 });
+    await verify("clipper", good.runId);
+    const bad = await strut.run("clipper", { start: 50, len: -10 });
+    await verify("clipper", bad.runId);
+
+    const all = (await get("/workflows/clipper/evidence")).body;
+    assert.deepEqual(view(all), [
+      [bad.runId, "clipper", "the clip starts where asked", "workflow", "supports"],
+      [bad.runId, "clipper/times", "end is after start", "step", "refutes"],
+      [good.runId, "clipper", "the clip starts where asked", "workflow", "supports"],
+      [good.runId, "clipper/times", "end is after start", "step", "supports"],
+    ]);
+    assert.equal(all["next"], undefined, "fewer runs than the limit: nothing more to page");
+    const meta = (await ws.getWorkflowMetadata("clipper"))!;
+    const row = all["evidence"][3];
+    assert.equal(typeof row.observedAt, "number");
+    assert.deepEqual(
+      { ...row, observedAt: undefined },
+      {
+        claim: { id: onStep.id, text: "end is after start" },
+        subject: { kind: "step", name: "clip/compute-times", version: (await ws.getActiveStepHashes())["clip/compute-times"] },
+        verdict: "supports",
+        content: "exit 0",
+        observedAt: undefined,
+        mode: "observed",
+        check: onStep.checks[0],
+        checkVersion: "exec",
+        run: { name: "clipper", runId: good.runId, path: "clipper/times" },
+      },
+    );
+    assert.deepEqual([all["evidence"][2].subject.version, all["evidence"][2].check], [meta.versions[meta.active]!.hash, onWf.checks[0]]);
+
+    // `limit` counts runs; `next` pages past the oldest one returned.
+    const page1 = (await get("/workflows/clipper/evidence?limit=1")).body;
+    assert.deepEqual([view(page1).map((v: unknown[]) => v[0]), page1["next"]], [[bad.runId, bad.runId], bad.runId]);
+    const page2 = (await get(`/workflows/clipper/evidence?limit=1&before=${page1["next"]}`)).body;
+    assert.deepEqual(view(page2).map((v: unknown[]) => v[0]), [good.runId, good.runId]);
+    assert.deepEqual((await get(`/workflows/clipper/evidence?limit=1&before=${page2["next"]}`)).body["evidence"], []);
+    // One run.
+    const one = (await get(`/workflows/clipper/evidence?runId=${good.runId}`)).body;
+    assert.deepEqual([view(one).map((v: unknown[]) => v[0]), one["next"]], [[good.runId, good.runId], undefined]);
+    assert.deepEqual((await get("/workflows/other/evidence")).body["evidence"], [], "keyed by the run's workflow");
+
+    // An external check's open question is in the run's row set; a reworded
+    // claim keeps its history under the words each check actually tested.
+    await addClaim(STEP, "the cut sounds natural", [{ description: "listen at the cut — code cannot hear a click", name: "ear" }]);
+    const edited = await claims.editClaim(onStep.id, "the clip has a positive length", human);
+    assert.ok("ok" in edited);
+    const third = await strut.run("clipper", { start: 7, len: 19 });
+    await verify("clipper", third.runId);
+    const latest = (await get(`/workflows/clipper/evidence?runId=${third.runId}`)).body["evidence"];
+    assert.deepEqual(
+      latest.map((e: any) => [e.run.path, e.claim.text, e.verdict]),
+      [
+        ["clipper", "the clip starts where asked", "supports"],
+        ["clipper/times", "the cut sounds natural", "open"], // claim ids sort by creation: the successor is newer
+        ["clipper/times", "the clip has a positive length", "supports"],
+      ],
+    );
+    const open = latest.find((e: any) => e.verdict === "open");
+    assert.match(open.question, /listen at the cut/);
+    assert.equal(open.content, undefined);
+    assert.deepEqual(view((await get(`/workflows/clipper/evidence?runId=${bad.runId}`)).body)[1], [bad.runId, "clipper/times", "end is after start", "step", "refutes"]);
+  });
+
   it("publish checks lint the new version's source; a kept run_step run is verified with EXECUTED → the step version it ran", async () => {
     const lint = await addClaim(STEP, "never reads process.env directly", [
       { type: "exec", when: "publish", name: "env lint", config: { cmd: "bash", args: ["-c", "! grep -q 'process.env' <<< \"$SRC\""], env: { SRC: "{{ input.source }}" } } },
@@ -599,6 +676,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     try {
       assert.deepEqual([off.claims, off.verifier], [null, null]);
       assert.deepEqual(await (await off.app.request("/claims?kind=step&name=clip/compute-times")).json(), { enabled: false, claims: [] });
+      assert.deepEqual(await (await off.app.request("/workflows/clipper/evidence")).json(), { enabled: false, evidence: [] });
       const post = (path: string) => off.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       assert.equal((await post("/claims")).status, 409);
       assert.equal((await post("/workflows/clipper/runs/1/verify")).status, 409);

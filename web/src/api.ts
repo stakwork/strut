@@ -1039,6 +1039,38 @@ export const retireCheck = (id: string) => fetchJSON<{ id: string }>(`/checks/${
 export const addClaimEvidence = (claimId: string, body: { name: string; runId: string; supports: boolean; content: string; slot?: string }) =>
   fetchJSON<{ evidence: string; filled: boolean }>(`/claims/${claimId}/evidence`, json("POST", body));
 
+/** One check's verdict on one run (`RunEvidence`, src/claims-authoring.ts). */
+export interface RunEvidence {
+  claim: { id: string; text: string };
+  /** The workflow, or a step it executed — and the version that ran. */
+  subject?: { kind: "step" | "workflow"; name: string; version: string };
+  /** `open` = an external check's question, still waiting on someone. */
+  verdict: "supports" | "refutes" | "open";
+  content?: string;
+  question?: string;
+  observedAt?: number;
+  mode?: string;
+  check?: string;
+  checkVersion?: string;
+  by?: string;
+  run: ClaimRunRef;
+}
+
+export interface RunEvidenceResponse {
+  enabled: boolean;
+  workflow?: string;
+  /** Newest run first; by step path within a run. */
+  evidence: RunEvidence[];
+  /** Set when the page is full: pass as `before` for older runs. */
+  next?: string;
+}
+
+/** What the checks said about a workflow's runs. `limit` counts runs. */
+export const getRunEvidence = (workflow: string, opts: { runId?: string; before?: string; limit?: number } = {}) => {
+  const q = new URLSearchParams(Object.entries(opts).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])));
+  return fetchJSON<RunEvidenceResponse>(`/workflows/${encodeURIComponent(workflow)}/evidence${q.size ? `?${q}` : ""}`);
+};
+
 // ── Automations (plans/automations.md) ─────────────────────────────────────
 //
 // A schedule that launches a workflow. Workflow-level metadata: creating,

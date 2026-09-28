@@ -33,7 +33,7 @@ import { closureIncludes, flowClosure, globToRegExp, type FlowClosure } from "./
 import { validateWorkflowYaml } from "./validate.js";
 import type { StepRegistry } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
-import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type EvidenceRow, type RunWhen, type SubjectRef } from "./graph/claims.js";
+import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type EvidenceRow, type RunEvidenceRow, type RunWhen, type SubjectRef } from "./graph/claims.js";
 import { ClaimsError, ClaimsWriter, boundedName, type CheckData } from "./graph/claims-writer.js";
 import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
 
@@ -183,6 +183,26 @@ export interface ClaimListing {
     sampleRate?: number;
     publisher?: string;
   }>;
+}
+
+/** One piece of evidence about one run (`GET /workflows/:name/evidence`) —
+ *  `latest`'s shape, plus the claim it answers and what it was about. */
+export interface RunEvidence {
+  claim: { id: string; text: string };
+  /** The subject and exact version the check observed: the workflow, or a
+   *  step it executed. */
+  subject?: { kind: "step" | "workflow"; name: string; version: string };
+  /** `open` = an external check's question, still waiting on someone. */
+  verdict: "supports" | "refutes" | "open";
+  content?: string;
+  /** An open slot's question. */
+  question?: string;
+  observedAt?: number;
+  mode?: string;
+  check?: string;
+  checkVersion?: string;
+  by?: string;
+  run: { name?: string; runId?: string; path?: string };
 }
 
 export type ClaimsAuthoring = ReturnType<typeof buildClaimsAuthoring>;
@@ -595,6 +615,25 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       } catch (e) {
         return fail(e);
       }
+    },
+
+    /** Everything the checks said about a run-store key's runs — the run
+     *  view: newest run first, each run's evidence on the workflow's claims
+     *  and on the claims of the steps it executed. */
+    async listRunEvidence(runKey: string, opts: { runId?: string; before?: string; limit?: number } = {}): Promise<RunEvidence[]> {
+      return (await reader.evidenceForRuns(runKey, opts)).map((e: RunEvidenceRow) => ({
+        claim: { id: e.claim_id, text: e.claim_text },
+        ...(e.about ? { subject: { kind: e.about.kind, name: e.about.name, version: e.about.content_hash } } : {}),
+        verdict: e.evidence_status === "planned" ? "open" : (e.strength ?? 0) > 0 ? "supports" : "refutes",
+        ...(e.evidence_status !== "planned" && e.content !== undefined ? { content: e.content } : {}),
+        ...(e.evidence_status === "planned" && e.description ? { question: e.description } : {}),
+        ...(e.observed_at !== undefined ? { observedAt: e.observed_at } : {}),
+        ...(e.evidence_mode ? { mode: e.evidence_mode } : {}),
+        ...(e.check_id ? { check: e.check_id } : {}),
+        ...(e.source?.context?.checkVersion ? { checkVersion: e.source.context.checkVersion } : {}),
+        ...(e.source?.context?.by ? { by: e.source.context.by } : {}),
+        run: runOf(e),
+      }));
     },
   };
 }
