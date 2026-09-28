@@ -18,6 +18,7 @@ import { resolveEvaluationModel } from "../llm.js";
 import { graphWalkTool } from "./walk-tool.js";
 import { secretLikeProperty, validateRequestedSchema } from "./elicitation.js";
 import { isValidSecretName } from "../secret-store.js";
+import { capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
 // the run-history reads. The chat tools layer their own policy on top (no
@@ -149,6 +150,41 @@ function elicitationTools(deps: AiDeps) {
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 
+/**
+ * Cap every tool's result where it is made (`capToolOutput`), through
+ * `toModelOutput` — the SDK's hook for what the model reads, which is also
+ * what the step's response messages (and so `messages.jsonl`) carry. The
+ * model sees the capped result in the turn that ran the tool, and every
+ * later turn replays those same bytes: history is never rewritten. The
+ * tool's own output — the `tool-output` event, the flyout's live view — is
+ * untouched. Provider-executed tools (no `execute`) are the provider's.
+ */
+export function capToolResults(tools: ToolSet, maxChars = toolResultMaxCharsFromEnv()): ToolSet {
+  if (maxChars <= 0) return tools;
+  const out: ToolSet = {};
+  for (const [name, t] of Object.entries(tools) as [string, any][]) {
+    if (!t.execute) {
+      out[name] = t;
+      continue;
+    }
+    const own = t.toModelOutput;
+    out[name] = {
+      ...t,
+      // The SDK's default when a tool has no toModelOutput: text, else JSON.
+      toModelOutput: async (o: { toolCallId: string; input: unknown; output: unknown }) =>
+        capToolOutput(
+          own
+            ? await own(o)
+            : typeof o.output === "string"
+              ? { type: "text", value: o.output }
+              : { type: "json", value: JSON.parse(JSON.stringify(o.output ?? null) ?? "null") },
+          maxChars,
+        ),
+    };
+  }
+  return out;
+}
+
 export function buildTools(deps: AiDeps): ToolSet {
   /** The static check behind validate_workflow — also the gate on
    *  create_workflow / edit_workflow, so an invalid YAML never becomes a
@@ -210,7 +246,7 @@ export function buildTools(deps: AiDeps): ToolSet {
   const principalFor = async (name: string) =>
     deps.actor ?? (await deps.workspace.getWorkflowMetadata(name).catch(() => null))?.owner;
 
-  return {
+  return capToolResults({
     list_steps: tool({
       description:
         "List contents of a step path, like a filesystem. Valid paths: 'steps' (shows core/, lib/, custom/), 'steps/core', 'steps/lib', 'steps/lib/<namespace>', 'steps/custom'.",
@@ -1099,5 +1135,5 @@ export function buildTools(deps: AiDeps): ToolSet {
     // reading API docs while authoring adapters. Built by the host per turn
     // for the chat's provider (createWebTools); absent → not offered.
     ...((deps.webTools ?? {}) as Record<string, any>),
-  };
+  });
 }

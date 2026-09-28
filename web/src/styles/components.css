@@ -871,6 +871,38 @@ body.is-resizing-flyout * {
   align-items: center;
   gap: var(--sp-2);
 }
+/* The builder's context meter ("351k / 1M"), riding the eyebrow line after
+   the label. The meter comes first in the DOM and the row is reversed, so in
+   a narrow flyout it is the LABEL that wraps — onto a second line, out of
+   sight — while the meter stays. */
+.chat-eyebrow {
+  display: flex;
+  flex-direction: row-reverse;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: 6px;
+  height: 1.2em;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.chat-eyebrow-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-eyebrow-label:not(:only-child)::after {
+  content: " ·";
+}
+.chat-context {
+  flex: none;
+  color: var(--text-dim);
+  text-transform: none;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.chat-context.is-warn {
+  color: var(--warning);
+}
 .flyout-close:hover {
   color: var(--text);
   border-color: var(--border-strong);
@@ -1072,6 +1104,33 @@ body.is-resizing-flyout * {
   letter-spacing: 0.06em;
   color: var(--text-dim);
   margin-bottom: var(--sp-2);
+}
+
+/* "↓ Latest": a zero-height sticky anchor keeps the pill pinned to the top
+   right of the scrolling log without taking a row's space. */
+.events-jump-anchor {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: 2;
+}
+.events-jump {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+.events-jump:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .event-row {

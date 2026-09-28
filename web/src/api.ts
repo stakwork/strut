@@ -694,7 +694,8 @@ export interface ChatCallbacks {
   onToolResult?: (tr: ToolResultInfo) => void;
   /** A streaming tool's intermediate yield (graph_walk's hop events). */
   onToolProgress?: (p: { name: string; toolCallId?: string; output: any }) => void;
-  onStepFinish: () => void;
+  /** A model call ended; `context` is how full the window is now. */
+  onStepFinish: (context?: ChatContext) => void;
   onFinish: (status: string) => void;
 }
 
@@ -751,6 +752,15 @@ export interface ChatMeta {
   actor?: string;
   /** The builder is waiting on this question; the flyout shows its form. */
   elicitation?: Elicitation;
+  /** How full the model's context window is, as of the last model call. */
+  context?: ChatContext;
+}
+
+/** Tokens the conversation occupies after a model call, against the model's
+ *  context window (the server's `ChatContext`). */
+export interface ChatContext {
+  used: number;
+  limit: number;
 }
 
 /** A normalized fine-grained chat event (matches the server's `ChatEvent`). */
@@ -767,6 +777,8 @@ export interface ChatEvent {
   /** tool-output: the tool threw (output is the error message). */
   isError?: boolean;
   error?: { message: string };
+  /** step.finish: the context after this step. */
+  context?: ChatContext;
 }
 
 export interface ChatTranscript {
@@ -933,7 +945,7 @@ function dispatchChatEvent(e: ChatEvent, cb: ChatCallbacks): void {
       cb.onToolProgress?.({ name: e.toolName ?? "", toolCallId: e.toolCallId, output: e.output });
       break;
     case "step.finish":
-      cb.onStepFinish();
+      cb.onStepFinish(e.context);
       break;
     case "chat.error":
       cb.onTextDelta(`\n\n⚠️ ${e.error?.message ?? "chat error"}`);

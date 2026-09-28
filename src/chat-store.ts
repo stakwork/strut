@@ -23,13 +23,19 @@ import type { ElicitationRecord } from "./ai/elicitation.js";
  *
  *   meta.json       — { id, title, status, model, createdAt, updatedAt,
  *                       currentTurn }. Cheap listing without parsing the logs.
+ *   system.md       — the chat's system prompt, rendered on its first turn and
+ *                     replayed verbatim on every later one (the head of the
+ *                     cached prefix — see `getSystem`).
  *   messages.jsonl  — append-only conversation (AI SDK ModelMessage objects).
  *                     The REPLAYABLE record: re-fed to the agent on the next
  *                     turn and rendered as the transcript. Whole messages only
- *                     — never deltas (keeps replay clean), lossless on disk.
+ *                     — never deltas (keeps replay clean) — exactly as the
+ *                     model saw them (tool results capped where they are
+ *                     made: `capToolOutput`).
  *   events.jsonl    — append-only fine-grained stream parts (text deltas, tool
  *                     calls/results, step/turn boundaries). The OBSERVABILITY
  *                     stream the SSE tail follows; never re-sent to the model.
+ *                     Tool outputs here are the tools' own, uncapped.
  *
  * A chat is long-lived across many turns; the unit with launch+detach+tail
  * semantics is a TURN. Each turn's events carry `turn: N` and end with a
@@ -71,6 +77,17 @@ export interface ChatMeta {
    *  it survives a restart. A new ask replaces it; `POST /chat` (a typed
    *  message) and an answer clear it. */
   elicitation?: ElicitationRecord;
+  /** How full the model's context window is, as of the chat's last model
+   *  call (the flyout's "351k / 1M"). Set at every step end. */
+  context?: ChatContext;
+}
+
+/** Tokens the conversation occupies after a model call — that call's input
+ *  (cached reads included) plus what it generated, which the next call
+ *  carries — against the model's context window (aieo's per-model table). */
+export interface ChatContext {
+  used: number;
+  limit: number;
 }
 
 export type ChatEventType =
@@ -104,6 +121,8 @@ export interface ChatEvent {
   /** chat.end: the turn was stopped (`POST /chat/:id/cancel`); what streamed
    *  before the stop is in the transcript. */
   stopped?: true;
+  /** step.finish: the context after this step (also on `ChatMeta.context`). */
+  context?: ChatContext;
 }
 
 /** A stored conversation message. Kept opaque (the AI SDK's `ModelMessage`
@@ -134,13 +153,19 @@ export interface ChatStore {
     turn: number,
     opts?: { intervalMs?: number; signal?: AbortSignal },
   ): AsyncGenerator<ChatEvent>;
+  /** The chat's system prompt — null until its first turn renders one. Set
+   *  once and replayed verbatim: it is the head of the prompt-cache prefix,
+   *  so a prompt re-rendered per turn (a new step in the tree, a host
+   *  section re-read) would miss the cache for the whole conversation. */
+  getSystem(chatId: string): Promise<string | null>;
+  setSystem(chatId: string, system: string): Promise<void>;
   deleteChat(chatId: string): Promise<void>;
 }
 
-// ── Tool-result truncation (token hygiene for long autonomous loops) ────────
+// ── Tool-result cap (token hygiene for long autonomous loops) ───────────────
 
-/** Default per-string cap for `truncateToolMessages`. Env
- *  `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` overrides it; `0` disables truncation. */
+/** Default per-string cap on the builder's tool results. Env
+ *  `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` overrides it; `0` disables it. */
 export const DEFAULT_TOOL_RESULT_MAX_CHARS = 50_000;
 
 /** Resolve the tool-result cap from the environment (see above). */
@@ -152,39 +177,53 @@ export function toolResultMaxCharsFromEnv(): number {
 }
 
 /**
- * `messages.jsonl` stays lossless on disk (it's the transcript), but the copy
- * re-fed to the model each turn can balloon: a single `repo_overview` or eval
- * result is huge and the model already processed it. Truncate long strings
- * inside `role: "tool"` messages (tool RESULTS) before sending them back.
- * Conservative: only tool messages, only strings over `maxChars`, structure
- * preserved (we just shorten strings + add a marker). Within the turn that
- * ran the tool the model always sees the full result — this only applies to
- * HISTORY replayed on later turns. `maxChars` of `0` disables it.
+ * Cap every long string in a tool result at `maxChars`, marker included: a
+ * capped string is never longer than `maxChars`, so capping twice changes
+ * nothing. Structure is kept; binary parts (`{ data, mediaType }`) are left
+ * whole.
+ *
+ * The builder's tools apply it where the result is made (`capToolResults`,
+ * ai/tools.ts): the model reads the capped result in the turn that ran the
+ * tool, `messages.jsonl` records exactly that, and every later turn replays
+ * the same bytes. Capping only on replay instead rewrote history one turn
+ * later — a prompt-cache miss from that result on (the whole conversation,
+ * once it sat beyond the provider's lookback), and on models that bind
+ * thinking blocks to the prefix, every later block invalidated.
  */
-export function truncateToolMessages(
-  messages: StoredMessage[],
-  maxChars = toolResultMaxCharsFromEnv(),
-): StoredMessage[] {
-  if (maxChars <= 0) return messages;
-  const shorten = (s: string): string =>
-    s.length > maxChars
-      ? `${s.slice(0, maxChars)}\n\n[TRUNCATED: ${s.length} chars — full content is in the chat transcript]`
-      : s;
-
+export function capToolOutput<T>(value: T, maxChars = toolResultMaxCharsFromEnv()): T {
+  if (maxChars <= 0) return value;
   const walk = (v: unknown): unknown => {
-    if (typeof v === "string") return shorten(v);
+    if (typeof v === "string") return capString(v, maxChars);
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === "object") {
+      if ("data" in v && typeof (v as { mediaType?: unknown }).mediaType === "string") return v;
       const out: Record<string, unknown> = {};
       for (const [k, val] of Object.entries(v)) out[k] = walk(val);
       return out;
     }
     return v;
   };
+  return walk(value) as T;
+}
 
-  return messages.map((m) =>
-    m.role === "tool" ? { ...m, content: walk(m.content) } : m,
-  );
+function capString(s: string, maxChars: number): string {
+  if (s.length <= maxChars) return s;
+  const marker = `\n\n[TRUNCATED: ${s.length} chars, cut to ${maxChars}]`;
+  return marker.length < maxChars ? s.slice(0, maxChars - marker.length) + marker : s.slice(0, maxChars);
+}
+
+/**
+ * The same cap over a stored history's `role: "tool"` messages, on what a
+ * turn replays. A no-op on anything recorded since the tools cap at the
+ * source; it keeps a history recorded before then (full results on disk) at
+ * the size the model has been reading.
+ */
+export function truncateToolMessages(
+  messages: StoredMessage[],
+  maxChars = toolResultMaxCharsFromEnv(),
+): StoredMessage[] {
+  if (maxChars <= 0) return messages;
+  return messages.map((m) => (m.role === "tool" ? { ...m, content: capToolOutput(m.content, maxChars) } : m));
 }
 
 // ── Filesystem implementation ──────────────────────────────────────────────
@@ -300,6 +339,19 @@ export class FileChatStore implements ChatStore {
     }
   }
 
+  async getSystem(chatId: string): Promise<string | null> {
+    try {
+      return await readFile(join(this.chatDir(chatId), "system.md"), "utf-8");
+    } catch {
+      return null;
+    }
+  }
+
+  async setSystem(chatId: string, system: string): Promise<void> {
+    await mkdir(this.chatDir(chatId), { recursive: true });
+    await writeFile(join(this.chatDir(chatId), "system.md"), system, "utf-8");
+  }
+
   async deleteChat(chatId: string): Promise<void> {
     await rm(this.chatDir(chatId), { recursive: true, force: true });
   }
@@ -311,6 +363,7 @@ export class MemoryChatStore implements ChatStore {
   metas = new Map<string, ChatMeta>();
   messages = new Map<string, StoredMessage[]>();
   events = new Map<string, ChatEvent[]>();
+  systems = new Map<string, string>();
 
   async createChat(init: { id: string; title?: string; model?: string }): Promise<ChatMeta> {
     const now = new Date().toISOString();
@@ -382,10 +435,19 @@ export class MemoryChatStore implements ChatStore {
     }
   }
 
+  async getSystem(chatId: string): Promise<string | null> {
+    return this.systems.get(chatId) ?? null;
+  }
+
+  async setSystem(chatId: string, system: string): Promise<void> {
+    this.systems.set(chatId, system);
+  }
+
   async deleteChat(chatId: string): Promise<void> {
     this.metas.delete(chatId);
     this.messages.delete(chatId);
     this.events.delete(chatId);
+    this.systems.delete(chatId);
   }
 }
 
