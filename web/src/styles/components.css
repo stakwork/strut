@@ -289,6 +289,20 @@ body.is-resizing-rows * {
   font-size: 10px;
   color: var(--text-dim);
 }
+/* A workflow with a run in progress (GET /runs/active). Takes the row's free
+   space in front of the clock / version badge, like the clock does alone. */
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex: none;
+  animation: chat-live-pulse 1.4s ease-in-out infinite;
+}
+.list-item .live-dot { margin: 0 6px 0 auto; }
+.list-item .live-dot + .list-item-clock { margin-left: 0; }
+.cat-header .live-dot { margin-left: auto; }
+.cat-header .live-dot + .cat-count { margin-left: 0; }
 
 /* ─── sidebar category groups ────────────────────────────────── */
 

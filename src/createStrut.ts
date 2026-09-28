@@ -795,6 +795,18 @@ export async function createStrut<TServices = unknown>(
     return c.json(meta);
   });
 
+  // Every run executing in THIS process, across workflows — the sidebar's
+  // running dot. Read off the controllers map, so it is cheap to poll; a run
+  // cut off by a crash has no controller and is not listed.
+  app.get("/runs/active", (c) =>
+    c.json([...controllers.values()].map((r) => ({
+      workflow: r.workflow,
+      runId: r.runId,
+      state: r.state,
+      ...(r.parent ? { parentRunId: r.parent.runId } : {}),
+    }))),
+  );
+
   app.get("/workflows/:name/runs", async (c) => {
     const name = c.req.param("name");
     const runIds = await store.listRuns(name);

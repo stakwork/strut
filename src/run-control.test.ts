@@ -1163,6 +1163,37 @@ describe("run control endpoints", () => {
     }
   });
 
+  it("GET /runs/active lists live runs across workflows, then drops them once settled", async () => {
+    const gate = createGateStep();
+    const { strut, workspace, store, cleanup } = await makeServer({ gate: gate.stepDef });
+    type Active = { workflow: string; runId: string; state: string; parentRunId?: string };
+    const active = async () => (await (await strut.app.request("/runs/active")).json()) as Active[];
+    try {
+      await workspace.publishWorkflowByContent(
+        "livewf",
+        ["name: livewf", "steps:", "  - id: a", "    type: gate", "    config: { name: a }"].join("\n"),
+      );
+      assert.deepEqual(await active(), []);
+
+      const launch = await strut.app.request("/workflows/livewf/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: {} }),
+      });
+      const { runId } = (await launch.json()) as { runId: string };
+      await gate.waitForStart("a");
+      assert.deepEqual(await active(), [{ workflow: "livewf", runId, state: "running" }]);
+
+      gate.release("a");
+      assert.equal((await waitForSummary(store, "livewf", runId)).status, "success");
+      const deadline = Date.now() + 3000;
+      while ((await active()).length && Date.now() < deadline) await sleep(10);
+      assert.deepEqual(await active(), []);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("POST resume durably resumes a failed run (replay + retry) and enforces the hash guard", async () => {
     const counter = createCounterStep();
     const flakey = createFlakeyStep(1);

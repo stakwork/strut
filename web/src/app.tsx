@@ -67,6 +67,11 @@ function countIterations(events: api.RunEvent[], prefix: string): number {
   return max + 1;
 }
 
+// Identity of a set of live runs, state included — equal keys, nothing changed.
+function activeKey(runs: api.ActiveRun[]): string {
+  return runs.map((r) => `${r.workflow}/${r.runId}:${r.state}`).join(",");
+}
+
 export function App() {
   // Deep-links: ?wf=<workflow>&run=<runId>&v=<version> select on load and are
   // kept in sync (replaceState) as the selection changes, so the address bar
@@ -332,6 +337,38 @@ export function App() {
   }, []);
 
   useEffect(() => { refreshWorkflows(); refreshStepTypes(); }, []);
+
+  // Runs executing right now, in any workflow — the sidebar's running dot.
+  // Polled (the server answers from memory) so runs started anywhere — the
+  // chat, an automation, curl, another tab — show up.
+  const [activeRuns, setActiveRuns] = useState<api.ActiveRun[]>([]);
+  const pollActiveRuns = useCallback(async () => {
+    try {
+      const next = await api.listActiveRuns();
+      setActiveRuns((prev) => (activeKey(prev) === activeKey(next) ? prev : next));
+    } catch { /* keep the last answer */ }
+  }, []);
+  useEffect(() => {
+    void pollActiveRuns();
+    const timer = setInterval(() => { if (!document.hidden) void pollActiveRuns(); }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+  const runningByWf = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of activeRuns) counts.set(r.workflow, (counts.get(r.workflow) ?? 0) + 1);
+    return counts;
+  }, [activeRuns]);
+  // The selected workflow's live runs changed (one started, finished, paused)
+  // → refresh its Runs list, so it never disagrees with the dot.
+  const prevActive = useRef(activeRuns);
+  useEffect(() => {
+    const prev = prevActive.current;
+    prevActive.current = activeRuns;
+    if (!selectedWf) return;
+    const mine = (rs: api.ActiveRun[]) => activeKey(rs.filter((r) => r.workflow === selectedWf));
+    if (mine(prev) !== mine(activeRuns)) void refreshRuns(selectedWf);
+  }, [activeRuns]);
+
   // Spend routed through the Mothership? Then the per-run cap means something.
   const [mothership, setMothership] = useState(false);
   useEffect(() => { api.getMothership().then(setMothership); }, []);
@@ -513,6 +550,7 @@ export function App() {
           listedRunning = true;
           refreshRuns(wf);
           refreshWorkflows(); // re-sort the sidebar: this workflow just ran
+          void pollActiveRuns();
         }
       });
 
@@ -522,8 +560,9 @@ export function App() {
     } finally {
       liveStreamRef.current = false;
       setRunning(false);
+      void pollActiveRuns();
     }
-  }, [selectedWf, localSteps, refreshRuns, refreshWorkflows]);
+  }, [selectedWf, localSteps, refreshRuns, refreshWorkflows, pollActiveRuns]);
 
   // Navigate into another workflow's run (from an Events-panel run-ref link).
   // Disarm any in-tab live stream first so it doesn't clobber the target run's
@@ -857,6 +896,9 @@ export function App() {
                     <div class="cat-header" onClick={() => toggleCat(catKey)}>
                       <span class={`cat-caret${collapsed ? "" : " is-open"}`}>▸</span>
                       <span class="cat-name">{g.category || "uncategorized"}</span>
+                      {collapsed && g.wfs.some((wf) => runningByWf.has(wf.name)) && (
+                        <span class="live-dot" title="A workflow in here is running" />
+                      )}
                       <span class="cat-count">{g.wfs.length}</span>
                     </div>
                   )}
@@ -864,6 +906,9 @@ export function App() {
                     <div key={wf.name} class={`list-item ${selectedWf === wf.name ? "is-active" : ""}`}
                       onClick={() => { setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
                       <span class="list-item-name">{wf.name}</span>
+                      {runningByWf.has(wf.name) && (
+                        <span class="live-dot" title={`${runningByWf.get(wf.name)} run${runningByWf.get(wf.name) === 1 ? "" : "s"} in progress`} />
+                      )}
                       {wf.automations?.some((a) => a.enabled) && (
                         <span class="list-item-clock" title="Runs on a schedule"><ClockIcon size={11} /></span>
                       )}
