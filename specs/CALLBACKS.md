@@ -7,6 +7,7 @@ holding a stream open.
 
 ```bash
 curl -X POST http://localhost:3000/workflows/review-pr/run \
+  -H "Authorization: Bearer $STRUT_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{
     "input": { "owner": "stakwork", "repo": "strut", "prNumber": 29 },
@@ -66,13 +67,16 @@ The callback carries the result, not the log. Agent transcripts can run to
 megabytes each, so it carries **links** to them, never their content. Each
 `transcripts[].url` is relative to the strut you launched on and returns that
 session as a bare JSON array of AI SDK model messages (system prompt, task,
-every turn). You don't have to parse it:
+every turn). Like every read, it needs the deployment's key when one is set.
+You don't have to parse it:
 
 ```ts
 import { put } from "@vercel/blob";
 
 for (const t of body.transcripts ?? []) {
-  const res = await fetch(new URL(t.url, STRUT_URL));
+  const res = await fetch(new URL(t.url, STRUT_URL), {
+    headers: { authorization: `Bearer ${STRUT_API_KEY}` },
+  });
   await put(`runs/${body.runId}/${encodeURIComponent(t.step)}.json`, res.body!, {
     access: "private",
     contentType: "application/json",
@@ -88,11 +92,13 @@ For everything else, use the `runId`:
 
 ```bash
 # the run summary (same fields as the callback, plus timestamps)
-curl http://localhost:3000/workflows/review-pr/runs/1790179200000
+curl -H "Authorization: Bearer $STRUT_API_KEY" \
+  http://localhost:3000/workflows/review-pr/runs/1790179200000
 
 # the full event log: every step's input and output; an agent step's
 # step.end carries a `transcript` link (the same URLs as above)
-curl http://localhost:3000/workflows/review-pr/runs/1790179200000/events
+curl -H "Authorization: Bearer $STRUT_API_KEY" \
+  http://localhost:3000/workflows/review-pr/runs/1790179200000/events
 ```
 
 ## Good to know
