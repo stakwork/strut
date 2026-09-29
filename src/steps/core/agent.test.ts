@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { coreRegistry } from "../registry.js";
-import { withAccessedNodes, withMessages, withMedia, messagesOf, accessedNodesOf, mediaOf, defineStep, type StepContext, type StepRegistry } from "../../core.js";
+import { CancelledError, RunController, isCancelledError } from "../../run-control.js";
+import { runWorkflow } from "../../runner.js";
+import { MemoryRunStore } from "../../store.js";
+import { withAccessedNodes, withMessages, withMedia, messagesOf, accessedNodesOf, mediaOf, defineStep, flow, step, type StepContext, type StepRegistry } from "../../core.js";
 import agent, {
   repoTree,
   textEdit,
@@ -21,6 +24,9 @@ import agent, {
   classifyFinalAnswerStop,
   degenerateSchemaFields,
   isTransientStreamError,
+  streamFailure,
+  streamError,
+  AgentStreamError,
   buildPreamble,
 } from "./agent.js";
 
@@ -798,6 +804,74 @@ describe("isTransientStreamError (resume a severed stream, not a real failure)",
   });
 });
 
+describe("streamFailure / streamError (a stream that ended in an error)", () => {
+  async function* parts(...ps: { type: string; error?: unknown }[]) {
+    yield* ps;
+  }
+
+  it("a stream that ran to its end has no failure", async () => {
+    assert.equal(await streamFailure({ stream: parts({ type: "text-delta" }, { type: "finish" }) }), undefined);
+  });
+
+  it("an `error` part is the failure, though the stream itself closed normally — the first one wins", async () => {
+    const refused = new Error("refused");
+    const got = await streamFailure({
+      stream: parts({ type: "finish-step" }, { type: "error", error: refused }, { type: "error", error: new Error("later") }),
+    });
+    assert.equal(got, refused);
+    // An error part with nothing in it is still a failure.
+    assert.ok((await streamFailure({ stream: parts({ type: "error" }) })) instanceof Error);
+  });
+
+  it("a stream that broke is the failure too", async () => {
+    const broke = new TypeError("terminated");
+    async function* severed() {
+      yield { type: "text-delta" };
+      throw broke;
+    }
+    assert.equal(await streamFailure({ stream: severed() }), broke);
+  });
+
+  const refusal = (statusCode: number, responseBody: string, message = "prompt is too long") =>
+    Object.assign(new Error(message), { name: "AI_APICallError", statusCode, responseBody });
+
+  it("says the status and the body in the MESSAGE — the run log records nothing else", () => {
+    const api = refusal(400, '{"type":"error","error":{"message":"prompt is too long"}}');
+    const e = streamError(api, 3) as Error;
+    assert.ok(e instanceof AgentStreamError);
+    assert.equal(
+      e.message,
+      'agent failed after 3 step(s): prompt is too long (HTTP 400: {"type":"error","error":{"message":"prompt is too long"}})',
+    );
+    assert.equal(e.cause, api);
+  });
+
+  it("finds the refused request under a wrapper: an explained error's `cause`, a RetryError's `lastError`", () => {
+    const explained = new Error("Mothership authorization for u1 is exhausted", { cause: refusal(402, "spent") });
+    assert.match((streamError(explained, 0) as Error).message, /^agent failed after 0 step\(s\): Mothership authorization for u1 is exhausted \(HTTP 402: spent\)$/);
+    const retried = Object.assign(new Error("Failed after 3 attempts. Last error: Overloaded"), { lastError: refusal(529, "busy") });
+    assert.match((streamError(retried, 2) as Error).message, /Failed after 3 attempts\. Last error: Overloaded \(HTTP 529: busy\)$/);
+  });
+
+  it("caps a long body, and says a failure that is not an Error as it is", () => {
+    const e = streamError(refusal(502, "x".repeat(5000)), 1) as Error;
+    assert.ok(e.message.length < 2200, String(e.message.length));
+    assert.match(e.message, /… \[5000 chars\]\)$/);
+    assert.equal((streamError("text part 1 not found", 1) as Error).message, "agent failed after 1 step(s): text part 1 not found");
+    assert.equal(
+      (streamError({ type: "overloaded_error", message: "Overloaded" }, 1) as Error).message,
+      'agent failed after 1 step(s): {"type":"overloaded_error","message":"Overloaded"}',
+    );
+  });
+
+  it("hands a cancel back untouched, wrapped or not", () => {
+    const cancel = new CancelledError("r1");
+    assert.equal(streamError(cancel, 1), cancel);
+    const wrapped = new Error("stream failed", { cause: cancel });
+    assert.equal(streamError(wrapped, 1), wrapped);
+  });
+});
+
 // These stay OFFLINE in the sense that matters — nothing leaves the machine.
 // They drive the real generation loop against a local server that speaks the
 // Anthropic SSE wire format, because the failure being guarded is a TRANSPORT
@@ -1056,4 +1130,181 @@ describe("mid-stream socket death is resumed, not lost", () => {
       s.close();
     }
   });
+
+  // A request the provider REFUSES is not a broken stream to the SDK: it
+  // arrives as an `error` part and the stream closes normally, with the steps
+  // banked so far — which reads exactly like a model that stopped.
+  const REFUSAL = { type: "error", error: { type: "invalid_request_error", message: "prompt is too long" } };
+  const refuse = (res: http.ServerResponse) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify(REFUSAL));
+  };
+  const ok = (res: http.ServerResponse, body: string) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(msgStart());
+    res.write(body);
+    res.end();
+  };
+  /** The provider's own words: the status, its message, and the body. */
+  const isRefusal = (e: any) => {
+    assert.match(e.message, /400/);
+    assert.match(e.message, /prompt is too long/);
+    assert.ok(e.message.includes(JSON.stringify(REFUSAL)), e.message);
+    assert.doesNotMatch(e.message, /No output generated/);
+    return true;
+  };
+  // The SDK prints every stream error it is not handed; keep the test output readable.
+  const quietly = async (fn: () => Promise<void>) => {
+    const error = console.error;
+    const warn = console.warn;
+    console.error = console.warn = () => {};
+    try {
+      await fn();
+    } finally {
+      console.error = error;
+      console.warn = warn;
+    }
+  };
+
+  it("a request refused after a successful step fails the step with the provider's message, and asks nothing more", () =>
+    quietly(async () => {
+      const s = await serve((call, res) =>
+        call === 1 ? ok(res, toolUse("toolu_1", "bash", { command: "echo one > research.md" })) : refuse(res),
+      );
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      try {
+        await assert.rejects(run(), (e: any) => isRefusal(e) && /after 1 step/.test(e.message));
+        assert.equal(s.calls(), 2, "no nudge, no forced final answer");
+      } finally {
+        s.close();
+      }
+    }));
+
+  it("a refused FIRST request fails with the provider's message, not the SDK's `No output generated`", () =>
+    quietly(async () => {
+      const s = await serve((_call, res) => refuse(res));
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      try {
+        await assert.rejects(run(), isRefusal);
+        assert.equal(s.calls(), 1);
+        await assert.rejects(runSchema(), isRefusal);
+        assert.equal(s.calls(), 2);
+      } finally {
+        s.close();
+      }
+    }));
+
+  it("a refusal in a continuation fails the step too: the nudge, the schema nudge, the forced final answer", () =>
+    quietly(async () => {
+      let first = textTurn("now let's write it up");
+      const s = await serve((call, res) => (call % 2 ? ok(res, first) : refuse(res)));
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      try {
+        // Stopped tool-lessly with budget left → the nudge is the refused request.
+        await assert.rejects(run(), isRefusal);
+        assert.equal(s.calls(), 2, "a refused nudge must not go on to the forced turn");
+        // Budget spent without final_answer → the forced turn is.
+        first = toolUse("toolu_1", "bash", { command: "true" });
+        await assert.rejects(run(1), isRefusal);
+        assert.equal(s.calls(), 4);
+        // A degenerate structured answer → the schema nudge is.
+        first = textTurn(JSON.stringify({ candidate: "c", version: "v1", summary: "" }));
+        await assert.rejects(runSchema(), isRefusal);
+        assert.equal(s.calls(), 6);
+      } finally {
+        s.close();
+      }
+    }));
+
+  it("a continuation cut by a connection fault still falls through to the next salvage", () =>
+    quietly(async () => {
+      const s = await serve((call, res) => {
+        if (call === 2) return severMidStream(res);
+        ok(res, textTurn(call === 1 ? "now let's write it up" : "the answer"));
+      });
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      try {
+        const out = await run();
+        assert.equal(out.result, "the answer");
+        assert.equal(s.calls(), 3, "turn, severed nudge, forced final answer");
+      } finally {
+        s.close();
+      }
+    }));
+
+  it("a cancel is a cancel, never a provider error — in the loop and in a continuation", () =>
+    quietly(async () => {
+      let first = toolUse("toolu_1", "bash", { command: "true" });
+      const s = await serve((_call, res) => ok(res, first));
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      // Cancelled while the first request is in flight: the next checkpoint throws.
+      const cancelled = () => {
+        let checks = 0;
+        const control = {
+          state: "running",
+          checkpoint: async () => {
+            if (++checks > 1) throw new CancelledError("r");
+          },
+        };
+        return agent.run(
+          (agent.input as any).parse({
+            cwd, system: "sys", prompt: "do the research", model: "claude-sonnet-4-5",
+            finalAnswer: "Report what you found.", toolFilter: ["bash"],
+          }),
+          { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {}, control } as any,
+        );
+      };
+      try {
+        await assert.rejects(cancelled(), (e: any) => isCancelledError(e) && !/provider/.test(e.message));
+        assert.equal(s.calls(), 1, "a cancelled loop asks nothing more");
+        // The loop ended on its own (a tool-less turn); the cancel lands on the nudge.
+        first = textTurn("now let's write it up");
+        await assert.rejects(cancelled(), (e: any) => isCancelledError(e) && !/provider/.test(e.message));
+        assert.equal(s.calls(), 2, "a cancelled nudge must not go on to the forced turn");
+      } finally {
+        s.close();
+      }
+    }));
+
+  it("the RUN says so: `error` with the provider's message for a refusal, `cancelled` for a cancel", () =>
+    quietly(async () => {
+      let cancel: (() => void) | undefined;
+      const s = await serve((call, res) => {
+        if (call === 2) return refuse(res);
+        // Cancelled while the request is in flight: the loop's next checkpoint stops it.
+        cancel?.();
+        ok(res, toolUse("toolu_1", "bash", { command: "true" }));
+      });
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      const wf = flow("agent-test", {
+        input: z.object({}),
+        steps: [
+          step("a", "agent", {
+            cwd, system: "sys", prompt: "do the research", model: "claude-sonnet-4-5",
+            finalAnswer: "Report what you found.", toolFilter: ["bash"],
+          }),
+        ],
+      });
+      const launch = (controller?: RunController) => {
+        const store = new MemoryRunStore();
+        return runWorkflow(wf, {}, coreRegistry(), { store, services: {}, ...(controller ? { controller } : {}) }).then(
+          async (r) => ({ r, events: await store.getRunEvents("agent-test", r.runId) }),
+        );
+      };
+      try {
+        const refused = await launch();
+        assert.equal(refused.r.status, "error");
+        const failed = refused.events.find((e) => e.type === "step.error" && e.path === "agent-test/a");
+        isRefusal(failed?.error);
+        assert.equal(s.calls(), 2);
+
+        const controller = new RunController("r-agent", "agent-test");
+        cancel = () => controller.cancel();
+        const stopped = await launch(controller);
+        assert.equal(stopped.r.status, "cancelled", JSON.stringify(stopped.r.error ?? ""));
+        assert.equal(s.calls(), 3, "one request, none after the cancel");
+      } finally {
+        s.close();
+      }
+    }));
 });

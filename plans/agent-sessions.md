@@ -8,11 +8,13 @@
 > fix in `plans/repo-agent.md` §4.1 (a `messages` input fed from a prior
 > run's log): the caller names a thread instead of pointing at a run.
 >
-> **Found along the way, not fixed here:** a provider error in the MIDDLE
-> of an agent loop (an HTTP 400 after a step that succeeded) does not fail
-> the step — the stream ends, the step nudges or forces a final answer,
-> and returns. Such a turn is committed like any other. An error on the
-> first call does fail the step.
+> **Found along the way, fixed since (2026-09-29):** a provider error in
+> the MIDDLE of an agent loop (an HTTP 400 after a step that succeeded)
+> did not fail the step — the stream ended, the step nudged or forced a
+> final answer, and returned, so the turn was committed like any other. The
+> step now reads the stream's `error` parts (`streamFailure` in
+> `steps/core/agent.ts`) and fails with the provider's message, on the
+> first call and on any later one; such a turn is never committed.
 
 ## Problem
 

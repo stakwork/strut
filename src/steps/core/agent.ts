@@ -509,6 +509,62 @@ export function isTransientStreamError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Read a stream to its end and return the error that ended it, if any.
+ *
+ * `consumeStream`'s `onError` hears only a stream that BROKE (a socket that
+ * died mid-body). A request the provider refused — a 400 on a later step — or
+ * a throw out of `prepareStep` (a cancel) is not a broken stream to the SDK:
+ * it arrives as an `error` part, the stream closes normally and `steps`
+ * resolves with what was banked, which reads exactly like a model that
+ * stopped. Observed 2026-09-29: a 400 after one tool call was nudged, then
+ * answered by a forced turn, and the step returned a result.
+ */
+export async function streamFailure(result: {
+  stream: AsyncIterable<{ type: string; error?: unknown }>;
+}): Promise<unknown> {
+  let failure: unknown;
+  try {
+    for await (const part of result.stream) {
+      if (part.type === "error") failure ??= part.error ?? new Error("the stream reported an error");
+    }
+  } catch (e) {
+    failure ??= e ?? new Error("the stream broke");
+  }
+  return failure;
+}
+
+/** Thrown when a stream ended in an error that no fallback may paper over. */
+export class AgentStreamError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "AgentStreamError";
+  }
+}
+
+/**
+ * The error the step fails with for a stream that ended in one. A cancel
+ * passes through untouched — run control reads it by identity. Anything else
+ * is said in full: a run log records an error's `message` only, and the SDK
+ * keeps a refused request's status and body on properties of the error (or
+ * of the one it wraps: `cause`, a RetryError's `lastError`).
+ */
+export function streamError(err: unknown, stepsDone: number): unknown {
+  if (isCancelledError(err)) return err;
+  let http = "";
+  const seen = new Set<unknown>();
+  for (let e: any = err; e && typeof e === "object" && !seen.has(e); e = e.cause ?? e.lastError) {
+    seen.add(e);
+    if (e.statusCode == null && typeof e.responseBody !== "string") continue;
+    const body = typeof e.responseBody === "string" ? e.responseBody.trim() : "";
+    const shown = body.length > 2000 ? `${body.slice(0, 2000)}… [${body.length} chars]` : body;
+    http = ` (HTTP ${e.statusCode ?? "?"}${shown ? `: ${shown}` : ""})`;
+    break;
+  }
+  const said = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
+  return new AgentStreamError(`agent failed after ${stepsDone} step(s): ${said}${http}`, err);
+}
+
 /** Sent as a user turn when resuming after a severed stream. The model cannot
  *  see where the cut fell, so it must be told what did and didn't happen. */
 const STREAM_ERROR_NUDGE =
@@ -1228,9 +1284,8 @@ export default defineStep({
           : prior.length
             ? await runner.stream({ messages: head as any })
             : await runner.stream({ prompt: basePrompt });
-        let streamError: unknown;
-        await attempt.consumeStream({ onError: (e: unknown) => { streamError = e; } });
-        if (!streamError) {
+        const failure = await streamFailure(attempt);
+        if (failure === undefined) {
           res = {
             steps: await attempt.steps,
             // v7: `response` is final-step only; `responseMessages` spans every step.
@@ -1242,26 +1297,41 @@ export default defineStep({
           break;
         }
         if (
-          !isTransientStreamError(streamError) ||
+          !isTransientStreamError(failure) ||
           streamErrorContinuations >= MAX_STREAM_ERROR_CONTINUATIONS ||
           bankedSteps.length >= cfg.maxSteps
         ) {
-          throw streamError;
+          throw streamError(failure, bankedSteps.length);
         }
         streamErrorContinuations++;
         // v7 wraps the socket fault ("Failed to process successful response");
         // the root cause is the useful part of the log line.
-        let rootCause: any = streamError;
+        let rootCause: any = failure;
         while (rootCause?.cause) rootCause = rootCause.cause;
         console.warn(
           `[agent] stream severed after ${bankedSteps.length} banked step(s) (${
-            (streamError as Error).message
-          }${rootCause !== streamError ? `: ${rootCause?.message ?? rootCause}` : ""}); resuming ${streamErrorContinuations}/${MAX_STREAM_ERROR_CONTINUATIONS}.`,
+            (failure as Error).message
+          }${rootCause !== failure ? `: ${rootCause?.message ?? rootCause}` : ""}); resuming ${streamErrorContinuations}/${MAX_STREAM_ERROR_CONTINUATIONS}.`,
         );
       }
       // A resumed run's final attempt only knows its own segment — the banked
       // record spans every attempt, so it is the honest view of the whole step.
       const resumedFromStreamError = streamErrorContinuations > 0;
+
+      // The continuations below (nudge, forced final answer) are SALVAGE: one
+      // that fails is given up and the next fallback takes over. Not so for a
+      // request the provider refused, or a cancel — the conversation is what
+      // was refused and the next fallback would send it again, and a cancelled
+      // run asks nothing more. Those fail the step, as in the main loop.
+      const drain = async (continuation: Parameters<typeof streamFailure>[0]) => {
+        const failure = await streamFailure(continuation);
+        if (failure === undefined) return;
+        throw isTransientStreamError(failure) ? failure : streamError(failure, bankedSteps.length);
+      };
+      const giveUp = (what: string, e: unknown) => {
+        if (e instanceof AgentStreamError || isCancelledError(e)) throw e;
+        console.warn(`[agent] ${what} failed:`, (e as Error).message);
+      };
 
       const steps = resumedFromStreamError ? bankedSteps : (res.steps ?? []);
       // Total LLM turns across the whole session — the nudge continuation
@@ -1351,9 +1421,7 @@ export default defineStep({
                 "that fills EVERY required field with real values: never a placeholder, never an empty string.",
             };
             const nudged = await nudger.stream({ messages: [...head, ...(messages as any[]), nudge] as any });
-            let nudgeError: unknown;
-            await nudged.consumeStream({ onError: (e: unknown) => { nudgeError = e; } });
-            if (nudgeError) throw nudgeError;
+            await drain(nudged);
             const nudgedSteps = (await nudged.steps) ?? [];
             stepsUsed += nudgedSteps.length;
             // The recorded session keeps the nudge that drove these turns.
@@ -1374,7 +1442,7 @@ export default defineStep({
               console.warn(`[agent] nudged structured answer still has empty/filler field(s): ${stillBad.join(", ")}`);
             }
           } catch (e) {
-            console.warn("[agent] schema nudge continuation failed:", (e as Error).message);
+            giveUp("schema nudge continuation", e);
           }
         }
         console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps, structured)`);
@@ -1438,9 +1506,7 @@ export default defineStep({
                 cfg.finalAnswer,
             };
             const nudged = await nudger.stream({ messages: [...head, ...(messages as any[]), nudge] as any });
-            let nudgeError: unknown;
-            await nudged.consumeStream({ onError: (e: unknown) => { nudgeError = e; } });
-            if (nudgeError) throw nudgeError;
+            await drain(nudged);
             const nudgedSteps = (await nudged.steps) ?? [];
             stepsUsed += nudgedSteps.length;
             // The recorded session keeps the nudge that drove these turns.
@@ -1455,7 +1521,7 @@ export default defineStep({
             usage = addUsage(usage, nu);
             cost += costOf(nu);
           } catch (e) {
-            console.warn("[agent] nudge continuation failed:", (e as Error).message);
+            giveUp("nudge continuation", e);
           }
         }
 
@@ -1480,9 +1546,7 @@ export default defineStep({
               // the forced turn is what it always was.
               messages: [...(prior.length ? head : []), ...(messages as any[]), forcedPrompt],
             });
-            let forcedError: unknown;
-            await forced.consumeStream({ onError: (e: unknown) => { forcedError = e; } });
-            if (forcedError) throw forcedError;
+            await drain(forced);
             // The recorded session keeps this turn too.
             messages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
             const ft = ((await forced.text) ?? "").trim();
@@ -1493,7 +1557,7 @@ export default defineStep({
               cost += costOf(fu);
             }
           } catch (e) {
-            console.warn("[agent] forced final-answer turn failed:", (e as Error).message);
+            giveUp("forced final-answer turn", e);
           }
           if (!final && lastText) {
             final = `${lastText}\n\n(Note: model did not invoke final_answer; using last reasoning text.)`;

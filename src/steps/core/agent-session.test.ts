@@ -198,6 +198,31 @@ describe("agent sessions", () => {
     }
   });
 
+  it("a request refused in the MIDDLE of a turn fails it the same way: the thread is untouched, nothing more is asked", async () => {
+    const s = await serve([answer("toolu_1", "first"), bash("toolu_2", "echo two"), { status: 400 }, answer("toolu_4", "third")]);
+    try {
+      await run({ session: "abc", prompt: "one" });
+      const before = JSON.stringify(await store.load("abc"));
+
+      // The provider's words — not a nudge, and an answer committed around it.
+      await assert.rejects(
+        run({ session: "abc", prompt: "two" }),
+        /agent failed after 1 step\(s\): no \(HTTP 400: \{"type":"error","error":\{"type":"invalid_request_error","message":"no"\}\}\)/,
+      );
+      assert.equal(s.calls(), 3);
+      assert.equal(JSON.stringify(await store.load("abc")), before);
+      assert.equal(sessions.holder("abc"), undefined);
+
+      const third = await run({ session: "abc", prompt: "three" });
+      assert.equal(third.session.turn, 1);
+      const sent = JSON.stringify(s.bodies[3].messages);
+      assert.ok(sent.includes("one") && sent.includes("three"));
+      assert.ok(!sent.includes("two"), "the refused turn left no trace");
+    } finally {
+      s.close();
+    }
+  });
+
   it("one turn at a time: a second turn on a held session fails session_busy, before any request", async () => {
     let letGo!: () => void;
     const hold = new Promise<void>((r) => (letGo = r));
