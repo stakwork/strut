@@ -33,6 +33,9 @@ import {
   searchRunEvents,
 } from "../authoring.js";
 
+/** The step behind the builder's `graph_get` tool. */
+const GRAPH_GET_STEP = "graph/graph-get";
+
 // ── Run control ────────────────────────────────────────────────────────────
 
 type RunControlAction = "cancel" | "pause" | "resume";
@@ -1100,6 +1103,35 @@ export function buildTools(deps: AiDeps): ToolSet {
                   params: coerceJsonArg(params) as Record<string, unknown> | undefined,
                   maxRows,
                 });
+              } catch (e) {
+                return { error: e instanceof Error ? e.message : String(e) };
+              }
+            },
+          }),
+        }
+      : {}),
+
+    // graph_get: the `graph/graph-get` STEP as a chat tool — its input schema
+    // and its run(), so a read here and a read in a workflow cannot differ.
+    // How the builder opens a page of the knowledge graph (a Concept's docs
+    // and its children); through run_step the same read comes back three
+    // times (the output, then the step's and the run's end events). Same gate
+    // as graph_query.
+    ...(deps.graph && deps.registry[GRAPH_GET_STEP]
+      ? {
+          graph_get: tool({
+            description:
+              "Read ONE node of the knowledge graph: by `ref_id`, or by `node_type` + `name` (an exact lookup, never a search — for types keyed by name, e.g. a Concept). " +
+              "Returns { ref_id, node_type, name, properties, edges } — `edges` is { EDGE_TYPE: count }, how connected the node is, not the nodes themselves. " +
+              'Pass `children` (an edge type, e.g. "PARENT_OF") to also get the nodes it points to along that edge, each { ref_id, node_type, name, description }, sorted by name: a page and its table of contents in one call. Open a child the same way, by its ref_id. ' +
+              `A miss or a bad argument comes back as a plain message. This is the ${GRAPH_GET_STEP} step: a workflow reads the graph with it.`,
+            inputSchema: deps.registry[GRAPH_GET_STEP]!.input as z.ZodType<Record<string, unknown>>,
+            execute: async (input) => {
+              const def = deps.registry[GRAPH_GET_STEP]!;
+              const cfg = def.input.safeParse(input ?? {});
+              if (!cfg.success) return { error: `invalid input: ${cfg.error.message}` };
+              try {
+                return await def.run(cfg.data, { runId: "", path: "graph_get", scope: {}, input: undefined, emit: async () => {}, services: deps.services });
               } catch (e) {
                 return { error: e instanceof Error ? e.message : String(e) };
               }

@@ -11,6 +11,8 @@ import { accessedNodesOf, type StepContext } from "../../../core.js";
 import { Bolt } from "../../../graph/bolt.js";
 import { closeGraphBackends } from "../../../graph/backend.js";
 import { testGraphConfig, wipeGraph } from "../../../graph/test-util.js";
+import { buildTools } from "../../../ai/tools.js";
+import { MemoryRunStore } from "../../../store.js";
 
 const cfg = testGraphConfig();
 const STEP_TYPES = [
@@ -48,6 +50,8 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
   } as unknown as StepContext;
   type StepDef = { input: { parse(v: unknown): unknown }; run(cfg: unknown, ctx: StepContext): Promise<any> };
   let run: (type: string, input: unknown) => Promise<any>;
+  /** The chat builder's `graph_get` tool, over the same registry and services. */
+  let builderGet: (input: unknown) => Promise<any>;
   const NS = "test-ns";
 
   before(async () => {
@@ -59,6 +63,15 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
       const def = registry[type] as unknown as StepDef;
       return def.run(def.input.parse(input), ctx);
     };
+    const tools = buildTools({
+      workspace: {} as any,
+      registry,
+      store: new MemoryRunStore(),
+      getRegistry: async () => registry,
+      services: ctx.services,
+      graph: { cfg: { namespace: NS } } as any,
+    }) as any;
+    builderGet = (input) => tools.graph_get.execute(input);
   });
   after(async () => {
     await closeGraphBackends();
@@ -408,6 +421,12 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     // An edge type the node has none of; and without the option the envelope is unchanged.
     assert.deepEqual((await run("graph/graph-get", { ref_id: parent, children: "VERSION_OF" })).children, []);
     assert.ok(!("children" in (await run("graph/graph-get", { ref_id: parent }))));
+
+    // The builder's graph_get tool is this step: the same read, by ref_id or by name.
+    assert.deepEqual(await builderGet({ ref_id: parent, children: "uses step", namespace: NS }), out);
+    const byName = await builderGet({ node_type: "StrutWorkflow", name: "harvey-deliver", namespace: NS });
+    assert.deepEqual(byName, await run("graph/graph-get", { ref_id: wfRef, namespace: NS }));
+    assert.match(await builderGet({ node_type: "StrutWorkflow", name: "nope", namespace: NS }), /node not found/);
   });
 
   it("move-node: re-points the edge that places a node, either direction; refuses cycles, ambiguity, bad triples", async () => {
