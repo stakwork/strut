@@ -662,6 +662,56 @@ describe("AI list_secrets tool", () => {
   });
 });
 
+// ── graph_get tool ───────────────────────────────────────────────────────────
+
+describe("AI graph_get tool", () => {
+  const calls: Array<{ cfg: any; services: unknown }> = [];
+  const graphGet = defineStep({
+    type: "graph/graph-get",
+    input: z.object({ ref_id: z.string().optional(), node_type: z.string().optional(), name: z.string().optional(), children: z.string().optional() }),
+    output: z.any(),
+    async run(cfg, ctx) {
+      calls.push({ cfg, services: ctx?.services });
+      if (cfg.name === "boom") throw new Error("bolt down");
+      return cfg.name === "nope" ? `node not found: ${cfg.node_type} "nope"` : { ref_id: "r1", name: cfg.name, children: [{ ref_id: "r2", name: "Janitor" }] };
+    },
+  });
+  const services = { secrets: { get: async () => undefined } };
+  function makeDeps(opts: { graph?: boolean; step?: boolean } = {}) {
+    const registry = (opts.step === false ? {} : { "graph/graph-get": graphGet }) as any;
+    return {
+      workspace: {} as any,
+      registry,
+      store: new MemoryRunStore(),
+      getRegistry: async () => registry,
+      services,
+      ...(opts.graph === false ? {} : { graph: { cfg: { namespace: "default" } } as any }),
+    };
+  }
+
+  it("is offered only with a graph backend and the step in the registry", () => {
+    assert.ok("graph_get" in buildTools(makeDeps()));
+    assert.ok(!("graph_get" in buildTools(makeDeps({ graph: false }))));
+    assert.ok(!("graph_get" in buildTools(makeDeps({ step: false }))));
+  });
+
+  it("is the step: its input schema, its run() with the chat's services, its output", async () => {
+    const tools = buildTools(makeDeps()) as any;
+    assert.equal(tools.graph_get.inputSchema, graphGet.input);
+    calls.length = 0;
+    const page = await tools.graph_get.execute({ node_type: "Concept", name: "Workflow Builder", children: "PARENT_OF" });
+    assert.deepEqual(page, { ref_id: "r1", name: "Workflow Builder", children: [{ ref_id: "r2", name: "Janitor" }] });
+    assert.deepEqual(calls, [{ cfg: { node_type: "Concept", name: "Workflow Builder", children: "PARENT_OF" }, services }]);
+  });
+
+  it("a miss is the step's message; a bad argument or a throw is an error, never a rejection", async () => {
+    const tools = buildTools(makeDeps()) as any;
+    assert.equal(await tools.graph_get.execute({ node_type: "Concept", name: "nope" }), 'node not found: Concept "nope"');
+    assert.match((await tools.graph_get.execute({ ref_id: 7 })).error, /^invalid input: /);
+    assert.deepEqual(await tools.graph_get.execute({ node_type: "Concept", name: "boom" }), { error: "bolt down" });
+  });
+});
+
 describe("run_workflow dispatch mode (auto-detach)", () => {
   let tempDir: string;
 
