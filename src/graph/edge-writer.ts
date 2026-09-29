@@ -76,6 +76,34 @@ export interface EdgeUpdateResult {
   removed: string[];
 }
 
+/** What `move` re-homes: the one live `edge` that ties `ref_id` to where it
+ *  hangs now, re-pointed at `to_ref_id`. */
+export interface EdgeMove {
+  /** The node being moved. */
+  ref_id: string;
+  edge: string;
+  /** Which way the edge points, from the moved node's side — graph-neighbors'
+   *  `direction`: `reverse` = `(from)-[EDGE]->(node)`, `forward` =
+   *  `(node)-[EDGE]->(from)`. The new edge points the same way. */
+  direction: "forward" | "reverse";
+  /** Where it hangs now. Needed only when it has more than one live `edge`
+   *  that way. */
+  from_ref_id?: string;
+  to_ref_id: string;
+}
+
+export interface EdgeMoveResult {
+  /** false: it already hung under `to_ref_id` — nothing written. */
+  moved: boolean;
+  ref_id: string;
+  from_ref_id: string;
+  to_ref_id: string;
+  /** The live edge to `to_ref_id`. */
+  edge_ref_id: string;
+  /** The edge to `from_ref_id` — muted by the move, kept as history. */
+  previous_edge_ref_id: string;
+}
+
 export interface EdgeWriterOptions {
   resolver?: SchemaResolver;
 }
@@ -85,6 +113,8 @@ const STAMPS = new Set(["ref_id", "edge_key", "weight", "date_added_to_graph", "
 const PROTECTED = new Set(["ref_id", "edge_key", "date_added_to_graph", "unique_source_id"]);
 const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
+/** A live edge: not soft-deleted (jarvis reads skip both flags). */
+const LIVE = (r: string) => `(${r}.is_muted IS NULL OR ${r}.is_muted <> true) AND (${r}.is_deleted IS NULL OR ${r}.is_deleted <> true)`;
 
 /** Registry check for one (source type, edge, target type) triple. */
 export function isRegisteredEdge(edge: string, sourceType: string, targetType: string): boolean {
@@ -226,6 +256,113 @@ export class EdgeWriter {
   async mute(ref_id: string): Promise<boolean> {
     const rows = await this.bolt.run(`MATCH ()-[r {ref_id: $ref_id}]->() SET r.is_muted = true RETURN r.ref_id AS ref_id`, { ref_id });
     return rows.length > 0;
+  }
+
+  /**
+   * Move a node: re-point the live `edge` that ties it to where it hangs now
+   * at `to_ref_id`, in one transaction. Edges cannot be re-pointed in place,
+   * so the old edge is muted and a new one written the same way round,
+   * carrying the old edge's properties (the triple is validated like any
+   * write). Refused when `to_ref_id` is the node itself or hangs under it
+   * along `edge` (a cycle would cut the subtree loose). A muted edge to
+   * `to_ref_id` from an earlier move is restored rather than duplicated.
+   */
+  async move(m: EdgeMove): Promise<EdgeMoveResult> {
+    const edge = m.edge.toUpperCase().replace(/ /g, "_");
+    if (!EDGE_TYPE.test(edge)) throw new GraphValidationError("UNKNOWN_TYPE", edge, "edge type must match ^[A-Z][A-Z0-9_]*$");
+    if (!m.ref_id || !m.to_ref_id) throw new GraphValidationError("MISSING_REQUIRED", edge, "ref_id and to_ref_id are required");
+    if (m.direction !== "forward" && m.direction !== "reverse") throw new GraphValidationError("MISSING_REQUIRED", edge, "direction must be forward or reverse");
+    const forward = m.direction === "forward";
+    const hop = forward ? `-[r:\`${edge}\`]->` : `<-[r:\`${edge}\`]-`;
+    const way = forward ? `(node)-[${edge}]->(…)` : `(…)-[${edge}]->(node)`;
+    return this.bolt.write(async (tx) => {
+      const rows = await txRows(
+        tx,
+        `MATCH (x:Data_Bank {ref_id: $ref_id})
+         OPTIONAL MATCH (x)-[:IS_ALIAS]->(xa)
+         WITH COALESCE(xa, x) AS n
+         OPTIONAL MATCH (n)${hop}(p) WHERE ${LIVE("r")}
+         RETURN n.ref_id AS node, p.ref_id AS other, r.ref_id AS edge_ref_id, properties(r) AS props`,
+        { ref_id: m.ref_id },
+      );
+      if (rows.length === 0) throw new GraphValidationError("NOT_FOUND", edge, `no node with ref_id ${m.ref_id}`);
+      const node = String(rows[0]!["node"]);
+      const current = rows.filter((r) => r["other"] != null);
+      const hits = m.from_ref_id ? current.filter((r) => r["other"] === m.from_ref_id) : current;
+      if (hits.length === 0) {
+        throw new GraphValidationError(
+          "NOT_FOUND",
+          edge,
+          m.from_ref_id
+            ? `no live ${way} edge between ${node} and ${m.from_ref_id}`
+            : `${node} has no live ${way} edge — nothing to move (graph/create-triplet attaches it)`,
+        );
+      }
+      if (hits.length > 1) {
+        throw new GraphValidationError("DUPLICATE_KEY", edge, `${node} has ${hits.length} live ${way} edges (to ${hits.map((h) => h["other"]).join(", ")}) — pass from_ref_id`);
+      }
+      const old = hits[0]!;
+      const from = String(old["other"]);
+      const unmoved = { moved: false, ref_id: node, from_ref_id: from, to_ref_id: m.to_ref_id, edge_ref_id: String(old["edge_ref_id"]), previous_edge_ref_id: String(old["edge_ref_id"]) };
+      if (m.to_ref_id === from) return unmoved;
+      if (m.to_ref_id === node) throw new GraphValidationError("WRONG_TYPE", edge, "a node cannot be moved under itself");
+
+      // Everything below the node along `edge` — the target must not be there.
+      const cycle = await txRows(
+        tx,
+        `MATCH (t0:Data_Bank {ref_id: $to})
+         OPTIONAL MATCH (t0)-[:IS_ALIAS]->(ta)
+         WITH COALESCE(ta, t0) AS t
+         MATCH (n:Data_Bank {ref_id: $node})
+         MATCH path = shortestPath(${forward ? `(t)-[:\`${edge}\`*1..]->(n)` : `(n)-[:\`${edge}\`*1..]->(t)`})
+         WHERE ALL(rel IN relationships(path) WHERE ${LIVE("rel")})
+         RETURN t.ref_id AS t LIMIT 1`,
+        { to: m.to_ref_id, node },
+      );
+      if (cycle.length > 0) throw new GraphValidationError("WRONG_TYPE", edge, `${m.to_ref_id} is under ${node} along ${edge} — moving there would make a cycle`);
+
+      const props = Object.fromEntries(
+        Object.entries((old["props"] ?? {}) as Record<string, unknown>).filter(([k]) => !STAMPS.has(k) && k !== "is_muted" && k !== "is_deleted"),
+      );
+      const input: EdgeInput = forward
+        ? { edge, source_ref_id: node, target_ref_id: m.to_ref_id, properties: props }
+        : { edge, source_ref_id: m.to_ref_id, target_ref_id: node, properties: props };
+      validateEdgeShape(input);
+      const resolved = await this.validateEndpoints(tx, [input]);
+      const [written] = await mergeEdges(tx, edge, resolved);
+      // `to_ref_id` was an alias of where it already hangs.
+      if (written!.ref_id === old["edge_ref_id"]) return unmoved;
+      const params = { old: old["edge_ref_id"], new: written!.ref_id };
+      if (written!.created) {
+        // The old edge's properties verbatim (Integers stay Integers), its
+        // own stamps back on top.
+        await txRows(
+          tx,
+          `MATCH ()-[old {ref_id: $old}]->()
+           MATCH ()-[new {ref_id: $new}]->()
+           WITH old, new, new.edge_key AS edge_key, new.date_added_to_graph AS added
+           SET new += properties(old)
+           SET new.ref_id = $new, new.edge_key = edge_key, new.date_added_to_graph = added, new.unique_source_id = $uid`,
+          { ...params, uid: resolved[0]!.unique_source_id ?? null },
+        );
+      }
+      // An edge to `to_ref_id` that an earlier move muted comes back.
+      await txRows(
+        tx,
+        `MATCH ()-[old {ref_id: $old}]->()
+         MATCH ()-[new {ref_id: $new}]->()
+         SET old.is_muted = true, new.is_muted = CASE WHEN new.is_muted = true THEN false ELSE new.is_muted END`,
+        params,
+      );
+      return {
+        moved: true,
+        ref_id: node,
+        from_ref_id: from,
+        to_ref_id: forward ? written!.target_ref_id : written!.source_ref_id,
+        edge_ref_id: written!.ref_id,
+        previous_edge_ref_id: String(old["edge_ref_id"]),
+      };
+    });
   }
 
   /** Resolve every endpoint's type label and check each triple: Strut

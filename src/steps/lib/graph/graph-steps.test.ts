@@ -17,11 +17,11 @@ const STEP_TYPES = [
   "graph/get-ontology", "graph/get-ontology-type", "graph/graph-search", "graph/graph-get",
   "graph/graph-get-batched", "graph/graph-neighbors", "graph/register-namespace", "graph/create-node",
   "graph/edit-node", "graph/create-triplet", "graph/create-batch-triplet", "graph/create-schema", "graph/edit-edge",
-  "graph/walk",
+  "graph/walk", "graph/move-node",
 ];
 
 describe("graph/* lib steps are discovered by the registry", () => {
-  it("all fourteen graph steps are present, sourced from lib", async () => {
+  it("all fifteen graph steps are present, sourced from lib", async () => {
     const { registry, sources } = await buildRegistry();
     for (const t of STEP_TYPES) {
       assert.ok(registry[t], `missing ${t}`);
@@ -408,6 +408,85 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     // An edge type the node has none of; and without the option the envelope is unchanged.
     assert.deepEqual((await run("graph/graph-get", { ref_id: parent, children: "VERSION_OF" })).children, []);
     assert.ok(!("children" in (await run("graph/graph-get", { ref_id: parent }))));
+  });
+
+  it("move-node: re-points the edge that places a node, either direction; refuses cycles, ambiguity, bad triples", async () => {
+    assert.equal((await run("graph/create-schema", { type: "Topic", attributes: {} })).status, "Success");
+    const topic = async (name: string) => (await run("graph/create-node", { node_type: "Topic", namespace: NS, node_data: { name } })).ref_id as string;
+    const [root, a, b, a1, a1x] = [await topic("root"), await topic("a"), await topic("b"), await topic("a1"), await topic("a1x")];
+    const link = async (source_ref_id: string, target_ref_id: string, edge_type = "PARENT_OF", extra = {}) => {
+      const out = await run("graph/create-triplet", { source_ref_id, target_ref_id, edge_type, create_schema_if_missing: true, ...extra });
+      assert.equal(out.status, "Success", JSON.stringify(out));
+      return out.edge_ref_id as string;
+    };
+    await link(root, a);
+    await link(root, b);
+    const firstEdge = await link(a, a1, "PARENT_OF", { weight: 3, edge_data: { importance: 0.5 } });
+    await link(a1, a1x);
+    const children = async (ref_id: string) => (await run("graph/graph-get", { ref_id, children: "PARENT_OF" })).children.map((c: any) => c.name);
+
+    // Reverse: (parent)-[PARENT_OF]->(node). a1 moves from a to b, its child with it.
+    let out = await run("graph/move-node", { ref_id: a1, edge_type: "parent of", direction: "reverse", to_ref_id: b });
+    assert.equal(out.status, "Success", JSON.stringify(out));
+    assert.deepEqual(
+      { ...out, edge_ref_id: undefined },
+      { status: "Success", ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", from_ref_id: a, to_ref_id: b, edge_ref_id: undefined, previous_edge_ref_id: firstEdge },
+    );
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: a1 }, { ref_id: a }, { ref_id: b }], "the node and both places");
+    const movedEdge = out.edge_ref_id;
+    assert.deepEqual([await children(a), await children(b), await children(a1)], [[], ["a1"], ["a1x"]]);
+    assert.deepEqual((await run("graph/graph-get", { ref_id: a })).edges, { PARENT_OF: 1 }, "the muted edge is not counted");
+    assert.deepEqual(
+      (await run("graph/graph-neighbors", { ref_id: a1 })).map((n: any) => [n.name, n.direction]).sort(),
+      [["a1x", "forward"], ["b", "reverse"]],
+      "the old parent is gone from the neighbors",
+    );
+    const bolt = new Bolt(cfg!);
+    try {
+      const rows = await bolt.run(
+        `MATCH ()-[r {ref_id: $old}]->() MATCH ()-[n {ref_id: $new}]->() RETURN properties(r) AS old, properties(n) AS new, valueType(n.weight) AS wt`,
+        { old: firstEdge, new: movedEdge },
+      );
+      const { old, new: moved, wt } = rows[0]! as { old: Record<string, unknown>; new: Record<string, unknown>; wt: string };
+      assert.equal(old["is_muted"], true, "the old edge is kept, muted");
+      assert.deepEqual([moved["weight"], moved["importance"], moved["edge_key"], "is_muted" in moved], [3, 0.5, "parent_of", false], "properties carried over");
+      assert.equal(wt, "INTEGER NOT NULL", "an Integer stays an Integer");
+      assert.notEqual(moved["date_added_to_graph"], old["date_added_to_graph"]);
+    } finally {
+      await bolt.close();
+    }
+
+    // Already there; itself; under its own child; nothing placing it; a Strut source the registry refuses.
+    out = await run("graph/move-node", { ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: b });
+    assert.deepEqual([out.status, out.from_ref_id, out.edge_ref_id, out.messages], ["Warning", b, movedEdge, ["Already hangs there — nothing moved"]]);
+    assert.equal(accessedNodesOf(out)!.length, 2);
+    assert.match(await run("graph/move-node", { ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a1 }), /under itself/);
+    assert.match(await run("graph/move-node", { ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a1x }), /WRONG_TYPE: .*cycle/);
+    assert.match(await run("graph/move-node", { ref_id: root, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a }), /NOT_FOUND: .*nothing to move/);
+    assert.match(await run("graph/move-node", { ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: wfRef }), /WRONG_TYPE/);
+    assert.match(await run("graph/move-node", { ref_id: "nope", edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a }), /NOT_FOUND: .*no node/);
+    assert.deepEqual(await children(b), ["a1"], "a refused move writes nothing");
+
+    // Two parents: which one moves must be named.
+    await link(b, a1x);
+    assert.match(await run("graph/move-node", { ref_id: a1x, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a }), /DUPLICATE_KEY: .*pass from_ref_id/);
+    assert.match(await run("graph/move-node", { ref_id: a1x, edge_type: "PARENT_OF", direction: "reverse", from_ref_id: a, to_ref_id: root }), /NOT_FOUND/);
+    out = await run("graph/move-node", { ref_id: a1x, edge_type: "PARENT_OF", direction: "reverse", from_ref_id: b, to_ref_id: a });
+    assert.equal(out.status, "Success", JSON.stringify(out));
+    assert.deepEqual([await children(a), await children(a1), await children(b)], [["a1x"], ["a1x"], ["a1"]]);
+
+    // Back where it started: the muted edge is restored, not duplicated.
+    out = await run("graph/move-node", { ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a });
+    assert.equal(out.edge_ref_id, firstEdge);
+    assert.deepEqual([await children(a), await children(b)], [["a1", "a1x"], []]);
+
+    // Forward: (node)-[PART_OF]->(group).
+    const [g1, g2, part] = [await topic("g1"), await topic("g2"), await topic("part")];
+    await link(part, g1, "PART_OF");
+    out = await run("graph/move-node", { ref_id: part, edge_type: "PART_OF", direction: "forward", to_ref_id: g2 });
+    assert.deepEqual([out.status, out.from_ref_id, out.to_ref_id], ["Success", g1, g2], JSON.stringify(out));
+    assert.deepEqual((await run("graph/graph-neighbors", { ref_id: part })).map((n: any) => [n.name, n.edge_type, n.direction]), [["g2", "PART_OF", "forward"]]);
+    assert.match(await run("graph/move-node", { ref_id: part, edge_type: "PART_OF", direction: "reverse", to_ref_id: g1 }), /nothing to move/, "the direction is the node's side");
   });
 });
 

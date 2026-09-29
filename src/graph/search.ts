@@ -328,6 +328,11 @@ function serializeEdge(type: string, props: Record<string, unknown>, source: str
   return out;
 }
 
+/** A live edge — jarvis's traversals skip soft-deleted edges too. */
+function liveEdge(alias: string): string {
+  return `(${alias}.is_muted IS NULL OR ${alias}.is_muted <> true) AND (${alias}.is_deleted IS NULL OR ${alias}.is_deleted <> true)`;
+}
+
 function visibility(alias: string): string {
   return [
     `(${alias}.is_muted IS NULL OR ${alias}.is_muted <> true)`,
@@ -461,7 +466,7 @@ export class GraphReader {
     const visible = await this.visibleDomainLabels();
     const rows = await this.bolt.run(
       `MATCH (n:Data_Bank {ref_id: $ref_id})-[r]-(m)
-       WHERE coalesce(n.namespace, $default_ns) = $namespace
+       WHERE coalesce(n.namespace, $default_ns) = $namespace AND ${liveEdge("r")}
          AND coalesce(m.namespace, $default_ns) = $namespace
          ${visible.length ? "AND ANY(lbl IN labels(m) WHERE lbl IN $visible_labels)" : ""}
        RETURN type(r) AS edge_type, labels(m) AS m_labels, count(*) AS cnt`,
@@ -489,7 +494,7 @@ export class GraphReader {
     const rows = await this.rows(
       tx,
       `MATCH (n:Data_Bank)-[r]-(m)
-       WHERE n.ref_id IN $ref_ids AND ${nsCond}
+       WHERE n.ref_id IN $ref_ids AND ${nsCond} AND ${liveEdge("r")}
          ${visible.length ? "AND ANY(lbl IN labels(m) WHERE lbl IN $visible_labels)" : ""}
        RETURN n.ref_id AS ref_id, type(r) AS edge_type, count(*) AS cnt`,
       { ref_ids, namespace, default_ns: DEFAULT_NAMESPACE, visible_labels: visible },
@@ -507,7 +512,7 @@ export class GraphReader {
    * node included in `nodes`, like jarvis.
    */
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [visibility("node")];
+    const where = [visibility("node"), liveEdge("r")];
     const params: Record<string, unknown> = { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES };
     if (p.node_types?.length) {
       params["imp_node_types"] = (await this.canonicalTypes(p.node_types)).map((n) => n.replace(/[-+/>]/g, ""));
