@@ -214,7 +214,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.equal(out.requested, 4);
     assert.equal(out.returned, 3, "deduped");
     assert.equal(out.nodes[0].ref_id, wfRef);
-    assert.deepEqual(out.nodes[0].edges, { VERSION_OF: 1 });
+    assert.deepEqual(out.nodes[0].edges, { "<-VERSION_OF": 1 }, "the version points at the workflow");
     assert.match(out.nodes[1].error, /not found/);
     assert.equal(out.nodes[2].node_type, "StrutWorkflowVersion");
     assert.equal(out.truncated, false);
@@ -404,9 +404,15 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     const parent = zeta.source_ref_id;
     assert.equal(alpha.source_ref_id, parent, "one parent, three children");
 
+    // The parent has a parent of its own: its count still equals the children listed.
+    const up = await run("graph/create-triplet", {
+      source_type: "StrutWorkflow", source_data: { name: "toc-wf" }, target_ref_id: parent, edge_type: "ACTIVE_VERSION", namespace: NS,
+    });
+    assert.equal(up.status, "Success", JSON.stringify(up));
+
     const out = await run("graph/graph-get", { ref_id: parent, children: "uses step", namespace: NS });
     assert.equal(out.ref_id, parent);
-    assert.deepEqual(out.edges, { USES_STEP: 3 });
+    assert.deepEqual(out.edges, { USES_STEP: 3, "<-ACTIVE_VERSION": 1 });
     assert.deepEqual(out.children.map((c: any) => c.name), ["alpha/step", "mid/step", "zeta/step"]);
     assert.deepEqual(out.children[2], { ref_id: zeta.target_ref_id, node_type: "StrutStep", name: "zeta/step", description: "Second by name." });
     assert.deepEqual(out.children[1], { ref_id: bare.target_ref_id, node_type: "StrutStep", name: "mid/step" }, "no description, no key");
@@ -416,7 +422,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
 
     // Outgoing edges only: the same edge, read from the child's side, lists nothing.
     const child = await run("graph/graph-get", { ref_id: zeta.target_ref_id, children: "USES_STEP", namespace: NS });
-    assert.deepEqual(child.edges, { USES_STEP: 1 });
+    assert.deepEqual(child.edges, { "<-USES_STEP": 1 }, "an incoming edge is marked, never counted as a child");
     assert.deepEqual(child.children, []);
     // An edge type the node has none of; and without the option the envelope is unchanged.
     assert.deepEqual((await run("graph/graph-get", { ref_id: parent, children: "VERSION_OF" })).children, []);
@@ -458,7 +464,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     );
     const movedEdge = out.edge_ref_id;
     assert.deepEqual([await children(a), await children(b), await children(a1)], [[], ["a1"], ["a1x"]]);
-    assert.deepEqual((await run("graph/graph-get", { ref_id: a })).edges, { PARENT_OF: 1 }, "the muted edge is not counted");
+    assert.deepEqual((await run("graph/graph-get", { ref_id: a })).edges, { "<-PARENT_OF": 1 }, "its own parent; the muted edge to a1 is not counted");
     assert.deepEqual(
       (await run("graph/graph-neighbors", { ref_id: a1 })).map((n: any) => [n.name, n.direction]).sort(),
       [["a1x", "forward"], ["b", "reverse"]],

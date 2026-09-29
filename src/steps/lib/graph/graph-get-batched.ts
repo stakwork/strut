@@ -1,21 +1,9 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName, type GraphBackend } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, edgeCountMap, type GraphBackend } from "./_shared.js";
 const BATCH_MAX = 50;
 const CONCURRENCY = 8;
-
-/** Collapse connection-count rows into a compact {EDGE_TYPE: total} map. */
-function collapseConnectionCounts(
-  counts: Array<{ edge_type: string; target_type?: string; count: number }>,
-): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const c of counts ?? []) {
-    if (!c?.edge_type) continue;
-    out[c.edge_type] = (out[c.edge_type] ?? 0) + Number(c.count ?? 0);
-  }
-  return out;
-}
 
 export default defineStep({
   type: "graph/graph-get-batched",
@@ -23,7 +11,7 @@ export default defineStep({
     `Resolve up to ${BATCH_MAX} nodes in one call by ref_id — the batched form of graph_graph_get. ` +
     "ALWAYS prefer this over calling graph_graph_get in a loop: it fetches them concurrently in a single call. " +
     "Returns `{ requested, returned, truncated, omitted_ref_ids, nodes }`, where each entry in " +
-    "`nodes` is either the full node (ref_id, node_type, name, properties, edges) or " +
+    "`nodes` is either the full node (ref_id, node_type, name, properties, edges — incoming edge types prefixed `<-`, as in graph_graph_get) or " +
     "`{ ref_id, error }` if that one could not be resolved — one bad ref_id never fails the rest. " +
     `If you pass more than ${BATCH_MAX} ref_ids, the excess comes back in ` +
     "`omitted_ref_ids` and `truncated` is true; call again with those to finish the job.",
@@ -53,7 +41,7 @@ export default defineStep({
         const properties = (raw.properties ?? {}) as Record<string, any>;
         let edges: Record<string, number> = {};
         try {
-          edges = collapseConnectionCounts(await b.reader.connectionCounts(ref_id, cfg.namespace));
+          edges = edgeCountMap(await b.reader.connectionCounts(ref_id, cfg.namespace));
         } catch {
           // best effort — edges stays {}
         }

@@ -173,10 +173,10 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
 
   it("connectionCounts + edgeCounts", async () => {
     assert.deepEqual(await reader.connectionCounts(ids["wfv"]!), [
-      { edge_type: "ACTIVE_VERSION", target_type: "StrutWorkflow", count: 1 },
-      { edge_type: "EXECUTED", target_type: "StrutRun", count: 1 },
-      { edge_type: "USES_STEP", target_type: "StrutStep", count: 1 },
-      { edge_type: "VERSION_OF", target_type: "StrutWorkflow", count: 1 },
+      { edge_type: "ACTIVE_VERSION", target_type: "StrutWorkflow", direction: "in", count: 1 },
+      { edge_type: "EXECUTED", target_type: "StrutRun", direction: "in", count: 1 },
+      { edge_type: "USES_STEP", target_type: "StrutStep", direction: "out", count: 1 },
+      { edge_type: "VERSION_OF", target_type: "StrutWorkflow", direction: "out", count: 1 },
     ]);
     assert.deepEqual(await reader.edgeCounts([ids["run"]!, ids["wf3"]!], "default"), {
       [ids["run"]!]: { EXECUTED: 1, IN_RUN: 1 },

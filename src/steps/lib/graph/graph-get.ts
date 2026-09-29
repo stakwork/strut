@@ -1,22 +1,10 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, edgeCountMap } from "./_shared.js";
 
 const CHILD_CAP = 50;
 const CHILD_DESCRIPTION_MAX = 300;
-
-/** Collapse connection-count rows into a compact {EDGE_TYPE: total} map. */
-function collapseConnectionCounts(
-  counts: Array<{ edge_type: string; target_type?: string; count: number }>,
-): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const c of counts ?? []) {
-    if (!c?.edge_type) continue;
-    out[c.edge_type] = (out[c.edge_type] ?? 0) + Number(c.count ?? 0);
-  }
-  return out;
-}
 
 export default defineStep({
   type: "graph/graph-get",
@@ -27,7 +15,8 @@ export default defineStep({
     "name \"Janitor\"): an exact lookup by the node's key, never a search — for types keyed by name. " +
     "Returns the node's ref_id, node_type, derived name, properties, and an " +
     "`edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
-    "which relationship types you can traverse next with graph_graph_neighbors. " +
+    "which relationship types you can traverse next with graph_graph_neighbors: outgoing edges by type, " +
+    "incoming ones prefixed `<-` (a node with a parent and two children has { PARENT_OF: 2, \"<-PARENT_OF\": 1 }). " +
     "Pass `children` (an edge type, e.g. \"PARENT_OF\") to also get the nodes this one points to " +
     "along that edge — each { ref_id, node_type, name, description }, sorted by name: a node and its " +
     "table of contents in one call. " +
@@ -74,7 +63,7 @@ export default defineStep({
       // Edge-type connectivity. Best effort — never fail the whole call.
       let edges: Record<string, number> = {};
       try {
-        edges = collapseConnectionCounts(await b.reader.connectionCounts(raw.ref_id, cfg.namespace));
+        edges = edgeCountMap(await b.reader.connectionCounts(raw.ref_id, cfg.namespace));
       } catch {
         // edges stays {}
       }
