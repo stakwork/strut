@@ -263,7 +263,7 @@ describe("agent sessions over HTTP", () => {
     assert.equal((await strut.sessionStore.load("abc"))!.turns.length, 1);
   });
 
-  it("every read of a thread is behind the key; a turn in the run log is a run read", async () => {
+  it("every read of a thread is behind the key, the turn in the run log included", async () => {
     const { json, run } = await boot();
     const { runId } = await run("talk", { prompt: "one", session: "abc" });
     process.env["STRUT_API_KEY"] = "k3y";
@@ -275,9 +275,10 @@ describe("agent sessions over HTTP", () => {
     }
     assert.equal((await json("/sessions?id=abc", { method: "DELETE" })).status, 401);
     const transcript = `/workflows/talk/runs/${runId}/transcripts/talk/work`;
-    assert.equal((await json(transcript)).status, 200);
-    assert.equal((await json(`${transcript}?full=1`)).status, 401);
-    assert.equal((await json(`${transcript}?full=1`, auth)).status, 200);
+    for (const path of [transcript, `${transcript}?full=1`]) {
+      assert.equal((await json(path)).status, 401, path);
+      assert.equal((await json(path, auth)).status, 200, path);
+    }
   });
 
   it("an injected sessions capability is the consumer's: the routes report 501", async () => {

@@ -373,15 +373,17 @@ export default defineStep({
     const base = `http://127.0.0.1:${port}`;
     const headers = { authorization: `Bearer ${key}` };
     if (!output.includes(`strut ui: ${base}/?key=${key}`)) failures.push("launcher did not print the UI URL on stderr");
-    const health = await (await fetch(`${base}/health`)).json();
+    const health = await (await fetch(`${base}/health`, { headers })).json();
     if (!health.ok) failures.push("health not ok");
     if (health.dataDir !== workspace) failures.push(`dataDir ${health.dataDir} != ${workspace}`);
 
-    const steps = await (await fetch(`${base}/steps`)).text();
+    const steps = await (await fetch(`${base}/steps`, { headers })).text();
     if (!steps.includes("smoke-step")) failures.push('custom step importing "strut" from an out-of-tree workspace did not register');
 
-    const unauth = await fetch(`${base}/audio/models`);
-    if (unauth.status !== 401) failures.push(`/audio/models without key: ${unauth.status}, expected 401`);
+    for (const path of ["/steps", "/audio/models"]) {
+      const unauth = await fetch(`${base}${path}`);
+      if (unauth.status !== 401) failures.push(`${path} without key: ${unauth.status}, expected 401`);
+    }
     const models = await (await fetch(`${base}/audio/models`, { headers })).json();
     if (!models.available) failures.push("sherpa addon did not load in the staged copy (available: false)");
     if (!models.modelDir.startsWith(cache)) failures.push(`modelDir ${models.modelDir} not under STRUT_CACHE_DIR`);

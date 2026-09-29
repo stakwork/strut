@@ -1,10 +1,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { z } from "zod";
 
 import { createStrut } from "./createStrut.js";
@@ -1049,6 +1049,135 @@ describe("listen()", () => {
   });
 });
 
+// ── The gate: with a key configured, nothing is served without it ─────────
+
+describe("the API key gate", () => {
+  const KEY = "gate-key";
+  const auth = { headers: { authorization: `Bearer ${KEY}` } };
+  let tempDir: string;
+  let savedKey: string | undefined;
+  beforeEach(async () => {
+    savedKey = process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_API_KEY"];
+    tempDir = join(tmpdir(), `strut-gate-${randomUUID()}`);
+    await mkdir(join(tempDir, "dist", "assets"), { recursive: true });
+    await writeFile(join(tempDir, "dist", "index.html"), "<html>the strut ui</html>");
+    await writeFile(join(tempDir, "dist", "assets", "app.js"), "// the bundle");
+  });
+  afterEach(async () => {
+    if (savedKey === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = savedKey;
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  /** A whole strut — UI, chat, audio routes — plus a route a host mounted. */
+  const boot = async () => {
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(join(tempDir, "ws")),
+      store: new MemoryRunStore(),
+      webDist: join(tempDir, "dist"),
+      scheduler: false,
+    });
+    strut.app.get("/host/mounted", (c) => c.json({ ok: true }));
+    return strut;
+  };
+
+  it("every registered route answers 401 without the key — reads included", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    // Every route the app holds, middleware and the UI's catch-all aside,
+    // with its params filled in — so a route added later is covered too.
+    const routes = [...new Set(
+      strut.app.routes
+        .filter((r) => r.method !== "ALL" && r.path !== "*")
+        .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
+    )].filter((r) => r !== "GET /health");
+    assert.ok(routes.length > 80, `swept ${routes.length} routes`);
+    assert.ok(routes.includes("GET /workflows/x/runs/x/transcripts/x"));
+    assert.ok(routes.includes("GET /host/mounted"));
+    for (const route of routes) {
+      const [method, path] = route.split(" ") as [string, string];
+      assert.equal((await strut.app.request(path, { method })).status, 401, route);
+      assert.equal((await strut.app.request(path, { method, headers: { authorization: "Bearer nope" } })).status, 401, route);
+    }
+    // A path no route answers is not the UI either.
+    assert.equal((await strut.app.request("/nope")).status, 401);
+    assert.equal((await strut.app.request("/", { method: "POST" })).status, 401);
+  });
+
+  it("the key opens them, as a Bearer header or as ?key=; unset, everything is open", async () => {
+    const strut = await boot();
+    const reads = ["/workflows", "/steps", "/runs/active", "/artifacts/123", "/host/mounted"];
+    for (const path of reads) assert.equal((await strut.app.request(path)).status, 200, `dev mode: ${path}`);
+    process.env["STRUT_API_KEY"] = KEY;
+    for (const path of reads) {
+      assert.equal((await strut.app.request(path, auth)).status, 200, path);
+      assert.equal((await strut.app.request(`${path}?key=${KEY}`)).status, 200, `${path}?key=`);
+      assert.equal((await strut.app.request(`${path}?key=nope`)).status, 401, `${path}?key=nope`);
+    }
+  });
+
+  it("the UI's own files and a bare /health are all that is served without it", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    for (const path of ["/", "/?wf=a&run=1", "/index.html"]) {
+      const page = await strut.app.request(path);
+      assert.equal(page.status, 200, path);
+      assert.match(await page.text(), /the strut ui/, path);
+    }
+    const bundle = await strut.app.request("/assets/app.js");
+    assert.equal(bundle.status, 200);
+    assert.match(await bundle.text(), /the bundle/);
+
+    assert.deepEqual(await (await strut.app.request("/health")).json(), { ok: true });
+    const health = (await (await strut.app.request("/health", auth)).json()) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(health).sort(), ["dataDir", "ok", "stepCount"]);
+  });
+
+  it("no path under the UI's prefix reaches a route: /assets/../secrets, as the wire carries it", async () => {
+    const strut = await boot();
+    const put = await strut.app.request("/secrets/PROBE", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "v" }) });
+    assert.equal(put.status, 200);
+    process.env["STRUT_API_KEY"] = KEY;
+    const port = await strut.listen(0, "127.0.0.1");
+    const raw = (path: string, headers: Record<string, string> = {}) =>
+      new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
+          let body = "";
+          res.on("data", (d) => (body += d));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    try {
+      for (const path of ["/assets/../secrets", "/assets/%2e%2e/secrets", "/assets/..%2fsecrets", "//secrets"]) {
+        const res = await raw(path);
+        assert.ok(!res.body.includes("PROBE"), `${path} → ${res.status} ${res.body.slice(0, 80)}`);
+      }
+      assert.equal((await raw("/secrets")).status, 401);
+      assert.match((await raw("/secrets", { authorization: `Bearer ${KEY}` })).body, /PROBE/);
+    } finally {
+      await strut.close();
+    }
+  });
+
+  it("a key in the query string never reaches the request log", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
+    try {
+      assert.equal((await strut.app.request(`/artifacts/123?key=${KEY}&x=1`)).status, 200);
+    } finally {
+      console.log = orig;
+    }
+    assert.ok(lines.some((l) => l.includes("/artifacts/123?key=…&x=1")), lines.join("\n"));
+    assert.ok(!lines.some((l) => l.includes(KEY)));
+  });
+});
+
 // ── Actors and the principal rule (plans/mothership-cost-control.md §2) ────
 
 describe("actors and the principal rule", () => {
@@ -1143,8 +1272,7 @@ describe("actors and the principal rule", () => {
     assert.deepEqual((await finished("wf", unkeyed)).output, { actor: null, principal: null }, "no key configured → nothing is honored");
 
     process.env["STRUT_API_KEY"] = "deploy-key";
-    const wrong = (await call("POST", "/workflows/wf/run", { input: {} }, { "x-strut-actor": "mallory-9", authorization: "Bearer nope" })).json.runId as string;
-    assert.deepEqual((await finished("wf", wrong)).output, { actor: null, principal: null });
+    assert.equal((await call("POST", "/workflows/wf/run", { input: {} }, { "x-strut-actor": "mallory-9", authorization: "Bearer nope" })).status, 401);
     const right = (await call("POST", "/workflows/wf/run", { input: {} }, { "x-strut-actor": "hive-user-1", authorization: "Bearer deploy-key" })).json.runId as string;
     assert.deepEqual((await finished("wf", right)).output, { actor: "hive-user-1", principal: "hive-user-1" });
   });

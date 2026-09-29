@@ -115,7 +115,7 @@ describe("automations endpoints", () => {
     assert.deepEqual((await finished(second.json.runId)).output, { newest_id: "first-next-next" }, "the cursor came from the first run's output");
   });
 
-  it("mutations and fire need the API key when one is configured; reads do not", async () => {
+  it("every route needs the API key when one is configured, reads included", async () => {
     const made = await call("POST", `/workflows/${WF}/automations`, { name: "Morning", trigger: { every: "day", at: ["09:00"], tz: "UTC" } });
     const id = made.json.automation.id as string;
     process.env["STRUT_API_KEY"] = "sekret";
@@ -127,7 +127,8 @@ describe("automations endpoints", () => {
     ] as const) {
       assert.equal((await call(method, path, {})).status, 401, `${method} ${path}`);
     }
-    assert.equal((await call("GET", "/automations")).status, 200);
+    assert.equal((await call("GET", "/automations")).status, 401);
+    assert.equal((await call("GET", "/automations", undefined, { authorization: "Bearer sekret" })).status, 200);
     assert.equal((await call("PATCH", `/workflows/${WF}/automations/${id}`, { name: "Renamed" }, { authorization: "Bearer sekret" })).status, 200);
   });
 });

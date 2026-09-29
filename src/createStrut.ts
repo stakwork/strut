@@ -28,7 +28,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { requireApiKey, apiKeyMatches, warnIfUnconfigured, actorFromHeader } from "./auth.js";
+import { requireApiKey, carriesApiKey, warnIfUnconfigured, actorFromHeader } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -724,7 +724,24 @@ export async function createStrut<TServices = unknown>(
   }
 
   const app = new Hono();
-  app.use(logger());
+  // `?key=` (below) never reaches the log.
+  app.use(logger((line, ...rest) => console.log(line.replace(/([?&]key=)[^&\s]*/g, "$1…"), ...rest)));
+
+  // ── Auth ─────────────────────────────────────────────────────────────────
+  //
+  // With `STRUT_API_KEY` set, NOTHING is served without it — reads included
+  // (a run's events, a transcript, an artifact are the deployment's data).
+  // This one gate is in front of every route, those a host mounts on `app`
+  // later too. Two things pass: `/health`, which tells a probe `{ ok: true }`
+  // and nothing else, and the UI's own files — they hold no data, and a
+  // person has to load the page to give it the key.
+  const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
+  app.use("*", (c, next) => {
+    const path = c.req.path;
+    const read = c.req.method === "GET" || c.req.method === "HEAD";
+    const open = read && (path === "/health" || (serveUi && UI_FILE.test(path)));
+    return open ? next() : requireApiKey(c, next);
+  });
 
   // ── Workflows ────────────────────────────────────────────────────────────
 
@@ -898,7 +915,7 @@ export async function createStrut<TServices = unknown>(
   //
   // A session turn (plans/agent-sessions.md) recorded its system prompt and
   // THAT TURN; `?full=1` serves the thread up to and including it, read from
-  // the session store — behind the key, like every read of a thread.
+  // the session store.
   app.get("/workflows/:name/runs/:runId/transcripts/:path{.+}", async (c) => {
     const { name, runId, path } = c.req.param();
     const events = await store.getRunEvents(name, runId);
@@ -907,9 +924,6 @@ export async function createStrut<TServices = unknown>(
     const at = (end.output as { session?: { id?: unknown; offset?: unknown } } | null | undefined)?.session;
     if (c.req.query("full") !== "1" || typeof at?.id !== "string" || typeof at.offset !== "number") {
       return c.json(end.messages);
-    }
-    if (!apiKeyMatches(c.req.header("authorization"))) {
-      return c.json({ error: "unauthorized: valid Authorization: Bearer <STRUT_API_KEY> required" }, 401);
     }
     const thread = sessionsInjected ? null : await sessionStore.load(at.id).catch(() => null);
     if (!thread) return c.json({ error: `Session "${at.id}" is gone` }, 404);
@@ -1550,8 +1564,8 @@ export async function createStrut<TServices = unknown>(
   });
 
   // Transfer a workflow to another actor (plans/mothership-cost-control.md §2).
-  // The owner pays for the workflow's automations, so this is gated.
-  app.put("/workflows/:name/owner", requireApiKey, async (c) => {
+  // The owner pays for the workflow's automations.
+  app.put("/workflows/:name/owner", async (c) => {
     const name = c.req.param("name")!;
     const body = await c.req.json<{ owner?: string | null }>();
     const owner = (typeof body.owner === "string" ? body.owner.trim() : "") || null;
@@ -1627,9 +1641,8 @@ export async function createStrut<TServices = unknown>(
   // ── Agent sessions (plans/agent-sessions.md §4) ───────────────────────
   //
   // The threads `agent` steps with `session` set continue. The id is a query
-  // parameter (it may hold slashes). Every route is behind the key, reads
-  // included: a thread is a whole conversation. 501 when the consumer
-  // injected their own `sessions` capability (we don't own that store).
+  // parameter (it may hold slashes). 501 when the consumer injected their
+  // own `sessions` capability (we don't own that store).
 
   const sessionRoute = (c: Context): { id: string } | Response => {
     if (sessionsInjected) return c.json({ error: "sessions are managed by an injected capability" }, 501);
@@ -1638,7 +1651,7 @@ export async function createStrut<TServices = unknown>(
     return problem ? c.json({ error: `session id "${id}" ${problem}` }, 400) : { id };
   };
 
-  app.get("/sessions", requireApiKey, async (c) => {
+  app.get("/sessions", async (c) => {
     if (sessionsInjected) return c.json({ error: "sessions are managed by an injected capability" }, 501);
     const busy = (id: string) => (sessions.holder(id) ? { busy: true } : {});
     if (c.req.query("id") === undefined) {
@@ -1652,7 +1665,7 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ...info, ...busy(at.id), turnLog: thread.turns });
   });
 
-  app.get("/sessions/messages", requireApiKey, async (c) => {
+  app.get("/sessions/messages", async (c) => {
     const at = sessionRoute(c);
     if (at instanceof Response) return at;
     const thread = await sessionStore.load(at.id);
@@ -1660,7 +1673,7 @@ export async function createStrut<TServices = unknown>(
     return c.json([{ role: "system", content: thread.system }, ...thread.messages]);
   });
 
-  app.delete("/sessions", requireApiKey, async (c) => {
+  app.delete("/sessions", async (c) => {
     const at = sessionRoute(c);
     if (at instanceof Response) return at;
     const by = sessions.holder(at.id);
@@ -1672,18 +1685,17 @@ export async function createStrut<TServices = unknown>(
   // ── Secrets ──────────────────────────────────────────────────────────────
   // Deployment-scoped credential store behind `ctx.services.secrets`. Values
   // are write-only over the API: GET returns NAMES + metadata only, never the
-  // value. All routes are gated by `STRUT_API_KEY` (permissive in dev mode).
-  // 501 when the consumer injected their own `secrets` capability (we don't
-  // own that store).
+  // value. 501 when the consumer injected their own `secrets` capability (we
+  // don't own that store).
 
-  app.get("/secrets", requireApiKey, async (c) => {
+  app.get("/secrets", async (c) => {
     if (secretsInjected) {
       return c.json({ error: "secrets are managed by an injected capability" }, 501);
     }
     return c.json({ secrets: await secretStore.list() });
   });
 
-  app.put("/secrets/:name", requireApiKey, async (c) => {
+  app.put("/secrets/:name", async (c) => {
     if (secretsInjected) {
       return c.json({ error: "secrets are managed by an injected capability" }, 501);
     }
@@ -1702,7 +1714,7 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, name });
   });
 
-  app.delete("/secrets/:name", requireApiKey, async (c) => {
+  app.delete("/secrets/:name", async (c) => {
     if (secretsInjected) {
       return c.json({ error: "secrets are managed by an injected capability" }, 501);
     }
@@ -1720,7 +1732,7 @@ export async function createStrut<TServices = unknown>(
   // principal reads it through the ordinary `ctx.services.secrets.get(NAME)`.
   // Separate file, separate routes, never in `/secrets` or `list_secrets`.
 
-  app.get("/actors/:actor/secrets", requireApiKey, async (c) => {
+  app.get("/actors/:actor/secrets", async (c) => {
     if (secretsInjected) {
       return c.json({ error: "secrets are managed by an injected capability" }, 501);
     }
@@ -1729,7 +1741,7 @@ export async function createStrut<TServices = unknown>(
     return c.json({ actor, secrets: await actorSecrets.list(actor) });
   });
 
-  app.put("/actors/:actor/secrets/:name", requireApiKey, async (c) => {
+  app.put("/actors/:actor/secrets/:name", async (c) => {
     if (secretsInjected) {
       return c.json({ error: "secrets are managed by an injected capability" }, 501);
     }
@@ -1749,7 +1761,7 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, actor, name });
   });
 
-  app.delete("/actors/:actor/secrets/:name", requireApiKey, async (c) => {
+  app.delete("/actors/:actor/secrets/:name", async (c) => {
     if (secretsInjected) {
       return c.json({ error: "secrets are managed by an injected capability" }, 501);
     }
@@ -1844,7 +1856,7 @@ export async function createStrut<TServices = unknown>(
   });
 
   // Switch a step's active version.
-  app.put("/steps/:type{.+}/active", requireApiKey, async (c) => {
+  app.put("/steps/:type{.+}/active", async (c) => {
     if (registryWasInjected) {
       return c.json(
         { error: "Step versioning is disabled when the registry is provided at construction time" },
@@ -1864,7 +1876,7 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, type, active: body.version });
   });
 
-  app.post("/steps", requireApiKey, async (c) => {
+  app.post("/steps", async (c) => {
     if (registryWasInjected) {
       return c.json(
         { error: "Step publishing is disabled when the registry is provided at construction time" },
@@ -1935,7 +1947,7 @@ export async function createStrut<TServices = unknown>(
     return c.json(result);
   });
 
-  app.delete("/steps", requireApiKey, async (c) => {
+  app.delete("/steps", async (c) => {
     const publisher = c.req.query("publisher");
     if (!publisher) return c.json({ error: "publisher query parameter is required" }, 400);
     const deleted = await workspace.deleteStepsByPublisher(publisher);
@@ -1943,7 +1955,7 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, deleted });
   });
 
-  app.delete("/steps/:name{.+}", requireApiKey, async (c) => {
+  app.delete("/steps/:name{.+}", async (c) => {
     const name = c.req.param("name");
     if (!name) return c.json({ error: "step name is required" }, 400);
     let removed: boolean;
@@ -2109,7 +2121,7 @@ export async function createStrut<TServices = unknown>(
   // flight — a live run needs somewhere to write; cancel it first. Gated
   // like the owner transfer: the one workflow mutation nothing undoes from
   // the UI (the graph backend keeps the nodes, soft-deleted).
-  app.delete("/workflows/:name", requireApiKey, async (c) => {
+  app.delete("/workflows/:name", async (c) => {
     const name = c.req.param("name")!;
     const live = [...controllers.keys()].filter((k) => k.startsWith(`${name}/`)).length;
     if (live) return c.json({ error: `Workflow "${name}" has ${live} run${live === 1 ? "" : "s"} in flight — cancel first` }, 409);
@@ -2816,7 +2828,7 @@ export async function createStrut<TServices = unknown>(
     }
 
     // A form answer — or a decline / cancel of either kind of question.
-    app.post("/chat/:chatId/elicitations/:eid", requireApiKey, async (c) => {
+    app.post("/chat/:chatId/elicitations/:eid", async (c) => {
       const found = await openElicitationOf(c);
       if (found instanceof Response) return found;
       const { meta, open } = found;
@@ -2853,7 +2865,7 @@ export async function createStrut<TServices = unknown>(
     // URL mode's completion: the value goes straight into the store under
     // the NAME the server recorded — never one from the request — and the
     // chat hears "stored". Nothing else ever carries the value.
-    app.post("/chat/:chatId/elicitations/:eid/secret", requireApiKey, async (c) => {
+    app.post("/chat/:chatId/elicitations/:eid/secret", async (c) => {
       if (secretsInjected) {
         return c.json({ error: "secrets are managed by an injected capability" }, 501);
       }
@@ -2919,7 +2931,10 @@ export async function createStrut<TServices = unknown>(
 
   // ── Health ───────────────────────────────────────────────────────────────
 
+  // Open to a probe (a container healthcheck has no key), which learns
+  // nothing but that the process answers.
   app.get("/health", (c) => {
+    if (!carriesApiKey(c)) return c.json({ ok: true });
     return c.json({
       ok: true,
       dataDir,

@@ -62,7 +62,7 @@ strut/
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either) — a host whose own entry is called `server.js` and imports the barrel never starts it (server.test.ts spawns that host)
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
-│   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
+│   ├── auth.ts            # requireApiKey middleware — createStrut puts it in front of EVERY route, reads included — + carriesApiKey (Bearer or `?key=`) + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── session-store.ts   # agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
 │   ├── actor-secrets.ts   # per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
@@ -118,7 +118,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1231 unit tests across 70 files (+ 221 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1236 unit tests across 70 files (+ 221 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -173,7 +173,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1231 tests, ~5s
+npm test                    # 1236 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -292,17 +292,28 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 `STRUT_API_KEY` is a **deployment-scoped shared secret**. Set it on every
 container in the compose (strut and any service that registers steps).
 
-- **Unset (dev mode):** registration mutations (`POST /steps`,
-  `DELETE /steps/:name`, `DELETE /steps?publisher=X`) are unauthenticated.
-  Strut logs a one-time warning at boot so the lax posture is visible.
-  `GET /steps` and workflow execution are always public.
-- **Set (production):** the gated endpoints require
-  `Authorization: Bearer <STRUT_API_KEY>`. Anything else returns `401`.
+- **Unset (dev mode):** every endpoint is unauthenticated. Strut logs a
+  one-time warning at boot so the lax posture is visible. A host that
+  authenticates requests itself (mcp's `labAuth` in front of `/lab`) runs
+  strut this way.
+- **Set (production):** **there are no public endpoints.** One gate in
+  `createStrut` sits in front of every route — reads, runs, publishes, chat,
+  artifacts, transcripts, and any route a host mounts on `strut.app` later —
+  and requires `Authorization: Bearer <STRUT_API_KEY>` (or `?key=`, for what
+  a browser loads without headers). Anything else returns `401`. Two things
+  are served without it: the UI's own files (`/`, `/index.html`,
+  `/assets/*`, `/favicon.ico` — no data, and the page a person pastes the key
+  into) and `GET /health`, which answers a probe `{ ok: true }` and nothing
+  else (`dataDir` + `stepCount` only with the key). A new route needs
+  nothing: `createStrut.test.ts` ("the API key gate") sweeps `app.routes`
+  and fails on any that answers without the key.
   The web UI attaches the key to every request once it has one: a host
   that spawns strut hands it over as `?key=` on the first page load (stored
   in `sessionStorage`, stripped from the URL), or a user pastes it under
-  Settings → Connection (`localStorage`). The dictation WebSocket sends it
-  as `?key=`, since browsers can't set headers on an upgrade.
+  Settings → Connection (`localStorage`) — which the UI opens by itself on
+  the first `401`. Artifact links and the dictation WebSocket send it as
+  `?key=`, since a browser can't set headers on an `<img>`, a new tab or an
+  upgrade; the request log prints `key=…`, never the value.
 
 The same secret authenticates **both directions** within a deployment:
 
@@ -342,8 +353,7 @@ instead of baked into env at deploy time.
 - **UI:** the topbar **Secrets** button opens `SecretsDialog` — list (names +
   "updated" date), add (name + value, value can be multi-line e.g. a
   service-account JSON), delete. The stored value is never sent back to the
-  browser. The UI assumes dev / same-trust-domain (no `Authorization` header),
-  exactly like the existing `/steps` mutations.
+  browser.
 
 - **`STRUT_SECRET_KEY`:** set it in production. Unset → values are encrypted with
   a fixed dev key and a one-time warning logs (obfuscation, not real security).
@@ -486,7 +496,8 @@ services bag can override it, same as `http`/`secrets`).
   `onRunEnd` does not touch them.
 - **HTTP:** `GET /artifacts/:runId` lists (recursive relative paths);
   `GET /artifacts/:runId/<path>` serves the file (minimal content-type map).
-  Read-only — steps are the only writers.
+  Read-only — steps are the only writers. Behind the key like every route;
+  the UI's links carry it as `?key=`.
 
 ## Shell (subprocesses)
 
