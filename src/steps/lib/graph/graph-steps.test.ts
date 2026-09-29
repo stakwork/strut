@@ -117,9 +117,13 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.match(await run("graph/create-node", { node_type: "StrutWorkflow", namespace: "never-registered", node_data: { name: "x" } }), /INVALID_NAMESPACE/);
   });
 
+  /** The seeded workflow and its version, as a step reports them. */
+  const wfNode = () => ({ ref_id: wfRef, node_type: "StrutWorkflow", name: "harvey-deliver" });
+  const wfvNode = () => ({ ref_id: wfvRef, node_type: "StrutWorkflowVersion", name: "harvey-deliver" });
+
   it("graph-get returns the jarvis envelope", async () => {
     const out = await run("graph/graph-get", { ref_id: wfRef, namespace: NS });
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }], "provenance marker");
+    assert.deepEqual(accessedNodesOf(out), [wfNode()], "provenance marker: the node that was asked for, by type and name");
     assert.equal(out.ref_id, wfRef);
     assert.equal(out.node_type, "StrutWorkflow");
     assert.equal(out.name, "harvey-deliver");
@@ -136,7 +140,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.equal(out.ref_id, wfRef);
     assert.equal(out.name, "harvey-deliver");
     assert.equal(out.properties.description, "Delivers legal memos");
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }]);
+    assert.deepEqual(accessedNodesOf(out), [wfNode()]);
     // The type is resolved like everywhere else, the name like its key: case, spaces and punctuation ignored.
     assert.equal((await run("graph/graph-get", { node_type: "strutworkflow", name: "Harvey Deliver", namespace: NS })).ref_id, wfRef);
     assert.equal((await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver-v2", namespace: NS })).ref_id, other.ref_id);
@@ -169,7 +173,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
   it("graph-search finds the workflow (fulltext, title boost, type filter)", async () => {
     const out = await run("graph/graph-search", { q: "harvey-deliver", namespace: NS, type: "StrutWorkflow" });
     assert.ok(Array.isArray(out) && out[0].ref_id === wfRef, JSON.stringify(out));
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }], "provenance marker on an array output");
+    assert.equal(accessedNodesOf(out), undefined, "a hit was SHOWN to the caller, not chosen by it: no provenance marker");
     assert.equal(out[0].name, "harvey-deliver");
     assert.equal(out[0].node_type, "StrutWorkflow");
     assert.deepEqual(out[0].edges, {});
@@ -190,7 +194,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.equal(out.edge_type, "VERSION_OF");
     assert.equal(out.target_ref_id, wfRef);
     wfvRef = out.source_ref_id;
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfvRef, node_type: "StrutWorkflowVersion" }, { ref_id: wfRef }], "both endpoints");
+    assert.deepEqual(accessedNodesOf(out), [wfvNode(), wfNode()], "both endpoints, described");
     out = await run("graph/create-triplet", { source_ref_id: wfvRef, target_ref_id: wfRef, edge_type: "VERSION_OF" });
     assert.equal(out.status, "Warning");
     assert.match(await run("graph/create-triplet", { source_ref_id: wfRef, target_ref_id: wfvRef, edge_type: "VERSION_OF" }), /WRONG_TYPE/);
@@ -200,7 +204,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
   it("graph-neighbors: direction, importance, edge filter, per-neighbor counts", async () => {
     const out = await run("graph/graph-neighbors", { ref_id: wfRef, namespace: NS });
     assert.equal(out.length, 1);
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "expanded node + neighbors");
+    assert.deepEqual(accessedNodesOf(out), [wfNode()], "the expanded node — its neighbors were shown, not chosen");
     assert.deepEqual(out[0], { ref_id: wfvRef, node_type: "StrutWorkflowVersion", name: "harvey-deliver", edge_type: "VERSION_OF", direction: "reverse", edges: { VERSION_OF: 1 }, importance: 0.5 });
     assert.deepEqual(await run("graph/graph-neighbors", { ref_id: wfRef, edge_type: ["USES_STEP"] }), []);
   });
@@ -214,7 +218,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.match(out.nodes[1].error, /not found/);
     assert.equal(out.nodes[2].node_type, "StrutWorkflowVersion");
     assert.equal(out.truncated, false);
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "resolved nodes only");
+    assert.deepEqual(accessedNodesOf(out), [wfNode(), wfvNode()], "resolved nodes only");
   });
 
   it("create-batch-triplet: per-item outcomes, inline dedupe", async () => {
@@ -244,7 +248,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.equal(out.status, "Success", JSON.stringify(out));
     assert.equal(out.edge_type, "ACTIVE_VERSION");
     assert.deepEqual(out.updated, ["strength", "note"]);
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef }, { ref_id: wfvRef }], "both endpoints");
+    assert.deepEqual(accessedNodesOf(out), [wfNode(), wfvNode()], "both endpoints, described");
     const edgeRef = out.edge_ref_id;
     out = await run("graph/edit-edge", { edge_ref_id: edgeRef, edge_data: { strength: -0.4 }, properties_to_be_deleted: ["note"] });
     assert.deepEqual(out, { status: "Success", edge_ref_id: edgeRef, edge_type: "ACTIVE_VERSION", source_ref_id: wfRef, target_ref_id: wfvRef, updated: ["strength"], deleted: ["note"] });
@@ -368,12 +372,12 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.deepEqual(kept.via, { from: wfRef, edge_type: "VERSION_OF", direction: "reverse" }, "the importance-sorted first edge wins over ACTIVE_VERSION");
     assert.equal(kept.properties["content_hash"], "c-1");
     assert.ok(!("Data_Bank" in kept.properties) && !("node_key" in kept.properties), "the reader's envelope, internals stripped");
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: wfRef, node_type: "StrutWorkflow" }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "expanded + kept");
+    assert.deepEqual(accessedNodesOf(out), [wfNode(), wfvNode()], "expanded + kept");
     assert.deepEqual(events.map((e) => [e.type, e.path]), [
       ["step.start", "wf/gather/001-hop"], ["step.end", "wf/gather/001-hop"],
       ["step.start", "wf/gather/002-hop"], ["step.end", "wf/gather/002-hop"],
     ]);
-    assert.deepEqual(events[3].nodes, [{ ref_id: wfRef, node_type: "StrutWorkflow" }, { ref_id: wfvRef, node_type: "StrutWorkflowVersion" }], "hop 1 read the workflow and its version");
+    assert.deepEqual(events[3].nodes, [wfNode(), wfvNode()], "hop 1 read the workflow and its version");
     // The live-viz deltas: hop 1's start carries the discovered subgraph, its end the verdicts.
     assert.deepEqual(events[2].input.candidates, [
       { ref_id: wfvRef, node_type: "StrutWorkflowVersion", name: "harvey-deliver", via: { from: wfRef, edge_type: "VERSION_OF", direction: "reverse" } },
@@ -408,11 +412,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.deepEqual(out.children[1], { ref_id: bare.target_ref_id, node_type: "StrutStep", name: "mid/step" }, "no description, no key");
     assert.equal(out.children[0].description.length, 301, "a long description is cut");
     assert.ok(!("children_truncated" in out));
-    assert.deepEqual(
-      accessedNodesOf(out),
-      [{ ref_id: parent, node_type: "StrutWorkflowVersion" }, ...out.children.map((c: any) => ({ ref_id: c.ref_id, node_type: "StrutStep" }))],
-      "the node and the children it listed",
-    );
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: parent, node_type: "StrutWorkflowVersion", name: out.name }], "the node — never the table of contents it listed");
 
     // Outgoing edges only: the same edge, read from the child's side, lists nothing.
     const child = await run("graph/graph-get", { ref_id: zeta.target_ref_id, children: "USES_STEP", namespace: NS });
@@ -451,7 +451,11 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
       { ...out, edge_ref_id: undefined },
       { status: "Success", ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", from_ref_id: a, to_ref_id: b, edge_ref_id: undefined, previous_edge_ref_id: firstEdge },
     );
-    assert.deepEqual(accessedNodesOf(out), [{ ref_id: a1 }, { ref_id: a }, { ref_id: b }], "the node and both places");
+    assert.deepEqual(
+      accessedNodesOf(out),
+      [[a1, "a1"], [a, "a"], [b, "b"]].map(([ref_id, name]) => ({ ref_id, node_type: "Topic", name })),
+      "the node and both places, described",
+    );
     const movedEdge = out.edge_ref_id;
     assert.deepEqual([await children(a), await children(b), await children(a1)], [[], ["a1"], ["a1x"]]);
     assert.deepEqual((await run("graph/graph-get", { ref_id: a })).edges, { PARENT_OF: 1 }, "the muted edge is not counted");

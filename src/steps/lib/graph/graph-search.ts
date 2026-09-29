@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
+import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
 import { graphCtx, errText } from "./_shared.js";
@@ -93,8 +93,9 @@ export default defineStep({
           ...(p.skill_id !== undefined ? { skill_id: p.skill_id } : {}),
         };
       });
-      // Provenance: every hit is a node this call touched.
-      return withAccessedNodes(hits, hits.map((h) => ({ ref_id: h.ref_id, node_type: h.node_type })));
+      // No provenance marker: a hit is a node the caller was SHOWN, not one
+      // it chose to read (`withAccessedNodes`).
+      return hits;
     } catch (e) {
       return errText("graph/graph-search", e);
     }

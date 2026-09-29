@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, graphErrorCode, writeEdge } from "./_shared.js";
+import { graphCtx, errText, graphErrorCode, writeEdge, describeNodes } from "./_shared.js";
 /** Validate one side of a triplet: either ref_id XOR (type + data). */
 function validateTripletSide(
   side: "source" | "target",
@@ -137,7 +137,7 @@ export default defineStep({
           ...(edge.created ? {} : { messages: ["Edge already exists in the graph"] }),
         },
         // Provenance: both endpoints (the edge itself is not a node).
-        [{ ref_id: edge.source_ref_id, node_type: cfg.source_type }, { ref_id: edge.target_ref_id, node_type: cfg.target_type }],
+        await describeNodes(b, [edge.source_ref_id, edge.target_ref_id]),
       );
     } catch (e) {
       return errText("graph/create-triplet", e);

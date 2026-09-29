@@ -170,7 +170,8 @@ describe("graph/walk: runWalk (offline)", () => {
     assert.deepEqual(events[4].input.candidates.map((c: any) => c.ref_id), ["run"]);
     assert.deepEqual(events[4].input.frontier, [{ ref_id: "st", relevance: 0.7 }, { ref_id: "v1", relevance: 0.3 }], "the frontier under consideration, best first");
     // step.end: the verdicts (the hop record itself).
-    assert.deepEqual(events[3].nodes.map((n: any) => n.ref_id), ["wf", "v1", "v2", "st"]);
+    assert.deepEqual(events[3].nodes.map((n: any) => n.ref_id), ["wf", "v2", "st"], "the node expanded and what was kept — v1 (0.3) was judged and dropped");
+    assert.deepEqual(events[3].nodes[1], { ref_id: "v2", node_type: "StrutWorkflowVersion", name: "deliver@2" });
     assert.deepEqual(events[3].output, out.hops[1]);
     assert.ok(typeof events[3].durationMs === "number");
   });

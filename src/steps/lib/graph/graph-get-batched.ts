@@ -86,7 +86,7 @@ export default defineStep({
         nodes,
       },
       // Provenance: the nodes that resolved (an `error` entry touched nothing).
-      nodes.filter((n) => !n["error"]).map((n) => ({ ref_id: n["ref_id"] as string, node_type: n["node_type"] as string })),
+      nodes.filter((n) => !n["error"]).map((n) => ({ ref_id: n["ref_id"] as string, node_type: n["node_type"] as string, name: n["name"] as string })),
     );
   },
 });

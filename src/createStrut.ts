@@ -1697,6 +1697,19 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true });
   });
 
+  // ── Graph nodes ──────────────────────────────────────────────────────────
+  // One node as the graph holds it NOW — what the run flyout opens when a
+  // node an agent read is clicked (the run log records which node, its type
+  // and its name; never its content). Read-only. 501 without a graph.
+  app.get("/graph/nodes/:ref_id", async (c) => {
+    const graph = opts.graph ?? workspace.graph;
+    if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+    const ref_id = c.req.param("ref_id");
+    const node = await graph.reader.getNode(ref_id);
+    if (!node) return c.json({ error: `No node "${ref_id}" in the graph` }, 404);
+    return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, properties: node.properties });
+  });
+
   // ── Secrets ──────────────────────────────────────────────────────────────
   // Deployment-scoped credential store behind `ctx.services.secrets`. Values
   // are write-only over the API: GET returns NAMES + metadata only, never the

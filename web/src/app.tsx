@@ -4,6 +4,7 @@ import type { CanvasData, CanvasNode, CanvasEdge } from "system-canvas";
 import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
+import { foldAccessedNodes } from "./accessed-nodes";
 import { replaceUrl } from "./embed";
 import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
@@ -304,7 +305,7 @@ export function App() {
     const end = stepEvts.find((e) => e.type === "step.end");
     const error = stepEvts.find((e) => e.type === "step.error");
     const skipped = stepEvts.find((e) => e.type === "step.skipped");
-    return { start, end, error, skipped, all: stepEvts };
+    return { start, end, error, skipped, all: stepEvts, nodes: foldAccessedNodes(viewEvents, path) };
   }, [flyoutStepId, viewWorkflow, viewEvents]);
 
   const refreshWorkflows = useCallback(async () => {

@@ -234,7 +234,7 @@ One object per line of the run's append-only log. Common fields:
 | `error`      | `{ message, stack? }` on `run.error` / `step.error` |
 | `durationMs` | on `step.end` / `step.error` |
 | `transcript` | on an agent step's `step.end`: the URL of its session (the `messages` never ride in this response) |
-| `nodes`      | on `step.end`: the graph nodes the step read or wrote, `[{ ref_id, node_type? }]`, never truncated — on a graph step the workflow ran (`graph/graph-get`) and on one an agent called (`tool:graph_graph_get`) alike. Absent when the step touched none |
+| `nodes`      | on `step.end`: the graph nodes the step read or wrote, `[{ ref_id, node_type?, name? }]`, never truncated — on a graph step the workflow ran (`graph/graph-get`) and on one an agent called (`tool:graph_graph_get`) alike. Only nodes the caller NAMED (fetched, expanded, created, edited, moved): a search's hits and the neighbors or children a call listed are not in it. `name` is the node's label when it was touched. Absent when the step touched none |
 
 | Type              | Meaning |
 | ----------------- | ------- |
@@ -443,3 +443,13 @@ error message:
 
 400 for a malformed id; 501 when the host
 injected its own `sessions` capability.
+
+### Graph nodes
+
+| Method | Path | Response |
+| ------ | ---- | -------- |
+| GET    | `/graph/nodes/:ref_id` | `{ ref_id, node_type, name, properties }` — the node as the graph holds it NOW (vectors and internal stamps stripped); 404 when it is gone; 501 on a deployment with no graph |
+
+What the run view opens when a node in a step's **Nodes** list is clicked: a
+run's events say which nodes a step touched (`nodes`, above), never their
+content.

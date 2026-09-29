@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, describeNodes } from "./_shared.js";
 const NEIGHBOR_CAP = 50;
 const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn"];
 
@@ -80,11 +80,9 @@ export default defineStep({
         if (neighbors.length >= NEIGHBOR_CAP) break;
       }
 
-      // Provenance: the expanded node plus every neighbor returned.
-      return withAccessedNodes(neighbors, [
-        { ref_id: cfg.ref_id },
-        ...neighbors.map((n) => ({ ref_id: n.ref_id as string, node_type: n.node_type as string })),
-      ]);
+      // Provenance: the node the caller expanded. Its neighbors were shown,
+      // not chosen.
+      return withAccessedNodes(neighbors, await describeNodes(b, [cfg.ref_id]));
     } catch (e) {
       return errText("graph/graph-neighbors", e);
     }

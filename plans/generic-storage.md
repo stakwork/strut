@@ -389,6 +389,12 @@ backend-independent and unaffected.
 > `maskDeep` carries it across masking; the projector writes `ACCESSED`
 > for refs the graph holds and counts the rest as `unresolved`. Chat-mode
 > agents expose no graph tools today, so nothing to capture there yet.
+>
+> **Amended 2026-09-29:** a step reports the nodes its caller NAMED
+> (fetched, expanded, created, edited, moved), each with `node_type` and
+> `name` — never what came back as a list. Search hits, neighbors and
+> listed children were reported before; they made "what did this agent
+> read" a list of everything it was shown. `ACCESSED` thins with it.
 
 Storage backends are not what blocks "which prompts touch which parts of
 the graph" — **provenance capture is**. Today a graph-touching tool call

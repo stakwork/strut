@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, describeNodes } from "./_shared.js";
 export default defineStep({
   type: "graph/edit-node",
   description:
@@ -59,7 +59,7 @@ export default defineStep({
           ...(hasSet ? { updated: Object.keys(cfg.node_data!) } : {}),
           ...(hasDelete ? { deleted: cfg.properties_to_be_deleted } : {}),
         },
-        [{ ref_id: cfg.ref_id }],
+        await describeNodes(b, [cfg.ref_id]),
       );
     } catch (e) {
       return errText("graph/edit-node", e);

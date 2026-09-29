@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, graphErrorCode, writeEdge, type GraphBackend } from "./_shared.js";
+import { graphCtx, errText, graphErrorCode, writeEdge, describeNodes, type GraphBackend } from "./_shared.js";
 /** Validate one side of a triplet: either ref_id XOR (type + data). */
 function validateTripletSide(
   side: "source" | "target",
@@ -139,7 +139,7 @@ export default defineStep({
     return withAccessedNodes(
       { requested: cfg.triplets.length, succeeded: results.length - failed, failed, results },
       // Provenance: both endpoints of every edge that was written.
-      results.filter((r) => !r.error).flatMap((r) => [{ ref_id: r.source_ref_id as string }, { ref_id: r.target_ref_id as string }]),
+      await describeNodes(b, results.filter((r) => !r.error).flatMap((r) => [r.source_ref_id as string, r.target_ref_id as string])),
     );
   },
 });
