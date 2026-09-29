@@ -230,8 +230,8 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     // Namespace scoping + counts read back like jarvis.
     const reader = new GraphReader(bolt, { resolver });
     assert.deepEqual(await reader.connectionCounts(evalset!.ref_id), [
-      { edge_type: "HAS_REQUIREMENT", target_type: "EvalRequirement", count: 1 },
-      { edge_type: "HAS_TRIGGER", target_type: "EvalTrigger", count: 1 },
+      { edge_type: "HAS_REQUIREMENT", target_type: "EvalRequirement", direction: "out", count: 1 },
+      { edge_type: "HAS_TRIGGER", target_type: "EvalTrigger", direction: "out", count: 1 },
     ]);
     // unique_source_id lands on the edge when both endpoints share it.
     const [a, b] = await nodes.writeMany([

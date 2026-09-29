@@ -122,6 +122,8 @@ export interface NeighborsParams {
 export interface ConnectionCount {
   edge_type: string;
   target_type: string;
+  /** "out" = the node is the edge's source, "in" = its target. */
+  direction: "out" | "in";
   count: number;
 }
 
@@ -455,8 +457,10 @@ export class GraphReader {
     return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
   }
 
-  /** GET …/connection-counts: `(edge_type, target_type) → count`, scoped to
-   *  the node's own namespace unless one is given. */
+  /** GET …/connection-counts: `(edge_type, target_type, direction) → count`,
+   *  scoped to the node's own namespace unless one is given. Jarvis counts
+   *  both directions as one; the direction is ours, so a reader can tell a
+   *  node's parent from its children. */
   async connectionCounts(ref_id: string, namespace?: string): Promise<ConnectionCount[]> {
     let ns = namespace;
     if (!ns) {
@@ -469,19 +473,22 @@ export class GraphReader {
        WHERE coalesce(n.namespace, $default_ns) = $namespace AND ${liveEdge("r")}
          AND coalesce(m.namespace, $default_ns) = $namespace
          ${visible.length ? "AND ANY(lbl IN labels(m) WHERE lbl IN $visible_labels)" : ""}
-       RETURN type(r) AS edge_type, labels(m) AS m_labels, count(*) AS cnt`,
+       RETURN type(r) AS edge_type, labels(m) AS m_labels, startNode(r) = n AS out, count(*) AS cnt`,
       { ref_id, namespace: ns, default_ns: DEFAULT_NAMESPACE, visible_labels: visible },
     );
     const bucket = new Map<string, ConnectionCount>();
     for (const r of rows) {
       const target = typeLabelOf(r["m_labels"] as string[]);
       if (!target) continue;
-      const key = `${r["edge_type"]}|${target}`;
-      const cur = bucket.get(key) ?? { edge_type: String(r["edge_type"]), target_type: target, count: 0 };
+      const direction = r["out"] ? "out" : "in";
+      const key = `${r["edge_type"]}|${target}|${direction}`;
+      const cur = bucket.get(key) ?? { edge_type: String(r["edge_type"]), target_type: target, direction, count: 0 };
       cur.count += Number(r["cnt"]);
       bucket.set(key, cur);
     }
-    return [...bucket.values()].sort((a, b) => b.count - a.count || cmp(a.edge_type, b.edge_type) || cmp(a.target_type, b.target_type));
+    return [...bucket.values()].sort(
+      (a, b) => b.count - a.count || cmp(a.edge_type, b.edge_type) || cmp(a.target_type, b.target_type) || cmp(a.direction, b.direction),
+    );
   }
 
   /** `_batch_edge_type_counts`: `{ref_id: {EDGE_TYPE: count}}`. */

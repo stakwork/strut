@@ -128,3 +128,17 @@ export function deriveNodeName(node: any, p: Record<string, any>): string {
   }
   return "";
 }
+
+/** Connection counts → the `edges` map graph-get shows the model:
+ *  `{ PARENT_OF: 2, "<-PARENT_OF": 1 }` — outgoing edges by type, incoming
+ *  ones marked `<-`. One undirected count read as "2 children" + a parent =
+ *  "3 children", and an agent re-fetched the node hunting the missing one. */
+export function edgeCountMap(counts: Array<{ edge_type: string; direction?: "out" | "in"; count: number }>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const c of counts ?? []) {
+    if (!c?.edge_type) continue;
+    const key = c.direction === "in" ? `<-${c.edge_type}` : c.edge_type;
+    out[key] = (out[key] ?? 0) + Number(c.count ?? 0);
+  }
+  return out;
+}
