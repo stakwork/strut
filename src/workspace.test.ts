@@ -83,6 +83,21 @@ steps:
       );
     });
 
+    it("points at an unquoted ': ' inside a plain value", async () => {
+      const badYaml = `name: bad
+description: Tells a second joke whose topic is "not about: <first joke>".
+steps:
+  - id: a
+    type: log
+    config:
+      message: hi
+`;
+      await assert.rejects(
+        () => ws.publishWorkflow("bad", "v1", badYaml),
+        /unquoted value containing ": "/,
+      );
+    });
+
     it("accepts a quoted template value (and {{ }} inside block scalars)", async () => {
       const goodYaml = `name: good
 steps:
