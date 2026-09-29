@@ -692,7 +692,7 @@ curl -X POST .../workflows/review-pr/run -d '{
 
 This is how overnight experiments work: a hundred prompt variants are a hundred **runs** (each fully logged in `run.json`), *not* a hundred workflow versions. When a winner emerges, paste it into the `params` default and publish one new version — a clean, single-block diff. (Override precedence: step Zod `.default()` < workflow `params` default < per-run override.)
 
-Subflows use their own `params` defaults; the parent's per-run override does not propagate into a child flow.
+Subflows use their own `params` defaults; the parent's per-run override does not propagate into a child flow. A `subflow` step's `params` config overrides the child's defaults for that one call (templated against the parent's scope); a run's keyed `paramOverrides[<child>]` still wins over it.
 
 ### 11.2 Step versioning & metadata
 

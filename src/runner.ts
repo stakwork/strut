@@ -383,8 +383,9 @@ async function executeFlow(
   // `params` = workflow defaults, shallow-merged with per-run overrides.
   // Exposed to step configs via `{{ params.* }}`. Distinct from `input`.
   //   - `paramOverrides[workflow.name]` applies at every level (entry + nested).
-  //   - `paramsOverride` (flat) is only passed for the entry flow.
-  // Precedence: flow defaults < keyed override < entry flat override.
+  //   - `paramsOverride` (flat) is the entry flow's run override, or a subflow
+  //     step's `params` (with the keyed override already merged over it).
+  // Precedence: flow defaults < keyed override < paramsOverride.
   const params = {
     ...(workflow.params ?? {}),
     ...(exec.paramOverrides?.[workflow.name] ?? {}),
@@ -1072,9 +1073,16 @@ async function executeSubflow(
   // Validate child flow input against its schema
   const validatedInput = childFlow.input.parse(childInput);
 
-  // Thread `paramOverrides` (but NOT the entry-only flat `paramsOverride`) into
-  // the child so a keyed override can reach knobs that live in this subflow.
-  return executeFlow(childFlow, validatedInput, exec, path);
+  // The step's `params` override the child's defaults for this call. A run's
+  // keyed `paramOverrides[child]` still wins — the experiment surface reaches
+  // a knob wherever the workflow sets it. The entry-only flat `paramsOverride`
+  // never reaches a child.
+  const stepParams = step.config["params"] != null ? resolveConfig(step.config["params"], scope) : undefined;
+  if (stepParams !== undefined && (typeof stepParams !== "object" || Array.isArray(stepParams))) {
+    throw new Error(`subflow step "${step.id}": params must be an object`);
+  }
+  const params = { ...(stepParams as Record<string, unknown> | undefined), ...exec.paramOverrides?.[childFlow.name] };
+  return executeFlow(childFlow, validatedInput, exec, path, params);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────

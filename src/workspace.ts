@@ -38,8 +38,9 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   } catch (err) {
     throw new Error(
       `Invalid workflow YAML: ${err instanceof Error ? err.message : String(err)}. ` +
-        `A common cause is an unquoted template — always wrap templates in quotes, ` +
-        `e.g. pull_number: "{{ input.pull_number }}".`,
+        `Common causes: an unquoted template — always wrap templates in quotes, ` +
+        `e.g. pull_number: "{{ input.pull_number }}"; or an unquoted value containing ": " ` +
+        `(e.g. description: topic is not about: cats) — quote the whole value or use a block scalar (|).`,
     );
   }
   // An unquoted `{{ ... }}` value parses to an object used as a map key, which

@@ -337,6 +337,46 @@ describe("integration: complete workflow patterns", () => {
     assert.equal((both.output as any).child, "KEYED_CHILD");
     assert.equal((both.output as any).entry, "FLAT_ENTRY");
   });
+
+  it("a subflow step's params override the child's defaults for that call", async () => {
+    const child = flow("child-topic", {
+      input: z.object({}),
+      params: { topic: "DEFAULT", tone: "dry" },
+      steps: [step("emit", "echo", { topic: "{{ params.topic }}", tone: "{{ params.tone }}" })],
+    });
+    const parent = flow("parent-topics", {
+      input: z.object({}),
+      steps: [
+        step("first", "subflow", { workflow: "child-topic", input: {}, params: { topic: "cats" } }),
+        step("second", "subflow", { workflow: "child-topic", input: {}, params: { topic: "not about: {{ first.topic }}" } }),
+        step("plain", "subflow", { workflow: "child-topic", input: {} }),
+        step("combine", "echo", { first: "{{ first }}", second: "{{ second }}", plain: "{{ plain }}" }),
+      ],
+    });
+    const opts = { workspace: makeResolver({ "child-topic": child }) };
+
+    const res = await runWorkflow(parent, {}, makeRegistry(), opts);
+    assert.equal(res.status, "success");
+    const out = res.output as any;
+    assert.deepEqual(out.first, { topic: "cats", tone: "dry" }); // unset knobs keep defaults
+    assert.deepEqual(out.second, { topic: "not about: cats", tone: "dry" }); // templated against the parent
+    assert.deepEqual(out.plain, { topic: "DEFAULT", tone: "dry" });
+
+    // A run's keyed override still wins over what the step sets.
+    const keyed = await runWorkflow(parent, {}, makeRegistry(), {
+      ...opts,
+      paramOverrides: { "child-topic": { topic: "KEYED" } },
+    });
+    assert.equal((keyed.output as any).first.topic, "KEYED");
+
+    const bad = flow("parent-bad", {
+      input: z.object({}),
+      steps: [step("call", "subflow", { workflow: "child-topic", input: {}, params: "nope" })],
+    });
+    const badRes = await runWorkflow(bad, {}, makeRegistry(), opts);
+    assert.equal(badRes.status, "error");
+    assert.match(badRes.error?.message ?? "", /params must be an object/);
+  });
 });
 
 // ── Integration: FileRunStore with runner ──────────────────────────────────

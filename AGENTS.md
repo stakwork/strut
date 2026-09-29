@@ -672,7 +672,9 @@ and the child env is scrubbed by construction).
   `POST /run { params }` / `runWorkflow({ params })`). Override
   precedence: step Zod `.default()` < `params` default < per-run
   override. Subflows use their own `params`; the parent override does
-  not propagate. This is what lets overnight experiments sweep 100
+  not propagate — a `subflow` step's own `params` config overrides the
+  child's defaults for that call (a run's keyed `paramOverrides[child]`
+  still wins). This is what lets overnight experiments sweep 100
   prompt variants as 100 **runs** (logged in `run.json`) rather than
   100 workflow versions — promote a winner by editing the `params`
   default and publishing one new version.
