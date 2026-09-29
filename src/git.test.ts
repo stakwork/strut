@@ -265,6 +265,174 @@ describe("git/checkout + git/diff", () => {
   });
 });
 
+describe("git/checkout workdir (kept working copies)", () => {
+  let root: string;
+  let origin: string;
+  let originUrl: string;
+  let dataDir: string;
+  let savedTtl: string | undefined;
+
+  before(async () => {
+    savedTtl = process.env["STRUT_WORKDIR_TTL_DAYS"];
+    delete process.env["STRUT_WORKDIR_TTL_DAYS"];
+    root = await mkdtemp(join(tmpdir(), "strut-workdir-"));
+    origin = join(root, "origin");
+    dataDir = join(root, "data");
+    await mkdir(origin, { recursive: true });
+    sh(["init", "-q", "-b", "main"], origin);
+    await writeFile(join(origin, "README.md"), "# hello\n");
+    await writeFile(join(origin, ".gitignore"), "build/\n");
+    sh(["add", "-A"], origin);
+    sh(["commit", "-q", "-m", "init"], origin);
+    sh(["switch", "-q", "-c", "feature"], origin);
+    await writeFile(join(origin, "feature.txt"), "f\n");
+    sh(["add", "-A"], origin);
+    sh(["commit", "-q", "-m", "feature"], origin);
+    sh(["switch", "-q", "main"], origin);
+    originUrl = `file://${origin}`;
+  });
+  after(async () => {
+    if (savedTtl === undefined) delete process.env["STRUT_WORKDIR_TTL_DAYS"];
+    else process.env["STRUT_WORKDIR_TTL_DAYS"] = savedTtl;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const services = () => standardServices({ secretsSource: {}, dataDir });
+
+  /** Test-only: a step that waits until it is let go, holding its run open. */
+  let letGo: () => void = () => {};
+  let waiting: () => void = () => {};
+  const gate = defineStep({
+    type: "gate",
+    input: z.object({}),
+    output: z.any(),
+    async run() {
+      waiting();
+      await new Promise<void>((r) => (letGo = r));
+      return {};
+    },
+  });
+  const reg = { ...registry, gate } as StepRegistry;
+
+  const co = (config: Record<string, unknown>, ...more: Step[]) =>
+    mk("co", z.any(), step("checkout", "git/checkout", { repo: originUrl, ...config }), ...more);
+  const checkoutOf = async (f: ReturnType<typeof co>, runId?: string) => {
+    const events: RunEvent[] = [];
+    const store = new MemoryRunStore();
+    const res = await runWorkflow(f, {}, reg, { services: services(), store, ...(runId ? { runId } : {}) });
+    events.push(...(await store.getRunEvents("co", res.runId)));
+    const end = events.find((e) => e.type === "step.end" && e.path === "co/checkout");
+    return { res, out: end?.output as Record<string, any> | undefined };
+  };
+
+  it("outlives the run; the next run finds the same path as it was left — edits, untracked and ignored files", async () => {
+    const first = await checkoutOf(
+      co(
+        { workdir: "s1" },
+        step("edit", "edit", {
+          path: "{{ checkout.path }}",
+          files: { "README.md": "# hello\nchanged\n", "new.txt": "untracked\n", "build/out.js": "ignored\n" },
+        }),
+      ),
+    );
+    assert.equal(first.res.status, "success", JSON.stringify(first.res));
+    const path = first.out!["path"] as string;
+    assert.equal(path, join(dataDir, "workdirs", "s1", "origin"));
+    assert.equal(first.out!["reused"], false);
+    assert.equal(first.out!["ref"], "main");
+    assert.ok(existsSync(join(path, "new.txt")), "kept after the run ended");
+
+    // Meanwhile the remote moves on.
+    await writeFile(join(origin, "later.txt"), "later\n");
+    sh(["add", "-A"], origin);
+    sh(["commit", "-q", "-m", "later"], origin);
+
+    // `ref` applies when a working copy is created, not when one is found.
+    const second = await checkoutOf(co({ workdir: "s1", ref: "feature" }));
+    assert.equal(second.res.status, "success", JSON.stringify(second.res));
+    assert.equal(second.out!["reused"], true);
+    assert.equal(second.out!["path"], path);
+    assert.equal(second.out!["ref"], "main");
+    assert.equal(second.out!["sha"], sh(["rev-parse", "HEAD"], path));
+    assert.equal(await readFile(join(path, "README.md"), "utf8"), "# hello\nchanged\n");
+    assert.equal(await readFile(join(path, "new.txt"), "utf8"), "untracked\n");
+    assert.equal(await readFile(join(path, "build/out.js"), "utf8"), "ignored\n");
+    assert.ok(!existsSync(join(path, "later.txt")), "the working copy was not moved");
+    // …but the cache was fetched, so the agent can reach the new commit.
+    const cache = cachePath(dataDir, parseRepo(originUrl));
+    assert.equal(sh(["rev-parse", "main"], cache), sh(["rev-parse", "main"], origin));
+  });
+
+  it("a slash is part of the name: s1 and s1/review are two working copies", async () => {
+    const { res, out } = await checkoutOf(co({ workdir: "s1/review" }));
+    assert.equal(res.status, "success", JSON.stringify(res));
+    assert.equal(out!["path"], join(dataDir, "workdirs", "s1%2Freview", "origin"));
+    assert.equal(out!["reused"], false);
+    assert.ok(!existsSync(join(out!["path"], "new.txt")));
+  });
+
+  it("refuses a name that looks like a missing template value", async () => {
+    const { res } = await checkoutOf(co({ workdir: "/review" }));
+    assert.equal(res.status, "error");
+    assert.match(res.error!.message, /git\/checkout: workdir "\/review" has an empty segment — is a template value missing\?/);
+  });
+
+  it("one run at a time: a second run is workdir_busy until the first ends", async () => {
+    const held = new Promise<void>((r) => (waiting = r));
+    const first = checkoutOf(co({ workdir: "busy" }, step("wait", "gate", {})), "run-a");
+    await held;
+
+    const second = await checkoutOf(co({ workdir: "busy" }), "run-b");
+    assert.equal(second.res.status, "error");
+    assert.match(second.res.error!.message, /workdir_busy: workdir "busy" is in use by run run-a/);
+
+    letGo();
+    assert.equal((await first).res.status, "success");
+    const third = await checkoutOf(co({ workdir: "busy" }), "run-c");
+    assert.equal(third.res.status, "success", JSON.stringify(third.res));
+    assert.equal(third.out!["reused"], true);
+  });
+
+  it("an idle working copy is swept by the next kept checkout, its worktree pruned from the cache", async () => {
+    const old = await checkoutOf(co({ workdir: "idle" }));
+    const path = old.out!["path"] as string;
+    const record = join(dataDir, "workdirs", "idle.json");
+    const cache = cachePath(dataDir, parseRepo(originUrl));
+    assert.ok(sh(["worktree", "list"], cache).includes(path));
+
+    const backdate = async (days: number) => {
+      const rec = JSON.parse(await readFile(record, "utf8"));
+      rec.usedAt = new Date(Date.now() - days * 86_400_000).toISOString();
+      await writeFile(record, JSON.stringify(rec));
+    };
+
+    // Six days idle: kept. And never swept when the TTL is 0.
+    await backdate(6);
+    await checkoutOf(co({ workdir: "fresh" }));
+    assert.ok(existsSync(path));
+    await backdate(30);
+    process.env["STRUT_WORKDIR_TTL_DAYS"] = "0";
+    await checkoutOf(co({ workdir: "fresh" }));
+    assert.ok(existsSync(path));
+    delete process.env["STRUT_WORKDIR_TTL_DAYS"];
+
+    // Coming back to an idle one keeps it: it is in use again.
+    const back = await checkoutOf(co({ workdir: "idle" }));
+    assert.equal(back.out!["reused"], true);
+
+    await backdate(8);
+    await checkoutOf(co({ workdir: "fresh" }));
+    assert.ok(!existsSync(path));
+    assert.ok(!existsSync(record));
+    assert.ok(!sh(["worktree", "list"], cache).includes(path));
+    assert.ok(existsSync(join(dataDir, "workdirs", "fresh", "origin")));
+
+    // A swept name starts over.
+    const again = await checkoutOf(co({ workdir: "idle" }));
+    assert.equal(again.out!["reused"], false);
+  });
+});
+
 describe("parseRepo", () => {
   it("accepts https and file URLs, strips .git, splits owner/name", () => {
     assert.deepEqual(parseRepo("https://github.com/stakwork/strut.git/"), {
