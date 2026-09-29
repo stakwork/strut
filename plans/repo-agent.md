@@ -151,6 +151,11 @@ caller's ten-minute budget rarely meets any of them.
 
 ### 4.1 A prior transcript in (multi-turn)
 
+> **Superseded (2026-09-29) by `plans/agent-sessions.md`.** The fix below
+> (a `messages` input fed from a prior run's log) is replaced by a
+> `session` input: a flat id the caller supplies, a session store, and a
+> kept working directory. The statement of the gap stands.
+
 **mcp.** `sessionId` on every request (minted when absent). The prior
 messages are loaded from `.sessions/<id>.jsonl` and sent as
 `[...previous, userMessage]`; the system prompt and tools are rebuilt from

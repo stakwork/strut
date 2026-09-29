@@ -20,7 +20,7 @@ server without a rebuild (proposed).
 | ----------- | -------------------------------------------------------------------------- |
 | Engine      | TypeScript (Node 22+), Zod for schemas, custom expression evaluator        |
 | HTTP        | Hono + @hono/node-server                                                   |
-| Persistence | One interface per layer — `WorkspaceStore` (workflows/steps), `RunStore` (runs), `ChatStore`, `SecretStore` — with File + Memory impls; local blobs (artifacts/cassettes/shell scratch) live under an explicit `dataDir` |
+| Persistence | One interface per layer — `WorkspaceStore` (workflows/steps), `RunStore` (runs), `ChatStore`, `SecretStore`, `SessionStore` (agent sessions) — with File + Memory impls; local blobs (artifacts/cassettes/shell scratch) live under an explicit `dataDir` |
 | Web UI      | Preact + Vite + system-canvas-react. Vanilla CSS, no Tailwind              |
 | Tests       | Node native test runner (`node:test`) via tsx                              |
 | LLM step    | Vercel AI SDK (`ai`) over an aieo-resolved model — lazy-loaded. `ai`, `zod`, `@ai-sdk/anthropic` are **peerDependencies** (see "One copy per process" below); provider SDKs are aieo's |
@@ -63,6 +63,7 @@ strut/
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── auth.ts            # requireApiKey middleware + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
+│   ├── session-store.ts   # agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
 │   ├── actor-secrets.ts   # per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses) — every one recordable by cassette.ts + secret-safe
 │   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
@@ -72,7 +73,7 @@ strut/
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, github/create-pr — open a PR or return the open one for that head, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
-│   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
+│   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd — or, with `workdir`, a KEPT one under <dataDir>/workdirs/<name>, reused by the next run that names it, one run at a time (`workdir_busy:`), swept when idle; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
 │   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus four strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, move-node re-homes a node (the one edge that places it — any type, either direction — is muted and written again to the new place, one transaction, cycles refused; graph reads skip muted edges, as jarvis's do), walk gathers context for a goal hop by hop with a decision model (jev via experimental_evaluate, or a wrapped LLM) judging relevance/next/enough — plans/graph-walk.md — and two strut-only INPUTS on graph-get: node_type + name, an exact lookup by node_key for types keyed by name, never a search; and `children: <EDGE_TYPE>`, which adds the nodes it points to along that edge as { ref_id, node_type, name, description } sorted by name — a node and its table of contents in one call); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
 │   ├── ai/                # AI workflow-builder backend (used by POST /chat)
@@ -116,7 +117,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1186 unit tests across 67 files (+ 221 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1217 unit tests across 70 files (+ 221 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -171,7 +172,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1186 tests, ~5s
+npm test                    # 1217 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -272,6 +273,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
+| `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a KEPT working copy (`git/checkout` with `workdir`) may sit unused before it is removed. Swept by the next kept checkout — no timer. `0` keeps them forever. |
 | `STRUT_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
@@ -1197,6 +1199,57 @@ and the child env is scrubbed by construction).
   fake provider proving the turn stops on an ask and goes on after a
   refused one (`chat-endpoints.test.ts`).
 
+- **Agent sessions — a finished agent can be given another prompt**
+  (`plans/agent-sessions.md`; `src/session-store.ts`, the `agent` step,
+  `git/checkout`). `session: <id>` on an `agent` step makes it CONTINUE a
+  thread: it opens the session (`ctx.services.sessions.open`, which takes
+  the session's in-process lock — a second turn fails `session_busy:`),
+  sends the thread's system prompt and messages followed by this turn's
+  prompt, and on success appends the turn; a failed or cancelled turn
+  appends nothing. The id is a flat, GLOBAL string the CALLER supplies
+  (usually `"{{ input.session }}"`, a uuid) — no run-level field, no chain
+  of runs: any run of any workflow naming it joins, so the unit stays one
+  run per turn. Which agents of a workflow remember is per step: several
+  agents take different ids (`"{{ input.session }}/review"`; a slash is
+  part of the name, not a hierarchy), an agent without `session` starts
+  cold. The id format is strict (`idProblem`) because a multi-segment
+  template renders a missing value as `""` — `/review` would otherwise be
+  one thread shared by every run that forgot an id.
+  **The record** is a second store (`SessionStore`, File + Memory; the
+  default follows the CHAT store's kind): `system.md` written by turn 0 and
+  never again, append-only `messages.jsonl`, and `turns.jsonl`, one line per
+  successful turn (who, which run and step, provider, model, `offset` /
+  `count`, usage, the context after it) — the turn line is the commit. The
+  run log records the TURN (`step.end.messages` = the system prompt + this
+  turn), so logs grow linearly; `GET …/transcripts/<path>?full=1` stitches
+  the thread to that turn from the store. The step's output gains
+  `session: { id, turn, offset }`.
+  **History is append-only**, the chat's rule: the system prompt is frozen
+  by the first turn (a later step's `system` is ignored, one warn line) and
+  the messages are replayed as stored, so every request begins with the
+  previous one byte for byte. Tools, output mode and `maxSteps` are the
+  current step's. The provider and whether calls are routed through the
+  gateway are fixed by the first turn (`session_mismatch:`); a thread over
+  90% of the model's window is refused before any model call
+  (`session_full:` — there is no compaction yet). An `agent` called as a
+  TOOL cannot take a session: the model would be choosing the id.
+  **The files** follow through `workdir` on `git/checkout`, a name of its
+  own (usually the same string): the working copy lives at
+  `<dataDir>/workdirs/<name>/<repo>` — the same path every run, the
+  transcript is full of it — is left as the last run left it (`reused:
+  true`; `ref` only applies when it is created), is held by one RUN at a
+  time (`workdir_busy:`), and is removed once idle for
+  `STRUT_WORKDIR_TTL_DAYS` by the next kept checkout.
+  **Run control:** a journaled session step replays its output on resume
+  and never reaches the store; "re-run from here" on one is a NEW turn — a
+  thread is never rewound. Endpoints (`/sessions`, all behind the key,
+  reads included; the id is a query parameter): list, one session's turn
+  log, its messages, delete (409 while held). Tests:
+  `storage-conformance.test.ts` (the store), `steps/core/agent-session.test.ts`
+  (what a turn puts on the wire, against a stand-in provider),
+  `sessions.test.ts` (runs over HTTP + the routes), `git.test.ts` (kept
+  working copies).
+
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
   workflow-*builder* chat above. It explores a working dir (`cwd`)
@@ -1220,7 +1273,8 @@ and the child env is scrubbed by construction).
   name, which may be an alias like `sonnet`/`grok` or slash format like
   `openrouter/moonshotai/kimi-k2.6`), lazy-loaded; needs the provider
   key in env + `git`/`rg` on PATH. Returns
-  `{ result, object?, steps, usage, cost }`. The full session — system
+  `{ result, object?, steps, usage, cost }` (+ `session` when it continued
+  one — see "Agent sessions"). The full session — system
   prompt, task prompt (with the cwd preamble the model saw), every
   generated turn, as AI SDK model messages — is ALWAYS recorded on the
   step's `step.end` event as `messages` (`buildSession` + `withMessages`,
@@ -1443,7 +1497,7 @@ provider-routing gotcha.
 4. Document it in `specs/API.md` — request and response shapes, from the
    types, not retyped.
 5. The Vite dev proxy in `web/vite.config.ts` only proxies known
-   prefixes (`/workflows`, `/steps`, `/secrets`, `/chat`, `/llm`, `/health`). Runs are
+   prefixes (`/workflows`, `/steps`, `/secrets`, `/sessions`, `/chat`, `/llm`, `/health`). Runs are
    under `/workflows/` and chat reattach under `/chat/` so they're
    already proxied. SSE responses get `cache-control: no-cache` +
    `x-accel-buffering: no` injected by the shared `sseConfigure` —

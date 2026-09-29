@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -11,6 +11,7 @@ import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { workspaceConformance } from "./test-util/workspace-conformance.js";
 import { FileChatStore, MemoryChatStore, type ChatStore, type ChatEvent } from "./chat-store.js";
 import { FileSecretStore, MemorySecretStore, type SecretStore } from "./secret-store.js";
+import { FileSessionStore, MemorySessionStore, idProblem, sessionsCapability, type NewTurn, type SessionStore } from "./session-store.js";
 
 /**
  * The storage boundary's spec, as tests: one behavioral suite per layer,
@@ -234,6 +235,142 @@ for (const impl of chatImpls) {
     });
   });
 }
+
+// ── Session store ──────────────────────────────────────────────────────────
+
+const sessionImpls: Array<{ name: string; make: (dir: string) => SessionStore }> = [
+  { name: "FileSessionStore", make: (dir) => new FileSessionStore(dir) },
+  { name: "MemorySessionStore", make: () => new MemorySessionStore() },
+];
+
+const turnOf = (runId: string, extra: Partial<NewTurn> = {}): NewTurn => ({
+  workflow: WF,
+  runId,
+  path: `${WF}/work`,
+  provider: "anthropic",
+  model: "anthropic/claude-sonnet-5-5",
+  routed: false,
+  ...extra,
+});
+const user = (text: string) => ({ role: "user", content: text });
+const reply = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+
+for (const impl of sessionImpls) {
+  describe(`SessionStore conformance: ${impl.name}`, () => {
+    let dir: string;
+    let store: SessionStore;
+    beforeEach(async () => {
+      dir = join(tmpdir(), `strut-conf-session-${randomUUID()}`);
+      await mkdir(dir, { recursive: true });
+      store = impl.make(dir);
+    });
+    afterEach(() => rm(dir, { recursive: true, force: true }));
+
+    it("null until a turn is committed; turns append, offsets follow, the system prompt is turn 0's", async () => {
+      assert.equal(await store.load("s1"), null);
+      assert.deepEqual(await store.list(), []);
+
+      const t0 = await store.appendTurn("s1", { system: "first", messages: [user("a"), reply("b")], record: turnOf("1", { principal: "ann" }) });
+      assert.deepEqual([t0.turn, t0.offset, t0.count], [0, 0, 2]);
+      const t1 = await store.appendTurn("s1", { system: "IGNORED", messages: [user("c"), reply("d"), reply("e")], record: turnOf("2", { principal: "bob" }) });
+      assert.deepEqual([t1.turn, t1.offset, t1.count], [1, 2, 3]);
+
+      const s = await store.load("s1");
+      assert.equal(s?.system, "first");
+      assert.deepEqual(s?.messages, [user("a"), reply("b"), user("c"), reply("d"), reply("e")]);
+      assert.deepEqual(s?.turns.map((t) => [t.turn, t.runId, t.principal]), [[0, "1", "ann"], [1, "2", "bob"]]);
+
+      const [info] = await store.list();
+      assert.deepEqual(
+        [info?.id, info?.turns, info?.messages, info?.createdBy, info?.createdAt, info?.updatedAt],
+        ["s1", 2, 5, "ann", t0.at, t1.at],
+      );
+    });
+
+    it("a slash is part of the id, not a hierarchy: abc and abc/review never meet", async () => {
+      await store.appendTurn("abc", { system: "w", messages: [user("work")], record: turnOf("1") });
+      await store.appendTurn("abc/review", { system: "r", messages: [user("review")], record: turnOf("1", { path: `${WF}/review` }) });
+      assert.deepEqual((await store.load("abc"))?.messages, [user("work")]);
+      assert.deepEqual((await store.load("abc/review"))?.messages, [user("review")]);
+      assert.deepEqual((await store.list()).map((i) => i.id).sort(), ["abc", "abc/review"]);
+
+      await store.delete("abc");
+      assert.equal(await store.load("abc"), null);
+      assert.equal((await store.load("abc/review"))?.system, "r");
+    });
+
+    it("refuses an id that could be a missing template value, or escape the store", async () => {
+      for (const id of ["", "/review", "abc/", "a//b", "..", "../x", "a/../b", "-abc", "abc-", "a b", "a%2Fb"]) {
+        await assert.rejects(() => store.load(id), /Invalid session id/, id);
+        await assert.rejects(() => store.appendTurn(id, { system: "s", messages: [], record: turnOf("1") }), /Invalid session id/, id);
+      }
+    });
+
+    it("the capability: one holder at a time, released on demand, and by a failed open", async () => {
+      const sessions = sessionsCapability(store);
+      const a = await sessions.open("s1", { runId: "1", path: "wf/work" });
+      assert.equal(a.system, null);
+      assert.deepEqual(a.messages, []);
+      assert.deepEqual(sessions.holder("s1"), { runId: "1", path: "wf/work" });
+      await assert.rejects(
+        () => sessions.open("s1", { runId: "2", path: "wf/work" }),
+        /^Error: session_busy: session "s1" is in use by run 1 \(wf\/work\)$/,
+      );
+      // Another session is nobody's business.
+      (await sessions.open("s2", { runId: "2", path: "wf/work" })).release();
+
+      await a.commit({ system: "sys", messages: [user("a"), reply("b")], record: turnOf("1") });
+      a.release();
+      assert.equal(sessions.holder("s1"), undefined);
+
+      const b = await sessions.open("s1", { runId: "2", path: "wf/work" });
+      assert.equal(b.system, "sys");
+      assert.deepEqual(b.messages, [user("a"), reply("b")]);
+      b.release();
+
+      await assert.rejects(() => sessions.open("/bad", { runId: "3", path: "p" }), /Invalid session id/);
+      assert.equal(sessions.holder("/bad"), undefined);
+    });
+  });
+}
+
+describe("FileSessionStore on disk", () => {
+  it("one flat directory per id; lines past the last committed turn are dropped", async () => {
+    const dir = join(tmpdir(), `strut-conf-session-${randomUUID()}`);
+    try {
+      const store = new FileSessionStore(dir);
+      await store.appendTurn("abc/review", { system: "sys", messages: [user("a"), reply("b")], record: turnOf("1") });
+      const at = join(dir, "sessions", "abc%2Freview");
+      assert.equal(await readFile(join(at, "system.md"), "utf-8"), "sys");
+
+      // A crash after the messages were appended and before the turn line.
+      await appendFile(join(at, "messages.jsonl"), JSON.stringify(user("lost")) + "\n");
+      assert.deepEqual((await store.load("abc/review"))?.messages, [user("a"), reply("b")]);
+
+      const t1 = await store.appendTurn("abc/review", { system: "sys", messages: [user("c")], record: turnOf("2") });
+      assert.equal(t1.offset, 2);
+      assert.deepEqual((await store.load("abc/review"))?.messages, [user("a"), reply("b"), user("c")]);
+      const raw = (await readFile(join(at, "messages.jsonl"), "utf-8")).trim().split("\n");
+      assert.equal(raw.length, 3);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("idProblem", () => {
+  it("accepts uuids, dotted and suffixed names", () => {
+    for (const id of ["a", "6f1c2a9e-0b1d-4c3e-9a7f-2d5e8b1c4f60", "janitor-daily", "abc/review", "v1.2_x/y-z/3"]) {
+      assert.equal(idProblem(id), null, id);
+    }
+  });
+  it("names the likely cause of a ragged id", () => {
+    assert.match(idProblem("/review") ?? "", /empty segment — is a template value missing\?/);
+    assert.match(idProblem("review-") ?? "", /invalid segment "review-"/);
+    assert.match(idProblem("x".repeat(121)) ?? "", /longer than 120/);
+    assert.equal(idProblem(undefined), "is empty");
+  });
+});
 
 // ── Secret store ───────────────────────────────────────────────────────────
 

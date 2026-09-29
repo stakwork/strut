@@ -7,9 +7,11 @@
  * Checks: (a) an Anthropic chat turn that calls web_fetch, (a2) one that
  * calls web_search and then another tool — so the model's NEXT request
  * carries the search in its history, (b) a workflow run with an agent step
- * (web_fetch + bash) and an llm step, (c) an xai chat turn (OpenAI-compatible
- * route), (d) the gateway's log has the calls under their session dims (the
- * workflow name, the chat id).
+ * (web_fetch + bash) and an llm step, (b2) two runs on one agent `session` —
+ * the second request replays the first turn's search, tool calls and
+ * thinking through the gateway (plans/agent-sessions.md), (c) an xai chat
+ * turn (OpenAI-compatible route), (d) the gateway's log has the calls under
+ * their session dims (the workflow name, the chat id).
  *
  * Routed through a gateway, strut never uses Anthropic's server-executed web
  * tools (`createWebTools({ routed })` → aieo's Exa + HTTP shims), because
@@ -219,6 +221,56 @@ const b = await sse(`${STRUT}/workflows/${WORKFLOW}/runs/${runId}/stream`);
   check("(b) run: agent fetched the page", /example domain/i.test(result), JSON.stringify(result).slice(0, 120));
   const llm = b.find((e) => e.type === "step.end" && e.path === `${WORKFLOW}/summarize`);
   check("(b) run: llm step answered", /example domain/i.test(String(llm?.output?.text ?? "")));
+}
+
+// ── (b2) an agent session: the second run continues the first ─────────────
+//
+// Turn 1's first request carries turn 0 — a web search, a bash call, the
+// model's thinking — read back from the session store, through the gateway.
+
+{
+  const name = `${WORKFLOW}-session`;
+  const session = `smoke/${tag}`;
+  const marker = `strut-session-${tag}`;
+  const sessionYaml = `name: ${name}
+input:
+  prompt: { type: string }
+  session: { type: string }
+steps:
+  - id: work
+    type: agent
+    config:
+      cwd: /tmp
+      model: ${MODEL}
+      session: "{{ input.session }}"
+      toolFilter: [web_search, bash]
+      maxSteps: 8
+      system: You are a terse test agent. Use exactly the tools you are told to.
+      prompt: "{{ input.prompt }}"
+`;
+  await json(await fetch(`${STRUT}/workflows`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ name, yaml: sessionYaml }) }), "publish session workflow");
+  const turn = async (prompt: string) => {
+    const launched = await json(
+      await fetch(`${STRUT}/workflows/${name}/run`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ input: { prompt, session } }) }),
+      "launch session run",
+    );
+    const events = await sse(`${STRUT}/workflows/${name}/runs/${launched.runId}/stream`);
+    return { events, end: events.find((e) => e.type === "step.end" && e.path === `${name}/work`) };
+  };
+  const t0 = await turn(
+    `Use web_search to find the year the Eiffel Tower opened. Then run the bash command \`echo ${marker}\`. Answer with the year only.`,
+  );
+  let errs = errorsOf(t0.events);
+  check("(b2) session turn 0: run.end, no errors", t0.events.some((e) => e.type === "run.end") && !errs.length, errs.join(" | "));
+  check("(b2) session turn 0: searched, then ran bash", ["tool:web_search", "tool:bash"].every((t) => t0.events.some((e) => e.type === "step.end" && e.stepType === t)));
+  check("(b2) session turn 0: is turn 0", t0.end?.output?.session?.turn === 0, JSON.stringify(t0.end?.output?.session));
+
+  const t1 = await turn("Without using any tool: which bash command did you run earlier? Answer with the command only.");
+  errs = errorsOf(t1.events);
+  check("(b2) session turn 1: run.end, no errors", t1.events.some((e) => e.type === "run.end") && !errs.length, errs.join(" | "));
+  check("(b2) session turn 1: is turn 1", t1.end?.output?.session?.turn === 1, JSON.stringify(t1.end?.output?.session));
+  check("(b2) session turn 1: remembers turn 0", String(t1.end?.output?.result ?? "").includes(marker), JSON.stringify(t1.end?.output?.result).slice(0, 160));
+  check("(b2) session turn 1: read the prefix from the cache", (t1.end?.output?.usage?.cacheReadTokens ?? 0) > 0, JSON.stringify(t1.end?.output?.usage));
 }
 
 // ── (c) xai chat turn (OpenAI-compatible route; web_fetch is aieo's shim) ──

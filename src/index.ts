@@ -229,6 +229,23 @@ export {
 export { STT_MODELS, DEFAULT_MODEL as DEFAULT_STT_MODEL, type SttModel } from "./audio/models.js";
 export { parseHotwords, formatHotwords, HotwordsStore, type Hotword } from "./audio/hotwords.js";
 
+// Agent sessions — the threads an `agent` step with `session` set continues
+// (plans/agent-sessions.md), behind the `sessions` capability + `/sessions`.
+export {
+  type SessionStore,
+  type Session,
+  type SessionInfo,
+  type SessionTurn,
+  type NewTurn,
+  type SessionsCapability,
+  type SessionHolder,
+  type OpenSession,
+  FileSessionStore,
+  MemorySessionStore,
+  sessionsCapability,
+  idProblem,
+} from "./session-store.js";
+
 // Secret store — deployment-scoped, encrypted credential persistence behind
 // the `secrets` capability + the `/secrets` admin endpoints.
 export {

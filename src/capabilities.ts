@@ -1,4 +1,5 @@
 import type { SttService } from "./audio/stt.js";
+import type { SessionsCapability } from "./session-store.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -352,6 +353,10 @@ export interface StrutCapabilities {
    *  transcribe through it without importing sherpa. Optional because a
    *  bare in-code bag may not carry one. */
   stt?: SttService;
+  /** Agent sessions (session-store.ts): the threads an `agent` step with
+   *  `session` set continues. Present on the standard server; optional
+   *  because a bare in-code bag may not carry one. */
+  sessions?: SessionsCapability;
   /** The deployment's local data directory — where artifacts, cassettes and
    *  the git cache/worktrees (`git/*` steps) live. Set by the standard
    *  server; a bare in-code bag may not carry one (steps fall back to the OS

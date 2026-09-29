@@ -149,7 +149,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/workflows/:name/runs`                                | array, newest first, no paging: a summary (§5.1) per finished run, `{ runId, workflow, status }` for one still going (§5.2 states) |
 | GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
 | GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |
-| GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none |
+| GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none. For a step that continued a `session` (§9) this is its system prompt + THAT TURN; `?full=1` **(key)** is the thread up to and including it (404 once the session is deleted) |
 | GET    | `/workflows/:name/evidence[?runId=&limit=&before=]`   | what the checks said about the workflow's runs (§5.4) |
 | GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …] }` — what the run's steps wrote; 501 when the deployment has no artifact store |
 | GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension |
@@ -369,3 +369,70 @@ run whose `run.start` and summary carry `origin: "schedule"` and
 | POST   | `/workflows/:name/automations/:id/fire` **(key)** | run now → 202 `{ runId }`; 409 while its previous run is going |
 
 `GET /health` → `{ ok, dataDir, stepCount }`.
+
+## 9. Agent sessions
+
+An `agent` step with `session` set continues a thread instead of starting
+cold (`plans/agent-sessions.md`). Nothing is added to `POST …/run`: the id
+is the caller's, it travels in `input`, and the workflow hands it to the
+step.
+
+```yaml
+input:
+  prompt:  { type: string }
+  session: { type: string, required: false }
+steps:
+  - id: checkout
+    type: git/checkout
+    config: { repo: "{{ input.repo }}", workdir: "{{ input.session }}" }   # the files come along
+  - id: work
+    type: agent
+    config:
+      cwd: "{{ checkout.path }}"
+      session: "{{ input.session }}"                                        # the context comes along
+      system: You are a careful engineer.
+      prompt: "{{ input.prompt }}"
+```
+
+```bash
+curl -X POST http://localhost:3000/workflows/repo-agent/run -H 'Content-Type: application/json' \
+  -d '{ "input": { "repo": "…", "prompt": "Why is login slow?", "session": "6f1c2a9e" } }'
+# the follow-up: the same call, the same session
+curl -X POST http://localhost:3000/workflows/repo-agent/run -H 'Content-Type: application/json' \
+  -d '{ "input": { "repo": "…", "prompt": "Fix it.", "session": "6f1c2a9e" } }'
+```
+
+- **The id** is a flat, GLOBAL string: every run of every workflow naming
+  it shares one thread. Up to 120 characters; `/`-separated segments of
+  letters, digits and `. _ -`, a letter or digit at each end. A slash is
+  part of the name (`abc/review` is unrelated to `abc`). Anyone who knows
+  an id can continue it — use a uuid.
+- **A turn** starts from the thread's system prompt (fixed by its first
+  turn; the step's `system` is ignored after) and every earlier message,
+  and is appended when the step succeeds. A failed or cancelled turn
+  appends nothing.
+- **The step's output** gains `session: { id, turn, offset }`; its
+  `step.end` records the turn, not the thread.
+- **`workdir`** on `git/checkout` keeps the working copy under a name: the
+  next run naming it gets the same path as it was left (`reused: true`).
+  Idle ones are removed after `STRUT_WORKDIR_TTL_DAYS` (default 7).
+
+A run that cannot take its turn fails with one of these at the start of the
+error message:
+
+| Prefix | Meaning |
+| ------ | ------- |
+| `session_busy:` | another run holds the session; one turn at a time |
+| `session_full:` | the thread has no room left in the model's window — start a new session |
+| `session_mismatch:` | the thread began on another provider, or on the other side of the LLM gateway |
+| `workdir_busy:` | another run holds the working copy |
+
+| Method | Path | Response |
+| ------ | ---- | -------- |
+| GET    | `/sessions` **(key)** | `{ sessions: [{ id, turns, messages, createdAt, updatedAt, createdBy?, provider, model, context?: { used, limit }, busy? }] }`, newest first |
+| GET    | `/sessions?id=<id>` **(key)** | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, provider, model, routed, offset, count, usage, cost, context? }]`; 404 |
+| GET    | `/sessions/messages?id=<id>` **(key)** | the thread, a bare array: the system message, then every message; 404 |
+| DELETE | `/sessions?id=<id>` **(key)** | `{ ok: true }`; 409 while a turn holds it |
+
+Reads are behind the key too. 400 for a malformed id; 501 when the host
+injected its own `sessions` capability.

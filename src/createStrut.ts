@@ -28,10 +28,18 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { requireApiKey, warnIfUnconfigured, actorFromHeader } from "./auth.js";
+import { requireApiKey, apiKeyMatches, warnIfUnconfigured, actorFromHeader } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
+import {
+  FileSessionStore,
+  MemorySessionStore,
+  idProblem,
+  sessionInfo,
+  sessionsCapability,
+  type SessionStore,
+} from "./session-store.js";
 import {
   FileSecretStore,
   MemorySecretStore,
@@ -130,6 +138,13 @@ export interface StrutOptions<TServices = unknown> {
    *  `FileChatStore` rooted at the workspace path (or `MemoryChatStore` when
    *  `store` is a `MemoryRunStore`). */
   chatStore?: ChatStore;
+
+  /** Where agent sessions live (session-store.ts; plans/agent-sessions.md):
+   *  the threads an `agent` step with `session` set continues. Defaults by
+   *  the CHAT store's kind — files under dataDir when chats are on disk
+   *  (passed or defaulted), memory otherwise — so a host that keeps chats
+   *  across restarts keeps sessions too. */
+  sessionStore?: SessionStore;
 
   /** Deployment-scoped secret store backing `ctx.services.secrets` and the
    *  `/secrets` admin endpoints. Defaults to an encrypted `FileSecretStore`
@@ -277,6 +292,8 @@ export interface Strut<TServices = unknown> {
   /** Deployment-scoped secret store backing `ctx.services.secrets` + the
    *  `/secrets` endpoints. */
   secretStore: SecretStore;
+  /** Agent sessions — the store behind `ctx.services.sessions` + `/sessions`. */
+  sessionStore: SessionStore;
   services: TServices;
 
   /** Current registry. Reads through the closure so callers always see
@@ -503,6 +520,19 @@ export async function createStrut<TServices = unknown>(
         ? new FileSecretStore(dataDir, ACTOR_SECRETS_FILE)
         : new MemorySecretStore()),
   );
+  // Agent sessions follow the chat store's kind: both are conversations a
+  // host expects to find again after a restart.
+  const sessionStore: SessionStore =
+    opts.sessionStore ??
+    ((opts.chatStore ? opts.chatStore instanceof FileChatStore : fileBacked)
+      ? new FileSessionStore(dataDir)
+      : new MemorySessionStore());
+  const sessions = sessionsCapability(sessionStore);
+  // A consumer's own `sessions` capability is theirs: the `/sessions`
+  // endpoints (which manage OUR store) then report 501, like `/secrets`.
+  const sessionsInjected =
+    opts.services != null &&
+    typeof (opts.services as Record<string, unknown>)["sessions"] === "object";
   // Auto-provide the standard capabilities (http + secrets) every adapter step
   // builds on, with the consumer's bag spread on top so they can override or
   // extend any capability. The default `secrets` capability reads the secret
@@ -520,6 +550,7 @@ export async function createStrut<TServices = unknown>(
     // Per-run artifact files, rooted in the local data dir. A consumer bag
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
+    sessions,
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
@@ -864,12 +895,26 @@ export async function createStrut<TServices = unknown>(
   // `wf/review/003-agent`): the `messages` of that path's last `step.end`,
   // as a bare JSON array. What the run callback's `transcripts` point at, so
   // a host copies each transcript byte-for-byte without parsing `/events`.
+  //
+  // A session turn (plans/agent-sessions.md) recorded its system prompt and
+  // THAT TURN; `?full=1` serves the thread up to and including it, read from
+  // the session store — behind the key, like every read of a thread.
   app.get("/workflows/:name/runs/:runId/transcripts/:path{.+}", async (c) => {
     const { name, runId, path } = c.req.param();
     const events = await store.getRunEvents(name, runId);
     const end = events.filter((e) => e.type === "step.end" && e.path === path && e.messages).pop();
     if (!end) return c.json({ error: `No transcript at "${path}" in run "${runId}"` }, 404);
-    return c.json(end.messages);
+    const at = (end.output as { session?: { id?: unknown; offset?: unknown } } | null | undefined)?.session;
+    if (c.req.query("full") !== "1" || typeof at?.id !== "string" || typeof at.offset !== "number") {
+      return c.json(end.messages);
+    }
+    if (!apiKeyMatches(c.req.header("authorization"))) {
+      return c.json({ error: "unauthorized: valid Authorization: Bearer <STRUT_API_KEY> required" }, 401);
+    }
+    const thread = sessionsInjected ? null : await sessionStore.load(at.id).catch(() => null);
+    if (!thread) return c.json({ error: `Session "${at.id}" is gone` }, 404);
+    const [system, ...turn] = end.messages!;
+    return c.json([system, ...thread.messages.slice(0, at.offset), ...turn]);
   });
 
   // Reattach to a run (live or completed) — SSE tail of its event log.
@@ -1577,6 +1622,51 @@ export async function createStrut<TServices = unknown>(
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+  });
+
+  // ── Agent sessions (plans/agent-sessions.md §4) ───────────────────────
+  //
+  // The threads `agent` steps with `session` set continue. The id is a query
+  // parameter (it may hold slashes). Every route is behind the key, reads
+  // included: a thread is a whole conversation. 501 when the consumer
+  // injected their own `sessions` capability (we don't own that store).
+
+  const sessionRoute = (c: Context): { id: string } | Response => {
+    if (sessionsInjected) return c.json({ error: "sessions are managed by an injected capability" }, 501);
+    const id = c.req.query("id") ?? "";
+    const problem = idProblem(id);
+    return problem ? c.json({ error: `session id "${id}" ${problem}` }, 400) : { id };
+  };
+
+  app.get("/sessions", requireApiKey, async (c) => {
+    if (sessionsInjected) return c.json({ error: "sessions are managed by an injected capability" }, 501);
+    const busy = (id: string) => (sessions.holder(id) ? { busy: true } : {});
+    if (c.req.query("id") === undefined) {
+      return c.json({ sessions: (await sessionStore.list()).map((s) => ({ ...s, ...busy(s.id) })) });
+    }
+    const at = sessionRoute(c);
+    if (at instanceof Response) return at;
+    const thread = await sessionStore.load(at.id);
+    const info = thread && sessionInfo(at.id, thread.turns);
+    if (!thread || !info) return c.json({ error: `No session "${at.id}"` }, 404);
+    return c.json({ ...info, ...busy(at.id), turnLog: thread.turns });
+  });
+
+  app.get("/sessions/messages", requireApiKey, async (c) => {
+    const at = sessionRoute(c);
+    if (at instanceof Response) return at;
+    const thread = await sessionStore.load(at.id);
+    if (!thread) return c.json({ error: `No session "${at.id}"` }, 404);
+    return c.json([{ role: "system", content: thread.system }, ...thread.messages]);
+  });
+
+  app.delete("/sessions", requireApiKey, async (c) => {
+    const at = sessionRoute(c);
+    if (at instanceof Response) return at;
+    const by = sessions.holder(at.id);
+    if (by) return c.json({ error: `session "${at.id}" is in use by run ${by.runId} (${by.path})` }, 409);
+    await sessionStore.delete(at.id);
+    return c.json({ ok: true });
   });
 
   // ── Secrets ──────────────────────────────────────────────────────────────
@@ -2991,6 +3081,7 @@ export async function createStrut<TServices = unknown>(
     dataDir,
     store,
     secretStore,
+    sessionStore,
     services,
     getRegistry: () => registry,
     rebuildRegistry,

@@ -12,9 +12,12 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StepContext } from "../../../core.js";
+import { encodeId } from "../../../session-store.js";
 import { shellCapability, type ShellCapability, type ShellResult, type StrutCapabilities } from "../../../capabilities.js";
 
 export type GitCtx = StepContext<StrutCapabilities>;
@@ -77,6 +80,115 @@ export function cachePath(dataDir: string, r: RepoRef): string {
 /** Where a run's working copies live: `<dataDir>/worktrees/<runId>/`. */
 export function worktreeRoot(dataDir: string, runId: string): string {
   return join(dataDir, "worktrees", runId);
+}
+
+// ── kept working copies (plans/agent-sessions.md §5) ──────────────────────
+
+/** Where a KEPT working copy lives: `<dataDir>/workdirs/<encoded name>/`,
+ *  the same path on every run that names it. Its record sits BESIDE it
+ *  (`<encoded name>.json`), out of the reach of an agent working inside. */
+export function workdirRoot(dataDir: string, name: string): string {
+  return join(dataDir, "workdirs", encodeId(name));
+}
+
+interface WorkdirRecord {
+  name: string;
+  usedAt: string;
+  /** Working copy dir → the cache it is a worktree of, and the ref it was
+   *  created at. */
+  repos: Record<string, { cache: string; ref: string }>;
+}
+
+async function readRecord(root: string): Promise<WorkdirRecord | null> {
+  try {
+    return JSON.parse(await readFile(`${root}.json`, "utf-8")) as WorkdirRecord;
+  } catch {
+    return null;
+  }
+}
+
+/** Stamp a workdir as used now, adding `repo` when given. Returns the record. */
+export async function touchWorkdir(
+  root: string,
+  name: string,
+  repo?: { dir: string; cache: string; ref: string },
+): Promise<WorkdirRecord> {
+  return withLock(`${root}.json`, async () => {
+    const rec = (await readRecord(root)) ?? { name, usedAt: "", repos: {} };
+    rec.usedAt = new Date().toISOString();
+    if (repo) rec.repos[repo.dir] = { cache: repo.cache, ref: repo.ref };
+    await mkdir(join(root, ".."), { recursive: true });
+    await writeFile(`${root}.json`, JSON.stringify(rec, null, 2), "utf-8");
+    return rec;
+  });
+}
+
+/** The ref a kept working copy was created at, if it is on record. */
+export async function workdirRef(root: string, dir: string): Promise<string | undefined> {
+  return (await readRecord(root))?.repos[dir]?.ref;
+}
+
+/** Which run holds each workdir (by root path). In-process, like the cache
+ *  locks: strut is single-process by design. */
+const heldWorkdirs = new Map<string, string>();
+
+/** Take a workdir for this RUN, until it ends: two runs in one working copy
+ *  would edit the same files. The same run may take it again (one checkout
+ *  per repository). Outside the runner (no `ctx.onRunEnd`) nothing is held. */
+export function holdWorkdir(ctx: GitCtx, root: string, name: string): void {
+  const by = heldWorkdirs.get(root);
+  if (by !== undefined && by !== ctx.runId) {
+    throw new Error(`workdir_busy: workdir "${name}" is in use by run ${by}`);
+  }
+  if (by === ctx.runId || !ctx.onRunEnd) return;
+  heldWorkdirs.set(root, ctx.runId);
+  ctx.onRunEnd(() => {
+    if (heldWorkdirs.get(root) === ctx.runId) heldWorkdirs.delete(root);
+  });
+}
+
+/** How long a kept working copy may sit unused (`STRUT_WORKDIR_TTL_DAYS`,
+ *  default 7). `0` keeps them forever. */
+export function workdirTtlMs(): number {
+  const raw = process.env["STRUT_WORKDIR_TTL_DAYS"];
+  const days = raw === undefined || raw === "" ? 7 : Number(raw);
+  return Number.isFinite(days) && days > 0 ? days * 86_400_000 : 0;
+}
+
+/** Remove the kept working copies nobody has used for `ttlMs` and nobody
+ *  holds. Run by every kept checkout, so disk is reclaimed without a timer.
+ *  Never throws: a workdir that cannot be removed is tried again next time. */
+export async function sweepWorkdirs(shell: ShellCapability, dataDir: string, ttlMs: number, now = Date.now()): Promise<string[]> {
+  if (!ttlMs) return [];
+  const base = join(dataDir, "workdirs");
+  let files: string[];
+  try {
+    files = (await readdir(base)).filter((f) => f.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const swept: string[] = [];
+  for (const file of files) {
+    const root = join(base, file.slice(0, -".json".length));
+    if (heldWorkdirs.has(root)) continue;
+    const rec = await readRecord(root);
+    if (!rec || !(now - Date.parse(rec.usedAt) > ttlMs)) continue;
+    try {
+      for (const [dir, { cache }] of Object.entries(rec.repos)) {
+        await withLock(cache, async () => {
+          if (!existsSync(join(cache, "HEAD"))) return;
+          await git(shell, ["worktree", "remove", "--force", "--force", dir], { cwd: cache, timeoutMs: 60_000 });
+          await git(shell, ["worktree", "prune"], { cwd: cache, timeoutMs: 60_000 });
+        });
+      }
+      await rm(root, { recursive: true, force: true });
+      await rm(`${root}.json`, { force: true });
+      swept.push(rec.name);
+    } catch (err) {
+      console.warn(`[git] could not sweep workdir "${rec.name}":`, (err as Error).message);
+    }
+  }
+  return swept;
 }
 
 // ── the services a git step needs ─────────────────────────────────────────
