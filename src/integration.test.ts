@@ -340,7 +340,7 @@ describe("integration: complete workflow patterns", () => {
 
   it("a subflow step's params override the child's defaults for that call", async () => {
     const child = flow("child-topic", {
-      input: z.object({}),
+      input: z.object({ note: z.string().optional() }),
       params: { topic: "DEFAULT", tone: "dry" },
       steps: [step("emit", "echo", { topic: "{{ params.topic }}", tone: "{{ params.tone }}" })],
     });
@@ -348,7 +348,8 @@ describe("integration: complete workflow patterns", () => {
       input: z.object({}),
       steps: [
         step("first", "subflow", { workflow: "child-topic", input: {}, params: { topic: "cats" } }),
-        step("second", "subflow", { workflow: "child-topic", input: {}, params: { topic: "not about: {{ first.topic }}" } }),
+        // no `input`: it defaults to {}, like POST /run
+        step("second", "subflow", { workflow: "child-topic", params: { topic: "not about: {{ first.topic }}" } }),
         step("plain", "subflow", { workflow: "child-topic", input: {} }),
         step("combine", "echo", { first: "{{ first }}", second: "{{ second }}", plain: "{{ plain }}" }),
       ],

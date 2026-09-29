@@ -602,7 +602,7 @@ async function executeStep(
       // (`loop` repeats until a condition — no natural input.)
       const startInput = SELF_RESOLVING_STEPS.has(step.type)
         ? step.type === "subflow"
-          ? resolveConfig(step.config["input"], scope)
+          ? resolveConfig(step.config["input"] ?? {}, scope)
           : step.type === "foreach"
             ? resolveConfig(step.config["items"], scope)
             : undefined
@@ -1054,7 +1054,7 @@ async function executeSubflow(
   const version = step.config["version"] != null
     ? (resolveConfig(step.config["version"], scope) as string)
     : undefined;
-  const childInput = resolveConfig(step.config["input"], scope);
+  const childInput = resolveConfig(step.config["input"] ?? {}, scope);
 
   if (!wfName || typeof wfName !== "string") {
     throw new Error(`subflow step "${step.id}" requires a "workflow" config (workflow name)`);

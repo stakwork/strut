@@ -534,7 +534,7 @@ Scope rules:
 
 - Each `flow` (top-level or subflow) has its own step-output scope.
 - A step inside a subflow **cannot** reference steps in the parent.
-- Inputs to subflows must pass through their `input` config explicitly.
+- Inputs to subflows must pass through their `input` config explicitly (omitted → `{}`).
 
 ---
 

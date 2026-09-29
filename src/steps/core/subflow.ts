@@ -17,7 +17,7 @@ export default defineStep({
   input: z.object({
     workflow: z.string().describe("name of a published workflow"),
     version: z.string().optional().describe("a specific version, e.g. v2 (default: the active version)"),
-    input: z.any().describe("the object passed as the child workflow's input"),
+    input: z.any().optional().describe("the object passed as the child workflow's input (default {})"),
     params: z.record(z.string(), z.unknown()).optional().describe("overrides for the child workflow's params defaults, for this call only"),
   }),
   output: z.any(),
