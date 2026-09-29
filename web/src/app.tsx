@@ -108,6 +108,7 @@ export function App() {
   const [stepsOpen, setStepsOpen] = useState<boolean>(() => loadPref("stepsOpen", false));
   const [infoStep, setInfoStep] = useState<StepTypeEntry | null>(null);
   const [stepQuery, setStepQuery] = useState("");
+  const [wfQuery, setWfQuery] = useState("");
   const [publishedSteps, setPublishedSteps] = useState<StepData[] | null>(null);
   const [localSteps, setLocalSteps] = useState<StepData[] | null>(null);
   // The workflow `localSteps` were actually loaded for. Until this matches
@@ -206,9 +207,18 @@ export function App() {
   // ordered by most-recent run so the active experiment floats to the top.
   // Uncategorized workflows form a trailing group; headers only render when
   // at least one workflow actually has a category.
+  // The Workflows filter uses the Tools filter's matcher: every word must hit
+  // the name, the category or the description.
+  const matchedWorkflows = useMemo(
+    () => searchSteps(
+      workflows.map((wf) => ({ type: wf.name, description: [wf.category, wf.description].filter(Boolean).join(" "), wf })),
+      wfQuery,
+    ).map((m) => m.wf),
+    [workflows, wfQuery],
+  );
   const wfGroups = useMemo(() => {
     const byCat = new Map<string, api.WorkflowEntry[]>();
-    for (const wf of workflows) {
+    for (const wf of matchedWorkflows) {
       const cat = wf.category ?? "";
       const arr = byCat.get(cat) ?? [];
       arr.push(wf);
@@ -226,11 +236,11 @@ export function App() {
       return b.latest - a.latest || a.category.localeCompare(b.category);
     });
     return groups;
-  }, [workflows]);
+  }, [matchedWorkflows]);
   const showGroupHeaders = wfGroups.some((g) => g.category);
   const categories = useMemo(
-    () => wfGroups.map((g) => g.category).filter(Boolean).sort(),
-    [wfGroups],
+    () => [...new Set(workflows.map((w) => w.category ?? ""))].filter(Boolean).sort(),
+    [workflows],
   );
 
   // Collapsed category groups, persisted across sessions.
@@ -894,11 +904,31 @@ export function App() {
             Workflows
             <button class="btn" style="float:right;padding:1px 8px;font-size:11px;margin-top:-3px;" onClick={() => setShowCreate(true)}>+</button>
           </div>
+          {workflows.length > 0 && (
+            <input
+              class="sidebar-search"
+              type="search"
+              value={wfQuery}
+              placeholder="Filter workflows…"
+              aria-label="Filter workflows"
+              onInput={(e) => setWfQuery((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setWfQuery("");
+                if (e.key === "Enter" && matchedWorkflows.length === 1) {
+                  setSelectedWf(matchedWorkflows[0]!.name); setSelectedRun(null); setEvents([]); closeFlyout();
+                }
+              }}
+            />
+          )}
           <div class="sidebar-scroll">
             {workflows.length === 0 && <div class="empty-sidebar">No workflows yet</div>}
+            {workflows.length > 0 && matchedWorkflows.length === 0 && (
+              <div class="empty-sidebar">No matching workflows</div>
+            )}
             {wfGroups.map((g) => {
               const catKey = g.category || "__uncategorized";
-              const collapsed = showGroupHeaders && !!collapsedCats[catKey];
+              // A filter shows every match regardless of collapsed groups.
+              const collapsed = showGroupHeaders && !wfQuery.trim() && !!collapsedCats[catKey];
               return (
                 <div key={catKey}>
                   {showGroupHeaders && (
