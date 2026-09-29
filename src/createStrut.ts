@@ -60,6 +60,7 @@ import { buildAuthoringCapability } from "./authoring.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+import { projectRunOnce } from "./graph/projector.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
@@ -683,16 +684,27 @@ export async function createStrut<TServices = unknown>(
         onSettled: (r) => verifySettled?.(r),
       })
     : null;
-  if (verifier) {
+  //
+  // The same hook PROJECTS the run into the graph (graph/projector.ts: its
+  // `StrutRun`, agent sessions, tool calls and the nodes they touched) —
+  // every top-level run, wherever the workspace is graph-backed, claims or
+  // not. Detached too: a graph that is slow or down never holds a teardown.
+  const runGraph = workspace.graph;
+  if (runGraph) {
     const bag = services as Record<string, unknown>;
     const prior = (bag["onRunEnd"] as ((id: string, info?: RunEndInfo) => unknown) | undefined)?.bind(bag);
     bag["onRunEnd"] = async (runId: string, info?: RunEndInfo) => {
       try {
         await prior?.(runId, info);
       } finally {
-        // Check runs are never verified (the recursion guard); a single-step
-        // run is verified by `runStep`, once it reaches the real store.
-        if (info?.workflow && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) verifier.schedule(info.workflow, runId);
+        // Check runs are never projected or verified (the recursion guard);
+        // a single-step run is verified by `runStep`, once it reaches the
+        // real store.
+        if (info?.workflow && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) {
+          const key = info.workflow;
+          void projectRunOnce(runGraph, store, key, runId).catch((err) => console.error(`[projector] run ${key}/${runId} was not projected:`, err));
+          verifier?.schedule(key, runId);
+        }
       }
     };
   }

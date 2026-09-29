@@ -5,7 +5,7 @@
  * tests are about verification, not module loading); the workspace still
  * holds their versions, which is what evidence is ABOUT.
  */
-import { describe, it, before, after, beforeEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,6 +21,7 @@ import { CLAIMS_OFF } from "../claims-schemas.js";
 import { buildAuthoringCapability, type AuthoringCapability } from "../authoring.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
 import type { VerifyResult, Verifier } from "../verify.js";
+import { projectionsSettled } from "./projector.js";
 import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
@@ -81,6 +82,9 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     await backend.close();
     await rm(dir, { recursive: true, force: true });
   });
+  // Runs are projected when they end, detached: let them land before the
+  // next test wipes the graph under them.
+  afterEach(() => projectionsSettled(backend));
   beforeEach(async () => {
     await rows(`MATCH (n) WHERE NOT n:Schema AND NOT n:Migration DETACH DELETE n`);
     delete process.env["STRUT_VERIFY_BUDGET_USD"];

@@ -14,6 +14,7 @@ import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import { MemoryChatStore } from "./chat-store.js";
 import { FileSessionStore, MemorySessionStore } from "./session-store.js";
+import { projectRunEvents } from "./graph/projector.js";
 
 // Agent sessions through a whole strut (plans/agent-sessions.md): runs
 // launched over HTTP with the id in `input`, a stand-in Anthropic endpoint
@@ -160,7 +161,7 @@ describe("agent sessions over HTTP", () => {
   });
 
   it("two runs on one session: the log holds each turn, ?full=1 the thread, /sessions the record", async () => {
-    const { json, run, ends } = await boot();
+    const { json, run, ends, store } = await boot();
     const first = await run("talk", { prompt: "why is login slow?", session: "abc" });
     assert.equal(first.summary.status, "success", JSON.stringify(first.summary));
     const second = await run("talk", { prompt: "fix it", session: "abc" });
@@ -172,6 +173,14 @@ describe("agent sessions over HTTP", () => {
     assert.equal((work!.output as any).session.turn, 1);
     assert.equal((review!.output as any).session.id, "abc/review");
     assert.equal((review!.output as any).session.turn, 1);
+
+    // What the graph projector makes of that log: each execution stamped
+    // with its thread and its turn in it.
+    const projected = projectRunEvents("talk", second.runId, await store.getRunEvents("talk", second.runId), second.summary)!;
+    assert.deepEqual(
+      projected.sessions.map((s) => [s.data["path"], s.data["session_id"], s.data["session_turn"]]),
+      [["talk/work", "abc", 1], ["talk/review", "abc/review", 1]],
+    );
 
     // The run log holds the turn…
     const turn = (await json(`/workflows/talk/runs/${second.runId}/transcripts/talk/work`)).body as any[];
@@ -207,10 +216,12 @@ describe("agent sessions over HTTP", () => {
   });
 
   it("no session in the input: every agent runs cold and nothing is stored", async () => {
-    const { json, run, ends } = await boot();
+    const { json, run, ends, store } = await boot();
     const { runId, summary } = await run("talk", { prompt: "hello" });
     assert.equal(summary.status, "success", JSON.stringify(summary));
     for (const end of await ends("talk", runId)) assert.ok(!("session" in (end.output as object)));
+    const projected = projectRunEvents("talk", runId, await store.getRunEvents("talk", runId), summary)!;
+    assert.deepEqual(projected.sessions.map((s) => [s.data["session_id"], s.data["session_turn"]]), [[undefined, undefined], [undefined, undefined]]);
     assert.deepEqual((await json("/sessions")).body.sessions, []);
     // ?full=1 on a session-less agent is its transcript, which is already whole.
     const plain = await json(`/workflows/talk/runs/${runId}/transcripts/talk/work`);

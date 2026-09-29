@@ -243,6 +243,22 @@ sensitive thing strut can serve. The run callback's `transcripts` links are
 unchanged; a host that wants the thread adds `?full=1`. 501 when the host
 injected its own `sessions` capability (strut does not own that store).
 
+**In the graph.** The projector's `StrutAgentSession` is one execution of
+an agent step — one TURN. A turn of a thread carries `session_id` (from the
+step's resolved config on `step.start`, so a failed turn is grouped too; an
+id the step refused is not stamped) and `session_turn` (from the output,
+so only a committed turn has one). A thread is every node with that id,
+across runs and workflows; what it touched is
+
+```cypher
+MATCH (s:StrutAgentSession {session_id: $id})<-[:IN_SESSION]-(:StrutToolCall)-[:ACCESSED]->(n)
+RETURN s.session_turn, s.run_id, n
+```
+
+An agent without `session` is found as before, by `run_id` + `path`. Every
+top-level run is projected when it ends (`createStrut`, detached), so a
+thread's turns are in the graph without a batch.
+
 ## 5. The working directory
 
 `git/checkout` gets `workdir?: string`, the same format as a session id.
@@ -330,9 +346,6 @@ sub-agent needs the parent to fix the id, which is its own design.
   returns the named directory's path.
 - **Sessions on the `llm` step**, and a thread that moves between
   providers.
-- **The graph.** `session_id` / `session_turn` on `StrutAgentSession` so a
-  reader can group turns — a schema entry in `strut-schemas.ts`, the
-  projector, a conformance case.
 - **UI.** The step editor shows `session` from the schema; the run flyout
   shows it in the output. A thread viewer is later.
 - **Deleting a workdir by hand**, pruning sessions, a publish-time lint for

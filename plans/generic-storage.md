@@ -13,7 +13,10 @@
 opts out). The v2 provenance convention below landed 2026-09-02
 > (`withAccessedNodes` in `core.ts`, `nodes` on `step.end`, `ACCESSED`
 > in the projector; every `graph/*` + mcp `jarvis/*` node-touching step
-> reports). Not projected yet: `PROMOTED_FROM` (promotion doesn't record
+> reports). Since 2026-09-29 `createStrut` also projects every top-level
+> run when it ends (detached, graph workspaces), so the batch is for chats
+> and for runs cut off before their end. Not projected yet:
+> `PROMOTED_FROM` (promotion doesn't record
 > its source run). One deliberate
 > deviation from the file store: graph versions are content-addressed —
 > publishing identical content under a new label re-labels the existing

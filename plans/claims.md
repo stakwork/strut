@@ -383,6 +383,10 @@ must leave a record. Three rules keep that from becoming noise:
   the `StrutRun` it is about to attach evidence to (it needs the node for
   `HAS_SOURCE`), with `EXECUTED → StrutStepVersion`. Step runs that
   produced no evidence never reach the graph. `projectRuns` is unchanged.
+  (WORKFLOW runs are another matter since 2026-09-29: `createStrut`
+  projects every top-level run when it ends, evidence or not, and the pass
+  takes that node — `runRef`: the projection in flight, else the settled
+  node the graph holds, else a projection.)
 
 Retention: an optional per-step cap (`STRUT_STEP_RUN_KEEP`, newest N)
 prunes old step runs. Evidence keeps its `content` on the node, so a pruned

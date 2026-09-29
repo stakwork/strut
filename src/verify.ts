@@ -55,7 +55,7 @@ import {
 import { boundedName } from "./graph/claims-writer.js";
 import type { EdgeInput } from "./graph/edge-writer.js";
 import { buildLedger, type Ledger } from "./ledger.js";
-import { projectRun } from "./graph/projector.js";
+import { runRef } from "./graph/projector.js";
 import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
 import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } from "./run-step.js";
 import { checkRunKey, stepTypeOfRunKey, type RunStore } from "./store.js";
@@ -434,10 +434,12 @@ export function createVerifier(deps: VerifierDeps) {
     return total;
   }
 
-  /** The `StrutRun` evidence points at — projected on first need, so a run
-   *  that produced no evidence never reaches the graph. */
+  /** The `StrutRun` evidence points at. A workflow run is projected when it
+   *  ends (createStrut), so this finds its node; a kept STEP run is
+   *  projected here, on first need — one that produced no evidence never
+   *  reaches the graph. */
   async function runRefOf(pass: Pass): Promise<string | null> {
-    if (pass.runRef === undefined) pass.runRef = await projectRun(graph, store, pass.key, pass.runId);
+    if (pass.runRef === undefined) pass.runRef = await runRef(graph, store, pass.key, pass.runId);
     return pass.runRef;
   }
 
@@ -803,14 +805,14 @@ export function createVerifier(deps: VerifierDeps) {
       return { ok: true, evidence: slot.id, filled: true, subject: o.subject };
     }
 
-    const runRef = await projectRun(graph, store, input.name, input.runId);
-    if (!runRef) return { error: `run ${input.runId} could not be projected into the graph` };
+    const sourceRef = await runRef(graph, store, input.name, input.runId);
+    if (!sourceRef) return { error: `run ${input.runId} could not be projected into the graph` };
     const id = newEpistemicId();
     const written = await writeEvidence({
       id,
       claim,
       version: { kind: o.subject.kind, name: subjectName(o.subject), content_hash: o.version! },
-      sourceRef: runRef,
+      sourceRef,
       node: { content: bound(content), evidence_mode: mode, evidence_status: "collected", observed_at: now },
       strength,
       context: { path: o.path, by: input.by, ...(o.check.cassette ? { cassette: o.check.cassette } : {}) },
