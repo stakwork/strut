@@ -118,7 +118,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1231 unit tests across 70 files (+ 221 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1231 unit tests across 70 files (+ 228 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -556,7 +556,15 @@ and the child env is scrubbed by construction).
   projects them into `StrutRun`/`StrutAgentSession`/`StrutToolCall`/
   `StrutChat`/`StrutTurn` with `EXECUTED`/`IN_RUN`/`IN_SESSION`/`SPAWNED`/
   `IN_CHAT` edges — summaries + `log_ref` pointers, never payloads,
-  idempotent upserts. **Provenance convention:** a graph-touching step
+  idempotent upserts. **Every top-level run is projected when it ends**
+  (`createStrut`, from the `services.onRunEnd` hook the verify pass rides;
+  claims on or off; detached, so a graph that is slow or down never holds
+  a teardown) — check runs (`origin: "verify"`) and `run_step` runs
+  excepted; a kept step run still reaches the graph only with evidence.
+  The verify pass does not project it again: `runRef` joins the projection
+  in flight (`projectRunOnce` is single-flighted per run), else takes the
+  settled node the graph holds. Chats, and runs cut off before their end,
+  are the `graph/project` step's. **Provenance convention:** a graph-touching step
   marks its output with `withAccessedNodes(output, [{ ref_id, node_type? }])`
   (`core.ts`; a non-enumerable marker — invisible to the model, `{{ }}`
   expressions, and JSON). `wrapToolsWithEmit` lifts it onto the tool call's
@@ -1243,7 +1251,12 @@ and the child env is scrubbed by construction).
   `STRUT_WORKDIR_TTL_DAYS` by the next kept checkout.
   **Run control:** a journaled session step replays its output on resume
   and never reaches the store; "re-run from here" on one is a NEW turn — a
-  thread is never rewound. Endpoints (`/sessions`, all behind the key,
+  thread is never rewound. **In the graph** the projector stamps each
+  `StrutAgentSession` — one execution, so one TURN — with `session_id`
+  (from `step.start`'s resolved config: a failed turn is grouped too) and
+  `session_turn` (from the output: committed turns only), so "which nodes
+  did this thread touch" is one query over `session_id` → `IN_SESSION` →
+  `ACCESSED`. Endpoints (`/sessions`, all behind the key,
   reads included; the id is a query parameter): list, one session's turn
   log, its messages, delete (409 while held). Tests:
   `storage-conformance.test.ts` (the store), `steps/core/agent-session.test.ts`

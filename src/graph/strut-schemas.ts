@@ -291,6 +291,12 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       duration_ms: "?int",
       error_message: "?string",
       log_ref: "?string",
+      /** The thread this execution was a turn of — the agent step's
+       *  `session` (plans/agent-sessions.md). Absent on a one-shot agent. */
+      session_id: "?string",
+      /** Its 0-based turn in that thread. Absent when the turn failed:
+       *  nothing was committed, so it has no number. */
+      session_turn: "?int",
     },
   },
   {

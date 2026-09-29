@@ -7,10 +7,13 @@
  * log, never full payloads.
  *
  * The raw log stays the store of record (tailing, resume, replay); this is
- * the queryable skeleton on top. Zero coupling to the hot path: run it at
- * boot, on a schedule, as a workflow, or by hand, and re-run it whenever the
- * edge vocabulary grows — every write is an idempotent `upsert` keyed by
- * the node's identity (`unique_source_id` stamped for cheap reconciliation).
+ * the queryable skeleton on top. Zero coupling to the hot path: `createStrut`
+ * projects every top-level run when it ends, DETACHED from the run's
+ * teardown (graph workspaces only), and it can be run again at boot, on a
+ * schedule, as a workflow, or by hand — for runs cut off before their end,
+ * and whenever the edge vocabulary grows. Every write is an idempotent
+ * `upsert` keyed by the node's identity (`unique_source_id` stamped for
+ * cheap reconciliation).
  *
  * Provenance: a tool call whose `step.end` carries `nodes` (the convention
  * in plans/generic-storage.md "v2" — graph-touching steps mark their output
@@ -19,16 +22,22 @@
  * this graph. Refs the graph doesn't hold (another database, a deleted
  * node) are counted as `unresolved`, never written — explicit over clever.
  *
+ * Threads: a `StrutAgentSession` is ONE execution of an agent step — one
+ * turn. An agent that continued a thread (`session`, plans/agent-sessions.md)
+ * carries `session_id` + `session_turn`, so a thread is every node with that
+ * id, across runs and workflows.
+ *
  * Not projected: `PROMOTED_FROM` — promotions publish a new version without
  * recording the source run.
  */
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatStore, StoredMessage } from "../chat-store.js";
+import { idProblem } from "../session-store.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
-import { PREVIEW_MAX_CHARS } from "./strut-schemas.js";
+import { PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
 
 export interface ProjectRunsOptions {
   /** Workflows to project. Default: every workflow with runs is unknown to a
@@ -146,6 +155,13 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     if (e.type !== "step.start" || e.stepType !== "agent") continue;
     const end = ends.get(keyOf(e));
     const input = (e.input ?? {}) as Record<string, unknown>;
+    // The thread this execution was a turn of (plans/agent-sessions.md). The
+    // id is the step's resolved config, so a turn that FAILED is grouped with
+    // its thread too; the number is in the output, which only a committed
+    // turn has. An id the step refused (a missing template value) names no
+    // thread.
+    const thread = typeof input["session"] === "string" && !idProblem(input["session"]) ? input["session"] : undefined;
+    const turn = (end?.output as { session?: { turn?: unknown } } | null | undefined)?.session?.turn;
     sessionPaths.push(e.path);
     sessions.push({
       type: "StrutAgentSession",
@@ -161,6 +177,8 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
         duration_ms: end?.durationMs,
         error_message: end?.error?.message,
         log_ref: logRef,
+        session_id: thread,
+        session_turn: thread !== undefined && typeof turn === "number" ? turn : undefined,
         unique_source_id: `strutagentsession:${runId}:${keyOf(e)}`,
       }),
     });
@@ -247,9 +265,9 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
  * run). `workflow` is the run-store key: a workflow name, or `step:<type>`
  * for a kept single-step run — which gets `EXECUTED → StrutStepVersion`
  * from `run.start.stepHashes` instead of the workflow-version edge. The
- * verify pass calls this for the run it is about to attach evidence to
- * (plans/claims.md §3): step runs that produced no evidence never reach the
- * graph, and `projectRuns` never lists them.
+ * verify pass projects the run it is about to attach evidence to
+ * (plans/claims.md §3) — the only way a STEP run reaches the graph: one that
+ * produced no evidence never does, and `projectRuns` never lists them.
  */
 export async function projectRun(
   backend: GraphBackend,
@@ -317,6 +335,55 @@ export async function projectRun(
     report.edges += edges.length;
   }
   return runRef;
+}
+
+const projecting = new WeakMap<GraphBackend, Map<string, Promise<string | null>>>();
+
+/**
+ * `projectRun`, one at a time per run: a caller that arrives while the run
+ * is being projected joins that projection, so the same nodes are never
+ * written side by side. What the run-end hook calls (`createStrut` projects
+ * every top-level run); the verify pass goes through `runRef`.
+ */
+export function projectRunOnce(backend: GraphBackend, store: RunStore, workflow: string, runId: string): Promise<string | null> {
+  let runs = projecting.get(backend);
+  if (!runs) projecting.set(backend, (runs = new Map()));
+  const inFlight = runs;
+  const key = `${workflow}/${runId}`;
+  const running = inFlight.get(key);
+  if (running) return running;
+  const p = projectRun(backend, store, workflow, runId).finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
+}
+
+/**
+ * The `StrutRun` of a run that has ended, for a caller that needs the NODE
+ * and not a fresh projection — the verify pass, whose evidence points at it.
+ * The projection in flight when there is one; else the node the graph
+ * already holds in a settled state (every top-level run is projected when it
+ * ends); else a projection — a kept step run's first, or an older run's.
+ */
+export async function runRef(backend: GraphBackend, store: RunStore, workflow: string, runId: string): Promise<string | null> {
+  const running = projecting.get(backend)?.get(`${workflow}/${runId}`);
+  if (running) return running;
+  // Lazy: the writer loads the driver, and this module is imported by hosts
+  // that have no graph.
+  const { composeNodeKey } = await import("./node-writer.js");
+  const rows = await backend.bolt.run(
+    `MATCH (r:StrutRun {node_key: $key, namespace: $ns}) WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
+    { key: composeNodeKey(getStrutSchema("StrutRun")!, { run_id: runId }), ns: backend.cfg.namespace, wf: workflow },
+  );
+  const held = rows[0];
+  if (held && isTerminalStatus(held["status"])) return held["ref_id"] as string;
+  return projectRunOnce(backend, store, workflow, runId);
+}
+
+/** Resolves once nothing started through `projectRunOnce` is in flight —
+ *  for a caller about to pull the graph from under it (a test's wipe). */
+export async function projectionsSettled(backend: GraphBackend): Promise<void> {
+  const runs = projecting.get(backend);
+  while (runs?.size) await Promise.allSettled([...runs.values()]);
 }
 
 // ── Chats ─────────────────────────────────────────────────────────────────

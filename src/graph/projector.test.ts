@@ -1,5 +1,8 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RunEvent } from "../core.js";
 import { MemoryRunStore } from "../store.js";
 import { MemoryChatStore } from "../chat-store.js";
@@ -7,9 +10,11 @@ import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
-import { messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRuns, spawnedRunIds } from "./projector.js";
+import { messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, spawnedRunIds } from "./projector.js";
 import { runStep } from "../run-step.js";
-import { buildRegistry } from "../steps/registry.js";
+import { buildRegistry, coreRegistry } from "../steps/registry.js";
+import { createStrut } from "../createStrut.js";
+import { runWorkflow } from "../runner.js";
 
 const cfg = testGraphConfig();
 let backend: GraphBackend;
@@ -81,6 +86,36 @@ describe("projectRunEvents (pure)", () => {
       [[CONCEPT_A, CONCEPT_B, "not-in-this-graph"], []],
     );
     assert.equal(p.toolCalls[0]!.accessed[0]!.node_type, "Concept");
+  });
+
+  it("stamps an agent's thread: the id from its config, the turn from its output", () => {
+    const agent = (i: number, id: string, input: Record<string, unknown>, end: Partial<RunEvent>): RunEvent[] => [
+      ev(i, "step.start", `${WF}/${id}`, { stepType: "agent", input: { prompt: "go", ...input } }),
+      ev(i + 1, end.error ? "step.error" : "step.end", `${WF}/${id}`, { stepType: "agent", ...end }),
+    ];
+    const p = projectRunEvents(
+      WF,
+      RUN,
+      [
+        ev(0, "run.start", WF),
+        ...agent(1, "committed", { session: "t-1/review" }, { output: { result: "ok", session: { id: "t-1/review", turn: 0, offset: 0 } } }),
+        // A failed turn committed nothing: it belongs to the thread, without a number.
+        ...agent(3, "failed", { session: "t-1/review" }, { error: { message: "session_busy: …" } }),
+        ...agent(5, "one-shot", {}, { output: { result: "ok" } }),
+        // `"{{ input.session }}/review"` with no session: the step refused it.
+        ...agent(7, "refused", { session: "/review" }, { error: { message: "agent: session …" } }),
+      ],
+      null,
+    )!;
+    assert.deepEqual(
+      p.sessions.map((s) => [s.data["path"], s.data["session_id"], s.data["session_turn"]]),
+      [
+        [`${WF}/committed`, "t-1/review", 0],
+        [`${WF}/failed`, "t-1/review", undefined],
+        [`${WF}/one-shot`, undefined, undefined],
+        [`${WF}/refused`, undefined, undefined],
+      ],
+    );
   });
 
   it("uses the summary when present, and marks a finalize-less log stale", () => {
@@ -192,6 +227,118 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     // Re-projection does not duplicate the edges.
     await projectRuns(backend, store, { workflows: [WF], skipSettled: false });
     assert.equal(await edges("ACCESSED"), 2);
+  });
+
+  it("a thread is queryable across runs: which nodes each turn of a session touched", async () => {
+    for (const [r, name] of [[CONCEPT_A, "a"], [CONCEPT_B, "b"]]) {
+      await backend.bolt.run(`CREATE (:Concept:Node:Data_Bank:Domain_general {ref_id: $r, node_key: $k, namespace: "default", name: $n})`, { r, k: `concept-${name}`, n: name });
+    }
+    // One run per turn; a third run whose agent took no session.
+    const turnRun = (runId: string, session: { id: string; turn: number } | null, touched: string): RunEvent[] =>
+      [
+        ev(0, "run.start", WF),
+        ev(1, "step.start", `${WF}/plan`, { stepType: "agent", input: { prompt: "go", ...(session ? { session: session.id } : {}) } }),
+        ev(2, "step.start", `${WF}/plan/001-get`, { stepType: "tool:graph/graph-get", input: {} }),
+        ev(3, "step.end", `${WF}/plan/001-get`, { stepType: "tool:graph/graph-get", output: {}, nodes: [{ ref_id: touched }] }),
+        ev(4, "step.end", `${WF}/plan`, { stepType: "agent", output: { result: "ok", ...(session ? { session: { ...session, offset: 0 } } : {}) } }),
+        ev(5, "run.end", WF),
+      ].map((e) => ({ ...e, runId }));
+    const runs: Array<[string, RunEvent[]]> = [
+      ["1788307097001", turnRun("1788307097001", { id: "thread-1", turn: 0 }, CONCEPT_A)],
+      ["1788307097002", turnRun("1788307097002", { id: "thread-1", turn: 1 }, CONCEPT_B)],
+      ["1788307097003", turnRun("1788307097003", null, CONCEPT_A)],
+    ];
+    for (const [runId, events] of runs) for (const e of events) await store.append(WF, runId, e);
+
+    const report = await projectRuns(backend, store, { workflows: [WF] });
+    assert.deepEqual([report.runs, report.sessions, report.accessed], [3, 3, 3]);
+    const thread = await backend.bolt.run(
+      `MATCH (s:StrutAgentSession {session_id: $id})<-[:IN_SESSION]-(:StrutToolCall)-[:ACCESSED]->(c:Concept)
+       RETURN s.session_turn AS turn, s.run_id AS run, c.name AS concept ORDER BY turn`,
+      { id: "thread-1" },
+    );
+    assert.deepEqual(thread, [
+      { turn: 0, run: "1788307097001", concept: "a" },
+      { turn: 1, run: "1788307097002", concept: "b" },
+    ]);
+    const oneShot = await backend.bolt.run(`MATCH (s:StrutAgentSession {run_id: "1788307097003"}) RETURN s.session_id AS id, s.session_turn AS turn`);
+    assert.deepEqual(oneShot, [{ id: null, turn: null }]);
+  });
+
+  it("createStrut projects every top-level run when it ends — claims or not, success or error; never a check run", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-project-"));
+    const yaml = (name: string, step: string) => `name: ${name}\nsteps:\n${step}`;
+    await ws.publishWorkflowByContent("greets", yaml("greets", `  - id: hi\n    type: log\n    config: { message: "hi" }\n`));
+    await ws.publishWorkflowByContent("fails", yaml("fails", `  - id: x\n    type: exec\n    config: { cmd: bash, args: ["-c", "exit 3"] }\n`));
+    const runs = () => backend.bolt.run(`MATCH (r:StrutRun) OPTIONAL MATCH (r)-[:EXECUTED]->(v:StrutWorkflowVersion) RETURN r.workflow_name AS wf, r.run_status AS status, v.name AS executed ORDER BY wf`);
+    try {
+      for (const claims of [false, true]) {
+        await backend.bolt.run(`MATCH (r:StrutRun) DETACH DELETE r`);
+        const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, claims, serveUi: false, enableChat: false, stt: false, scheduler: false });
+        const ok = await strut.run("greets", {});
+        const bad = await strut.run("fails", {});
+        assert.deepEqual([ok.status, bad.status], ["success", "error"]);
+        // The projection is detached from the run; joining it is how a caller waits.
+        await projectRunOnce(backend, store, "greets", ok.runId);
+        await projectRunOnce(backend, store, "fails", bad.runId);
+        assert.deepEqual(
+          await runs(),
+          [
+            { wf: "fails", status: "error", executed: "fails" },
+            { wf: "greets", status: "success", executed: "greets" },
+          ],
+          `claims: ${claims}`,
+        );
+
+        // A check run (the verify pass's own) is not a run of the deployment's.
+        const check = await runWorkflow(await ws.getWorkflow("greets"), {}, coreRegistry(), { store, services: strut.services, origin: "verify" });
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(check.status, "success");
+        assert.equal((await runs()).length, 2);
+        await strut.close();
+      }
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("projectRunOnce: two callers on one run share one projection", async () => {
+    for (const e of sampleEvents("h")) await store.append(WF, RUN, e);
+    const [a, b] = [projectRunOnce(backend, store, WF, RUN), projectRunOnce(backend, store, WF, RUN)];
+    assert.equal(a, b);
+    assert.ok(await a);
+    const again = projectRunOnce(backend, store, WF, RUN);
+    assert.notEqual(again, a, "settled: the next caller projects again");
+    assert.equal(await again, await a, "onto the same node");
+    assert.equal(await count("StrutRun"), 1);
+  });
+
+  it("runRef: the projection in flight, else the settled node the graph holds, else a projection", async () => {
+    // A projection reads the run's log; finding the node does not.
+    let reads = 0;
+    const counting = Object.assign(Object.create(store) as MemoryRunStore, {
+      getRunEvents: (wf: string, id: string) => (reads++, store.getRunEvents(wf, id)),
+    });
+    const events = sampleEvents("h");
+    for (const e of events.slice(0, 7)) await store.append(WF, RUN, e); // in flight: no terminal event
+
+    const first = await runRef(backend, counting, WF, RUN);
+    assert.ok(first);
+    assert.equal(reads, 1, "nothing in the graph: projected");
+    assert.equal(await runRef(backend, counting, WF, RUN), first);
+    assert.equal(reads, 2, "a stale node is not the run's record: projected again");
+
+    for (const e of events.slice(7)) await store.append(WF, RUN, e);
+    const hook = projectRunOnce(backend, counting, WF, RUN); // what the run-end hook does
+    assert.equal(await runRef(backend, counting, WF, RUN), first, "joins the projection in flight");
+    await hook;
+    assert.equal(reads, 3);
+    assert.equal(await runRef(backend, counting, WF, RUN), first, "found, not projected");
+    assert.equal(reads, 3);
+
+    assert.equal(await runRef(backend, counting, "another-workflow", RUN), null, "a node of another workflow's run is not this run's");
+    assert.equal(await runRef(backend, counting, WF, "nope"), null);
+    assert.equal(await count("StrutRun"), 1);
   });
 
   it("projectRun: a kept single-step run gets EXECUTED → the StrutStepVersion it actually ran, from run.start.stepHashes", async () => {
