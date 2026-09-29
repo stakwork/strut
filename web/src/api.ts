@@ -22,21 +22,23 @@ export function isArtifactPath(v: unknown): v is string {
   return typeof v === "string" && v.startsWith("/artifacts/");
 }
 
-/** Browser URL for an artifact path. Mount-path aware (works under `/lab`);
- *  the route is public, so a plain `<a href>` needs no key. */
+/** Browser URL for an artifact path. Mount-path aware (works under `/lab`).
+ *  An `<a href>` / `<img src>` cannot set a header, so the key rides as
+ *  `?key=`, like the dictation socket's. */
 export function artifactUrl(path: string): string {
-  return `${BASE}${path}`;
+  const key = getApiKey();
+  return `${BASE}${path}${key ? `?key=${encodeURIComponent(key)}` : ""}`;
 }
 
 /** The text of an artifact, for the inline viewer (markdown / text files). */
 export async function fetchArtifactText(path: string): Promise<string> {
-  const res = await fetch(artifactUrl(path));
+  const res = await apiFetch(path);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
 }
 
 // ── API key ────────────────────────────────────────────────────────────────
-// When the server sets STRUT_API_KEY, gated routes need `Authorization:
+// When the server sets STRUT_API_KEY, every route needs `Authorization:
 // Bearer`. A host that spawns strut (desktop app) hands the per-launch key to
 // the UI as `?key=` on first load; we stash it in sessionStorage and strip
 // it from the URL. A user can also paste one in Settings (localStorage),
@@ -67,6 +69,7 @@ export function getApiKey(): string {
 
 /** Save a user-entered key (Settings). Empty clears it. */
 export function setApiKey(key: string): void {
+  refused = false;
   try {
     if (key) localStorage.setItem(KEY_STORAGE, key);
     else {
@@ -90,12 +93,25 @@ function authHeaders(): Record<string, string> {
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
+// The server refused the key (or the lack of one). The app is told once per
+// key — every poll would say it again — and opens Settings → Connection.
+let refused = false;
+let onRefused: (() => void) | null = null;
+export function onUnauthorized(fn: (() => void) | null): void {
+  onRefused = fn;
+}
+
 /** `fetch` against the API base with the key attached. Every call goes
  *  through here so a gated deployment works without per-call plumbing. */
-export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers ?? {});
   for (const [k, v] of Object.entries(authHeaders())) if (!headers.has(k)) headers.set(k, v);
-  return fetch(`${BASE}${path}`, { ...init, headers });
+  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+  if (res.status === 401 && !refused) {
+    refused = true;
+    onRefused?.();
+  }
+  return res;
 }
 
 export async function fetchJSON<T>(path: string, opts?: RequestInit): Promise<T> {
