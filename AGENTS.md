@@ -118,7 +118,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1236 unit tests across 70 files (+ 228 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1237 unit tests across 70 files (+ 228 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -173,7 +173,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1236 tests, ~5s
+npm test                    # 1237 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -498,6 +498,21 @@ services bag can override it, same as `http`/`secrets`).
   `GET /artifacts/:runId/<path>` serves the file (minimal content-type map).
   Read-only — steps are the only writers. Behind the key like every route;
   the UI's links carry it as `?key=`.
+- **An artifact is untrusted content on strut's own origin** — a step or an
+  agent wrote it, and the UI keeps the API key in that origin's storage. So
+  the file route answers with `Content-Security-Policy: sandbox` (no
+  allowances) and `X-Content-Type-Options: nosniff` (`artifactHeaders` in
+  `createStrut.ts`): opened as a document — the "Open in new tab" link, a
+  pasted URL, a frame — an `.html` or `.svg` gets an opaque origin and runs no
+  script, so it cannot read the key from storage or from its own URL, call
+  the API, or send its URL as a referrer. Sandboxed unless exempt, so a type
+  added to the map is covered; the one exemption is `video/*` and `audio/*`,
+  which cannot script and whose player, in a tab of its own, cannot load the
+  file from an opaque origin. An HTML artifact is therefore a STATIC page
+  everywhere (the viewer's frame is `sandbox=""` too); never add
+  `allow-scripts` or `allow-same-origin` to either. The UI's viewers are
+  unaffected — the header only applies to a document, not to an `<img>` /
+  `<video>` / `fetch`.
 
 ## Shell (subprocesses)
 
