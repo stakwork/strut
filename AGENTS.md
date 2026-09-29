@@ -117,7 +117,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1217 unit tests across 70 files (+ 221 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1231 unit tests across 70 files (+ 221 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -172,7 +172,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1217 tests, ~5s
+npm test                    # 1231 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -1323,6 +1323,22 @@ and the child env is scrubbed by construction).
     each iteration's tool calls show in order. No-op without a runner `ctx`
     (in-code/test); skips `final_answer` + provider-executed tools (no
     `execute`). `agent.run` now consumes `ctx` (registry + emit).
+  - **A stream that ends in an error fails the step** (`streamFailure` +
+    `streamError`). The step reads `result.stream`, never `consumeStream`:
+    the SDK reports a request the provider REFUSED (a 400 on a later step)
+    and a throw out of `prepareStep` (a cancel) as an `error` PART on a
+    stream that then closes normally, and `steps` resolves with what was
+    banked — which reads exactly like a model that stopped, so the step
+    used to nudge, force a final answer and return one. A connection fault
+    (`isTransientStreamError`) is still resumed from the banked
+    conversation, up to 5 times. Anything else throws `AgentStreamError`,
+    `agent failed after N step(s): <message> (HTTP <status>: <body>)` — in
+    the MESSAGE, because a run log records nothing else of an error — and a
+    cancel is rethrown as it is (`status: "cancelled"`). The nudge and the
+    forced final answer are salvage and still give up quietly on a
+    connection fault; a refusal or a cancel there fails the step too, since
+    the next fallback would send the refused conversation again. With a
+    `session`, nothing is committed.
 
 ## Conventions
 
