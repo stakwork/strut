@@ -1,7 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import yaml from "js-yaml";
 import { YamlEditor } from "./YamlEditor";
-import { humanize } from "../helpers";
+import { humanize, errorMessage } from "../helpers";
 
 // ── Params panel (a Workflow flyout tab) ───────────────────────────────────
 //
@@ -19,6 +19,9 @@ import { humanize } from "../helpers";
 // invalid, we keep the draft text but do NOT commit it (so localParams stays
 // structurally valid), surface an "invalid" marker, and report invalidity up so
 // the parent can block Publish.
+//
+// The flyout covers the topbar's Publish button, so the panel carries its own
+// while there is anything to publish.
 
 const dumpYaml = (v: unknown): string => {
   if (v == null) return "";
@@ -35,6 +38,9 @@ export function ParamsPanel(props: {
   /** Reports whether every structured param currently parses (parent blocks
    *  Publish while false). */
   onValidChange?: (valid: boolean) => void;
+  /** Unpublished edits (params or canvas) — shows the Publish bar. */
+  dirty: boolean;
+  onPublish: () => Promise<void>;
 }) {
   const keys = Object.keys(props.params);
 
@@ -54,10 +60,25 @@ export function ParamsPanel(props: {
     return d;
   });
   const [invalid, setInvalid] = useState<Record<string, boolean>>({});
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const valid = Object.values(invalid).every((bad) => !bad);
 
   useEffect(() => {
-    props.onValidChange?.(Object.values(invalid).every((bad) => !bad));
-  }, [invalid]);
+    props.onValidChange?.(valid);
+  }, [valid]);
+
+  const publish = async () => {
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      await props.onPublish();
+    } catch (err) {
+      setPublishError(errorMessage(err));
+    } finally {
+      setPublishing(false);
+    }
+  };
 
   const update = (key: string, text: string) => {
     setDrafts((d) => ({ ...d, [key]: text }));
@@ -75,32 +96,42 @@ export function ParamsPanel(props: {
   };
 
   return (
-    <div class="flyout-body">
-      {keys.length === 0 ? (
-        <div class="flyout-section">
-          <span class="flyout-meta-value">This workflow has no params.</span>
-        </div>
-      ) : (
-        keys.map((k) => (
-          <div class="flyout-section" key={k}>
-            <div class="flyout-section-title">
-              {humanize(k)}
-              {kinds[k] === "yaml" && <span class="param-type-tag">yaml</span>}
-              {invalid[k] && <span class="param-type-tag param-invalid">invalid</span>}
-            </div>
-            <YamlEditor
-              value={drafts[k] ?? ""}
-              language={kinds[k] === "string" ? "text" : "yaml"}
-              onChange={(text) => update(k, text)}
-            />
+    <>
+      <div class="flyout-body">
+        {keys.length === 0 ? (
+          <div class="flyout-section">
+            <span class="flyout-meta-value">This workflow has no params.</span>
           </div>
-        ))
-      )}
-      <div class="flyout-section">
-        <span class="flyout-meta-value">
-          Edits mark the workflow changed — hit Publish to save as a new version. Invalid YAML blocks publishing.
-        </span>
+        ) : (
+          keys.map((k) => (
+            <div class="flyout-section" key={k}>
+              <div class="flyout-section-title">
+                {humanize(k)}
+                {kinds[k] === "yaml" && <span class="param-type-tag">yaml</span>}
+                {invalid[k] && <span class="param-type-tag param-invalid">invalid</span>}
+              </div>
+              <YamlEditor
+                value={drafts[k] ?? ""}
+                language={kinds[k] === "string" ? "text" : "yaml"}
+                onChange={(text) => update(k, text)}
+              />
+            </div>
+          ))
+        )}
+        <div class="flyout-section">
+          <span class="flyout-meta-value">
+            Edits mark the workflow changed — Publish saves them as a new version. Invalid YAML blocks publishing.
+          </span>
+        </div>
+        {publishError && <div class="flyout-section" style="color:var(--danger);font-size:12px;">{publishError}</div>}
       </div>
-    </div>
+      {props.dirty && (
+        <div class="flyout-actions">
+          <button class="btn btn-publish" disabled={publishing || !valid} onClick={publish}>
+            {publishing ? "Publishing…" : "Publish"}
+          </button>
+        </div>
+      )}
+    </>
   );
 }

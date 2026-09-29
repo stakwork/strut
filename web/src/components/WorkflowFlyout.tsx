@@ -54,6 +54,8 @@ export function WorkflowFlyout(props: {
   params: Record<string, unknown>;
   onParamsChange: (next: Record<string, unknown>) => void;
   onParamsValidChange: (valid: boolean) => void;
+  /** Publish the working copy (params + canvas) as a new version. */
+  onPublish: () => Promise<void>;
   // Claims
   claims: api.ClaimsResponse | null;
   onClaimsLoaded: (r: api.ClaimsResponse) => void;
@@ -118,7 +120,8 @@ export function WorkflowFlyout(props: {
       </div>
 
       {props.tab === "params" && (
-        <ParamsPanel params={props.params} onChange={props.onParamsChange} onValidChange={props.onParamsValidChange} />
+        <ParamsPanel params={props.params} onChange={props.onParamsChange} onValidChange={props.onParamsValidChange}
+          dirty={props.dirty} onPublish={props.onPublish} />
       )}
       {props.tab === "claims" && (
         <div class="flyout-body">
@@ -151,8 +154,9 @@ export function WorkflowFlyout(props: {
         />
       )}
 
-      {/* The automation editor brings its own action bar; the footer yields to it. */}
-      {!editing && (
+      {/* The automation editor and the params' Publish bar bring their own
+          action bar; the footer yields to it. */}
+      {!editing && !(props.tab === "params" && props.dirty) && (
         <div class="flyout-footer">
           <span class="flyout-footer-runs" title="All runs, every version">
             {props.runs.length === 0 ? "No runs" : `${props.runs.length} run${props.runs.length === 1 ? "" : "s"}`}

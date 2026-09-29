@@ -1237,6 +1237,7 @@ export function App() {
           params={localParams ?? {}}
           onParamsChange={setLocalParams}
           onParamsValidChange={setParamsValid}
+          onPublish={handlePublish}
           claims={wfClaims}
           onClaimsLoaded={setWfClaims}
           onOpenRun={openRunFromClaim}
