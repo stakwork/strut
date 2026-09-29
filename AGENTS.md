@@ -34,6 +34,7 @@ strut/
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend on a bare `docker run`
 ├── docker-compose.yml     # test/local compose: that image on the graph backend + a neo4j:5 container (named volumes for neo4j data, /data/workspace, /data/models, uv cache)
+├── images/browser/        # a second image, nothing of strut's in it: a Playwright SERVER (`playwright run-server`, the package baked in, tini, non-root) for hosts whose steps drive a browser over a websocket. `.github/workflows/publish-browser.yml` pushes it to ghcr.io/stakwork/strut-browser when this directory changes on main, tagged with the Playwright version its Dockerfile pins — the connecting host's `playwright-core` must be on the same major.minor
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
 │   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the three output markers — withAccessedNodes / withMessages / withMedia (readers accessedNodesOf / messagesOf / mediaOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
