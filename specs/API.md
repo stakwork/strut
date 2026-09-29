@@ -12,12 +12,18 @@ how-tos: `CALLBACKS.md` (the result pushed to your endpoint),
 
 ## Auth
 
-With `STRUT_API_KEY` set, the mutations marked **(key)** below need
-`Authorization: Bearer <STRUT_API_KEY>`; unset (dev mode) they are open.
-Publishing, running and reading are never gated. `x-strut-actor: <id>` names
-who a request is from — honored only alongside a matching key — and is
-recorded on the run (`actor`, `principal`) and on the workflow it publishes
-(`owner`). AGENTS.md "Auth" has the whole model.
+With `STRUT_API_KEY` set there are **no public endpoints**: every request in
+this document — reads, runs, streams, transcripts, artifacts — needs
+`Authorization: Bearer <STRUT_API_KEY>`, and gets a `401` without it. Where a
+header cannot be set (a link, an `<img>`, the dictation socket) the key may
+ride as `?key=` instead. Unset (dev mode) everything is open. The only
+things served without the key are the web UI's own files and `GET /health`
+(§8). The examples below leave the header out for brevity; add
+`-H "Authorization: Bearer $STRUT_API_KEY"`.
+
+`x-strut-actor: <id>` names who a request is from — honored only alongside a
+matching key — and is recorded on the run (`actor`, `principal`) and on the
+workflow it publishes (`owner`). AGENTS.md "Auth" has the whole model.
 
 ## 1. Publish
 
@@ -68,7 +74,7 @@ reads.
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
-| DELETE | `/workflows/:name` **(key)**    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
+| DELETE | `/workflows/:name`    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
 
 ## 3. Run
 
@@ -149,7 +155,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/workflows/:name/runs`                                | array, newest first, no paging: a summary (§5.1) per finished run, `{ runId, workflow, status }` for one still going (§5.2 states) |
 | GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
 | GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |
-| GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none. For a step that continued a `session` (§9) this is its system prompt + THAT TURN; `?full=1` **(key)** is the thread up to and including it (404 once the session is deleted) |
+| GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none. For a step that continued a `session` (§9) this is its system prompt + THAT TURN; `?full=1` is the thread up to and including it (404 once the session is deleted) |
 | GET    | `/workflows/:name/evidence[?runId=&limit=&before=]`   | what the checks said about the workflow's runs (§5.4) |
 | GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …] }` — what the run's steps wrote; 501 when the deployment has no artifact store |
 | GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension |
@@ -349,10 +355,10 @@ the step has claims. 404 for an unknown type.
 | GET    | `/steps/:type/source`           | source code |
 | GET    | `/steps/:type/versions`         | a custom step's versions + active id |
 | GET    | `/steps/:type/version/:version` | archived source for one version |
-| PUT    | `/steps/:type/active` **(key)** | `{ version }` — switch the active version; rebuilds the registry |
-| POST   | `/steps` **(key)**              | `{ name, code, description?, publisher? }` → `{ version, changed }`; content-hash idempotent |
-| DELETE | `/steps/:name` **(key)**        | delete a custom step |
-| DELETE | `/steps?publisher=X` **(key)**  | delete every step a publisher owns |
+| PUT    | `/steps/:type/active` | `{ version }` — switch the active version; rebuilds the registry |
+| POST   | `/steps`              | `{ name, code, description?, publisher? }` → `{ version, changed }`; content-hash idempotent |
+| DELETE | `/steps/:name`        | delete a custom step |
+| DELETE | `/steps?publisher=X`  | delete every step a publisher owns |
 
 Automations launch a workflow on a schedule; the trigger grammar is in
 `SPEC.md` §12.1 and `plans/automations.md`. A scheduled run is an ordinary
@@ -363,12 +369,13 @@ run whose `run.start` and summary carry `origin: "schedule"` and
 | ------ | ----------------------------------------- | ----------- |
 | GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running }]` |
 | POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
-| POST   | `/workflows/:name/automations` **(key)**  | `{ name, trigger, input?, enabled? }` |
-| PATCH  | `/workflows/:name/automations/:id` **(key)** | any subset; `{ enabled: false }` pauses |
-| DELETE | `/workflows/:name/automations/:id` **(key)** | remove |
-| POST   | `/workflows/:name/automations/:id/fire` **(key)** | run now → 202 `{ runId }`; 409 while its previous run is going |
+| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled? }` |
+| PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses |
+| DELETE | `/workflows/:name/automations/:id` | remove |
+| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going |
 
-`GET /health` → `{ ok, dataDir, stepCount }`.
+`GET /health` → `{ ok, dataDir, stepCount }`; without the key, `{ ok: true }`
+and nothing else — the one route a keyless probe may call.
 
 ## 9. Agent sessions
 
@@ -429,10 +436,10 @@ error message:
 
 | Method | Path | Response |
 | ------ | ---- | -------- |
-| GET    | `/sessions` **(key)** | `{ sessions: [{ id, turns, messages, createdAt, updatedAt, createdBy?, provider, model, context?: { used, limit }, busy? }] }`, newest first |
-| GET    | `/sessions?id=<id>` **(key)** | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, provider, model, routed, offset, count, usage, cost, context? }]`; 404 |
-| GET    | `/sessions/messages?id=<id>` **(key)** | the thread, a bare array: the system message, then every message; 404 |
-| DELETE | `/sessions?id=<id>` **(key)** | `{ ok: true }`; 409 while a turn holds it |
+| GET    | `/sessions` | `{ sessions: [{ id, turns, messages, createdAt, updatedAt, createdBy?, provider, model, context?: { used, limit }, busy? }] }`, newest first |
+| GET    | `/sessions?id=<id>` | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, provider, model, routed, offset, count, usage, cost, context? }]`; 404 |
+| GET    | `/sessions/messages?id=<id>` | the thread, a bare array: the system message, then every message; 404 |
+| DELETE | `/sessions?id=<id>` | `{ ok: true }`; 409 while a turn holds it |
 
-Reads are behind the key too. 400 for a malformed id; 501 when the host
+400 for a malformed id; 501 when the host
 injected its own `sessions` capability.

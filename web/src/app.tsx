@@ -336,6 +336,14 @@ export function App() {
     } catch { /* ignore */ }
   }, []);
 
+  // The server wants a key this browser doesn't have: ask for it. Not when
+  // embedded — there the key is the host's to renew.
+  useEffect(() => {
+    if (window.parent !== window) return;
+    api.onUnauthorized(() => setShowSettings(true));
+    return () => api.onUnauthorized(null);
+  }, []);
+
   useEffect(() => { refreshWorkflows(); refreshStepTypes(); }, []);
 
   // Runs executing right now, in any workflow — the sidebar's running dot.

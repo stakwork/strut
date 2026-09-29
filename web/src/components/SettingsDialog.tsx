@@ -30,8 +30,8 @@ export function SettingsDialog(props: {
     const v = value.trim();
     if (v === api.getApiKey()) return;
     api.setApiKey(v);
-    setApiKeyState(v);
-    refresh();
+    // Everything on screen was fetched with the old key (or refused for it).
+    location.reload();
   };
 
   const refresh = async () => {
@@ -107,8 +107,9 @@ export function SettingsDialog(props: {
 
         <div class="settings-section-title">Connection</div>
         <div class="dialog-hint">
-          Only needed when the server sets <code>STRUT_API_KEY</code>. Sent as a bearer
-          token on every request (and as <code>?key=</code> on the dictation socket).
+          Needed when the server sets <code>STRUT_API_KEY</code>: nothing is served without
+          it. Sent as a bearer token on every request (and as <code>?key=</code> on artifact
+          links and the dictation socket).
           {keySource === "url" && " This session's key came from the launch URL."}
         </div>
         <div class="dialog-field">
