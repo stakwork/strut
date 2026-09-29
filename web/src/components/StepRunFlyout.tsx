@@ -7,6 +7,8 @@ import { Markdown, hasMarkdownField } from "./Markdown";
 import { ValueFields } from "./ValueFields";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { ConfirmButton } from "./ConfirmButton";
+import { AccessedNodes } from "./AccessedNodes";
+import type { TouchedNode } from "../accessed-nodes";
 import yaml from "js-yaml";
 
 export interface StepRunEvents {
@@ -15,6 +17,9 @@ export interface StepRunEvents {
   error?: api.RunEvent;
   skipped?: api.RunEvent;
   all: api.RunEvent[];
+  /** Graph nodes the step read or wrote — an agent's, through its tool
+   *  calls (`foldAccessedNodes`). */
+  nodes: TouchedNode[];
 }
 
 // ── Step Run Results Flyout (read-only) ────────────────────────────────────
@@ -23,6 +28,7 @@ export interface StepRunEvents {
 // container (subflow/foreach/loop) it's the aggregate "summary" (subflow:
 // child input → child result; foreach: items array → results array).
 // Per-child detail is reached by drilling in via the node's arrow.
+// A step that touched the graph also lists the nodes it read or wrote.
 
 export function StepRunFlyout(props: {
   step: StepData;
@@ -126,6 +132,8 @@ export function StepRunFlyout(props: {
               </div>
             );
           })()}
+
+          {disp.nodes.length > 0 && <AccessedNodes nodes={disp.nodes} />}
 
           {/* Error */}
           {disp.error?.error != null && (

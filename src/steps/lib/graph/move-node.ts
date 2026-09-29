@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, describeNodes } from "./_shared.js";
 
 const EXAMPLE = `- id: rehome
   type: graph/move-node
@@ -62,7 +62,7 @@ export default defineStep({
           ...(r.moved ? { previous_edge_ref_id: r.previous_edge_ref_id } : { messages: ["Already hangs there — nothing moved"] }),
         },
         // Provenance: the node and both places.
-        [{ ref_id: r.ref_id }, { ref_id: r.from_ref_id }, ...(r.moved ? [{ ref_id: r.to_ref_id }] : [])],
+        await describeNodes(b, [r.ref_id, r.from_ref_id, ...(r.moved ? [r.to_ref_id] : [])]),
       );
     } catch (e) {
       return errText("graph/move-node", e);

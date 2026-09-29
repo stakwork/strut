@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
-import { defineStep, flow, step, withMessages } from "./core.js";
+import { defineStep, flow, step, withAccessedNodes, withMessages } from "./core.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
@@ -449,6 +449,26 @@ describe("createStrut", () => {
     assert.equal((await post("/claims")).status, 409);
     assert.equal((await post("/claims/x/evidence")).status, 409);
     assert.equal((await post("/workflows/wf/runs/1/verify")).status, 409);
+  });
+
+  it("a graph step's nodes reach the run's events by name; without a graph, a node's content is a 501", async () => {
+    const reads = defineStep({
+      type: "reads",
+      input: z.any(),
+      output: z.any(),
+      run: async () => withAccessedNodes({ ok: true }, [{ ref_id: "n-1", node_type: "Concept", name: "Billing" }]),
+    });
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir), registry: await createRegistry([reads]), store: new MemoryRunStore(), serveUi: false, enableChat: false,
+    });
+    await strut.workspace.publishWorkflow("reader", "v1", { steps: [{ id: "r", type: "reads", config: {} }] });
+    const { runId } = await strut.run("reader", {});
+    const events = (await (await strut.app.request(`/workflows/reader/runs/${runId}/events`)).json()) as Array<{ type: string; path: string; nodes?: unknown }>;
+    assert.deepEqual(events.find((e) => e.type === "step.end" && e.path === "reader/r")!.nodes, [{ ref_id: "n-1", node_type: "Concept", name: "Billing" }]);
+
+    const res = await strut.app.request("/graph/nodes/n-1");
+    assert.equal(res.status, 501);
+    assert.match(((await res.json()) as { error: string }).error, /no graph/);
   });
 
   it("exposes /steps with registered types", async () => {

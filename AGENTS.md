@@ -118,7 +118,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1237 unit tests across 70 files (+ 228 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1243 unit tests across 71 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -138,10 +138,12 @@ strut/
         ├── step-depends.ts # dependsForSave: what the step editor saves as `depends` — a checked list, `[]` when the step had an explicit `depends` and nothing is checked (a parallel step stays parallel; unchecking every dep means none), omitted when it never had one (still implicitly sequential)
         ├── step-search.ts # searchSteps: the one step-type matcher (sidebar Steps filter + Add Step picker) — every word must hit the type or description, name hits rank first
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
+        ├── accessed-nodes.ts # foldAccessedNodes: a run's events → the graph nodes one step read or wrote (an agent's, through its tool calls), with the calls that touched each; type counts + filter (pure; tested)
         ├── elicitation.ts # the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[] for ConfigField + form helpers (pure; tested)
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat to the host named by ?embed_origin
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
+        │   ├── AccessedNodes.tsx     # the run flyout's Nodes section: type chips (Concept by default, sticky), one row per node, a click opens its content in place (GET /graph/nodes/:ref_id)
         │   ├── ArtifactViewer.tsx    # the eye beside an artifact link (ValueFields): a modal showing the file RENDERED — markdown via Markdown.tsx, media inline, pdf/html in a frame (html sandboxed), text in a pre — portaled onto <body>
         │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate / Versions (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
         │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
@@ -173,7 +175,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1237 tests, ~5s
+npm test                    # 1243 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -599,7 +601,16 @@ and the child env is scrubbed by construction).
   `ACCESSED` edge per ref the graph holds (`StrutToolCall → any node`; a
   workflow step's `nodes` are in the log only). Every
   `graph/*` (and mcp `jarvis/*`) node-touching step does this; a step that
-  reports nothing gets no edges — never inferred from prose. The same
+  reports nothing gets no edges — never inferred from prose. **What is
+  reported is what the caller NAMED** — fetched by ref or key, expanded,
+  created, edited, moved — with its `node_type` and `name` (`describeNodes`
+  in `graph/_shared.ts` reads them for a write that only had the ref).
+  Never what came back as a list: `graph-search` reports nothing,
+  `graph-neighbors` the expanded node only, `graph-get` never its
+  `children`, a `walk` hop the node it expanded and what it kept. The run
+  flyout lists them per step (`web/src/accessed-nodes.ts` folds an agent's
+  tool calls; filtered to `Concept` by default) and opens one in place
+  through `GET /graph/nodes/:ref_id`. The same
   marker mechanism carries an agent step's transcript: `withMessages(output,
   session)` → `step.end.messages` (lifted by the runner for steps and by
   `wrapToolsWithEmit` for tool calls; `messagesOf` reads it).
@@ -1553,7 +1564,7 @@ provider-routing gotcha.
 4. Document it in `specs/API.md` — request and response shapes, from the
    types, not retyped.
 5. The Vite dev proxy in `web/vite.config.ts` only proxies known
-   prefixes (`/workflows`, `/steps`, `/secrets`, `/sessions`, `/chat`, `/llm`, `/health`). Runs are
+   prefixes (`/workflows`, `/steps`, `/secrets`, `/sessions`, `/graph`, `/chat`, `/llm`, `/health`). Runs are
    under `/workflows/` and chat reattach under `/chat/` so they're
    already proxied. SSE responses get `cache-control: no-cache` +
    `x-accel-buffering: no` injected by the shared `sseConfigure` —

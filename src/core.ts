@@ -276,11 +276,16 @@ export interface RunEvent {
 
 // ── Provenance convention: which graph nodes did a step touch? ─────────────
 
-/** One graph node a step read or wrote, by its stable `ref_id`. */
+/** One graph node a step read or wrote, by its stable `ref_id`. `name` is
+ *  the node's label when the step touched it: the record outlives a rename
+ *  and a delete, and a reader needs no graph to show it. */
 export interface AccessedNode {
   ref_id: string;
   node_type?: string;
+  name?: string;
 }
+
+const ACCESSED_NAME_MAX = 200;
 
 const ACCESSED_NODES_KEY = "_nodes";
 
@@ -292,6 +297,11 @@ const ACCESSED_NODES_KEY = "_nodes";
  * — but never reaches the model, downstream `{{ }}` expressions, or a JSON
  * serializer. Refs are deduplicated by `ref_id`;
  * empty lists and non-object outputs (error strings) are left unmarked.
+ *
+ * WHAT to report: the nodes the caller NAMED — fetched by ref or by key,
+ * expanded, created, edited, moved. Never what came back as a list (search
+ * hits, the neighbors or children returned): a node an agent was shown is
+ * not a node it chose to read.
  * Returns `output` for chaining: `return withAccessedNodes(result, refs)`.
  */
 export function withAccessedNodes<T>(output: T, nodes: Array<AccessedNode | null | undefined>): T {
@@ -301,7 +311,11 @@ export function withAccessedNodes<T>(output: T, nodes: Array<AccessedNode | null
   for (const n of nodes) {
     if (!n || typeof n.ref_id !== "string" || !n.ref_id || seen.has(n.ref_id)) continue;
     seen.add(n.ref_id);
-    list.push(typeof n.node_type === "string" && n.node_type ? { ref_id: n.ref_id, node_type: n.node_type } : { ref_id: n.ref_id });
+    list.push({
+      ref_id: n.ref_id,
+      ...(typeof n.node_type === "string" && n.node_type ? { node_type: n.node_type } : {}),
+      ...(typeof n.name === "string" && n.name.trim() ? { name: n.name.trim().slice(0, ACCESSED_NAME_MAX) } : {}),
+    });
   }
   if (list.length === 0) return output;
   Object.defineProperty(output, ACCESSED_NODES_KEY, { value: list, enumerable: false, configurable: true, writable: true });

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, describeNodes } from "./_shared.js";
 
 const EXAMPLE = `- id: set_strength
   type: graph/edit-edge
@@ -64,7 +64,7 @@ export default defineStep({
           ...(hasDelete ? { deleted: r.removed } : {}),
         },
         // Provenance: both endpoints (the edge itself is not a node).
-        [{ ref_id: r.source_ref_id }, { ref_id: r.target_ref_id }],
+        await describeNodes(b, [r.source_ref_id, r.target_ref_id]),
       );
     } catch (e) {
       return errText("graph/edit-edge", e);

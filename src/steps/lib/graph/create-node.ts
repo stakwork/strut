@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName } from "./_shared.js";
 export default defineStep({
   type: "graph/create-node",
   description:
@@ -41,7 +41,7 @@ export default defineStep({
           ...(existed ? { messages: [`Node already exists in the graph with node_key: ${r.node_key}`] } : {}),
           ...(r.outcome === "restored" ? { messages: ["Node restored"] } : {}),
         },
-        [{ ref_id: r.ref_id, node_type: cfg.node_type }],
+        [{ ref_id: r.ref_id, node_type: cfg.node_type, name: deriveNodeName(undefined, cfg.node_data ?? {}) }],
       );
     } catch (e) {
       return errText("graph/create-node", e);

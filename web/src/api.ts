@@ -1,3 +1,5 @@
+import type { AccessedNode } from "./accessed-nodes";
+
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
 // under any sub-path (`/lab`, `/foo/bar`, …) — no build-time base needed.
@@ -568,7 +570,20 @@ export interface RunEvent {
   error?: { message: string };
   durationMs?: number;
   iteration?: number;
+  /** Graph nodes the step named — read, expanded, written (never a search
+   *  hit). On a `step.end`; an agent's are on its tool calls'. */
+  nodes?: AccessedNode[];
 }
+
+/** One graph node as the graph holds it now (`GET /graph/nodes/:ref_id`). */
+export interface GraphNode {
+  ref_id: string;
+  node_type: string | null;
+  name: string | null;
+  properties: Record<string, unknown>;
+}
+
+export const getGraphNode = (refId: string) => fetchJSON<GraphNode>(`/graph/nodes/${encodeURIComponent(refId)}`);
 
 export const listRuns = (workflow: string) =>
   fetchJSON<RunSummary[]>(`/workflows/${workflow}/runs`);

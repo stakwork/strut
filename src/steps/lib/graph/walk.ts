@@ -457,7 +457,13 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
         iteration: hop,
         output: record,
         durationMs: Date.now() - startedAt,
-        nodes: [...(current ? [brief(current)] : []), ...candidates.map(brief), ...folded.map(([m]) => brief(m))].map(({ ref_id, node_type }) => ({ ref_id, node_type })),
+        // Provenance: the node this hop expanded and what it KEPT. A
+        // candidate it judged and dropped was shown, not chosen.
+        nodes: [
+          ...(current ? [brief(current)] : []),
+          ...candidates.filter((c) => keptSet.has(c.ref_id)).map(brief),
+          ...folded.filter(([, g]) => kept.has(g.ref_id)).map(([m]) => brief(m)),
+        ],
       });
 
       if (sufficient >= SUFFICIENT_AT) {
@@ -500,7 +506,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
     ...(c.merged?.length ? { merged: c.merged.map((m) => ({ ref_id: m.ref_id, name: m.name })) } : {}),
   }));
   const out: WalkOutput = { goal: cfg.goal, nodes, hops, stopped, usage };
-  const provenance: AccessedNode[] = [...expanded.map(brief), ...nodes, ...[...kept.values()].flatMap((k) => (k.merged ?? []).map(brief))].map((c) => ({ ref_id: c.ref_id, node_type: c.node_type }));
+  const provenance: AccessedNode[] = [...expanded.map(brief), ...nodes, ...[...kept.values()].flatMap((k) => (k.merged ?? []).map(brief))].map((c) => ({ ref_id: c.ref_id, node_type: c.node_type, name: c.name }));
   return withAccessedNodes(out, provenance);
 }
 

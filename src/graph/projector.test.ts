@@ -302,6 +302,23 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     }
   });
 
+  it("GET /graph/nodes/:ref_id: a node as the graph holds it now; 404 when it is gone", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-node-"));
+    const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, serveUi: false, enableChat: false, stt: false, scheduler: false });
+    try {
+      const wfRef = (await backend.bolt.run(`MATCH (w:StrutWorkflow {name: $n}) RETURN w.ref_id AS r`, { n: WF }))[0]!["r"] as string;
+      const res = await strut.app.request(`/graph/nodes/${wfRef}`);
+      assert.equal(res.status, 200);
+      const node = (await res.json()) as { ref_id: string; node_type: string; name: string; properties: Record<string, unknown> };
+      assert.deepEqual([node.ref_id, node.node_type, node.name, node.properties["name"]], [wfRef, "StrutWorkflow", WF, WF]);
+      assert.ok(!Object.keys(node.properties).some((k) => /embedding|vector/i.test(k)), "no vectors in a response");
+      assert.equal((await strut.app.request("/graph/nodes/not-a-node")).status, 404);
+    } finally {
+      await strut.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("projectRunOnce: two callers on one run share one projection", async () => {
     for (const e of sampleEvents("h")) await store.append(WF, RUN, e);
     const [a, b] = [projectRunOnce(backend, store, WF, RUN), projectRunOnce(backend, store, WF, RUN)];

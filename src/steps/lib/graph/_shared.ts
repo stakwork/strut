@@ -1,4 +1,4 @@
-import type { StepContext } from "../../../core.js";
+import type { AccessedNode, StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
 
@@ -107,6 +107,32 @@ export function errText(step: string, e: unknown): string {
 }
 
 const LABEL_MAX = 160;
+
+/** Provenance entries for nodes a step NAMED but did not read (an edit, a
+ *  move, an edge's endpoints): each ref with its type and name as the graph
+ *  holds them now. Best effort — a ref that cannot be read is reported bare,
+ *  never dropped. */
+export async function describeNodes(b: GraphBackend, refs: Array<string | null | undefined>): Promise<AccessedNode[]> {
+  const unique = [...new Set(refs.filter((r): r is string => typeof r === "string" && r.length > 0))];
+  const out: AccessedNode[] = [];
+  for (let i = 0; i < unique.length; i += DESCRIBE_CONCURRENCY) {
+    out.push(
+      ...(await Promise.all(
+        unique.slice(i, i + DESCRIBE_CONCURRENCY).map(async (ref_id): Promise<AccessedNode> => {
+          try {
+            const n = await b.reader.getNode(ref_id);
+            if (!n) return { ref_id };
+            return { ref_id, node_type: n.node_type, name: deriveNodeName(n, (n.properties ?? {}) as Record<string, any>) };
+          } catch {
+            return { ref_id };
+          }
+        }),
+      )),
+    );
+  }
+  return out;
+}
+const DESCRIBE_CONCURRENCY = 8;
 
 /** Nodes keep their human label under different keys depending on node
  *  type — try a generous ordered candidate list (same as jarvis/graph-get).

@@ -85,7 +85,9 @@ export default defineStep({
         properties: raw.properties,
         edges,
       };
-      if (!cfg.children) return withAccessedNodes(out, [{ ref_id: raw.ref_id, node_type: raw.node_type }]);
+      // Provenance: the node that was asked for — never its table of contents.
+      const read = [{ ref_id: raw.ref_id, node_type: raw.node_type, name: out.name }];
+      if (!cfg.children) return withAccessedNodes(out, read);
 
       // The table of contents: what this node points to along one edge type.
       const data = await b.reader.neighbors(raw.ref_id, {
@@ -121,10 +123,7 @@ export default defineStep({
       children.sort((a, c) => a.name.localeCompare(c.name) || a.ref_id.localeCompare(c.ref_id));
       const truncated = children.length > CHILD_CAP;
       const listed = children.slice(0, CHILD_CAP);
-      return withAccessedNodes({ ...out, children: listed, ...(truncated ? { children_truncated: true } : {}) }, [
-        { ref_id: raw.ref_id, node_type: raw.node_type },
-        ...listed.map((c) => ({ ref_id: c.ref_id, node_type: c.node_type })),
-      ]);
+      return withAccessedNodes({ ...out, children: listed, ...(truncated ? { children_truncated: true } : {}) }, read);
     } catch (e) {
       return errText("graph/graph-get", e);
     }

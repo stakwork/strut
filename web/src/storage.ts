@@ -66,3 +66,10 @@ export const recentRunInput = {
   set: (workflow: string, input: Record<string, unknown>) =>
     save(`runInput/${workflow}`, input),
 };
+
+/** The node type the run flyout's Nodes list is filtered to, sticky across
+ *  runs and reloads ("*" = every type). */
+export const nodeTypeFilter = {
+  get: (): string => load<string>("nodeTypeFilter", "Concept"),
+  set: (type: string) => save("nodeTypeFilter", type),
+};
