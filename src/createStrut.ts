@@ -1595,7 +1595,8 @@ export async function createStrut<TServices = unknown>(
   // ── Artifacts ────────────────────────────────────────────────────────────
   // Files a run wrote via `ctx.services.artifacts` (keyed by runId alone —
   // artifacts are run-scoped, not workflow-scoped). Read-only: steps are the
-  // only writers.
+  // only writers — so a file's content is untrusted, and it is served
+  // sandboxed (`artifactHeaders`).
 
   app.get("/artifacts/:runId", async (c) => {
     if (!artifacts) return c.json({ error: "artifacts capability not available" }, 501);
@@ -1613,9 +1614,11 @@ export async function createStrut<TServices = unknown>(
     const relPath = c.req.param("path");
     try {
       const bytes = await artifacts.read(runId, relPath);
-      return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, {
-        "content-type": contentTypeFor(relPath),
-      });
+      return c.body(
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+        200,
+        artifactHeaders(relPath),
+      );
     } catch (err: any) {
       if (err?.code === "ENOENT") {
         return c.json({ error: `artifact not found: ${relPath}` }, 404);
@@ -3095,6 +3098,28 @@ export async function createStrut<TServices = unknown>(
     listen,
     close,
   };
+}
+
+/**
+ * Response headers for an artifact. A step or an agent wrote the file, and it
+ * is served from strut's own origin, where the UI keeps the API key.
+ * `sandbox` with no allowances: opened as a document (a new tab, a frame) it
+ * gets an opaque origin and runs no script, so it cannot read the UI's
+ * storage or its own URL, call the API, or send its URL as a referrer.
+ * `nosniff`: the browser never reads a file as a type the map did not say.
+ * Sandboxed unless exempt, so a type added to the map is sandboxed too. The
+ * one exemption is video and audio: they cannot script, and the player a
+ * browser builds for one in its own tab cannot load the file from an opaque
+ * origin.
+ */
+function artifactHeaders(path: string): Record<string, string> {
+  const type = contentTypeFor(path);
+  const headers: Record<string, string> = {
+    "content-type": type,
+    "x-content-type-options": "nosniff",
+  };
+  if (!/^(video|audio)\//.test(type)) headers["content-security-policy"] = "sandbox";
+  return headers;
 }
 
 /** Minimal content-type map for serving artifacts; octet-stream otherwise. */

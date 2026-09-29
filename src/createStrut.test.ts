@@ -144,6 +144,44 @@ describe("createStrut", () => {
     assert.deepEqual(list, { runId: "run-1", files: ["audio/track.wav", "blob.bin", "clip.mp4"] });
   });
 
+  it("serves an artifact sandboxed: a file a step wrote never acts as strut's origin", async () => {
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      store: new MemoryRunStore(),
+      serveUi: false,
+      enableChat: false,
+    });
+    const artifacts = (strut.services as { artifacts: { write(r: string, p: string, c: string): Promise<string> } }).artifacts;
+    const script = "<script>fetch('/secrets')</script>";
+    await artifacts.write("run-1", "page.html", script);
+    await artifacts.write("run-1", "drawing.svg", `<svg xmlns="http://www.w3.org/2000/svg">${script}</svg>`);
+    await artifacts.write("run-1", "notes.txt", script);
+    await artifacts.write("run-1", "page.xhtml", script); // not in the map
+    await artifacts.write("run-1", "clip.mp4", script);
+
+    const get = async (file: string) => (await strut.app.request(`/artifacts/run-1/${file}`)).headers;
+
+    // The two types a browser runs script from, and everything else by default.
+    for (const [file, type] of [
+      ["page.html", "text/html; charset=utf-8"],
+      ["drawing.svg", "image/svg+xml"],
+      ["notes.txt", "text/plain; charset=utf-8"],
+      ["page.xhtml", "application/octet-stream"],
+    ]) {
+      const h = await get(file);
+      assert.equal(h.get("content-type"), type, file);
+      assert.equal(h.get("content-security-policy"), "sandbox", file);
+      assert.equal(h.get("x-content-type-options"), "nosniff", file);
+    }
+
+    // Video and audio are exempt (a sandboxed media tab cannot load its own
+    // file), and nosniff holds them to their type.
+    const mp4 = await get("clip.mp4");
+    assert.equal(mp4.get("content-type"), "video/mp4");
+    assert.equal(mp4.get("content-security-policy"), null);
+    assert.equal(mp4.get("x-content-type-options"), "nosniff");
+  });
+
   it("uses an injected registry as-is", async () => {
     const myStep = defineStep({
       type: "ping",
