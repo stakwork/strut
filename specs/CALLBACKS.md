@@ -43,6 +43,9 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
       "url": "/workflows/review-pr/runs/1790179200000/transcripts/review-pr/review"
     }
   ],
+  "artifacts": [
+    { "id": "report", "kind": "markdown", "title": "Review", "url": "/artifacts/1790179200000/report.md" }
+  ],
   "durationMs": 48213
 }
 ```
@@ -56,6 +59,7 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
 | `output`     | the workflow's output (its last step's) — on success only    |
 | `error`      | `{ "message": "..." }` — on error only                       |
 | `transcripts`| one link per agent session the run recorded — only when it recorded any (see §3) |
+| `artifacts`  | the deliverables the workflow's output declared, resolved to links — only when it declared any (see §4) |
 | `durationMs` | wall time from launch to finish                              |
 
 Reply with any `2xx`. Strut retries a failed delivery a few times over about
@@ -100,6 +104,51 @@ curl -H "Authorization: Bearer $STRUT_API_KEY" \
 curl -H "Authorization: Bearer $STRUT_API_KEY" \
   http://localhost:3000/workflows/review-pr/runs/1790179200000/events
 ```
+
+## 4. Artifacts — what the run hands you to look at
+
+A workflow's output may carry `artifacts`: a list of things the run produced
+for a person to look at rather than read — a plan, a page, a screenshot, a
+pull request, a pod. Each entry names one:
+
+```yaml
+- id: result
+  type: pack
+  config:
+    text: "{{ work.object.text }}"
+    artifacts:
+      - { id: plan, title: "Plan", path: plan.md }                       # a file the run wrote
+      - { id: pod,  kind: url, title: "Pod", url: "{{ claim.frontend }}" } # somewhere to go
+      - { id: diff, kind: diff, title: "Diff", content: "{{ diff.diff }}" } # small, inline
+```
+
+| Field     | Meaning |
+| --------- | ------- |
+| `id`      | stable across runs: the same `id` from a later run is a newer version of the same thing (turn 12's `plan` replaces turn 3's) |
+| `kind`    | how to show it — the host's renderer names (`markdown`, `html`, `image`, `video`, `audio`, `pdf`, `url`, `diff`, `pull_request`, `code`, `log`, `json`). Read off the file's extension when omitted (`url` when that says nothing) |
+| `title`   | shown on the card |
+| `label`, `summary` | optional: what it is to the reader ("Plan", "Screenshot"), and a sentence about it |
+| `path`    | a file, relative to the run's directory — the **job's** for a run launched with `job` (see below), else the run's own artifact directory |
+| `url`     | an absolute URL, or a strut-relative one starting with `/` (another run's `/artifacts/<runId>/clip.mp4`) |
+| `content` | inline, up to 50 KB: a diff, a JSON value, short markdown |
+
+Exactly one of `path`, `url`, `content`. `output` is delivered as the
+workflow packed it; the resolved list rides beside it as the callback's
+top-level `artifacts`, each entry with a `url` (a `path` becomes
+`/jobs/<job>/files/<path>` or `/artifacts/<runId>/<path>`, served behind the
+key like every read — see `API.md` §5) or its `content`, or an `error`
+(`not found`, `bad url`, `too large`) when it could not be resolved — show
+those as unavailable. Entries with no `id` or `title` are dropped. The same
+list is at `GET /workflows/:name/runs/:runId/artifacts` for a callback you
+missed.
+
+**Jobs.** `POST …/run { job: "<id>" }` launches the run under a job — an
+id you mint, the format of a session id (`API.md` §9) — and the `job/dir`
+step then hands the workflow ONE directory, `<dataDir>/jobs/<id>/`, the
+same for every run launched with that id. Launch again with the same `job`
+(and the same `session` on the agent) and the next run revises the same
+files behind the same links: that is how a plan gets iterated on across
+twenty turns. `plans/jobs.md` is the design.
 
 ## Good to know
 

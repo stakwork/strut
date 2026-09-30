@@ -265,7 +265,7 @@ describe("git/checkout + git/diff", () => {
   });
 });
 
-describe("git/checkout workdir (kept working copies)", () => {
+describe("git/checkout workdir (kept working copies, in a job's directory)", () => {
   let root: string;
   let origin: string;
   let originUrl: string;
@@ -337,7 +337,7 @@ describe("git/checkout workdir (kept working copies)", () => {
     );
     assert.equal(first.res.status, "success", JSON.stringify(first.res));
     const path = first.out!["path"] as string;
-    assert.equal(path, join(dataDir, "workdirs", "s1", "origin"));
+    assert.equal(path, join(dataDir, "jobs", "s1", "origin"));
     assert.equal(first.out!["reused"], false);
     assert.equal(first.out!["ref"], "main");
     assert.ok(existsSync(join(path, "new.txt")), "kept after the run ended");
@@ -366,7 +366,7 @@ describe("git/checkout workdir (kept working copies)", () => {
   it("a slash is part of the name: s1 and s1/review are two working copies", async () => {
     const { res, out } = await checkoutOf(co({ workdir: "s1/review" }));
     assert.equal(res.status, "success", JSON.stringify(res));
-    assert.equal(out!["path"], join(dataDir, "workdirs", "s1%2Freview", "origin"));
+    assert.equal(out!["path"], join(dataDir, "jobs", "s1%2Freview", "origin"));
     assert.equal(out!["reused"], false);
     assert.ok(!existsSync(join(out!["path"], "new.txt")));
   });
@@ -377,14 +377,14 @@ describe("git/checkout workdir (kept working copies)", () => {
     assert.match(res.error!.message, /git\/checkout: workdir "\/review" has an empty segment — is a template value missing\?/);
   });
 
-  it("one run at a time: a second run is workdir_busy until the first ends", async () => {
+  it("one run at a time: a second run is job_busy until the first ends", async () => {
     const held = new Promise<void>((r) => (waiting = r));
     const first = checkoutOf(co({ workdir: "busy" }, step("wait", "gate", {})), "run-a");
     await held;
 
     const second = await checkoutOf(co({ workdir: "busy" }), "run-b");
     assert.equal(second.res.status, "error");
-    assert.match(second.res.error!.message, /workdir_busy: workdir "busy" is in use by run run-a/);
+    assert.match(second.res.error!.message, /job_busy: job "busy" is in use by run run-a/);
 
     letGo();
     assert.equal((await first).res.status, "success");
@@ -396,7 +396,7 @@ describe("git/checkout workdir (kept working copies)", () => {
   it("an idle working copy is swept by the next kept checkout, its worktree pruned from the cache", async () => {
     const old = await checkoutOf(co({ workdir: "idle" }));
     const path = old.out!["path"] as string;
-    const record = join(dataDir, "workdirs", "idle.json");
+    const record = join(dataDir, "jobs", "idle.json");
     const cache = cachePath(dataDir, parseRepo(originUrl));
     assert.ok(sh(["worktree", "list"], cache).includes(path));
 
@@ -425,11 +425,35 @@ describe("git/checkout workdir (kept working copies)", () => {
     assert.ok(!existsSync(path));
     assert.ok(!existsSync(record));
     assert.ok(!sh(["worktree", "list"], cache).includes(path));
-    assert.ok(existsSync(join(dataDir, "workdirs", "fresh", "origin")));
+    assert.ok(existsSync(join(dataDir, "jobs", "fresh", "origin")));
 
     // A swept name starts over.
     const again = await checkoutOf(co({ workdir: "idle" }));
     assert.equal(again.out!["reused"], false);
+  });
+
+  it("the sweep removes an idle job's repositories and keeps its files (plans/jobs.md §2.1)", async () => {
+    const { out } = await checkoutOf(co({ workdir: "planned" }));
+    const path = out!["path"] as string;
+    const root = join(dataDir, "jobs", "planned");
+    const record = `${root}.json`;
+    await writeFile(join(root, "plan.md"), "# the plan\n");
+    const rec = JSON.parse(await readFile(record, "utf8"));
+    rec.usedAt = new Date(Date.now() - 8 * 86_400_000).toISOString();
+    await writeFile(record, JSON.stringify(rec));
+
+    await checkoutOf(co({ workdir: "fresh" }));
+    assert.ok(!existsSync(path), "the repository is gone");
+    assert.equal(await readFile(join(root, "plan.md"), "utf8"), "# the plan\n");
+    const after = JSON.parse(await readFile(record, "utf8"));
+    assert.deepEqual(after.repos, {});
+    const cache = cachePath(dataDir, parseRepo(originUrl));
+    assert.ok(!sh(["worktree", "list"], cache).includes(path));
+
+    // Coming back: the plan is there, the repository is checked out again.
+    const back = await checkoutOf(co({ workdir: "planned" }));
+    assert.equal(back.out!["reused"], false);
+    assert.ok(existsSync(join(root, "plan.md")));
   });
 });
 

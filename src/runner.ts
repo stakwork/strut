@@ -92,6 +92,10 @@ export interface RunOptions<TServices = unknown> {
    *  only carries them. */
   actor?: string;
   principal?: string;
+  /** The job the run is launched under (plans/jobs.md §1). Recorded on
+   *  `run.start` and the summary, handed to every step as `ctx.job` and to
+   *  templates as `$job`. */
+  job?: string;
   /** The launch asked for the result to be posted to a host (`POST …/run
    *  { callback }`). The runner records the URL's ORIGIN on `run.start` and
    *  nothing more; the launcher keeps the URL and does the posting. */
@@ -158,6 +162,7 @@ interface Exec {
   journal?: Record<string, unknown>;
   actor?: string;
   principal?: string;
+  job?: string;
   /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
@@ -179,6 +184,7 @@ export async function runWorkflow<TServices = unknown>(
     ...(opts?.automation ? { automation: opts.automation } : {}),
     ...(opts?.actor ? { actor: opts.actor } : {}),
     ...(opts?.principal ? { principal: opts.principal } : {}),
+    ...(opts?.job ? { job: opts.job } : {}),
     ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
   };
   // Default services to an empty object so steps can destructure freely.
@@ -252,6 +258,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.verify ? { verify: opts.verify } : {}),
       ...(opts?.actor ? { actor: opts.actor } : {}),
       ...(opts?.principal ? { principal: opts.principal } : {}),
+      ...(opts?.job ? { job: opts.job } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
@@ -273,6 +280,7 @@ export async function runWorkflow<TServices = unknown>(
     journal: opts?.journal,
     actor: opts?.actor,
     principal: opts?.principal,
+    job: opts?.job,
     disposers: [],
   };
 
@@ -393,7 +401,10 @@ async function executeFlow(
   };
   // `$runId` lets a workflow name its own run — e.g. a final pack step
   // returning the artifact path of a file it produced (/artifacts/<runId>/…).
-  const scope: Record<string, unknown> = { input, params, $runId: exec.runId };
+  // `$job` is always a key — undefined on a plain run — so `session: "{{ $job }}"`
+  // in a job workflow resolves to nothing (a cold agent) instead of throwing:
+  // the same workflow works as a one-shot from the Run button (plans/jobs.md §2).
+  const scope: Record<string, unknown> = { input, params, $runId: exec.runId, $job: exec.job };
   const steps = workflow.steps;
 
   if (steps.length === 0) return undefined;
@@ -745,6 +756,7 @@ async function dispatchStep(
         // Same run, same principal — a subflow's steps inherit these unchanged.
         ...(exec.actor ? { actor: exec.actor } : {}),
         ...(exec.principal ? { principal: exec.principal } : {}),
+        ...(exec.job ? { job: exec.job } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),

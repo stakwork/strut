@@ -80,7 +80,7 @@ reads.
 
 | Method | Path                            | Body | Response |
 | ------ | ------------------------------- | ---- | -------- |
-| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback? }` | 202 `{ runId, callback?: true }` |
+| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback?, job? }` | 202 `{ runId, callback?: true }` |
 | POST   | `/workflows/:name/:version/run` | same | same |
 
 | Field            | Meaning |
@@ -90,6 +90,7 @@ reads.
 | `paramOverrides` | `{ "<workflow name>": { … } }` — the same, per workflow, reaching subflows |
 | `runId`          | your own id (unique within the workflow); default a millisecond timestamp, e.g. `"1790436489808"` |
 | `callback`       | `{ url }` (http/https) — the result is POSTed there when the run settles; see `CALLBACKS.md`. Any other scheme is a 400 and nothing launches |
+| `job`            | the job to launch under (`plans/jobs.md`): an id you mint, the format of a session id (§9); a bad one is a 400 and nothing launches. Recorded on the run, handed to steps as `ctx.job` and to templates as `{{ $job }}`; `job/dir` gives the run the job's directory, and the callback resolves the output's `artifacts[]` into it (`CALLBACKS.md` §4) |
 
 The run is **detached**: the 202 comes back before anything executes, the
 run keeps going whether or not you stay connected, and every event is
@@ -156,9 +157,12 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
 | GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |
 | GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none. For a step that continued a `session` (§9) this is its system prompt + THAT TURN; `?full=1` is the thread up to and including it (404 once the session is deleted) |
+| GET    | `/workflows/:name/runs/:runId/artifacts`               | `{ workflow, runId, job?, artifacts: [{ id, kind, title, label?, summary?, url? \| content? \| error? }] }` — the deliverables the run's output declared, resolved as the run callback resolves them (`CALLBACKS.md` §4); 404 until the run has a summary |
 | GET    | `/workflows/:name/evidence[?runId=&limit=&before=]`   | what the checks said about the workflow's runs (§5.4) |
 | GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …] }` — what the run's steps wrote; 501 when the deployment has no artifact store |
 | GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension (unknown → `application/octet-stream`), with `X-Content-Type-Options: nosniff`. A step wrote it, so everything but `video/*` and `audio/*` also carries `Content-Security-Policy: sandbox`: opened in a browser it runs no script and has no origin — an HTML artifact is a static page. A host that frames or proxies artifacts must keep both headers |
+| GET    | `/jobs/:id/files`                                      | `{ job, files: ["plan.md", …] }` — every file in a job's directory (`job/dir`, `plans/jobs.md`), recursive, skipping the repositories checked out into it; 404 for a job with no directory, 400 for a malformed id (percent-encode a `/`) |
+| GET    | `/jobs/:id/files/<path>`                               | the file, served exactly like `/artifacts/:runId/<path>` — same content types, same two headers |
 
 ### 5.1 Summary (`RunSummary`, `src/core.ts`)
 
@@ -187,6 +191,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | `stepCounts`   | executions per step type across the whole tree; a tool an agent called is `tool:<type>` |
 | `actor`, `principal` | who launched it and who is billed, when known |
 | `automation`   | `{ id }` when a schedule fired it |
+| `job`          | the job it was launched under (§3), when one was given |
 
 After a durable resume (§6.2) the summary describes the resumed execution:
 `startedAt` is the resume's, and replayed steps are not counted again.

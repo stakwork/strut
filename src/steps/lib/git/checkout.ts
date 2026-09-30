@@ -5,21 +5,16 @@ import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { idProblem } from "../../../session-store.js";
+import { holdJob, jobRoot, jobTtlMs, readJobRecord, sweepJobs, touchJob } from "../../../jobs.js";
 import {
   cachePath,
   cancelSignal,
   dataDirOf,
   git,
   gitOk,
-  holdWorkdir,
   parseRepo,
   shellOf,
-  sweepWorkdirs,
-  touchWorkdir,
   withLock,
-  workdirRef,
-  workdirRoot,
-  workdirTtlMs,
   worktreeRoot,
   type GitCtx,
 } from "./_shared.js";
@@ -46,10 +41,12 @@ const EXAMPLE = `- id: checkout
  * inline credential helper only; the checkout stores no credential, so the
  * agent's bash cannot push from it. See `_shared.ts`.
  *
- * With `workdir` the working copy is KEPT (plans/agent-sessions.md §5):
- * `<dataDir>/workdirs/<name>/`, the same path on every run that names it,
- * left as the last run left it, held by one run at a time, and swept once
- * idle for `STRUT_WORKDIR_TTL_DAYS`. What an agent `session` works in.
+ * With `workdir` the working copy is KEPT, inside a JOB's directory
+ * (plans/jobs.md §2; jobs.ts): `<dataDir>/jobs/<name>/<repo>`, the same
+ * path on every run that names it, left as the last run left it, held by
+ * one run at a time, and removed once the job is idle for
+ * `STRUT_WORKDIR_TTL_DAYS` — the job's other files stay. What an agent
+ * `session` works in; `workdir: "{{ $job }}"` on a run launched with a job.
  */
 export default defineStep({
   type: "git/checkout",
@@ -57,7 +54,7 @@ export default defineStep({
     `Check out a git repository into a fresh, isolated working copy for this run and return its path — the cwd for an agent or exec step. ` +
     `Clones once into a credential-free cache and fetches on later runs; the working copy is removed when the run ends. ` +
     `ref: a branch, tag or commit sha (default: the remote's default branch). ` +
-    `workdir: a name that KEEPS the working copy — the next run naming it finds the same path with every edit, untracked and ignored file in place (reused: true), which is how the files follow an agent's \`session\`. ` +
+    `workdir: the JOB whose directory keeps the working copy (usually "{{ $job }}") — the next run naming it finds the same path with every edit, untracked and ignored file in place (reused: true), which is how the files follow an agent's \`session\`. ` +
     `Auth: the tokenSecret secret (default GITHUB_TOKEN), needed for private repos — the value only ever reaches git's child env, never the log or the checkout. ` +
     `Output: { path, sha, ref, branch, repo, host, url, reused? } — branch is the remote's default branch.\n\n${EXAMPLE}`,
   input: z.object({
@@ -71,7 +68,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        'KEEP the working copy under this name, usually "{{ input.session }}": it is not removed when the run ends, and the next run that names it gets the same path exactly as it was left (output `reused: true`; `ref` only applies when the copy is created, `sha` is its current HEAD). One run at a time per name (a second fails with `workdir_busy:`). Names are GLOBAL, like session ids; letters, digits and ". _ -" in `/`-separated segments. Idle working copies are removed after STRUT_WORKDIR_TTL_DAYS (default 7) — then the next run starts from a fresh one (`reused: false`). Omit for a fresh copy per run.',
+        'KEEP the working copy in this JOB\'s directory (<dataDir>/jobs/<name>/<repo>; usually "{{ $job }}", the job the run was launched with): it is not removed when the run ends, and the next run that names it gets the same path exactly as it was left (output `reused: true`; `ref` only applies when the copy is created, `sha` is its current HEAD). One run at a time per job (a second fails with `job_busy:`). Names are GLOBAL, like session ids; letters, digits and ". _ -" in `/`-separated segments. A job idle for STRUT_WORKDIR_TTL_DAYS (default 7) loses its repositories, not its other files — the next run starts from a fresh copy (`reused: false`). Omit for a fresh copy per run.',
       ),
     timeoutMs: z.number().int().positive().default(600_000).describe("per git command (default 10 min)"),
   }),
@@ -97,15 +94,15 @@ export default defineStep({
       const problem = idProblem(kept);
       if (problem) throw new Error(`git/checkout: workdir "${kept}" ${problem}`);
     }
-    const wtRoot = kept !== undefined ? workdirRoot(dataDir, kept) : worktreeRoot(dataDir, ctx.runId);
+    const wtRoot = kept !== undefined ? jobRoot(dataDir, kept) : worktreeRoot(dataDir, ctx.runId);
     const wtDir = join(wtRoot, r.name);
 
     if (kept !== undefined) {
-      holdWorkdir(ctx, wtRoot, kept);
+      holdJob(ctx, wtRoot, kept);
       // Used now — so the sweep, which runs before this checkout takes its
       // cache's lock (it takes others'), leaves this one alone.
-      await touchWorkdir(wtRoot, kept);
-      await sweepWorkdirs(shell, dataDir, workdirTtlMs());
+      await touchJob(wtRoot, kept);
+      await sweepJobs(shell, dataDir, jobTtlMs());
     } else {
       // Cleanup is registered BEFORE anything is created, so a checkout that
       // fails halfway (or is cancelled mid-clone) still leaves no worktree.
@@ -152,7 +149,7 @@ export default defineStep({
         // A kept working copy is left exactly as the last run left it.
         if (kept !== undefined && existsSync(join(wtDir, ".git"))) {
           const head = (await gitOk(shell, ["rev-parse", "HEAD"], { cwd: wtDir, ...o })).trim();
-          const was = (await workdirRef(wtRoot, wtDir)) ?? cfg.ref ?? branch;
+          const was = (await readJobRecord(wtRoot))?.repos[wtDir]?.ref ?? cfg.ref ?? branch;
           return { path: wtDir, sha: head, ref: was, ...where, reused: true };
         }
 
@@ -176,7 +173,7 @@ export default defineStep({
         await gitOk(shell, ["worktree", "add", "--detach", "--quiet", wtDir, sha], { cwd: cacheDir, ...o });
 
         if (kept === undefined) return { path: wtDir, sha, ref, ...where };
-        await touchWorkdir(wtRoot, kept, { dir: wtDir, cache: cacheDir, ref });
+        await touchJob(wtRoot, kept, { dir: wtDir, cache: cacheDir, ref });
         return { path: wtDir, sha, ref, ...where, reused: false };
       });
     } finally {
