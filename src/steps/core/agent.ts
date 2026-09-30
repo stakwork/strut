@@ -59,7 +59,7 @@ import os from "node:os";
 // Shell plumbing (capture/runCmd/runShell + env scrubbing) lives in shell.ts,
 // shared with the chat builder's bash tool.
 
-import { runCmd, runShell, maskSecretValues } from "../../shell.js";
+import { runCmd, runShellProcess, maskSecretValues, type ProcessResult } from "../../shell.js";
 
 /** Immediate subdirs of `cwd` that are git repos. */
 function listRepos(cwd: string): string[] {
@@ -867,6 +867,25 @@ const EXAMPLE = `- id: fix
     finalAnswer: "A short report: what was wrong, what you changed, how you verified it."
     model: sonnet`;
 
+/** The `bash` tool's result text for a finished command — the contract the
+ *  tool has always had (exit 0 → stdout, plus a `[stderr]` section when there
+ *  was any; exit 1 with no stderr → stdout or "No matches found", the grep
+ *  idiom; anything else → `Command execution failed: …`), with the two ways a
+ *  command is STOPPED named: the run cancelling (the loop's next checkpoint
+ *  raises, so the model never reads this one) and `bashTimeoutMs`. Both kill
+ *  the process group; whatever the command printed before that rides along. */
+export function bashResult(res: ProcessResult, timeoutMs: number, cancelled: boolean): string {
+  const printed = res.stderr || res.stdout;
+  if (cancelled) return `Command cancelled: the run is being cancelled${printed ? `\n${printed}` : ""}`;
+  if (res.timedOut) {
+    return `Command execution failed: Error: Command timed out after ${timeoutMs}ms (its process group was killed)${printed ? `\n${printed}` : ""}`;
+  }
+  if (res.code === 0) return res.stdout + (res.stderr ? `\n[stderr]\n${res.stderr}` : "");
+  if (res.code === 1 && !res.stderr) return res.stdout || "No matches found";
+  const how = res.code === null ? `killed by ${res.signal}` : String(res.code);
+  return `Command execution failed: Error: Command failed (${how}): ${res.stderr || res.stdout || "Unknown error"}`;
+}
+
 export default defineStep({
   type: "agent",
   description:
@@ -923,6 +942,14 @@ export default defineStep({
       .optional()
       .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`)"),
     maxSteps: z.number().int().positive().default(200).describe("cap on tool-loop turns before the agent must answer"),
+    bashTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(300_000)
+      .describe(
+        "cap on ONE `bash` command, in ms (default 5 minutes): at it the command's whole process group is killed and the tool reports the timeout. Raise it for a workflow whose commands run real builds or test suites.",
+      ),
     cacheTtl: z
       .enum(["5m", "1h"])
       .default("5m")
@@ -1008,6 +1035,15 @@ export default defineStep({
           : "")
       : "";
 
+    // What the model is told a `bash` command may take (the tool result names
+    // the real number when one is killed).
+    const bashBudget =
+      cfg.bashTimeoutMs >= 60_000
+        ? `${Math.round(cfg.bashTimeoutMs / 60_000)} minute${Math.round(cfg.bashTimeoutMs / 60_000) === 1 ? "" : "s"}`
+        : cfg.bashTimeoutMs >= 1000
+          ? `${Math.round(cfg.bashTimeoutMs / 1000)} seconds`
+          : `${cfg.bashTimeoutMs} ms`;
+
     // Built-in tools (operate on cfg.cwd). `inputSchema` cast to any to stop the
     // SDK's tool() from deeply inferring the zod type (TS2589 in strict builds).
     const allTools: Record<string, any> = {
@@ -1037,19 +1073,39 @@ export default defineStep({
       }),
       bash: tool({
         description:
-          "Execute a bash command inside the working dir. Use for listing dirs, reading files (cat/head), inspecting manifests/lockfiles/docker files, running installs/builds, and anything the other tools don't cover. Long-running commands are allowed (up to a 10-minute timeout); a command that never exits (e.g. a dev server) will block until killed at the timeout." +
+          `Execute a bash command inside the working dir. Use for listing dirs, reading files (cat/head), inspecting manifests/lockfiles/docker files, running installs/builds, and anything the other tools don't cover. One command may run for ${bashBudget}: at that point its whole process group is killed and the tool reports the timeout. So a program that never exits (a dev server), or a pipeline whose helper processes keep the pipe open (a browser behind \`| tail\`), is started in the background with its output redirected to a file, then polled.` +
           secretsNote,
         inputSchema: z.object({ command: z.string().describe("The bash command to execute") }) as any,
         execute: async ({ command }: { command: string }) => {
+          if (!existsSync(cfg.cwd)) return "Working directory does not exist";
+          // One command is one unit of run control (RUN_CONTROL_SPEC §4): watch
+          // the run's state while it runs and kill the PROCESS GROUP the moment
+          // the run starts cancelling — the exec step's treatment — so a cancel
+          // never waits out a hung browser or build. The loop's next
+          // prepareStep checkpoint then raises the canonical CancelledError.
+          // Pause is left alone (in-flight leaves finish).
+          const ac = new AbortController();
+          const control = ctx?.control;
+          const watch = control
+            ? setInterval(() => {
+                if (control.state === "cancelling") ac.abort();
+              }, 200)
+            : undefined;
+          let res: ProcessResult;
           try {
-            if (!existsSync(cfg.cwd)) return "Working directory does not exist";
-            // 10-minute timeout so the agent can run real installs/builds (not just
-            // quick inspection). Note: a non-terminating process (a dev server)
-            // still blocks until killed at this timeout.
-            return await runShell(command, cfg.cwd, 600_000, BASH_MAX_CHARS, secretEnv);
+            res = await runShellProcess(command, {
+              cwd: cfg.cwd,
+              timeoutMs: cfg.bashTimeoutMs,
+              maxOutputChars: BASH_MAX_CHARS,
+              env: secretEnv,
+              signal: ac.signal,
+            });
           } catch (e) {
             return `Command execution failed: ${e}`;
+          } finally {
+            if (watch) clearInterval(watch);
           }
+          return bashResult(res, cfg.bashTimeoutMs, ac.signal.aborted);
         },
       }),
     };
