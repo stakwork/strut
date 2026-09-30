@@ -278,6 +278,14 @@ export interface TextEditInput {
   view_range?: number[];
 }
 
+/** A file this tool must not read as text: a NUL byte in its first 8 KB (git's
+ *  own test). Read as UTF-8, a PNG is ~its size in replacement characters, and
+ *  the model then carries that in every later request. */
+function binaryFile(target: string): string | null {
+  const head = readFileSync(target).subarray(0, 8192);
+  return head.includes(0) ? `Error: binary file (${statSync(target).size} bytes) — this tool reads text only` : null;
+}
+
 /** Resolve a tool-supplied path against one or more allowed roots and refuse
  *  anything that escapes all of them (directory-traversal / absolute-path guard).
  *  Relative paths are resolved against the primary root (`roots[0]`). */
@@ -315,6 +323,8 @@ export function textEdit(input: TextEditInput, roots: string | string[]): string
           .sort();
         return entries.length ? entries.join("\n") : "(empty directory)";
       }
+      const binary = binaryFile(target);
+      if (binary) return binary;
       const lines = readFileSync(target, "utf-8").split("\n");
       let start = 1;
       let end = lines.length;
@@ -339,6 +349,8 @@ export function textEdit(input: TextEditInput, roots: string | string[]): string
 
     case "str_replace": {
       if (!existsSync(target)) return "Error: File not found";
+      const binary = binaryFile(target);
+      if (binary) return binary;
       const content = readFileSync(target, "utf-8");
       const old = input.old_str ?? "";
       const count = old ? content.split(old).length - 1 : 0;
@@ -352,6 +364,8 @@ export function textEdit(input: TextEditInput, roots: string | string[]): string
 
     case "insert": {
       if (!existsSync(target)) return "Error: File not found";
+      const binary = binaryFile(target);
+      if (binary) return binary;
       const lines = readFileSync(target, "utf-8").split("\n");
       const at = input.insert_line ?? 0;
       if (at < 0 || at > lines.length)
@@ -882,7 +896,7 @@ export default defineStep({
     toolFilter: z
       .array(z.string())
       .default([])
-      .describe("subset of built-in tool names to enable; empty = all. (final_answer is always available in finalAnswer mode.)"),
+      .describe("subset of built-in tool names to enable; empty = all, ['none'] = no built-ins (only agentTools). (final_answer is always available in finalAnswer mode.)"),
     agentTools: z
       .array(z.string())
       .default([])
