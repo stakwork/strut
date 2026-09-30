@@ -493,6 +493,19 @@ describe("textEdit (str_replace_based_edit_tool handler)", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("refuses a binary file instead of dumping it as text", () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    writeFileSync(join(cwd, "shot.png"), png);
+    for (const input of [
+      { command: "view" as const, path: "shot.png" },
+      { command: "str_replace" as const, path: "shot.png", old_str: "PNG", new_str: "x" },
+      { command: "insert" as const, path: "shot.png", insert_line: 0, insert_text: "x" },
+    ]) {
+      assert.equal(textEdit(input, cwd), "Error: binary file (12 bytes) — this tool reads text only");
+    }
+    assert.deepEqual(readFileSync(join(cwd, "shot.png")), png, "the file is untouched");
+  });
+
   it("views a file with 1-indexed line numbers", () => {
     writeFileSync(join(cwd, "a.txt"), "one\ntwo\nthree");
     const out = textEdit({ command: "view", path: "a.txt" }, cwd);
@@ -976,6 +989,26 @@ describe("mid-stream socket death is resumed, not lost", () => {
       assert.equal(s.heads[0]?.["x-api-key"], "from-store");
       // The alias resolved to the concrete id on the request.
       assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-5-5"'), s.bodies[0]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("toolFilter ['none'] sends no built-in tool — only final_answer", async () => {
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(toolUse("toolu_1", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      await agent.run(
+        (agent.input as any).parse({ cwd, system: "sys", prompt: "go", model: "sonnet", finalAnswer: "Report.", toolFilter: ["none"] }),
+        { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any,
+      );
+      const tools = JSON.parse(s.bodies[0] ?? "{}").tools.map((t: { name: string }) => t.name);
+      assert.deepEqual(tools, ["final_answer"]);
     } finally {
       s.close();
     }
