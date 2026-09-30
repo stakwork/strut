@@ -182,6 +182,19 @@ steps:
     assert.equal(r.ok, true);
   });
 
+  it("accepts $job as a global root (the job a run was launched with; undefined on a plain run)", async () => {
+    const r = await v(`
+name: job
+steps:
+  - id: a
+    type: echo
+    config: { message: "{{ $job }}" }
+`);
+    const { errors } = msgs(r);
+    assert.ok(!has(errors, /unknown root/), errors.join("\n"));
+    assert.equal(r.ok, true);
+  });
+
   it("loop/error variables are only valid in their nested context", async () => {
     const r = await v(`
 name: vars
