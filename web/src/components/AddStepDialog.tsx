@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "preact/hooks";
-import { searchSteps } from "../step-search";
+import { searchSteps } from "../../../src/search.js";
 
 // ── Add Step Dialog (searchable) ────────────────────────────────────────────
 

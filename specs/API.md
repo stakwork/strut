@@ -68,13 +68,18 @@ reads.
 
 | Method | Path                            | Response |
 | ------ | ------------------------------- | -------- |
-| GET    | `/workflows`                    | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, automations?, lastRunAt? }]` |
+| GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, automations?, lastRunAt? }]` |
 | GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
 | DELETE | `/workflows/:name`    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
+
+`?q=` is the sidebar's filter: the query is split into words and every word
+must appear (case-insensitive) in the name, the category or the description.
+Name hits rank first; otherwise the list keeps its order. Empty or absent
+returns everything.
 
 ## 3. Run
 
