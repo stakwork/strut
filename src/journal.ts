@@ -37,6 +37,8 @@ export function readRunStart(
    *  rather than re-deriving it (the owner may have changed since). */
   actor?: string;
   principal?: string;
+  /** The job the run was launched under (plans/jobs.md §1) — kept by a resume. */
+  job?: string;
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -49,6 +51,7 @@ export function readRunStart(
     automation: start.automation,
     actor: start.actor,
     principal: start.principal,
+    job: start.job,
   };
 }
 

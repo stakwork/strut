@@ -73,6 +73,11 @@ export interface StepContext<TServices = unknown> {
    *  deliberately and what a model inside it decided to do are not the same
    *  actor (plans/claims.md §4.1, fixed point 3). */
   agentTool?: boolean;
+  /** The JOB this run was launched under (plans/jobs.md §1): a flat, global
+   *  string the caller minted — `POST …/run { job }` — that every run of the
+   *  job shares, whatever its workflow. `job/dir` hands out its directory;
+   *  templates see it as `{{ $job }}`. Absent on a plain run. */
+  job?: string;
   /** Who launched this run — an opaque string the host resolved from the
    *  request (plans/mothership-cost-control.md §2). Strut stores and forwards
    *  it, never interprets it. Absent when nobody is known. */
@@ -237,6 +242,9 @@ export interface RunEvent {
    *  person even if the workflow's owner has changed since. */
   actor?: string;
   principal?: string;
+  /** On `run.start`: the job the run was launched under (plans/jobs.md §1),
+   *  read back by a resume like `principal`. */
+  job?: string;
   /** On `run.start`: the ORIGIN of the URL the launch asked to have the
    *  result POSTed to (`POST …/run { callback }`, src/callback.ts). The URL
    *  itself is the host's credential and never leaves the launch site. */
@@ -416,6 +424,9 @@ export interface RunSummary {
   /** Who launched the run and who was billed for it (see `StepContext`). */
   actor?: string;
   principal?: string;
+  /** The job the run was launched under (plans/jobs.md §1) — on the summary
+   *  so a job's deliverables resolve from it alone (`…/runs/:runId/artifacts`). */
+  job?: string;
   /** Content hash of the workflow version the run executed (as on
    *  `run.start`) — on the summary so "runs per version" is a summary scan. */
   workflowHash?: string;

@@ -18,10 +18,11 @@ function deriveBase(): string {
 
 const BASE = deriveBase();
 
-/** True for a run-artifact path as steps put it in their output —
- *  `/artifacts/<runId>/<relPath>` (see `ctx.services.artifacts`). */
+/** True for a served-file path as steps put it in their output — a run's
+ *  `/artifacts/<runId>/<relPath>` (see `ctx.services.artifacts`) or a job's
+ *  `/jobs/<job>/files/<relPath>` (`job/dir`). */
 export function isArtifactPath(v: unknown): v is string {
-  return typeof v === "string" && v.startsWith("/artifacts/");
+  return typeof v === "string" && (v.startsWith("/artifacts/") || v.startsWith("/jobs/"));
 }
 
 /** Browser URL for an artifact path. Mount-path aware (works under `/lab`).

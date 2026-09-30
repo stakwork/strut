@@ -246,6 +246,30 @@ export {
   idProblem,
 } from "./session-store.js";
 
+// Jobs — one kept directory per job (plans/jobs.md), what `job/dir` hands
+// out and `git/checkout { workdir }` checks out into; and the deliverables a
+// run declares in its output (`artifacts[]`), resolved for the run callback.
+export {
+  type JobRecord,
+  jobRoot,
+  readJobRecord,
+  touchJob,
+  holdJob,
+  jobHolder,
+  jobTtlMs,
+  sweepJobs,
+  listJobFiles,
+  jobFilePath,
+} from "./jobs.js";
+export {
+  type ArtifactEntry,
+  type ArtifactRef,
+  ARTIFACT_CONTENT_MAX_CHARS,
+  artifactKind,
+  artifactEntriesOf,
+  resolveArtifactRefs,
+} from "./artifact-refs.js";
+
 // Secret store — deployment-scoped, encrypted credential persistence behind
 // the `secrets` capability + the `/secrets` admin endpoints.
 export {

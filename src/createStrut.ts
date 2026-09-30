@@ -3,7 +3,8 @@ import { logger } from "hono/logger";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -72,6 +73,8 @@ import { attachAudioWebSocket } from "./audio/ws.js";
 import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
+import { jobFilePath, jobRoot, listJobFiles, readJobRecord } from "./jobs.js";
+import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -928,6 +931,16 @@ export async function createStrut<TServices = unknown>(
   // A session turn (plans/agent-sessions.md) recorded its system prompt and
   // THAT TURN; `?full=1` serves the thread up to and including it, read from
   // the session store.
+  // A run's declared deliverables (plans/jobs.md §3), resolved as the run
+  // callback resolves them — for a host that missed the callback.
+  app.get("/workflows/:name/runs/:runId/artifacts", async (c) => {
+    const { name, runId } = c.req.param();
+    const summary = await store.getRunSummary(name, runId);
+    if (!summary) return c.json({ error: `Run "${runId}" of "${name}" has no summary yet` }, 404);
+    const refs = (await artifactRefs(runId, summary.output, summary.job)) ?? [];
+    return c.json({ workflow: name, runId, ...(summary.job ? { job: summary.job } : {}), artifacts: refs });
+  });
+
   app.get("/workflows/:name/runs/:runId/transcripts/:path{.+}", async (c) => {
     const { name, runId, path } = c.req.param();
     const events = await store.getRunEvents(name, runId);
@@ -1085,6 +1098,7 @@ export async function createStrut<TServices = unknown>(
         runId: p.runId,
         params: p.runStart.params,
         paramOverrides: p.runStart.paramOverrides,
+        ...(p.runStart.job ? { job: p.runStart.job } : {}),
       },
       {
         journal: p.journal,
@@ -1653,6 +1667,51 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
+  // ── Jobs (plans/jobs.md §2.2) ────────────────────────────────────────────
+  // The files in a job's directory — what a session-carrying agent wrote
+  // across runs (`job/dir`; src/jobs.ts). Read-only, and served sandboxed
+  // like a run's artifacts: an agent wrote them. The listing skips the
+  // repositories checked out into the job.
+
+  const jobRoute = (c: Context): { id: string; root: string } | Response => {
+    let id: string;
+    try {
+      id = decodeURIComponent(c.req.param("id") ?? "");
+    } catch {
+      return c.json({ error: "malformed job id" }, 400);
+    }
+    const problem = idProblem(id);
+    if (problem) return c.json({ error: `job id "${id}" ${problem}` }, 400);
+    const root = jobRoot(dataDir, id);
+    if (!existsSync(root)) return c.json({ error: `No job "${id}"` }, 404);
+    return { id, root };
+  };
+
+  app.get("/jobs/:id/files", async (c) => {
+    const at = jobRoute(c);
+    if (at instanceof Response) return at;
+    return c.json({ job: at.id, files: await listJobFiles(at.root, await readJobRecord(at.root)) });
+  });
+
+  app.get("/jobs/:id/files/:path{.+}", async (c) => {
+    const at = jobRoute(c);
+    if (at instanceof Response) return at;
+    const relPath = c.req.param("path");
+    try {
+      const bytes = new Uint8Array(await readFile(jobFilePath(at.root, relPath)));
+      return c.body(
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+        200,
+        artifactHeaders(relPath),
+      );
+    } catch (err: any) {
+      if (err?.code === "ENOENT" || err?.code === "EISDIR") {
+        return c.json({ error: `no file "${relPath}" in job "${at.id}"` }, 404);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
   // ── Agent sessions (plans/agent-sessions.md §4) ───────────────────────
   //
   // The threads `agent` steps with `session` set continue. The id is a query
@@ -2006,6 +2065,9 @@ export async function createStrut<TServices = unknown>(
     runId?: string;
     /** Where to POST the result when the run settles (src/callback.ts). */
     callback?: { url: string } | null;
+    /** The job to launch the run under (plans/jobs.md §1): a flat, global
+     *  id the caller minted, the format of a session id. */
+    job?: string;
   }
 
   /**
@@ -2063,12 +2125,13 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.automation ? { automation: extra.automation } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
+        ...(body.job ? { job: body.job } : {}),
         ...(callback ? { callback: { origin: callbackOrigin(callback.url) } } : {}),
       });
     })()
       .then(
         (res) => {
-          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt);
+          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt, body.job);
         },
         // runWorkflow finalizes its own errors into a resolved result; a
         // rejection is an unexpected throw (e.g. a store write failure).
@@ -2089,10 +2152,11 @@ export async function createStrut<TServices = unknown>(
    *  one POST, detached from the run's teardown and never awaited — a slow
    *  or dead host holds nothing up, and `postCallback` retries then warns,
    *  never throws. The payload mirrors the run's summary, minus the stack. */
-  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number): void {
+  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number, job?: string): void {
     const durationMs = Date.now() - launchedAt;
     void (async () => {
       const transcripts = await transcriptLinks(workflow, res.runId).catch(() => []);
+      const artifacts = await artifactRefs(res.runId, res.output, job).catch(() => undefined);
       await postCallback(
         url,
         {
@@ -2103,6 +2167,7 @@ export async function createStrut<TServices = unknown>(
           ...(res.output !== undefined ? { output: res.output } : {}),
           ...(res.error ? { error: { message: res.error.message } } : {}),
           ...(transcripts.length ? { transcripts } : {}),
+          ...(artifacts ? { artifacts } : {}),
           durationMs,
         },
         { tag: `[run ${res.runId}] callback run.end` },
@@ -2131,6 +2196,42 @@ export async function createStrut<TServices = unknown>(
   /** A run body's `callback`, validated; absent or `null` = none. */
   const runCallbackOf = (body: RunBody): { url: string } | undefined =>
     body.callback == null ? undefined : parseCallback(body.callback);
+
+  /** A run body's `job`, validated (the session-id format); absent = none. */
+  const runJobOf = (body: RunBody): string | undefined => {
+    if (body.job === undefined || body.job === null) return undefined;
+    const problem = idProblem(body.job);
+    if (problem) throw new Error(`job "${String(body.job)}" ${problem}`);
+    return body.job;
+  };
+
+  /** Whether the file behind a strut-relative artifact url is here: a job's
+   *  file on disk, a run's through the artifacts capability (whatever
+   *  backs it). Absolute urls are never checked. */
+  const artifactFileExists = async (url: string): Promise<boolean> => {
+    const job = /^\/jobs\/([^/]+)\/files\/(.+)$/.exec(url);
+    if (job) {
+      try {
+        await access(jobFilePath(jobRoot(dataDir, decodeURIComponent(job[1]!)), decodeURIComponent(job[2]!)));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    const run = /^\/artifacts\/([^/]+)\/(.+)$/.exec(url);
+    if (run) {
+      if (!artifacts) return false;
+      const rel = decodeURIComponent(run[2]!);
+      return (await artifacts.list(decodeURIComponent(run[1]!)).catch(() => [] as string[])).includes(rel);
+    }
+    return true;
+  };
+
+  /** A run's declared deliverables, resolved to links on this server
+   *  (plans/jobs.md §3; src/artifact-refs.ts). Undefined when the output
+   *  declares none. */
+  const artifactRefs = (runId: string, output: unknown, job: string | undefined): Promise<ArtifactRef[] | undefined> =>
+    resolveArtifactRefs(output, { runId, ...(job ? { job } : {}), exists: artifactFileExists });
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
@@ -2208,6 +2309,7 @@ export async function createStrut<TServices = unknown>(
     let callback: { url: string } | undefined;
     try {
       callback = runCallbackOf(body);
+      runJobOf(body);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -2227,6 +2329,7 @@ export async function createStrut<TServices = unknown>(
     let callback: { url: string } | undefined;
     try {
       callback = runCallbackOf(body);
+      runJobOf(body);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }

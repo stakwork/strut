@@ -62,6 +62,8 @@ strut/
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either) — a host whose own entry is called `server.js` and imports the barrel never starts it (server.test.ts spawns that host)
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
+│   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`), the idle sweep (repositories removed, files kept), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
+│   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
 │   ├── auth.ts            # requireApiKey middleware — createStrut puts it in front of EVERY route, reads included — + carriesApiKey (Bearer or `?key=`) + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── session-store.ts   # agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
@@ -74,7 +76,8 @@ strut/
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, github/create-pr — open a PR or return the open one for that head, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
-│   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd — or, with `workdir`, a KEPT one under <dataDir>/workdirs/<name>, reused by the next run that names it, one run at a time (`workdir_busy:`), swept when idle; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
+│   │   │   ├── job/       # job/dir: the run's JOB directory (jobs.ts) for an agent's cwd — `<dataDir>/jobs/<job>/`, the same path every run launched with that `job`; a run with no job gets its own artifact dir, so a job workflow is also a one-shot
+│   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd — or, with `workdir`, a KEPT one inside a job's directory, <dataDir>/jobs/<name>/<repo>, reused by the next run that names it, one run at a time (`job_busy:`), the repository removed when the job is idle; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
 │   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus four strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, move-node re-homes a node (the one edge that places it — any type, either direction — is muted and written again to the new place, one transaction, cycles refused; graph reads skip muted edges, as jarvis's do), walk gathers context for a goal hop by hop with a decision model (jev via experimental_evaluate, or a wrapped LLM) judging relevance/next/enough — plans/graph-walk.md — and two strut-only INPUTS on graph-get: node_type + name, an exact lookup by node_key for types keyed by name, never a search; and `children: <EDGE_TYPE>`, which adds the nodes it points to along that edge as { ref_id, node_type, name, description } sorted by name — a node and its table of contents in one call); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
 │   ├── ai/                # AI workflow-builder backend (used by POST /chat)
@@ -118,7 +121,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1243 unit tests across 71 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1246 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -276,7 +279,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
-| `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a KEPT working copy (`git/checkout` with `workdir`) may sit unused before it is removed. Swept by the next kept checkout — no timer. `0` keeps them forever. |
+| `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a job (`job/dir`, `git/checkout` with `workdir`) may sit unused before its REPOSITORIES are removed — its other files are kept, and a job with nothing left goes with its record. Swept by the next `job/dir` or kept checkout — no timer. `0` keeps them forever. |
 | `STRUT_AUTO_RESUME` | `1` (file-backed) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
@@ -1282,12 +1285,12 @@ and the child env is scrubbed by construction).
   (`session_full:` — there is no compaction yet). An `agent` called as a
   TOOL cannot take a session: the model would be choosing the id.
   **The files** follow through `workdir` on `git/checkout`, a name of its
-  own (usually the same string): the working copy lives at
-  `<dataDir>/workdirs/<name>/<repo>` — the same path every run, the
-  transcript is full of it — is left as the last run left it (`reused:
-  true`; `ref` only applies when it is created), is held by one RUN at a
-  time (`workdir_busy:`), and is removed once idle for
-  `STRUT_WORKDIR_TTL_DAYS` by the next kept checkout.
+  own (usually the job, `"{{ $job }}"`): the working copy lives inside
+  that job's directory, `<dataDir>/jobs/<name>/<repo>` — the same path
+  every run, the transcript is full of it — is left as the last run left
+  it (`reused: true`; `ref` only applies when it is created), is held by
+  one RUN at a time (`job_busy:`), and is removed once the job is idle
+  for `STRUT_WORKDIR_TTL_DAYS` by the next kept checkout or `job/dir`.
   **Run control:** a journaled session step replays its output on resume
   and never reaches the store; "re-run from here" on one is a NEW turn — a
   thread is never rewound. **In the graph** the projector stamps each
@@ -1302,6 +1305,36 @@ and the child env is scrubbed by construction).
   (what a turn puts on the wire, against a stand-in provider),
   `sessions.test.ts` (runs over HTTP + the routes), `git.test.ts` (kept
   working copies).
+
+- **Jobs — one directory and one memory across many runs**
+  (`plans/jobs.md`; `src/jobs.ts`, `src/artifact-refs.ts`, `steps/lib/job/dir.ts`).
+  A host hands strut work as a *job*: `POST …/run { job: "<id>" }` — a
+  flat, global id the CALLER mints (the session-id format), beside `input`
+  and `callback`, never in `input`. It is recorded on `run.start` and the
+  summary, handed to every step as `ctx.job`, seen by templates as
+  `{{ $job }}` (always a key in scope — `undefined` on a plain run, so
+  `session: "{{ $job }}"` is a cold agent then, not an error), and kept by a
+  durable resume. `job/dir` returns `<dataDir>/jobs/<id>/`, the SAME
+  directory for every run of the job, held by one run at a time
+  (`job_busy:`), and the generalization of yesterday's `workdir`:
+  `git/checkout { workdir: "{{ $job }}" }` checks repositories out INTO it,
+  the idle sweep removes those and keeps the job's own files. So a job
+  workflow is `job/dir → agent (cwd: the dir, session: "{{ $job }}") →
+  pack`, and turn twelve opens the `plan.md` turn three wrote with a
+  transcript that remembers writing it; without a job the same YAML is a
+  one-shot in the run's artifact dir. **Deliverables** are declared in
+  the run's OUTPUT, `artifacts: [{ id, kind?, title, path | url | content }]`
+  (`specs/CALLBACKS.md` §4): the `run.end` callback (and `GET
+  …/runs/:runId/artifacts`) carries them resolved — `path` →
+  `/jobs/<id>/files/<path>` (served like `/artifacts`, sandboxed) or
+  `/artifacts/<runId>/<path>`, `kind` from the extension when omitted, an
+  `error` when a file is not there — while `output` stays as packed. The
+  same `id` on a later run is a newer version of the same thing; one live
+  file behind one link is the contract (no snapshots). The job agent is a
+  seeded WORKFLOW whose `params.tools` grow on the swarm; the host's side
+  (mint an id, launch, store the refs, proxy a link) is closed by design.
+  Not yet: `job` on chats, a job index/delete, holds for pods, the
+  projector stamp — plans/jobs.md §11.
 
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
