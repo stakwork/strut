@@ -140,7 +140,9 @@ export function validateWorkflowYaml(source: string, opts: ValidateOptions): Val
   const ancestors = ancestorsOf(depsOf);
 
   // ── Pass 3: per-step semantics ──────────────────────────────────────────
-  const globals = ["input", "params", "$runId"];
+  // The runner's fixed scope keys (`executeFlow`): `$job` is always a key —
+  // undefined on a plain run — so `session: "{{ $job }}"` validates.
+  const globals = ["input", "params", "$runId", "$job"];
   const stepById = new Map(steps.filter((s) => s && typeof s.id === "string").map((s) => [s.id, s]));
   steps.forEach((s, i) => {
     if (!s || typeof s !== "object") return;
