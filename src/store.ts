@@ -1,4 +1,4 @@
-import { mkdir, writeFile, appendFile, readdir, readFile, open, rm } from "node:fs/promises";
+import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { RunEvent, RunSummary, StepCounts } from "./core.js";
 
@@ -405,11 +405,14 @@ export class FileRunStore implements RunStore {
   async finalize(workflow: string, runId: string, summary: RunSummary): Promise<void> {
     const dir = this.runDir(workflow, runId);
     await mkdir(dir, { recursive: true });
-    await writeFile(
-      join(dir, "run.json"),
-      JSON.stringify(summary, null, 2),
-      "utf-8",
-    );
+    // Written beside and renamed into place: a resume REWRITES an existing
+    // run.json (the failed summary becomes the successful one), and a plain
+    // writeFile truncates first — a reader polling `getRunSummary` in that
+    // window saw an empty file, and a summary that was there read as null.
+    // rename is atomic, so a reader sees the old summary or the new one.
+    const tmp = join(dir, "run.json.tmp");
+    await writeFile(tmp, JSON.stringify(summary, null, 2), "utf-8");
+    await rename(tmp, join(dir, "run.json"));
   }
 
   /** List runs for a workflow, sorted newest first. Returns dir names (timestamps). */
