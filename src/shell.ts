@@ -286,3 +286,20 @@ export function runProcess(req: ProcessRequest): Promise<ProcessResult> {
     );
   });
 }
+
+/** `runProcess` for a model-authored command LINE: the platform shell runs it
+ *  (`/bin/sh -c`; `cmd.exe /d /s /c` on Windows), so pipes and redirects work,
+ *  and the group kill still reaches everything the line started — the
+ *  background browser, the `| tail` waiting on it. The agent step's `bash`
+ *  tool runs on this; `runShell` above is the older capture-and-throw form. */
+export function runShellProcess(
+  command: string,
+  opts: Omit<ProcessRequest, "cmd" | "args" | "stdin">,
+): Promise<ProcessResult> {
+  const win = process.platform === "win32";
+  return runProcess({
+    ...opts,
+    cmd: win ? "cmd.exe" : "/bin/sh",
+    args: win ? ["/d", "/s", "/c", command] : ["-c", command],
+  });
+}

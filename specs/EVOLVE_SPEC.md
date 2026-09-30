@@ -123,7 +123,7 @@ by an agent failing at something.
 ### 4.1 Why not just let the agent install what it needs
 
 It technically could: the container runs as root, `bash` allows up to a
-10-minute timeout, and `/usr/src/agent-venv/bin` is first on `PATH`, so
+5-minute timeout per command (`bashTimeoutMs`), and `/usr/src/agent-venv/bin` is first on `PATH`, so
 `pip install` would land in the right place. It is disallowed inside graded
 runs for three reasons:
 
