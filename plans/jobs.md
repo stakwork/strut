@@ -478,7 +478,14 @@ revises the same file.
 2. **mcp.** The `job` seed with NO grants beyond the agent's built-ins:
    `job/dir → agent (cwd, session: "{{ $job }}", schema { text, artifacts,
    ask? }) → pack`; `params.system` says deliverables are files in `cwd`,
-   named stably, listed in the output.
+   named stably, listed in the output. "Built-ins" means ALL of them —
+   files, `bash`, `web_search`, `web_fetch` — with `params.tools` wired to
+   `agentTools` (empty in V1) and never to `toolFilter`: the seed as first
+   merged ([stakwork/stakgraph#1727](https://github.com/stakwork/stakgraph/pull/1727))
+   filtered the agent down to the three file tools, so the first prod job
+   ("explain this doc at a GitHub URL") could not fetch anything. On a
+   swarm every call is routed through the gateway, so `web_search` there
+   needs `EXA_API_KEY`; `web_fetch` needs no key.
 3. **Hive** (§8): `start_job` / `continue_job`, the `job_turn` handler, the
    reader route. For an `html` deliverable the reader serving the proxied
    bytes from hive's own origin is what makes it framable — hive's call.
