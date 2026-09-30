@@ -12,7 +12,7 @@ import "./styles/base.css";
 import "./styles/components.css";
 import { deepEqual, errorMessage, normalizeSteps, statusTone } from "./helpers";
 import { load as loadPref, save as savePref } from "./storage";
-import { searchSteps } from "./step-search";
+import { searchSteps, searchWorkflows } from "../../src/search.js";
 import { ChatFlyout } from "./components/ChatFlyout";
 import { CategoryEditor } from "./components/CategoryEditor";
 import { RunCapEditor } from "./components/RunCapEditor";
@@ -207,15 +207,9 @@ export function App() {
   // ordered by most-recent run so the active experiment floats to the top.
   // Uncategorized workflows form a trailing group; headers only render when
   // at least one workflow actually has a category.
-  // The Workflows filter uses the Tools filter's matcher: every word must hit
+  // The Workflows filter is `GET /workflows?q=`'s matcher: every word must hit
   // the name, the category or the description.
-  const matchedWorkflows = useMemo(
-    () => searchSteps(
-      workflows.map((wf) => ({ type: wf.name, description: [wf.category, wf.description].filter(Boolean).join(" "), wf })),
-      wfQuery,
-    ).map((m) => m.wf),
-    [workflows, wfQuery],
-  );
+  const matchedWorkflows = useMemo(() => searchWorkflows(workflows, wfQuery), [workflows, wfQuery]);
   const wfGroups = useMemo(() => {
     const byCat = new Map<string, api.WorkflowEntry[]>();
     for (const wf of matchedWorkflows) {

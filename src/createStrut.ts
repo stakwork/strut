@@ -75,6 +75,7 @@ import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { jobFilePath, jobRoot, listJobFiles, readJobRecord } from "./jobs.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
+import { searchWorkflows } from "./search.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -763,8 +764,9 @@ export async function createStrut<TServices = unknown>(
   app.get("/workflows", async (c) => {
     // The workspace lists what it stores; the run store decorates with each
     // workflow's newest run time. Composed here so neither layer reads the
-    // other's records.
-    const workflows = await workspace.listWorkflows();
+    // other's records. `?q=` filters like the sidebar: every word must hit
+    // the name, the category or the description; name hits rank first.
+    const workflows = searchWorkflows(await workspace.listWorkflows(), c.req.query("q") ?? "");
     const decorated = await Promise.all(
       workflows.map(async (w) => {
         const lastRunAt = await store.lastRunAt(w.name);

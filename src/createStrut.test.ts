@@ -937,6 +937,21 @@ describe("createStrut", () => {
     assert.equal(byName["never"], undefined);
   });
 
+  it("GET /workflows?q= filters by name, category and description", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    const steps = [{ id: "g", type: "log", config: { message: "x" } }];
+    await ws.publishWorkflow("daily-digest", "v1", { steps }, "Summarize the day");
+    await ws.publishWorkflow("slack-backfill", "v1", { steps });
+    await ws.publishWorkflow("clip", "v1", { steps });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false });
+    const names = async (q: string) =>
+      ((await (await strut.app.request(`/workflows?q=${encodeURIComponent(q)}`)).json()) as { name: string }[]).map((w) => w.name);
+    assert.deepEqual(await names("slack"), ["slack-backfill"]);
+    assert.deepEqual(await names("summarize"), ["daily-digest"]);
+    assert.deepEqual(await names("slack summarize"), []);
+    assert.equal((await names("")).length, 3);
+  });
+
   it("resolves + applies a declared promotion (run output → target param)", async () => {
     const ws = new WorkspaceManager(tempDir);
     // Target workflow whose `system` param we'll promote into.

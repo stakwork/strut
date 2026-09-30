@@ -39,6 +39,7 @@ strut/
 ├── src/
 │   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the three output markers — withAccessedNodes / withMessages / withMedia (readers accessedNodesOf / messagesOf / mediaOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
+│   ├── search.ts          # searchSteps / searchWorkflows: the one matcher behind the sidebar filters, the Add Step picker and `GET /workflows?q=` — every word must hit the name (or the category / description), name hits rank first. The web UI imports it from here
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
 │   ├── step-ref.ts        # `type: name@vN` — a PINNED custom-step version (parseStepRef / baseType); a bare type runs the active version. Events keep the bare `stepType`; the pin rides on `step.start.stepVersion`
 │   ├── runner.ts          # execution engine: DAG (topological), retry, onError, control flow, journal replay
@@ -139,7 +140,6 @@ strut/
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── step-depends.ts # dependsForSave: what the step editor saves as `depends` — a checked list, `[]` when the step had an explicit `depends` and nothing is checked (a parallel step stays parallel; unchecking every dep means none), omitted when it never had one (still implicitly sequential)
-        ├── step-search.ts # searchSteps: the one step-type matcher (sidebar Steps filter + Add Step picker) — every word must hit the type or description, name hits rank first
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
         ├── accessed-nodes.ts # foldAccessedNodes: a run's events → the graph nodes one step read or wrote (an agent's, through its tool calls), with the calls that touched each; type counts + filter (pure; tested)
         ├── elicitation.ts # the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[] for ConfigField + form helpers (pure; tested)
