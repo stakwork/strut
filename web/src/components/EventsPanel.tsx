@@ -32,10 +32,6 @@ function runRefs(evt: api.RunEvent): RunRef[] {
   return out;
 }
 
-/** A run's history replays back-to-back; a live run's tail polls every 250ms.
- *  A gap this long means the replay is over. */
-const SETTLE_MS = 200;
-
 const isAtBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 40;
 
 export function EventsPanel(props: {
@@ -45,11 +41,10 @@ export function EventsPanel(props: {
 }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Opening a run replays its whole log in a quick burst of renders (app.tsx
-  // clears events on every run switch, so the panel mounts per run). Stay pinned to the bottom until that burst goes
-  // quiet or the user scrolls up — then never follow again: a new event
-  // leaves the view where it is, and the pill jumps down on demand.
-  const settling = useRef(true);
+  // Follow the log while it is scrolled to the bottom — the replay of a run's
+  // history and a live run's new events alike. Scrolling up stops following;
+  // scrolling back down (or the pill) starts it again.
+  const following = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
 
   // Auto-expand run.end when it arrives
@@ -59,24 +54,19 @@ export function EventsPanel(props: {
   }, [props.events]);
 
   // Layout effect: the scroll lands in the same commit as the new rows, so no
-  // scroll event ever sees the grown log unpinned and ends the settle early.
+  // scroll event ever sees the grown log unpinned and stops following.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (settling.current) el.scrollTop = el.scrollHeight;
+    if (following.current) el.scrollTop = el.scrollHeight;
     setAtBottom(isAtBottom(el));
   }, [props.events.length, expanded]);
-
-  useEffect(() => {
-    const t = setTimeout(() => { settling.current = false; }, SETTLE_MS);
-    return () => clearTimeout(t);
-  }, [props.events.length]);
 
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     const bottom = isAtBottom(el);
-    if (!bottom) settling.current = false;
+    following.current = bottom;
     setAtBottom(bottom);
   };
 
