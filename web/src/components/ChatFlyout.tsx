@@ -551,7 +551,7 @@ export function ChatFlyout(props: {
       // The turn may have ended on a question — show its form.
       if (!ac.signal.aborted) {
         try {
-          const { meta } = await api.getChat(id);
+          const meta = await api.getChatMeta(id);
           setElicitation(meta.elicitation ?? null);
           setContext(meta.context ?? null);
         } catch {
@@ -601,17 +601,24 @@ export function ChatFlyout(props: {
 
   // While idle, watch for SERVER-INITIATED turns: when a detached run
   // finishes, the server appends a [run-notification] message and launches a
-  // turn on its own — no client action to key off, so poll. On a new turn:
-  // re-render the transcript (it now holds the notification) and, if the
-  // turn is live, attach to its stream.
+  // turn on its own — no client action to key off, so poll. The poll asks
+  // for the META alone: a long transcript is megabytes, and re-sent every
+  // tick it queued behind itself until nothing on the page loaded (swarm38,
+  // 2026-09-30). On a new turn: load the transcript (it now holds the
+  // notification) and, if the turn is live, attach to its stream. One poll
+  // in flight at a time — a slow answer is never joined by the next tick's.
   useEffect(() => {
     if (!chatId || loading || showHistory) return;
+    let inFlight = false;
     const t = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const { meta, messages } = await api.getChat(chatId);
+        const meta = await api.getChatMeta(chatId);
         setElicitation(meta.elicitation ?? null);
         setContext(meta.context ?? null);
         if (meta.currentTurn > seenTurn.current) {
+          const { messages } = await api.getChat(chatId);
           seenTurn.current = meta.currentTurn;
           setEntries(transcriptToEntries(messages));
           if (meta.status === "live") {
@@ -620,6 +627,8 @@ export function ChatFlyout(props: {
         }
       } catch {
         // Server briefly unreachable — keep polling.
+      } finally {
+        inFlight = false;
       }
     }, TURN_POLL_MS);
     return () => clearInterval(t);

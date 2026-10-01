@@ -851,6 +851,11 @@ export async function sendChat(
 export const getChat = (chatId: string) =>
   fetchJSON<ChatTranscript>(`/chat/${chatId}`);
 
+/** A chat's meta alone — the idle poll's request, so a long transcript is
+ *  not re-sent every few seconds. */
+export const getChatMeta = (chatId: string) =>
+  fetchJSON<ChatMeta>(`/chat/${chatId}/meta`);
+
 /** A finished tool call's progress outputs (`tool-progress` events), in
  *  order — for a streaming tool (graph_walk) loaded from history, whose
  *  stored message holds only the final result. */

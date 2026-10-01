@@ -174,6 +174,42 @@ describe("chat endpoints", () => {
     assert.equal(missing.status, 404);
   });
 
+  it("GET /chat/:id/meta returns the meta alone (the idle poll's door); 404 when missing", async () => {
+    const strut = await makeStrut();
+    await chatStore.createChat({ id: "c1", title: "t" });
+    await chatStore.appendMessages("c1", [{ role: "user", content: "x" }]);
+
+    const ok = await strut.app.request("/chat/c1/meta");
+    assert.equal(ok.status, 200);
+    const body = (await ok.json()) as { id: string; currentTurn: number; messages?: unknown };
+    assert.equal(body.id, "c1");
+    assert.equal(body.currentTurn, -1);
+    assert.equal(body.messages, undefined);
+
+    assert.equal((await strut.app.request("/chat/missing/meta")).status, 404);
+  });
+
+  it("responses are gzipped for a client that accepts it — the SSE stream never", async () => {
+    const strut = await makeStrut();
+    await chatStore.createChat({ id: "c1" });
+    await chatStore.appendMessages("c1", [{ role: "user", content: "x".repeat(5000) }]);
+    await chatStore.setMeta("c1", { status: "done", currentTurn: 0 });
+    await chatStore.appendEvent("c1", { ts: new Date().toISOString(), chatId: "c1", turn: 0, type: "chat.end" });
+
+    const gz = await strut.app.request("/chat/c1", { headers: { "accept-encoding": "gzip" } });
+    assert.equal(gz.headers.get("content-encoding"), "gzip");
+    const inflated = new Response(gz.body!.pipeThrough(new DecompressionStream("gzip")));
+    const body = (await inflated.json()) as { messages: unknown[] };
+    assert.equal(body.messages.length, 1);
+
+    const plain = await strut.app.request("/chat/c1");
+    assert.equal(plain.headers.get("content-encoding"), null);
+
+    const sse = await strut.app.request("/chat/c1/stream?turn=0", { headers: { "accept-encoding": "gzip" } });
+    assert.equal(sse.headers.get("content-encoding"), null);
+    assert.match(await sse.text(), /event: done/);
+  });
+
   it("GET /chats lists sessions", async () => {
     const strut = await makeStrut();
     await chatStore.createChat({ id: "a" });

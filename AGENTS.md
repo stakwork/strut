@@ -1170,7 +1170,7 @@ and the child env is scrubbed by construction).
   runId }`, is a preliminary result (a `tool-progress` chat event) the
   flyout opens the run on at LAUNCH, so the sidebar and canvas follow it
   live; only the last yield reaches the model (a direct `execute` caller
-  drains it). The flyout polls `GET /chat/:id` (~4s, idle+open only) to notice
+  drains it). The flyout polls `GET /chat/:id/meta` (~4s, idle+open only, one in flight; the transcript is loaded when the turn advanced) to notice
   server-initiated turns and renders `[run-notification]` /
   `[verify-notification]` messages as a collapsed notice card, not a user
   bubble (`web/src/notice.ts` parses the model-facing text —
@@ -1623,6 +1623,11 @@ provider-routing gotcha.
    `x-accel-buffering: no` injected by the shared `sseConfigure` —
    wired onto both `/workflows` and `/chat` (the two SSE prefixes).
    Add new prefixes if needed.
+6. Every response is compressed for a client that accepts it
+   (`hono/compress`, right after the logger — a transcript is megabytes of
+   JSON). SSE is excluded by its content type, so a streaming route needs
+   `text/event-stream` and nothing else; a test in `chat-endpoints.test.ts`
+   pins both.
 
 ## When modifying the web UI
 
