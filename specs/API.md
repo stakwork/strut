@@ -351,8 +351,9 @@ changed and no stored version matches its hash (pass `force`).
 `POST /steps/:type/run` `{ config?, input?, params?, cassette?: "record" |
 "replay", cassetteName?, keep? }` runs a single step in memory and returns
 `{ runId, status, output?, error?, events, recorded?, kept? }`
-(`RunStepResult`): its events at `__run_step__/step`, `recorded` the number
-of service calls a cassette captured. The run is kept (`kept:
+(`RunStepResult`): its events at `__run_step__/<type>` (slashes as dots:
+`__run_step__/clip.shout`), `recorded` the number of service calls a
+cassette captured. The run is kept (`kept:
 "step:<type>"`, readable under that key) only with `keep: true` or when
 the step has claims. 404 for an unknown type.
 

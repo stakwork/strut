@@ -79,7 +79,9 @@ describe("mothership: names and caps", () => {
     assert.equal(stepAgentName("wf/agent/003-llm"), "wf.agent.llm");
     assert.equal(stepAgentName("wf/agent/003-llm/foreach#12/inner"), "wf.agent.llm.foreach.inner");
     assert.equal(stepAgentName("my wf/st ep"), "my_wf.st_ep");
-    assert.equal(stepAgentName("__run_step__/step"), "__run_step__.step");
+    // A single-step run (run_step, a verify check): the step's id is its type.
+    assert.equal(stepAgentName("__run_step__/clip.shout"), "__run_step__.clip.shout");
+    assert.equal(stepAgentName("__run_step__/agent/003-bash"), "__run_step__.agent.bash");
     for (const p of ["a/b/c", "a//b", "/a/", "weird name/x#1"]) assert.ok(!stepAgentName(p).includes("/"), p);
   });
 

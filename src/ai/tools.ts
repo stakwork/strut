@@ -4,7 +4,7 @@ import { runWorkflow } from "../runner.js";
 import { AiDeps, GRAPH_WALK_TOOL_ENABLED } from "./prompts.js";
 import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
-import { runStep, cassettePath } from "../run-step.js";
+import { runStep, runStepId, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
 import { mergeClaimSpecs, type ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
@@ -951,7 +951,7 @@ export function buildTools(deps: AiDeps): ToolSet {
           },
         );
         // A kept run is being verified: show the step's contract, pending.
-        return result.kept ? { ...result, ...(await pendingContract({ name: type, steps: [{ id: "step", type, config: {} }] })) } : result;
+        return result.kept ? { ...result, ...(await pendingContract({ name: type, steps: [{ id: runStepId(type), type, config: {} }] })) } : result;
       },
     }),
 

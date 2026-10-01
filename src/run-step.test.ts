@@ -179,6 +179,11 @@ describe("runStep", () => {
     );
     assert.equal(r.status, "success");
     assert.deepEqual(r.output, { start: 12, end: 31 });
+    assert.deepEqual(
+      r.events.filter((e) => e.type === "step.end").map((e) => e.path),
+      ["__run_step__/clip.compute-times"],
+      "the one step is named after its type — the path is what the Mothership bills",
+    );
     const start = r.events.find((e) => e.type === "run.start")!;
     assert.deepEqual(start.stepHashes, { "clip/compute-times": "aaaabbbbcccc" }, "only the steps the flow can execute");
     assert.equal(start.cassette, undefined);
