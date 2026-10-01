@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runShell, runCmd, minimalEnv, runProcess } from "./shell.js";
+import { runShell, runCmd, minimalEnv, runProcess, runShellProcess } from "./shell.js";
 import { buildTools } from "./ai/tools.js";
 import type { AiDeps } from "./ai/prompts.js";
 
@@ -211,5 +211,26 @@ describe("runProcess", () => {
     assert.ok(grandchild > 0, r.stdout);
     await new Promise((r) => setTimeout(r, 200));
     assert.throws(() => process.kill(grandchild, 0), /ESRCH/); // gone with the group
+  });
+});
+
+describe("runShellProcess", () => {
+  it("runs the line through a shell, so pipes and redirects work", async () => {
+    const r = await runShellProcess("printf 'a\\nb\\n' | wc -l", { cwd: dir });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout.trim(), "2");
+  });
+
+  it("abort kills everything the line started, not just the shell", async () => {
+    const ac = new AbortController();
+    const pending = runShellProcess("sleep 30 & echo $!; wait", { cwd: dir, signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 300));
+    ac.abort();
+    const r = await pending;
+    assert.equal(r.signal, "SIGTERM");
+    const background = Number(r.stdout.trim());
+    assert.ok(background > 0, r.stdout);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.throws(() => process.kill(background, 0), /ESRCH/);
   });
 });

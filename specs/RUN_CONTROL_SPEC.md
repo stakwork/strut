@@ -157,7 +157,11 @@ grader subprocess completes, its output is journaled, THEN the branch
 stops. v1.5 (optional): thread an `AbortSignal` (aborted on cancel only,
 never pause) into the agent step's AI-SDK calls and `services.http` for
 faster, cheaper teardown of the most expensive leaves. Subprocess
-graders keep run-to-completion semantics.
+graders keep run-to-completion semantics. Subprocesses strut itself
+spawns are the exception: the `exec` step and the agent step's `bash`
+tool watch the run state and SIGTERM their process group when it turns
+cancelling, so a cancel never waits out a hung command (the `bash` tool's
+own cap is `bashTimeoutMs`, 5 min by default).
 
 **API/UI.** `POST /workflows/:name/runs/:runId/cancel` (404 unknown, 409
 already terminal). UI: a Cancel button in the topbar of an active run's

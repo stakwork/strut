@@ -1517,6 +1517,86 @@ describe("mid-stream socket death is resumed, not lost", () => {
       }
     }));
 
+  it("a cancel reaches a RUNNING bash command: its process group dies at once, not at the timeout", () =>
+    quietly(async () => {
+      const control = {
+        state: "running",
+        checkpoint: async () => {
+          if (control.state === "cancelling") throw new CancelledError("r");
+        },
+      };
+      const s = await serve((call, res) => {
+        // The command would run 30s; the run starts cancelling 300ms into it.
+        if (call === 1) setTimeout(() => (control.state = "cancelling"), 300);
+        ok(res, toolUse("toolu_1", "bash", { command: "sleep 30 & echo $!; wait" }));
+      });
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      const events: any[] = [];
+      const t0 = Date.now();
+      try {
+        await assert.rejects(
+          agent.run(
+            (agent.input as any).parse({
+              cwd, system: "sys", prompt: "go", model: "claude-sonnet-4-5",
+              finalAnswer: "Report.", toolFilter: ["bash"],
+            }),
+            { runId: "r", path: "p", scope: {}, input: undefined, emit: async (e: any) => void events.push(e), services: {}, registry: {}, control } as any,
+          ),
+          (e: any) => isCancelledError(e),
+        );
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms — the cancel waited for the command`);
+        assert.equal(s.calls(), 1, "a cancelled loop asks nothing more");
+        const end = events.find((e) => e.type === "step.end" && e.stepType === "tool:bash");
+        const output = String(end?.output);
+        assert.match(output, /^Command cancelled/);
+        // The shell printed its background child's pid before the kill; the
+        // group kill took the child too.
+        const background = Number(output.trim().split("\n").pop());
+        assert.ok(background > 0, output);
+        await new Promise((r) => setTimeout(r, 300));
+        assert.throws(() => process.kill(background, 0), /ESRCH/);
+      } finally {
+        s.close();
+      }
+    }));
+
+  it("a bash command past bashTimeoutMs is killed with its group, reported, and the loop goes on", () =>
+    quietly(async () => {
+      const s = await serve((call, res) =>
+        ok(
+          res,
+          call === 1
+            ? toolUse("toolu_1", "bash", { command: "sleep 30 & echo $!; wait" })
+            : toolUse("toolu_2", "final_answer", { answer: "done" }),
+        ),
+      );
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      const events: any[] = [];
+      const t0 = Date.now();
+      try {
+        const out = (await agent.run(
+          (agent.input as any).parse({
+            cwd, system: "sys", prompt: "go", model: "claude-sonnet-4-5",
+            finalAnswer: "Report.", toolFilter: ["bash"], bashTimeoutMs: 300,
+          }),
+          { runId: "r", path: "p", scope: {}, input: undefined, emit: async (e: any) => void events.push(e), services: {}, registry: {} } as any,
+        )) as any;
+        assert.equal(out.result, "done");
+        assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+        const end = events.find((e) => e.type === "step.end" && e.stepType === "tool:bash");
+        const output = String(end?.output);
+        assert.match(output, /^Command execution failed: Error: Command timed out after 300ms/);
+        const background = Number(output.trim().split("\n").pop());
+        assert.ok(background > 0, output);
+        await new Promise((r) => setTimeout(r, 300));
+        assert.throws(() => process.kill(background, 0), /ESRCH/);
+        // The model is told the budget it has.
+        assert.ok((s.bodies[0] ?? "").includes("One command may run for 300 ms"), "the tool description names the budget");
+      } finally {
+        s.close();
+      }
+    }));
+
   it("the RUN says so: `error` with the provider's message for a refusal, `cancelled` for a cancel", () =>
     quietly(async () => {
       let cancel: (() => void) | undefined;

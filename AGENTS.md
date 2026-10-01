@@ -122,7 +122,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1264 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1268 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -178,7 +178,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1264 tests, ~5s
+npm test                    # 1268 tests, ~6s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -1416,6 +1416,17 @@ and the child env is scrubbed by construction).
     each iteration's tool calls show in order. No-op without a runner `ctx`
     (in-code/test); skips `final_answer` + provider-executed tools (no
     `execute`). `agent.run` now consumes `ctx` (registry + emit).
+  - **A `bash` command is one unit of run control.** The tool runs the line
+    through `runShellProcess` (`shell.ts`: `runProcess` under the platform
+    shell — its own PROCESS GROUP) and watches `ctx.control.state` while it
+    runs: a cancel SIGTERMs the group at once (SIGKILL 2 s later), the exec
+    step's treatment, and the loop's next `prepareStep` checkpoint raises the
+    `CancelledError`. `bashTimeoutMs` (default 5 min) SIGKILLs the group and
+    the tool result names it; the tool description tells the model the
+    budget, so a dev server or a browser behind `| tail` goes to the
+    background. Before this a cancel waited out the command's 10-minute cap
+    (2026-09-30, swarm38: a `chrome --screenshot … | tail` that never
+    returned).
   - **A stream that ends in an error fails the step** (`streamFailure` +
     `streamError`). The step reads `result.stream`, never `consumeStream`:
     the SDK reports a request the provider REFUSED (a 400 on a later step)
