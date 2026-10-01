@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runShell, runCmd, minimalEnv, runProcess, runShellProcess } from "./shell.js";
+import { runShell, runCmd, minimalEnv, runProcess, runShellProcess, killGroups } from "./shell.js";
 import { buildTools } from "./ai/tools.js";
 import type { AiDeps } from "./ai/prompts.js";
 
@@ -211,6 +211,34 @@ describe("runProcess", () => {
     assert.ok(grandchild > 0, r.stdout);
     await new Promise((r) => setTimeout(r, 200));
     assert.throws(() => process.kill(grandchild, 0), /ESRCH/); // gone with the group
+  });
+
+  it("reports the group a command LEFT RUNNING, and killGroups ends it", async () => {
+    const left: number[] = [];
+    // The shell backgrounds a sleep with its output redirected and returns at once.
+    const r = await runProcess({
+      cmd: "sh",
+      args: ["-c", "sleep 30 >/dev/null 2>&1 & echo $!"],
+      cwd: dir,
+      onLeftover: (pgid) => void left.push(pgid),
+    });
+    assert.equal(r.code, 0);
+    const background = Number(r.stdout.trim());
+    assert.ok(background > 0, r.stdout);
+    assert.doesNotThrow(() => process.kill(background, 0)); // outlived its command
+    assert.equal(left.length, 1, "the group is reported once");
+    const groups = new Set(left);
+    killGroups(groups);
+    assert.equal(groups.size, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.throws(() => process.kill(background, 0), /ESRCH/);
+  });
+
+  it("reports nothing for a command that left nothing behind", async () => {
+    const left: number[] = [];
+    const r = await runProcess({ cmd: "sh", args: ["-c", "echo hi"], cwd: dir, onLeftover: (pgid) => void left.push(pgid) });
+    assert.equal(r.code, 0);
+    assert.deepEqual(left, []);
   });
 });
 

@@ -1597,6 +1597,44 @@ describe("mid-stream socket death is resumed, not lost", () => {
       }
     }));
 
+  it("a process a bash command left running is killed when the run ends", () =>
+    quietly(async () => {
+      const s = await serve((call, res) =>
+        ok(
+          res,
+          call === 1
+            ? toolUse("toolu_1", "bash", { command: "sleep 30 >/dev/null 2>&1 & echo $!" })
+            : toolUse("toolu_2", "final_answer", { answer: "done" }),
+        ),
+      );
+      process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+      const events: any[] = [];
+      const disposers: Array<() => unknown> = [];
+      try {
+        const out = (await agent.run(
+          (agent.input as any).parse({
+            cwd, system: "sys", prompt: "go", model: "claude-sonnet-4-5",
+            finalAnswer: "Report.", toolFilter: ["bash"],
+          }),
+          {
+            runId: "r", path: "p", scope: {}, input: undefined, emit: async (e: any) => void events.push(e),
+            services: {}, registry: {}, onRunEnd: (fn: () => unknown) => void disposers.push(fn),
+          } as any,
+        )) as any;
+        assert.equal(out.result, "done");
+        const end = events.find((e) => e.type === "step.end" && e.stepType === "tool:bash");
+        const background = Number(String(end?.output).trim());
+        assert.ok(background > 0, String(end?.output));
+        assert.doesNotThrow(() => process.kill(background, 0)); // outlived its command
+        assert.equal(disposers.length, 1, "the step registered its run-end disposer");
+        for (const dispose of disposers) await dispose(); // what the runner does at run end
+        await new Promise((r) => setTimeout(r, 300));
+        assert.throws(() => process.kill(background, 0), /ESRCH/); // gone with the run
+      } finally {
+        s.close();
+      }
+    }));
+
   it("the RUN says so: `error` with the provider's message for a refusal, `cancelled` for a cancel", () =>
     quietly(async () => {
       let cancel: (() => void) | undefined;

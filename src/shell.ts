@@ -158,6 +158,13 @@ export interface ProcessRequest {
   maxOutputChars?: number;
   /** Abort → SIGTERM the process group, SIGKILL 2s later. */
   signal?: AbortSignal;
+  /** Called once the command has returned, with its process group id, when
+   *  something it started is STILL RUNNING in that group — a dev server put
+   *  in the background, a browser behind `| tail` whose shell came back. The
+   *  caller ends those with the run (`killGroups` from `ctx.onRunEnd`):
+   *  nothing a run spawns may outlive it. A function, so a cassette never
+   *  records it and a replay never kills a stranger's pid. */
+  onLeftover?: (pgid: number) => void;
 }
 
 export interface ProcessResult {
@@ -218,7 +225,7 @@ class OutputSink {
  *  the server, as the agent's `bash` children already do.) Spawn failure,
  *  e.g. a program that isn't on PATH, rejects. */
 export function runProcess(req: ProcessRequest): Promise<ProcessResult> {
-  const { cmd, args = [], cwd, stdin, env, timeoutMs = 600_000, maxOutputChars = 500_000, signal } = req;
+  const { cmd, args = [], cwd, stdin, env, timeoutMs = 600_000, maxOutputChars = 500_000, signal, onLeftover } = req;
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const detached = process.platform !== "win32";
@@ -272,7 +279,10 @@ export function runProcess(req: ProcessRequest): Promise<ProcessResult> {
       finish(() => reject(e.code === "ENOENT" ? new Error(`command not found: ${cmd}`) : e)),
     );
     child.on("close", (code, sig) =>
-      finish(() =>
+      finish(() => {
+        // The child is gone (close follows exit); anything still in its
+        // group is what the command left behind.
+        if (detached && child.pid !== undefined && onLeftover && groupAlive(child.pid)) onLeftover(child.pid);
         resolve({
           code,
           signal: sig,
@@ -281,10 +291,39 @@ export function runProcess(req: ProcessRequest): Promise<ProcessResult> {
           truncated: out.truncated || err.truncated,
           timedOut,
           durationMs: Date.now() - started,
-        }),
-      ),
+        });
+      }),
     );
   });
+}
+
+/** Whether any process is still in group `pgid` (a signal-0 probe). */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** End the process groups a run's commands left running (`onLeftover`):
+ *  SIGTERM now, SIGKILL two seconds later, never awaited — a run's end does
+ *  not wait on a server's shutdown. Empties the set. */
+export function killGroups(pgids: Set<number>): void {
+  const groups = [...pgids];
+  pgids.clear();
+  const signal = (sig: NodeJS.Signals) => {
+    for (const pgid of groups) {
+      try {
+        process.kill(-pgid, sig);
+      } catch {
+        /* already gone */
+      }
+    }
+  };
+  signal("SIGTERM");
+  if (groups.length) setTimeout(() => signal("SIGKILL"), 2000).unref();
 }
 
 /** `runProcess` for a model-authored command LINE: the platform shell runs it

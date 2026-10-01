@@ -161,7 +161,9 @@ graders keep run-to-completion semantics. Subprocesses strut itself
 spawns are the exception: the `exec` step and the agent step's `bash`
 tool watch the run state and SIGTERM their process group when it turns
 cancelling, so a cancel never waits out a hung command (the `bash` tool's
-own cap is `bashTimeoutMs`, 5 min by default).
+own cap is `bashTimeoutMs`, 5 min by default). Whatever a command leaves
+running in its process group after it returns is killed when the run ends,
+so nothing a run spawned outlives it.
 
 **API/UI.** `POST /workflows/:name/runs/:runId/cancel` (404 unknown, 409
 already terminal). UI: a Cancel button in the topbar of an active run's
