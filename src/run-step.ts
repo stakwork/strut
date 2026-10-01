@@ -32,6 +32,16 @@ import {
  *  events' path root. Never a published workflow. */
 export const RUN_STEP_FLOW = "__run_step__";
 
+/** The id of that flow's one step: the step TYPE, slashes as dots (an id
+ *  cannot hold a `/` — it would read as a nested path), the version pin
+ *  dropped. So the event path — and the agent name the Mothership bills,
+ *  `stepAgentName` of that path — names the step that ran:
+ *  `__run_step__/clip.shout` → `__run_step__.clip.shout`, never
+ *  `__run_step__/step`. */
+export function runStepId(type: string): string {
+  return baseType(type).replace(/\//g, ".");
+}
+
 export interface RunStepOptions {
   /** The step's config (same shape as a workflow step's `config`). Templates
    *  like `{{ input.* }}` / `{{ params.* }}` are resolved. */
@@ -87,7 +97,7 @@ export async function runSingleStep(
   const flow: Flow = {
     name: RUN_STEP_FLOW,
     input: z.any(),
-    steps: [{ id: "step", type, config: opts.config ?? {} }],
+    steps: [{ id: runStepId(type), type, config: opts.config ?? {} }],
     ...(opts.params != null ? { params: opts.params } : {}),
   };
 
@@ -176,7 +186,7 @@ export async function runStep(
   deps: RunStepDeps,
 ): Promise<KeptRunStepResult> {
   const { keep, ...runOpts } = opts;
-  const flowSteps = [{ id: "step", type, config: runOpts.config ?? {} }];
+  const flowSteps = [{ id: runStepId(type), type, config: runOpts.config ?? {} }];
   const stepHashes = runOpts.stepHashes ?? (await stepHashesFor(deps.workspace, { steps: flowSteps }));
   const result = await runSingleStep(type, registry, services, {
     ...runOpts,
