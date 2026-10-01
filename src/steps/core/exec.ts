@@ -8,7 +8,7 @@ import {
   type ShellResult,
   type StrutCapabilities,
 } from "../../capabilities.js";
-import { maskSecretValues } from "../../shell.js";
+import { maskSecretValues, killGroups } from "../../shell.js";
 
 const EXAMPLE = `- id: download
   type: exec
@@ -192,6 +192,10 @@ export default defineStep({
     // child when the run starts cancelling, then let checkpoint() raise the
     // canonical CancelledError. Pause is left alone (in-flight leaves finish).
     const ac = new AbortController();
+    // A process the command leaves running in its group (a server it put in
+    // the background) is ended with the run — the agent step's treatment.
+    const leftovers = new Set<number>();
+    ctx.onRunEnd?.(() => killGroups(leftovers));
     const control = ctx.control;
     const watch = control
       ? setInterval(() => {
@@ -209,6 +213,7 @@ export default defineStep({
         timeoutMs: cfg.timeoutMs,
         maxOutputChars: cfg.maxOutputChars,
         signal: ac.signal,
+        onLeftover: (pgid) => void leftovers.add(pgid),
       });
     } finally {
       if (watch) clearInterval(watch);

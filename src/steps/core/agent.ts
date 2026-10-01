@@ -68,7 +68,7 @@ import os from "node:os";
 // Shell plumbing (capture/runCmd/runShell + env scrubbing) lives in shell.ts,
 // shared with the chat builder's bash tool.
 
-import { runCmd, runShellProcess, maskSecretValues, type ProcessResult } from "../../shell.js";
+import { runCmd, runShellProcess, killGroups, maskSecretValues, type ProcessResult } from "../../shell.js";
 
 /** Immediate subdirs of `cwd` that are git repos. */
 function listRepos(cwd: string): string[] {
@@ -1112,6 +1112,14 @@ export default defineStep({
           : "")
       : "";
 
+    // What a `bash` command leaves running in its process group once it has
+    // returned — a dev server started in the background, a browser behind
+    // `| tail` — is ended with the run (shell.ts `killGroups`), never left to
+    // the container: on swarm38 (2026-10-01) the headless Chromes job runs
+    // had left behind held gigabytes.
+    const leftovers = new Set<number>();
+    ctx?.onRunEnd?.(() => killGroups(leftovers));
+
     // What the model is told a `bash` command may take (the tool result names
     // the real number when one is killed).
     const bashBudget =
@@ -1176,6 +1184,7 @@ export default defineStep({
               maxOutputChars: BASH_MAX_CHARS,
               env: secretEnv,
               signal: ac.signal,
+              onLeftover: (pgid) => void leftovers.add(pgid),
             });
           } catch (e) {
             return `Command execution failed: ${e}`;

@@ -138,6 +138,15 @@ describe("exec (core)", () => {
     assert.ok(Date.now() - t0 < 5000);
   });
 
+  it("a process the command left running is killed when the run ends", async () => {
+    const r = await runExec({ cmd: "sh", args: ["-c", "sleep 30 >/dev/null 2>&1 & echo $!"] });
+    assert.equal(r.status, "success", errText(r));
+    const background = Number((r.output as Out).stdout.trim());
+    assert.ok(background > 0);
+    await new Promise((res) => setTimeout(res, 300));
+    assert.throws(() => process.kill(background, 0), /ESRCH/); // gone with the run
+  });
+
   it("secretsEnv injects values into the child env and masks them out of the output", async () => {
     const r = await runExec({
       cmd: "sh",

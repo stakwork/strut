@@ -544,7 +544,9 @@ and the child env is scrubbed by construction).
 - **Cancel:** the step polls `ctx.control.state` while the child runs and
   SIGTERMs the process group (SIGKILL 2s later) when the run starts
   cancelling, then `checkpoint()` raises the canonical `CancelledError`.
-  Timeout (default 10 min) is SIGKILL.
+  Timeout (default 10 min) is SIGKILL. A process the command left running
+  in its group (a server it put in the background) is killed when the run
+  ends (`runProcess`'s `onLeftover` → `ctx.onRunEnd` → `killGroups`).
 - **Output:** each stream is capped (default 500k chars) keeping head + tail,
   so a JSON result and the error that ended a build both survive; the child
   is NOT killed for being chatty. Big results belong in artifact files.
@@ -1426,7 +1428,12 @@ and the child env is scrubbed by construction).
     budget, so a dev server or a browser behind `| tail` goes to the
     background. Before this a cancel waited out the command's 10-minute cap
     (2026-09-30, swarm38: a `chrome --screenshot … | tail` that never
-    returned).
+    returned). What a command leaves running in its process group once it
+    has returned is killed when the RUN ends (`runProcess` reports the group
+    through `onLeftover` only when something is still in it; the step kills
+    them from `ctx.onRunEnd`), so a backgrounded server or browser never
+    outlives its run — on swarm38 (2026-10-01) the headless Chromes job runs
+    left behind put the repo2graph container at 12 GB.
   - **A stream that ends in an error fails the step** (`streamFailure` +
     `streamError`). The step reads `result.stream`, never `consumeStream`:
     the SDK reports a request the provider REFUSED (a 400 on a later step)
