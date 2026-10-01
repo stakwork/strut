@@ -1639,6 +1639,31 @@ describe("run callbacks", () => {
     }
   });
 
+  it("a durable resume posts run.end again: the URL is kept by the store, never by the log", async () => {
+    const host = await callbackHost();
+    try {
+      const { store, run } = await boot();
+      const res = await run("/workflows/ok/run", { input: {}, callback: { url: host.url } });
+      const runId = res.json.runId as string;
+      await until(() => host.posts.length === 1);
+      assert.equal(await store.getRunCallback("ok", runId), host.url);
+      // "Re-run from here" is a durable resume: same runId, the callback read back.
+      const again = await run(`/workflows/ok/runs/${runId}/resume`, { from: "ok/e" });
+      assert.equal(again.status, 202);
+      await until(() => host.posts.length === 2);
+      assert.deepEqual(
+        host.posts.map((p) => [p.path, p.body.runId, p.body.status]),
+        [["/hook?token=s3cret", runId, "success"], ["/hook?token=s3cret", runId, "success"]],
+      );
+      const events = await store.getRunEvents("ok", runId);
+      assert.deepEqual(events.find((e) => e.type === "run.resumed")!.callback, { origin: new URL(host.url).origin });
+      assert.ok(!JSON.stringify(events).includes("s3cret"));
+      assert.ok(!JSON.stringify(await store.getRunSummary("ok", runId)).includes("s3cret"));
+    } finally {
+      host.close();
+    }
+  });
+
   it("a failed run posts status: error with the message", async () => {
     const host = await callbackHost();
     try {

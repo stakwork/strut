@@ -97,7 +97,7 @@ export interface RunOptions<TServices = unknown> {
    *  templates as `$job`. */
   job?: string;
   /** The launch asked for the result to be posted to a host (`POST …/run
-   *  { callback }`). The runner records the URL's ORIGIN on `run.start` and
+   *  { callback }`). The runner records the URL's ORIGIN on `run.start` / `run.resumed` and
    *  nothing more; the launcher keeps the URL and does the posting. */
   callback?: { origin: string };
 }
@@ -244,6 +244,7 @@ export async function runWorkflow<TServices = unknown>(
       path: wfName,
       // Steps load at (re)launch: what runs from here on is what is active NOW.
       ...(opts.stepHashes ? { stepHashes: opts.stepHashes } : {}),
+      ...(opts.callback ? { callback: opts.callback } : {}),
     });
   } else {
     await emit({

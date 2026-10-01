@@ -255,7 +255,7 @@ One object per line of the run's append-only log. Common fields:
 | `run.end`         | terminal, success; `output` |
 | `run.error`       | terminal, failure; `error` |
 | `run.cancelled`   | terminal, cancelled |
-| `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event |
+| `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event and carries `stepHashes` + `callback: { origin }` like `run.start` |
 | `step.replayed`   | on resume: a finished step's journaled `output`, not re-executed |
 
 `step.start.stepVersion: { version, hash }` records a pinned custom step's
