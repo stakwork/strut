@@ -8,9 +8,10 @@ import { z } from "zod";
 
 import { flow, step, defineStep, type StepRegistry, type RunEvent } from "./core.js";
 import { runWorkflow } from "./runner.js";
-import { MemoryRunStore, FileRunStore } from "./store.js";
+import { MemoryRunStore, FileRunStore, type RunStore } from "./store.js";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
+import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { RunController, CancelledError, isCancelledError } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart, transitiveDependents } from "./journal.js";
 
@@ -1018,8 +1019,8 @@ describe("run control endpoints", () => {
     }
   }
 
-  async function waitForSummary(store: FileRunStore, wf: string, runId: string) {
-    const deadline = Date.now() + 3000;
+  async function waitForSummary(store: FileRunStore, wf: string, runId: string, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
     for (;;) {
       const s = await store.getRunSummary(wf, runId);
       if (s) return s;
@@ -1399,7 +1400,7 @@ describe("run control endpoints", () => {
      *  done, step two started, no run.json. */
     async function writeCutOffLog(
       workspace: WorkspaceManager,
-      store: FileRunStore,
+      store: RunStore,
       runId: string,
       extra: { ts?: string; parentRunId?: string; markers?: RunEvent["type"][]; terminal?: RunEvent["type"] } = {},
     ) {
@@ -1587,6 +1588,46 @@ describe("run control endpoints", () => {
         assert.equal(flakey.attempts(), 0);
       } finally {
         await cleanup();
+      }
+    });
+
+    it("is on by default whenever the run store outlives the process, whatever the workspace kind", async () => {
+      // The lab host: a GRAPH workspace (stood in for by a pathless one) with
+      // an explicit FileRunStore. The gate is the run store, not the
+      // workspace — gating on the workspace's kind left every graph-backed
+      // swarm without auto-resume. A MemoryRunStore cannot hold a cut-off
+      // run, so that one stays off.
+      const dir = join(tmpdir(), `strut-test-${randomUUID()}`);
+      await mkdir(dir, { recursive: true });
+      const fileWs = new WorkspaceManager(dir);
+      await fileWs.publishWorkflowByContent("boot", WF);
+      const fileStore = new FileRunStore(dir);
+      const memStore = new MemoryRunStore();
+      await writeCutOffLog(fileWs, fileStore, "1000");
+      await writeCutOffLog(fileWs, memStore, "1000");
+      const boot = (store: RunStore) => {
+        const counter = createCounterStep();
+        const flakey = createFlakeyStep(0);
+        return createStrut({
+          workspace: pathlessWorkspace(fileWs),
+          dataDir: dir,
+          store,
+          registry: { value: valueStep, counter: counter.stepDef, flakey: flakey.stepDef } as StepRegistry,
+          serveUi: false,
+          enableChat: false,
+          // `autoResume` deliberately unset: the DEFAULT is under test.
+        });
+      };
+      await Promise.all([boot(fileStore), boot(memStore)]);
+      try {
+        // The scan runs 3 s after construction.
+        const summary = await waitForSummary(fileStore, "boot", "1000", 8000);
+        assert.equal(summary.status, "success");
+        assert.ok((await fileStore.getRunEvents("boot", "1000")).some((e) => e.type === "run.resumed"));
+        assert.ok(!(await memStore.getRunSummary("boot", "1000")), "a memory store's cut-off run is left alone");
+        assert.ok(!(await memStore.getRunEvents("boot", "1000")).some((e) => e.type === "run.resumed"));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
       }
     });
   });

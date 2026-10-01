@@ -268,9 +268,11 @@ step. Three crash-specific hardenings:
 
 ### 5.3 Boot-time auto-resume
 
-IMPLEMENTED (`autoResumeStaleRuns` in `createStrut.ts`; on by default for
-a file-backed store, `STRUT_AUTO_RESUME=0` or `autoResume: false` to
-disable; runs a few seconds after construction). The operational goal:
+IMPLEMENTED (`autoResumeStaleRuns` in `createStrut.ts`; on by default
+whenever the RUN STORE outlives the process — anything but
+`MemoryRunStore`, whatever the workspace's kind, so a graph workspace
+with a `FileRunStore` counts — `STRUT_AUTO_RESUME=0` or `autoResume:
+false` to disable; runs a few seconds after construction). The operational goal:
 a long serial workflow must never need to be started over because the
 server restarted.
 
