@@ -206,9 +206,11 @@ export interface StrutOptions<TServices = unknown> {
   chatMaxAutoTurns?: number;
 
   /** Boot-time auto-resume of runs cut off by a crash/restart
-   *  (RUN_CONTROL_SPEC §5.3). Defaults to ON for a file-backed store unless
-   *  `STRUT_AUTO_RESUME=0`; pass `false` to disable, or an object to tune
-   *  the guards. Only the NEWEST root run per workflow is considered. */
+   *  (RUN_CONTROL_SPEC §5.3). Defaults to ON whenever the RUN STORE outlives
+   *  the process — anything but `MemoryRunStore`, whatever the workspace's
+   *  kind — unless `STRUT_AUTO_RESUME=0`; pass `false` to disable, or an
+   *  object to tune the guards. Only the NEWEST root run per workflow is
+   *  considered. */
   autoResume?: boolean | AutoResumeOptions;
 
   /** The automations tick loop (plans/automations.md §6): fires scheduled
@@ -3223,13 +3225,19 @@ export async function createStrut<TServices = unknown>(
     });
   }
 
-  // Boot-time auto-resume (§5.3): on by default for a file-backed store
-  // (an in-memory store cannot hold a cut-off run), off with
-  // `STRUT_AUTO_RESUME=0` or `autoResume: false`. Deferred and unref'd so a
-  // host that constructs strut and exits (tests, CLIs) is never held open.
+  // Boot-time auto-resume (§5.3): on by default whenever the RUN STORE
+  // outlives the process — anything but `MemoryRunStore`, which cannot hold
+  // a cut-off run — off with `STRUT_AUTO_RESUME=0` or `autoResume: false`.
+  // The gate is the run store, not the workspace: the lab host keeps its
+  // workflows in the graph and its runs in a `FileRunStore`, and gating on
+  // the workspace's kind left every graph-backed swarm without auto-resume
+  // (2026-10-01, swarm38: a container update cut a run off, hive declared it
+  // lost 10 s later, and a human resumed it by hand). Deferred and unref'd
+  // so a host that constructs strut and exits (tests, CLIs) is never held
+  // open.
   const autoResumeEnabled =
     opts.autoResume === undefined
-      ? fileBacked && process.env["STRUT_AUTO_RESUME"] !== "0"
+      ? !(store instanceof MemoryRunStore) && process.env["STRUT_AUTO_RESUME"] !== "0"
       : opts.autoResume !== false;
   if (autoResumeEnabled) {
     const o = typeof opts.autoResume === "object" ? opts.autoResume : {};
