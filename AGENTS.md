@@ -122,7 +122,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1246 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1264 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -178,7 +178,7 @@ strut/
 # Engine
 cd strut
 npm install
-npm test                    # 1243 tests, ~5s
+npm test                    # 1264 tests, ~5s
 npm run dev                 # starts Hono server on :3000
 
 # Graph backend tests — LIVE, against a THROWAWAY Neo4j (they wipe it).
@@ -1353,8 +1353,15 @@ and the child env is scrubbed by construction).
   of three shapes: a
   `final_answer` tool's
   text (set `finalAnswer` to its description), a STRUCTURED object (set
-  `schema` to a JSON Schema → `Output.object`, read off `res.output`), or
-  the final assistant text. Provider-direct via aieo
+  `schema` to a JSON Schema: it becomes the `final_answer` tool's INPUT, and
+  the step returns the object it was called with — never the SDK's
+  `Output.object` grammar over the loop, which forbids all free text and
+  made Sonnet 5.5 mark time with `true` / `echo done` tool calls until the
+  step cap; the grammar is used only for the forced no-tools answer turn),
+  or the final assistant text. A no-op loop guard runs in every mode: after
+  three consecutive steps that are one identical tool call with an
+  identical result, the next step offers only `final_answer` (no tools in
+  text mode). Provider-direct via aieo
   (anthropic|openai|google|openrouter|xai — inferred from the model
   name, which may be an alias like `sonnet`/`grok` or slash format like
   `openrouter/moonshotai/kimi-k2.6`), lazy-loaded; needs the provider
