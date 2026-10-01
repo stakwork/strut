@@ -272,7 +272,9 @@ IMPLEMENTED (`autoResumeStaleRuns` in `createStrut.ts`; on by default
 whenever the RUN STORE outlives the process — anything but
 `MemoryRunStore`, whatever the workspace's kind, so a graph workspace
 with a `FileRunStore` counts — `STRUT_AUTO_RESUME=0` or `autoResume:
-false` to disable; runs a few seconds after construction). The operational goal:
+false` to disable; runs a few seconds after construction). A resumed run
+posts its `run.end` callback: the URL is kept by the run store beside the
+log (`setRunCallback`), never in it. The operational goal:
 a long serial workflow must never need to be started over because the
 server restarted.
 

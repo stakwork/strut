@@ -176,6 +176,13 @@ export interface RunStore {
   /** Remove every run record of a workflow (a deleted workflow's history).
    *  Nothing to remove is not an error. */
   deleteRuns(workflow: string): Promise<void>;
+  /** Where the run's result is POSTed when it settles (`POST …/run
+   *  { callback }`): the host's credential, kept HERE and never in the log
+   *  — the events and the summary carry its origin only, and no endpoint
+   *  reads this — so a durable resume can post `run.end` the way the
+   *  launch would have. Null for a run launched without one. */
+  setRunCallback(workflow: string, runId: string, url: string): Promise<void>;
+  getRunCallback(workflow: string, runId: string): Promise<string | null>;
   /** Heal a log left torn by a crash mid-append (a truncated final line with
    *  no newline) so the next append starts on a fresh line instead of being
    *  glued onto the fragment. Called before a durable resume; returns true
@@ -395,6 +402,21 @@ export class FileRunStore implements RunStore {
     return join(this.runsDir(workflow), runId);
   }
 
+  async setRunCallback(workflow: string, runId: string, url: string): Promise<void> {
+    const dir = this.runDir(workflow, runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "callback.json"), JSON.stringify({ url }), "utf-8");
+  }
+
+  async getRunCallback(workflow: string, runId: string): Promise<string | null> {
+    try {
+      const { url } = JSON.parse(await readFile(join(this.runDir(workflow, runId), "callback.json"), "utf-8")) as { url?: unknown };
+      return typeof url === "string" ? url : null;
+    } catch {
+      return null;
+    }
+  }
+
   async append(workflow: string, runId: string, event: RunEvent): Promise<void> {
     const dir = this.runDir(workflow, runId);
     await mkdir(dir, { recursive: true });
@@ -549,6 +571,7 @@ export class FileRunStore implements RunStore {
 export class MemoryRunStore implements RunStore {
   events: Map<string, RunEvent[]> = new Map();
   summaries: Map<string, RunSummary> = new Map();
+  callbacks: Map<string, string> = new Map();
 
   private key(workflow: string, runId: string): string {
     return `${workflow}/${runId}`;
@@ -574,7 +597,16 @@ export class MemoryRunStore implements RunStore {
     for (const id of await this.listRuns(workflow)) {
       this.events.delete(this.key(workflow, id));
       this.summaries.delete(this.key(workflow, id));
+      this.callbacks.delete(this.key(workflow, id));
     }
+  }
+
+  async setRunCallback(workflow: string, runId: string, url: string): Promise<void> {
+    this.callbacks.set(this.key(workflow, runId), url);
+  }
+
+  async getRunCallback(workflow: string, runId: string): Promise<string | null> {
+    return this.callbacks.get(this.key(workflow, runId)) ?? null;
   }
 
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {

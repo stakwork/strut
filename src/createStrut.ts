@@ -1024,6 +1024,8 @@ export async function createStrut<TServices = unknown>(
     journal: Record<string, unknown>;
     runStart: NonNullable<ReturnType<typeof readRunStart>>;
     events: RunEvent[];
+    /** The callback the launch recorded (`RunStore.setRunCallback`). */
+    callback?: { url: string };
   };
   type ResumeRefusal = { ok: false; status: 400 | 404 | 409; error: string };
 
@@ -1096,7 +1098,10 @@ export async function createStrut<TServices = unknown>(
         return { ok: false, status: 400, error: err instanceof Error ? err.message : String(err) };
       }
     }
-    return { ok: true, name, runId, flow, version, journal, runStart, events };
+    // The resumed run posts `run.end` the way the launch would have: the
+    // URL is the store's, beside the log, never in it.
+    const url = await store.getRunCallback(name, runId);
+    return { ok: true, name, runId, flow, version, journal, runStart, events, ...(url ? { callback: { url } } : {}) };
   };
 
   /** Relaunch a prepared durable resume under its ORIGINAL runId (§5). */
@@ -1119,6 +1124,7 @@ export async function createStrut<TServices = unknown>(
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
         ...(p.runStart.principal ? { principal: p.runStart.principal } : {}),
+        ...(p.callback ? { callback: p.callback } : {}),
       },
     );
   };
@@ -1237,7 +1243,12 @@ export async function createStrut<TServices = unknown>(
         }
         if (controllers.has(`${name}/${runId}`)) break;
         launchDurableResume(prepared);
-        report(name, runId, "resumed", `replaying ${Object.keys(prepared.journal).length} journaled step(s)${prepared.version ? ` against version ${prepared.version}` : ""}`);
+        report(
+          name,
+          runId,
+          "resumed",
+          `replaying ${Object.keys(prepared.journal).length} journaled step(s)${prepared.version ? ` against version ${prepared.version}` : ""}${prepared.callback ? `; run.end goes to ${callbackOrigin(prepared.callback.url)}` : ""}`,
+        );
         break;
       }
     }
@@ -2105,8 +2116,10 @@ export async function createStrut<TServices = unknown>(
       actor?: string;
       principal?: string;
       /** Where to POST the result when the run settles (`POST …/run
-       *  { callback }`). Lives here, in the launch closure, and is never
-       *  persisted: it is the host's credential. */
+       *  { callback }`). The host's credential: the log records its origin
+       *  only, and the URL is kept by the run store beside the log
+       *  (`setRunCallback`, served by no endpoint) so a durable resume
+       *  posts `run.end` the way the launch would have. */
       callback?: { url: string };
     },
   ): string {
@@ -2115,6 +2128,9 @@ export async function createStrut<TServices = unknown>(
     const launchedAt = Date.now();
     const callback = extra?.callback;
     void (async () => {
+      // Recorded before the first event, so a run cut off at any point is
+      // resumed WITH its callback. A resume read it from there already.
+      if (callback && !extra?.resume) await store.setRunCallback(flow.name, runId, callback.url);
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);

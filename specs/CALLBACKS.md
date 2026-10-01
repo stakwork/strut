@@ -153,8 +153,10 @@ twenty turns. `plans/jobs.md` is the design.
 ## Good to know
 
 - **The URL is your secret.** Put a token in it, like the example. Strut
-  never stores or returns the URL — the run log records only its origin.
-- **If strut restarts mid-run**, the callback is lost with it. If you have not
+  never returns the URL — the run log records only its origin, and the URL
+  is kept beside the log where no endpoint serves it.
+- **If strut restarts mid-run**, it resumes the run at boot and the callback
+  posts when the run settles, as if nothing had happened. If you have not
   heard back after a run should have finished, read the summary endpoint above.
 - `POST /chat` accepts the same `callback` field for the AI builder; that one
   posts once per turn with `event: "turn.end"`.

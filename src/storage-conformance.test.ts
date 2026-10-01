@@ -96,6 +96,20 @@ for (const impl of runImpls) {
       await store.deleteRuns("never"); // nothing to remove is not an error
     });
 
+    it("setRunCallback → getRunCallback: null until set, kept beside the log, gone with deleteRuns", async () => {
+      assert.equal(await store.getRunCallback(WF, "1000"), null);
+      await store.setRunCallback(WF, "1000", "http://host.test/hook?token=s3cret");
+      await store.append(WF, "1000", ev("1000", "run.start"));
+      await store.finalize(WF, "1000", summaryFor("1000"));
+      assert.equal(await store.getRunCallback(WF, "1000"), "http://host.test/hook?token=s3cret");
+      assert.equal(await store.getRunCallback(WF, "1001"), null);
+      // Never in what the read endpoints serve.
+      assert.ok(!JSON.stringify(await store.getRunEvents(WF, "1000")).includes("s3cret"));
+      assert.ok(!JSON.stringify(await store.getRunSummary(WF, "1000")).includes("s3cret"));
+      await store.deleteRuns(WF);
+      assert.equal(await store.getRunCallback(WF, "1000"), null);
+    });
+
     it("a finalize-less log yields a partial summary (crash / in-flight)", async () => {
       await store.append(WF, "1", ev("1", "run.start", { input: { q: 1 } }));
       await store.append(WF, "1", ev("1", "step.end", { path: `${WF}/a`, output: "A" }));

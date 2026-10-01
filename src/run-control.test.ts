@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile, appendFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { z } from "zod";
 
 import { flow, step, defineStep, type StepRegistry, type RunEvent } from "./core.js";
@@ -1587,6 +1588,40 @@ describe("run control endpoints", () => {
         assert.match(report[0]!.reason, /no stored version matches/);
         assert.equal(flakey.attempts(), 0);
       } finally {
+        await cleanup();
+      }
+    });
+
+    it("a cut-off run launched with a callback posts run.end when auto-resumed", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      const posts: Array<{ path: string; body: Record<string, unknown> }> = [];
+      const host = createServer((req, res) => {
+        let body = "";
+        req.on("data", (d) => (body += d));
+        req.on("end", () => {
+          posts.push({ path: req.url!, body: JSON.parse(body) });
+          res.writeHead(204).end();
+        });
+      });
+      await new Promise<void>((r) => host.listen(0, "127.0.0.1", r));
+      const url = `http://127.0.0.1:${(host.address() as { port: number }).port}/hook?token=s3cret`;
+      try {
+        await writeCutOffLog(workspace, store, "1000");
+        await store.setRunCallback("boot", "1000", url);
+        const report = await strut.autoResumeStaleRuns();
+        assert.equal(report[0]!.action, "resumed");
+        assert.match(report[0]!.reason, /run\.end goes to http:\/\/127\.0\.0\.1:\d+$/);
+        await waitForSummary(store, "boot", "1000");
+        for (let i = 0; i < 200 && posts.length === 0; i++) await sleep(25);
+        assert.equal(posts.length, 1);
+        assert.equal(posts[0]!.path, "/hook?token=s3cret");
+        assert.equal(posts[0]!.body["runId"], "1000");
+        assert.equal(posts[0]!.body["status"], "success");
+        const events = await store.getRunEvents("boot", "1000");
+        assert.deepEqual(events.find((e) => e.type === "run.resumed")!.callback, { origin: new URL(url).origin });
+        assert.ok(!JSON.stringify(events).includes("s3cret"));
+      } finally {
+        host.close();
         await cleanup();
       }
     });

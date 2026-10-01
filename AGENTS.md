@@ -860,13 +860,16 @@ and the child env is scrubbed by construction).
   — each agent session as a LINK (`GET …/runs/:runId/transcripts/<step
   path>` serves its bare `messages` array), never inline — detached from the run's teardown,
   with the chat callback's delivery rules (a few retries; a 4xx is the
-  host refusing it). The URL is the host's credential: it lives in the
-  launch closure and is never persisted — `run.start` records `callback:
-  { origin }` only, so no read endpoint (events, stream, summary) can leak
-  it. Same crash posture as the chat: a restart drops it, and a run
-  resumed afterwards (by hand or boot-time auto-resume) posts nothing —
-  the host's fallback is `GET /workflows/:name/runs/:runId`. The web UI
-  never sends one.
+  host refusing it). The URL is the host's credential: `run.start` and
+  `run.resumed` record `callback: { origin }` only, so no read endpoint
+  (events, stream, summary) can leak it; the URL itself is kept by the run
+  store beside the log (`RunStore.setRunCallback` / `getRunCallback` —
+  `callback.json` on files — served by nothing), so a durable resume, by
+  hand or boot-time auto-resume (§5.3), posts `run.end` the way the launch
+  would have (before 2026-10-01 a restart dropped it, and hive learned of a
+  resumed run only through its reconcile cron, up to 10 minutes later). A
+  restart still drops a post in flight; the host's fallback is `GET
+  /workflows/:name/runs/:runId`. The web UI never sends one.
 
 - **Run control** (`RUN_CONTROL_SPEC.md`, `src/run-control.ts` +
   `src/journal.ts`). Every launch site registers a `RunController`
