@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { logger } from "hono/logger";
+import { compress } from "hono/compress";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
@@ -742,6 +743,11 @@ export async function createStrut<TServices = unknown>(
   const app = new Hono();
   // `?key=` (below) never reaches the log.
   app.use(logger((line, ...rest) => console.log(line.replace(/([?&]key=)[^&\s]*/g, "$1…"), ...rest)));
+  // gzip/br for a client that accepts it. A chat transcript is megabytes of
+  // JSON, and nothing in front of strut compresses: over a 400 KB/s link
+  // 2.8 MB took 7 s raw (swarm38, 2026-09-30). SSE is skipped by content
+  // type, so the streams flush event by event as before.
+  app.use(compress());
 
   // ── Auth ─────────────────────────────────────────────────────────────────
   //
@@ -3035,6 +3041,16 @@ export async function createStrut<TServices = unknown>(
         if (outputs.length) return c.json({ outputs });
       }
       return c.json({ outputs: [] });
+    });
+
+    // Meta alone — what the flyout's idle poll needs (turn, status, open
+    // question, context). A long transcript is megabytes; the client loads
+    // it only when the turn advanced.
+    app.get("/chat/:chatId/meta", async (c) => {
+      const chatId = c.req.param("chatId");
+      const meta = await chatStore.getMeta(chatId);
+      if (!meta) return c.json({ error: `Chat "${chatId}" not found` }, 404);
+      return c.json(publicMeta(await reconcileStaleChat(meta)));
     });
 
     app.get("/chat/:chatId", async (c) => {
