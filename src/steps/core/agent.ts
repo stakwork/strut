@@ -19,9 +19,18 @@ import os from "node:os";
  * of general-purpose tools and either:
  *   - calls a terminal `final_answer` tool and returns its text (`finalAnswer`
  *     mode — a free-form output contract the caller defines), or
- *   - produces a STRUCTURED object matching a JSON Schema (`schema` mode, via the
- *     SDK's `Output.object`), or
+ *   - calls that same tool with a STRUCTURED object matching a JSON Schema
+ *     (`schema` mode: the schema is the tool's input, the step returns the
+ *     object), or
  *   - just returns the final assistant text (neither set).
+ *
+ * Both answer modes end on a TOOL CALL, never on an output grammar over the
+ * loop. The SDK's `Output.object` (Anthropic `output_config.format`) forbids
+ * any free text, so at the "I'm done" moment a model that wants to narrate
+ * cannot, and substitutes the cheapest tool call instead — observed live on
+ * Sonnet 5.5 as `true` / `echo done` repeated until the step cap, and
+ * reproduced direct to the provider. A terminal tool leaves the text free;
+ * the grammar is only used for the forced no-tools turn, where it is safe.
  *
  * The tools are general (work on any codebase / working dir), so the step is
  * domain-agnostic: point it at a `cwd`, give it a `system` + `prompt`, and
@@ -33,8 +42,8 @@ import os from "node:os";
  * to cwd), web_search and web_fetch (every provider, via aieo: native on
  * anthropic; Exa-backed search — needs EXA_API_KEY — and a guarded HTTP
  * fetch elsewhere). `final_answer` is added
- * automatically in finalAnswer mode and is always available regardless of
- * `toolFilter`.
+ * automatically in finalAnswer and schema mode and is always available
+ * regardless of `toolFilter`.
  *
  * Provider-direct via the AI SDK, resolved through aieo (anthropic | openai |
  * google | openrouter | xai), lazy-loaded. Needs the provider's key in env
@@ -467,6 +476,74 @@ export function degenerateSchemaFields(schema: unknown, output: unknown): string
   }
   return bad;
 }
+
+/**
+ * The answer a terminal loop produced: the OUTPUT of the newest executed
+ * `final_answer` call (its text in finalAnswer mode, the object in schema
+ * mode), or undefined when no step called it. A call the tool refused is a
+ * `tool-error`, not a result — it does not count, so the model answers it.
+ */
+export function finalAnswerOf(steps: Array<{ content?: any[] }>): unknown {
+  for (const step of [...steps].reverse()) {
+    const fa = step.content?.find((c: any) => c.type === "tool-result" && c.toolName === "final_answer");
+    if (fa) return (fa as { output?: unknown }).output;
+  }
+  return undefined;
+}
+
+/**
+ * Top-level `required` properties of a JSON Schema that `input` leaves out.
+ * The SDK's `jsonSchema()` validates nothing by itself, so this is the one
+ * check the `final_answer` tool makes before accepting an object: a missing
+ * required field is refused as a tool error the model must answer, instead
+ * of reaching the caller as `undefined`.
+ */
+export function missingRequired(schema: unknown, input: unknown): string[] {
+  const s = schema as { required?: unknown } | null;
+  if (!s || typeof s !== "object" || !Array.isArray(s.required)) return [];
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  return (s.required as unknown[]).filter((k): k is string => typeof k === "string" && obj[k] === undefined);
+}
+
+/**
+ * The no-op loop guard. A model that has finished but is not producing its
+ * answer tends to mark time with the cheapest tool call it has — `true`,
+ * `echo done` — and once a few identical turns sit in the history it repeats
+ * them: three swarm runs of the `job` workflow burned 65, 90 and 493 calls
+ * that way (2026-09-30). After this many consecutive steps that are ONE
+ * identical tool call with an identical result, the next step offers only
+ * `final_answer` (no tools at all in text mode), so the only moves left are
+ * to answer or to stop. Identical RESULTS keep a legitimate poll (same
+ * command, changing output) out of it.
+ */
+export const NOOP_LOOP_STREAK = 3;
+
+/**
+ * How many trailing steps are the same single (tool, input, output). A step
+ * with no tool call, several, or a call without a result ends the streak.
+ */
+export function identicalTailCalls(steps: Array<{ content?: any[] }>): number {
+  let n = 0;
+  let key: string | undefined;
+  for (const step of [...steps].reverse()) {
+    const content = step.content ?? [];
+    const calls = content.filter((c: any) => c.type === "tool-call");
+    if (calls.length !== 1) break;
+    const result = content.find((c: any) => c.type === "tool-result" && c.toolCallId === calls[0].toolCallId);
+    if (!result) break;
+    const k = JSON.stringify([calls[0].toolName, calls[0].input, result.output]);
+    if (key !== undefined && k !== key) break;
+    key = k;
+    n++;
+  }
+  return n;
+}
+
+/** What `final_answer` is for in schema mode — the tool's description, and
+ *  the contract every nudge restates. */
+const SCHEMA_ANSWER_CONTRACT =
+  "Your FINAL answer: the structured object the caller asked for. Call final_answer exactly once, when the work is done — it ends your run. " +
+  "Fill every required field with real values, never a placeholder or an empty string.";
 
 /**
  * How many times a mid-stream CONNECTION failure may be resumed before the
@@ -907,15 +984,15 @@ export default defineStep({
     finalAnswer: z
       .string()
       .optional()
-      .describe("if set, a `final_answer` tool is added with this description; its output is the result. Omit when using `schema`."),
+      .describe("if set, a `final_answer` tool is added with this description; its text is the result. Omit when using `schema`."),
     schema: z
       .any()
       .optional()
-      .describe("if set, a JSON Schema for STRUCTURED output (Output.object); the step returns the object. Mutually exclusive with finalAnswer."),
+      .describe("if set, a JSON Schema for STRUCTURED output: it becomes the `final_answer` tool's input, and the step returns the object the model called it with. Mutually exclusive with finalAnswer."),
     toolFilter: z
       .array(z.string())
       .default([])
-      .describe("subset of built-in tool names to enable; empty = all, ['none'] = no built-ins (only agentTools). (final_answer is always available in finalAnswer mode.)"),
+      .describe("subset of built-in tool names to enable; empty = all, ['none'] = no built-ins (only agentTools). (final_answer is always available in finalAnswer and schema mode.)"),
     agentTools: z
       .array(z.string())
       .default([])
@@ -965,7 +1042,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    const { ToolLoopAgent, Output, tool, isStepCount, hasToolCall, jsonSchema, streamText } = await import("ai");
+    const { ToolLoopAgent, Output, tool, isStepCount, jsonSchema, streamText } = await import("ai");
 
     // Model/provider resolution via aieo (shared with mcp) through strut's
     // resolver (src/llm.ts): friendly aliases ("sonnet", "grok"), canonical
@@ -1167,17 +1244,34 @@ export default defineStep({
     if (ctx?.registry) for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(ctx.registry, name);
     Object.assign(tools, buildRegistryTools(cfg.agentTools, ctx?.registry, ctx, tool));
 
-    // Output mode: schema (structured) vs finalAnswer (terminal tool) vs text.
+    // Output mode: schema (structured) vs finalAnswer (free text) vs plain
+    // text. The first two end on the SAME terminal tool — see the header for
+    // why the schema is the tool's input and never an output grammar.
     const useSchema = cfg.schema != null;
     if (useSchema && cfg.finalAnswer) {
       throw new Error("agent: set EITHER `schema` (structured output) OR `finalAnswer` (terminal tool), not both.");
     }
-    if (!useSchema && cfg.finalAnswer) {
-      tools.final_answer = tool({
-        description: cfg.finalAnswer,
-        inputSchema: z.object({ answer: z.string() }) as any,
-        execute: async ({ answer }: { answer: string }) => answer,
-      });
+    const terminal = useSchema || !!cfg.finalAnswer;
+    /** The output contract, restated by every nudge. */
+    const contract: string = useSchema ? SCHEMA_ANSWER_CONTRACT : (cfg.finalAnswer ?? "");
+    if (terminal) {
+      tools.final_answer = useSchema
+        ? tool({
+            description: SCHEMA_ANSWER_CONTRACT,
+            inputSchema: jsonSchema(cfg.schema) as any,
+            execute: async (input: unknown) => {
+              const missing = missingRequired(cfg.schema, input);
+              if (missing.length) {
+                throw new Error(`final_answer refused: missing required field(s): ${missing.join(", ")}. Call it again with EVERY required field.`);
+              }
+              return input;
+            },
+          })
+        : tool({
+            description: cfg.finalAnswer,
+            inputSchema: z.object({ answer: z.string() }) as any,
+            execute: async ({ answer }: { answer: string }) => answer,
+          });
     }
 
     // Mask secret values out of EVERY tool result — must wrap INSIDE the emit
@@ -1192,9 +1286,10 @@ export default defineStep({
     // it's uniformly considered (and skipped).
     wrapToolsWithEmit(tools, ctx);
 
-    const stopWhen = !useSchema && cfg.finalAnswer
-      ? [hasToolCall("final_answer"), isStepCount(cfg.maxSteps)]
-      : [isStepCount(cfg.maxSteps)];
+    /** The terminal condition: the newest step EXECUTED final_answer. (The
+     *  SDK's `hasToolCall` would also stop on a call the tool refused.) */
+    const finalAnswered = ({ steps }: { steps: any[] }) => finalAnswerOf(steps.slice(-1)) !== undefined;
+    const stopWhen = terminal ? [finalAnswered, isStepCount(cfg.maxSteps)] : [isStepCount(cfg.maxSteps)];
 
     // Resolved LAST (after all config validation): the key lookup throws when
     // no key is configured — a config error should surface before a
@@ -1284,8 +1379,18 @@ export default defineStep({
       // before the next LLM call starts (the in-flight one finishes and is
       // journaled); a cancel stops the session here. `ctx.control` is the
       // runner's unit-scoped view, so a parked agent counts as quiesced.
-      const prepareStep = async () => {
+      const prepareStep = async ({ steps: soFar }: { steps: any[] }) => {
         await ctx?.control?.checkpoint();
+        // The no-op loop guard (NOOP_LOOP_STREAK): the model is marking time.
+        if (identicalTailCalls(soFar) >= NOOP_LOOP_STREAK) {
+          const call = soFar.at(-1)?.content?.find((c: any) => c.type === "tool-call");
+          const only = terminal ? ["final_answer"] : [];
+          console.warn(
+            `[agent] ${NOOP_LOOP_STREAK} identical tool calls in a row (${call?.toolName} ${JSON.stringify(call?.input ?? null).slice(0, 120)}); ` +
+              `this step offers ${only.length ? "only final_answer" : "no tools"}.`,
+          );
+          return { activeTools: only };
+        }
         return undefined;
       };
       const agent = new ToolLoopAgent({
@@ -1295,7 +1400,6 @@ export default defineStep({
         maxOutputTokens,
         stopWhen,
         ...(providerOptions ? { providerOptions } : {}),
-        ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
         prepareStep,
         onStepEnd,
       });
@@ -1325,7 +1429,6 @@ export default defineStep({
         responseMessages: any[];
         usage: any;
         text: any;
-        output: any;
       };
       for (;;) {
         const resuming = streamErrorContinuations > 0;
@@ -1337,12 +1440,8 @@ export default defineStep({
               instructions: system,
               tools,
               maxOutputTokens,
-              stopWhen:
-                !useSchema && cfg.finalAnswer
-                  ? [hasToolCall("final_answer"), isStepCount(remaining)]
-                  : [isStepCount(remaining)],
+              stopWhen: terminal ? [finalAnswered, isStepCount(remaining)] : [isStepCount(remaining)],
               ...(providerOptions ? { providerOptions } : {}),
-              ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
               prepareStep,
               onStepEnd,
             })
@@ -1362,7 +1461,6 @@ export default defineStep({
             responseMessages: await attempt.responseMessages,
             usage: await attempt.usage,
             text: await attempt.text,
-            output: useSchema ? await (attempt as any).output : undefined,
           };
           break;
         }
@@ -1452,62 +1550,165 @@ export default defineStep({
         `[agent] tokens in:${usage.inputTokens} cacheRead:${usage.cacheReadTokens} cacheWrite:${usage.cacheWriteTokens} out:${usage.outputTokens} → $${cost.toFixed(4)}`,
       );
 
-      // Structured mode: return the typed object.
+      // The last text the model wrote: the plain-text result, and the
+      // last-resort fallback for a finalAnswer loop that never answered.
+      let lastText = "";
+      const noteText = (fromSteps: any[]) => {
+        for (const step of fromSteps) {
+          for (const item of step.content ?? []) {
+            if (item.type === "text" && item.text?.trim()) lastText = item.text.trim();
+          }
+        }
+      };
+      noteText(steps);
+
+      if (!terminal) {
+        console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps)`);
+        return await finish({ result: res.text || lastText, steps: stepsUsed, usage, cost });
+      }
+
+      // Both answer modes end on final_answer: its text (finalAnswer) or the
+      // caller's object (schema). Everything below is SALVAGE for a loop that
+      // ended without it — or, in schema mode, with a degenerate one.
+      let answer: unknown = finalAnswerOf(steps);
+
+      /** Resume the REAL tool loop once from the whole conversation so far,
+       *  with `nudge` as the next user turn — the model can still finish file
+       *  work before answering. Banks the new steps' usage, cost, text and
+       *  messages; returns them. */
+      const continueLoop = async (nudge: { role: "user"; content: string }, budget: number) => {
+        const nudger = new ToolLoopAgent({
+          model,
+          instructions: system,
+          tools,
+          maxOutputTokens,
+          // At least a few turns even when the stop came near the cap —
+          // finishing file work takes more than one call.
+          stopWhen: [finalAnswered, isStepCount(Math.max(4, budget))],
+          ...(providerOptions ? { providerOptions } : {}),
+          prepareStep,
+          onStepEnd,
+        });
+        const nudged = await nudger.stream({ messages: [...head, ...(messages as any[]), nudge] as any });
+        await drain(nudged);
+        const nudgedSteps = (await nudged.steps) ?? [];
+        stepsUsed += nudgedSteps.length;
+        // The recorded session keeps the nudge that drove these turns.
+        messages.push(nudge, ...(((await nudged.responseMessages) ?? []) as any[]));
+        noteText(nudgedSteps);
+        const nu = usageFromSteps(nudgedSteps);
+        usage = addUsage(usage, nu);
+        cost += costOf(nu);
+        return nudgedSteps;
+      };
+
+      // PREMATURE text-only stop: the model narrated ("now let's copy this…")
+      // instead of calling a tool, which ends the SDK loop even with budget
+      // remaining — observed live losing a 62-minute research session whose
+      // deliverable needed two more tool calls. Unlike the no-tools forced
+      // turn below, resuming the REAL tool loop can still finish that work:
+      // continue the session ONCE with the remaining budget and a nudge to
+      // either keep working or call final_answer. A second tool-less stop
+      // falls through to the forced turn / last-text fallback as before.
+      if (classifyFinalAnswerStop(answer !== undefined, stepsUsed, cfg.maxSteps) === "nudge") {
+        console.warn(
+          `[agent] Loop ended tool-lessly at ${stepsUsed}/${cfg.maxSteps} steps without final_answer; nudging the loop once.`,
+        );
+        try {
+          const nudgedSteps = await continueLoop(
+            {
+              role: "user",
+              content:
+                "You stopped by sending a message without any tool call — that ends your run, and you have NOT called final_answer. " +
+                "If the task is genuinely complete, verify your deliverables now and call final_answer. Otherwise continue the work " +
+                "with tool calls. Do not stop again without calling final_answer.\n\n" +
+                contract,
+            },
+            cfg.maxSteps - stepsUsed,
+          );
+          answer = finalAnswerOf(nudgedSteps);
+        } catch (e) {
+          giveUp("nudge continuation", e);
+        }
+      }
+
+      // The loop ended (budget exhausted, or the nudge also stopped tool-lessly)
+      // WITHOUT calling final_answer, so we'd otherwise return a stray reasoning
+      // sentence and lose the whole (expensive) exploration. Salvage it: force
+      // ONE no-tools turn that must emit the final answer now, continuing the
+      // full session. With no tools in the request, schema mode may ask the
+      // SDK for the object through its output grammar here — a single answer
+      // turn is what the grammar is for; it is over a tool LOOP that it fails
+      // (see the header).
+      if (answer === undefined) {
+        console.warn("[agent] No final_answer tool call; forcing a final-answer turn.");
+        try {
+          // Streamed for the same severed-connection reason as the main loop —
+          // this single turn emits the ENTIRE final answer.
+          const forcedPrompt = {
+            role: "user" as const,
+            content: `You have used your entire exploration budget — do NOT call any tools. Using everything you learned above, produce the final ${useSchema ? "structured " : ""}answer NOW.\n\n${contract}`,
+          };
+          const forced = streamText({
+            model,
+            ...(providerOptions ? { providerOptions } : {}),
+            ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
+            // A thread's history leads, with this turn's task; without one
+            // the forced turn is what it always was.
+            messages: [...(prior.length ? head : []), ...(messages as any[]), forcedPrompt],
+          } as any);
+          await drain(forced);
+          // The recorded session keeps this turn too.
+          messages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
+          const got: unknown = useSchema ? await (forced as any).output : ((await forced.text) ?? "").trim();
+          if (got !== undefined && got !== "") {
+            answer = got;
+            const fu = usageFromSteps(await forced.steps);
+            usage = addUsage(usage, fu);
+            cost += costOf(fu);
+          }
+        } catch (e) {
+          giveUp("forced final-answer turn", e);
+        }
+      }
+
       if (useSchema) {
-        let object = res.output;
-        let text = res.text;
-        // PREMATURE stop, schema flavour: the loop ended on a tool-less turn
-        // with budget remaining and the parsed object has required strings
-        // that are empty or filler. Same remedy as the finalAnswer nudge
-        // below — resume the REAL tool loop once (it can still publish or
-        // verify whatever it skipped) and demand a complete structured
-        // answer. A second degenerate stop is returned as-is: the caller's
-        // own fallbacks (usableSummary, version resolution) take it from there.
-        const bad = degenerateSchemaFields(cfg.schema, object);
+        if (answer === undefined) {
+          throw new Error(
+            `agent: no structured answer after ${stepsUsed} step(s): the model never called final_answer, and the forced turn produced none`,
+          );
+        }
+        // DEGENERATE answer: final_answer was called with required strings
+        // that are empty or filler — a model that bailed early (observed live
+        // in a hill-climb: 3 of 8 authoring generations answered `summary: ""`
+        // at 5-8 of 200 steps, one echoing a version it never published).
+        // Same remedy as the tool-less stop: resume the real loop once and
+        // demand a complete answer. A second degenerate answer is returned
+        // as-is — the caller's own fallbacks take it from there.
+        const bad = degenerateSchemaFields(cfg.schema, answer);
         if (bad.length && stepsUsed < cfg.maxSteps) {
           console.warn(
             `[agent] Structured answer left required field(s) empty/filler (${bad.join(", ")}) at ${stepsUsed}/${cfg.maxSteps} steps; nudging the loop once.`,
           );
           try {
-            const nudger = new ToolLoopAgent({
-              model,
-              instructions: system,
-              tools,
-              maxOutputTokens,
-              // At least a few turns even when the stop came near the cap.
-              stopWhen: [isStepCount(Math.max(4, cfg.maxSteps - stepsUsed))],
-              ...(providerOptions ? { providerOptions } : {}),
-              output: Output.object({ schema: jsonSchema(cfg.schema) }),
-              prepareStep,
-              onStepEnd,
-            });
-            const nudge = {
-              role: "user" as const,
-              content:
-                "Your last message ended your run and was parsed as your FINAL structured answer, but it left " +
-                `required field(s) empty or filler: ${bad.join(", ")}. That answer is what the harness harvests — ` +
-                "an empty field there wastes the whole run. If work remains (something you still had to publish, " +
-                "create, or verify), continue it with tool calls now. Then finish with a complete structured answer " +
-                "that fills EVERY required field with real values: never a placeholder, never an empty string.",
-            };
-            const nudged = await nudger.stream({ messages: [...head, ...(messages as any[]), nudge] as any });
-            await drain(nudged);
-            const nudgedSteps = (await nudged.steps) ?? [];
-            stepsUsed += nudgedSteps.length;
-            // The recorded session keeps the nudge that drove these turns.
-            messages.push(nudge, ...(((await nudged.responseMessages) ?? []) as any[]));
-            const nu = usageFromSteps(nudgedSteps);
-            usage = addUsage(usage, nu);
-            cost += costOf(nu);
+            const nudgedSteps = await continueLoop(
+              {
+                role: "user",
+                content:
+                  "Your final_answer call ended your run, but it left " +
+                  `required field(s) empty or filler: ${bad.join(", ")}. That answer is what the harness harvests — ` +
+                  "an empty field there wastes the whole run. If work remains (something you still had to publish, " +
+                  "create, or verify), continue it with tool calls now. Then call final_answer again with EVERY required " +
+                  "field filled with real values: never a placeholder, never an empty string.",
+              },
+              cfg.maxSteps - stepsUsed,
+            );
             // The continuation may have done real work (a publish) before
             // answering, so its object is the fresher one — keep it unless it
-            // is WORSE than what we already had.
-            const nudgedObject = await (nudged as any).output;
-            const stillBad = degenerateSchemaFields(cfg.schema, nudgedObject);
-            if (stillBad.length <= bad.length) {
-              object = nudgedObject;
-              text = await nudged.text;
-            }
+            // is WORSE than what we already had (or absent).
+            const nudgedObject = finalAnswerOf(nudgedSteps);
+            const stillBad = nudgedObject === undefined ? bad : degenerateSchemaFields(cfg.schema, nudgedObject);
+            if (nudgedObject !== undefined && stillBad.length <= bad.length) answer = nudgedObject;
             if (stillBad.length) {
               console.warn(`[agent] nudged structured answer still has empty/filler field(s): ${stillBad.join(", ")}`);
             }
@@ -1516,127 +1717,13 @@ export default defineStep({
           }
         }
         console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps, structured)`);
-        return await finish({ result: text, object, steps: stepsUsed, usage, cost });
+        return await finish({ result: JSON.stringify(answer), object: answer, steps: stepsUsed, usage, cost });
       }
 
-      // finalAnswer / text mode: extract the final_answer tool output, else last text.
-      let final = "";
-      let lastText = "";
-      for (const step of steps) {
-        for (const item of step.content) {
-          if (item.type === "text" && item.text?.trim()) lastText = item.text.trim();
-        }
+      let final = typeof answer === "string" ? answer : answer === undefined ? "" : JSON.stringify(answer);
+      if (!final && lastText) {
+        final = `${lastText}\n\n(Note: model did not invoke final_answer; using last reasoning text.)`;
       }
-      if (cfg.finalAnswer) {
-        const extractFinal = (fromSteps: any[]): string => {
-          for (const step of [...fromSteps].reverse()) {
-            const fa = step.content.find(
-              (c: any) => c.type === "tool-result" && c.toolName === "final_answer",
-            );
-            if (fa) return String((fa as { output?: unknown }).output ?? "");
-          }
-          return "";
-        };
-        final = extractFinal(steps);
-
-        // PREMATURE text-only stop: the model narrated ("now let's copy this…")
-        // instead of calling a tool, which ends the SDK loop even with budget
-        // remaining — observed live losing a 62-minute research session whose
-        // deliverable needed two more tool calls. Unlike the no-tools forced
-        // turn below, resuming the REAL tool loop can still finish that work:
-        // continue the session ONCE with the remaining budget and a nudge to
-        // either keep working or call final_answer. A second tool-less stop
-        // falls through to the forced turn / last-text fallback as before.
-        if (classifyFinalAnswerStop(!!final, stepsUsed, cfg.maxSteps) === "nudge") {
-          console.warn(
-            `[agent] Loop ended tool-lessly at ${stepsUsed}/${cfg.maxSteps} steps without final_answer; nudging the loop once.`,
-          );
-          try {
-            const nudger = new ToolLoopAgent({
-              model,
-              instructions: system,
-              tools,
-              maxOutputTokens,
-              stopWhen: [
-                hasToolCall("final_answer"),
-                // At least a few turns even when the stop came near the cap —
-                // finishing file work takes more than one call.
-                isStepCount(Math.max(4, cfg.maxSteps - stepsUsed)),
-              ],
-              ...(providerOptions ? { providerOptions } : {}),
-              prepareStep,
-              onStepEnd,
-            });
-            const nudge = {
-              role: "user" as const,
-              content:
-                "You stopped by sending a message without any tool call — that ends your run, and you have NOT called final_answer. " +
-                "If the task is genuinely complete, verify your deliverables now and call final_answer. Otherwise continue the work " +
-                "with tool calls. Do not stop again without calling final_answer.\n\n" +
-                cfg.finalAnswer,
-            };
-            const nudged = await nudger.stream({ messages: [...head, ...(messages as any[]), nudge] as any });
-            await drain(nudged);
-            const nudgedSteps = (await nudged.steps) ?? [];
-            stepsUsed += nudgedSteps.length;
-            // The recorded session keeps the nudge that drove these turns.
-            messages.push(nudge, ...(((await nudged.responseMessages) ?? []) as any[]));
-            for (const step of nudgedSteps) {
-              for (const item of step.content) {
-                if (item.type === "text" && item.text?.trim()) lastText = item.text.trim();
-              }
-            }
-            final = extractFinal(nudgedSteps);
-            const nu = usageFromSteps(nudgedSteps);
-            usage = addUsage(usage, nu);
-            cost += costOf(nu);
-          } catch (e) {
-            giveUp("nudge continuation", e);
-          }
-        }
-
-        // The loop ended (budget exhausted, or the nudge also stopped tool-lessly)
-        // WITHOUT calling final_answer, so we'd otherwise return a stray reasoning
-        // sentence and lose the whole (expensive) exploration. Salvage it: force
-        // ONE no-tools turn that must emit the final answer now, continuing the
-        // full session.
-        if (!final) {
-          console.warn("[agent] No final_answer tool call; forcing a final-answer turn.");
-          try {
-            // Streamed for the same severed-connection reason as the main loop —
-            // this single turn emits the ENTIRE final answer.
-            const forcedPrompt = {
-              role: "user" as const,
-              content: `You have used your entire exploration budget — do NOT call any tools. Using everything you learned above, produce the final answer NOW.\n\n${cfg.finalAnswer}`,
-            };
-            const forced = streamText({
-              model,
-              ...(providerOptions ? { providerOptions } : {}),
-              // A thread's history leads, with this turn's task; without one
-              // the forced turn is what it always was.
-              messages: [...(prior.length ? head : []), ...(messages as any[]), forcedPrompt],
-            });
-            await drain(forced);
-            // The recorded session keeps this turn too.
-            messages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
-            const ft = ((await forced.text) ?? "").trim();
-            if (ft) {
-              final = ft;
-              const fu = usageFromSteps(await forced.steps);
-              usage = addUsage(usage, fu);
-              cost += costOf(fu);
-            }
-          } catch (e) {
-            giveUp("forced final-answer turn", e);
-          }
-          if (!final && lastText) {
-            final = `${lastText}\n\n(Note: model did not invoke final_answer; using last reasoning text.)`;
-          }
-        }
-      } else {
-        final = res.text || lastText;
-      }
-
       console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps)`);
       return await finish({ result: final, steps: stepsUsed, usage, cost });
     } finally {

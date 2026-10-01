@@ -23,6 +23,10 @@ import agent, {
   wrapToolsWithMask,
   classifyFinalAnswerStop,
   degenerateSchemaFields,
+  finalAnswerOf,
+  missingRequired,
+  identicalTailCalls,
+  NOOP_LOOP_STREAK,
   isTransientStreamError,
   streamFailure,
   streamError,
@@ -741,6 +745,61 @@ describe("degenerateSchemaFields (schema-mode premature stop)", () => {
   });
 });
 
+describe("the terminal tool's helpers", () => {
+  const call = (toolName: string, input: unknown, id = "t1") => ({ type: "tool-call", toolCallId: id, toolName, input });
+  const result = (toolName: string, output: unknown, id = "t1") => ({ type: "tool-result", toolCallId: id, toolName, output });
+
+  it("finalAnswerOf: the newest EXECUTED final_answer's output, whatever its shape", () => {
+    const steps = [
+      { content: [call("bash", { command: "ls" }), result("bash", "a\n")] },
+      { content: [call("final_answer", { answer: "first" }), result("final_answer", "first")] },
+      { content: [call("final_answer", { candidate: "x" }), result("final_answer", { candidate: "x" })] },
+    ];
+    assert.deepEqual(finalAnswerOf(steps), { candidate: "x" });
+    assert.equal(finalAnswerOf(steps.slice(0, 2)), "first");
+    assert.equal(finalAnswerOf(steps.slice(0, 1)), undefined);
+    assert.equal(finalAnswerOf([]), undefined);
+  });
+
+  it("finalAnswerOf: a call the tool refused is a tool-error, not an answer", () => {
+    const steps = [{ content: [call("final_answer", { candidate: "x" }), { type: "tool-error", toolCallId: "t1", toolName: "final_answer", error: new Error("refused") }] }];
+    assert.equal(finalAnswerOf(steps), undefined);
+  });
+
+  it("missingRequired: the top-level required keys the object leaves out, nothing else", () => {
+    const schema = { type: "object", required: ["text", "artifacts"], properties: { text: { type: "string" }, artifacts: { type: "array" }, ask: { type: "object" } } };
+    assert.deepEqual(missingRequired(schema, { text: "hi" }), ["artifacts"]);
+    assert.deepEqual(missingRequired(schema, { text: "", artifacts: [] }), [], "present but empty is for degenerateSchemaFields to judge");
+    assert.deepEqual(missingRequired(schema, undefined), ["text", "artifacts"]);
+    assert.deepEqual(missingRequired({ type: "object" }, {}), [], "no required list, nothing to miss");
+    assert.deepEqual(missingRequired(undefined, {}), []);
+  });
+
+  it("identicalTailCalls: counts trailing steps that are ONE identical call with an identical result", () => {
+    const noop = (id: string) => ({ content: [call("bash", { command: "true" }, id), result("bash", "", id)] });
+    assert.equal(identicalTailCalls([noop("a"), noop("b"), noop("c")]), 3);
+    // Real work before the streak does not count; the streak is the tail.
+    assert.equal(identicalTailCalls([{ content: [call("bash", { command: "ls" }), result("bash", "x")] }, noop("a"), noop("b")]), 2);
+    // A different call in the tail resets it.
+    assert.equal(identicalTailCalls([noop("a"), noop("b"), { content: [call("bash", { command: "ls" }), result("bash", "x")] }]), 1);
+    assert.equal(identicalTailCalls([]), 0);
+  });
+
+  it("identicalTailCalls: a poll whose result changes is not a no-op loop, nor are parallel calls or text turns", () => {
+    const poll = (id: string, out: string) => ({ content: [call("bash", { command: "gh run view" }, id), result("bash", out, id)] });
+    assert.equal(identicalTailCalls([poll("a", "queued"), poll("b", "running"), poll("c", "done")]), 1);
+    const two = { content: [call("bash", { command: "true" }, "a"), result("bash", "", "a"), call("bash", { command: "true" }, "b"), result("bash", "", "b")] };
+    assert.equal(identicalTailCalls([two, two]), 0);
+    assert.equal(identicalTailCalls([{ content: [{ type: "text", text: "done" }] }]), 0);
+    // A call without a result (cut off) ends the streak too.
+    assert.equal(identicalTailCalls([{ content: [call("bash", { command: "true" })] }]), 0);
+  });
+
+  it("the guard trips after three", () => {
+    assert.equal(NOOP_LOOP_STREAK, 3);
+  });
+});
+
 describe("isTransientStreamError (resume a severed stream, not a real failure)", () => {
   it("treats undici's bare `terminated` as transient", () => {
     // The live incident: a 34-tool-call case-law step died ~12 minutes in when
@@ -1073,9 +1132,11 @@ describe("mid-stream socket death is resumed, not lost", () => {
     }
   });
 
-  // Schema (structured-output) mode: the provider sends the JSON as plain
-  // assistant text (output_format json_schema), so a "final answer" is a
-  // text turn that ends the loop.
+  // Schema (structured-output) mode: the schema is the final_answer TOOL's
+  // input — never an output grammar over the loop (see agent.ts: the grammar
+  // forbids all free text, and a model that cannot narrate marks time with
+  // no-op tool calls) — so a "final answer" is a final_answer call carrying
+  // the object. A text-only turn is a premature stop, as in finalAnswer mode.
   const textTurn = (text: string) =>
     sse({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }) +
     sse({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }) +
@@ -1088,24 +1149,75 @@ describe("mid-stream socket death is resumed, not lost", () => {
     required: ["candidate", "version", "summary"],
     additionalProperties: false,
   };
+  const ctxArg = { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any;
   const runSchema = (maxSteps = 10) =>
     agent.run(
       (agent.input as any).parse({
         cwd, system: "sys", prompt: "author and publish the candidate",
         model: "claude-sonnet-4-5", maxSteps, schema, toolFilter: ["bash"],
       }),
-      { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any,
+      ctxArg,
     ) as Promise<any>;
+  const answered = (id: string, obj: unknown) => toolUse(id, "final_answer", obj);
+  const toolNames = (body: string | undefined) => (JSON.parse(body ?? "{}").tools ?? []).map((t: { name: string }) => t.name);
 
-  it("schema mode: a premature degenerate answer is nudged, and the continuation's work + object win", async () => {
-    // The live incident: an author ended on a bare text turn at 6/200 steps
-    // with summary "" and a version it never published.
+  it("schema mode: the schema is final_answer's input, and no output grammar rides on the loop", async () => {
+    const obj = { candidate: "gaia-produce-ai", version: "v6", summary: "curl not html/extract" };
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(answered("toolu_1", obj));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runSchema();
+      assert.deepEqual(out.object, obj);
+      assert.equal(out.result, JSON.stringify(obj));
+      assert.equal(out.steps, 1);
+      const body = JSON.parse(s.bodies[0] ?? "{}");
+      const fa = body.tools.find((t: { name: string }) => t.name === "final_answer");
+      assert.ok(fa, "final_answer is a tool the model can call");
+      assert.deepEqual(fa.input_schema.required, schema.required);
+      assert.deepEqual(Object.keys(fa.input_schema.properties), Object.keys(schema.properties));
+      assert.equal(body.output_config, undefined, "no output grammar over the tool loop");
+      assert.equal(body.output_format, undefined);
+      assert.deepEqual(body.tool_choice, { type: "auto" }, "never a forced tool choice");
+    } finally {
+      s.close();
+    }
+  });
+
+  it("schema mode: a final_answer missing a required field is refused, and the loop goes on", async () => {
     const s = await serve((call, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(msgStart());
-      if (call === 1) res.write(textTurn(JSON.stringify({ candidate: "gaia-produce-ai", version: "v11", summary: "" })));
-      else if (call === 2) res.write(toolUse("toolu_1", "bash", { command: "echo v11 > published.txt" }));
-      else res.write(textTurn(JSON.stringify({ candidate: "gaia-produce-ai", version: "v11", summary: "dual attempt + reconcile" })));
+      if (call === 1) res.write(answered("toolu_1", { candidate: "gaia-produce-ai" }));
+      else res.write(answered("toolu_2", { candidate: "gaia-produce-ai", version: "v7", summary: "second try" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runSchema();
+      assert.equal(out.object.version, "v7");
+      assert.equal(out.steps, 2);
+      assert.equal(s.calls(), 2);
+      // The refusal reaches the model as the tool's error, naming the fields.
+      assert.ok((s.bodies[1] ?? "").includes("missing required field(s): version, summary"), s.bodies[1]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("schema mode: a premature degenerate answer is nudged, and the continuation's work + object win", async () => {
+    // The live incident: an author answered at 6/200 steps with summary ""
+    // and a version it never published.
+    const s = await serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      if (call === 1) res.write(answered("toolu_1", { candidate: "gaia-produce-ai", version: "v11", summary: "" }));
+      else if (call === 2) res.write(toolUse("toolu_2", "bash", { command: "echo v11 > published.txt" }));
+      else res.write(answered("toolu_3", { candidate: "gaia-produce-ai", version: "v11", summary: "dual attempt + reconcile" }));
       res.end();
     });
     process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
@@ -1121,17 +1233,18 @@ describe("mid-stream socket death is resumed, not lost", () => {
       const nudge = s.bodies[1] ?? "";
       assert.ok(nudge.includes("empty or filler: summary"), "nudge must name the empty field(s)");
       assert.ok(nudge.includes("author and publish the candidate"), "nudge must restate the task");
+      assert.ok(nudge.includes("call final_answer again"), "nudge must say how to answer");
     } finally {
       s.close();
     }
   });
 
   it("schema mode: a usable answer is returned without a nudge, and an exhausted budget is never nudged", async () => {
-    let body = JSON.stringify({ candidate: "gaia-produce-ai", version: "v6", summary: "" });
+    let obj = { candidate: "gaia-produce-ai", version: "v6", summary: "" };
     const s = await serve((_call, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(msgStart());
-      res.write(textTurn(body));
+      res.write(answered("toolu_1", obj));
       res.end();
     });
     process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
@@ -1140,11 +1253,116 @@ describe("mid-stream socket death is resumed, not lost", () => {
       const exhausted = await runSchema(1);
       assert.equal(exhausted.object.summary, "");
       assert.equal(s.calls(), 1);
-      body = JSON.stringify({ candidate: "gaia-produce-ai", version: "v6", summary: "curl not html/extract" });
+      obj = { candidate: "gaia-produce-ai", version: "v6", summary: "curl not html/extract" };
       const fine = await runSchema();
       assert.equal(fine.object.summary, "curl not html/extract");
       assert.equal(fine.steps, 1);
       assert.equal(s.calls(), 2, "a complete answer must not trigger a continuation");
+    } finally {
+      s.close();
+    }
+  });
+
+  it("schema mode: no final_answer at all → one nudge, then a forced no-tools turn through the output grammar", async () => {
+    const s = await serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      // The loop, then the nudged loop, both stop on narration …
+      if (call <= 2) res.write(textTurn("Still weighing the options."));
+      // … and the forced turn answers under the grammar.
+      else res.write(textTurn(JSON.stringify({ candidate: "gaia-produce-ai", version: "v8", summary: "forced" })));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runSchema();
+      assert.equal(out.object.version, "v8");
+      assert.equal(out.object.summary, "forced");
+      assert.equal(s.calls(), 3);
+      assert.ok((s.bodies[1] ?? "").includes("have NOT called final_answer"), "the nudge");
+      const forced = JSON.parse(s.bodies[2] ?? "{}");
+      assert.equal(forced.tools, undefined, "the forced turn offers no tools");
+      assert.ok(forced.output_config, "and asks for the object through the grammar, where no loop can go wrong");
+      assert.ok((s.bodies[2] ?? "").includes("produce the final structured answer NOW"));
+    } finally {
+      s.close();
+    }
+  });
+
+  // The no-op loop guard: three identical calls with identical results, and
+  // the fourth step is offered only final_answer. The live shape: a model that
+  // had finished, running `true` / `echo done` until the step cap.
+  const runMode = (extra: Record<string, unknown>) =>
+    agent.run(
+      (agent.input as any).parse({ cwd, system: "sys", prompt: "mark time", model: "claude-sonnet-4-5", maxSteps: 10, toolFilter: ["bash"], ...extra }),
+      ctxArg,
+    ) as Promise<any>;
+  const noopThenAnswer = (answer: () => string) =>
+    serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      if (call <= NOOP_LOOP_STREAK) res.write(toolUse(`toolu_${call}`, "bash", { command: "true" }));
+      else res.write(answer());
+      res.end();
+    });
+
+  it("the no-op loop guard: after three identical no-op calls the next step offers only final_answer", async () => {
+    const s = await noopThenAnswer(() => answered("toolu_fa", { answer: "done" }));
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runMode({ finalAnswer: "the report" });
+      assert.equal(out.result, "done");
+      assert.equal(out.steps, 4);
+      assert.ok(toolNames(s.bodies[2]).includes("bash"), "the full tool set up to the trip point");
+      assert.deepEqual(toolNames(s.bodies[3]), ["final_answer"], "only the way out on the guarded step");
+    } finally {
+      s.close();
+    }
+  });
+
+  it("the no-op loop guard in schema mode: the guarded step still carries the schema'd final_answer", async () => {
+    const obj = { candidate: "gaia-produce-ai", version: "v9", summary: "guarded" };
+    const s = await noopThenAnswer(() => answered("toolu_fa", obj));
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runMode({ schema });
+      assert.deepEqual(out.object, obj);
+      assert.equal(out.steps, 4);
+      assert.deepEqual(toolNames(s.bodies[3]), ["final_answer"]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("the no-op loop guard in text mode: the guarded step has no tools, so the model answers in text", async () => {
+    const s = await noopThenAnswer(() => textTurn("finished"));
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runMode({});
+      assert.equal(out.result, "finished");
+      assert.equal(out.steps, 4);
+      assert.ok(toolNames(s.bodies[2]).includes("bash"));
+      assert.equal(JSON.parse(s.bodies[3] ?? "{}").tools, undefined, "no tools on the guarded step");
+    } finally {
+      s.close();
+    }
+  });
+
+  it("the no-op loop guard leaves a poll alone: same command, changing output, all tools stay", async () => {
+    let n = 0;
+    const s = await serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      // Each `date +%N` call returns something new — the model is watching something, not marking time.
+      if (call <= 3) res.write(toolUse(`toolu_${call}`, "bash", { command: `echo poll-${++n}` }));
+      else res.write(answered("toolu_fa", { answer: "settled" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const out = await runMode({ finalAnswer: "the report" });
+      assert.equal(out.result, "settled");
+      assert.ok(toolNames(s.bodies[3]).includes("bash"), "a changing poll never trips the guard");
     } finally {
       s.close();
     }
