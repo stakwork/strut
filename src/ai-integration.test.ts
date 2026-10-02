@@ -523,19 +523,22 @@ describe("AI list_runs / get_run tools", () => {
     assert.equal(runs[0].runId, run.runId);
     assert.equal(runs[0].status, "success");
 
-    // Slimmed events by default (no payloads).
+    // The tree, no payloads on listed steps by default.
     const slim = await tools.get_run.execute({ name: "greeter", runId: run.runId });
     assert.equal(slim.summary.status, "success");
-    assert.ok(slim.events.length > 0);
-    assert.ok(slim.events.every((e: any) => !("input" in e) && !("output" in e)));
+    assert.deepEqual(slim.steps.map((s: any) => [s.id, s.status]), [["say", "success"]]);
+    assert.ok(slim.steps.every((s: any) => !("input" in s) && !("output" in s)));
+    assert.equal(slim.errors, undefined);
 
-    // Full events include payloads.
-    const full = await tools.get_run.execute({
-      name: "greeter",
-      runId: run.runId,
-      fullEvents: true,
-    });
-    assert.ok(full.events.some((e: any) => e.output !== undefined));
+    // fullEvents puts payloads on the listed steps.
+    const full = await tools.get_run.execute({ name: "greeter", runId: run.runId, fullEvents: true });
+    assert.deepEqual(full.steps[0].output, { echoed: "hello" });
+
+    // A zoom: the node is the focus, with its payloads, and its (no) children.
+    const zoom = await tools.get_run.execute({ name: "greeter", runId: run.runId, path: "greeter/say" });
+    assert.equal(zoom.focus.path, "greeter/say");
+    assert.deepEqual(zoom.focus.output, { echoed: "hello" });
+    assert.deepEqual(zoom.steps, []);
   });
 
   it("get_run errors for an unknown run id", async () => {
@@ -566,7 +569,9 @@ describe("AI list_runs / get_run tools", () => {
     assert.deepEqual(list.runs.map((r: { runId: string }) => r.runId), ["1"]);
     const get = await tools.get_run.execute({ name: "x", runId: "1", fullEvents: false });
     assert.equal(get.runId, "1");
-    assert.equal(get.events.length, 1);
+    assert.equal(get.status, "running");
+    assert.equal(get.summary.partial, true, "no summary yet: the view says so");
+    assert.deepEqual(get.steps, []);
     const missing = await tools.get_run.execute({ name: "x", runId: "2", fullEvents: false });
     assert.ok(missing.error && /not found/.test(missing.error));
   });

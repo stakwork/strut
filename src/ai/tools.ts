@@ -974,17 +974,23 @@ export function buildTools(deps: AiDeps): ToolSet {
 
     get_run: tool({
       description:
-        "Get a single run's details: its summary (input, output, status, error, duration) and its event log. By default the event log is slimmed (type/path/duration/error per step, no payloads) to stay token-cheap; set fullEvents:true to include each step's input/output. Use this to debug why a run failed or to read what each step produced.",
+        "One run, as a tree: its summary (input/output previews, status, error, duration), `errors` — the deepest ones first, the run's failure chain at the top, each with the siblings that ran before it — and `steps`, the top-level steps with everything below each ROLLED UP (`children`: count, status histogram, by step type — an agent's tool calls by tool — and the last few ids). The size follows the workflow's shape, never how long it ran. Zoom with `path` (any event path: `wf/agent`, `wf/items#3`, `wf/agent/042-bash`): that node becomes `focus`, with its logged input/output and error stack, and `steps` lists its children one level deep. A long list keeps its head, its tail and every error, with `{ omitted, from, to }` gaps between. `fullEvents: true` adds payloads to every node in view (previews, cut to the budget). Everything is cut to ~20k chars; a `hint` says so when it was. Agent transcripts are never included.",
       inputSchema: z.object({
         name: z.string().describe("Workflow name"),
         runId: z.string().describe("Run id (a millisecond timestamp, from list_runs)"),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Zoom to one node by its event path (from `errors`, `steps`, or search_runs): it becomes `focus` with payloads, and `steps` lists its children. Omit for the run's top level.",
+          ),
         fullEvents: z
           .boolean()
           .default(false)
-          .describe("Include full per-step input/output payloads in events (default false: slimmed)."),
+          .describe("Also put input/output previews on every listed node (default false: only the focus node carries payloads)."),
       }),
-      execute: async ({ name, runId, fullEvents }) => {
-        return readRun(deps.store, name, runId, fullEvents);
+      execute: async ({ name, runId, path, fullEvents }) => {
+        return readRun(deps.store, name, runId, { path, fullEvents });
       },
     }),
 

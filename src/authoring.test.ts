@@ -193,9 +193,9 @@ describe("authoring capability (the meta surface)", () => {
 
     const run = (await authoring.getRun("cand-flow", result.runId)) as any;
     assert.equal(run.summary.status, "success");
-    assert.ok(Array.isArray(run.events) && run.events.length > 0);
-    // Slim events carry no payloads by default.
-    assert.equal(run.events[0].input, undefined);
+    assert.ok(Array.isArray(run.steps) && run.steps.length > 0);
+    // Listed steps carry no payloads by default.
+    assert.equal(run.steps[0].input, undefined);
   });
 
   it("searchRuns greps event logs across runs, gated to the stamped set", async () => {

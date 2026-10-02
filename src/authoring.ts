@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { AnyStepDef, RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
+import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
 import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
@@ -49,27 +50,6 @@ export const AI_PUBLISHER = "ai";
 
 // ── Run-history reads (shared mechanism) ───────────────────────────────────
 
-/** Drop bulky input/output payloads from an event so a run's event list stays
- *  token-cheap; the caller can re-fetch a specific run's full events if needed. */
-export function slimEvent(e: RunEvent) {
-  return {
-    type: e.type,
-    path: e.path,
-    ...(e.stepType ? { stepType: e.stepType } : {}),
-    ...(e.durationMs != null ? { durationMs: e.durationMs } : {}),
-    ...(e.iteration != null ? { iteration: e.iteration } : {}),
-    ...(e.error ? { error: e.error } : {}),
-  };
-}
-
-/** An agent step's `step.end` carries its whole session (`messages`) — for
- *  the events endpoint and a log store, not for the model's context. */
-function withoutTranscript(e: RunEvent): Omit<RunEvent, "messages"> {
-  if (!e.messages) return e;
-  const { messages: _transcript, ...rest } = e;
-  return rest;
-}
-
 /** List a workflow's recent runs (newest first) as slim summaries. */
 export async function listRunSummaries(
   store: Pick<RunStore, "listRuns" | "getRunSummary" | "getRunEvents">,
@@ -91,26 +71,22 @@ export async function listRunSummaries(
   );
 }
 
-/** Read one run's summary + events (slimmed unless `fullEvents`). */
+/** Read one run as the builder's VIEW (src/run-view.ts): its summary, the
+ *  deepest errors first, and its event log folded into the step tree — one
+ *  level open (`path` picks which), everything below rolled up, cut to a char
+ *  budget. Never the log itself: that grows with the execution. An agent's
+ *  transcript (`step.end.messages`) is not in it at any zoom. */
 export async function readRun(
   store: Pick<RunStore, "listRuns" | "getRunSummary" | "getRunEvents">,
   name: string,
   runId: string,
-  fullEvents: boolean,
+  opts: RunViewOptions = {},
 ) {
-  const [summary, rawEvents] = await Promise.all([
-    store.getRunSummary(name, runId),
-    store.getRunEvents(name, runId),
-  ]);
-  if (!summary && rawEvents.length === 0) {
+  const [summary, events] = await Promise.all([store.getRunSummary(name, runId), store.getRunEvents(name, runId)]);
+  if (!summary && events.length === 0) {
     return { error: `Run "${runId}" not found for workflow "${name}".` };
   }
-  return {
-    workflow: name,
-    runId,
-    summary,
-    events: fullEvents ? rawEvents.map(withoutTranscript) : rawEvents.map(slimEvent),
-  };
+  return buildRunView(name, runId, events, summary, opts);
 }
 
 // ── Run search (shared mechanism) ──────────────────────────────────────────
@@ -404,7 +380,7 @@ export interface AuthoringCapability {
     opts?: { parentRunId?: string; actor?: string; principal?: string },
   ): Promise<RunResult | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
-  getRun(name: string, runId: string, fullEvents?: boolean): Promise<unknown>;
+  getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
   searchRuns(name: string, pattern: string, opts?: RunSearchOptions): Promise<unknown>;
   listSecrets(): Promise<unknown>;
 
@@ -740,10 +716,10 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       return { workflow: name, runs: await listRunSummaries(store, name, limit) };
     },
 
-    async getRun(name, runId, fullEvents = false) {
+    async getRun(name, runId, opts = {}) {
       const gate = await notOwned(name, "reads run history of");
       if (gate) return { error: gate };
-      return readRun(store, name, runId, fullEvents);
+      return readRun(store, name, runId, opts);
     },
 
     async searchRuns(name, pattern, opts) {
