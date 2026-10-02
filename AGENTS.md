@@ -57,6 +57,7 @@ strut/
 │   ├── closure.ts         # what a flow can EXECUTE: walkSteps (loop/foreach bodies, onError), flowClosure (nested subflows via the workspace, agentTools grants; templated/missing child → unresolvable), stepHashesFor → run.start.stepHashes
 │   ├── step-stats.ts      # GET /steps/:type/stats — the Step Info flyout's Usage: workflows whose active version can run the type (direct, or via subflow) + execution counts summed from their runs' `RunSummary.stepCounts` (written at finalize; older summaries backfilled from the log on first read) and the `step:<type>` bucket
 │   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
+│   ├── run-view.ts        # the run VIEW the builder reads (get_run + meta/get-run, via readRun in authoring.ts): foldRun (the event log → the step tree, by path: `wf/sub/child`, `wf/each#3`, `wf/agent/042-bash`, `wf/step/onError`) + buildRunView — ONE level open (`path` picks which; that node is `focus` with its payloads), everything below rolled up (count / status histogram / by step type / last ids), the deepest errors first with the siblings before each, long lists kept head + tail + errors with `{ omitted }` gaps, previews, and a char budget (20k) that tightens in fixed levels and says so in `hint`. Size follows the DAG, never the execution; a transcript is never in it
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + system.md + messages.jsonl + events.jsonl) + capToolOutput (the builder's tool-result cap) + truncateToolMessages (the same cap on replay)
 │   ├── workspace.ts       # WorkspaceStore interface + FileWorkspaceStore (alias WorkspaceManager): versioning, _metadata.json, YAML loading
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
@@ -90,6 +91,7 @@ strut/
 │   │   │                  #                   graph_query (read-only Cypher; only when deps.graph is wired),
 │   │   │                  #                   graph_get (the graph/graph-get STEP as a chat tool — its schema, its run(); one node by ref_id or type + name, with `children`; same gate),
 │   │   │                  #                   graph_walk (graph/walk as a chat tool; same gate),
+│   │   │                  #                   list_runs / get_run (a run as a TREE — src/run-view.ts) / search_runs (grep across recent runs' logs → (runId, path, snippet); then get_run on a hit's path),
 │   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
 │   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts),
 │   │   │                  #                   list_automations / set_automation / delete_automation (schedules; when deps.automations is wired),
@@ -122,7 +124,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1268 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1302 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
