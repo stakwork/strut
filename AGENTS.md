@@ -135,7 +135,7 @@ strut/
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
-        ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render (pure; tested)
+        ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render; findArtifacts: every such path INSIDE a value (object fields, arrays, `[{ link }]`) — a block holding several gets one eye with a pop-down to pick from (pure; tested)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
