@@ -18,12 +18,8 @@ function deriveBase(): string {
 
 const BASE = deriveBase();
 
-/** True for a served-file path as steps put it in their output — a run's
- *  `/artifacts/<runId>/<relPath>` (see `ctx.services.artifacts`) or a job's
- *  `/jobs/<job>/files/<relPath>` (`job/dir`). */
-export function isArtifactPath(v: unknown): v is string {
-  return typeof v === "string" && (v.startsWith("/artifacts/") || v.startsWith("/jobs/"));
-}
+// Which strings are served-file paths: with the viewer's other pure helpers.
+export { isArtifactPath } from "./artifact-view";
 
 /** Browser URL for an artifact path. Mount-path aware (works under `/lab`).
  *  An `<a href>` / `<img src>` cannot set a header, so the key rides as

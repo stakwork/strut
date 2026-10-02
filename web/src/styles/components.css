@@ -1350,6 +1350,49 @@ body.is-resizing-flyout * {
   color: var(--text);
   border-color: var(--text-dim);
 }
+/* The head's actions: the eye for paths inside a block, then copy. */
+.flyout-field-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--sp-1);
+}
+/* The pick list under that eye: one row per viewable file in the block. */
+.artifact-menu {
+  position: absolute;
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  max-width: min(360px, 90vw);
+  max-height: 240px;
+  overflow: auto;
+  padding: var(--sp-1);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.artifact-menu-item {
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.artifact-menu-item:hover {
+  background: var(--bg);
+  color: var(--accent);
+}
 .flyout-fields {
   display: flex;
   flex-direction: column;
