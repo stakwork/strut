@@ -839,6 +839,12 @@ and the child env is scrubbed by construction).
   from EOF — no sequence numbers, no dedupe), and **one code path
   serves completed and in-flight runs**. Pass an `AbortSignal` (wired
   to `stream.onAbort` on client disconnect) to stop the tail early.
+  `?skip=N` (`TailOpts.skip`) leaves out the first N events — what the
+  client already read from `GET …/events`, one gzipped response. SSE is
+  never compressed and each event is its own frame, so the web UI's run
+  select fetches the log first (one render) and tails from its length; a
+  big finished run used to replay through the tail, one re-render and
+  layout per network chunk (swarm38, 2026-10-03).
   `RunStore` is the FULL contract (append/finalize + listRuns/
   getRunSummary/getRunEvents/tailEvents/lastRunAt): no endpoint
   capability-gates on the concrete class. A backend without a native

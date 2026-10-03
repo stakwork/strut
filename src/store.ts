@@ -66,10 +66,14 @@ export async function* tailJsonl<T>(
      *  producer (a registered run controller) means a resume is in flight —
      *  keep following instead of closing. Default: close at EOF. */
     stillLive?: () => boolean;
+    /** Events the caller already has: the first `skip` are read (terminality
+     *  tracked) but not yielded. */
+    skip?: number;
   } = {},
 ): AsyncGenerator<T> {
   const intervalMs = opts.intervalMs ?? 250;
   const signal = opts.signal;
+  let toSkip = opts.skip ?? 0;
   let offset = 0;
   let leftover = "";
   // Deferred-close mode (opts.reopens set): saw a terminal event, close at
@@ -107,7 +111,8 @@ export async function* tailJsonl<T>(
           if (!line) continue;
           const event = parseJsonlLine<T>(line, file);
           if (event === undefined) continue; // corrupt line — skip, keep tailing
-          yield event;
+          if (toSkip > 0) toSkip--;
+          else yield event;
           if (isTerminal(event)) {
             if (!opts.reopens) return;
             sawTerminal = true;
@@ -142,6 +147,11 @@ export interface TailOpts {
    *  registered run controller) means a resume is in flight — keep following
    *  instead of closing. Default: close at EOF. */
   stillLive?: () => boolean;
+  /** Events the caller already has (it read `getRunEvents` first): the first
+   *  `skip` are consumed — terminality tracked through them — but not
+   *  yielded. The log is append-only, so a count is a race-free cursor: a
+   *  skip past the end of a finished log yields nothing and closes. */
+  skip?: number;
 }
 
 /**
@@ -205,6 +215,7 @@ export async function* tailFromPolling(
   opts: TailOpts = {},
 ): AsyncGenerator<RunEvent> {
   const intervalMs = opts.intervalMs ?? 250;
+  let toSkip = opts.skip ?? 0;
   let cursor = 0;
   let sawTerminal = false;
   while (true) {
@@ -213,7 +224,8 @@ export async function* tailFromPolling(
     const fresh = events.slice(cursor);
     cursor = events.length;
     for (const event of fresh) {
-      yield event;
+      if (toSkip > 0) toSkip--;
+      else yield event;
       if (isTerminal(event)) sawTerminal = true;
       else if (sawTerminal && reopensRun(event)) sawTerminal = false;
     }

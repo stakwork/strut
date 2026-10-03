@@ -134,6 +134,30 @@ for (const impl of runImpls) {
       assert.deepEqual(seen, ["run.start", "step.start", "run.end"]);
     });
 
+    it("tailEvents: skip consumes the first N events without yielding them, terminality intact", async () => {
+      // A client read 2 events from getRunEvents, then tails from there: it
+      // gets only what came after — the live appends included.
+      await store.append(WF, "1", ev("1", "run.start"));
+      await store.append(WF, "1", ev("1", "step.start", { path: `${WF}/a` }));
+      const seen: string[] = [];
+      const tail = (async () => {
+        for await (const e of store.tailEvents(WF, "1", { intervalMs: 5, skip: 2 })) seen.push(e.type);
+      })();
+      await new Promise((r) => setTimeout(r, 25));
+      await store.append(WF, "1", ev("1", "step.end", { path: `${WF}/a`, output: "A" }));
+      await store.append(WF, "1", ev("1", "run.end"));
+      await tail;
+      assert.deepEqual(seen, ["step.end", "run.end"]);
+
+      // Skipping past a finished log's terminal event still closes the tail.
+      const none: string[] = [];
+      for await (const e of store.tailEvents(WF, "1", { intervalMs: 5, skip: 4 })) none.push(e.type);
+      assert.deepEqual(none, []);
+      const none2: string[] = [];
+      for await (const e of store.tailEvents(WF, "1", { intervalMs: 5, skip: 99 })) none2.push(e.type);
+      assert.deepEqual(none2, []);
+    });
+
     it("tailEvents: a run.resumed past a terminal event reopens the log", async () => {
       for (const t of ["run.start", "run.cancelled", "run.resumed", "run.end"] as const) {
         await store.append(WF, "1", ev("1", t));

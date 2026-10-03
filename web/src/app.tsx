@@ -434,26 +434,29 @@ export function App() {
       setEvents([]);
       return;
     }
-    // TAIL the run rather than one-shot fetching its events: the SSE stream
-    // replays the full history, then follows live appends until the run
-    // completes — so selecting an IN-FLIGHT run (launched via curl, the chat
-    // agent, or another tab) updates the events panel in real time. For a
-    // completed run the stream drains and ends immediately (same behavior as
-    // the old fetch). Aborted on run-switch/unmount so pollers don't leak.
+    // The log FIRST, as one compressed response and one render, THEN the SSE
+    // tail from where it ends (`skip`) — so selecting an IN-FLIGHT run
+    // (launched via curl, the chat agent, or another tab) still updates the
+    // events panel in real time, while a big finished run no longer replays
+    // through the tail: uncompressed, one frame per event, one render per
+    // network chunk, each one laying out the whole list (swarm38,
+    // 2026-10-03). The count is a race-free cursor on an append-only log.
+    // Aborted on run-switch/unmount so pollers don't leak.
     const ctrl = new AbortController();
-    const accumulated: api.RunEvent[] = [];
     setEvents([]);
-    api.streamRun(selectedWf, selectedRun, (event) => {
+    (async () => {
+      const accumulated = await api.getRunEvents(selectedWf, selectedRun, ctrl.signal);
       if (ctrl.signal.aborted) return;
-      accumulated.push(event);
       setEvents([...accumulated]);
-    }, ctrl.signal)
-      .then((result) => {
-        // A live-tailed run just finished → refresh the sidebar status
-        // (runs list + workflow ordering, which sorts by last run).
-        if (result != null && !ctrl.signal.aborted) { refreshRuns(); refreshWorkflows(); }
-      })
-      .catch(console.error);
+      const result = await api.streamRun(selectedWf, selectedRun, (event) => {
+        if (ctrl.signal.aborted) return;
+        accumulated.push(event);
+        setEvents([...accumulated]);
+      }, { signal: ctrl.signal, skip: accumulated.length });
+      // A live-tailed run just finished → refresh the sidebar status
+      // (runs list + workflow ordering, which sorts by last run).
+      if (result != null && !ctrl.signal.aborted) { refreshRuns(); refreshWorkflows(); }
+    })().catch((e) => { if ((e as Error)?.name !== "AbortError") console.error(e); });
     return () => ctrl.abort();
   }, [selectedRun, runEpoch]);
 
