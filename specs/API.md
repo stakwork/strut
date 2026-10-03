@@ -146,6 +146,12 @@ data: {"runId":"1790436489808","status":"success","output":"Bye World after 3000
 - **An unknown run id never errors: the tail waits for its log to appear.**
   Launch first, or check `GET …/runs/:runId`, before streaming an id you
   did not just get from a 202.
+- `?skip=N` leaves out the first N events. SSE is never compressed and
+  every event is its own frame, so for a big log read `GET …/runs/:runId/events`
+  first (one gzipped response, §5) and tail with `skip` set to its length:
+  the log is append-only, so the count is a race-free cursor. The tail still
+  tracks the terminal event through the skipped ones — a `skip` past the end
+  of a finished log sends just `done`. Not an integer ≥ 0 → 400.
 
 ```js
 const es = new EventSource(`${BASE}/workflows/hello/runs/${runId}/stream`);

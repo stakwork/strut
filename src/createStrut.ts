@@ -970,13 +970,24 @@ export async function createStrut<TServices = unknown>(
   // Replays history from the start of the file, then follows appends until
   // the terminal event, then sends a final `done` carrying the RunResult.
   // One path serves in-flight and finished runs (see `RunStore.tailEvents`).
+  //
+  // `?skip=N` leaves out the first N events: the client read them from
+  // `GET …/events` (one compressed response) and only wants what follows.
+  // SSE is never compressed and each event is its own frame, so replaying
+  // a big log through the tail is slow (swarm38, 2026-10-03); the UI reads
+  // the log first and tails from its end.
   app.get("/workflows/:name/runs/:runId/stream", async (c) => {
     const { name, runId } = c.req.param();
+    const skip = Number(c.req.query("skip") ?? 0);
+    if (!Number.isInteger(skip) || skip < 0) {
+      return c.json({ error: "skip must be a non-negative integer" }, 400);
+    }
     return streamSSE(c, async (stream) => {
       const ac = new AbortController();
       stream.onAbort(() => ac.abort());
       for await (const event of store.tailEvents(name, runId, {
         signal: ac.signal,
+        skip,
         // A resumed run appends past its old terminal event — keep following
         // while a live controller exists (§5.2 tail terminality).
         stillLive: () => controllers.has(`${name}/${runId}`),

@@ -711,6 +711,36 @@ describe("createStrut", () => {
     assert.ok(text.includes("event: done"));
   });
 
+  it("?skip=N tails from after the N events a client already read via /events", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    await ws.publishWorkflow("echo-flow", "v1", {
+      steps: [{ id: "g", type: "log", config: { message: "hi" } }],
+    });
+    const strut = await createStrut({
+      workspace: ws,
+      store: new FileRunStore(tempDir),
+      serveUi: false,
+      enableChat: false,
+    });
+    const result = await strut.run("echo-flow", {});
+    const events = (await (await strut.app.request(`/workflows/echo-flow/runs/${result.runId}/events`)).json()) as unknown[];
+    assert.ok(events.length >= 3);
+
+    // The UI's path: the log from /events, then the tail from its end → just `done`.
+    const all = await (await strut.app.request(`/workflows/echo-flow/runs/${result.runId}/stream?skip=${events.length}`)).text();
+    assert.ok(!all.includes('"type":"run.start"'), "replays nothing the client has");
+    assert.ok(all.includes("event: done"), "still sends the result");
+
+    // A partial read: only what follows.
+    const rest = await (await strut.app.request(`/workflows/echo-flow/runs/${result.runId}/stream?skip=${events.length - 1}`)).text();
+    assert.ok(!rest.includes('"type":"run.start"'));
+    assert.ok(rest.includes('"type":"run.end"'));
+
+    const bad = await strut.app.request(`/workflows/echo-flow/runs/${result.runId}/stream?skip=-1`);
+    assert.equal(bad.status, 400);
+    assert.equal((await strut.app.request(`/workflows/echo-flow/runs/${result.runId}/stream?skip=abc`)).status, 400);
+  });
+
   it("streams a completed run's events from a MemoryRunStore (no capability gate)", async () => {
     const strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),

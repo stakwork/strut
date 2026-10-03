@@ -416,16 +416,21 @@ export async function launchWorkflow(
  * Reattach to a run (live or completed) and stream its events. Tails the
  * server's append-only log from the start, so callers see full history even
  * when they attach late. Resolves to the final RunResult on `done`.
+ *
+ * `skip`: how many events the caller already has (from `getRunEvents`) — the
+ * tail starts after them. The log is append-only, so the count is a
+ * race-free cursor.
  */
 export async function streamRun(
   name: string,
   runId: string,
   onEvent?: (event: RunEvent) => void,
-  signal?: AbortSignal,
+  opts: { signal?: AbortSignal; skip?: number } = {},
 ): Promise<any> {
+  const { signal, skip } = opts;
   let res: Response;
   try {
-    res = await apiFetch(`/workflows/${name}/runs/${runId}/stream`, { signal });
+    res = await apiFetch(`/workflows/${name}/runs/${runId}/stream${skip ? `?skip=${skip}` : ""}`, { signal });
   } catch (e) {
     if ((e as Error)?.name === "AbortError") return null;
     throw e;
@@ -599,8 +604,8 @@ export const listActiveRuns = () => fetchJSON<ActiveRun[]>("/runs/active");
 export const getRun = (workflow: string, runId: string) =>
   fetchJSON<RunSummary>(`/workflows/${workflow}/runs/${runId}`);
 
-export const getRunEvents = (workflow: string, runId: string) =>
-  fetchJSON<RunEvent[]>(`/workflows/${workflow}/runs/${runId}/events`);
+export const getRunEvents = (workflow: string, runId: string, signal?: AbortSignal) =>
+  fetchJSON<RunEvent[]>(`/workflows/${workflow}/runs/${runId}/events`, { signal });
 
 // ── Run control (RUN_CONTROL_SPEC) ─────────────────────────────────────────
 // Cancel/pause act on the live run tree (nested runs included). Resume is
