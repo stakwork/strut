@@ -447,14 +447,14 @@ error message:
 | Prefix | Meaning |
 | ------ | ------- |
 | `session_busy:` | another run holds the session; one turn at a time |
-| `session_full:` | the thread has no room left in the model's window — start a new session |
+| `session_full:` | compaction is off (`STRUT_COMPACT_AT=1`) and the thread has no room left in the model's window — start a new session. With compaction on (the default), a thread past the mark is summarized at open instead and the turn goes ahead (plans/compaction.md) |
 | `session_mismatch:` | the thread began on another provider, or on the other side of the LLM gateway |
 | `workdir_busy:` | another run holds the working copy |
 
 | Method | Path | Response |
 | ------ | ---- | -------- |
 | GET    | `/sessions` | `{ sessions: [{ id, turns, messages, createdAt, updatedAt, createdBy?, provider, model, context?: { used, limit }, busy? }] }`, newest first |
-| GET    | `/sessions?id=<id>` | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, provider, model, routed, offset, count, usage, cost, context? }]`; 404 |
+| GET    | `/sessions?id=<id>` | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, provider, model, routed, offset, count, usage, cost, context?, replayFrom }]`; 404. `replayFrom` is the thread index the NEXT turn replays from — 0 until a turn compacts the thread, then the index of its `[compaction]` message (plans/compaction.md); offsets stay absolute and the whole thread is still served |
 | GET    | `/sessions/messages?id=<id>` | the thread, a bare array: the system message, then every message; 404 |
 | DELETE | `/sessions?id=<id>` | `{ ok: true }`; 409 while a turn holds it |
 

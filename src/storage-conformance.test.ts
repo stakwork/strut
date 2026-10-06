@@ -344,6 +344,34 @@ for (const impl of sessionImpls) {
       }
     });
 
+    it("replayFrom: a turn's compaction boundary is read back and inherited by the turns after it", async () => {
+      const t0 = await store.appendTurn("s1", { system: "s", messages: [user("a"), reply("b")], record: turnOf("1") });
+      assert.equal(t0.replayFrom, 0);
+      assert.equal((await store.load("s1"))?.replayFrom, 0);
+      // Turn 1 compacted at open: its first message is the summary, and that
+      // is where the thread replays from — an absolute index.
+      const t1 = await store.appendTurn("s1", {
+        system: "s",
+        messages: [user("[compaction] …"), user("c"), reply("d")],
+        record: turnOf("2", { replayFrom: 2 }),
+      });
+      assert.equal(t1.replayFrom, 2);
+      const t2 = await store.appendTurn("s1", { system: "s", messages: [user("e"), reply("f")], record: turnOf("3") });
+      assert.equal(t2.replayFrom, 2);
+
+      const s = await store.load("s1");
+      assert.equal(s?.replayFrom, 2);
+      assert.equal(s?.messages.length, 7);
+      assert.deepEqual(s?.messages.slice(s.replayFrom)[0], user("[compaction] …"));
+      assert.deepEqual(s?.turns.map((t) => t.replayFrom), [0, 2, 2]);
+
+      const sessions = sessionsCapability(store);
+      const open = await sessions.open("s1", { runId: "4", path: "wf/work" });
+      assert.equal(open.replayFrom, 2);
+      assert.equal(open.messages.length, 7);
+      open.release();
+    });
+
     it("the capability: one holder at a time, released on demand, and by a failed open", async () => {
       const sessions = sessionsCapability(store);
       const a = await sessions.open("s1", { runId: "1", path: "wf/work" });

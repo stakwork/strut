@@ -801,7 +801,7 @@ export interface ChatEvent {
   ts: string;
   chatId: string;
   turn: number;
-  type: "text-delta" | "tool-input" | "tool-output" | "tool-progress" | "step.finish" | "chat.end" | "chat.error";
+  type: "text-delta" | "tool-input" | "tool-output" | "tool-progress" | "step.finish" | "chat.compact" | "chat.end" | "chat.error";
   delta?: string;
   toolName?: string;
   toolCallId?: string;
@@ -810,8 +810,11 @@ export interface ChatEvent {
   /** tool-output: the tool threw (output is the error message). */
   isError?: boolean;
   error?: { message: string };
-  /** step.finish: the context after this step. */
+  /** step.finish: the context after this step. chat.compact: the floor the
+   *  compaction left (the summary's size; the next call corrects it). */
   context?: ChatContext;
+  /** chat.compact: what was folded into the summary (plans/compaction.md). */
+  compact?: { messages: number; tokens: number };
 }
 
 export interface ChatTranscript {
@@ -983,6 +986,8 @@ function dispatchChatEvent(e: ChatEvent, cb: ChatCallbacks): void {
       cb.onToolProgress?.({ name: e.toolName ?? "", toolCallId: e.toolCallId, output: e.output });
       break;
     case "step.finish":
+    case "chat.compact":
+      // A compaction resets the meter to its floor, like a step's end sets it.
       cb.onStepFinish(e.context);
       break;
     case "chat.error":

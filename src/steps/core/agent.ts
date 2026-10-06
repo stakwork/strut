@@ -5,6 +5,7 @@ import { idProblem, type OpenSession, type SessionsCapability } from "../../sess
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { accessedNodesOf, defineStep, mediaOf, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
+import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
 import { resolveStep } from "../registry.js";
@@ -208,7 +209,10 @@ const FILE_SUMMARY_MAX_CHARS = 12000;
  *  in the message history for the whole run, so it is sized to one big
  *  retrieval (~125k–250k tokens at 2–4 chars/token — a 2.5-hour transcript)
  *  rather than going to a V8-string-limit-sized ceiling. Same default as
- *  exec's maxOutputChars. */
+ *  exec's maxOutputChars. This is the CEILING: the cap a run applies is
+ *  `min(this, the window's headroom)` — `resultCapChars`, src/compaction.ts —
+ *  so one result always fits in the room above the compaction mark (176k
+ *  chars on a 1M window at the default 0.9; plans/compaction.md §4). */
 const BASH_MAX_CHARS = 500_000;
 
 /** Is an executable named `bin` on PATH? Unix-style — the agent's tools already
@@ -271,7 +275,8 @@ export function buildPreamble(cwd: string): string {
 
 // ── file editing tool (str_replace_based_edit_tool) ────────────────────────────
 
-/** Max chars returned by a `view` before truncation. */
+/** Max chars returned by a `view` before truncation — the ceiling; the step
+ *  passes the window-derived cap (see BASH_MAX_CHARS). */
 const FILE_VIEW_MAX_CHARS = 500_000;
 
 /** The Anthropic text-editor tool's input shape (also used by the generic
@@ -315,7 +320,7 @@ function resolveInCwd(p: string, roots: string | string[]): string {
  * top-of-file) so it backs both the provider-defined anthropic tool and the
  * generic fallback. Returns a human-readable string (errors as `Error: …`).
  */
-export function textEdit(input: TextEditInput, roots: string | string[]): string {
+export function textEdit(input: TextEditInput, roots: string | string[], maxChars = FILE_VIEW_MAX_CHARS): string {
   let target: string;
   try {
     target = resolveInCwd(input.path, roots);
@@ -346,9 +351,7 @@ export function textEdit(input: TextEditInput, roots: string | string[]): string
         .slice(start - 1, end)
         .map((l, i) => `${start + i}: ${l}`)
         .join("\n");
-      return out.length > FILE_VIEW_MAX_CHARS
-        ? out.slice(0, FILE_VIEW_MAX_CHARS) + "\n\n[... output truncated ...]"
-        : out;
+      return out.length > maxChars ? out.slice(0, maxChars) + "\n\n[... output truncated ...]" : out;
     }
 
     case "create": {
@@ -830,14 +833,17 @@ const SESSION_FULL_AT = 0.9;
  *    gateway, are fixed by the first turn: another provider cannot read the
  *    thread's thinking and provider-executed tool blocks, and the gateway
  *    cannot round-trip the native web tools a direct turn may have used.
- *  - `session_full:` — the last turn left the thread over `SESSION_FULL_AT`
- *    of the model's window: the next one would outgrow it mid-loop. Said
- *    before any model call, not as a provider 400 on every later turn.
+ *  - `session_full:` — with compaction OFF (`STRUT_COMPACT_AT=1`): the last
+ *    turn left the thread over `SESSION_FULL_AT` of the model's window, and
+ *    the next one would outgrow it mid-loop. Said before any model call, not
+ *    as a provider 400 on every later turn. With compaction on, the step
+ *    summarizes the thread at open instead (plans/compaction.md §3).
  */
 export async function openSession(
   id: string,
   ctx: StepContext | undefined,
   resolved: Pick<ResolvedModel, "provider" | "routed" | "contextLimit">,
+  compactAt = 1,
 ): Promise<OpenSession> {
   const sessions = (ctx?.services as { sessions?: SessionsCapability } | undefined)?.sessions;
   if (!sessions || typeof sessions.open !== "function") {
@@ -852,7 +858,7 @@ export async function openSession(
     refusal =
       `session_mismatch: session "${id}" began on ${first.provider} (${how(first.routed)}); ` +
       `this turn resolved to ${resolved.provider} (${how(resolved.routed)})`;
-  } else if (last?.context && last.context.used > SESSION_FULL_AT * resolved.contextLimit) {
+  } else if (compactAt >= 1 && last?.context && last.context.used > SESSION_FULL_AT * resolved.contextLimit) {
     refusal =
       `session_full: session "${id}" holds ${last.context.used} tokens of a ${resolved.contextLimit}-token window ` +
       `(over ${SESSION_FULL_AT * 100}%) — no room for another turn. Start a new session.`;
@@ -862,23 +868,6 @@ export async function openSession(
     throw new Error(refusal);
   }
   return session;
-}
-
-/** The tool set with every `execute` removed: the same definitions on the
- *  wire — the prefix a replayed thinking block is bound to, and the prompt
- *  cache's — and a call the model makes anyway runs nothing. (The twin of the
- *  compaction summarizer's, plans/compaction.md §3.) */
-export function stripExecute<T extends Record<string, unknown>>(tools: T): T {
-  const out: Record<string, unknown> = {};
-  for (const [name, t] of Object.entries(tools)) {
-    if (t && typeof t === "object" && "execute" in t) {
-      const { execute: _execute, ...rest } = t as Record<string, unknown>;
-      out[name] = rest;
-    } else {
-      out[name] = t;
-    }
-  }
-  return out as T;
 }
 
 /** The transcript recorded for an agent session (`RunEvent.messages`): the
@@ -911,17 +900,16 @@ export function wrapToolsWithMask(tools: Record<string, any>, secretValues: stri
   }
 }
 
-export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext | undefined): void {
+export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext | undefined, counter: { n: number } = { n: 0 }): void {
   if (!ctx?.emit || !ctx.path) return;
   const basePath = ctx.path;
   const emit = ctx.emit as unknown as (e: Record<string, unknown>) => Promise<void>;
-  let calls = 0;
   for (const [name, t] of Object.entries(tools)) {
     if (name === "final_answer") continue;
     const orig = t?.execute;
     if (typeof orig !== "function") continue;
     t.execute = async (input: unknown, opts: unknown) => {
-      const n = ++calls;
+      const n = ++counter.n;
       const path = `${basePath}/${String(n).padStart(3, "0")}-${name}`;
       const startedAt = Date.now();
       await emit({ type: "step.start", path, stepType: `tool:${name}`, input });
@@ -1089,12 +1077,16 @@ export default defineStep({
     // writes only what the last step added). `cacheTtl` picks the lifetime. Other
     // providers fall back to the generic editor tool. (Web search/fetch
     // are NOT provider-gated — see the web tools after model resolution.)
+    // What one `bash` / `view` result may be: the ceiling now, the window's
+    // headroom once the model is resolved (plans/compaction.md §4). Read when
+    // a tool RUNS, so the closures below see the resolved value.
+    let resultCap = BASH_MAX_CHARS;
     let textEditorTool: any;
     let providerOptions: any;
     if (provider === "anthropic") {
       const { anthropic } = await import("@ai-sdk/anthropic");
       textEditorTool = anthropic.tools.textEditor_20250728({
-        execute: async (input: TextEditInput) => textEdit(input, [cfg.cwd, os.tmpdir()]),
+        execute: async (input: TextEditInput) => textEdit(input, [cfg.cwd, os.tmpdir()], resultCap),
       });
       providerOptions = { anthropic: { cacheControl: { type: "ephemeral", ttl: cfg.cacheTtl } } };
     }
@@ -1199,7 +1191,7 @@ export default defineStep({
             res = await runShellProcess(command, {
               cwd: cfg.cwd,
               timeoutMs: cfg.bashTimeoutMs,
-              maxOutputChars: BASH_MAX_CHARS,
+              maxOutputChars: resultCap,
               env: secretEnv,
               signal: ac.signal,
               onLeftover: (pgid) => void leftovers.add(pgid),
@@ -1253,7 +1245,7 @@ export default defineStep({
             old_str: z.string().optional(),
             view_range: z.array(z.number().int()).optional(),
           }) as any,
-          execute: async (input: TextEditInput) => textEdit(input, [cfg.cwd, os.tmpdir()]),
+          execute: async (input: TextEditInput) => textEdit(input, [cfg.cwd, os.tmpdir()], resultCap),
         });
 
     // Apply toolFilter (empty = all). Unknown names are ignored.
@@ -1310,13 +1302,14 @@ export default defineStep({
     // Emit a nested run event per tool call (built-ins + agentTools) so every
     // iteration is visible in the UI events panel / run drill-down. No-op when
     // run outside the runner (no ctx). Must come AFTER final_answer is added so
-    // it's uniformly considered (and skipped).
-    wrapToolsWithEmit(tools, ctx);
+    // it's uniformly considered (and skipped). One counter for the step: the
+    // web tools below and a compaction's event share it, so `NNN` stays in order.
+    const calls = { n: 0 };
+    wrapToolsWithEmit(tools, ctx, calls);
 
     /** The terminal condition: the newest step EXECUTED final_answer. (The
      *  SDK's `hasToolCall` would also stop on a call the tool refused.) */
     const finalAnswered = ({ steps }: { steps: any[] }) => finalAnswerOf(steps.slice(-1)) !== undefined;
-    const stopWhen = terminal ? [finalAnswered, isStepCount(cfg.maxSteps)] : [isStepCount(cfg.maxSteps)];
 
     // Resolved LAST (after all config validation): the key lookup throws when
     // no key is configured — a config error should surface before a
@@ -1333,6 +1326,10 @@ export default defineStep({
     });
     const model: any = resolved.model;
     const maxOutputTokens = resolved.maxOutputTokens;
+    // Compaction (plans/compaction.md): the mark, and the result cap that
+    // keeps one step's results inside the room above it.
+    const compactAt = compactAtFromEnv();
+    resultCap = resultCapChars(BASH_MAX_CHARS, resolved.contextLimit, compactAt);
     // Dollar cost at aieo's rates (per-model OpenRouter rates once
     // loadModelPricing() has run; provider defaults otherwise).
     const costOf = (u: TokenUsage) => computeSessionCost(resolved.provider, usageForCost(u), resolved.modelId);
@@ -1341,8 +1338,10 @@ export default defineStep({
     // a time per thread. Its system prompt is the first turn's, replayed
     // verbatim — with its messages it heads every request, and the prompt
     // cache (and thinking blocks bound to the prefix) need it byte for byte.
-    const session = cfg.session ? await openSession(cfg.session, ctx, resolved) : undefined;
+    const session = cfg.session ? await openSession(cfg.session, ctx, resolved, compactAt) : undefined;
     const system = session?.system ?? cfg.system;
+    // What the requests send: the same text, with its own cache breakpoint.
+    const instructions = cachedSystem(system, providerOptions) as any;
     if (session?.system != null && session.system !== cfg.system) {
       console.warn(`[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`);
     }
@@ -1366,7 +1365,7 @@ export default defineStep({
         if (!filter.length || filter.includes(name)) webTools[name] = t;
       }
       wrapToolsWithMask(webTools, secretValues);
-      wrapToolsWithEmit(webTools, ctx);
+      wrapToolsWithEmit(webTools, ctx, calls);
       Object.assign(tools, webTools);
       // Steps that completed BEFORE a mid-stream failure are unreachable through
       // the stream's result promises — `steps`, `responseMessages`, `usage` and
@@ -1420,16 +1419,24 @@ export default defineStep({
         }
         return undefined;
       };
-      const agent = new ToolLoopAgent({
-        model,
-        instructions: system,
-        tools,
-        maxOutputTokens,
-        stopWhen,
-        ...(providerOptions ? { providerOptions } : {}),
-        prepareStep,
-        onStepEnd,
-      });
+      /** Past the mark (plans/compaction.md §3): the loop stops after this
+       *  step — its tool results are in — and the main loop compacts before
+       *  going on. The SDK asks only after a step that called tools, so a
+       *  compaction never falls inside a tool round. */
+      const overMarkStop = () => overMark({ used: contextUsed, limit: resolved.contextLimit }, compactAt);
+      const stopConditions = (budget: number) => [...(terminal ? [finalAnswered] : []), isStepCount(budget), overMarkStop];
+      /** One tool-loop runner over this step's tools, with `budget` steps left. */
+      const makeRunner = (budget: number) =>
+        new ToolLoopAgent({
+          model,
+          instructions,
+          tools,
+          maxOutputTokens,
+          stopWhen: stopConditions(budget),
+          ...(providerOptions ? { providerOptions } : {}),
+          prepareStep,
+          onStepEnd,
+        });
 
       const preamble = buildPreamble(cfg.cwd);
       const startTime = Date.now();
@@ -1440,78 +1447,130 @@ export default defineStep({
       // Streaming keeps bytes flowing; we drain the stream and then await the
       // aggregate fields, which have the same shapes generate() returned.
       const basePrompt = preamble ? `${preamble}\n\n${cfg.prompt}` : cfg.prompt;
-      // What leads every request of this turn: the thread so far, then the
-      // task. `responseMessages` holds only generated turns, so each
-      // continuation below (stream resume, nudge) restates it.
-      const prior = (session?.messages ?? []) as any[];
-      const head = [...prior, { role: "user" as const, content: basePrompt }];
+      const task = { role: "user" as const, content: basePrompt };
+      // The REQUEST and the RECORD (plans/compaction.md §3). This turn's
+      // record is `lead` (a compaction at open, if any), the task, then
+      // `bankedMessages`: everything generated, plus the user turns the
+      // continuations below insert — a stream-error nudge, a compaction, a
+      // final-answer nudge. The request is the thread (from its last
+      // boundary) plus that record — until a compaction: from then on it
+      // begins at the compaction message, and nothing before it is sent
+      // again. The record keeps everything.
+      let prior = session ? (session.messages as any[]).slice(session.replayFrom) : [];
+      const lead: any[] = [];
+      let compactedAt: number | undefined;
+      const conversation = (): any[] =>
+        compactedAt === undefined ? [...prior, ...lead, task, ...bankedMessages] : bankedMessages.slice(compactedAt);
+      /** Where the thread's next turn starts replaying, when this turn moved it. */
+      const replayFrom = (): number | undefined => {
+        if (!session) return undefined;
+        const offset = session.messages.length;
+        if (compactedAt !== undefined) return offset + lead.length + 1 + compactedAt;
+        return lead.length ? offset : undefined;
+      };
+      let compactions = 0;
+
+      /** Fold the conversation into the model's own summary and put the
+       *  boundary in: at open the thread is summarized and the summary leads
+       *  this turn; between steps the whole request so far is, and the request
+       *  begins at the summary from then on. The summarizer runs under the
+       *  loop's own system, tools and provider options — the prefix the
+       *  thinking blocks are bound to, and the cache's. A summarizer that
+       *  fails is a warning: the loop goes on uncompacted and tries again at
+       *  the next boundary. One nested event, like a tool call. */
+      const compact = async (where: "open" | "step", tokens: number): Promise<boolean> => {
+        const before = where === "open" ? prior : conversation();
+        const emit = ctx?.emit as unknown as ((e: Record<string, unknown>) => Promise<void>) | undefined;
+        const path = ctx?.path && emit ? `${ctx.path}/${String(++calls.n).padStart(3, "0")}-compaction` : undefined;
+        const startedAt = Date.now();
+        if (path) await emit!({ type: "step.start", path, stepType: "compaction", input: { at: where, messages: before.length, tokens } });
+        try {
+          const got = await summarize({ streamText, model, system: instructions, tools, providerOptions, messages: before, retain: AGENT_RETAIN });
+          bankedUsage = addUsage(bankedUsage, got.usage);
+          if (got.summary === undefined) throw new Error(`the summary ended with finishReason "${got.finishReason}"`);
+          const text = compactionMessage(got.summary, { messages: before.length, tokens });
+          const message = { role: "user" as const, content: preamble ? `${text}\n\n${preamble}` : text };
+          if (where === "open") {
+            lead.push(message);
+            prior = [];
+          } else {
+            bankedMessages.push(message);
+            compactedAt = bankedMessages.length - 1;
+          }
+          compactions++;
+          console.log(`[agent] compacted ${before.length} messages (~${tokens} tokens) at ${where}; the request now begins at the summary.`);
+          if (path) await emit!({ type: "step.end", path, stepType: "compaction", output: summarizeForEvent(got.summary), durationMs: Date.now() - startedAt });
+          return true;
+        } catch (e) {
+          if (isCancelledError(e)) throw e;
+          const message = e instanceof Error ? e.message : String(e);
+          console.warn(`[agent] compaction at ${where} failed (${message}); continuing uncompacted.`);
+          if (path) await emit!({ type: "step.error", path, stepType: "compaction", error: { message } });
+          return false;
+        }
+      };
+      /** The model is mid-task: its last step called tools (the results are
+       *  in) and gave no final answer. */
+      const midTask = (step: any): boolean =>
+        !!step &&
+        Array.isArray(step.content) &&
+        step.content.some((c: any) => c.type === "tool-call" && c.toolName !== "final_answer" && !c.providerExecuted) &&
+        finalAnswerOf([step]) === undefined;
+
+      // A thread the last turn left over the mark is summarized before this
+      // turn's first call, and the next turn replays from that summary. (With
+      // compaction off, `openSession` refused it: `session_full:`.)
+      const lastTurn = session?.turns[session.turns.length - 1];
+      if (session && lastTurn?.context && overMark({ used: lastTurn.context.used, limit: resolved.contextLimit }, compactAt)) {
+        await compact("open", lastTurn.context.used);
+      }
+
       // Streaming keeps the socket alive but cannot make it immortal: the body
       // can still die mid-flight, and when it does the SDK's result promises all
       // reject, so an unguarded read throws away every tool call the session
       // already made. Resume instead — replay the banked conversation and let the
       // model carry on. Only connection faults qualify; see isTransientStreamError.
       let streamErrorContinuations = 0;
-      let res!: {
-        steps: any;
-        responseMessages: any[];
-        usage: any;
-        text: any;
-      };
+      let res!: { text: any };
       for (;;) {
-        const resuming = streamErrorContinuations > 0;
         // Budget already spent by banked steps must not be handed out again.
         const remaining = Math.max(1, cfg.maxSteps - bankedSteps.length);
-        const runner = resuming
-          ? new ToolLoopAgent({
-              model,
-              instructions: system,
-              tools,
-              maxOutputTokens,
-              stopWhen: terminal ? [finalAnswered, isStepCount(remaining)] : [isStepCount(remaining)],
-              ...(providerOptions ? { providerOptions } : {}),
-              prepareStep,
-              onStepEnd,
-            })
-          : agent;
-        const attempt = resuming
-          ? await runner.stream({
-              messages: [...head, ...(bankedMessages as any[]), { role: "user", content: STREAM_ERROR_NUDGE }] as any,
-            })
-          : prior.length
-            ? await runner.stream({ messages: head as any })
-            : await runner.stream({ prompt: basePrompt });
+        const attempt = await makeRunner(remaining).stream({ messages: conversation() as any });
         const failure = await streamFailure(attempt);
-        if (failure === undefined) {
-          res = {
-            steps: await attempt.steps,
-            // v7: `response` is final-step only; `responseMessages` spans every step.
-            responseMessages: await attempt.responseMessages,
-            usage: await attempt.usage,
-            text: await attempt.text,
-          };
-          break;
+        if (failure !== undefined) {
+          if (
+            !isTransientStreamError(failure) ||
+            streamErrorContinuations >= MAX_STREAM_ERROR_CONTINUATIONS ||
+            bankedSteps.length >= cfg.maxSteps
+          ) {
+            throw streamError(failure, bankedSteps.length);
+          }
+          streamErrorContinuations++;
+          // v7 wraps the socket fault ("Failed to process successful response");
+          // the root cause is the useful part of the log line.
+          let rootCause: any = failure;
+          while (rootCause?.cause) rootCause = rootCause.cause;
+          console.warn(
+            `[agent] stream severed after ${bankedSteps.length} banked step(s) (${
+              (failure as Error).message
+            }${rootCause !== failure ? `: ${rootCause?.message ?? rootCause}` : ""}); resuming ${streamErrorContinuations}/${MAX_STREAM_ERROR_CONTINUATIONS}.`,
+          );
+          // The model cannot see where the cut fell: tell it, on the record.
+          bankedMessages.push({ role: "user", content: STREAM_ERROR_NUDGE });
+          continue;
         }
-        if (
-          !isTransientStreamError(failure) ||
-          streamErrorContinuations >= MAX_STREAM_ERROR_CONTINUATIONS ||
-          bankedSteps.length >= cfg.maxSteps
-        ) {
-          throw streamError(failure, bankedSteps.length);
+        // The stream ended on its own terms. Past the mark with the model
+        // mid-task and budget left, the stop was ours (`overMarkStop`): fold
+        // the conversation into a summary and go on from it. A summarizer
+        // that failed leaves the loop uncompacted for one more step, after
+        // which it is tried again here.
+        if (overMarkStop() && midTask(bankedSteps.at(-1)) && bankedSteps.length < cfg.maxSteps) {
+          await compact("step", contextUsed);
+          continue;
         }
-        streamErrorContinuations++;
-        // v7 wraps the socket fault ("Failed to process successful response");
-        // the root cause is the useful part of the log line.
-        let rootCause: any = failure;
-        while (rootCause?.cause) rootCause = rootCause.cause;
-        console.warn(
-          `[agent] stream severed after ${bankedSteps.length} banked step(s) (${
-            (failure as Error).message
-          }${rootCause !== failure ? `: ${rootCause?.message ?? rootCause}` : ""}); resuming ${streamErrorContinuations}/${MAX_STREAM_ERROR_CONTINUATIONS}.`,
-        );
+        res = { text: await attempt.text };
+        break;
       }
-      // A resumed run's final attempt only knows its own segment — the banked
-      // record spans every attempt, so it is the honest view of the whole step.
-      const resumedFromStreamError = streamErrorContinuations > 0;
 
       // The continuations below (nudge, forced final answer) are SALVAGE: one
       // that fails is given up and the next fallback takes over. Not so for a
@@ -1528,14 +1587,16 @@ export default defineStep({
         console.warn(`[agent] ${what} failed:`, (e as Error).message);
       };
 
-      const steps = resumedFromStreamError ? bankedSteps : (res.steps ?? []);
+      // The banked record spans every attempt and continuation — a resume, a
+      // compaction — where the last attempt knows only its own segment.
+      const steps = bankedSteps;
       // Total LLM turns across the whole session — the nudge continuation
       // (finalAnswer mode, below) folds its turns in.
       let stepsUsed = steps.length;
       // The generated turns so far; the nudge / forced continuations below
       // append theirs (and the user turns that drove them), so `messages` is the
       // whole conversation after the task prompt.
-      const messages = resumedFromStreamError ? bankedMessages : (res.responseMessages ?? []);
+      const messages = bankedMessages;
       /** The step's output with the whole session recorded on its `step.end`
        *  (`withMessages` — the runner lifts it; templates, a parent agent's tool
        *  result and run.json never see it) and, only on request, in the output.
@@ -1543,8 +1604,10 @@ export default defineStep({
        *  task, what was generated): the turn is committed to the session
        *  store, which holds the rest, and the output says where it sits. */
       const finish = async (out: Record<string, unknown>) => {
-        const turn = buildSession(system, basePrompt, messages);
+        const turn = [{ role: "system", content: system }, ...lead, task, ...messages];
+        if (compactions) out = { ...out, compactions };
         if (session) {
+          const from = replayFrom();
           const line = await session.commit({
             system,
             messages: turn.slice(1),
@@ -1560,6 +1623,7 @@ export default defineStep({
               usage: out["usage"],
               cost: out["cost"] as number,
               ...(contextUsed ? { context: { used: contextUsed, limit: resolved.contextLimit } } : {}),
+              ...(from !== undefined ? { replayFrom: from } : {}),
             },
           });
           out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
@@ -1606,7 +1670,7 @@ export default defineStep({
       const continueLoop = async (nudge: { role: "user"; content: string }, budget: number) => {
         const nudger = new ToolLoopAgent({
           model,
-          instructions: system,
+          instructions,
           tools,
           maxOutputTokens,
           // At least a few turns even when the stop came near the cap —
@@ -1616,12 +1680,13 @@ export default defineStep({
           prepareStep,
           onStepEnd,
         });
-        const nudged = await nudger.stream({ messages: [...head, ...(messages as any[]), nudge] as any });
+        // The record keeps the nudge that drives these turns (onStepEnd banks
+        // what they generate); the request is the conversation as it stands.
+        bankedMessages.push(nudge);
+        const nudged = await nudger.stream({ messages: conversation() as any });
         await drain(nudged);
         const nudgedSteps = (await nudged.steps) ?? [];
         stepsUsed += nudgedSteps.length;
-        // The recorded session keeps the nudge that drove these turns.
-        messages.push(nudge, ...(((await nudged.responseMessages) ?? []) as any[]));
         noteText(nudgedSteps);
         const nu = usageFromSteps(nudgedSteps);
         usage = addUsage(usage, nu);
@@ -1691,15 +1756,15 @@ export default defineStep({
           };
           const forced = streamText({
             model,
-            system,
+            // The loop's own system prompt, as the loop sends it.
+            system: instructions,
             tools: stripExecute(tools),
             ...(providerOptions ? { providerOptions } : {}),
             ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
             // The conversation as the model saw it — the thread, this turn's
-            // task, what was generated — then the forced prompt: the nudge's
-            // shape. (It used to drop `head` on a run with no thread, so the
-            // request began at the first assistant turn: an edited prefix.)
-            messages: [...head, ...(messages as any[]), forcedPrompt],
+            // task, what was generated; from the compaction boundary, if there
+            // was one — then the forced prompt: the nudge's shape.
+            messages: [...conversation(), forcedPrompt] as any,
           } as any);
           await drain(forced);
           const fu = usageFromSteps(await forced.steps);
@@ -1711,8 +1776,8 @@ export default defineStep({
             // the session store would fail the thread's next request.
             console.warn("[agent] the forced final-answer turn called a tool instead of answering; nothing to salvage.");
           } else {
-            // The recorded session keeps this turn too.
-            messages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
+            // The record keeps this turn too.
+            bankedMessages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
             const got: unknown = useSchema ? await (forced as any).output : ((await forced.text) ?? "").trim();
             if (got !== undefined && got !== "") answer = got;
           }

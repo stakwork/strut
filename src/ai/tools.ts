@@ -1178,5 +1178,5 @@ export function buildTools(deps: AiDeps): ToolSet {
     // reading API docs while authoring adapters. Built by the host per turn
     // for the chat's provider (createWebTools); absent → not offered.
     ...((deps.webTools ?? {}) as Record<string, any>),
-  });
+  }, deps.toolResultMaxChars);
 }

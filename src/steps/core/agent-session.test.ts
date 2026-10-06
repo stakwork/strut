@@ -28,14 +28,20 @@ const toolUse = (id: string, name: string, input: unknown) =>
   sse({ type: "content_block_stop", index: 0 }) +
   sse({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } }) +
   sse({ type: "message_stop" });
-const textTurn = (text: string) =>
+const textBlock = (text: string, stop = "end_turn") =>
   sse({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }) +
   sse({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }) +
   sse({ type: "content_block_stop", index: 0 }) +
-  sse({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 20 } }) +
+  sse({ type: "message_delta", delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 30 } }) +
   sse({ type: "message_stop" });
 
-type Reply = { tool: [string, string, unknown] } | { text: string } | { status: number } | { hold: Promise<void>; then: Reply };
+/** `input` = the input_tokens the stand-in reports for the request — how a
+ *  test puts the conversation over the compaction mark. */
+type Reply =
+  | { tool: [string, string, unknown]; input?: number }
+  | { text: string; stop?: string; input?: number }
+  | { status: number }
+  | { hold: Promise<void>; then: Reply };
 type Server = { bodies: any[]; calls: () => number; close: () => void };
 
 /** Serve `replies` in order, one per request. */
@@ -53,8 +59,8 @@ async function serve(replies: Reply[]): Promise<Server> {
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
-    res.write(msgStart());
-    res.write("text" in reply ? textTurn(reply.text) : toolUse(...reply.tool));
+    res.write(msgStart(reply.input));
+    res.write("tool" in reply ? toolUse(...reply.tool) : textBlock(reply.text, reply.stop));
     res.end();
   };
   const server = http.createServer((req, res) => {
@@ -72,17 +78,19 @@ async function serve(replies: Reply[]): Promise<Server> {
   return { bodies, calls: () => call, close: () => server.close() };
 }
 
-const bash = (id: string, command: string): Reply => ({ tool: [id, "bash", { command }] });
+const bash = (id: string, command: string, input?: number): Reply => ({ tool: [id, "bash", { command }], ...(input ? { input } : {}) });
 const answer = (id: string, text: string): Reply => ({ tool: [id, "final_answer", { answer: text }] });
+const summary = (text: string, stop?: string): Reply => ({ text, ...(stop ? { stop } : {}) });
 const text = (t: string): Reply => ({ text: t });
 const systemOf = (body: any): string => (body.system as any[]).map((b) => b.text).join("");
+const textOf = (m: any): string => JSON.stringify(m.content);
 
 describe("agent sessions", () => {
   let cwd = "";
   let store: MemorySessionStore;
   let sessions: SessionsCapability;
   let saved: Record<string, string | undefined> = {};
-  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_LLM_PROVIDER", "AI_SDK_LOG_WARNINGS"];
+  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_LLM_PROVIDER", "AI_SDK_LOG_WARNINGS", "STRUT_COMPACT_AT"];
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "strut-session-"));
     store = new MemorySessionStore();
@@ -292,7 +300,8 @@ describe("agent sessions", () => {
     }
   });
 
-  it("session_full: a thread over 90% of the window is refused before any request", async () => {
+  it("session_full: with compaction off, a thread over 90% of the window is refused before any request", async () => {
+    process.env["STRUT_COMPACT_AT"] = "1";
     const s = await serve([answer("toolu_1", "fits")]);
     try {
       await seed("full", { context: { used: 990_000, limit: 1_000_000 } });
@@ -358,6 +367,147 @@ describe("agent sessions", () => {
       assert.equal((await run({ session: "abc" })).result, "later");
       const sent = JSON.stringify(s.bodies[2].messages);
       assert.ok(sent.includes("toolu_1") && !sent.includes("toolu_2"));
+    } finally {
+      s.close();
+    }
+  });
+
+  // ── compaction (plans/compaction.md §3) ──────────────────────────────────
+
+  it("compacts between steps: the summarizer sees the loop's prefix, the next request begins at the summary, the record is whole", async () => {
+    // The bash step's call reports 950k input tokens of a 1M window: past the
+    // mark, with the tool result in, the loop stops and compacts.
+    const s = await serve([bash("toolu_1", "echo one", 950_000), summary("HANDOFF: echoed one; answer next."), answer("toolu_2", "done")]);
+    const events: any[] = [];
+    try {
+      const out = await run({ prompt: "echo then answer" }, { emit: async (e: any) => void events.push(e) });
+      assert.equal(out.result, "done");
+      assert.equal(out.compactions, 1);
+      assert.equal(s.calls(), 3);
+      const [first, summarizer, after] = s.bodies;
+
+      // The summarizer's request: the same system and tools as the step
+      // before it (the prefix the thinking blocks are bound to), no
+      // tool_choice, the conversation with the tool result IN, then the
+      // instruction.
+      assert.equal(systemOf(summarizer), systemOf(first));
+      assert.deepEqual(summarizer.tools, first.tools);
+      assert.deepEqual(summarizer.tool_choice, first.tool_choice);
+      // Tools + system end in a cache breakpoint of their own on every
+      // request: the prefix the request after the boundary can read.
+      for (const body of [first, summarizer, after]) {
+        assert.deepEqual(body.system.at(-1).cache_control, body.cache_control, JSON.stringify(body.system));
+      }
+      // (The tool result and the instruction are both user turns: one
+      // message on the wire, the result first.)
+      const msgs = summarizer.messages as any[];
+      assert.equal(msgs.length, 3);
+      assert.ok(textOf(msgs[0]).includes("echo then answer"));
+      assert.equal(msgs[2].role, "user");
+      const closing = textOf(msgs[2]);
+      assert.ok(closing.includes("tool_result"), "the tool round is closed before the summary");
+      assert.ok(closing.indexOf("tool_result") < closing.indexOf("respond with text only."));
+      assert.equal(summarizer.max_tokens, 8000);
+
+      // The request after the boundary: the compaction message alone — the
+      // summary, the cwd preamble — nothing earlier.
+      assert.equal(after.messages.length, 1);
+      assert.equal(after.messages[0].role, "user");
+      const compaction = textOf(after.messages[0]);
+      assert.match(compaction, /\[compaction\] Compacted 3 messages \(~950020 tokens\)/);
+      assert.ok(compaction.includes("HANDOFF: echoed one; answer next."));
+      assert.ok(!compaction.includes("echo then answer"));
+
+      // The record is whole: the task, the call, the result, the compaction, the answer.
+      const turn = messagesOf(out) as any[];
+      assert.deepEqual(turn.map((m) => m.role), ["system", "user", "assistant", "tool", "user", "assistant", "tool"]);
+      assert.ok(JSON.stringify(turn[1]).includes("echo then answer"));
+      assert.ok(JSON.stringify(turn[4]).includes("[compaction]"));
+
+      // One nested event, like a tool call, after the bash call's.
+      const paths = events.filter((e) => e.type === "step.start").map((e) => [e.path, e.stepType]);
+      assert.deepEqual(paths, [["wf/work/001-bash", "tool:bash"], ["wf/work/002-compaction", "compaction"]]);
+      const end = events.find((e) => e.type === "step.end" && e.stepType === "compaction");
+      assert.ok(end.output.includes("HANDOFF"));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a thread over the mark is compacted at open: the summary leads the turn, and the next turn replays from it", async () => {
+    const s = await serve([summary("HANDOFF: the thread so far."), answer("toolu_1", "went on"), answer("toolu_2", "and again")]);
+    try {
+      await seed("long", { context: { used: 990_000, limit: 1_000_000 } });
+      const out = await run({ session: "long", prompt: "carry on" }, { runId: "r1" });
+      assert.equal(out.result, "went on");
+      assert.equal(out.compactions, 1);
+      assert.deepEqual(out.session, { id: "long", turn: 1, offset: 2 });
+
+      // The summarizer read the thread (and only the thread), under its system prompt.
+      const [summarizer, first] = s.bodies;
+      assert.equal(systemOf(summarizer), "sys");
+      assert.equal(summarizer.messages.length, 3);
+      assert.ok(textOf(summarizer.messages[0]).includes("earlier"));
+      assert.ok(textOf(summarizer.messages[2]).includes("Do not call any tools"));
+
+      // This turn's first request: the compaction message, then the task
+      // (two user turns, one message on the wire); nothing of the thread.
+      assert.deepEqual(first.messages.map((m: any) => m.role), ["user"]);
+      const opening = textOf(first.messages[0]);
+      assert.ok(opening.includes("[compaction] Compacted 2 messages (~990000 tokens)"));
+      assert.ok(opening.indexOf("[compaction]") < opening.indexOf("carry on"));
+      assert.ok(!opening.includes('"earlier"'), "nothing of the thread");
+
+      // The line records the boundary: the thread's index of the compaction
+      // message (the 2 seeded messages come first), and the next turn replays from it.
+      const thread = await store.load("long");
+      assert.deepEqual(thread!.turns.map((t) => t.replayFrom), [0, 2]);
+      // The seeded 2, then this turn: the summary, the task, the call, its result.
+      assert.equal(thread!.messages.length, 2 + 4);
+      assert.ok(JSON.stringify(thread!.messages[2]).includes("[compaction]"));
+
+      const again = await run({ session: "long", prompt: "once more" }, { runId: "r2" });
+      assert.equal(again.result, "and again");
+      assert.ok(!("compactions" in again));
+      const next = s.bodies[2];
+      assert.ok(textOf(next.messages[0]).includes("[compaction]"));
+      assert.ok(!JSON.stringify(next.messages).includes('"earlier"'), "nothing of the thread");
+      assert.equal(thread!.turns.length + 1, (await store.load("long"))!.turns.length);
+      assert.equal((await store.load("long"))!.replayFrom, 2);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a summarizer that fails, or stops short, is a warning: the loop goes on uncompacted and the step succeeds", async () => {
+    const s = await serve([
+      bash("toolu_1", "echo one", 950_000),
+      { status: 400 }, // the summarizer, refused
+      bash("toolu_2", "echo two", 960_000),
+      summary("cut off mid", "max_tokens"), // the summarizer again, truncated
+      answer("toolu_3", "done anyway"),
+    ]);
+    try {
+      const out = await run({ prompt: "keep going" });
+      assert.equal(out.result, "done anyway");
+      assert.ok(!("compactions" in out));
+      assert.equal(s.calls(), 5);
+      // Every real request still carried the whole conversation.
+      for (const i of [2, 4]) assert.ok(JSON.stringify(s.bodies[i].messages).includes("keep going"), `request #${i + 1}`);
+      assert.ok(!JSON.stringify(s.bodies[4].messages).includes("[compaction]"));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a bash result is capped at the window's headroom: 16k chars on a 200k model", async () => {
+    const s = await serve([bash("toolu_1", "head -c 40000 /dev/zero | tr '\\0' a"), answer("toolu_2", "saw it")]);
+    try {
+      const out = await run({ model: "claude-haiku-4-5", prompt: "read a lot" });
+      assert.equal(out.result, "saw it");
+      const result = textOf(s.bodies[1].messages[2]);
+      assert.ok(result.length < 16_000 + 600, `${result.length} chars`);
+      assert.ok(result.includes("chars truncated"));
     } finally {
       s.close();
     }

@@ -46,6 +46,10 @@ services:
       # call), and a routed call uses it in place of Anthropic's web_search
       # (createWebTools `routed`). Interpolated from ./.env; empty = no search.
       EXA_API_KEY: ${EXA_API_KEY:-}
+      # Low enough that the smoke test's agent run (e) compacts after one big
+      # bash result, high enough that its chats — the builder's prompt and
+      # tools alone are ~30k — never reach it (plans/compaction.md).
+      STRUT_COMPACT_AT: ${STRUT_COMPACT_AT:-0.07}
     volumes:
       # Its own workspace, so no secrets.json from the plain compose (which
       # may hold pasted provider keys) is in reach.

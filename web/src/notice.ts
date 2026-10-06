@@ -8,6 +8,8 @@
 // `notes` — a format drift shows up as text, never as a lost line.
 // `[elicitation-response]` (src/ai/elicitation.ts) is the third of the
 // family: the user's answer to the builder's question, as the model read it.
+// `[compaction]` (src/compaction.ts) is the fourth: the model's own summary
+// of everything before it, where its memory restarts (plans/compaction.md).
 
 export type ClaimStatus = "supported" | "refuted" | "unknown" | "stale";
 
@@ -35,9 +37,13 @@ export interface LedgerClaim {
 export type Ledger = Record<string, LedgerClaim[]>;
 
 export interface ParsedNotice {
-  kind: "run" | "verify" | "elicitation";
+  kind: "run" | "verify" | "elicitation" | "compaction";
   /** First line, prefix removed. */
   headline: string;
+  /** `[compaction]` only: what was folded into the summary, and the summary. */
+  compactedMessages?: number;
+  compactedTokens?: number;
+  summary?: string;
   /** `[elicitation-response]` only. */
   elicitationId?: string;
   action?: "accept" | "decline" | "cancel";
@@ -66,7 +72,12 @@ export interface ParsedNotice {
   notes: string[];
 }
 
-const PREFIXES = { "[run-notification]": "run", "[verify-notification]": "verify", "[elicitation-response]": "elicitation" } as const;
+const PREFIXES = {
+  "[run-notification]": "run",
+  "[verify-notification]": "verify",
+  "[elicitation-response]": "elicitation",
+  "[compaction]": "compaction",
+} as const;
 
 export function isNotice(text: string): boolean {
   return Object.keys(PREFIXES).some((p) => text.startsWith(p));
@@ -113,6 +124,17 @@ export function parseNotice(text: string): ParsedNotice | null {
     } else {
       for (const line of rest) if (line.trim()) notice.notes.push(line);
     }
+    return notice;
+  }
+
+  if (notice.kind === "compaction") {
+    // "Compacted 40 messages (~612000 tokens) into the summary below; …", then the summary.
+    const m = /^Compacted (\d+) messages \(~(\d+) tokens\)/.exec(notice.headline);
+    if (m) {
+      notice.compactedMessages = Number(m[1]);
+      notice.compactedTokens = Number(m[2]);
+    }
+    notice.summary = rest.join("\n").trim();
     return notice;
   }
 
@@ -188,6 +210,7 @@ export function countLedger(ledger: Ledger): LedgerCounts {
 
 /** One word for the card's dot: the worst thing a person should know. */
 export function noticeTone(n: ParsedNotice): "ok" | "error" | "warning" | "pending" | "neutral" {
+  if (n.kind === "compaction") return "neutral";
   if (n.kind === "elicitation") return n.action === "accept" ? "ok" : n.action === "decline" ? "warning" : "neutral";
   if (n.runStatus === "error") return "error";
   const c = n.ledger ? countLedger(n.ledger) : null;

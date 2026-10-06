@@ -2138,6 +2138,8 @@ body.is-resizing-flyout * {
 .chat-notice-verify.is-error { color: var(--danger); }
 .chat-notice-verify.is-dim { color: var(--text-dim); }
 .chat-notice-notes { color: var(--text-dim); font-size: 11px; line-height: 1.45; }
+/* A [compaction] card's summary: the handoff the model continues from. */
+.chat-notice-summary { color: var(--text); font-size: 12px; line-height: 1.5; }
 .chat-notice-notes-label {
   display: block;
   font-size: 10px;

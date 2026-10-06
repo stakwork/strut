@@ -9,9 +9,10 @@
  * carries the search in its history, (b) a workflow run with an agent step
  * (web_fetch + bash) and an llm step, (b2) two runs on one agent `session` —
  * the second request replays the first turn's search, tool calls and
- * thinking through the gateway (plans/agent-sessions.md), (c) an xai chat
- * turn (OpenAI-compatible route), (d) the gateway's log has the calls under
- * their session dims (the workflow name, the chat id).
+ * thinking through the gateway (plans/agent-sessions.md), (e) an agent run
+ * that compacts (plans/compaction.md; the overlay's STRUT_COMPACT_AT), (c) an
+ * xai chat turn (OpenAI-compatible route), (d) the gateway's log has the calls
+ * under their session dims (the workflow name, the chat id).
  *
  * Routed through a gateway, strut never uses Anthropic's server-executed web
  * tools (`createWebTools({ routed })` → aieo's Exa + HTTP shims), because
@@ -271,6 +272,49 @@ steps:
   check("(b2) session turn 1: is turn 1", t1.end?.output?.session?.turn === 1, JSON.stringify(t1.end?.output?.session));
   check("(b2) session turn 1: remembers turn 0", String(t1.end?.output?.result ?? "").includes(marker), JSON.stringify(t1.end?.output?.result).slice(0, 160));
   check("(b2) session turn 1: read the prefix from the cache", (t1.end?.output?.usage?.cacheReadTokens ?? 0) > 0, JSON.stringify(t1.end?.output?.usage));
+}
+
+// ── (e) an agent run that compacts (plans/compaction.md) ──────────────────
+//
+// One bash result (~80k tokens) puts the run past the container's
+// STRUT_COMPACT_AT (docker-compose.gateway.yml). The second command needs the
+// first one's output, so the step that reads it is mid-task: the summarizer
+// call replays the turn under the loop's own system + tools, then the loop
+// goes on from the summary — both through the gateway. (A step that answers
+// is never compacted.)
+
+{
+  const name = `${WORKFLOW}-compact`;
+  const lines = 3500;
+  const compactYaml = `name: ${name}
+steps:
+  - id: work
+    type: agent
+    config:
+      cwd: /tmp
+      model: ${MODEL}
+      toolFilter: [bash]
+      maxSteps: 8
+      finalAnswer: The answer, as asked.
+      system: You are a terse test agent. Use exactly the tools you are told to.
+      prompt: >-
+        Run this bash command exactly: \`for i in $(seq 1 ${lines}); do echo "line $i: the quick brown fox jumps over the lazy dog"; done\`.
+        When you have its output, run the bash command \`echo strut-compact-<N>\`, where <N> is the number of
+        the last line it printed. Then call final_answer with that second command's output.
+`;
+  await json(await fetch(`${STRUT}/workflows`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ name, yaml: compactYaml }) }), "publish compaction workflow");
+  const launched = await json(
+    await fetch(`${STRUT}/workflows/${name}/run`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ input: {} }) }),
+    "launch compaction run",
+  );
+  const events = await sse(`${STRUT}/workflows/${name}/runs/${launched.runId}/stream`);
+  const end = events.find((e) => e.type === "step.end" && e.path === `${name}/work`);
+  const result = String(end?.output?.result ?? "");
+  const errs = errorsOf(events);
+  check("(e) compaction run: run.end, no errors", events.some((e) => e.type === "run.end") && !errs.length, errs.join(" | "));
+  check("(e) compaction run: a compaction event", events.some((e) => e.type === "step.end" && e.stepType === "compaction"));
+  check("(e) compaction run: output.compactions ≥ 1", (end?.output?.compactions ?? 0) >= 1, JSON.stringify(end?.output?.usage));
+  check("(e) compaction run: carried on from the summary", result.includes(`strut-compact-${lines}`), JSON.stringify(result).slice(0, 160));
 }
 
 // ── (c) xai chat turn (OpenAI-compatible route; web_fetch is aieo's shim) ──

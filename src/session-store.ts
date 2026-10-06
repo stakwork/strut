@@ -73,6 +73,12 @@ export interface NewTurn {
   cost?: number;
   /** The context after the turn's last model call. */
   context?: { used: number; limit: number };
+  /** Where the NEXT turn's replay begins: an absolute index into
+   *  `messages.jsonl`, set by a turn that compacted the thread
+   *  (plans/compaction.md) to the index of its `[compaction]` message.
+   *  Absent → inherited from the previous line (0 at first); every stored
+   *  line states it. Offsets stay absolute: the whole thread is still there. */
+  replayFrom?: number;
 }
 
 export interface SessionTurn extends NewTurn {
@@ -90,6 +96,8 @@ export interface Session {
   system: string;
   messages: StoredMessage[];
   turns: SessionTurn[];
+  /** The last turn's `replayFrom`: where the next turn starts replaying. */
+  replayFrom: number;
 }
 
 export interface SessionInfo {
@@ -151,7 +159,14 @@ function nextTurn(turns: SessionTurn[], count: number, record: NewTurn): Session
     offset: last ? last.offset + last.count : 0,
     count,
     ...record,
+    // Carried forward, so every line says where the replay begins.
+    replayFrom: record.replayFrom ?? last?.replayFrom ?? 0,
   };
+}
+
+/** Where a thread's next turn starts replaying: its last line's word. */
+export function replayFromOf(turns: SessionTurn[]): number {
+  return turns[turns.length - 1]?.replayFrom ?? 0;
 }
 
 // ── filesystem ─────────────────────────────────────────────────────────────
@@ -188,6 +203,7 @@ export class FileSessionStore implements SessionStore {
       system: await readFile(join(dir, "system.md"), "utf-8"),
       messages: lines.slice(0, last.offset + last.count).map((l) => JSON.parse(l) as StoredMessage),
       turns,
+      replayFrom: replayFromOf(turns),
     };
   }
 
@@ -241,11 +257,11 @@ export class MemorySessionStore implements SessionStore {
   async load(id: string): Promise<Session | null> {
     const s = this.sessions.get(checked(id));
     // Copies: the caller may hold them across a later append.
-    return s ? { ...s, messages: [...s.messages], turns: [...s.turns] } : null;
+    return s ? { ...s, messages: [...s.messages], turns: [...s.turns], replayFrom: replayFromOf(s.turns) } : null;
   }
 
   async appendTurn(id: string, turn: { system: string; messages: unknown[]; record: NewTurn }): Promise<SessionTurn> {
-    const s = this.sessions.get(checked(id)) ?? { id, system: turn.system, messages: [], turns: [] };
+    const s = this.sessions.get(checked(id)) ?? { id, system: turn.system, messages: [], turns: [], replayFrom: 0 };
     const line = nextTurn(s.turns, turn.messages.length, turn.record);
     // Through JSON, like the file store: what is read back is what a file
     // would hold.
@@ -282,8 +298,10 @@ export interface OpenSession {
   id: string;
   /** `null` on turn 0: the step's own `system` starts the thread. */
   system: string | null;
+  /** The WHOLE thread; the step replays `messages.slice(replayFrom)`. */
   messages: StoredMessage[];
   turns: SessionTurn[];
+  replayFrom: number;
   commit(turn: { system: string; messages: unknown[]; record: NewTurn }): Promise<SessionTurn>;
   release(): void;
 }
@@ -321,6 +339,7 @@ export function sessionsCapability(store: SessionStore): SessionsCapability {
           system: s ? s.system : null,
           messages: s ? s.messages : [],
           turns: s ? s.turns : [],
+          replayFrom: s ? s.replayFrom : 0,
           commit: (turn) => store.appendTurn(id, turn),
           release,
         };
