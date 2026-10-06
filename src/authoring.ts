@@ -382,8 +382,11 @@ export interface AuthoringCapability {
     /** `parentRunId` = the calling step's `ctx.runId`, linking the nested
      *  run's controller under the launching run's (subtree control).
      *  `actor` / `principal`: the launching step's — a nested run is billed
-     *  like the run that launched it. */
-    opts?: { parentRunId?: string; actor?: string; principal?: string },
+     *  like the run that launched it. `job`: the launching run's job
+     *  (plans/jobs.md §4) — stamped on the child, so its `{{ $job }}`,
+     *  `job/dir` and `workdir` resolve to the directory the parent holds,
+     *  which it shares (`holdJob`). */
+    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string },
   ): Promise<RunResult | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
@@ -727,6 +730,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           stepHashes: await stepHashesFor(workspace, flow),
           ...(opts?.actor ? { actor: opts.actor } : {}),
           ...(opts?.principal ? { principal: opts.principal } : {}),
+          ...(opts?.job ? { job: opts.job } : {}),
         });
       } finally {
         tracked?.untrack();

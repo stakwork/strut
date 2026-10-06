@@ -10,9 +10,13 @@
 > the smallest thing that round-trips — a host launches `job`, a
 > session-carrying agent writes `plan.md` or a page into the job
 > directory, the callback hands back links, the host renders them. No
-> repositories, pods, authoring or `strut/run-workflow` in it; each of
+> repositories, pods, authoring or running other workflows in it; each of
 > those is a later tool in `params.tools`, which is the point. The rest
 > of this document is the whole shape so the slices land in one place.
+> **Update (2026-10-06):** a job runs other workflows through
+> `meta/run-workflow`, which stamps the child with the job and lets it share
+> the job directory (§4, §2) — the separate `strut/run-workflow` and
+> `LaunchCapability` an earlier draft of §4 had are not needed.
 > Current behaviour was re-read on
 > this checkout (`fe24cb6`, main), `hive@b210ddab6` (master, the merge of
 > [stakwork/hive#5375](https://github.com/stakwork/hive/pull/5375)) and the
@@ -22,8 +26,9 @@
 > `code-change.md` (actor secrets, run callbacks, `ctx.onRunEnd`, hive's
 > `StrutRun` rows), `repo-agent.md` §4 (the agent-step gaps a long job
 > makes visible), `agentic-loop-as-workflow.md` §5 (the harness / policy
-> split this is an instance of), `federation.md` §2.2 (`strut/run-workflow`
-> is named there for dispatch-through; the local half ships here first).
+> split this is an instance of), `federation.md` §2.2 (a `strut/run-workflow`
+> is named there for dispatch-through to a PEER, later; the local half is
+> `meta/run-workflow`, §4).
 
 ## Problem
 
@@ -72,7 +77,7 @@ release.
 | Per-run artifacts | **Unchanged.** `artifacts/<runId>/` stays the immutable record of what a run produced, for every workflow. The job directory is for what a job MAINTAINS |
 | Deliverables | **Declared in the run's OUTPUT**, `artifacts: [{ id, kind?, title, path \| url \| content }]`, resolved to links in the `run.end` callback the way `transcripts` are (`createStrut.ts` `postRunCallback`). The host stores refs, reads bytes from strut when someone looks |
 | Versions of one file | **The live file.** Twenty turns editing `plan.md` are twenty refs with the same `id` pointing at one path; a card shows what is there now. Distinct things get distinct names. History of one file, if ever wanted, is git in the job dir (§10), not snapshots |
-| Running other workflows | **`strut/run-workflow`**, a lib step that runs ANY workflow as its own run under the parent's controller, stamped with the job. `meta/run-workflow` keeps its ownership rule for the harnesses that need it |
+| Running other workflows | **`meta/run-workflow`**, which runs ANY unsealed workflow as its own run under the parent's controller, stamped with the job (§4). One step: since what the meta surface may run is decided by sealing, not by publisher, there is no reason for a second |
 | Resources that outlive a run | **The agent claims them, through tools** (a pod: `hive/claim-pod`), and the job REMEMBERS them: a hold in the job manifest with a release action strut runs when the job is closed or swept (§6). Never claimed by the host on the agent's behalf |
 | Asking the user | **In the output** (`ask`), the run ends `success`; the answer is the next turn. Nothing parks (the sessions rule) |
 | One turn at a time | **Per job**, the workdir rule: a second top-level run of a job while one holds the directory fails `job_busy:`. Child runs the turn launches share it |
@@ -133,8 +138,7 @@ steps:
 params:
   model: claude-sonnet-5
   tools:                                   # THE evolvable surface
-    - strut/run-workflow
-    - meta/*
+    - meta/*                               # meta/run-workflow: run any unsealed workflow under this job
     - graph/graph-search
     - graph/graph-get
     - graph/graph-neighbors
@@ -142,7 +146,7 @@ params:
     - browser/*
   system: |
     …read the Concept tree for this kind of goal first; prefer an existing
-    workflow (strut/run-workflow) over authoring one; …
+    workflow (meta/run-workflow) over authoring one; …
 ```
 
 ```bash
@@ -172,7 +176,7 @@ Where it goes, all optional, all absent when the launch had none:
 | `ctx.job` | steps: `job/dir`, `git/checkout`, `hive/claim-pod` read it |
 | `{{ $job }}` | templates, beside `$runId`: `session: "{{ $job }}"`, `workdir: "{{ $job }}"` |
 | `ChatMeta.job` | the builder chat (§7) |
-| `strut/run-workflow`, `meta/run-workflow`, the chat's `run_workflow` | pass the launching run's / chat's job to the child, like `parentRunId` and `actor` |
+| `meta/run-workflow` (built, §4); the chat's `run_workflow` (with §7) | pass the launching run's / chat's job to the child, like `parentRunId` and `actor` |
 | the projector | a `job` attribute on `StrutRun`, `StrutChat`, `StrutAgentSession` (schema entries + conformance cases, the convention in AGENTS.md) — "everything in job X" is one query, no new node type, the `session_id` precedent |
 
 **The index.** `GET /jobs/:id` → `{ job, runs: [{ workflow, runId, status,
@@ -215,13 +219,18 @@ when another run has it — the `holdWorkdir` rule, released by
 `ctx.onRunEnd`), runs the sweep (§2.1). `git/checkout { workdir }` takes the
 same hold, so a job workflow may call either first.
 
-**Held, not nested.** The hold is per top-level run. A child the turn
-launches through `strut/run-workflow` carries the job stamp but does not
-take the directory: it writes its own `artifacts/<childRunId>/` as any
-run does, and the turn reads that (the tool result names the child's
-artifact directory) with bash, or copies what it wants into the job dir. A
-child that must work IN the job dir is given the path in its input. So
-"one turn at a time" is one rule with no exceptions to reason about.
+**Held by the turn, shared by its children.** The hold is per top-level
+run. A child the turn launches through `meta/run-workflow` carries the job
+stamp, and because its controller descends from the holder's
+(`trackRun(…, parentRunId)`, RUN_CONTROL_SPEC §2.2), its `job/dir` — or
+`git/checkout { workdir: "{{ $job }}" }` — is the SAME directory, not
+`job_busy:` (`holdJob` walks `ctx.control`'s parent chain with
+`isAncestorRun`; the child registers no release of its own, the holder's
+stands). The child is the turn, so "one turn at a time" is still one rule
+with no exceptions: an unrelated run of the job, with no controller or
+with one outside the holder's tree, is refused as before. A child that
+would rather keep its output apart writes its own `artifacts/<childRunId>/`
+as any run does.
 
 ### 2.1 Sweep
 
@@ -297,24 +306,32 @@ URLs; a child run's output names its files under `/artifacts/<childRunId>/`
 `content`. Everything the turn hands the human is one list, whatever
 produced it.
 
-## 4. `strut/run-workflow`
+## 4. Running other workflows — `meta/run-workflow`
 
-`src/steps/lib/strut/run-workflow.ts`: `{ name, input?, params?, version? }`
-→ `{ runId, status, output?, error?, artifactsDir, durationMs }`. Runs the
-workflow as its OWN persisted run — the same launcher `POST …/run` uses,
-attached under this run's controller (`parentRunId`, so cancel and pause
-reach it), billed to this run's principal, stamped with this run's job.
-Awaits it: a turn that launched a two-hour child is a two-hour turn, which
-is what a run is for. Any workflow: seeded, ai-published, the one it is
-running in (a job can launch a job).
+A job launches other workflows through the step that already exists.
+`meta/run-workflow` (`src/steps/lib/meta/run-workflow.ts`): `{ name,
+input?, params?, version? }` → `{ runId, status, output?, error? }`, thin
+plumbing over `AuthoringCapability.runWorkflow` (`src/authoring.ts`). The
+child is its OWN persisted run (inspect it with `meta/get-run`), attached
+under this run's controller (`parentRunId`, so cancel and pause reach it),
+billed to this run's principal, and **stamped with this run's job**:
+`ctx.job` rides as `opts.job` into `RunOptions.job`, so the child's
+`run.start` and summary record it, its `{{ $job }}` resolves to it, and its
+`job/dir` or `git/checkout { workdir: "{{ $job }}" }` is the directory this
+run holds — shared, not `job_busy:` (§2). Awaited: a turn that launched a
+two-hour child is a two-hour turn, which is what a run is for. Any workflow
+but a sealed one: seeded, ai-published, the one it is running in (a job can
+launch a job).
 
-The door is a small `LaunchCapability` on the standard bag, provided by
-`createStrut` (it owns `launchDetached`): `services.launch(name, { input,
-params, version, parentRunId, actor, principal, job })` → `{ runId,
-result: Promise<RunResult> }`. `meta/run-workflow` moves onto it too,
-keeping its `notOwned` gate in front; the chat's `run_workflow` already has
-the equivalent in `AiDeps`. Federation's dispatch-through is this step with
-a `peer` argument, later.
+An earlier draft of this section had a separate `strut/run-workflow` over
+a `LaunchCapability` on the services bag, because `meta/run-workflow` then
+refused anything not stamped `publisher: "ai"`. The sealed-meta change
+(`src/sealed.ts`: what the meta surface may RUN is decided by sealing, not
+by who published) removed the only reason for a second step — it runs a
+seeded `pod-pr` as readily as a candidate — so there is one, and the
+chat's `run_workflow` keeps its own door (`AiDeps`). Federation's
+dispatch-through to a peer stays a later, separate thing (`federation.md`
+§2.2).
 
 ## 5. The `job` workflow
 
@@ -326,7 +343,7 @@ on the swarm survives the next boot. The shape is the one above. Its
 - `system` — the prototype's good parts: read the Concept tree for the
   goal's kind before choosing anything (the `Workflow Builder` concept and
   its children name which workflow runs what; `Pod Decision` says when a
-  sandbox is warranted); prefer `strut/run-workflow` on an existing workflow
+  sandbox is warranted); prefer `meta/run-workflow` on an existing workflow
   over authoring; author only when nothing fits, and test candidates with
   `meta/run-step` and cassettes, never by publishing scratch workflows;
   name deliverables stably (`plan`, not `plan-v3`); end with `ask` when a
@@ -423,7 +440,7 @@ the point.
 
 | | |
 | --- | --- |
-| Cancel | The turn's run is cancelled; `strut/run-workflow` children with it (`parentRunId`). The hold is released with the run's `onRunEnd`; the job's holds (pods) stay — a cancelled turn is not a closed job |
+| Cancel | The turn's run is cancelled; `meta/run-workflow` children with it (`parentRunId`). The hold is released with the run's `onRunEnd`; the job's holds (pods) stay — a cancelled turn is not a closed job |
 | Durable resume | `run.start.job` is read back; `job/dir` re-takes the hold (the run is the same). A journaled session step replays, as agent-sessions §7 |
 | A crash | Directory holds are in-process, like workdirs' — gone with the process; the manifest and its holds survive, and the sweep still releases them |
 | Automations | A scheduled job is an automation whose `input` names a fixed `job` — a janitor that keeps a plan up to date has one directory and one thread forever (and will fill its window: `session_full:`, agent-sessions §9) |
@@ -432,7 +449,7 @@ the point.
 | Secrets | Actor secrets reach the turn through the principal as for any run; nothing job-scoped yet (§10) |
 | The graph | The projector's `job` attribute (§1) — `MATCH (r:StrutRun {job: $job})` is the job's history; a `StrutAgentSession` with `session_id = job` its thread; `ACCESSED` edges what it read |
 | The UI | The run flyout shows `job` in the summary and links `artifacts[]` from the output the way it links `/artifacts/…` paths today (`ValueFields`); `GET /jobs` is a later sidebar |
-| Federation | `strut/run-workflow` gains `peer`; a job's directory and holds stay on the strut that owns the job |
+| Federation | Dispatch-through to a peer is `federation.md` §2.2's later step; a job's directory and holds stay on the strut that owns the job |
 
 ## 10. Left out
 
@@ -496,10 +513,10 @@ running release actions, `DELETE /jobs/:id` (§6); the `hive/*` pod steps
 into the seed with the hold registered and the plain `password` gone;
 `hive/*` and `browser/*` in `params.tools`.
 
-**V3 — running and authoring workflows.** `strut/run-workflow` +
-`LaunchCapability`, `meta/run-workflow` onto it (§4); `meta/*` in
-`params.tools`; the Concept docs (`Workflow Builder` gains a `Job` child);
-claims on `job` (§5).
+**V3 — running and authoring workflows.** `meta/run-workflow` stamps the
+job and its child shares the directory — built (§4, §2; `authoring.test.ts`,
+`jobs.test.ts`). Left: `meta/*` in `params.tools`; the Concept docs
+(`Workflow Builder` gains a `Job` child); claims on `job` (§5).
 
 **Later, as needed.** `POST /chat { job }` + the per-chat shell cwd (§7);
 `GET /jobs`, `GET /jobs/:id` (the index); the projector attribute; the
@@ -510,7 +527,7 @@ items in §10.
 Offline (`npm test`):
 
 - A run launched with `job` records it on `run.start` and the summary, hands
-  it to steps and templates, and to a `strut/run-workflow` child; a bad id
+  it to steps and templates, and to a `meta/run-workflow` child; a bad id
   is a 400; a resume reads it back.
 - `job/dir` creates the directory, stamps the manifest, refuses a second
   concurrent run (`job_busy:`), and is free after the first ends; a child
@@ -526,9 +543,10 @@ Offline (`npm test`):
 - The callback: `path` on a job run and on a plain run resolve to the two
   URL forms; a missing file carries `error`; `url` and `content` pass
   through; `kind` is inferred from an extension; `output` is unchanged.
-- `strut/run-workflow` runs a seeded workflow the meta surface refuses,
-  attaches under the parent (cancel reaches it), stamps the job, returns
-  the child's artifact directory.
+- `meta/run-workflow` runs a seeded workflow, attaches under the parent
+  (cancel reaches it), stamps the job; the child's `job/dir` is the
+  parent's directory, not `job_busy:`, and the hold leaves with the parent;
+  a child of a job-less parent records no job.
 - The projector stamps `job` on the three node types (a graph case under
   `npm run test:graph`).
 

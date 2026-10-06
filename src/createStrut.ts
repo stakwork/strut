@@ -397,6 +397,9 @@ export interface StrutRunOptions<TServices = unknown> {
    *  to the workflow's owner (plans/mothership-cost-control.md §2). */
   actor?: string;
   principal?: string;
+  /** The job to launch under (plans/jobs.md §1) — the in-process twin of
+   *  `POST …/run { job }`. Not format-checked here, as the route's is. */
+  job?: string;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -3312,6 +3315,7 @@ export async function createStrut<TServices = unknown>(
         ...(stepHashes ? { stepHashes } : {}),
         ...(runOpts?.actor ? { actor: runOpts.actor } : {}),
         ...(principal ? { principal } : {}),
+        ...(runOpts?.job ? { job: runOpts.job } : {}),
       });
     } finally {
       untrack();

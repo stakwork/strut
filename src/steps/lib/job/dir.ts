@@ -32,7 +32,7 @@ export default defineStep({
   description:
     `This run's JOB directory: <dataDir>/jobs/<job>/, created on first use, the SAME path for every run launched with the same \`job\` (POST …/run { job }). ` +
     `Point an agent step's cwd at \`path\` so what it writes (plan.md, a page, screenshots) is there next turn and served at GET /jobs/<job>/files/<path>; declare deliverables in the workflow's output as artifacts: [{ id, title, path }]. ` +
-    `Held by this run until it ends (a second run of the job fails \`job_busy:\`). Repositories checked out into it (git/checkout with workdir: "{{ $job }}") are removed once the job is idle for STRUT_WORKDIR_TTL_DAYS; its other files are kept. ` +
+    `Held by this run until it ends (a second run of the job fails \`job_busy:\`; a child run this one launches through meta/run-workflow shares it). Repositories checked out into it (git/checkout with workdir: "{{ $job }}") are removed once the job is idle for STRUT_WORKDIR_TTL_DAYS; its other files are kept. ` +
     `Without a job (the Run button, a plain POST) it returns the run's own artifact directory, so the workflow still works as a one-shot. Output: { path, job?, created }\n\n${EXAMPLE}`,
   input: z.object({}),
   output: z.object({
