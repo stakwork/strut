@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import http from "node:http";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { messagesOf } from "../../core.js";
@@ -81,6 +81,7 @@ async function serve(replies: Reply[]): Promise<Server> {
 const bash = (id: string, command: string, input?: number): Reply => ({ tool: [id, "bash", { command }], ...(input ? { input } : {}) });
 const answer = (id: string, text: string): Reply => ({ tool: [id, "final_answer", { answer: text }] });
 const summary = (text: string, stop?: string): Reply => ({ text, ...(stop ? { stop } : {}) });
+const text = (t: string): Reply => ({ text: t });
 const systemOf = (body: any): string => (body.system as any[]).map((b) => b.text).join("");
 const textOf = (m: any): string => JSON.stringify(m.content);
 
@@ -311,6 +312,61 @@ describe("agent sessions", () => {
       // The window is the RESOLVED model's, not the one on record.
       await seed("roomy", { context: { used: 100_000, limit: 100_000 } });
       assert.equal((await run({ session: "roomy" })).result, "fits");
+    } finally {
+      s.close();
+    }
+  });
+
+  // The forced final-answer turn — the loop ended at its step cap without
+  // final_answer — is one more request of the SAME conversation. Under
+  // Anthropic's preserved thinking a replayed thinking block is bound to
+  // system + tools + the messages before it, and the tools head the prompt
+  // cache, so the turn sends the loop's own system and tools (inert: their
+  // `execute` removed) and only appends to its messages.
+  it("the forced final-answer turn carries the loop's own system and tools, and only appends to its messages", async () => {
+    const s = await serve([bash("toolu_1", "echo one"), text("one, in the end")]);
+    try {
+      const out = await run({ session: "abc", system: "you are careful", maxSteps: 1 });
+      assert.equal(out.result, "one, in the end");
+      assert.equal(s.calls(), 2);
+      const [loop, forced] = s.bodies;
+      assert.deepEqual(forced.system, loop.system, "the same system prompt");
+      assert.deepEqual(forced.tools, loop.tools, "the same tools");
+      assert.deepEqual(forced.tool_choice, loop.tool_choice, "the same tool choice — never a forced one");
+      assert.deepEqual((forced.tools as any[]).map((t) => t.name).sort(), ["bash", "final_answer"]);
+      // Append-only: the loop's request, its tool call, then its result and the
+      // forced prompt — one user turn, as the provider renders them.
+      const prefix = loop.messages as unknown[];
+      assert.equal(JSON.stringify((forced.messages as unknown[]).slice(0, prefix.length)), JSON.stringify(prefix));
+      assert.equal(forced.messages.length, prefix.length + 2);
+      const last = JSON.stringify((forced.messages as any[]).at(-1));
+      assert.ok(last.includes('"role":"user"') && last.includes("toolu_1") && last.includes("do NOT call any tools"));
+      // The thread records the forced turn like any other.
+      const thread = await store.load("abc");
+      assert.ok(JSON.stringify(thread!.messages.at(-2)).includes("do NOT call any tools"));
+      assert.ok(JSON.stringify(thread!.messages.at(-1)).includes("one, in the end"));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a tool call in the forced turn runs nothing, answers nothing, and is not committed to the thread", async () => {
+    const s = await serve([bash("toolu_1", "echo one"), bash("toolu_2", "echo stray > stray.txt"), answer("toolu_3", "later")]);
+    try {
+      const out = await run({ session: "abc", maxSteps: 1 });
+      assert.equal(s.calls(), 2, "the stray call gets no result — nothing more is asked");
+      assert.equal(out.result, "", "nothing to salvage");
+      assert.ok(!existsSync(join(cwd, "stray.txt")), "the stripped tool did not execute");
+      // The thread holds the loop's turn only: a tool call without its result
+      // would fail the thread's next request.
+      const thread = await store.load("abc");
+      assert.equal((thread!.messages.at(-1) as any).role, "tool");
+      assert.ok(!JSON.stringify(thread!.messages).includes("toolu_2"));
+      assert.ok(!JSON.stringify(thread!.messages).includes("do NOT call any tools"));
+      // And the next turn continues from it.
+      assert.equal((await run({ session: "abc" })).result, "later");
+      const sent = JSON.stringify(s.bodies[2].messages);
+      assert.ok(sent.includes("toolu_1") && !sent.includes("toolu_2"));
     } finally {
       s.close();
     }

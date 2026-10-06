@@ -132,6 +132,15 @@ describe("AI tools see in-code registered steps", () => {
     assert.equal(withSource.source, null);
   });
 
+  it("run_step returns the output once — not again on step.end / run.end", async () => {
+    const { deps } = await setup();
+    const tools = buildTools(deps) as any;
+    const res = await tools.run_step.execute({ type: "do-thing", config: { x: 7 } });
+    assert.equal(res.output, "did 7");
+    assert.deepEqual(res.events.map((e: any) => e.type), ["run.start", "step.start", "step.end", "run.end"]);
+    for (const e of res.events) assert.equal("output" in e, false, e.type);
+  });
+
   it("get_step omits `output` for an untyped (z.any()) step and resolves namespaced types", async () => {
     const { deps } = await setup();
     const tools = buildTools(deps) as any;

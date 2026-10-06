@@ -950,8 +950,14 @@ export function buildTools(deps: AiDeps): ToolSet {
             },
           },
         );
+        // The step's `step.end` and the run's `run.end` repeat `output` — the
+        // model reads it once (a big output came back three times, 560k tokens).
+        const events = result.events.map((e) =>
+          (e.type === "step.end" || e.type === "run.end") && "output" in e ? (({ output: _, ...rest }) => rest)(e) : e,
+        );
+        const slim = { ...result, events };
         // A kept run is being verified: show the step's contract, pending.
-        return result.kept ? { ...result, ...(await pendingContract({ name: type, steps: [{ id: runStepId(type), type, config: {} }] })) } : result;
+        return result.kept ? { ...slim, ...(await pendingContract({ name: type, steps: [{ id: runStepId(type), type, config: {} }] })) } : slim;
       },
     }),
 
@@ -1120,9 +1126,8 @@ export function buildTools(deps: AiDeps): ToolSet {
     // graph_get: the `graph/graph-get` STEP as a chat tool — its input schema
     // and its run(), so a read here and a read in a workflow cannot differ.
     // How the builder opens a page of the knowledge graph (a Concept's docs
-    // and its children); through run_step the same read comes back three
-    // times (the output, then the step's and the run's end events). Same gate
-    // as graph_query.
+    // and its children) without run_step's run wrapper. Same gate as
+    // graph_query.
     ...(deps.graph && deps.registry[GRAPH_GET_STEP]
       ? {
           graph_get: tool({
