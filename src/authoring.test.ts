@@ -299,6 +299,40 @@ describe("authoring capability (the meta surface)", () => {
     assert.match(String((sealed.output as any).error), /is sealed/);
   });
 
+  it("meta/run-workflow stamps the launching run's job on the child, which shares the job directory (plans/jobs.md §4)", async () => {
+    // The child: job/dir, then what it saw.
+    await strut.workspace.createWorkflow("job-child", `name: job-child\nsteps:\n  - id: dir\n    type: job/dir\n  - id: out\n    type: pack\n    config:\n      path: "{{ dir.path }}"\n      job: "{{ $job }}"\n`);
+    // The parent holds the directory first (the job seed's shape), then
+    // launches the child from inside the turn.
+    await strut.workspace.createWorkflow("job-parent", `name: job-parent\nsteps:\n  - id: dir\n    type: job/dir\n  - id: child\n    type: meta/run-workflow\n    config:\n      name: job-child\n      input: {}\n  - id: out\n    type: pack\n    config:\n      path: "{{ dir.path }}"\n      child: "{{ child }}"\n`);
+
+    const res = await strut.run("job-parent", {}, { job: "j-tree" });
+    assert.equal(res.status, "success", JSON.stringify(res.error));
+    const out = res.output as any;
+    assert.equal(out.child.status, "success", JSON.stringify(out.child));
+    assert.equal(out.child.output.job, "j-tree", "the child's {{ $job }} is the parent's job");
+    assert.equal(out.child.output.path, out.path, "job/dir on the child is the SAME directory — not job_busy");
+    assert.equal(out.path, join(tempDir, "jobs", "j-tree"));
+    // Recorded on the child's own run, like `principal`, and linked under the parent.
+    const childStart = (await strut.store.getRunEvents("job-child", out.child.runId)).find((e) => e.type === "run.start")!;
+    assert.equal(childStart.job, "j-tree");
+    assert.equal(childStart.parentRunId, res.runId);
+    assert.equal((await strut.store.getRunSummary("job-child", out.child.runId))!.job, "j-tree");
+
+    // The hold left with the parent: the next turn of the job is free to take it.
+    const next = await strut.run("job-parent", {}, { job: "j-tree" });
+    assert.equal(next.status, "success", JSON.stringify(next.error));
+
+    // Without a job on the parent the child has none, and each run gets its own artifact dir.
+    const plain = await strut.run("job-parent", {});
+    assert.equal(plain.status, "success", JSON.stringify(plain.error));
+    const p = plain.output as any;
+    assert.equal(p.child.output.job, undefined);
+    assert.notEqual(p.child.output.path, p.path);
+    const plainStart = (await strut.store.getRunEvents("job-child", p.child.runId)).find((e) => e.type === "run.start")!;
+    assert.equal("job" in plainStart, false);
+  });
+
   it("runWorkflow sees a step authored moments before (fresh registry, §5.3.1)", async () => {
     const created = (await authoring.createStep("cand/echo2", echoStep("cand/echo2", 7))) as any;
     assert.equal(created.ok, true);

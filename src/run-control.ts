@@ -144,10 +144,12 @@ export class RunController implements RunControl {
 
   /** A unit-scoped view for `ctx.control`: its `checkpoint()` releases the
    *  enclosing unit while parked (so an agent step paused between tool calls
-   *  counts as quiesced) and re-acquires it before continuing. */
+   *  counts as quiesced) and re-acquires it before continuing. The view
+   *  remembers its controller (`controllerOf`) so `isAncestorRun` can read
+   *  the tree through it without the view exposing cancel/pause. */
   forUnit(): RunControl {
     const controller = this;
-    return {
+    const view: RunControl = {
       get state() {
         return controller.state;
       },
@@ -160,6 +162,8 @@ export class RunController implements RunControl {
         }
       },
     };
+    controllerOf.set(view, this);
+    return view;
   }
 
   /** Unlink from the parent on unregister so a completed nested run stops
@@ -177,4 +181,20 @@ export class RunController implements RunControl {
     for (const wake of woken) wake();
     for (const child of this.children) child.poke();
   }
+}
+
+/** The controller behind each `forUnit()` view. */
+const controllerOf = new WeakMap<RunControl, RunController>();
+
+/** True when `runId` is the run `control` belongs to, or an ANCESTOR of it —
+ *  a run it was launched under (a nested launch attaches its controller to
+ *  the launching run's, §2.2: `meta/run-workflow` from inside a job's turn).
+ *  What lets a child run share its parent's job directory (`holdJob`,
+ *  src/jobs.ts). False with no control, or a stand-in that is not a
+ *  controller's view. */
+export function isAncestorRun(control: RunControl | undefined, runId: string): boolean {
+  for (let c = control && controllerOf.get(control); c; c = c.parent) {
+    if (c.runId === runId) return true;
+  }
+  return false;
 }

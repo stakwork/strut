@@ -11,7 +11,8 @@ import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import { fileArtifactsCapability, shellCapability, standardServices, type StrutCapabilities } from "./capabilities.js";
 import { readRunStart } from "./journal.js";
-import { holdJob, jobRoot, listJobFiles, readJobRecord, sweepJobs, touchJob } from "./jobs.js";
+import { holdJob, jobHolder, jobRoot, listJobFiles, readJobRecord, sweepJobs, touchJob } from "./jobs.js";
+import { RunController } from "./run-control.js";
 import { artifactKind, resolveArtifactRefs } from "./artifact-refs.js";
 import jobDir from "./steps/lib/job/dir.js";
 import pack from "./steps/core/pack.js";
@@ -154,6 +155,35 @@ describe("jobs — the directory", () => {
     for (const d of disposers) d();
     holdJob({ runId: "r2" }, r, "h"); // no onRunEnd: not held
     holdJob({ runId: "r3" }, r, "h");
+  });
+
+  it("holdJob: a child run of the holder shares the hold and leaves it with the holder; an unrelated run is still job_busy", () => {
+    const r = jobRoot(dataDir, "tree");
+    // The tree a nested launch builds: meta/run-workflow attaches the child's
+    // controller under the launching run's (trackRun's parentRunId).
+    const parent = new RunController("p", "job");
+    const child = new RunController("c", "child", parent);
+    const grandchild = new RunController("g", "grandchild", child);
+    const other = new RunController("o", "job");
+    const releases: Record<string, Array<() => unknown>> = { p: [], c: [], g: [], o: [], s: [] };
+    const ctxOf = (c: RunController) => ({ runId: c.runId, onRunEnd: (fn: () => unknown) => void releases[c.runId]!.push(fn), control: c.forUnit() });
+
+    holdJob(ctxOf(parent), r, "tree");
+    holdJob(ctxOf(child), r, "tree");
+    holdJob(ctxOf(grandchild), r, "tree");
+    assert.equal(jobHolder(r), "p", "the holder is still the parent");
+    assert.equal(releases["c"]!.length + releases["g"]!.length, 0, "a child registers no release of its own");
+
+    assert.throws(() => holdJob(ctxOf(other), r, "tree"), /job_busy: job "tree" is in use by run p/);
+    assert.throws(() => holdJob({ runId: "x", onRunEnd: () => {} }, r, "tree"), /job_busy/, "no control at all: not a child");
+    // The holder's child may not be used as a door by a run outside the tree.
+    const stranger = new RunController("s", "job", other);
+    assert.throws(() => holdJob(ctxOf(stranger), r, "tree"), /job_busy/);
+
+    for (const d of releases["p"]!) d();
+    assert.equal(jobHolder(r), undefined, "released with the holder");
+    holdJob(ctxOf(other), r, "tree");
+    assert.equal(jobHolder(r), "o");
   });
 
   describe("the sweep (§2.1)", () => {

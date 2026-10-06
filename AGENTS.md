@@ -43,7 +43,7 @@ strut/
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
 │   ├── step-ref.ts        # `type: name@vN` — a PINNED custom-step version (parseStepRef / baseType); a bare type runs the active version. Events keep the bare `stepType`; the pin rides on `step.start.stepVersion`
 │   ├── runner.ts          # execution engine: DAG (topological), retry, onError, control flow, journal replay
-│   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md)
+│   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md); isAncestorRun reads the tree through a step's `ctx.control` (what lets a child run share its parent's job directory)
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation
 │   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
 │   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change), the additive `claims` publish arg, publisher scoping (fixed point 1), the sealed check over the check closure (fixed point 2; sealed.ts)
@@ -66,7 +66,7 @@ strut/
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either) — a host whose own entry is called `server.js` and imports the barrel never starts it (server.test.ts spawns that host)
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
-│   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`), the idle sweep (repositories removed, files kept), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
+│   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (repositories removed, files kept), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
 │   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
 │   ├── auth.ts            # requireApiKey middleware — createStrut puts it in front of EVERY route, reads included — + carriesApiKey (Bearer or `?key=`) + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
@@ -1353,7 +1353,8 @@ and the child env is scrubbed by construction).
   that job's directory, `<dataDir>/jobs/<name>/<repo>` — the same path
   every run, the transcript is full of it — is left as the last run left
   it (`reused: true`; `ref` only applies when it is created), is held by
-  one RUN at a time (`job_busy:`), and is removed once the job is idle
+  one RUN at a time (`job_busy:`; a child run launched by
+  `meta/run-workflow` shares it), and is removed once the job is idle
   for `STRUT_WORKDIR_TTL_DAYS` by the next kept checkout or `job/dir`.
   **Run control:** a journaled session step replays its output on resume
   and never reaches the store; "re-run from here" on one is a NEW turn — a
@@ -1380,7 +1381,9 @@ and the child env is scrubbed by construction).
   `session: "{{ $job }}"` is a cold agent then, not an error), and kept by a
   durable resume. `job/dir` returns `<dataDir>/jobs/<id>/`, the SAME
   directory for every run of the job, held by one run at a time
-  (`job_busy:`), and the generalization of yesterday's `workdir`:
+  (`job_busy:`; a child run launched by `meta/run-workflow` shares it — the
+  child carries the job, and `holdJob` walks `ctx.control`'s parent chain),
+  and the generalization of yesterday's `workdir`:
   `git/checkout { workdir: "{{ $job }}" }` checks repositories out INTO it,
   the idle sweep removes those and keeps the job's own files. So a job
   workflow is `job/dir → agent (cwd: the dir, session: "{{ $job }}") →

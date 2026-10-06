@@ -40,6 +40,7 @@ export {
   RunController,
   CancelledError,
   isCancelledError,
+  isAncestorRun,
   type RunControl,
   type ControlState,
 } from "./run-control.js";

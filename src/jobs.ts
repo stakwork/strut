@@ -16,8 +16,10 @@
  * later work).
  *
  * One run at a time per job (`holdJob`, `job_busy:`): two runs in one
- * directory would edit the same files. In-process, like every strut lock —
- * strut is single-process by design; a crash drops every hold.
+ * directory would edit the same files. A child run the holder launches
+ * (`meta/run-workflow`, under its controller) is the same turn and shares
+ * it. In-process, like every strut lock — strut is single-process by
+ * design; a crash drops every hold.
  */
 
 import { existsSync } from "node:fs";
@@ -25,6 +27,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import type { StepContext } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
+import { isAncestorRun } from "./run-control.js";
 import { encodeId } from "./session-store.js";
 
 export interface JobRecord {
@@ -73,14 +76,19 @@ export async function touchJob(
 const held = new Map<string, string>();
 
 /** Take a job's directory for this RUN, until it ends. The same run may
- *  take it again (`job/dir` and then a checkout, or several checkouts).
+ *  take it again (`job/dir` and then a checkout, or several checkouts), and
+ *  so may a run launched FROM the holder — a child `meta/run-workflow`
+ *  started inside the job's turn, whose controller descends from the
+ *  holder's (`isAncestorRun`): it shares the directory and registers no
+ *  release of its own; the holder's stands. Any other run is `job_busy:`.
  *  Outside the runner (no `ctx.onRunEnd`) nothing is held. */
-export function holdJob(ctx: Pick<StepContext<unknown>, "runId" | "onRunEnd">, root: string, name: string): void {
+export function holdJob(ctx: Pick<StepContext<unknown>, "runId" | "onRunEnd" | "control">, root: string, name: string): void {
   const by = held.get(root);
-  if (by !== undefined && by !== ctx.runId) {
+  if (by !== undefined) {
+    if (by === ctx.runId || isAncestorRun(ctx.control, by)) return;
     throw new Error(`job_busy: job "${name}" is in use by run ${by}`);
   }
-  if (by === ctx.runId || !ctx.onRunEnd) return;
+  if (!ctx.onRunEnd) return;
   held.set(root, ctx.runId);
   ctx.onRunEnd(() => {
     if (held.get(root) === ctx.runId) held.delete(root);

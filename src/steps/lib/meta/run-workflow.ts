@@ -5,7 +5,7 @@ import { requireAuthoring } from "./_shared.js";
 export default defineStep({
   type: "meta/run-workflow",
   description:
-    "Run a published workflow with a given input, awaiting the result: { runId, status, output?, error? }. It runs as its OWN persisted run (inspect it with meta/get-run). Any workflow — a candidate you authored, a seeded one like pod-pr — except a SEALED one (a grading harness), which is refused by name. Sees steps and workflows published earlier in this same run (the registry is re-read fresh).",
+    "Run a published workflow with a given input, awaiting the result: { runId, status, output?, error? }. It runs as its OWN persisted run (inspect it with meta/get-run). Any workflow — a candidate you authored, a seeded one like pod-pr — except a SEALED one (a grading harness), which is refused by name. Sees steps and workflows published earlier in this same run (the registry is re-read fresh). Launched from a job run (POST …/run { job }) the child carries the same job: its {{ $job }} resolves to it and job/dir hands it the SAME directory, shared with this run rather than job_busy.",
   input: z.object({
     name: z.string().describe("Workflow name to run"),
     input: z
@@ -32,6 +32,9 @@ export default defineStep({
       // Billed like the run that launched it (the principal rule, §2).
       ...(ctx.actor ? { actor: ctx.actor } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),
+      // Under the same job (plans/jobs.md §4): the child's `{{ $job }}` and
+      // `job/dir` are this run's, and it shares the directory this run holds.
+      ...(ctx.job ? { job: ctx.job } : {}),
     });
   },
 });
