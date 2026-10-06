@@ -28,6 +28,13 @@
 >   the tool result and the instruction in the summarizer's request.
 > - Tests use the suites' stand-in Anthropic endpoints (SSE, `input_tokens`
 >   set past the mark), not a fake provider.
+> - The system prompt carries a cache breakpoint of its own
+>   (`cachedSystem`), on the loop, the summarizer and the chat. Without it
+>   no cache entry ended at system + tools — the automatic breakpoint sits
+>   at the end of the messages — and the first request after a boundary
+>   read nothing (live, 2026-10-06: `cache_read` 0, the builder's 25k prompt
+>   and tools written again). With it that request reads them (25,096 on
+>   the builder, 5,120 on an agent step) and writes about the summary.
 
 ## Problem
 
