@@ -890,7 +890,7 @@ number exists).
    only runs recorded after it can ever be verified; then `run_step`
    persists under `step:<type>` (§3) + the projector pair.
 3. **Done** — `graph/claims-writer.ts` (invariants), `claims-authoring.ts`
-   (validation, write-time defaults, scoping, the deny-list over the check
+   (validation, write-time defaults, scoping, the sealed check over the check
    closure), `claims-schemas.ts`; the `claims` arg on the four chat publish
    tools and on `meta/create-step` / `meta/edit-step` /
    `meta/publish-workflow` (validated BEFORE the publish — a broken
@@ -898,7 +898,7 @@ number exists).
    the nine chat tools and their nine `meta/*` twins; prompt rules 1–4
    (5–6 land with the ledger, step 5). Decided while building: the chat
    surface is NOT publisher-scoped (it is human-supervised, like
-   `edit_step`) but still stamps `ai`, so the deny-list applies to its
+   `edit_step`) but still stamps `ai`, so the sealed check applies to its
    checks; a scoped author may also attach / add claims only to subjects
    it published; a successor claim is stamped by its EDITOR; a claim's
    last subject cannot be detached (retire it); a contract passed on a
@@ -1105,7 +1105,7 @@ number exists).
   today with `lastVerify: pending`; the detached verify pass wakes the chat
   with `[verify-notification]` (§4, §5).
 - A check may be a whole workflow (`step_type: subflow`). Paid,
-  `evidence_mode` and the grader deny-list are decided from the check
+  `evidence_mode` and the sealed check are decided from the check
   closure, not the type; observed cost is the backstop. Every Evidence
   records the check that produced it and the code version that ran.
   Verify-origin runs are never verified (§4, §4.1).

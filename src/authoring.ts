@@ -1,12 +1,13 @@
 import { join } from "node:path";
-import type { AnyStepDef, RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
+import type { AnyStepDef, Flow, RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
-import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
+import { claimsBlockOf, flowFromYaml, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
 import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
-import { stepHashesFor } from "./closure.js";
+import { flowClosure, stepHashesFor } from "./closure.js";
+import { isSealedStep, sealedInClosure } from "./sealed.js";
 import {
   mergeClaimSpecs,
   toSubjectRef,
@@ -37,12 +38,15 @@ import { validateWorkflowYaml, type ValidationResult } from "./validate.js";
  *
  * The exported helpers are the shared MECHANISM (conflict checks, strict
  * load-verification, run-history reads). `buildAuthoringCapability` bakes in
- * the meta-surface POLICY on top (EVOLVE_SPEC §6): everything the capability
- * publishes is stamped `publisher: "ai"`, and its publish / run /
- * run-history operations are CLOSED over that stamped set — it refuses to
- * touch, run, or read runs of workflows it didn't publish. A harness
- * workflow's run log records what its grader steps were handed, so
- * run-history reads on unstamped workflows fail closed.
+ * the meta-surface POLICY on top (EVOLVE_SPEC §6): everything it publishes
+ * is stamped `publisher: "ai"` and it publishes only over names so stamped;
+ * what it may RUN, read the runs of, verify, or reach from a publish is
+ * decided by SEALING (`src/sealed.ts`) — a grading harness (`sealed: true`
+ * in its YAML) or a grader step (a sealed namespace, or `sealed: true` on
+ * its def) is refused by name, and a publish whose closure reaches one is
+ * refused. Any other workflow — a seeded `pod-pr`, a person's — it runs and
+ * inspects like its own: a harness's run log records what its graders were
+ * handed, a job's does not.
  */
 
 /** The provenance stamp for AI-authored artifacts (steps AND workflows). */
@@ -385,10 +389,9 @@ export interface AuthoringCapability {
   listSecrets(): Promise<unknown>;
 
   // ── Claims (plans/claims.md §2, door two) ──
-  // Publisher-scoped like everything else on this surface (fixed point 1):
-  // only claims / checks stamped `ai`, only subjects it published; its
-  // checks may never reach a grader (fixed point 2). On a filesystem
-  // workspace each returns `{ error }`.
+  // Publisher-scoped (fixed point 1): only claims / checks stamped `ai`,
+  // only subjects it published; its checks may never reach anything sealed
+  // (fixed point 2). On a filesystem workspace each returns `{ error }`.
   addClaim(input: { subjects: SubjectInput[]; text: string; checks: CheckSpecInput[] }): Promise<unknown>;
   editClaim(id: string, text: string): Promise<unknown>;
   retireClaim(id: string): Promise<unknown>;
@@ -471,28 +474,25 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
   const findWorkflow = async (name: string) =>
     (await workspace.listWorkflows()).find((w) => w.name === name);
 
-  /** The ownership gate: the meta surface acts only on workflows it
-   *  published (EVOLVE_SPEC §6). Returns an error message, or null when the
-   *  workflow exists and is stamped. */
-  const notOwned = async (name: string, verb: string): Promise<string | null> => {
-    // `step:<type>` — a step's kept single-step runs (plans/claims.md §3):
-    // same scoping, on the step's publisher stamp.
+  /** The sealed gate (EVOLVE_SPEC §6; `src/sealed.ts`): a run-store key the
+   *  meta surface may not touch — a workflow whose YAML says `sealed: true`
+   *  (a grading harness), or `step:<type>` of a sealed step (a grader; the
+   *  kept single-step runs of plans/claims.md §3). An error message, or
+   *  null when it exists and is open. */
+  const sealedGate = async (name: string, verb: string): Promise<string | null> => {
     const stepType = stepTypeOfRunKey(name);
-    if (stepType) {
-      const owned = (await workspace.listSteps({ publisher: AI_PUBLISHER })).some((s) => s.type === stepType);
-      return owned ? null : `Step "${stepType}" is not agent-authored — the meta surface only ${verb} steps it published.`;
+    if (stepType) return isSealedStep(stepType, await deps.getRegistry()) ? sealedStep(stepType, verb) : null;
+    let flow: Flow;
+    try {
+      flow = await workspace.getWorkflow(name);
+    } catch {
+      return `Workflow "${name}" not found`;
     }
-    const entry = await findWorkflow(name);
-    if (!entry) return `Workflow "${name}" not found`;
-    if (entry.publisher !== AI_PUBLISHER) {
-      return (
-        `Workflow "${name}" is not agent-authored (publisher: ${entry.publisher ?? "none"}) — ` +
-        `the meta surface only ${verb} workflows it published. ` +
-        `Author a candidate with meta/publish-workflow under a new name instead.`
-      );
-    }
-    return null;
+    return flow.sealed ? sealedWorkflow(name, verb) : null;
   };
+  const sealedWorkflow = (name: string, verb: string) =>
+    `Workflow "${name}" is sealed (a grading harness: its run log records what its graders were handed) — the meta surface may not ${verb}.`;
+  const sealedStep = (type: string, verb: string) => `Step "${type}" is sealed (a grader) — the meta surface may not ${verb}.`;
 
   return {
     async listSteps(path = "steps") {
@@ -523,6 +523,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
     },
 
     async createStep(name, code, description, contract) {
+      if (isSealedStep(name)) return { error: `"${name}" is in a sealed namespace (a grader's) — author candidates under another name.` };
       const invalid = await claimsGate(contract);
       if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
       const published = await publishNewStep(deps, name, code, description, AI_PUBLISHER);
@@ -566,6 +567,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       } catch (e) {
         return { error: (e as Error).message };
       }
+      if (isSealedStep(baseType(type), registry)) return { error: sealedStep(type, "run it") };
       if (args.cassette && !deps.dataDir) {
         return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
       }
@@ -651,6 +653,22 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
             `didn't publish — choose a new name to author a candidate.`,
         };
       }
+      // What the candidate can EXECUTE is read off its definition: it may
+      // not seal itself, and nothing in its closure may be sealed — the
+      // step by type, a harness through a subflow, a grader in a grant.
+      let candidate: Flow;
+      try {
+        candidate = flowFromYaml(name, "candidate", yaml);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      if (candidate.sealed) {
+        return { error: `Nothing was published — "${name}" declares \`sealed: true\`. Only a seeded grading harness is sealed; drop the key.` };
+      }
+      const reached = sealedInClosure(await flowClosure(candidate, workspace), await deps.getRegistry());
+      if (reached) {
+        return { error: `Nothing was published — "${name}" reaches a sealed ${reached}: a candidate may never run, subflow, or grant a grader (EVOLVE_SPEC §6).` };
+      }
       try {
         const result = await workspace.publishWorkflowByContent(
           name,
@@ -673,7 +691,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
     },
 
     async runWorkflow(name, input, params, version, opts) {
-      const gate = await notOwned(name, "runs");
+      const gate = await sealedGate(name, "run it");
       if (gate) return { error: gate };
       let flow;
       try {
@@ -683,6 +701,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
       }
+      // The seal is read off the version that would run, too.
+      if (flow.sealed) return { error: sealedWorkflow(name, "run it") };
       // FRESH registry, same reason as runStep: steps published mid-run are
       // invisible to the enclosing run's registry snapshot.
       const registry = await deps.getRegistry();
@@ -711,19 +731,19 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
     },
 
     async listRuns(name, limit = 20) {
-      const gate = await notOwned(name, "reads run history of");
+      const gate = await sealedGate(name, "read its runs");
       if (gate) return { error: gate };
       return { workflow: name, runs: await listRunSummaries(store, name, limit) };
     },
 
     async getRun(name, runId, opts = {}) {
-      const gate = await notOwned(name, "reads run history of");
+      const gate = await sealedGate(name, "read its runs");
       if (gate) return { error: gate };
       return readRun(store, name, runId, opts);
     },
 
     async searchRuns(name, pattern, opts) {
-      const gate = await notOwned(name, "reads run history of");
+      const gate = await sealedGate(name, "read its runs");
       if (gate) return { error: gate };
       return searchRunEvents(store, name, pattern, opts);
     },
@@ -749,7 +769,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
 
     async verifyRun(name, runId) {
       if (!claims || !deps.verifier) return claimsOff;
-      const gate = await notOwned(name, "verifies runs of");
+      const gate = await sealedGate(name, "verify its runs");
       if (gate) return { error: gate };
       return deps.verifier.verifyRun(name, runId, { explicit: true });
     },

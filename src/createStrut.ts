@@ -724,8 +724,9 @@ export async function createStrut<TServices = unknown>(
   // the registry state initialized just before. This is what the meta/* lib
   // steps reach via ctx.services.authoring, letting an in-workflow agent
   // (agentTools: ["meta/*"]) author and evaluate candidate workflows
-  // (EVOLVE_SPEC §5). Everything it publishes is stamped publisher "ai", and
-  // its publish/run/run-history operations are closed over that stamped set.
+  // (EVOLVE_SPEC §5). Everything it publishes is stamped publisher "ai" and
+  // it publishes only over that stamped set; it runs and inspects anything
+  // but what is sealed (src/sealed.ts: a grading harness, a grader step).
   if (!(services as Record<string, unknown>)["authoring"]) {
     (services as Record<string, unknown>)["authoring"] = buildAuthoringCapability({
       workspace,
@@ -813,6 +814,7 @@ export async function createStrut<TServices = unknown>(
       input?: InputBlock;
       params?: Record<string, unknown>;
       claims?: ClaimsBlock;
+      sealed?: boolean;
       yaml?: string;
       description?: string;
       category?: string;
@@ -834,6 +836,7 @@ export async function createStrut<TServices = unknown>(
             ...(body.input != null ? { input: body.input } : {}),
             ...(body.params != null ? { params: body.params } : {}),
             ...(body.claims != null ? { claims: body.claims } : {}),
+            ...(body.sealed != null ? { sealed: body.sealed } : {}),
           },
           body.description,
           body.category,
@@ -1542,6 +1545,7 @@ export async function createStrut<TServices = unknown>(
         ...(flow.inputBlock != null ? { input: flow.inputBlock } : {}),
         ...(flow.params != null ? { params: flow.params } : {}),
         ...(flow.promotes != null ? { promotes: flow.promotes } : {}),
+        ...(flow.sealed ? { sealed: true } : {}),
       });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
@@ -1573,6 +1577,7 @@ export async function createStrut<TServices = unknown>(
       input?: InputBlock;
       params?: Record<string, unknown>;
       claims?: ClaimsBlock;
+      sealed?: boolean;
       yaml?: string;
       description?: string;
     }>();
@@ -1593,6 +1598,7 @@ export async function createStrut<TServices = unknown>(
             ...(body.input != null ? { input: body.input } : {}),
             ...(body.params != null ? { params: body.params } : {}),
             ...(body.claims != null ? { claims: body.claims } : {}),
+            ...(body.sealed != null ? { sealed: body.sealed } : {}),
           },
           body.description,
         );

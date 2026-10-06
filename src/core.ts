@@ -30,6 +30,10 @@ export interface StepDef<
    *  `createRegistry([...])` (which have no discoverable on-disk file) so their
    *  real implementation can still be inspected. */
   source?: string;
+  /** Sealed from the meta surface (`src/sealed.ts`): an in-workflow author
+   *  may never run this step or publish anything that reaches it. The
+   *  grader namespaces are sealed by name; this seals one step anywhere. */
+  sealed?: boolean;
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
@@ -167,6 +171,10 @@ export interface Flow {
    *  Resolved against a run's output by the UI to offer one-click promotion
    *  of a winning value (e.g. an optimize loop's `bestPrompt`). */
   promotes?: PromoteSpec[];
+  /** The YAML `sealed: true` — a grading harness (`src/sealed.ts`): the meta
+   *  surface never runs it, reads its runs, or publishes anything that
+   *  reaches it. Content like `claims:`, so it rides in the version hash. */
+  sealed?: boolean;
 }
 
 /** Run event types for the JSONL log. */
@@ -456,6 +464,8 @@ export interface AnyStepDef {
   output: z.ZodTypeAny;
   /** Optional source code for in-code steps (see `StepDef.source`). */
   source?: string;
+  /** Sealed from the meta surface (see `StepDef.sealed`, `src/sealed.ts`). */
+  sealed?: boolean;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
 }
 

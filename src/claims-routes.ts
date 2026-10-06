@@ -4,7 +4,7 @@
  *
  * Whoever is at the keyboard is a PERSON: not publisher-scoped, and stamped
  * `person` — so an `ai` author can never edit what they wrote, and their
- * checks are not subject to the producer's grader deny-list. What a person
+ * checks are not subject to the producer's sealed check. What a person
  * says about a run is still `asserted` evidence (`by: person`): a person
  * vouched, no instrument measured.
  *

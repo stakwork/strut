@@ -422,7 +422,11 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const other = await strut.run("candidate", {});
     assert.match(String(((await authoring.addEvidence({ ...input, name: "candidate", runId: other.runId })) as { error: string }).error), /did not execute a subject of this claim/);
     assert.match(String(((await authoring.addEvidence({ ...input, content: " " })) as { error: string }).error), /content is empty/);
-    assert.match(String(((await authoring.verifyRun("clipper", run.runId)) as { error: string }).error), /not agent-authored/, "the meta surface verifies only what it published");
+    // The meta surface verifies any run but a sealed workflow's (src/sealed.ts).
+    assert.ok(!("error" in ((await authoring.verifyRun("clipper", run.runId)) as object)), "a seeded, unsealed workflow is verifiable");
+    await ws.publishWorkflowByContent("sealed-wf", `name: sealed-wf\nsealed: true\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n`);
+    const sealedRun = await strut.run("sealed-wf", {});
+    assert.match(String(((await authoring.verifyRun("sealed-wf", sealedRun.runId)) as { error: string }).error), /is sealed/, "the meta surface never verifies a grading harness");
     assert.ok(!("error" in ((await authoring.verifyRun("candidate", other.runId)) as object)));
   });
 

@@ -309,6 +309,9 @@ export {
 // What a flow can execute (nested subflows, agentTools grants) and the step
 // hashes a launch records on `run.start` (plans/claims.md §3–§4).
 export { walkSteps, flowClosure, closureIncludes, stepHashesFor, globToRegExp, type FlowClosure } from "./closure.js";
+// Sealed — what the meta surface may never run, read the runs of, verify, or
+// reach from a publish (EVOLVE_SPEC §6): the sealed namespaces + `sealed: true`.
+export { DEFAULT_SEALED_STEPS, sealedStepPatterns, isSealedStep, sealedInClosure } from "./sealed.js";
 export { parseStepRef, baseType, formatStepRef, type StepRef } from "./step-ref.js";
 
 // Authoring — the workspace's author/test/inspect operations as one
@@ -396,10 +399,7 @@ export {
 export { ClaimsWriter, ClaimsError, boundedName, type CheckData, type ClaimsErrorCode } from "./graph/claims-writer.js";
 export {
   buildClaimsAuthoring,
-  deniedInClosure,
-  verifyDenyPatterns,
   toSubjectRef,
-  DEFAULT_VERIFY_DENY,
   type ClaimsAuthoring,
   type ClaimsAuthoringDeps,
   type ClaimActor,

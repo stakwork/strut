@@ -278,8 +278,9 @@ The chat tools carry real logic worth not duplicating: name-conflict checks,
 JSON-string arg coercion (`coerceJsonArg`), and the load-verify-and-report
 behavior §5.3.4 demands. Both surfaces sit on the one shared core
 (`authoring.ts`); the capability adds the meta POLICY on top — everything it
-publishes is stamped `publisher: "ai"`, and its publish, run, and
-run-history operations are **closed over that stamped set** (§6).
+publishes is stamped `publisher: "ai"`, it publishes only over that stamped
+set, and its run, run-history and verify operations refuse anything
+**sealed** (§6).
 
 Then `agentTools: ["meta/*"]` closes the loop:
 
@@ -340,29 +341,35 @@ surface, permanently:
   own rubric trains against it.
 - **Grader grants.** `harvey/evaluate` / `gaia/evaluate` are harness-only,
   never in a producing agent's `agentTools`.
-- **The meta surface is closed over its own namespace** (*built* —
-  `authoring.ts`). A harness workflow's run log records what its grader
-  steps were handed — potentially gold and rubric text. So the capability
-  scopes by **workflow provenance**, not by actor: `meta/publish-workflow`
-  stamps everything it publishes `publisher: "ai"` (the capability sets the
-  stamp; the calling agent cannot override it), and `meta/run-workflow`,
-  `meta/list-runs`, and `meta/get-run` act on stamped workflows ONLY,
-  failing closed on everything else. Publishing over an existing unstamped
-  workflow is refused outright (so the loop also can't rewire the harness
-  that grades it), an identical-content republish never re-stamps (no
-  claiming a workflow by republishing its own YAML verbatim), and
-  `meta/edit-step` edits only steps published as `"ai"` (seeded harness
-  steps carry seeder publishers). Actor scoping ("runs this agent
-  started") would have broken iteration — generation N must inspect
-  generation N−1's candidate runs, which a different run started; the
-  stamp lives on the workflow record, so it survives sessions. This is
-  defense in depth, not the sole barrier: graders must also resolve gold
-  internally (by task id, from the services bag) and emit only verdicts,
-  so that NO run's event log carries answers even where scoping is
-  misconfigured — including a laundered candidate that embeds a grader
-  step directly. The residual channel — hill-climbing answers against
-  pass/fail verdicts as an oracle — is the train-set problem, and §7's
-  train/val split is what answers it, not scoping.
+- **The meta surface never touches a sealed thing** (*built* —
+  `authoring.ts`, `sealed.ts`). A harness workflow's run log records what
+  its grader steps were handed — potentially gold and rubric text. So a
+  grading harness declares `sealed: true` at the top of its YAML, a grader
+  step declares `sealed: true` on its def (a grader's namespace usually
+  also holds the producer's door — `gaia/get-task` strips the gold — so
+  only the wholly harness-side namespaces, `eval/*` and `meta/*` plus a
+  deployment's `STRUT_SEALED`, are sealed by name), and the capability
+  refuses them: `meta/run-workflow`, `meta/list-runs`, `meta/get-run`,
+  `meta/search-runs`, `meta/verify-run` and `meta/run-step` by name, and
+  `meta/publish-workflow` by CLOSURE — a candidate that names the step,
+  subflows the harness (at any depth), grants a grader to an agent, or
+  seals itself is refused. Everything else the surface runs and inspects
+  like its own — a seeded `pod-pr`, a job — so generation N can inspect
+  generation N−1's candidate runs and a job agent can run the workflows a
+  person seeded: sealing, not provenance, is the line. Provenance still
+  decides what it may EDIT: `meta/publish-workflow` stamps everything it
+  publishes `publisher: "ai"` (the capability sets the stamp; the calling
+  agent cannot override it) and publishes only over names so stamped — an
+  identical-content republish never re-stamps (no claiming a workflow by
+  republishing its own YAML verbatim) — and `meta/edit-step` edits only
+  steps published as `"ai"`; and only an unstamped harness records
+  `observed` evidence (claims §4). This is defense in depth, not the sole
+  barrier: graders must also resolve gold internally (by task id, from the
+  services bag) and emit only verdicts, so that NO run's event log carries
+  answers even where a seal is missing — including a laundered candidate
+  that embeds a grader step directly. The residual channel — hill-climbing
+  answers against pass/fail verdicts as an oracle — is the train-set
+  problem, and §7's train/val split is what answers it, not sealing.
 - **Benchmark provenance.** Clean-tree checks, `benchmarkRev`,
   `scorerSha256`. A dirty checkout refuses to grade.
 - **Infra constants.** Values a workflow author has no basis for choosing and

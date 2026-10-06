@@ -17,9 +17,8 @@ import { WorkspaceManager } from "../workspace.js";
 import { AI_PUBLISHER, buildAuthoringCapability, type AuthoringCapability } from "../authoring.js";
 import { buildTools } from "../ai/tools.js";
 import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
-import { DEFAULT_VERIFY_DENY, buildClaimsAuthoring, deniedInClosure, verifyDenyPatterns, type ClaimActor, type ClaimsAuthoring } from "../claims-authoring.js";
+import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema } from "../claims-schemas.js";
-import { flowClosure } from "../closure.js";
 import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { evidenceId } from "./claims.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
@@ -29,26 +28,8 @@ const cfg = testGraphConfig();
 
 // ── Pure ────────────────────────────────────────────────────────────────────
 
-describe("grader deny-list (pure)", () => {
-  const types = ["exec", "llm", "clip/trim", "gaia/evaluate", "harvey/score"];
-  const closureOf = (steps: Array<{ type: string; config?: Record<string, unknown> }>) =>
-    flowClosure({ steps: steps.map((s, i) => ({ id: `s${i}`, type: s.type, config: s.config ?? {} })) });
-
-  it("defaults + STRUT_VERIFY_DENY", () => {
-    assert.deepEqual(verifyDenyPatterns({}), DEFAULT_VERIFY_DENY);
-    assert.deepEqual(verifyDenyPatterns({ STRUT_VERIFY_DENY: " secret/*, gaia/* ,," }), [...DEFAULT_VERIFY_DENY, "secret/*"]);
-  });
-
-  it("a named grader, a literal grant, and a glob grant that REACHES one are all caught", async () => {
-    const deny = DEFAULT_VERIFY_DENY;
-    assert.equal(deniedInClosure(await closureOf([{ type: "exec" }, { type: "clip/trim" }]), deny, types), null);
-    assert.equal(deniedInClosure(await closureOf([{ type: "gaia/evaluate" }]), deny, types), "gaia/evaluate");
-    assert.equal(deniedInClosure(await closureOf([{ type: "agent", config: { agentTools: ["meta/*"] } }]), deny, types), "meta/*");
-    assert.equal(deniedInClosure(await closureOf([{ type: "agent", config: { agentTools: ["harvey/score"] } }]), deny, types), "harvey/score");
-    assert.equal(deniedInClosure(await closureOf([{ type: "agent", config: { agentTools: ["*"] } }]), deny, types), "* (reaches gaia/evaluate)");
-    assert.equal(deniedInClosure(await closureOf([{ type: "agent", config: { agentTools: ["clip/*"] } }]), deny, types), null);
-  });
-
+// (The sealed check itself — namespaces, defs, closures — is src/sealed.test.ts.)
+describe("claims schemas (pure)", () => {
   it("the tool schema requires text and at least one check", () => {
     assert.ok(claimSpecSchema.safeParse({ text: "t", checks: [{ type: "exec", config: { command: "true" } }] }).success);
     assert.ok(claimSpecSchema.safeParse({ text: "t", checks: [{ description: "listen to the cut" }] }).success);
@@ -138,7 +119,8 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     await backend.bolt.run(`MATCH (n) WHERE NOT n:Schema AND NOT n:Migration DETACH DELETE n`);
     ws = new Neo4jWorkspaceStore(backend, { materializeDir: join(dir, "steps") });
     // A registry the checks can name: core + a stand-in grader and an llm-ish judge.
-    const grader = defineStep({ type: "gaia/evaluate", input: z.any(), output: z.any(), run: async () => ({}) });
+    // A grader seals itself on its def (its namespace also holds the producer's door).
+    const grader = defineStep({ type: "gaia/evaluate", sealed: true, input: z.any(), output: z.any(), run: async () => ({}) });
     registry = { ...(await coreRegistry()), "gaia/evaluate": grader } as StepRegistry;
     // Like the real one: whatever the workspace holds is loadable (stubbed —
     // these tests are about claims, not module loading).
@@ -405,19 +387,21 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     const refuse = async (check: Record<string, unknown>, re: RegExp) => {
       for (const actor of [chat, meta]) assert.match(errOf(await claims.addClaim({ subjects: [CANDIDATE], text: "scores well", checks: [check as never] }, actor)), re);
     };
-    await refuse({ type: "gaia/evaluate", config: {} }, /harness-only step \(gaia\/evaluate\)/);
-    await refuse({ type: "subflow", config: { workflow: "sneaky", input: {} } }, /harness-only step \(gaia\/evaluate\)/);
-    await refuse({ type: "subflow", config: { workflow: "granting", input: {} } }, /harness-only step \(gaia\/\*\)/);
-    await refuse({ type: "agent", config: { prompt: "grade", agentTools: ["meta/*"] } }, /harness-only step \(meta\/\*\)/);
+    await refuse({ type: "gaia/evaluate", config: {} }, /sealed step "gaia\/evaluate"/);
+    await refuse({ type: "subflow", config: { workflow: "sneaky", input: {} } }, /sealed step "gaia\/evaluate"/);
+    await refuse({ type: "subflow", config: { workflow: "granting", input: {} } }, /sealed grant "gaia\/\*" \(reaches "gaia\/evaluate"\)/);
+    await refuse({ type: "agent", config: { prompt: "grade", agentTools: ["meta/*"] } }, /sealed grant "meta\/\*"/);
     await refuse({ type: "subflow", config: { workflow: "{{ input.output.wf }}", input: {} } }, /closure cannot be resolved/);
-    assert.match(errOf(await authoring.createStep("cand/x", STEP_SRC("cand/x"), "d", [{ text: "t", checks: [{ type: "gaia/evaluate" }] }])), /Nothing was published.*harness-only/s);
+    assert.match(errOf(await authoring.createStep("cand/x", STEP_SRC("cand/x"), "d", [{ text: "t", checks: [{ type: "gaia/evaluate" }] }])), /Nothing was published.*sealed/s);
     assert.ok(!(await ws.listSteps()).some((s) => s.type === "cand/x"), "an invalid contract blocks the publish");
 
     // A person (or a seeder) wiring the harness as a check is not the producer.
     idOf(await claims.addClaim({ subjects: [SEEDED], text: "accuracy ≥ baseline", checks: [{ type: "subflow", config: { workflow: "sneaky", input: {} } }] }, human));
-    // STRUT_VERIFY_DENY extends the list per deployment.
-    const strict = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry, env: { STRUT_VERIFY_DENY: "log" } });
-    assert.match(errOf(await strict.addClaim({ subjects: [CANDIDATE], text: "t", checks: [{ type: "log", config: { message: "x" } }] }, chat)), /harness-only step \(log\)/);
+    // STRUT_SEALED extends the namespaces per deployment; a sealed WORKFLOW is one hop away too.
+    const strict = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry, env: { STRUT_SEALED: "log" } });
+    assert.match(errOf(await strict.addClaim({ subjects: [CANDIDATE], text: "t", checks: [{ type: "log", config: { message: "x" } }] }, chat)), /sealed step "log"/);
+    await ws.publishWorkflowByContent("harness", "name: harness\nsealed: true\nsteps:\n  - id: a\n    type: exec\n    config: { cmd: \"true\" }\n");
+    await refuse({ type: "subflow", config: { workflow: "harness", input: {} } }, /sealed workflow "harness"/);
   });
 
   it("both doors, end to end: the capability publishes with a contract; the chat tools offer the claims surface", async () => {
