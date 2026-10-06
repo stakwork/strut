@@ -215,6 +215,23 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await ws.getWorkflowMetadata("wf"))?.active, "v1");
     });
 
+    it("records which door wrote each version, and who", async () => {
+      await ws.createWorkflow("wf", { steps, params: { greeting: "old" } }, undefined, undefined, undefined, { source: "seed" });
+      const seed = await ws.getWorkflowSource("wf", "v1");
+      const edit = seed.replace("old", "new");
+      await ws.publishWorkflowByContent("wf", edit, undefined, undefined, undefined, { source: "ui", actor: "alice" });
+      await ws.setParam("wf", "greeting", "promoted", "bob");
+      await ws.publishWorkflow("wf", "v4", { steps, params: { greeting: "plain" } });
+      const v = (await ws.getWorkflowMetadata("wf"))!.versions;
+      assert.equal(v["v1"]?.source, "seed");
+      assert.equal(v["v1"]?.actor, undefined);
+      assert.equal(v["v2"]?.source, "ui");
+      assert.equal(v["v2"]?.actor, "alice");
+      assert.equal(v["v3"]?.source, "promote");
+      assert.equal(v["v3"]?.actor, "bob");
+      assert.equal(v["v4"]?.source, undefined, "a publish that names no door records none");
+    });
+
     it("createWorkflow allocates a fresh name/version and returns it", async () => {
       const a = await ws.createWorkflow("made", { steps });
       const b = await ws.createWorkflow("made", { steps });

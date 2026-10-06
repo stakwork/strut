@@ -284,13 +284,18 @@ export const createWorkflowYaml = (
 ) =>
   fetchJSON<CreateWorkflowResponse>(`/workflows`, {
     method: "POST",
-    body: JSON.stringify({ name, yaml: yamlStr, description, category }),
+    body: JSON.stringify({ name, yaml: yamlStr, description, category, source: "ui" }),
   });
 
 export interface WorkflowVersionStats {
   version: string;
   createdAt: string;
   description?: string;
+  /** Which door wrote it — seed / ui / api / builder / agent / promote.
+   *  Absent on versions published before it was recorded. */
+  source?: string;
+  /** Who published it, when known. */
+  actor?: string;
   /** Finished runs that executed this version's content, by status. */
   runs: number;
   success: number;
@@ -352,7 +357,7 @@ export const publishWorkflow = (
 ) =>
   fetchJSON<any>(`/workflows/${name}`, {
     method: "POST",
-    body: JSON.stringify({ version, steps, description }),
+    body: JSON.stringify({ version, steps, description, source: "ui" }),
   });
 
 /** Publish a new version of an existing workflow (raw YAML). */
@@ -364,7 +369,7 @@ export const publishWorkflowYaml = (
 ) =>
   fetchJSON<any>(`/workflows/${name}`, {
     method: "POST",
-    body: JSON.stringify({ version, yaml: yamlStr, description }),
+    body: JSON.stringify({ version, yaml: yamlStr, description, source: "ui" }),
   });
 
 export const getWorkflowYaml = async (name: string, version: string) => {

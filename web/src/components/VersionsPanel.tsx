@@ -3,6 +3,7 @@ import * as api from "../api";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
 import { ConfirmButton } from "./ConfirmButton";
+import { displayActor } from "../actor";
 
 // ── Versions panel (a Workflow flyout tab) ─────────────────────────────────
 //
@@ -78,6 +79,11 @@ export function VersionsPanel(props: {
                 {v.version}
                 {active && <span class="badge badge-accent">active</span>}
                 {v.version === shown && !active && <span class="badge">viewing</span>}
+                {v.source && (
+                  <span class="badge" title={v.actor ? `Published via ${v.source} by ${v.actor}` : `Published via ${v.source}`}>
+                    {v.source}{v.actor ? ` · ${displayActor(v.actor)}` : ""}
+                  </span>
+                )}
               </span>
               <span class="auto-meta" title={new Date(v.createdAt).toLocaleString()}>{published(v.createdAt)}</span>
             </div>

@@ -591,6 +591,22 @@ describe("createStrut", () => {
     assert.equal(body.unattributed, 0);
   });
 
+  it("records a version's source over HTTP: ui when the UI says so, api otherwise — never seed", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false });
+    const steps = [{ id: "g", type: "log", config: { message: "hi" } }];
+    const post = (path: string, body: unknown) =>
+      strut.app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal((await post("/workflows", { name: "src-flow", steps, source: "ui" })).status, 201);
+    assert.equal((await post("/workflows/src-flow", { version: "v2", steps: [...steps, { id: "h", type: "log", config: { message: "x" } }] })).status, 201);
+    assert.equal((await post("/workflows/src-flow", { version: "v3", steps, source: "seed" })).status, 201);
+    const body = (await (await strut.app.request("/workflows/src-flow/versions")).json()) as {
+      versions: Array<{ version: string; source?: string }>;
+    };
+    const by = Object.fromEntries(body.versions.map((v) => [v.version, v.source]));
+    assert.deepEqual(by, { v1: "ui", v2: "api", v3: "api" });
+  });
+
   it("returns a declared input block from the flow endpoint and validates runs against it", async () => {
     const ws = new WorkspaceManager(tempDir);
     const steps = [{ id: "g", type: "log", config: { message: "{{ input.url }}" } }];

@@ -22,7 +22,7 @@ import {
   truncateToolMessages,
 } from "./chat-store.js";
 import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
-import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type WorkspaceStore } from "./workspace.js";
+import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
@@ -807,6 +807,13 @@ export async function createStrut<TServices = unknown>(
     return invalid ? { error: `Nothing was published — fix the claims first. ${invalid.error}` } : { contract };
   };
 
+  /** A version published over HTTP is `api`, or `ui` when the web UI says so
+   *  — the only source a request may name (`seed` etc. are other doors'). */
+  const httpPublishOptions = (source: string | undefined, actor: string | undefined): PublishOptions => ({
+    source: source === "ui" ? "ui" : "api",
+    ...(actor ? { actor } : {}),
+  });
+
   app.post("/workflows", async (c) => {
     const body = await c.req.json<{
       name: string;
@@ -818,16 +825,19 @@ export async function createStrut<TServices = unknown>(
       yaml?: string;
       description?: string;
       category?: string;
+      source?: string;
     }>();
 
     if (!body.name) return c.json({ error: "name is required" }, 400);
     const { contract, error: contractError } = await httpContract(body);
     if (contractError) return c.json({ error: contractError }, 400);
 
+    const actor = await resolveActor(c);
+    const opts = httpPublishOptions(body.source, actor);
     let result;
     try {
       if (body.yaml) {
-        result = await workspace.createWorkflow(body.name, body.yaml, body.description, body.category);
+        result = await workspace.createWorkflow(body.name, body.yaml, body.description, body.category, undefined, opts);
       } else if (body.steps) {
         result = await workspace.createWorkflow(
           body.name,
@@ -840,6 +850,8 @@ export async function createStrut<TServices = unknown>(
           },
           body.description,
           body.category,
+          undefined,
+          opts,
         );
       } else {
         return c.json({ error: "either steps or yaml is required" }, 400);
@@ -850,7 +862,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
 
-    await adoptWorkflow(result.name, await resolveActor(c));
+    await adoptWorkflow(result.name, actor);
     await rebuildRegistry();
     const applied = contract ? await claimsAuthoring!.applyClaimsArg({ kind: "workflow", name: result.name }, contract, PERSON) : undefined;
 
@@ -1475,7 +1487,7 @@ export async function createStrut<TServices = unknown>(
 
     let result;
     try {
-      result = await workspace.setParam(target.workflow, target.param, value);
+      result = await workspace.setParam(target.workflow, target.param, value, await resolveActor(c));
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -1499,7 +1511,13 @@ export async function createStrut<TServices = unknown>(
     const meta = await workspace.getWorkflowMetadata(name);
     if (!meta) return c.json({ error: `Workflow "${name}" not found` }, 404);
     const versions = Object.entries(meta.versions)
-      .map(([version, info]) => ({ version, createdAt: info.createdAt, description: info.description }))
+      .map(([version, info]) => ({
+        version,
+        createdAt: info.createdAt,
+        description: info.description,
+        ...(info.source ? { source: info.source } : {}),
+        ...(info.actor ? { actor: info.actor } : {}),
+      }))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const hashes = new Map<string, string | null>();
     for (const v of versions) hashes.set(v.version, await workspace.getWorkflowHash(name, v.version));
@@ -1580,15 +1598,18 @@ export async function createStrut<TServices = unknown>(
       sealed?: boolean;
       yaml?: string;
       description?: string;
+      source?: string;
     }>();
 
     if (!body.version) return c.json({ error: "version is required" }, 400);
     const { contract, error: contractError } = await httpContract(body);
     if (contractError) return c.json({ error: contractError }, 400);
 
+    const actor = await resolveActor(c);
+    const opts = httpPublishOptions(body.source, actor);
     try {
       if (body.yaml) {
-        await workspace.publishWorkflow(name, body.version, body.yaml, body.description);
+        await workspace.publishWorkflow(name, body.version, body.yaml, body.description, undefined, undefined, opts);
       } else if (body.steps) {
         await workspace.publishWorkflow(
           name,
@@ -1601,6 +1622,9 @@ export async function createStrut<TServices = unknown>(
             ...(body.sealed != null ? { sealed: body.sealed } : {}),
           },
           body.description,
+          undefined,
+          undefined,
+          opts,
         );
       } else {
         return c.json({ error: "either steps or yaml is required" }, 400);
@@ -1609,7 +1633,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
 
-    await adoptWorkflow(name, await resolveActor(c));
+    await adoptWorkflow(name, actor);
     await rebuildRegistry();
     const applied = contract ? await claimsAuthoring!.applyClaimsArg({ kind: "workflow", name }, contract, PERSON) : undefined;
 
