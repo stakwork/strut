@@ -2635,8 +2635,10 @@ export async function createStrut<TServices = unknown>(
           const providerOptions =
             llm.provider === "anthropic" ? { anthropic: { cacheControl: { type: "ephemeral" as const } } } : undefined;
           const tools = buildTools(deps);
-          // The context after the latest model call (`step.finish`), and the
-          // compaction mark against it (plans/compaction.md §5).
+          // The context after the latest model call, and the compaction mark
+          // against it (plans/compaction.md §5). Set in `onStepEnd`, which the
+          // SDK awaits before it asks `stopWhen` — never from the event loop
+          // below, which may still be writing an earlier step's events.
           let lastContext: { used: number; limit: number } | undefined;
           const overMarkStop = () => !!lastContext && overMark(lastContext, compactAt);
           /** A tool-loop runner with `budget` steps left. The turn ends on an
@@ -2710,6 +2712,8 @@ export async function createStrut<TServices = unknown>(
                 stepsUsed++;
                 lastStep = step;
                 const u = step.usage;
+                const context = chatEventOf({ type: "finish-step", usage: u }, llm.contextLimit)?.context;
+                if (context) lastContext = context;
                 console.log(
                   `[chat ${chatId}] turn ${turn} step ${step.stepNumber} finish=${step.finishReason} tokens=in:${u?.inputTokens ?? "?"}/out:${u?.outputTokens ?? "?"}`,
                 );
@@ -2753,10 +2757,7 @@ export async function createStrut<TServices = unknown>(
                 }
                 const e = chatEventOf(part, llm.contextLimit);
                 if (e) await emit(e);
-                if (e?.context) {
-                  lastContext = e.context;
-                  await chatStore.setMeta(chatId, { context: e.context });
-                }
+                if (e?.context) await chatStore.setMeta(chatId, { context: e.context });
               }
             } catch (err) {
               // A stop can surface as the aborted provider call's throw.

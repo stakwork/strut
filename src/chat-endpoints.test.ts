@@ -771,6 +771,43 @@ describe("chat endpoints", () => {
     }
   });
 
+  it("compaction: the turn stops at the step that crossed the mark, however far behind the event writer is", async () => {
+    // The SDK asks `stopWhen` as soon as a step's callbacks are done; the
+    // loop that persists the stream's events can lag well behind it (a file
+    // store on a busy disk). Seen live: the step after the crossing ran
+    // before the turn compacted.
+    class SlowEvents extends MemoryChatStore {
+      override async appendEvent(...args: Parameters<MemoryChatStore["appendEvent"]>) {
+        await new Promise((r) => setTimeout(r, 30));
+        return super.appendEvent(...args);
+      }
+    }
+    chatStore = new SlowEvents();
+    const bodies: any[] = [];
+    const s = await scripted(
+      [
+        { tool: ["toolu_1", "list_steps", { path: "steps" }], input: 950_000 }, // past the mark
+        { text: "HANDOFF: list_steps was called; answer next." }, // must be the summarizer
+        { text: "All set." },
+      ],
+      bodies,
+    );
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const strut = await makeStrut();
+      const res = await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: "what steps are there?" }) });
+      const { chatId } = (await res.json()) as { chatId: string };
+      await settled(chatId);
+      assert.equal(bodies.length, 3, JSON.stringify(bodies.map((b) => b.max_tokens)));
+      assert.equal(bodies[1].max_tokens, 8000, "the request right after the crossing is the summarizer");
+      assert.equal(bodies[2].messages.length, 1);
+      assert.ok(JSON.stringify(bodies[2].messages[0]).includes("[compaction]"));
+    } finally {
+      s.close();
+    }
+  });
+
   it("compaction: a summarizer that fails is a warning — the turn goes on uncompacted and ends normally", async () => {
     const bodies: any[] = [];
     const s = await scripted(
