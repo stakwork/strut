@@ -8,7 +8,7 @@ import { runStep, runStepId, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
 import { mergeClaimSpecs, type ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
-import { claimsBlockOf } from "../workspace.js";
+import { claimsBlockOf, type PublishOptions } from "../workspace.js";
 import { automationDraftSchema, automationInputSchema, triggerSchema } from "../automations.js";
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
@@ -239,6 +239,8 @@ export function buildTools(deps: AiDeps): ToolSet {
 
   /** A workflow with no owner is adopted by the chat's actor when it publishes
    *  it (plans/mothership-cost-control.md §2). */
+  // Every version the builder publishes records who asked for it.
+  const publishOpts: PublishOptions = { source: "builder", ...(deps.actor ? { actor: deps.actor } : {}) };
   const adopt = async (name: string) => {
     if (!deps.actor) return;
     const meta = await deps.workspace.getWorkflowMetadata(name).catch(() => null);
@@ -426,6 +428,8 @@ export function buildTools(deps: AiDeps): ToolSet {
           yaml,
           description,
           category,
+          undefined,
+          publishOpts,
         );
         await adopt(finalName);
         // Rebuild registry in case the workflow references new patterns
@@ -491,6 +495,8 @@ export function buildTools(deps: AiDeps): ToolSet {
             yaml,
             description,
             category,
+            undefined,
+            publishOpts,
           );
         } catch (err) {
           return { error: err instanceof Error ? err.message : String(err) };

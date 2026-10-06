@@ -367,6 +367,8 @@ export interface AuthoringCapability {
     description?: string,
     category?: string,
     claims?: ClaimSpecInput[],
+    /** Who is publishing (the calling run's actor), recorded on the version. */
+    actor?: string,
   ): Promise<unknown>;
   runWorkflow(
     name: string,
@@ -628,7 +630,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       });
     },
 
-    async publishWorkflow(name, yaml, description, category, contractArg) {
+    async publishWorkflow(name, yaml, description, category, contractArg, by) {
       // The YAML's own `claims:` block is the same contract as the arg
       // (merged by text) — read only where a claims layer can record it; on
       // a filesystem workspace the block stays in the file, nothing is dropped.
@@ -658,6 +660,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           description,
           category,
           AI_PUBLISHER,
+          { source: "agent", ...(by ? { actor: by } : {}) },
         );
         return {
           ok: true,

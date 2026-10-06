@@ -34,7 +34,10 @@ import {
   flowFromYaml,
   renderWorkflowYaml,
   validateStepName,
+  provenance,
   type PublishByContentOptions,
+  type PublishOptions,
+  type VersionSource,
   type WorkflowContent,
   type StepListEntry,
   type StepVersionsResult,
@@ -89,6 +92,9 @@ interface VersionRow {
   created_at: number; // epoch seconds
   source: string;
   publisher?: string;
+  /** `WorkflowVersionInfo.source` — `source` is the YAML here. */
+  version_source?: VersionSource;
+  actor?: string;
 }
 
 interface StepRow {
@@ -235,6 +241,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
         createdAt: isoFromSeconds(v.created_at),
         ...(v.description !== undefined ? { description: v.description } : {}),
         hash: v.content_hash,
+        ...(v.version_source ? { source: v.version_source } : {}),
+        ...(v.actor ? { actor: v.actor } : {}),
       };
     }
     if (w.category) meta.category = w.category;
@@ -289,6 +297,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     description?: string,
     category?: string,
     publisher?: string,
+    opts?: PublishOptions,
   ): Promise<{ name: string; version: string }> {
     let finalName = name;
     let n = 2;
@@ -301,7 +310,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
         resolvedContent = yaml.dump(parsed, { lineWidth: 120, noRefs: true });
       }
     }
-    await this.publishWorkflow(finalName, "v1", resolvedContent, description, category, publisher);
+    await this.publishWorkflow(finalName, "v1", resolvedContent, description, category, publisher, opts);
     return { name: finalName, version: "v1" };
   }
 
@@ -312,10 +321,11 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     description?: string,
     category?: string,
     publisher?: string,
+    opts?: PublishOptions,
   ): Promise<void> {
     const yamlStr = renderWorkflowYaml(name, content);
     assertValidWorkflowYaml(yamlStr);
-    await this.writeVersion(name, version, yamlStr, description, category, publisher);
+    await this.writeVersion(name, version, yamlStr, description, category, publisher, opts);
   }
 
   /** The one write path behind publish/publishByContent/setParam: ensure the
@@ -328,7 +338,9 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     description: string | undefined,
     category: string | undefined,
     publisher: string | undefined,
+    opts?: PublishOptions,
   ): Promise<VersionRow> {
+    const { source: version_source, actor } = provenance(opts);
     const hash = contentHash(yamlStr);
     const { nodes } = this.backend;
     const existing = (await this.versionRows(name)).find((v) => v.content_hash === hash);
@@ -338,6 +350,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
       const patch = patchFor(existing as unknown as Record<string, unknown>, {
         version_label: label,
         ...(description !== undefined ? { description } : {}),
+        ...(version_source ? { version_source } : {}),
+        ...(actor ? { actor } : {}),
       });
       if (patch) await nodes.update(existing.ref_id, patch);
       versionRef = existing.ref_id;
@@ -354,6 +368,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
           source: yamlStr,
           params_json: parsed["params"] != null ? JSON.stringify(parsed["params"]) : undefined,
           publisher,
+          version_source,
+          actor,
         }),
       });
       versionRef = r.ref_id;
@@ -454,7 +470,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     }
     const next = nextVersionLabel((await this.versionRows(name)).map((v) => v.version_label));
     assertValidWorkflowYaml(yamlStr);
-    await this.writeVersion(name, next, yamlStr, description, category, publisher);
+    await this.writeVersion(name, next, yamlStr, description, category, publisher, opts);
     return { version: next, changed: true };
   }
 
@@ -520,6 +536,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     name: string,
     param: string,
     value: unknown,
+    actor?: string,
   ): Promise<{ version: string; before: unknown; after: unknown }> {
     const active = await this.activeVersion(name);
     const obj = (yaml.load(active.source) as Record<string, unknown>) ?? {};
@@ -531,7 +548,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     obj["params"] = params;
     const yamlStr = yaml.dump(obj, { lineWidth: 120, noRefs: true });
     const next = nextVersionLabel((await this.versionRows(name)).map((v) => v.version_label));
-    await this.publishWorkflow(name, next, yamlStr);
+    await this.publishWorkflow(name, next, yamlStr, undefined, undefined, undefined, { source: "promote", actor });
     return { version: next, before, after: value };
   }
 

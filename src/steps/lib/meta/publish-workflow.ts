@@ -25,6 +25,7 @@ export default defineStep({
       cfg.description,
       cfg.category,
       cfg.claims,
+      ctx.actor,
     );
   },
 });

@@ -203,6 +203,9 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       output_schema: "?string",
       params_json: "?string",
       publisher: "?string",
+      /** Which door wrote the version (`WorkflowVersionInfo.source`). */
+      version_source: "?string",
+      actor: "?string",
     },
   },
   {

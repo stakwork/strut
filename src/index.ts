@@ -126,6 +126,8 @@ export {
   type StepListEntry,
   type StepVersionsResult,
   type PublishByContentOptions,
+  type PublishOptions,
+  type VersionSource,
 } from "./workspace.js";
 
 // Content-hash versioning (internal dedup) + sequential version labels

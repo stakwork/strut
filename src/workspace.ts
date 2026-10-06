@@ -178,6 +178,32 @@ export interface WorkflowVersionInfo {
   /** Content hash of this version's source — internal dedup key for
    *  content-hash publishing. Not the user-facing version id. */
   hash?: string;
+  /** Which door wrote this version (see `VersionSource`). Absent on versions
+   *  published before it was recorded. */
+  source?: VersionSource;
+  /** Who published it, when the door knew (an opaque actor string). */
+  actor?: string;
+}
+
+/** Where a workflow version came from — recorded at publish, never inferred:
+ *  `seed` a host's boot-time seeder (the committed template), `ui` the web
+ *  UI, `api` any other HTTP caller, `builder` the chat builder's tools,
+ *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param.
+ *  So "is the active version still the seed?" is one lookup. */
+export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote";
+
+/** Provenance a publish records on the version it writes. */
+export interface PublishOptions {
+  source?: VersionSource;
+  actor?: string;
+}
+
+/** The set fields of `opts`, to spread onto a version record. */
+export function provenance(opts?: PublishOptions): Pick<WorkflowVersionInfo, "source" | "actor"> {
+  return {
+    ...(opts?.source ? { source: opts.source } : {}),
+    ...(opts?.actor ? { actor: opts.actor } : {}),
+  };
 }
 
 export interface WorkflowMetadata {
@@ -236,7 +262,7 @@ export interface StepDirMetadata {
 
 /** Options for the content-hash publishers (`publishWorkflowByContent`,
  *  `publishStep`). */
-export interface PublishByContentOptions {
+export interface PublishByContentOptions extends PublishOptions {
   /** What to do when the content matches an OLDER, non-active version.
    *  `true` (default) re-points active at it — "this exact content should be
    *  live" (the author's intent). `false` leaves the active pointer alone —
@@ -318,6 +344,7 @@ export interface WorkspaceStore extends SubflowResolver {
     description?: string,
     category?: string,
     publisher?: string,
+    opts?: PublishOptions,
   ): Promise<{ name: string; version: string }>;
   publishWorkflow(
     name: string,
@@ -326,6 +353,7 @@ export interface WorkspaceStore extends SubflowResolver {
     description?: string,
     category?: string,
     publisher?: string,
+    opts?: PublishOptions,
   ): Promise<void>;
   publishWorkflowByContent(
     name: string,
@@ -355,6 +383,7 @@ export interface WorkspaceStore extends SubflowResolver {
     name: string,
     param: string,
     value: unknown,
+    actor?: string,
   ): Promise<{ version: string; before: unknown; after: unknown }>;
 
   // ── Steps (custom tier) ──
@@ -500,6 +529,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     description?: string,
     category?: string,
     publisher?: string,
+    opts?: PublishOptions,
   ): Promise<{ name: string; version: string }> {
     const workflowsDir = join(this.root, "workflows");
     let finalName = name;
@@ -519,7 +549,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       }
     }
 
-    await this.publishWorkflow(finalName, "v1", resolvedContent, description, category, publisher);
+    await this.publishWorkflow(finalName, "v1", resolvedContent, description, category, publisher, opts);
     return { name: finalName, version: "v1" };
   }
 
@@ -533,6 +563,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     description?: string,
     category?: string,
     publisher?: string,
+    opts?: PublishOptions,
   ): Promise<void> {
     // Validate BEFORE touching disk: a refused publish must leave nothing
     // behind — an empty directory would make the next `createWorkflow` of
@@ -554,6 +585,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       createdAt: new Date().toISOString(),
       description,
       hash: contentHash(yamlStr),
+      ...provenance(opts),
     };
     meta.active = version;
     if (category !== undefined) meta.category = category;
@@ -666,6 +698,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     name: string,
     param: string,
     value: unknown,
+    actor?: string,
   ): Promise<{ version: string; before: unknown; after: unknown }> {
     const meta = await this.readWorkflowMetadata(name);
     if (!meta) throw new Error(`Workflow "${name}" not found`);
@@ -683,7 +716,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
     const yamlStr = yaml.dump(obj, { lineWidth: 120, noRefs: true });
     const next = nextVersionLabel(Object.keys(meta.versions));
-    await this.publishWorkflow(name, next, yamlStr);
+    await this.publishWorkflow(name, next, yamlStr, undefined, undefined, undefined, { source: "promote", actor });
     return { version: next, before, after: value };
   }
 
@@ -734,7 +767,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     // never reconciled on the identical-content no-op path above, so
     // republishing a workflow's existing content verbatim cannot re-stamp
     // (and thereby claim) a workflow someone else published.
-    await this.publishWorkflow(name, next, yamlStr, description, category, publisher);
+    await this.publishWorkflow(name, next, yamlStr, description, category, publisher, opts);
     return { version: next, changed: true };
   }
 

@@ -29,8 +29,8 @@ workflow it publishes (`owner`). AGENTS.md "Auth" has the whole model.
 
 | Method | Path                | Body                                                                 | Response |
 | ------ | ------------------- | -------------------------------------------------------------------- | -------- |
-| POST   | `/workflows`        | `{ name, steps \| yaml, input?, params?, claims?, description?, category? }` | 201 `{ ok, workflow, version: "v1", active: "v1", renamed, requested, claims? }` |
-| POST   | `/workflows/:name`  | `{ version, steps \| yaml, input?, params?, claims?, description? }`          | 201 `{ ok, workflow, version, active, claims? }` |
+| POST   | `/workflows`        | `{ name, steps \| yaml, input?, params?, claims?, description?, category?, source? }` | 201 `{ ok, workflow, version: "v1", active: "v1", renamed, requested, claims? }` |
+| POST   | `/workflows/:name`  | `{ version, steps \| yaml, input?, params?, claims?, description?, source? }` | 201 `{ ok, workflow, version, active, claims? }` |
 
 - `steps` is an array of step objects (below) and the server writes the YAML;
   `yaml` is the whole file as text, `input:` / `params:` / `claims:` blocks
@@ -40,6 +40,12 @@ workflow it publishes (`owner`). AGENTS.md "Auth" has the whole model.
 - `version` is your label (`v2`). A new version becomes active. Reusing a
   label **overwrites** that version's content; the same content under a new
   label is a second version with the same `hash`.
+- Each version records where it came from: `source` is `"ui"` when the web
+  UI publishes and `"api"` for anything else over HTTP (no other value is
+  accepted here), with the request's `actor`. The other doors stamp their
+  own: `seed` (a host's boot-time seeder), `builder` (the chat builder),
+  `agent` (`meta/publish-workflow`), `promote` (a promoted param). Versions
+  published before this was recorded have none.
 - 400 for what the workspace refuses — a bad `input:` block, or an unquoted
   template (`message: {{ input.x }}` parses as a YAML mapping; write
   `message: "{{ input.x }}"`).
@@ -69,9 +75,9 @@ reads.
 | Method | Path                            | Response |
 | ------ | ------------------------------- | -------- |
 | GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, automations?, lastRunAt? }]` |
-| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`) |
+| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
-| GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
+| GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
 | DELETE | `/workflows/:name`    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
