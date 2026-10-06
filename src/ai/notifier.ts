@@ -148,7 +148,9 @@ export function createChatNotifier(opts: {
         currentTurn: turn,
         autoTurns: human ? 0 : autoTurns + 1,
       });
-      const prior = await opts.chatStore.loadMessages(chatId);
+      // From the chat's compaction boundary (plans/compaction.md §5): the
+      // whole history stays on disk; the model replays from the summary.
+      const prior = (await opts.chatStore.loadMessages(chatId)).slice(meta.replayFrom ?? 0);
       // startTurn (launchChatTurn) re-claims liveness idempotently and calls
       // turnEnded when the turn finishes, which drains anything queued since.
       opts.startTurn(chatId, turn, truncateToolMessages(prior), human ? "human" : "notification");

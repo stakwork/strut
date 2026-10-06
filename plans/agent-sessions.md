@@ -188,11 +188,12 @@ With `session` set, in order:
    a `try … finally { release() }`.
 3. **Binding.** On turn 0 nothing to check. Later: the resolved provider
    and `routed` must equal the first turn's, else `session_mismatch:`.
-4. **Room.** When the last turn left the thread over 90% of the resolved
-   model's `contextLimit`, fail with `session_full:` before any model
-   call — a clear error the host can act on (start a new
-   session) instead of a provider 400 on every later turn. Compaction is
-   not in this plan (§9).
+4. **Room.** When the last turn left the thread past the compaction mark
+   (`STRUT_COMPACT_AT`, 0.9 of the resolved model's `contextLimit`), the
+   thread is summarized before any model call and the summary leads this
+   turn (`plans/compaction.md` §3, built 2026-10-06). With compaction off,
+   fail with `session_full:` instead — a clear error the host can act on
+   (start a new session) rather than a provider 400 on every later turn.
 5. `system` = the session's, else `cfg.system`.
 6. `head = [...session.messages, { role: "user", content: basePrompt }]`.
    The first call becomes `stream({ messages: head })`; the three
@@ -336,9 +337,12 @@ sub-agent needs the parent to fix the id, which is its own design.
 
 ## 9. Left out
 
-- **Compaction.** A thread that reaches the window is over
-  (`session_full:`). The guard in `plans/repo-agent.md` §4.4 must respect
-  append-only: compaction is a NEW session seeded from a summary.
+- **Compaction** — built 2026-10-06 as `plans/compaction.md`, with a
+  simpler shape than the one first noted here: not a new session seeded
+  from a summary but a boundary in the same thread — the `[compaction]`
+  message appended at open (a thread left past the mark) or between
+  steps, and `replayFrom` on the turn line. `session_full:` remains for
+  `STRUT_COMPACT_AT=1`.
 - **Forks.** One id is one line. Replaying from a midpoint is copying a
   thread to a new id up to a turn; evals will want it, nothing does yet.
 - **A working directory that is not a repository** (an agent whose `cwd` is

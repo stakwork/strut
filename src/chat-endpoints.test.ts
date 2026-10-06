@@ -644,6 +644,166 @@ describe("chat endpoints", () => {
     }
     assert.deepEqual(await chatStore.listChats(), []);
   });
+  // ── compaction (plans/compaction.md §5) ──────────────────────────────
+
+  /** A stand-in Anthropic endpoint that answers from a script, one reply per
+   *  request, and records the request bodies. `input` is the input_tokens it
+   *  reports — how a test puts the conversation past the compaction mark. */
+  async function scripted(
+    replies: Array<{ tool?: [string, string, unknown]; text?: string; input?: number }>,
+    bodies: any[],
+  ): Promise<{ port: number; close: () => void }> {
+    const sse = (o: any) => `event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`;
+    let call = 0;
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        const r = replies[call++];
+        if (!r) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: `unexpected request #${call}` } }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(
+          sse({
+            type: "message_start",
+            message: {
+              id: "m1", type: "message", role: "assistant", model: "claude-sonnet-5",
+              content: [], stop_reason: null, stop_sequence: null,
+              usage: { input_tokens: r.input ?? 100, output_tokens: 1 },
+            },
+          }),
+        );
+        if (r.tool) {
+          const [id, name, input] = r.tool;
+          res.write(sse({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name, input: {} } }));
+          res.write(sse({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }));
+          res.write(sse({ type: "content_block_stop", index: 0 }));
+          res.write(sse({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } }));
+        } else {
+          res.write(sse({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+          res.write(sse({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: r.text ?? "" } }));
+          res.write(sse({ type: "content_block_stop", index: 0 }));
+          res.write(sse({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 20 } }));
+        }
+        res.write(sse({ type: "message_stop" }));
+        res.end();
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return { port: (server.address() as { port: number }).port, close: () => server.close() };
+  }
+
+  it("compaction: a turn past the mark folds its history into a [compaction] message and goes on from it; the next turn replays from there", async () => {
+    const bodies: any[] = [];
+    const s = await scripted(
+      [
+        { tool: ["toolu_1", "list_steps", { path: "steps" }], input: 950_000 }, // past the mark on a 1M window
+        { text: "HANDOFF: the user asked which steps exist; list_steps was called; answer next." }, // the summarizer
+        { text: "All set." }, // the turn goes on from the summary
+        { text: "Still here." }, // the next turn
+      ],
+      bodies,
+    );
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const strut = await makeStrut();
+      const post = async (body: unknown) =>
+        (await (await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json()) as { chatId: string };
+      const { chatId } = await post({ message: "what steps are there?" });
+      await settled(chatId);
+      assert.equal(bodies.length, 3, JSON.stringify(bodies.map((b) => b.messages.length)));
+      const [first, summarizer, after] = bodies;
+
+      // The summarizer's request: the turn's own prefix — system, tools,
+      // cache_control, tool_choice — the conversation with the tool result
+      // IN, then the instruction (one user message on the wire).
+      assert.deepEqual(summarizer.system, first.system);
+      assert.deepEqual(summarizer.tools, first.tools);
+      assert.deepEqual(summarizer.cache_control, first.cache_control);
+      assert.deepEqual(summarizer.tool_choice, first.tool_choice);
+      const closing = JSON.stringify(summarizer.messages.at(-1));
+      assert.ok(closing.includes("tool_result"), "the tool round is closed before the summary");
+      assert.ok(closing.indexOf("tool_result") < closing.indexOf("respond with text only."));
+      assert.equal(summarizer.max_tokens, 8000);
+
+      // The continuation begins at the summary, and nothing earlier is sent.
+      assert.equal(after.messages.length, 1);
+      const compaction = JSON.stringify(after.messages[0]);
+      assert.match(compaction, /\[compaction\] Compacted 3 messages \(~95\d+ tokens\)/);
+      assert.ok(compaction.includes("HANDOFF:"));
+      assert.ok(!compaction.includes("what steps are there?"));
+
+      // The record is whole, the boundary is on the chat, the meter got its floor.
+      const messages = await chatStore.loadMessages(chatId);
+      assert.deepEqual(messages.map((m) => m.role), ["user", "assistant", "tool", "user", "assistant"]);
+      assert.ok(String(messages[3]!.content).startsWith("[compaction]"));
+      const meta = (await chatStore.getMeta(chatId))!;
+      assert.equal(meta.replayFrom, 3);
+      assert.equal(meta.context!.limit, 1_000_000);
+      assert.ok(meta.context!.used < 1000, `context after the turn: ${meta.context!.used}`);
+      const events: any[] = [];
+      for await (const e of chatStore.tailEvents(chatId, 0)) events.push(e);
+      const compact = events.find((e) => e.type === "chat.compact");
+      assert.equal(compact.compact.messages, 3);
+      assert.ok(compact.compact.usage.outputTokens > 0);
+      assert.deepEqual(compact.context, { used: compact.compact.usage.outputTokens, limit: 1_000_000 });
+      assert.equal(events.at(-1).type, "chat.end");
+
+      // GET /chat/:id still serves everything.
+      const whole = (await (await strut.app.request(`/chat/${chatId}`)).json()) as { messages: unknown[] };
+      assert.equal(whole.messages.length, 5);
+
+      // The next turn replays from the boundary: the compaction message, the
+      // answer after it, the new message — nothing before.
+      await post({ chatId, message: "and now?" });
+      await settled(chatId);
+      assert.equal(bodies.length, 4);
+      assert.deepEqual(bodies[3].messages.map((m: any) => m.role), ["user", "assistant", "user"]);
+      assert.ok(JSON.stringify(bodies[3].messages[0]).includes("[compaction]"));
+      assert.ok(!JSON.stringify(bodies[3].messages).includes("what steps are there?"));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("compaction: a summarizer that fails is a warning — the turn goes on uncompacted and ends normally", async () => {
+    const bodies: any[] = [];
+    const s = await scripted(
+      [
+        { tool: ["toolu_1", "list_steps", { path: "steps" }], input: 950_000 },
+        // the summarizer: no reply scripted → the stand-in answers 400
+      ],
+      bodies,
+    );
+    // The third request (the uncompacted continuation) also gets the 400:
+    // the turn ends in chat.error on the provider's words, as any refused
+    // request does — but the failed SUMMARY is not what fails it.
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const strut = await makeStrut();
+      const res = await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: "hi" }) });
+      const { chatId } = (await res.json()) as { chatId: string };
+      await settled(chatId);
+      assert.equal(bodies.length, 3);
+      // The continuation carried the whole conversation, not a summary.
+      assert.ok(JSON.stringify(bodies[2].messages).includes("hi"));
+      assert.ok(!JSON.stringify(bodies[2].messages).includes("[compaction]"));
+      const meta = (await chatStore.getMeta(chatId))!;
+      assert.equal(meta.replayFrom, undefined);
+      assert.equal(meta.status, "error");
+      const messages = await chatStore.loadMessages(chatId);
+      assert.deepEqual(messages.map((m) => m.role), ["user", "assistant", "tool"]);
+    } finally {
+      s.close();
+    }
+  });
+
   // ── stop (POST /chat/:id/cancel) ─────────────────────────────────────
 
   /** A stand-in provider that streams the start of a reply, then hangs — a

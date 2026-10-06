@@ -68,6 +68,11 @@ export interface AiDeps {
    *  the chat with a `[verify-notification]` when that run's verify pass
    *  settles. Optional: without it the evidence is still written. */
   watchVerify?: (runId: string) => void;
+  /** Per-string cap on the builder's tool results (`capToolResults`): the
+   *  env cap bounded by the model's window, so one result fits in the room
+   *  above the compaction mark (plans/compaction.md §4). Absent → the env
+   *  cap alone. */
+  toolResultMaxChars?: number;
   /** Web tools for the builder — `web_search` + `web_fetch` (the same pair
    *  the agent step ships): built per turn by createStrut for the chat's
    *  resolved provider via `createWebTools` (src/llm.ts; native on

@@ -80,6 +80,10 @@ export interface ChatMeta {
   /** How full the model's context window is, as of the chat's last model
    *  call (the flyout's "351k / 1M"). Set at every step end. */
   context?: ChatContext;
+  /** Where a turn's replay begins in `messages.jsonl`: the index of the
+   *  latest `[compaction]` message (plans/compaction.md §5). Absent → 0.
+   *  The whole history stays on disk and the read endpoints serve it. */
+  replayFrom?: number;
 }
 
 /** Tokens the conversation occupies after a model call — that call's input
@@ -96,6 +100,7 @@ export type ChatEventType =
   | "tool-output"
   | "tool-progress"
   | "step.finish"
+  | "chat.compact"
   | "chat.end"
   | "chat.error";
 
@@ -121,8 +126,11 @@ export interface ChatEvent {
   /** chat.end: the turn was stopped (`POST /chat/:id/cancel`); what streamed
    *  before the stop is in the transcript. */
   stopped?: true;
-  /** step.finish: the context after this step (also on `ChatMeta.context`). */
+  /** step.finish: the context after this step (also on `ChatMeta.context`).
+   *  chat.compact: the floor the compaction left (the summary's size). */
   context?: ChatContext;
+  /** chat.compact: what was folded into the summary, and what writing it cost. */
+  compact?: { messages: number; tokens: number; usage?: unknown };
 }
 
 /** A stored conversation message. Kept opaque (the AI SDK's `ModelMessage`

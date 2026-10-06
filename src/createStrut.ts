@@ -18,8 +18,10 @@ import {
   MemoryChatStore,
   generateChatId,
   capToolOutput,
+  toolResultMaxCharsFromEnv,
   truncateToolMessages,
 } from "./chat-store.js";
+import { CHAT_RETAIN, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
 import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
@@ -2459,7 +2461,7 @@ export async function createStrut<TServices = unknown>(
           });
 
         try {
-          const { ToolLoopAgent, isStepCount } = await import("ai");
+          const { ToolLoopAgent, isStepCount, streamText } = await import("ai");
           const { buildTools, buildSystem } = await import("./ai/index.js");
 
           // The chat's model (`ChatMeta.model`, set by POST /chat) or the
@@ -2480,6 +2482,9 @@ export async function createStrut<TServices = unknown>(
               ? { llmAuth: opts.llmAuth, auth: { kind: "chat" as const, chatId, turn, ...(actor ? { actor, principal: actor } : {}) } }
               : {}),
           });
+          // Compaction (plans/compaction.md §5): the mark, and the cap that
+          // keeps one tool result inside the room above it.
+          const compactAt = compactAtFromEnv();
           const catalog = await listModelOptions({ default: chatModel, secrets: secretsCap });
           const web = await createWebTools({
             provider: llm.provider,
@@ -2495,6 +2500,7 @@ export async function createStrut<TServices = unknown>(
             registry,
             store,
             services,
+            toolResultMaxChars: resultCapChars(toolResultMaxCharsFromEnv(), llm.contextLimit, compactAt),
             ...(actor ? { actor } : {}),
             secrets: secretsInjected ? undefined : secretStore,
             // Build-time bash for the chat builder, cwd'd at the local data
@@ -2622,25 +2628,33 @@ export async function createStrut<TServices = unknown>(
             await chatStore.setSystem(chatId, system);
           }
 
-          const agent = new ToolLoopAgent({
-            model: llm.model,
-            instructions: system,
-            tools: buildTools(deps),
-            maxOutputTokens: llm.maxOutputTokens,
-            // Anthropic's automatic prompt caching (the request's top-level
-            // `cache_control`): each step reads the conversation so far and
-            // writes only what the last step added. Other providers cache on
-            // their own (xai, openai) or through aieo's model settings.
-            ...(llm.provider === "anthropic"
-              ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } } }
-              : {}),
-            // The turn ends on an ask (plans/elicitation.md): the tool's
-            // result is in, and the answer arrives as the next turn's message.
-            stopWhen: [({ steps }) => stepAsked(steps[steps.length - 1]), isStepCount(chatMaxSteps)],
-            onEnd: () => {
-              registry = deps.registry;
-            },
-          });
+          // Anthropic's automatic prompt caching (the request's top-level
+          // `cache_control`): each step reads the conversation so far and
+          // writes only what the last step added. Other providers cache on
+          // their own (xai, openai) or through aieo's model settings.
+          const providerOptions =
+            llm.provider === "anthropic" ? { anthropic: { cacheControl: { type: "ephemeral" as const } } } : undefined;
+          const tools = buildTools(deps);
+          // The context after the latest model call (`step.finish`), and the
+          // compaction mark against it (plans/compaction.md §5).
+          let lastContext: { used: number; limit: number } | undefined;
+          const overMarkStop = () => !!lastContext && overMark(lastContext, compactAt);
+          /** A tool-loop runner with `budget` steps left. The turn ends on an
+           *  ask (plans/elicitation.md: the tool's result is in, and the
+           *  answer arrives as the next turn's message), at the cap, or past
+           *  the mark — the loop below then compacts and goes on. */
+          const makeAgent = (budget: number) =>
+            new ToolLoopAgent({
+              model: llm.model,
+              instructions: system,
+              tools,
+              maxOutputTokens: llm.maxOutputTokens,
+              ...(providerOptions ? { providerOptions } : {}),
+              stopWhen: [({ steps }) => stepAsked(steps[steps.length - 1]), isStepCount(budget), overMarkStop],
+              onEnd: () => {
+                registry = deps.registry;
+              },
+            });
 
           console.log(`[chat ${chatId}] turn ${turn} start (${modelMessages.length} msgs, model ${llm.name})`);
 
@@ -2678,69 +2692,137 @@ export async function createStrut<TServices = unknown>(
             return [assistant, tool];
           };
 
-          const result = await agent.stream({
-            messages: modelMessages,
-            abortSignal: ac.signal,
-            onStepEnd: (step) => {
-              doneMessages.push(...step.response.messages);
-              const u = step.usage;
-              console.log(
-                `[chat ${chatId}] turn ${turn} step ${step.stepNumber} finish=${step.finishReason} tokens=in:${u?.inputTokens ?? "?"}/out:${u?.outputTokens ?? "?"}`,
-              );
-              // finish=length is a TRUNCATED generation: a cut-off tool call
-              // never executes and the turn dies silently. Say why, loudly.
-              if (step.finishReason === "length") {
-                console.warn(
-                  `[chat ${chatId}] turn ${turn} step ${step.stepNumber} TRUNCATED at maxOutputTokens=${llm.maxOutputTokens} — a cut-off tool call never executed; the turn likely ended incomplete. Raise STRUT_MAX_OUTPUT_TOKENS if this recurs.`,
+          // What this attempt sends: the history from the chat's last boundary
+          // plus the new message — and, after a compaction mid-turn, the
+          // compaction message alone. One attempt per stretch of the turn.
+          let request: any[] = modelMessages;
+          let stepsUsed = 0;
+          let lastStep: any;
+          let stopped = false;
+          let responseMessages: any[] = [];
+          for (;;) {
+            doneMessages.length = 0;
+            const result = await makeAgent(Math.max(1, chatMaxSteps - stepsUsed)).stream({
+              messages: request,
+              abortSignal: ac.signal,
+              onStepEnd: (step) => {
+                doneMessages.push(...step.response.messages);
+                stepsUsed++;
+                lastStep = step;
+                const u = step.usage;
+                console.log(
+                  `[chat ${chatId}] turn ${turn} step ${step.stepNumber} finish=${step.finishReason} tokens=in:${u?.inputTokens ?? "?"}/out:${u?.outputTokens ?? "?"}`,
                 );
-              }
-            },
-          });
+                // finish=length is a TRUNCATED generation: a cut-off tool call
+                // never executes and the turn dies silently. Say why, loudly.
+                if (step.finishReason === "length") {
+                  console.warn(
+                    `[chat ${chatId}] turn ${turn} step ${step.stepNumber} TRUNCATED at maxOutputTokens=${llm.maxOutputTokens} — a cut-off tool call never executed; the turn likely ended incomplete. Raise STRUT_MAX_OUTPUT_TOKENS if this recurs.`,
+                  );
+                }
+              },
+            });
 
-          try {
-            for await (const part of result.stream) {
-              // Bookkeeping for a stop mid-turn (partialStep above). A
-              // preliminary tool-result (graph_walk's hops) is progress, not
-              // the call's result.
-              switch (part.type) {
-                case "text-delta":
-                  if (part.text) stepText += part.text;
-                  break;
-                case "tool-call":
-                  stepCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
-                  break;
-                case "tool-result":
-                  if (!(part as { preliminary?: boolean }).preliminary) setOutput(part.toolCallId, capToolOutput({ type: "json", value: part.output }));
-                  break;
-                case "tool-error":
-                  setOutput(part.toolCallId, {
-                    type: "error-text",
-                    value: part.error instanceof Error ? part.error.message : String(part.error),
-                  });
-                  break;
-                case "finish-step":
-                  stepText = "";
-                  stepCalls = [];
-                  break;
-                case "error":
-                  throw part.error;
+            try {
+              for await (const part of result.stream) {
+                // Bookkeeping for a stop mid-turn (partialStep above). A
+                // preliminary tool-result (graph_walk's hops) is progress, not
+                // the call's result.
+                switch (part.type) {
+                  case "text-delta":
+                    if (part.text) stepText += part.text;
+                    break;
+                  case "tool-call":
+                    stepCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
+                    break;
+                  case "tool-result":
+                    if (!(part as { preliminary?: boolean }).preliminary) setOutput(part.toolCallId, capToolOutput({ type: "json", value: part.output }));
+                    break;
+                  case "tool-error":
+                    setOutput(part.toolCallId, {
+                      type: "error-text",
+                      value: part.error instanceof Error ? part.error.message : String(part.error),
+                    });
+                    break;
+                  case "finish-step":
+                    stepText = "";
+                    stepCalls = [];
+                    break;
+                  case "error":
+                    throw part.error;
+                }
+                const e = chatEventOf(part, llm.contextLimit);
+                if (e) await emit(e);
+                if (e?.context) {
+                  lastContext = e.context;
+                  await chatStore.setMeta(chatId, { context: e.context });
+                }
               }
-              const e = chatEventOf(part, llm.contextLimit);
-              if (e) await emit(e);
-              if (e?.context) await chatStore.setMeta(chatId, { context: e.context });
+            } catch (err) {
+              // A stop can surface as the aborted provider call's throw.
+              if (!ac.signal.aborted) throw err;
             }
-          } catch (err) {
-            // A stop can surface as the aborted provider call's throw.
-            if (!ac.signal.aborted) throw err;
-          }
 
-          // Every step's messages (tool calls + results), not just the last:
-          // v7's `response` is final-step only. A stopped turn never awaits
-          // the SDK's promises (they reject when no step completed): what it
-          // has is what streamed.
-          const stopped = ac.signal.aborted;
-          const responseMessages = stopped ? [...doneMessages, ...partialStep()] : await result.responseMessages;
-          if (responseMessages.length) await chatStore.appendMessages(chatId, responseMessages as any);
+            // Every step's messages (tool calls + results), not just the last:
+            // v7's `response` is final-step only. A stopped turn never awaits
+            // the SDK's promises (they reject when no step completed): what it
+            // has is what streamed.
+            stopped = ac.signal.aborted;
+            responseMessages = stopped ? [...doneMessages, ...partialStep()] : await result.responseMessages;
+            if (responseMessages.length) await chatStore.appendMessages(chatId, responseMessages as any);
+            if (stopped) break;
+
+            // Past the mark (plans/compaction.md §5): fold everything the
+            // model has seen into its own summary, appended as a user message
+            // — the history only grows — and move the chat's replay boundary
+            // to it. Mid-task (the last step called tools, their results are
+            // in, no question asked, budget left) the turn goes on from the
+            // summary alone; a finished turn leaves the summary for the next
+            // one. The summarizer runs under the turn's own system, tools and
+            // provider options — the prefix the thinking blocks are bound to,
+            // and the cache's. A failed summarizer is a warning: the turn goes
+            // on uncompacted and the next step boundary tries again.
+            if (lastContext && overMark(lastContext, compactAt)) {
+              const sent = [...request, ...responseMessages];
+              const midTask = responseMessages.at(-1)?.role === "tool" && !stepAsked(lastStep) && stepsUsed < chatMaxSteps;
+              let compaction: { role: "user"; content: string } | undefined;
+              try {
+                const got = await summarize({
+                  streamText,
+                  model: llm.model,
+                  system,
+                  tools,
+                  providerOptions,
+                  messages: sent,
+                  retain: CHAT_RETAIN,
+                  abortSignal: ac.signal,
+                });
+                if (got.summary === undefined) throw new Error(`the summary ended with finishReason "${got.finishReason}"`);
+                const of = { messages: sent.length, tokens: lastContext.used };
+                compaction = { role: "user", content: compactionMessage(got.summary, of) };
+                // Its index in messages.jsonl is where the chat replays from.
+                const replayFrom = (await chatStore.loadMessages(chatId)).length;
+                await chatStore.appendMessages(chatId, [compaction]);
+                // A floor for the meter — the summary's size; the next call corrects it.
+                const context = { used: got.usage.outputTokens, limit: llm.contextLimit };
+                lastContext = context;
+                await chatStore.setMeta(chatId, { replayFrom, context });
+                await emit({ type: "chat.compact", compact: { ...of, usage: got.usage }, context });
+                console.log(`[chat ${chatId}] turn ${turn} compacted ${of.messages} messages (~${of.tokens} tokens); the replay begins at ${replayFrom}.`);
+              } catch (err) {
+                if (ac.signal.aborted) {
+                  stopped = true;
+                  break;
+                }
+                console.warn(`[chat ${chatId}] turn ${turn} compaction failed (${err instanceof Error ? err.message : String(err)}); continuing uncompacted.`);
+              }
+              if (midTask) {
+                request = compaction ? [compaction] : sent;
+                continue;
+              }
+            }
+            break;
+          }
           outcome = { status: "done", text: finalAssistantText(responseMessages), ...(stopped ? { stopped: true as const } : {}) };
           await emit({ type: "chat.end", ...(stopped ? { stopped: true as const } : {}) });
           await chatStore.setMeta(chatId, { status: "done" });
@@ -2881,7 +2963,9 @@ export async function createStrut<TServices = unknown>(
         });
       }
 
-      const prior = await chatStore.loadMessages(chatId);
+      // From the chat's compaction boundary (plans/compaction.md §5): the
+      // whole history stays on disk; the model replays from the summary.
+      const prior = (await chatStore.loadMessages(chatId)).slice(meta!.replayFrom ?? 0);
       const userMsg = { role: "user", content: body.message };
       await chatStore.appendMessages(chatId, [userMsg]);
 

@@ -6,6 +6,7 @@ import { formatRunNotification } from "../../src/ai/notifier.js";
 import { formatElicitationResponse } from "../../src/ai/elicitation.js";
 import { STILL_VERIFYING } from "../../src/ai/verify-waker.js";
 import { formatLedgerLines, formatVerifyNotification, type Ledger } from "../../src/ledger.js";
+import { compactionMessage } from "../../src/compaction.js";
 import { countLedger, isNotice, lastVerifyLabel, noticeTone, parseNotice } from "./notice";
 
 const ledger: Ledger = {
@@ -111,6 +112,20 @@ describe("ledger summaries", () => {
 });
 
 // ── [elicitation-response] ─────────────────────────────────────────────────
+
+describe("compaction", () => {
+  it("reads a [compaction] message: what was folded, and the summary", () => {
+    const text = compactionMessage("Task: build a clip workflow.\n\nDone: `youtube-clip` v3 published.", { messages: 40, tokens: 612_345 });
+    assert.ok(isNotice(text));
+    const n = parseNotice(text)!;
+    assert.equal(n.kind, "compaction");
+    assert.equal(n.compactedMessages, 40);
+    assert.equal(n.compactedTokens, 612_345);
+    assert.equal(n.summary, "Task: build a clip workflow.\n\nDone: `youtube-clip` v3 published.");
+    assert.equal(noticeTone(n), "neutral");
+    assert.deepEqual(n.notes, []);
+  });
+});
 
 describe("elicitation responses", () => {
   it("parses an accepted form answer: who answered and the content", () => {

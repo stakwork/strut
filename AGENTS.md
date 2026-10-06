@@ -59,6 +59,7 @@ strut/
 │   ├── run-step.ts        # runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: records stepHashes, then persists the run under `step:<type>` only when the step has claims or `keep: true` (plans/claims.md §3)
 │   ├── run-view.ts        # the run VIEW the builder reads (get_run + meta/get-run, via readRun in authoring.ts): foldRun (the event log → the step tree, by path: `wf/sub/child`, `wf/each#3`, `wf/agent/042-bash`, `wf/step/onError`) + buildRunView — ONE level open (`path` picks which; that node is `focus` with its payloads), everything below rolled up (count / status histogram / by step type / last ids), the deepest errors first with the siblings before each, long lists kept head + tail + errors with `{ omitted }` gaps, previews, and a char budget (20k) that tightens in fixed levels and says so in `hint`. Size follows the DAG, never the execution; a transcript is never in it
 │   ├── chat-store.ts      # ChatStore interface + FileChatStore + MemoryChatStore (chats/<id>/: meta.json + system.md + messages.jsonl + events.jsonl) + capToolOutput (the builder's tool-result cap) + truncateToolMessages (the same cap on replay)
+│   ├── compaction.ts      # compaction (plans/compaction.md): the mark (`STRUT_COMPACT_AT`, `overMark`), the window-derived result cap (`resultCapChars`), the summarizer call (`summarize`: the loop's own system + tools without `execute` + provider options, the conversation, one instruction, streamed) and the `[compaction]` message the chat and the `agent` step APPEND as the boundary a replay starts from — history is never edited
 │   ├── workspace.ts       # WorkspaceStore interface + FileWorkspaceStore (alias WorkspaceManager): versioning, _metadata.json, YAML loading
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
@@ -124,7 +125,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1302 unit tests across 72 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1324 unit tests across 73 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -275,10 +276,11 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
-| `STRUT_CHAT_MAX_STEPS` | `30`         | Max agent tool-call iterations per chat turn |
+| `STRUT_CHAT_MAX_STEPS` | `100`        | Max agent tool-call iterations per chat turn |
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
-| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string cap on the builder's tool RESULTS, applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. `0` disables. |
+| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string CEILING on the builder's tool RESULTS, applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. The cap in force is this bounded by the window's headroom below the compaction mark (`STRUT_COMPACT_AT`): 50k on a 1M window, 16k on 200k. `0` removes the ceiling; the window's cap still applies while compaction is on. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
+| `STRUT_COMPACT_AT` | `0.9` | Compaction (plans/compaction.md): the share of the model's window past which the builder chat and the `agent` step fold everything the model has seen into its own summary and go on from it — one APPENDED `[compaction]` user message and a replay boundary (`ChatMeta.replayFrom`; `replayFrom` on an agent session's turn line). Nothing is edited: the whole history stays, the read endpoints serve it, and the prompt cache and prefix-bound thinking blocks hold. Also sizes the per-result caps: one `bash` / `view` / builder-tool result may be at most `((1 − at) × window − 12k) × 2` chars (the 12k reserves the summary and one generation), under each surface's own ceiling. `1` disables it: the provider's limit and `session_full:` are the backstops. |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a job (`job/dir`, `git/checkout` with `workdir`) may sit unused before its REPOSITORIES are removed — its other files are kept, and a job with nothing left goes with its record. Swept by the next `job/dir` or kept checkout — no timer. `0` keeps them forever. |
@@ -1064,13 +1066,32 @@ and the child env is scrubbed by construction).
   rendered on a chat's first turn and stored (`ChatStore.getSystem` /
   `setSystem`, `chats/<id>/system.md`), then replayed verbatim: a step
   published mid-chat never re-renders the steps tree, and the model
-  reads what changed through `list_steps` / `search_steps`.
+  reads what changed through `list_steps` / `search_steps`. (3) When the
+  window fills the turn COMPACTS instead of editing (plans/compaction.md
+  §5; `src/compaction.ts`): after a step whose model call passed the mark
+  (`STRUT_COMPACT_AT`, 0.9) — its tool results in, so never inside a tool
+  round — the turn has the same model summarize everything it has seen,
+  in one streamed call under the turn's own system prompt, tool
+  definitions (without their `execute`) and cache options — the prefix the
+  thinking blocks are bound to; a summarizer that dropped the tools would
+  fail the preserved-thinking check and miss the whole cache — appends
+  the summary as a `[compaction]` user message, sets `ChatMeta.replayFrom`
+  to its index, emits `chat.compact` (the meter's floor rides on it), and
+  goes on from the summary alone when the model was mid-task; a finished
+  turn leaves the summary for the next one. Every later turn replays
+  `messages.jsonl` from `replayFrom` (`POST /chat` and the notifier's
+  wake-up both slice there). The file only grows, `GET /chat/:id` serves
+  it whole, and the flyout shows the boundary as a collapsed card
+  ("Compacted 612k tokens of history") that opens to the summary. A
+  summarizer that fails, or stops short of `finishReason: stop`, is a
+  warning: the turn goes on uncompacted and the next step boundary tries
+  again.
   **Context meter:** each `step.finish` event carries `context: { used,
   limit }` — that model call's input (cached reads included) plus its
   output, against aieo's window for the model (`ResolvedModel.contextLimit`)
   — also written to `ChatMeta.context`; the flyout header shows it as
   `351k / 1M`, amber from 80% (`web/src/context-meter.ts`).
-  `chatMaxSteps` (env `STRUT_CHAT_MAX_STEPS`, default 30) bounds the
+  `chatMaxSteps` (env `STRUT_CHAT_MAX_STEPS`, default 100) bounds the
   per-turn agent loop. The browser (`web/src/api.ts`: `sendChat` +
   `streamChat` + `getChat`) persists the active `chatId` in
   localStorage and reattaches to a still-live turn on reopen.
@@ -1293,10 +1314,22 @@ and the child env is scrubbed by construction).
   the messages are replayed as stored, so every request begins with the
   previous one byte for byte. Tools, output mode and `maxSteps` are the
   current step's. The provider and whether calls are routed through the
-  gateway are fixed by the first turn (`session_mismatch:`); a thread over
-  90% of the model's window is refused before any model call
-  (`session_full:` — there is no compaction yet). An `agent` called as a
-  TOOL cannot take a session: the model would be choosing the id.
+  gateway are fixed by the first turn (`session_mismatch:`). A thread the
+  last turn left past the compaction mark (`STRUT_COMPACT_AT`, 0.9 of the
+  resolved model's window) is summarized AT OPEN: the `[compaction]`
+  message leads this turn, the committed line's `replayFrom` points at it,
+  and the next turn replays `messages.slice(replayFrom)` — the thread is
+  still whole on disk (plans/compaction.md §3). The same happens BETWEEN
+  STEPS when a turn itself crosses the mark: the loop stops after the step
+  (its tool results in), summarizes the request so far under its own
+  system, tools and provider options, pushes the summary onto the record
+  and continues from it alone, with one nested `compaction` event beside
+  the tool calls (`<agentPath>/NNN-compaction`) and `compactions: n` on the
+  output. One `bash` / `view` result is capped at the window's headroom
+  below the mark (`BASH_MAX_CHARS` is the ceiling). With compaction off
+  (`STRUT_COMPACT_AT=1`) a thread over 90% is refused before any model
+  call (`session_full:`). An `agent` called as a TOOL cannot take a
+  session: the model would be choosing the id.
   **The files** follow through `workdir` on `git/checkout`, a name of its
   own (usually the job, `"{{ $job }}"`): the working copy lives inside
   that job's directory, `<dataDir>/jobs/<name>/<repo>` — the same path

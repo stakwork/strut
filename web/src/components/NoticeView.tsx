@@ -1,6 +1,8 @@
 import { displayActor } from "../actor";
+import { formatTokens } from "../context-meter";
 import { countLedger, lastVerifyLabel, noticeTone, parseNotice, type Ledger, type LedgerClaim } from "../notice";
 import { ago } from "./ClaimsPanel";
+import { Markdown } from "./Markdown";
 import { ToolResultView } from "./ToolResultView";
 
 // ── Wake-up notice card ────────────────────────────────────────────────────
@@ -124,6 +126,40 @@ export function NoticeView(props: {
                 onToggle={() => props.onToggle(key("content"))}
               />
             )}
+            <ToolResultView
+              label="Raw message"
+              result={{ output: props.text, isError: false }}
+              open={isOpen("raw")}
+              onToggle={() => props.onToggle(key("raw"))}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // The model's memory restarts here (plans/compaction.md): everything above
+  // is still the transcript; from this card on, the model knows the summary.
+  if (n?.kind === "compaction") {
+    return (
+      <div class={`chat-notice-card${open ? " is-open" : ""}`}>
+        <button type="button" class="chat-notice-head" onClick={() => props.onToggle(key("card"))} aria-expanded={open}>
+          <span class={`chat-tool-dot ${DOT[noticeTone(n)]}`} />
+          <span class="chat-notice-main">
+            <span class="chat-notice-title">Compacted</span>
+            <span class="chat-notice-subject">
+              {n.compactedTokens != null ? `${formatTokens(n.compactedTokens)} tokens of history` : "the history"}
+            </span>
+            <span class="chat-notice-meta">
+              {n.compactedMessages != null && <span class="claim-dim">{n.compactedMessages} messages</span>}
+              <span class="claim-dim">the model continues from the summary</span>
+            </span>
+          </span>
+          <span class={`chat-tool-chev${open ? " is-open" : ""}`} aria-hidden="true" />
+        </button>
+        {open && (
+          <div class="chat-notice-body">
+            {n.summary && <Markdown source={n.summary} class="chat-notice-summary" />}
             <ToolResultView
               label="Raw message"
               result={{ output: props.text, isError: false }}
