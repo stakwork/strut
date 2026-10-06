@@ -46,8 +46,9 @@ strut/
 │   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md)
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation
 │   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
-│   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change), the additive `claims` publish arg, publisher scoping (fixed point 1), the grader deny-list over the check closure (fixed point 2; STRUT_VERIFY_DENY)
+│   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change), the additive `claims` publish arg, publisher scoping (fixed point 1), the sealed check over the check closure (fixed point 2; sealed.ts)
 │   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps
+│   ├── sealed.ts          # what the meta surface may never touch (EVOLVE_SPEC §6): DEFAULT_SEALED_STEPS (`eval/*`, `meta/*`) + STRUT_SEALED, a step def's `sealed: true` (the graders — their namespace also holds the producer's door), a workflow's top-level `sealed: true` (content: Flow.sealed, rides in the version hash). isSealedStep / sealedInClosure — read by authoring.ts (run / run-history / verify / run-step refused by name, a publish refused by closure), claims-authoring.ts and verify.ts (an ai-stamped check's closure, fixed point 2)
 │   ├── verify.ts          # the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
 │   ├── ledger.ts          # the ledger (plans/claims.md §5): buildLedger (claims per subject with computed status + each check's lastVerify: pending | ran | skipped | planned), subjectsOfFlow (what a launch can execute), the [verify-notification] text. The forcing function — the model reads its contract in a tool RESULT, not an instruction
 │   ├── claims-routes.ts   # the Claims panel's HTTP door: GET /claims?kind=&name= (contract + computed status + latest evidence + open slots; `{ enabled: false }` on a filesystem workspace), GET /workflows/:name/evidence (the run view: every verdict on a workflow's runs — its claims and its steps' — keyed by the run, `limit` counts runs; mounted before the `/:version` catch-all), POST/PATCH/DELETE /claims[/:id], /claims/:id/{attach,detach,checks,evidence}, PATCH/DELETE /checks/:id. Mutations behind requireApiKey; the actor is a PERSON (unscoped, stamped `person`; evidence `asserted`, `by: person`)
@@ -125,7 +126,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1324 unit tests across 73 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1331 unit tests across 74 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -291,7 +292,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_GRAPH_SEED_ONTOLOGY` | (off)   | `1` seeds the bundled jarvis ontology (153 schemas + edge schemas + indexes, add-only) on first open, so a standalone Neo4j can host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis process. No-op on a jarvis-seeded DB. Also turns on the one-shot `Claim` schema upgrade (the standalone mirror of jarvis migration 124) — never run against a jarvis-hosted graph. |
 | `STRUT_VERIFY_BUDGET_USD` | `10` | Verify-pass spend cap PER VERIFIED RUN: once the pass's checks have reported this much, remaining checks presumed paid (an `agent`/`llm` step anywhere in the check closure, or an unresolvable one) are skipped (`lastVerify: { skipped: "budget" }`) and the claim stays `unknown` — never `supported`. Checks that report no cost never count. |
 | `STRUT_VERIFY_BUDGET_USD_PER_DAY` | `100` | The same cap PER SUBJECT PER (UTC) DAY, computed from the run store alone: the cost of today's runs under `check:<id>` tagged with that subject. A harness that verifies many candidates raises it, or sets its paid checks to `manual`. |
-| `STRUT_VERIFY_DENY` | (none) | Comma-separated step-type globs added to the grader deny-list (`gaia/*`, `harvey/*`, `eval/*`, `meta/*`): an `ai`-stamped check may not reach any of them — by name, through a subflow, or via an `agentTools` grant (plans/claims.md §4.1, fixed point 2). |
+| `STRUT_SEALED` | (none) | Comma-separated step-type globs sealed in addition to the defaults (`eval/*`, `meta/*`) — `src/sealed.ts`. A sealed step (by namespace, or `sealed: true` on its def — the lab's graders) or workflow (`sealed: true` in its YAML — a grading harness) is what the meta surface may never run, read the runs of, verify, or reach from a publish, and what an `ai`-stamped check may never reach — by name, through a subflow, or via an `agentTools` grant (plans/claims.md §4.1, fixed point 2). |
 | `STRUT_MODEL_DIR`    | `~/.cache/strut-models` | Local model files: MiniLM's ONNX cache and STT models under `stt/<id>/`. `STRUT_MODEL_CACHE` is the older alias. |
 | `STRUT_STT_MODEL`    | `zipformer-en-kroko` | Finals recognizer for `/audio/stream` + `/audio/transcribe` (hotword-capable) |
 | `STRUT_STT_PARTIAL_MODEL` | `nemo-fast-conformer-en-80ms` | Fast greedy recognizer whose output is shown as live partials; `off` for single-recognizer streams |
@@ -1130,6 +1131,23 @@ and the child env is scrubbed by construction).
   Versions are recorded, never inferred: `run.start.stepHashes` /
   `workflowHash`, and a subflow step's `step.start.subflow` — no record, no
   evidence.
+
+- **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
+  EVOLVE_SPEC §6). The `meta/*` steps publish only over names they stamped
+  `ai`, but RUN, read the runs of, and verify any workflow except a sealed
+  one — `sealed: true` at the top of its YAML, a grading harness whose run
+  log records what its graders were handed — and run any step except a
+  sealed one: the sealed namespaces (`eval/*`, `meta/*`, plus
+  `STRUT_SEALED`) or `sealed: true` on its def (the lab's graders seal
+  themselves; `gaia/*` is not sealed whole because `gaia/get-task` is the
+  producer's door). A publish whose closure reaches one — the step by type,
+  the workflow through a subflow, a grader in an `agentTools` grant — is
+  refused, as is a candidate that seals itself or a step authored into a
+  sealed namespace. So the job agent runs a seeded `pod-pr` through
+  `meta/run-workflow`, and an evolve candidate still cannot run, read, or
+  subflow its grader. Evidence is unchanged: only an unstamped harness
+  records `observed`. The web editor's Publish carries `sealed:` (and
+  `claims:`, `promotes:`) through from the version being edited.
 
 - **Automations — run a workflow on a schedule** (`plans/automations.md`;
   `src/automations.ts` pure, `src/scheduler.ts` stateful). An automation is

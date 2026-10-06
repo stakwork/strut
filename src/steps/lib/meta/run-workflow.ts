@@ -5,7 +5,7 @@ import { requireAuthoring } from "./_shared.js";
 export default defineStep({
   type: "meta/run-workflow",
   description:
-    "Run an agent-authored workflow (publisher 'ai' — i.e. published via meta/publish-workflow) with a given input, awaiting the result: { runId, status, output?, error? }. The candidate runs as its OWN persisted run (inspect it with meta/get-run). Sees steps and workflows published earlier in this same run (the registry is re-read fresh). Workflows the agent surface did not author are refused.",
+    "Run a published workflow with a given input, awaiting the result: { runId, status, output?, error? }. It runs as its OWN persisted run (inspect it with meta/get-run). Any workflow — a candidate you authored, a seeded one like pod-pr — except a SEALED one (a grading harness), which is refused by name. Sees steps and workflows published earlier in this same run (the registry is re-read fresh).",
   input: z.object({
     name: z.string().describe("Workflow name to run"),
     input: z

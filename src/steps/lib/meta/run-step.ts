@@ -5,7 +5,7 @@ import { requireAuthoring } from "./_shared.js";
 export default defineStep({
   type: "meta/run-step",
   description:
-    "Run a SINGLE step in isolation with a given config + input and return its output + events — the inner loop for authoring: meta/create-step → meta/run-step → meta/edit-step → meta/run-step until the output is right. Set cassette:'record' to run live AND capture the step's external service calls to a reusable fixture (secrets scrubbed); then cassette:'replay' to iterate OFFLINE against it — deterministic, no rate limits, no cost, no side effects. Sees steps published earlier in this same run (the registry is re-read fresh). Returns { runId, status, output?, error?, events, recorded?, kept? } — `kept` is the run-store key when the run was persisted.",
+    "Run a SINGLE step in isolation with a given config + input and return its output + events — the inner loop for authoring: meta/create-step → meta/run-step → meta/edit-step → meta/run-step until the output is right. A sealed step (a grader) is refused. Set cassette:'record' to run live AND capture the step's external service calls to a reusable fixture (secrets scrubbed); then cassette:'replay' to iterate OFFLINE against it — deterministic, no rate limits, no cost, no side effects. Sees steps published earlier in this same run (the registry is re-read fresh). Returns { runId, status, output?, error?, events, recorded?, kept? } — `kept` is the run-store key when the run was persisted.",
   input: z.object({
     type: z.string().describe("Step type to run, e.g. 'candidates/my-fetcher' or 'http'."),
     config: z

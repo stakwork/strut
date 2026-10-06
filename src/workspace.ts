@@ -57,9 +57,15 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   // to 404, so a bad block that reached disk would hide the workflow.
   const input = (parsed as { input?: unknown } | null)?.input;
   if (input != null) parseInputBlock(input);
+  // `sealed:` is `true` or absent. A mistyped seal must fail the publish:
+  // read as "not sealed" it would open a grading harness to the meta surface.
+  const sealed = (parsed as { sealed?: unknown } | null)?.sealed;
+  if (sealed != null && typeof sealed !== "boolean") {
+    throw new Error("Workflow YAML has an invalid `sealed:` key — it is `true` (a grading harness the meta surface may never run or reach) or absent.");
+  }
   // A `claims:` block is checked for SHAPE here (every backend, no graph
   // needed) so a malformed contract fails the publish like a bad `input:`;
-  // what it names (step types, the grader deny-list) is the claims layer's
+  // what it names (step types, the sealed check) is the claims layer's
   // check, at publish where there is one and at boot for seeded files.
   readClaimsBlock(parsed);
 }
@@ -139,6 +145,7 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
     // param) once at load, so a shared value can be factored into one knob.
     ...(data.params != null ? { params: resolveParamSelfReferences(data.params) } : {}),
     ...(Array.isArray(data.promotes) ? { promotes: data.promotes } : {}),
+    ...(data.sealed === true ? { sealed: true } : {}),
   };
 }
 
@@ -152,6 +159,8 @@ export interface WorkflowContent {
   promotes?: unknown[];
   /** The contract, as a `claims:` block (plans/claims.md §2, door one). */
   claims?: ClaimsBlock;
+  /** `sealed: true` — a grading harness (`src/sealed.ts`). */
+  sealed?: boolean;
 }
 
 export function renderWorkflowYaml(name: string, content: WorkflowContent | string): string {
@@ -165,6 +174,7 @@ export function renderWorkflowYaml(name: string, content: WorkflowContent | stri
           ...(content.params != null ? { params: content.params } : {}),
           ...(content.promotes != null ? { promotes: content.promotes } : {}),
           ...(content.claims != null ? { claims: content.claims } : {}),
+          ...(content.sealed ? { sealed: true } : {}),
         },
         { lineWidth: 120, noRefs: true },
       );

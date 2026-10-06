@@ -5,9 +5,9 @@ import { requireAuthoring } from "./_shared.js";
 export default defineStep({
   type: "meta/search-runs",
   description:
-    "Grep across the recent runs of an agent-authored workflow: match a regex against every event's JSON (inputs, outputs, errors) and get back (runId, event path, snippet) tuples plus a per-run frequency summary. The cross-run complement to meta/get-run — use it to answer 'which runs hit this, and how often?' (e.g. environment-gap signatures like 'command not found' or 'ModuleNotFoundError' — EVOLVE_SPEC §4.2), then meta/get-run to investigate one run. Note: tool outputs are truncated in the event log (~1500 chars), so a signature deep in long output can be missed. Run history of workflows the agent surface did not author is refused.",
+    "Grep across the recent runs of a workflow: match a regex against every event's JSON (inputs, outputs, errors) and get back (runId, event path, snippet) tuples plus a per-run frequency summary. The cross-run complement to meta/get-run — use it to answer 'which runs hit this, and how often?' (e.g. environment-gap signatures like 'command not found' or 'ModuleNotFoundError' — EVOLVE_SPEC §4.2), then meta/get-run to investigate one run. Note: tool outputs are truncated in the event log (~1500 chars), so a signature deep in long output can be missed. The run history of a SEALED workflow (a grading harness) is refused.",
   input: z.object({
-    name: z.string().describe("Workflow name whose runs to search (must be agent-authored)"),
+    name: z.string().describe("Workflow name whose runs to search (a sealed workflow is refused)"),
     pattern: z
       .string()
       .describe(

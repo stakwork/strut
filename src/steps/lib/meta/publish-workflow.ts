@@ -6,7 +6,7 @@ import { claimsArgSchema } from "../../../claims-schemas.js";
 export default defineStep({
   type: "meta/publish-workflow",
   description:
-    "Publish a workflow from YAML — an explicit UPSERT: a new name creates v1, an existing agent-authored name gets the next version (identical content is a no-op; prior versions are kept for rollback). Everything published here is stamped publisher 'ai' — that stamp is what later allows meta/run-workflow and meta/get-run on it. Publishing over a workflow the agent surface did NOT author is refused: author candidates under new names.",
+    "Publish a workflow from YAML — an explicit UPSERT: a new name creates v1, an existing agent-authored name gets the next version (identical content is a no-op; prior versions are kept for rollback). Everything published here is stamped publisher 'ai' — that stamp is what later allows meta/run-workflow and meta/get-run on it. Publishing over a workflow the agent surface did NOT author is refused: author candidates under new names. A workflow whose closure reaches anything SEALED — a grader step by type, a sealed workflow through a subflow, a grader in an agentTools grant — is refused, and a candidate may not declare `sealed: true` itself.",
   input: z.object({
     name: z.string().describe("Workflow name (kebab-case)"),
     yaml: z.string().describe("Full workflow YAML"),

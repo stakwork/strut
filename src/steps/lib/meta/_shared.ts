@@ -6,7 +6,7 @@ import type { AuthoringCapability } from "../../../authoring.js";
  * author/test/inspect operations as REGISTRY STEPS, so an in-workflow agent
  * (`agentTools: ["meta/*"]`) can author, test, and inspect candidate
  * workflows from inside a run. See EVOLVE_SPEC §5.2, and authoring.ts for
- * the ownership rule the capability enforces (§6).
+ * the sealed rule the capability enforces (§6, src/sealed.ts).
  *
  * GRANT DISCIPLINE (§5.3.2): an authoring agent gets `meta/*` and nothing
  * else — never `bash` alongside it, and never grader steps. The producing

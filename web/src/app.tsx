@@ -696,8 +696,16 @@ export function App() {
     const nums = (selectedEntry?.versions ?? [activeVersion]).map((v) => parseInt(v.replace(/^v/, ""), 10) || 0);
     const nextVersion = `v${Math.max(0, ...nums) + 1}`;
     const hasParams = localParams != null && Object.keys(localParams).length > 0;
+    // The editor models name / input / steps / params; every other top-level
+    // key of the version being edited — `claims:`, `promotes:`, `sealed:` —
+    // rides through unchanged.
+    let rest: Record<string, unknown> = {};
+    try {
+      const prev = yaml.load(await api.getWorkflowYaml(selectedWf, viewVersion ?? activeVersion)) as Record<string, unknown> | null;
+      rest = Object.fromEntries(Object.entries(prev ?? {}).filter(([k]) => !["name", "input", "steps", "params"].includes(k)));
+    } catch { /* publish what the editor has */ }
     const yamlStr = yaml.dump(
-      { name: selectedWf, ...(localInput ? { input: localInput } : {}), steps: localSteps, ...(hasParams ? { params: localParams } : {}) },
+      { name: selectedWf, ...(localInput ? { input: localInput } : {}), steps: localSteps, ...(hasParams ? { params: localParams } : {}), ...rest },
       { lineWidth: 120, noRefs: true },
     );
     await api.publishWorkflowYaml(selectedWf, nextVersion, yamlStr);
@@ -709,7 +717,7 @@ export function App() {
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
     setLocalInput(flow.input ?? null);
-  }, [selectedWf, selectedEntry, localSteps, localParams, localInput, activeVersion, refreshWorkflows]);
+  }, [selectedWf, selectedEntry, localSteps, localParams, localInput, activeVersion, viewVersion, refreshWorkflows]);
 
   // Roll back (or forward) to a stored version: it becomes what Run,
   // schedules and the canvas use. Nothing is published, so unsaved canvas

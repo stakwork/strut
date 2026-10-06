@@ -13,8 +13,9 @@ import { mergeClaimSpecs } from "./claims-authoring.js";
 
 /**
  * The authoring capability (services.authoring) + the meta/* lib steps —
- * EVOLVE_SPEC §5.2/§6: an in-workflow agent's author/test/inspect surface,
- * closed over the artifacts it publishes (publisher "ai").
+ * EVOLVE_SPEC §5.2/§6: an in-workflow agent's author/test/inspect surface.
+ * It publishes only over what it stamped (publisher "ai"), and runs or
+ * inspects anything but what is SEALED (src/sealed.ts).
  *
  * Authored step sources deliberately avoid `import "strut"`: the temp
  * workspace lives outside the package tree, where that specifier can't
@@ -150,7 +151,7 @@ describe("authoring capability (the meta surface)", () => {
     assert.ok(res.error && /only edits steps it authored/.test(res.error), res.error);
   });
 
-  it("publishWorkflow stamps publisher 'ai'; run + run-history are closed over the stamped set", async () => {
+  it("publishWorkflow stamps publisher 'ai' and publishes only over that stamped set; a seeded workflow runs and reads back", async () => {
     // Candidate: published through the meta surface → stamped.
     const pub = (await authoring.publishWorkflow("cand-flow", logFlow("cand-flow", "v1"))) as any;
     assert.equal(pub.ok, true, JSON.stringify(pub));
@@ -167,20 +168,21 @@ describe("authoring capability (the meta surface)", () => {
     const bumped = (await authoring.publishWorkflow("cand-flow", logFlow("cand-flow", "v2"))) as any;
     assert.equal(bumped.version, "v2");
 
-    // Harness: created outside the meta surface → unstamped.
-    await strut.workspace.createWorkflow("harness-flow", logFlow("harness-flow", "gold"));
+    // Seeded outside the meta surface → unstamped: never published over…
+    await strut.workspace.createWorkflow("pod-pr", logFlow("pod-pr", "gold"));
 
     const overwrite = (await authoring.publishWorkflow(
-      "harness-flow",
-      logFlow("harness-flow", "evil"),
+      "pod-pr",
+      logFlow("pod-pr", "evil"),
     )) as any;
     assert.ok(overwrite.error && /not agent-authored/.test(overwrite.error), overwrite.error);
 
-    const runRefused = (await authoring.runWorkflow("harness-flow")) as any;
-    assert.ok(runRefused.error && /not agent-authored/.test(runRefused.error));
-
-    const historyRefused = (await authoring.listRuns("harness-flow")) as any;
-    assert.ok(historyRefused.error && /not agent-authored/.test(historyRefused.error));
+    // …but not sealed, so it runs and its runs read back like a candidate's
+    // (the job agent running a seeded pod-pr through meta/run-workflow).
+    const seeded = (await authoring.runWorkflow("pod-pr")) as any;
+    assert.equal(seeded.status, "success", JSON.stringify(seeded.error));
+    const seededRuns = (await authoring.listRuns("pod-pr")) as any;
+    assert.deepEqual(seededRuns.runs.map((r: any) => r.runId), [seeded.runId]);
 
     // The stamped candidate runs, and its run history reads back.
     const result = (await authoring.runWorkflow("cand-flow", {})) as any;
@@ -198,7 +200,7 @@ describe("authoring capability (the meta surface)", () => {
     assert.equal(run.steps[0].input, undefined);
   });
 
-  it("searchRuns greps event logs across runs, gated to the stamped set", async () => {
+  it("searchRuns greps event logs across runs", async () => {
     // Two runs of a stamped candidate: one carries an env-gap signature, one is clean.
     const yaml = `name: cand-search\nsteps:\n  - id: say\n    type: log\n    config:\n      message: "{{ input.msg }}"\n`;
     const pub = (await authoring.publishWorkflow("cand-search", yaml)) as any;
@@ -241,10 +243,60 @@ describe("authoring capability (the meta surface)", () => {
     // Bad regex → a handed-back error, not a throw.
     const invalid = (await authoring.searchRuns("cand-search", "(unclosed")) as any;
     assert.ok(invalid.error && /Invalid pattern/.test(invalid.error), invalid.error);
+  });
 
-    // The ownership gate holds: unstamped workflows' logs are not searchable.
-    const refused = (await authoring.searchRuns("harness-flow", "gold")) as any;
-    assert.ok(refused.error && /not agent-authored/.test(refused.error), refused.error);
+  it("sealed (EVOLVE_SPEC §6): a grading harness and a grader step are refused by name; a publish that reaches one is refused", async () => {
+    // A seeded grading harness: `sealed: true` at the top of its YAML.
+    await strut.workspace.createWorkflow("grader-flow", `name: grader-flow\nsealed: true\nsteps:\n  - id: say\n    type: log\n    config:\n      message: "gold"\n`);
+    await strut.run("grader-flow", {});
+    // A seeded grader step: `sealed: true` on its def (its namespace is the
+    // producer's too — gaia/get-task is the door — so the step seals itself).
+    await strut.workspace.publishStep("gaia/evaluate", echoStep("gaia/evaluate", 1).replace("type:", "sealed: true,\n  type:"), undefined, "gaia-seed");
+
+    for (const call of [
+      () => authoring.runWorkflow("grader-flow"),
+      () => authoring.runWorkflow("grader-flow", {}, undefined, "v1"),
+      () => authoring.listRuns("grader-flow"),
+      () => authoring.getRun("grader-flow", "whatever"),
+      () => authoring.searchRuns("grader-flow", "gold"),
+    ]) {
+      const r = (await call()) as any;
+      assert.ok(r.error && /is sealed \(a grading harness/.test(r.error), JSON.stringify(r));
+    }
+    assert.match(((await authoring.runStep("gaia/evaluate", { config: { msg: "x" } })) as any).error, /is sealed \(a grader\)/);
+    assert.match(((await authoring.listRuns("step:gaia/evaluate")) as any).error, /is sealed \(a grader\)/);
+    // The sealed namespaces: nothing is authored into them.
+    assert.match(((await authoring.createStep("eval/sneak", echoStep("eval/sneak", 1))) as any).error, /sealed namespace/);
+    assert.ok(!(await strut.workspace.listSteps()).some((s) => s.type === "eval/sneak"));
+    // Reading the harness's YAML is fine — the producer is meant to see it.
+    assert.ok(((await authoring.getWorkflow("grader-flow")) as any).yaml.includes("sealed: true"));
+
+    // Publishing: nothing in a candidate's closure may be sealed, and it may
+    // not seal itself.
+    const refused = async (body: string, re: RegExp) => {
+      const r = (await authoring.publishWorkflow("cand-sealed", `name: cand-sealed\n${body}`)) as any;
+      assert.ok(r.error && re.test(r.error), r.error);
+    };
+    await refused(`steps:\n  - id: s\n    type: subflow\n    config:\n      workflow: grader-flow\n      input: {}\n`, /sealed workflow "grader-flow"/);
+    await refused(`steps:\n  - id: g\n    type: gaia/evaluate\n    config:\n      msg: x\n`, /sealed step "gaia\/evaluate"/);
+    await refused(`steps:\n  - id: a\n    type: agent\n    config:\n      prompt: go\n      agentTools: ["meta/*"]\n`, /sealed grant "meta\/\*"/);
+    await refused(`steps:\n  - id: a\n    type: agent\n    config:\n      prompt: go\n      agentTools: ["gaia/*"]\n`, /sealed grant "gaia\/\*" \(reaches "gaia\/evaluate"\)/);
+    await refused(`sealed: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n`, /declares `sealed: true`/);
+    assert.ok(!(await strut.workspace.listWorkflows()).some((w) => w.name === "cand-sealed"), "nothing was published");
+    // An open seeded workflow is fair game, one hop away included.
+    const open = (await authoring.publishWorkflow("cand-open", `name: cand-open\nsteps:\n  - id: s\n    type: subflow\n    config:\n      workflow: pod-pr\n      input: {}\n`)) as any;
+    assert.equal(open.ok, true, JSON.stringify(open));
+  });
+
+  it("the job agent's shape: a workflow whose meta/run-workflow step runs a seeded pod-pr", async () => {
+    await strut.workspace.createWorkflow("job-like", `name: job-like\nsteps:\n  - id: run\n    type: meta/run-workflow\n    config:\n      name: "{{ input.name }}"\n      input: {}\n`);
+    const ok = await strut.run("job-like", { name: "pod-pr" });
+    assert.equal(ok.status, "success", JSON.stringify(ok.error));
+    assert.equal((ok.output as any).status, "success");
+    // The same step over the harness: refused, as a result the agent reads.
+    const sealed = await strut.run("job-like", { name: "grader-flow" });
+    assert.equal(sealed.status, "success", JSON.stringify(sealed.error));
+    assert.match(String((sealed.output as any).error), /is sealed/);
   });
 
   it("runWorkflow sees a step authored moments before (fresh registry, §5.3.1)", async () => {

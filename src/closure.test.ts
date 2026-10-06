@@ -43,6 +43,15 @@ describe("flowClosure", () => {
     assert.equal(c.resolvable, true);
   });
 
+  it("a reached child that declares sealed: true is marked", async () => {
+    const flows = {
+      grader: { ...flow("grader", [step("g", "log")]), sealed: true },
+      plain: flow("plain", [step("p", "log")]),
+      parent: flow("parent", [step("s", "subflow", { workflow: "grader" }), step("t", "subflow", { workflow: "plain" })]),
+    };
+    assert.deepEqual((await flowClosure(flows.parent, resolver(flows))).workflows, [{ workflow: "grader", sealed: true }, { workflow: "plain" }]);
+  });
+
   it("collects agentTools grants verbatim; closureIncludes expands globs", async () => {
     const c = await flowClosure(flow("f", [step("a", "agent", { agentTools: ["clip/*", "http"] })]));
     assert.deepEqual([...c.agentTools], ["clip/*", "http"]);

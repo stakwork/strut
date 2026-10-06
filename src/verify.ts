@@ -20,7 +20,7 @@
  *   - verify its own runs. Checks run with `origin: "verify"`, and such runs
  *     are skipped by every trigger — a check workflow that has claims would
  *     otherwise verify its checks, whose checks verify theirs;
- *   - let a producer-visible check reach a grader: the deny-list is applied
+ *   - let a producer-visible check reach a grader: the sealed check is applied
  *     to the check CLOSURE again here, because a subflow child can be
  *     republished after the check was written;
  *   - overspend: a check presumed paid is skipped once a cap is hit, and any
@@ -29,7 +29,7 @@
 import { createHash } from "node:crypto";
 import { closureIncludes, flowClosure } from "./closure.js";
 import type { RunEvent, StepRegistry } from "./core.js";
-import { deniedInClosure, verifyDenyPatterns } from "./claims-authoring.js";
+import { sealedInClosure, sealedStepPatterns } from "./sealed.js";
 import type { GraphBackend } from "./graph/backend.js";
 import {
   CLAIM_EDGES,
@@ -501,8 +501,8 @@ export function createVerifier(deps: VerifierDeps) {
     const closure = await flowClosure({ steps: [{ id: "check", type, config }] }, workspace);
     if (check.publisher === AI_STAMP) {
       if (!closure.resolvable) return { skipped: "denied", reason: "the check's closure cannot be resolved" };
-      const grader = deniedInClosure(closure, verifyDenyPatterns(env()), Object.keys(pass.registry));
-      if (grader) return { skipped: "denied", reason: `reaches a harness-only step (${grader})` };
+      const grader = sealedInClosure(closure, pass.registry, sealedStepPatterns(env()));
+      if (grader) return { skipped: "denied", reason: `reaches a sealed ${grader}` };
     }
     const paidInClosure = !closure.resolvable || PAID_STEP_TYPES.some((t) => closureIncludes(closure, t));
     if (paidInClosure) {

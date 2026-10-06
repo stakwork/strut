@@ -13,7 +13,9 @@
  * A `subflow` whose `workflow` (or `version`) is a template, a child that
  * does not resolve, or a templated `agentTools` makes the closure
  * UNRESOLVABLE: what was collected is then a lower bound, and each consumer
- * takes its own conservative reading.
+ * takes its own conservative reading. A reached child that declares
+ * `sealed: true` is marked, so `src/sealed.ts` can refuse a flow that
+ * subflows a grading harness.
  */
 import type { Flow, Step } from "./core.js";
 import { hasTemplates } from "./expr.js";
@@ -48,8 +50,9 @@ export interface FlowClosure {
   types: Set<string>;
   /** `agentTools` entries granted anywhere in the closure, verbatim. */
   agentTools: Set<string>;
-  /** Child workflows reached through `subflow`, in discovery order. */
-  workflows: Array<{ workflow: string; version?: string }>;
+  /** Child workflows reached through `subflow`, in discovery order; `sealed`
+   *  when the child's YAML says so (`src/sealed.ts`). */
+  workflows: Array<{ workflow: string; version?: string; sealed?: true }>;
   /** False = a lower bound (see module doc). */
   resolvable: boolean;
 }
@@ -59,7 +62,7 @@ export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: Subflow
   const seen = new Set<string>();
 
   const visitFlow = async (steps: readonly Step[]): Promise<void> => {
-    const children: Array<{ workflow: string; version?: string }> = [];
+    const children: FlowClosure["workflows"] = [];
     walkSteps(steps, (s) => {
       out.types.add(baseType(s.type));
       const cfg = (s.config ?? {}) as Record<string, unknown>;
@@ -85,6 +88,7 @@ export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: Subflow
       try {
         if (!workspace) throw new Error("no workspace");
         const child = c.version ? await workspace.getWorkflowVersion(c.workflow, c.version) : await workspace.getWorkflow(c.workflow);
+        if (child.sealed) c.sealed = true;
         await visitFlow(child.steps);
       } catch {
         out.resolvable = false;

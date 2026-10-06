@@ -18,18 +18,20 @@
  *     stamped, and may attach claims only to subjects it published. An
  *     always-passing check hung on a seeded contract line would otherwise
  *     read as `supported` whenever the real check was skipped;
- *   - FIXED POINT 2 — a check stamped `ai` may not reach a grader: no
- *     harness-only step type (`gaia/*`, `harvey/*`, `eval/*`, `meta/*`, plus
- *     `STRUT_VERIFY_DENY`) anywhere in the check CLOSURE — named, nested in
- *     a subflow child, or granted to an agent — and an unresolvable closure
- *     is refused. Enforced here at write; the verify pass enforces it again
- *     at run time, because a subflow child can be republished afterwards.
+ *   - FIXED POINT 2 — a check stamped `ai` may not reach a grader: nothing
+ *     SEALED (`src/sealed.ts`: the sealed namespaces `eval/*`, `meta/*` plus
+ *     `STRUT_SEALED`, a step def's `sealed: true`, a workflow's `sealed:
+ *     true`) anywhere in the check CLOSURE — named, nested in a subflow
+ *     child, or granted to an agent — and an unresolvable closure is
+ *     refused. Enforced here at write; the verify pass enforces it again at
+ *     run time, because a subflow child can be republished afterwards.
  *
  * Every method returns a plain result (`{ ok: true, … }` or `{ error }`) —
  * the shape the tool layer hands to a model.
  */
 import yaml from "js-yaml";
-import { closureIncludes, flowClosure, globToRegExp, type FlowClosure } from "./closure.js";
+import { closureIncludes, flowClosure } from "./closure.js";
+import { sealedInClosure, sealedStepPatterns } from "./sealed.js";
 import { validateWorkflowYaml } from "./validate.js";
 import type { StepRegistry } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
@@ -92,33 +94,6 @@ export const YAML_STAMP = "yaml";
 const RUN_WHENS: readonly RunWhen[] = ["run", "publish"];
 const POLICIES: readonly CheckPolicy[] = ["always", "on_change", "sample", "manual"];
 const PAID_STEP_TYPES = ["agent", "llm"];
-
-/** Harness-only namespaces a producer-visible check must never reach. */
-export const DEFAULT_VERIFY_DENY = ["gaia/*", "harvey/*", "eval/*", "meta/*"];
-
-export function verifyDenyPatterns(env: Record<string, string | undefined> = process.env): string[] {
-  const extra = (env["STRUT_VERIFY_DENY"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  return [...new Set([...DEFAULT_VERIFY_DENY, ...extra])];
-}
-
-/**
- * The first grader a check closure reaches, or null. A step type is checked
- * by name; an `agentTools` grant is checked both literally (`"gaia/*"`) and
- * expanded over the registry (`"*"` reaches `gaia/evaluate`).
- */
-export function deniedInClosure(closure: FlowClosure, deny: readonly string[], registryTypes: readonly string[]): string | null {
-  const res = deny.map((p) => ({ p, re: globToRegExp(p) }));
-  const hit = (type: string) => res.find((d) => d.re.test(type));
-  for (const t of closure.types) if (hit(t)) return t;
-  for (const grant of closure.agentTools) {
-    if (hit(grant) || res.some((d) => d.p === grant)) return grant;
-    if (!grant.includes("*")) continue;
-    const re = globToRegExp(grant);
-    const reached = registryTypes.find((t) => re.test(t) && hit(t));
-    if (reached) return `${grant} (reaches ${reached})`;
-  }
-  return null;
-}
 
 export function toSubjectRef(s: SubjectInput): SubjectRef {
   return s.kind === "workflow" ? { kind: "workflow", name: s.name } : { kind: "step", type: s.name };
@@ -210,7 +185,7 @@ export type ClaimsAuthoring = ReturnType<typeof buildClaimsAuthoring>;
 export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
   const reader = new ClaimsReader(deps.graph);
   const writer = new ClaimsWriter(deps.graph, reader);
-  const deny = () => verifyDenyPatterns(deps.env ?? process.env);
+  const sealedPatterns = () => sealedStepPatterns(deps.env ?? process.env);
 
   /** What validating a check needs from the deployment, resolved ONCE per
    *  call (a registry rebuild re-materializes every custom step, so it is
@@ -272,9 +247,9 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       if (!closure.resolvable) {
         throw new ClaimsError("REFUSED", `${where}: this check's closure cannot be resolved (a subflow with a templated or missing \`workflow\`/\`version\`, or templated agentTools) — a check must name exactly what it runs`);
       }
-      const grader = deniedInClosure(closure, deny(), Object.keys(registry));
+      const grader = sealedInClosure(closure, registry, sealedPatterns());
       if (grader) {
-        throw new ClaimsError("REFUSED", `${where}: a check may not reach a harness-only step (${grader}) — a contract the producer can see must never embed its grader`);
+        throw new ClaimsError("REFUSED", `${where}: a check may not reach a sealed ${grader} — a contract the producer can see must never embed its grader`);
       }
     }
     // The same static check a workflow gets — a check IS a one-step flow whose
