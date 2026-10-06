@@ -138,6 +138,19 @@ export function parseCompaction(text: string): { messages: number; tokens: numbe
 
 // ── the summarizer call ────────────────────────────────────────────────────
 
+/** The system prompt as a request sends it: with a cache breakpoint of its
+ *  own when the request caches (Anthropic's `cacheControl`). Tools render
+ *  before the system prompt, so this makes tools + system a cache entry by
+ *  itself — the prefix the first request after a boundary shares with the
+ *  ones before it. The automatic breakpoint alone sits at the end of the
+ *  messages, so that request found nothing to read and wrote tools + system
+ *  again (25k tokens for the builder). */
+export function cachedSystem(system: string | undefined, providerOptions: unknown): unknown {
+  const cacheControl = (providerOptions as { anthropic?: { cacheControl?: unknown } } | undefined)?.anthropic?.cacheControl;
+  if (!system || !cacheControl) return system;
+  return { role: "system", content: system, providerOptions: { anthropic: { cacheControl } } };
+}
+
 /** The tool set with every `execute` removed: the same definitions on the
  *  wire, and a call the model makes anyway runs nothing. */
 export function stripExecute<T extends Record<string, unknown>>(tools: T): T {
@@ -163,8 +176,9 @@ export interface SummarizeOptions {
     steps: PromiseLike<unknown[]>;
   };
   model: unknown;
-  /** The loop's own system prompt, tools and provider options — the prefix. */
-  system?: string;
+  /** The loop's own system prompt (as it sends it — `cachedSystem`), tools
+   *  and provider options — the prefix. */
+  system?: unknown;
   tools?: Record<string, unknown>;
   providerOptions?: unknown;
   /** The conversation as the request stands. */

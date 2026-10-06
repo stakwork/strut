@@ -337,6 +337,11 @@ describe("agent sessions", () => {
       assert.equal(systemOf(summarizer), systemOf(first));
       assert.deepEqual(summarizer.tools, first.tools);
       assert.deepEqual(summarizer.tool_choice, first.tool_choice);
+      // Tools + system end in a cache breakpoint of their own on every
+      // request: the prefix the request after the boundary can read.
+      for (const body of [first, summarizer, after]) {
+        assert.deepEqual(body.system.at(-1).cache_control, body.cache_control, JSON.stringify(body.system));
+      }
       // (The tool result and the instruction are both user turns: one
       // message on the wire, the result first.)
       const msgs = summarizer.messages as any[];

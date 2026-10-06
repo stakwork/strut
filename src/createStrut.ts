@@ -21,7 +21,7 @@ import {
   toolResultMaxCharsFromEnv,
   truncateToolMessages,
 } from "./chat-store.js";
-import { CHAT_RETAIN, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
+import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
 import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
@@ -2635,6 +2635,8 @@ export async function createStrut<TServices = unknown>(
           const providerOptions =
             llm.provider === "anthropic" ? { anthropic: { cacheControl: { type: "ephemeral" as const } } } : undefined;
           const tools = buildTools(deps);
+          // What the requests send: the frozen prompt, with its own cache breakpoint.
+          const instructions = cachedSystem(system, providerOptions) as any;
           // The context after the latest model call, and the compaction mark
           // against it (plans/compaction.md §5). Set in `onStepEnd`, which the
           // SDK awaits before it asks `stopWhen` — never from the event loop
@@ -2648,7 +2650,7 @@ export async function createStrut<TServices = unknown>(
           const makeAgent = (budget: number) =>
             new ToolLoopAgent({
               model: llm.model,
-              instructions: system,
+              instructions,
               tools,
               maxOutputTokens: llm.maxOutputTokens,
               ...(providerOptions ? { providerOptions } : {}),
@@ -2791,7 +2793,7 @@ export async function createStrut<TServices = unknown>(
                 const got = await summarize({
                   streamText,
                   model: llm.model,
-                  system,
+                  system: instructions,
                   tools,
                   providerOptions,
                   messages: sent,

@@ -726,6 +726,11 @@ describe("chat endpoints", () => {
       assert.deepEqual(summarizer.tools, first.tools);
       assert.deepEqual(summarizer.cache_control, first.cache_control);
       assert.deepEqual(summarizer.tool_choice, first.tool_choice);
+      // Tools + system end in a cache breakpoint of their own on every
+      // request: the prefix the request after the boundary can read.
+      for (const body of [first, summarizer, after]) {
+        assert.deepEqual(body.system.at(-1).cache_control, body.cache_control, JSON.stringify(body.system).slice(-200));
+      }
       const closing = JSON.stringify(summarizer.messages.at(-1));
       assert.ok(closing.includes("tool_result"), "the tool round is closed before the summary");
       assert.ok(closing.indexOf("tool_result") < closing.indexOf("respond with text only."));

@@ -5,7 +5,7 @@ import { idProblem, type OpenSession, type SessionsCapability } from "../../sess
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { accessedNodesOf, defineStep, mediaOf, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
-import { AGENT_RETAIN, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "../../compaction.js";
+import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
 import { resolveStep } from "../registry.js";
@@ -1339,6 +1339,8 @@ export default defineStep({
     // cache (and thinking blocks bound to the prefix) need it byte for byte.
     const session = cfg.session ? await openSession(cfg.session, ctx, resolved, compactAt) : undefined;
     const system = session?.system ?? cfg.system;
+    // What the requests send: the same text, with its own cache breakpoint.
+    const instructions = cachedSystem(system, providerOptions) as any;
     if (session?.system != null && session.system !== cfg.system) {
       console.warn(`[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`);
     }
@@ -1426,7 +1428,7 @@ export default defineStep({
       const makeRunner = (budget: number) =>
         new ToolLoopAgent({
           model,
-          instructions: system,
+          instructions,
           tools,
           maxOutputTokens,
           stopWhen: stopConditions(budget),
@@ -1482,7 +1484,7 @@ export default defineStep({
         const startedAt = Date.now();
         if (path) await emit!({ type: "step.start", path, stepType: "compaction", input: { at: where, messages: before.length, tokens } });
         try {
-          const got = await summarize({ streamText, model, system, tools, providerOptions, messages: before, retain: AGENT_RETAIN });
+          const got = await summarize({ streamText, model, system: instructions, tools, providerOptions, messages: before, retain: AGENT_RETAIN });
           bankedUsage = addUsage(bankedUsage, got.usage);
           if (got.summary === undefined) throw new Error(`the summary ended with finishReason "${got.finishReason}"`);
           const text = compactionMessage(got.summary, { messages: before.length, tokens });
@@ -1667,7 +1669,7 @@ export default defineStep({
       const continueLoop = async (nudge: { role: "user"; content: string }, budget: number) => {
         const nudger = new ToolLoopAgent({
           model,
-          instructions: system,
+          instructions,
           tools,
           maxOutputTokens,
           // At least a few turns even when the stop came near the cap —
