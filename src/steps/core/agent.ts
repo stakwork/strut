@@ -30,7 +30,8 @@ import os from "node:os";
  * cannot, and substitutes the cheapest tool call instead — observed live on
  * Sonnet 5.5 as `true` / `echo done` repeated until the step cap, and
  * reproduced direct to the provider. A terminal tool leaves the text free;
- * the grammar is only used for the forced no-tools turn, where it is safe.
+ * the grammar is only used for the forced final-answer turn — one request,
+ * no loop, the model told not to call tools — where it is safe.
  *
  * The tools are general (work on any codebase / working dir), so the step is
  * domain-agnostic: point it at a `cwd`, give it a `system` + `prompt`, and
@@ -863,6 +864,23 @@ export async function openSession(
   return session;
 }
 
+/** The tool set with every `execute` removed: the same definitions on the
+ *  wire — the prefix a replayed thinking block is bound to, and the prompt
+ *  cache's — and a call the model makes anyway runs nothing. (The twin of the
+ *  compaction summarizer's, plans/compaction.md §3.) */
+export function stripExecute<T extends Record<string, unknown>>(tools: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [name, t] of Object.entries(tools)) {
+    if (t && typeof t === "object" && "execute" in t) {
+      const { execute: _execute, ...rest } = t as Record<string, unknown>;
+      out[name] = rest;
+    } else {
+      out[name] = t;
+    }
+  }
+  return out as T;
+}
+
 /** The transcript recorded for an agent session (`RunEvent.messages`): the
  *  system prompt, the task prompt as the model saw it (cwd preamble included),
  *  then every generated turn — AI SDK model messages, the shape a log store
@@ -1644,11 +1662,24 @@ export default defineStep({
       // The loop ended (budget exhausted, or the nudge also stopped tool-lessly)
       // WITHOUT calling final_answer, so we'd otherwise return a stray reasoning
       // sentence and lose the whole (expensive) exploration. Salvage it: force
-      // ONE no-tools turn that must emit the final answer now, continuing the
-      // full session. With no tools in the request, schema mode may ask the
-      // SDK for the object through its output grammar here — a single answer
-      // turn is what the grammar is for; it is over a tool LOOP that it fails
-      // (see the header).
+      // ONE answer turn that must emit the final answer now, continuing the
+      // full session. The request is the loop's own PREFIX — `system`, the
+      // same `tools` (their `execute` removed, so a call the model makes
+      // anyway runs nothing) and `providerOptions` — then the conversation
+      // and the forced prompt, which tells the model not to call tools. Under
+      // Anthropic's preserved thinking (Fable 5.1 / Opus 5.5) a replayed
+      // thinking block is bound to system + tools + the messages before it,
+      // so a request that dropped either was a 400 on an enforced account —
+      // and a whole-cache miss everywhere, the tools heading the cached
+      // prefix. Schema mode still asks for the object through the SDK's
+      // output grammar: a single answer turn is what the grammar is for; it
+      // is over a tool LOOP that it fails (see the header). Beside tools the
+      // provider sends it as `output_config.format` (Opus 4.1 and every model
+      // since) — a request field outside system / tools / messages, so not
+      // part of the bound prefix; on Sonnet 4 / Opus 4 the SDK's fallback
+      // appends a `json` tool and forces it, which changes the tool set and
+      // misses the cache as the no-tools request always did — those models
+      // have no preserved thinking to break.
       if (answer === undefined) {
         console.warn("[agent] No final_answer tool call; forcing a final-answer turn.");
         try {
@@ -1660,21 +1691,30 @@ export default defineStep({
           };
           const forced = streamText({
             model,
+            system,
+            tools: stripExecute(tools),
             ...(providerOptions ? { providerOptions } : {}),
             ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
-            // A thread's history leads, with this turn's task; without one
-            // the forced turn is what it always was.
-            messages: [...(prior.length ? head : []), ...(messages as any[]), forcedPrompt],
+            // The conversation as the model saw it — the thread, this turn's
+            // task, what was generated — then the forced prompt: the nudge's
+            // shape. (It used to drop `head` on a run with no thread, so the
+            // request began at the first assistant turn: an edited prefix.)
+            messages: [...head, ...(messages as any[]), forcedPrompt],
           } as any);
           await drain(forced);
-          // The recorded session keeps this turn too.
-          messages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
-          const got: unknown = useSchema ? await (forced as any).output : ((await forced.text) ?? "").trim();
-          if (got !== undefined && got !== "") {
-            answer = got;
-            const fu = usageFromSteps(await forced.steps);
-            usage = addUsage(usage, fu);
-            cost += costOf(fu);
+          const fu = usageFromSteps(await forced.steps);
+          usage = addUsage(usage, fu);
+          cost += costOf(fu);
+          if (((await forced.toolCalls) as unknown[]).length) {
+            // A tool call despite the instruction: it ran nothing and answers
+            // nothing, and it is not recorded — a call without its result in
+            // the session store would fail the thread's next request.
+            console.warn("[agent] the forced final-answer turn called a tool instead of answering; nothing to salvage.");
+          } else {
+            // The recorded session keeps this turn too.
+            messages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
+            const got: unknown = useSchema ? await (forced as any).output : ((await forced.text) ?? "").trim();
+            if (got !== undefined && got !== "") answer = got;
           }
         } catch (e) {
           giveUp("forced final-answer turn", e);

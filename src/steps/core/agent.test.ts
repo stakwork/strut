@@ -687,7 +687,7 @@ describe("classifyFinalAnswerStop (premature text-only stop vs exhausted budget)
     assert.equal(classifyFinalAnswerStop(false, 1, 40), "nudge");
   });
 
-  it("exhausted at (or beyond) the step cap — only a no-tools forced turn is left", () => {
+  it("exhausted at (or beyond) the step cap — only the forced final-answer turn is left", () => {
     assert.equal(classifyFinalAnswerStop(false, 40, 40), "exhausted");
     assert.equal(classifyFinalAnswerStop(false, 41, 40), "exhausted");
   });
@@ -1263,7 +1263,7 @@ describe("mid-stream socket death is resumed, not lost", () => {
     }
   });
 
-  it("schema mode: no final_answer at all → one nudge, then a forced no-tools turn through the output grammar", async () => {
+  it("schema mode: no final_answer at all → one nudge, then a forced turn through the output grammar, on the loop's own system and tools", async () => {
     const s = await serve((call, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(msgStart());
@@ -1280,9 +1280,16 @@ describe("mid-stream socket death is resumed, not lost", () => {
       assert.equal(out.object.summary, "forced");
       assert.equal(s.calls(), 3);
       assert.ok((s.bodies[1] ?? "").includes("have NOT called final_answer"), "the nudge");
+      const nudged = JSON.parse(s.bodies[1] ?? "{}");
       const forced = JSON.parse(s.bodies[2] ?? "{}");
-      assert.equal(forced.tools, undefined, "the forced turn offers no tools");
-      assert.ok(forced.output_config, "and asks for the object through the grammar, where no loop can go wrong");
+      // The forced turn keeps the loop's prefix — the system prompt and the
+      // same tools, inert — so a replayed thinking block stays bound to it and
+      // the cache holds; the object is asked for as `output_config.format`
+      // BESIDE the tools, never through a forced `json` tool.
+      assert.deepEqual(forced.system, nudged.system, "the same system prompt");
+      assert.deepEqual(forced.tools, nudged.tools, "the same tools");
+      assert.deepEqual(forced.tool_choice, nudged.tool_choice, "never a forced tool choice");
+      assert.equal(forced.output_config?.format?.type, "json_schema", "and asks for the object through the grammar, where no loop can go wrong");
       assert.ok((s.bodies[2] ?? "").includes("produce the final structured answer NOW"));
     } finally {
       s.close();

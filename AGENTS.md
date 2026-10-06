@@ -1370,7 +1370,11 @@ and the child env is scrubbed by construction).
   the step returns the object it was called with — never the SDK's
   `Output.object` grammar over the loop, which forbids all free text and
   made Sonnet 5.5 mark time with `true` / `echo done` tool calls until the
-  step cap; the grammar is used only for the forced no-tools answer turn),
+  step cap; the grammar is used only for the forced final-answer turn — one
+  request on the loop's own `system` and `tools`, their `execute` removed,
+  the model told not to call them: under preserved thinking a replayed
+  thinking block is bound to system + tools + the messages before it, and
+  the tools head the prompt cache, so the salvage turn must not drop them),
   or the final assistant text. A no-op loop guard runs in every mode: after
   three consecutive steps that are one identical tool call with an
   identical result, the next step offers only `final_answer` (no tools in
