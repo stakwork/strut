@@ -1,12 +1,13 @@
 /**
  * Deliverables (plans/jobs.md §3): a workflow's output may carry
- * `artifacts: [{ id, kind?, title, path | url | content }]` — what a run
+ * `artifacts: [{ id, kind?, title, path?, url?, content? }]` — what a run
  * hands the human to LOOK at, as opposed to read in prose. Strut resolves
  * the list once, where a host receives it (the `run.end` callback and
  * `GET …/runs/:runId/artifacts`): a `path` becomes a URL on this server —
  * in the job's directory for a run launched with a job, else in the run's
- * own artifact directory — a `url` and a `content` pass through, and a
- * missing `kind` is read off the file's extension. `output` itself is
+ * own artifact directory — a `url` and a `content` pass through (both, when
+ * both are given — the fields are not exclusive), and a missing `kind` is
+ * read off the file's extension. `output` itself is
  * never rewritten.
  *
  * `kind` is the HOST's renderer vocabulary (hive's canvas chat:
@@ -93,7 +94,7 @@ export function artifactEntriesOf(output: unknown): unknown[] | undefined {
 /**
  * Resolve a run's declared artifacts. Entries with no `id` or `title` are
  * dropped (nothing to key or name them by); every other entry comes back,
- * with a `url` / `content` or an `error`. Undefined when the output
+ * with a `url` and/or `content`, or an `error`. Undefined when the output
  * declares none.
  */
 export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsAt): Promise<ArtifactRef[] | undefined> {
@@ -118,31 +119,38 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
     const path = text(raw["path"]);
     const url = text(raw["url"]);
     const hasContent = raw["content"] !== undefined && raw["content"] !== null;
-    const given = [path !== undefined, url !== undefined, hasContent].filter(Boolean).length;
-    if (given !== 1) {
-      out.push({ ...ref, error: given === 0 ? "one of path, url or content is required" : "only one of path, url or content" });
+    if (path === undefined && url === undefined && !hasContent) {
+      out.push({ ...ref, error: "one of path, url or content is required" });
       continue;
     }
+    // The three are not exclusive: a model names a pull request by its
+    // link AND its fields, and both reach the host. Only a `path` needs
+    // strut (it knows where the file is); it takes the place of a `url`.
+    // A `content` rides along whichever way the location resolved.
+    let error: string | undefined;
     if (path !== undefined) {
       const rel = path.replace(/^\/+/, "");
       const resolved = at.job
         ? `/jobs/${encodeURIComponent(at.job)}/files/${rel}`
         : `/artifacts/${encodeURIComponent(at.runId)}/${rel}`;
       if (!text(raw["kind"])) ref.kind = artifactKind(rel);
-      if (rel.split("/").includes("..") || !rel) {
-        out.push({ ...ref, error: "bad path" });
-      } else if (await at.exists(resolved)) {
-        out.push({ ...ref, url: resolved });
-      } else {
-        out.push({ ...ref, error: "not found" });
-      }
+      if (rel.split("/").includes("..") || !rel) error = "bad path";
+      else if (await at.exists(resolved)) ref.url = resolved;
+      else error = "not found";
     } else if (url !== undefined) {
       if (!text(raw["kind"])) ref.kind = artifactKind(url);
-      out.push(/^(https?:\/\/|\/)/.test(url) ? { ...ref, url } : { ...ref, error: "bad url" });
-    } else {
-      const size = typeof raw["content"] === "string" ? raw["content"].length : JSON.stringify(raw["content"]).length;
-      out.push(size > ARTIFACT_CONTENT_MAX_CHARS ? { ...ref, error: "too large" } : { ...ref, content: raw["content"] });
+      if (/^(https?:\/\/|\/)/.test(url)) ref.url = url;
+      else error = "bad url";
     }
+    if (hasContent) {
+      const size = typeof raw["content"] === "string" ? raw["content"].length : JSON.stringify(raw["content"]).length;
+      if (size > ARTIFACT_CONTENT_MAX_CHARS) error ??= "too large";
+      else ref.content = raw["content"];
+    }
+    // An error only when nothing could be shown: a bad path beside good
+    // inline content is still something to look at.
+    if (error && ref.url === undefined && ref.content === undefined) ref.error = error;
+    out.push(ref);
   }
   return out;
 }

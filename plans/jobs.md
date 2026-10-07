@@ -273,7 +273,10 @@ interface ArtifactEntry {
 }
 ```
 
-Exactly one of `path` / `url` / `content`. Resolution:
+At least one of `path` / `url` / `content` — not exclusive: a `content`
+rides along a `path` or `url`, and a `path` takes a `url`'s place (strut
+holds the file). The first `job` run that opened a PR (2026-10-07) named it
+by link AND fields and lost the card to an "exactly one" rule. Resolution:
 
 | entry | the callback carries |
 | --- | --- |

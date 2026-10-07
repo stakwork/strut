@@ -132,13 +132,15 @@ pull request, a pod. Each entry names one:
 | `url`     | an absolute URL, or a strut-relative one starting with `/` (another run's `/artifacts/<runId>/clip.mp4`) |
 | `content` | inline, up to 50 KB: a diff, a JSON value, short markdown |
 
-Exactly one of `path`, `url`, `content`. `output` is delivered as the
-workflow packed it; the resolved list rides beside it as the callback's
-top-level `artifacts`, each entry with a `url` (a `path` becomes
-`/jobs/<job>/files/<path>` or `/artifacts/<runId>/<path>`, served behind the
-key like every read — see `API.md` §5) or its `content`, or an `error`
-(`not found`, `bad url`, `too large`) when it could not be resolved — show
-those as unavailable. Entries with no `id` or `title` are dropped. The same
+At least one of `path`, `url`, `content`; they are not exclusive (a pull
+request may carry its link and its fields — both are delivered). `output`
+is delivered as the workflow packed it; the resolved list rides beside it
+as the callback's top-level `artifacts`, each entry with a `url` (a `path`
+becomes `/jobs/<job>/files/<path>` or `/artifacts/<runId>/<path>`, served
+behind the key like every read — see `API.md` §5 — and takes the place of a
+`url` given beside it) and/or its `content`, or an `error` (`not found`,
+`bad url`, `too large`) when nothing could be resolved — show those as
+unavailable. Entries with no `id` or `title` are dropped. The same
 list is at `GET /workflows/:name/runs/:runId/artifacts` for a callback you
 missed.
 
