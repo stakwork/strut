@@ -380,31 +380,63 @@ describe("AI list_workflows / get_workflow tools", () => {
   const wfYaml = (name: string) =>
     `name: ${name}\nsteps:\n  - id: hello\n    type: log\n    config:\n      message: hi\n`;
 
-  it("list_workflows returns published workflows with versions", async () => {
+  it("list_workflows returns slim entries; query filters; limit cuts with total + hint", async () => {
     const { ws, deps } = makeDeps();
     await ws.createWorkflow("alpha", wfYaml("alpha"), "first one");
     await ws.createWorkflow("beta", wfYaml("beta"));
+    await ws.createWorkflow("youtube-clip", wfYaml("youtube-clip"), "cut a clip from a video", "media");
     const tools = buildTools(deps) as any;
 
-    const { workflows } = await tools.list_workflows.execute({});
-    const names = workflows.map((w: any) => w.name).sort();
-    assert.deepEqual(names, ["alpha", "beta"]);
-    const alpha = workflows.find((w: any) => w.name === "alpha");
-    assert.equal(alpha.activeVersion, "v1");
-    assert.deepEqual(alpha.versions, ["v1"]);
-    assert.equal(alpha.description, "first one");
+    // No args: everything, under the default limit — no hint.
+    const all = await tools.list_workflows.execute({});
+    assert.deepEqual(all.workflows.map((w: any) => w.name).sort(), ["alpha", "beta", "youtube-clip"]);
+    assert.equal(all.total, 3);
+    assert.equal(all.hint, undefined);
+    // The entry is what picking a workflow needs — versions and schedules
+    // are get_workflow's / list_automations's, never in the list.
+    assert.deepEqual(all.workflows.find((w: any) => w.name === "alpha"), { name: "alpha", activeVersion: "v1", description: "first one" });
+    assert.deepEqual(all.workflows.find((w: any) => w.name === "youtube-clip"), {
+      name: "youtube-clip", activeVersion: "v1", description: "cut a clip from a video", category: "media",
+    });
+
+    // query: every word must hit the name, category or description.
+    const q = await tools.list_workflows.execute({ query: "youtube video" });
+    assert.deepEqual(q.workflows.map((w: any) => w.name), ["youtube-clip"]);
+    assert.equal(q.total, 1);
+    assert.deepEqual(await tools.list_workflows.execute({ query: "nothing-like-this" }), { workflows: [], total: 0 });
+
+    // limit: the cut is in the result, with the count and what to do.
+    const cut = await tools.list_workflows.execute({ limit: 2 });
+    assert.equal(cut.workflows.length, 2);
+    assert.equal(cut.total, 3);
+    assert.match(cut.hint, /Showing 2 of 3 workflows/);
+    assert.match(cut.hint, /pass query/);
+    const cutQ = await tools.list_workflows.execute({ query: "e", limit: 1 });
+    assert.equal(cutQ.total, 3);
+    assert.match(cutQ.hint, /1 of 3 workflows matching "e"/);
   });
 
-  it("get_workflow returns the active version's YAML + metadata", async () => {
+  it("get_workflow returns the active version's YAML + metadata — any version by label, one metadata read", async () => {
     const { ws, deps } = makeDeps();
     await ws.createWorkflow("alpha", wfYaml("alpha"), "first one");
+    await ws.publishWorkflow("alpha", "v2", wfYaml("alpha").replace("hi", "hello"), "second");
     const tools = buildTools(deps) as any;
 
     const res = await tools.get_workflow.execute({ name: "alpha" });
     assert.equal(res.name, "alpha");
-    assert.equal(res.version, "v1");
-    assert.equal(res.activeVersion, "v1");
-    assert.ok(res.yaml.includes("type: log"));
+    assert.equal(res.version, "v2");
+    assert.equal(res.activeVersion, "v2");
+    assert.deepEqual(res.versions, ["v1", "v2"]);
+    assert.equal(res.description, "second");
+    assert.ok(res.yaml.includes("message: hello"));
+
+    const v1 = await tools.get_workflow.execute({ name: "alpha", version: "v1" });
+    assert.equal(v1.version, "v1");
+    assert.ok(v1.yaml.includes("message: hi"));
+    const missing = await tools.get_workflow.execute({ name: "alpha", version: "v9" });
+    assert.match(missing.error, /Version "v9" not found for "alpha"\. Available: v1, v2/);
+    const gone = await tools.get_workflow.execute({ name: "nope" });
+    assert.match(gone.error, /Workflow "nope" not found/);
   });
 
   it("create_workflow / edit_workflow refuse invalid YAML with a readable error; warnings ride along", async () => {

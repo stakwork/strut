@@ -25,6 +25,7 @@ import type { SecretInfo } from "./secret-store.js";
 import { lsSteps, searchSteps, readStepSource } from "./ai/stepHelpers.js";
 import { stepSchemas } from "./ai/schemaHelpers.js";
 import { validateWorkflowYaml, type ValidationResult } from "./validate.js";
+import { searchWorkflows } from "./search.js";
 
 /**
  * The AUTHORING core — the workspace's author/test/inspect operations, shared
@@ -51,6 +52,71 @@ import { validateWorkflowYaml, type ValidationResult } from "./validate.js";
 
 /** The provenance stamp for AI-authored artifacts (steps AND workflows). */
 export const AI_PUBLISHER = "ai";
+
+// ── Workflow reads (shared mechanism) ──────────────────────────────────────
+
+/** How many workflows a listing returns when the caller names no limit. */
+export const DEFAULT_WORKFLOW_LIST_LIMIT = 100;
+
+/**
+ * The workflows a builder can pick from: `name`, `description`, `category`,
+ * `activeVersion` (and the `publisher` stamp, which the meta surface
+ * republishes by) — never the version list or the schedules, which are
+ * `readWorkflow`'s and the automations tools' and once made a thousand
+ * workflows a 100k-token tool result on the first turn of every chat.
+ * `query` is the sidebar's matcher (`searchWorkflows`: every word must hit
+ * the name, category or description; name hits rank first); `limit` cuts
+ * the list, and a cut is in the result (`total` + `hint`), where the model
+ * reads it.
+ */
+export async function listWorkflowEntries(
+  workspace: Pick<WorkspaceStore, "listWorkflows">,
+  query = "",
+  limit = DEFAULT_WORKFLOW_LIST_LIMIT,
+) {
+  const matched = searchWorkflows(await workspace.listWorkflows(), query);
+  const workflows = matched.slice(0, limit).map((w) => ({
+    name: w.name,
+    activeVersion: w.activeVersion,
+    ...(w.description ? { description: w.description } : {}),
+    ...(w.category ? { category: w.category } : {}),
+    ...(w.publisher ? { publisher: w.publisher } : {}),
+  }));
+  const total = matched.length;
+  if (total <= workflows.length) return { workflows, total };
+  const hint = query
+    ? `Showing ${workflows.length} of ${total} workflows matching "${query}" — narrow the query (every word must hit the name, category or description) or raise limit.`
+    : `Showing ${workflows.length} of ${total} workflows — pass query (keywords; every word must hit the name, category or description, name hits first) to find one, or raise limit.`;
+  return { workflows, total, hint };
+}
+
+/** One workflow's YAML + version metadata — from its metadata record, one
+ *  read, never a listing (a thousand workflows made this a full scan). */
+export async function readWorkflow(
+  workspace: Pick<WorkspaceStore, "getWorkflowMetadata" | "getWorkflowSource">,
+  name: string,
+  version?: string,
+) {
+  const meta = await workspace.getWorkflowMetadata(name);
+  if (!meta) return { error: `Workflow "${name}" not found` };
+  const versions = Object.keys(meta.versions);
+  const resolved = version ?? meta.active;
+  let yaml: string;
+  try {
+    yaml = await workspace.getWorkflowSource(name, resolved);
+  } catch {
+    return { error: `Version "${resolved}" not found for "${name}". Available: ${versions.join(", ")}` };
+  }
+  return {
+    name,
+    version: resolved,
+    activeVersion: meta.active,
+    versions,
+    description: meta.versions[meta.active]?.description,
+    ...(meta.publisher ? { publisher: meta.publisher } : {}),
+    yaml,
+  };
+}
 
 // ── Run-history reads (shared mechanism) ───────────────────────────────────
 
@@ -360,7 +426,9 @@ export interface AuthoringCapability {
   createStep(name: string, code: string, description?: string, claims?: ClaimSpecInput[]): Promise<StepPublishResult>;
   editStep(type: string, code: string, description?: string, claims?: ClaimSpecInput[]): Promise<StepPublishResult>;
   runStep(type: string, args?: RunStepArgs): Promise<RunStepResult | { error: string }>;
-  listWorkflows(): Promise<unknown>;
+  /** Slim entries, `query`-filtered and cut at `limit` (default 100) with
+   *  `total` + a `hint` when cut — `listWorkflowEntries`. */
+  listWorkflows(query?: string, limit?: number): Promise<unknown>;
   getWorkflow(name: string, version?: string): Promise<unknown>;
   /** Static check of workflow YAML WITHOUT publishing — the chat builder's
    *  `validate_workflow`, for in-run authors (`meta/validate-workflow`). */
@@ -476,8 +544,9 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
     return (await claims.validateClaimsArg(arg, actor))?.error ?? null;
   };
 
-  const findWorkflow = async (name: string) =>
-    (await workspace.listWorkflows()).find((w) => w.name === name);
+  /** A workflow's metadata record (one read, never a listing) — for its
+   *  publisher stamp; undefined when there is no such workflow. */
+  const findWorkflow = async (name: string) => (await workspace.getWorkflowMetadata(name)) ?? undefined;
 
   /** The sealed gate (EVOLVE_SPEC §6; `src/sealed.ts`): a run-store key the
    *  meta surface may not touch — a workflow whose YAML says `sealed: true`
@@ -599,31 +668,12 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       );
     },
 
-    async listWorkflows() {
-      return { workflows: await workspace.listWorkflows() };
+    async listWorkflows(query, limit) {
+      return listWorkflowEntries(workspace, query, limit);
     },
 
     async getWorkflow(name, version) {
-      const entry = await findWorkflow(name);
-      if (!entry) return { error: `Workflow "${name}" not found` };
-      const resolved = version ?? entry.activeVersion;
-      let yaml;
-      try {
-        yaml = await workspace.getWorkflowSource(name, resolved);
-      } catch {
-        return {
-          error: `Version "${resolved}" not found for "${name}". Available: ${entry.versions.join(", ")}`,
-        };
-      }
-      return {
-        name,
-        version: resolved,
-        activeVersion: entry.activeVersion,
-        versions: entry.versions,
-        description: entry.description,
-        publisher: entry.publisher,
-        yaml,
-      };
+      return readWorkflow(workspace, name, version);
     },
 
     async validateWorkflow(yaml, name) {
