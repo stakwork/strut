@@ -254,13 +254,20 @@ export {
 // run declares in its output (`artifacts[]`), resolved for the run callback.
 export {
   type JobRecord,
+  type JobHold,
+  type JobsCapability,
+  type ReleaseFn,
+  type SweepOptions,
   jobRoot,
   readJobRecord,
   touchJob,
   holdJob,
   jobHolder,
   jobTtlMs,
+  jobsCapability,
+  releaseWith,
   sweepJobs,
+  deleteJob,
   listJobFiles,
   jobFilePath,
 } from "./jobs.js";

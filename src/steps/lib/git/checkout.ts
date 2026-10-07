@@ -5,7 +5,7 @@ import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { idProblem } from "../../../session-store.js";
-import { holdJob, jobRoot, jobTtlMs, readJobRecord, sweepJobs, touchJob } from "../../../jobs.js";
+import { holdJob, jobRoot, jobTtlMs, readJobRecord, releaseWith, sweepJobs, touchJob } from "../../../jobs.js";
 import {
   cachePath,
   cancelSignal,
@@ -102,7 +102,7 @@ export default defineStep({
       // Used now — so the sweep, which runs before this checkout takes its
       // cache's lock (it takes others'), leaves this one alone.
       await touchJob(wtRoot, kept);
-      await sweepJobs(shell, dataDir, jobTtlMs());
+      await sweepJobs(shell, dataDir, jobTtlMs(), { release: releaseWith(ctx.registry, ctx.services) });
     } else {
       // Cleanup is registered BEFORE anything is created, so a checkout that
       // fails halfway (or is cancelled mid-clone) still leaves no worktree.
