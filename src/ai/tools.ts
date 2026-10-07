@@ -25,11 +25,14 @@ import { capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
 // ownership gating — this surface is human-supervised).
 import {
   AI_PUBLISHER,
+  DEFAULT_WORKFLOW_LIST_LIMIT,
   coerceJsonArg,
   listRunSummaries,
+  listWorkflowEntries,
   publishNewStep,
   publishStepVersion,
   readRun,
+  readWorkflow,
   searchRunEvents,
 } from "../authoring.js";
 
@@ -745,12 +748,20 @@ export function buildTools(deps: AiDeps): ToolSet {
 
     list_workflows: tool({
       description:
-        "List all published workflows in the workspace, with each one's active version, all versions, and description. Use this to discover what workflows already exist before creating a new one or referencing one in a subflow.",
-      inputSchema: z.object({}),
-      execute: async () => {
-        const workflows = await deps.workspace.listWorkflows();
-        return { workflows };
-      },
+        "List published workflows — each one's name, description, category and active version (and publisher stamp when set) — up to `limit` (default 100). The result carries `total`, and a `hint` when the list was cut: call again with `query` then (keywords; every word must hit the name, category or description; name hits rank first). Use this to discover what exists before creating a new workflow or referencing one in a subflow. get_workflow for a workflow's YAML and versions; list_automations for its schedules.",
+      inputSchema: z.object({
+        query: z
+          .string()
+          .optional()
+          .describe("Keywords to filter by, e.g. 'youtube clip' — every word must hit the name, category or description. Omit to list everything (up to limit)."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .default(DEFAULT_WORKFLOW_LIST_LIMIT)
+          .describe("Max workflows to return (default 100)."),
+      }),
+      execute: async ({ query, limit }) => listWorkflowEntries(deps.workspace, query, limit),
     }),
 
     get_workflow: tool({
@@ -763,31 +774,7 @@ export function buildTools(deps: AiDeps): ToolSet {
           .optional()
           .describe("Optional specific version. Defaults to the active version."),
       }),
-      execute: async ({ name, version }) => {
-        const entry = (await deps.workspace.listWorkflows()).find(
-          (w) => w.name === name,
-        );
-        if (!entry) {
-          return { error: `Workflow "${name}" not found` };
-        }
-        const resolved = version ?? entry.activeVersion;
-        let yaml;
-        try {
-          yaml = await deps.workspace.getWorkflowSource(name, resolved);
-        } catch (err) {
-          return {
-            error: `Version "${resolved}" not found for "${name}". Available: ${entry.versions.join(", ")}`,
-          };
-        }
-        return {
-          name,
-          version: resolved,
-          activeVersion: entry.activeVersion,
-          versions: entry.versions,
-          description: entry.description,
-          yaml,
-        };
-      },
+      execute: async ({ name, version }) => readWorkflow(deps.workspace, name, version),
     }),
 
     run_workflow: tool({

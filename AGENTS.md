@@ -89,6 +89,7 @@ strut/
 │   │   ├── prompts.ts     # SYSTEM prompt + buildSystem(deps) (pre-seeds steps tree); AiDeps carries `services` + `secrets` (read-only names)
 │   │   ├── tools.ts       # buildTools(deps): list_steps, search_steps, get_step,
 │   │   │                  #                   list_secrets (NAMES only), create_step, edit_step,
+│   │   │                  #                   list_workflows (query?/limit?: slim entries — name/description/category/activeVersion — cut at 100 with `total` + a `hint` the model reads; the sidebar's matcher, src/search.ts) / get_workflow (one metadata read; both shared with the meta/* twins through authoring.ts),
 │   │   │                  #                   create_workflow, run_workflow (threads ctx.services),
 │   │   │                  #                   graph_query (read-only Cypher; only when deps.graph is wired),
 │   │   │                  #                   graph_get (the graph/graph-get STEP as a chat tool — its schema, its run(); one node by ref_id or type + name, with `children`; same gate),

@@ -161,6 +161,12 @@ describe("authoring capability (the meta surface)", () => {
     const listed = (await authoring.listWorkflows()) as any;
     const entry = listed.workflows.find((w: any) => w.name === "cand-flow");
     assert.equal(entry.publisher, "ai");
+    // The same read filtered and cut — meta/list-workflows's query + limit.
+    const found = (await authoring.listWorkflows("cand-flow")) as any;
+    assert.ok(found.workflows.some((w: any) => w.name === "cand-flow"));
+    assert.ok(found.workflows.every((w: any) => w.name.includes("cand-flow")));
+    assert.equal(found.total, found.workflows.length);
+    assert.equal(((await authoring.listWorkflows(undefined, 1)) as any).workflows.length, 1);
 
     // Idempotent republish; changed content bumps the version.
     const same = (await authoring.publishWorkflow("cand-flow", logFlow("cand-flow", "v1"))) as any;
