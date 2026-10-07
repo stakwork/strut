@@ -1039,6 +1039,12 @@ export default defineStep({
       .describe(
         "anthropic prompt-cache lifetime. 1h costs 2x per cache write (vs 1.25x) but survives gaps over 5 minutes between turns — use it when a tool call can run long (a sub-agent granted via agentTools, a slow build or test run), or the session re-writes its whole context after the wait",
       ),
+    reasoning: z
+      .enum(["none", "minimal", "low", "medium", "high", "xhigh", "provider-default"])
+      .default("medium")
+      .describe(
+        "how hard the model thinks before each call (the AI SDK's provider-neutral `reasoning`; anthropic maps it to `effort`). Most of a long agent's time is thinking, so this is the main lever on its latency and cost: `low` for routine research and file work, `high`/`xhigh` for hard problems. `provider-default` sends nothing (anthropic's default is high).",
+      ),
     returnMessages: z
       .boolean()
       .default(false)
@@ -1090,6 +1096,10 @@ export default defineStep({
       });
       providerOptions = { anthropic: { cacheControl: { type: "ephemeral", ttl: cfg.cacheTtl } } };
     }
+    // What every model call of this step sends beside the conversation — the
+    // loop, the nudge, the forced answer and the summarizer alike, so they
+    // share one cache (an effort change invalidates the cached messages).
+    const callSettings = { ...(providerOptions ? { providerOptions } : {}), reasoning: cfg.reasoning };
 
     // ── secretsEnv: resolve named secrets → bash subprocess env ────────────
     // Values are fetched here (in code, via the secrets capability) and go two
@@ -1433,7 +1443,7 @@ export default defineStep({
           tools,
           maxOutputTokens,
           stopWhen: stopConditions(budget),
-          ...(providerOptions ? { providerOptions } : {}),
+          ...callSettings,
           prepareStep,
           onStepEnd,
         });
@@ -1485,7 +1495,7 @@ export default defineStep({
         const startedAt = Date.now();
         if (path) await emit!({ type: "step.start", path, stepType: "compaction", input: { at: where, messages: before.length, tokens } });
         try {
-          const got = await summarize({ streamText, model, system: instructions, tools, providerOptions, messages: before, retain: AGENT_RETAIN });
+          const got = await summarize({ streamText, model, system: instructions, tools, ...callSettings, messages: before, retain: AGENT_RETAIN });
           bankedUsage = addUsage(bankedUsage, got.usage);
           if (got.summary === undefined) throw new Error(`the summary ended with finishReason "${got.finishReason}"`);
           const text = compactionMessage(got.summary, { messages: before.length, tokens });
@@ -1676,7 +1686,7 @@ export default defineStep({
           // At least a few turns even when the stop came near the cap —
           // finishing file work takes more than one call.
           stopWhen: [finalAnswered, isStepCount(Math.max(4, budget))],
-          ...(providerOptions ? { providerOptions } : {}),
+          ...callSettings,
           prepareStep,
           onStepEnd,
         });
@@ -1759,7 +1769,7 @@ export default defineStep({
             // The loop's own system prompt, as the loop sends it.
             system: instructions,
             tools: stripExecute(tools),
-            ...(providerOptions ? { providerOptions } : {}),
+            ...callSettings,
             ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
             // The conversation as the model saw it — the thread, this turn's
             // task, what was generated; from the compaction boundary, if there

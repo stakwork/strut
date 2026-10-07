@@ -1438,7 +1438,12 @@ and the child env is scrubbed by construction).
   `openrouter/moonshotai/kimi-k2.6`), lazy-loaded; needs the provider
   key in env + `git`/`rg` on PATH. Returns
   `{ result, object?, steps, usage, cost }` (+ `session` when it continued
-  one — see "Agent sessions"). The full session — system
+  one — see "Agent sessions"). `reasoning` (the AI SDK's provider-neutral
+  setting; anthropic maps it to `effort`) defaults to `medium` — anthropic's
+  own default is `high`, and a long agent's time is mostly thinking (swarm38,
+  2026-10-07: a research job spent 26 of its 27 minutes generating, ~170k of
+  203k output tokens thinking). Every model call of the step sends it —
+  loop, nudge, forced answer, summarizer — so they share one cache. The full session — system
   prompt, task prompt (with the cwd preamble the model saw), every
   generated turn, as AI SDK model messages — is ALWAYS recorded on the
   step's `step.end` event as `messages` (`buildSession` + `withMessages`,
