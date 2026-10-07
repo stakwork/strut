@@ -111,7 +111,7 @@ describe("agent sessions", () => {
     agent.run(
       (agent.input as any).parse({
         cwd, system: "sys", prompt: "look around", model: "claude-sonnet-4-5",
-        finalAnswer: "Report.", toolFilter: ["bash"], ...cfg,
+        finalAnswer: "Report.", toolFilter: ["bash"], reasoning: "provider-default", ...cfg,
       }),
       {
         runId: "r1", path: "wf/work", scope: {}, input: undefined, emit: async () => {},
@@ -373,6 +373,28 @@ describe("agent sessions", () => {
   });
 
   // ── compaction (plans/compaction.md §3) ──────────────────────────────────
+
+  it("reasoning defaults to medium, and the loop, the summarizer and the forced answer all send it", async () => {
+    // `reasoning: undefined` drops the helper's pin, so the schema's default applies.
+    const current = { model: "claude-sonnet-5-5", reasoning: undefined };
+    // A compacting run (loop → summarizer → loop), then a capped one (loop → forced answer).
+    for (const [replies, cfg] of [
+      [[bash("toolu_1", "echo one", 950_000), summary("HANDOFF: echoed one."), answer("toolu_2", "done")], {}],
+      [[bash("toolu_1", "echo one"), text("one, in the end")], { maxSteps: 1 }],
+    ] as const) {
+      const s = await serve([...replies]);
+      try {
+        await run({ ...current, ...cfg });
+        assert.equal(s.calls(), replies.length);
+        for (const body of s.bodies) {
+          assert.equal(body.output_config?.effort, "medium", JSON.stringify(body.output_config));
+          assert.equal(body.thinking?.type, "adaptive");
+        }
+      } finally {
+        s.close();
+      }
+    }
+  });
 
   it("compacts between steps: the summarizer sees the loop's prefix, the next request begins at the summary, the record is whole", async () => {
     // The bash step's call reports 950k input tokens of a 1M window: past the

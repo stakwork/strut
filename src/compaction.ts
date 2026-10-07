@@ -181,6 +181,8 @@ export interface SummarizeOptions {
   system?: unknown;
   tools?: Record<string, unknown>;
   providerOptions?: unknown;
+  /** The loop's reasoning setting — part of what the cache is keyed on. */
+  reasoning?: string;
   /** The conversation as the request stands. */
   messages: unknown[];
   retain: string;
@@ -205,6 +207,7 @@ export async function summarize(opts: SummarizeOptions): Promise<SummaryResult> 
     ...(opts.system !== undefined ? { system: opts.system } : {}),
     ...(opts.tools ? { tools: stripExecute(opts.tools) } : {}),
     ...(opts.providerOptions ? { providerOptions: opts.providerOptions } : {}),
+    ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
     ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
     maxOutputTokens: SUMMARY_MAX_TOKENS,
     messages: [...opts.messages, summarizeMessage(opts.retain)],
