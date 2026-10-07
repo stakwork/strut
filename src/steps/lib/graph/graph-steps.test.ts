@@ -141,8 +141,9 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.equal(out.name, "harvey-deliver");
     assert.equal(out.properties.description, "Delivers legal memos");
     assert.deepEqual(accessedNodesOf(out), [wfNode()]);
-    // The type is resolved like everywhere else, the name like its key: case, spaces and punctuation ignored.
-    assert.equal((await run("graph/graph-get", { node_type: "strutworkflow", name: "Harvey Deliver", namespace: NS })).ref_id, wfRef);
+    // The type is resolved like everywhere else; the name is exact (a workspace node is keyed on it as written).
+    assert.equal((await run("graph/graph-get", { node_type: "strutworkflow", name: "harvey-deliver", namespace: NS })).ref_id, wfRef);
+    assert.match(await run("graph/graph-get", { node_type: "StrutWorkflow", name: "Harvey Deliver", namespace: NS }), /node not found/);
     assert.equal((await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver-v2", namespace: NS })).ref_id, other.ref_id);
     // Another namespace (here the deployment's default) does not hold it.
     assert.match(await run("graph/graph-get", { node_type: "StrutWorkflow", name: "harvey-deliver" }), /node not found: StrutWorkflow "harvey-deliver"/);

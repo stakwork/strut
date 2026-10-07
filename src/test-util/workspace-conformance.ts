@@ -295,6 +295,41 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.deepEqual(await ws.getActiveStepHashes(), {});
     });
 
+    it("names that differ only in punctuation are different steps and workflows: published, read, versioned and deleted apart", async () => {
+      // `pod/test` once landed on `pod_test`'s graph node (its key stripped
+      // every non-alphanumeric); every backend must keep such pairs apart.
+      await ws.publishStep("a/b", STEP_SRC("a/b", "slash"), "slash");
+      await ws.publishStep("a_b", STEP_SRC("a_b", "underscore"), "underscore");
+      await ws.publishWorkflow("a-b", "v1", { steps }, "dash");
+      await ws.publishWorkflow("a_b", "v1", { steps, params: { x: 1 } }, "underscore");
+      assert.deepEqual(
+        (await ws.listSteps()).map((s) => [s.type, s.description]).sort(),
+        [["a/b", "slash"], ["a_b", "underscore"]],
+      );
+      assert.ok((await ws.getStepSource("a/b"))?.code.includes('"slash"'));
+      assert.ok((await ws.getStepSource("a_b"))?.code.includes('"underscore"'));
+      assert.deepEqual((await ws.listWorkflows()).map((w) => [w.name, w.description]).sort(), [["a-b", "dash"], ["a_b", "underscore"]]);
+      assert.ok((await ws.getWorkflowSource("a_b", "v1")).includes("x: 1"));
+      assert.notEqual(await ws.getWorkflowHash("a-b"), await ws.getWorkflowHash("a_b"));
+      // Versions stay apart: a second version of one is not a version of the other.
+      await ws.publishStep("a_b", STEP_SRC("a_b", "underscore two"), "two");
+      await ws.publishWorkflow("a_b", "v2", { steps, params: { x: 2 } });
+      assert.deepEqual(await ws.listStepVersions("a/b"), { active: "v1", versions: ["v1"] });
+      assert.deepEqual(await ws.listStepVersions("a_b"), { active: "v2", versions: ["v1", "v2"] });
+      assert.deepEqual(Object.keys((await ws.getWorkflowMetadata("a-b"))!.versions), ["v1"]);
+      assert.deepEqual(Object.keys((await ws.getWorkflowMetadata("a_b"))!.versions), ["v1", "v2"]);
+      // Deleting one of a pair leaves the other whole …
+      assert.equal(await ws.deleteStep("a_b"), true);
+      assert.deepEqual((await ws.listSteps()).map((s) => s.type), ["a/b"]);
+      assert.ok((await ws.getStepSource("a/b"))?.code.includes('"slash"'));
+      assert.equal(await ws.deleteWorkflow("a-b"), true);
+      assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["a_b"]);
+      assert.deepEqual(Object.keys((await ws.getWorkflowMetadata("a_b"))!.versions), ["v1", "v2"]);
+      // … and the deleted name comes back as itself, not as its twin.
+      await ws.publishStep("a_b", STEP_SRC("a_b", "underscore"), "underscore");
+      assert.deepEqual((await ws.listSteps()).map((s) => [s.type, s.description]).sort(), [["a/b", "slash"], ["a_b", "underscore"]]);
+    });
+
     it("deleteStepsByPublisher removes exactly that publisher's steps", async () => {
       await ws.publishStep("a", STEP_SRC("a", "a"), "a", "svc-1");
       await ws.publishStep("ns/b", STEP_SRC("ns/b", "b"), "b", "svc-1");

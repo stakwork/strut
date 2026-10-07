@@ -80,7 +80,11 @@ export interface SeedReport {
  */
 export function flattenSchema(schema: StrutSchema | typeof THING_SCHEMA): Record<string, unknown> {
   const { attributes, ...core } = schema;
-  return { ...core, ...attributes };
+  const flat: Record<string, unknown> = { ...core, ...attributes };
+  // `exact_key` is strut's composition rule (strut-schemas.ts), not a
+  // jarvis schema key: on the node it would read as an attribute.
+  delete flat["exact_key"];
+  return flat;
 }
 
 /** Seed the Strut domain. Safe to call on every boot. */

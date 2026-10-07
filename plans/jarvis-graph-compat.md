@@ -445,6 +445,12 @@ label registry in generic-storage.md. Keys:
 | `StrutChat`            | `strutchat-chat_id`                              | `[title, summary]`                       |
 | `StrutTurn`            | `strutturn-chat_id-turn`                         | `[user_text_preview]`                    |
 
+Since 2026-10-07 the four workspace types are `exact_key` (strut-schemas.ts):
+each token is the HEX of its exact value, not the sanitized form — the
+sanitizer strips every non-alphanumeric, so `pod/test` and `pod_test` were one
+node. The spec strings above are unchanged; `exact-key-migration.ts` moves the
+nodes an older strut wrote.
+
 Rules baked in: every node_key token is a required (non-`?`) attribute;
 `*_preview` fields are truncated (~500 chars) copies specifically so
 search/embeddings stay light while full payloads stay in the run log

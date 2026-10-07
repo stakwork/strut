@@ -112,14 +112,15 @@ strut/
 │   │   └── routes.ts      # /audio/models (+ SSE download), /audio/transcribe (WAV body), /audio/hotwords/:name, /audio/sessions/:id (+ corrections)
 │   ├── graph/             # jarvis-compatible Neo4j graph backend over bolt, no jarvis in the loop (plans/jarvis-graph-compat.md). Opt-in via openGraphBackend
 │   │   ├── bolt.ts        # neo4j-driver wrapper; int() for Integer writes (plain JS numbers write as FLOAT)
-│   │   ├── strut-schemas.ts# the 9 Strut node types + 15-row edge registry (label registry in plans/generic-storage.md); author-time checks
+│   │   ├── strut-schemas.ts# the 9 Strut node types + 15-row edge registry (label registry in plans/generic-storage.md); author-time checks. The four WORKSPACE types (StrutWorkflow/-Version, StrutStep/-Version) are `exact_key`: their node_key tokens are the HEX of the exact name (`strutstep-706f642f74657374` for `pod/test`), not jarvis's sanitized form, which strips every non-alphanumeric and made `pod/test` and `pod_test` ONE node (swarm38, 2026-10-07); the run/chat types keep jarvis's composition. The flag never reaches the Schema node
 │   │   ├── schema-seed.ts # idempotent domain registration: Thing root, Schema nodes, CHILD_OF, constraints, vector/fulltext indexes, migration stamp
-│   │   ├── node-writer.ts # §6 validation gate + node_key composition + Data_Bank + MERGE (create/upsert/restore/update), UNWIND batches
+│   │   ├── node-writer.ts # §6 validation gate + node_key composition (jarvis's sanitizer, verbatim; hex tokens for an `exact_key` type — `keyToken`) + Data_Bank + MERGE (create/upsert/restore/update), UNWIND batches
 │   │   ├── edge-writer.ts # edge MERGE by ref_id with IS_ALIAS rewrite (ON CREATE only); closed (source, edge, target) registry; update() = jarvis PATCH /v2/edges/:ref_id (stamps protected)
 │   │   ├── schema-crud.ts # createNodeSchema(): register a non-Strut node type like jarvis POST /v2/schema (parent, attribute grammar, node_key, CHILD_OF, constraint) or add-only extend an existing one
 │   │   ├── claims.ts      # the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject) — and ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor; muted edges invisible). `strut.claims` is null unless the workspace is graph-backed
 │   │   ├── claims-writer.ts # ClaimsWriter: the claim graph's invariants — ≥1 check per claim, edits SUPERSEDE (successor claim carries ABOUT + checks; successor check takes over TESTS), retire = timestamp, detach = muted edge, last check / last subject refused
 │   │   ├── claim-schema-upgrade.ts # one-shot standalone mirror of jarvis migration 124 (Claim re-keyed on id, Epistemic/Thing); runs before the ontology seed, only with STRUT_GRAPH_SEED_ONTOLOGY
+│   │   ├── exact-key-migration.ts # one-shot boot re-key of existing StrutWorkflow/-Version/StrutStep/-Version nodes from the sanitized name to the exact (hex) key — ledger-stamped, idempotent, every namespace, soft-deleted nodes included; ref_ids, edges and the Schema nodes untouched
 │   │   ├── embeddings.ts  # local all-MiniLM-L6-v2 via transformers.js, tokenized like sentence-transformers (256 incl. specials); NULL-scan backfill
 │   │   ├── search.ts      # the read surface: hybrid search (RRF + title boost + usage tiebreak), get/neighbors/counts, ontology, namespaces
 │   │   ├── backend.ts     # openGraphBackend(): cached per config; runs seed + backfill on first open

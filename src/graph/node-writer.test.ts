@@ -106,16 +106,41 @@ describe("validateNode (§6 gate)", () => {
 describe("composeNodeKey (parity with jarvis sanitize_node_key)", () => {
   const cases = JSON.parse(readFileSync(new URL("node-key-parity.json", fixturesDir), "utf8")) as Array<{
     type: string;
+    node_key_spec: string;
     props: Record<string, unknown>;
     expected: string;
   }>;
   for (const c of cases) {
     it(`${c.type} ${JSON.stringify(c.props).slice(0, 60)}`, () => {
-      assert.equal(composeNodeKey(getStrutSchema(c.type)!, c.props), c.expected);
+      // The fixture's own spec, no `exact_key`: jarvis's algorithm as such,
+      // whatever strut keys the type on today.
+      assert.equal(composeNodeKey({ type: c.type, node_key: c.node_key_spec }, c.props), c.expected);
     });
   }
   it("property lookup is case-insensitive", () => {
     assert.equal(composeNodeKey(getStrutSchema("StrutRun")!, { RUN_ID: "Abc" }), "strutrun-abc");
+  });
+});
+
+describe("composeNodeKey (exact_key — strut's workspace types)", () => {
+  it("keys on the hex of the exact name, so punctuation-only differences are different nodes", () => {
+    const step = getStrutSchema("StrutStep")!;
+    const keys = ["pod/test", "pod-test", "pod_test", "podtest", "Pod/Test"].map((t) => composeNodeKey(step, { step_type: t }));
+    assert.equal(new Set(keys).size, keys.length, keys.join(" "));
+    assert.equal(keys[0], "strutstep-706f642f74657374");
+    assert.equal(Buffer.from(keys[0]!.slice("strutstep-".length), "hex").toString("utf8"), "pod/test", "reversible");
+    // Everything else about a key holds: the type token, `-` between tokens,
+    // case-insensitive lookup, the 200-char collapse.
+    const version = getStrutSchema("StrutWorkflowVersion")!;
+    assert.equal(composeNodeKey(version, { NAME: "a-b", content_hash: "c1" }), "strutworkflowversion-612d62-6331");
+    assert.match(composeNodeKey(version, { name: "x".repeat(120), content_hash: "c1" }), /^strutworkflowversion-[0-9a-f]{32}$/);
+    for (const t of ["StrutWorkflow", "StrutWorkflowVersion", "StrutStep", "StrutStepVersion"]) assert.equal(getStrutSchema(t)!.exact_key, true, t);
+    assert.equal(getStrutSchema("StrutRun")!.exact_key, undefined, "run and chat nodes keep jarvis's keys");
+    assert.equal(fromStrut(step).exact_key, true, "the resolver's view carries the flag");
+  });
+  it("validates exact-key tokens like any other", () => {
+    assert.equal(validateNode("StrutStep", { step_type: "pod/test" }).values["step_type"], "pod/test");
+    rejects(() => validateNode("StrutStep", { step_type: "" }), "MISSING_REQUIRED", "step_type");
   });
 });
 

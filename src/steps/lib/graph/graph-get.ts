@@ -24,7 +24,13 @@ export default defineStep({
   input: z.object({
     ref_id: z.string().optional().describe("The ref_id of the node to resolve. Omit to look the node up by node_type + name."),
     node_type: z.string().optional().describe('With `name`: the node\'s type, e.g. "Concept".'),
-    name: z.string().optional().describe("With `node_type`: the node's exact name (case, spaces and punctuation are ignored, as in its key)."),
+    name: z
+      .string()
+      .optional()
+      .describe(
+        "With `node_type`: the node's name, matched the way its key is composed — exactly for strut's own types (StrutWorkflow, …); " +
+          "for a jarvis type (Concept, …) case, spaces and punctuation are ignored.",
+      ),
     namespace: z
       .string()
       .optional()

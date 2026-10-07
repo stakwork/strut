@@ -13,7 +13,10 @@
  * deliberate difference: versions are CONTENT-ADDRESSED. A version node is
  * keyed by `(name, content_hash)`, and the user-facing `v1`/`v2` label is a
  * property on it. Publishing content that already exists under another
- * label re-labels that version instead of duplicating it.
+ * label re-labels that version instead of duplicating it. Node keys are
+ * the HEX of the exact name (`exact_key` in strut-schemas.ts), so `pod/test`
+ * and `pod_test` are two nodes; every lookup here matches on the name
+ * attribute (`name` / `step_type`), never on the key.
  *
  * Custom step code is executable, so the store also materializes every
  * active custom step into a scratch directory (`materializeCustomSteps`) for
