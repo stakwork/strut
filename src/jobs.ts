@@ -12,8 +12,13 @@
  * of its subdirectories are git worktrees. The sweep (`sweepJobs`) reads it
  * to remove the REPOSITORIES of an idle job — re-checkout-able, and big —
  * and keep its FILES; a job directory with nothing left is removed with its
- * record. Nothing else ever deletes a job's files (`DELETE /jobs/:id` is
- * later work).
+ * record. `DELETE /jobs/:id` (`deleteJob`) is the only other thing that
+ * removes a job's files.
+ *
+ * A job also keeps HOLDS (§6): what a tool claimed that must outlive the
+ * run — a pod — recorded through `ctx.services.jobs.hold` with the step
+ * that lets it go. The sweep and the delete run those release steps first;
+ * a hold that will not release stays on the record for the next attempt.
  *
  * One run at a time per job (`holdJob`, `job_busy:`): two runs in one
  * directory would edit the same files. A child run the holder launches
@@ -25,10 +30,10 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
-import type { StepContext } from "./core.js";
+import type { StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
-import { encodeId } from "./session-store.js";
+import { encodeId, idProblem } from "./session-store.js";
 
 export interface JobRecord {
   name: string;
@@ -36,6 +41,28 @@ export interface JobRecord {
   /** Working copy dir → the cache it is a worktree of, and the ref it was
    *  created at (`git/checkout`). */
   repos: Record<string, { cache: string; ref: string }>;
+  /** What the job keeps alive beyond a run (§6). Absent when nothing is held. */
+  holds?: JobHold[];
+}
+
+/**
+ * Something a job keeps alive beyond a run (plans/jobs.md §6): a pod, later
+ * a browser or a VM. Recorded by the tool that claimed it, through
+ * `ctx.services.jobs.hold`, with the way to let it go — a registry step and
+ * its input — which strut runs when the job is deleted or swept. Strut
+ * knows nothing about pods; it knows a hold has a release.
+ */
+export interface JobHold {
+  /** The resource's own id (a pod id). One hold per id: a re-claim replaces. */
+  id: string;
+  /** What it is, in the tool's words ("pod"). Passed through, never read. */
+  kind: string;
+  since: string;
+  /** The step that lets it go, with its input: a bare type (the active
+   *  version), run under a minimal context — `services`, `registry`, `job`,
+   *  no run. */
+  release: { type: string; input: unknown };
+  note?: string;
 }
 
 /** Where a job's directory lives — the same path for every run that names
@@ -70,6 +97,109 @@ export async function touchJob(
     await writeJobRecord(root, rec);
     return rec;
   });
+}
+
+// ── holds (§6) ────────────────────────────────────────────────────────────
+
+/** `ctx.services.jobs`: the holds of a job, for the tools that claim and
+ *  release what outlives a run. */
+export interface JobsCapability {
+  /** Record a hold. The same `id` again replaces the earlier hold. */
+  hold(job: string, hold: Omit<JobHold, "since"> & { since?: string }): Promise<void>;
+  /** Drop a hold whose resource the caller already let go of — the tool that
+   *  released the pod says so. Nothing happens when there is none. */
+  release(job: string, id: string): Promise<void>;
+  holds(job: string): Promise<JobHold[]>;
+}
+
+export function jobsCapability(dataDir: string): JobsCapability {
+  const rootOf = (job: string) => {
+    const problem = idProblem(job);
+    if (problem) throw new Error(`jobs: job id "${job}" ${problem}`);
+    return jobRoot(dataDir, job);
+  };
+  return {
+    async hold(job, hold) {
+      const root = rootOf(job);
+      await withLock(`${root}.json`, async () => {
+        const rec = (await readJobRecord(root)) ?? { name: job, usedAt: "", repos: {} };
+        rec.usedAt = new Date().toISOString();
+        rec.holds = [...(rec.holds ?? []).filter((h) => h.id !== hold.id), { ...hold, since: hold.since ?? rec.usedAt }];
+        await writeJobRecord(root, rec);
+      });
+    },
+    async release(job, id) {
+      const root = rootOf(job);
+      await withLock(`${root}.json`, async () => {
+        const rec = await readJobRecord(root);
+        if (!rec?.holds?.some((h) => h.id === id)) return;
+        rec.holds = rec.holds.filter((h) => h.id !== id);
+        if (rec.holds.length === 0) delete rec.holds;
+        await writeJobRecord(root, rec);
+      });
+    },
+    async holds(job) {
+      return (await readJobRecord(rootOf(job)))?.holds ?? [];
+    },
+  };
+}
+
+/** How a sweep or a delete lets a hold go. Built by `releaseWith`. */
+export type ReleaseFn = (hold: JobHold, job: string) => Promise<void>;
+
+/**
+ * The release runner a caller with a registry hands to `sweepJobs` /
+ * `deleteJob`: the hold's step — a bare type, the active version — run with
+ * its recorded input under a minimal context (no run, no events; the bag,
+ * the registry and the job). A step that is not in the registry throws like
+ * any other failure, and the hold stays for the next attempt. Undefined
+ * without a registry (a bare run): nothing can be released, and jobs with
+ * holds are left alone.
+ */
+export function releaseWith(registry: StepRegistry | undefined, services: unknown): ReleaseFn | undefined {
+  if (!registry) return undefined;
+  return async (hold, job) => {
+    const def = registry[hold.release.type];
+    if (!def) throw new Error(`release step "${hold.release.type}" is not in the registry`);
+    const ctx: StepContext<unknown> = {
+      runId: "jobs",
+      path: `jobs/${job}/${hold.id}`,
+      scope: {},
+      input: hold.release.input,
+      emit: async () => {},
+      services,
+      registry,
+      job,
+    };
+    await def.run(def.input.parse(hold.release.input), ctx);
+  };
+}
+
+/** Let every hold of a job go through `release`. The ones that fail stay on
+ *  the record (warned) for the next attempt; the record is written. */
+async function releaseHolds(
+  root: string,
+  rec: JobRecord,
+  release: ReleaseFn,
+): Promise<{ released: string[]; failed: Array<{ id: string; error: string }> }> {
+  const released: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  for (const hold of rec.holds ?? []) {
+    try {
+      await release(hold, rec.name);
+      released.push(hold.id);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      console.warn(`[jobs] could not release ${hold.kind} "${hold.id}" of job "${rec.name}":`, error);
+      failed.push({ id: hold.id, error });
+    }
+  }
+  if (released.length) {
+    rec.holds = (rec.holds ?? []).filter((h) => !released.includes(h.id));
+    if (rec.holds.length === 0) delete rec.holds;
+    await withLock(`${root}.json`, () => writeJobRecord(root, rec));
+  }
+  return { released, failed };
 }
 
 /** Which run holds each job (by root path). */
@@ -123,16 +253,24 @@ export async function removeJobRepo(shell: ShellCapability, dir: string, cache: 
   });
 }
 
+export interface SweepOptions {
+  now?: number;
+  /** How to let a hold go (`releaseWith`). Without it a job with holds is
+   *  left alone: only a caller with a registry can release. */
+  release?: ReleaseFn;
+}
+
 /**
  * The idle sweep: for every job nobody has used for `ttlMs` and nobody
- * holds, remove its repositories and keep its files; a job with nothing
- * left is removed with its record. Run by every `job/dir` and kept
- * checkout, so disk is reclaimed without a timer. Returns the names it
- * touched. Never throws: a job that cannot be swept is tried again next
- * time.
+ * holds, let its holds go (§6), remove its repositories and keep its
+ * files; a job with nothing left is removed with its record. Run by every
+ * `job/dir` and kept checkout, so disk — and a pod — is reclaimed without
+ * a timer. Returns the names it touched. Never throws: a job that cannot
+ * be swept, and a hold that will not release, are tried again next time.
  */
-export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: number, now = Date.now()): Promise<string[]> {
+export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: number, opts: SweepOptions = {}): Promise<string[]> {
   if (!ttlMs) return [];
+  const now = opts.now ?? Date.now();
   const base = join(dataDir, "jobs");
   let files: string[];
   try {
@@ -148,6 +286,11 @@ export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: 
     if (!rec || !(now - Date.parse(rec.usedAt) > ttlMs)) continue;
     const repos = Object.entries(rec.repos);
     try {
+      let released = 0;
+      if (rec.holds?.length) {
+        if (!opts.release) continue;
+        released = (await releaseHolds(root, rec, opts.release)).released.length;
+      }
       for (const [dir, { cache }] of repos) {
         await removeJobRepo(shell, dir, cache);
         delete rec.repos[dir];
@@ -158,11 +301,11 @@ export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: 
       } catch {
         /* the directory is already gone */
       }
-      if (left.length === 0) {
+      if (left.length === 0 && !rec.holds?.length) {
         await rm(root, { recursive: true, force: true });
         await rm(`${root}.json`, { force: true });
         swept.push(rec.name);
-      } else if (repos.length) {
+      } else if (repos.length || released) {
         await withLock(`${root}.json`, () => writeJobRecord(root, rec));
         swept.push(rec.name);
       }
@@ -171,6 +314,40 @@ export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: 
     }
   }
   return swept;
+}
+
+/**
+ * `DELETE /jobs/:id`: let every hold go, remove the repositories, the
+ * directory and the record. Runs, chats and sessions are records of their
+ * own and are not touched. Refused (`job_busy:`) while a run holds the
+ * directory. A hold that will not release keeps the job — the error names
+ * it and nothing is removed — so a pod is never forgotten silently; the
+ * next call tries again.
+ */
+export async function deleteJob(
+  shell: ShellCapability,
+  root: string,
+  name: string,
+  release: ReleaseFn | undefined,
+): Promise<{ released: string[] }> {
+  const by = held.get(root);
+  if (by !== undefined) throw new Error(`job_busy: job "${name}" is in use by run ${by}`);
+  const rec = await readJobRecord(root);
+  let released: string[] = [];
+  if (rec?.holds?.length) {
+    if (!release) throw new Error(`jobs: job "${name}" has holds and no registry to release them with`);
+    const r = await releaseHolds(root, rec, release);
+    released = r.released;
+    if (r.failed.length) {
+      throw new Error(
+        `jobs: could not release ${r.failed.map((f) => `"${f.id}" (${f.error})`).join(", ")}; job "${name}" is kept`,
+      );
+    }
+  }
+  for (const [dir, { cache }] of Object.entries(rec?.repos ?? {})) await removeJobRepo(shell, dir, cache);
+  await rm(root, { recursive: true, force: true });
+  await rm(`${root}.json`, { force: true });
+  return { released };
 }
 
 // ── serving (plans/jobs.md §2.2) ──────────────────────────────────────────

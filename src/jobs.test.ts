@@ -11,7 +11,7 @@ import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import { fileArtifactsCapability, shellCapability, standardServices, type StrutCapabilities } from "./capabilities.js";
 import { readRunStart } from "./journal.js";
-import { holdJob, jobHolder, jobRoot, listJobFiles, readJobRecord, sweepJobs, touchJob } from "./jobs.js";
+import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, sweepJobs, touchJob } from "./jobs.js";
 import { RunController } from "./run-control.js";
 import { artifactKind, resolveArtifactRefs } from "./artifact-refs.js";
 import jobDir from "./steps/lib/job/dir.js";
@@ -39,6 +39,32 @@ const writer = defineStep({
     await mkdir(join(cfg.dir, cfg.name, ".."), { recursive: true });
     await writeFile(join(cfg.dir, cfg.name), cfg.text);
     return { wrote: cfg.name };
+  },
+});
+
+/** Test-only: the release step a hold names (§6) — records what it was
+ *  handed, or refuses when told to. */
+const releases: Array<{ input: unknown; job?: string }> = [];
+let releaseFails = false;
+const releaser = defineStep({
+  type: "fake/release",
+  input: z.object({ podId: z.string() }),
+  output: z.any(),
+  async run(cfg, ctx: StepContext<unknown>) {
+    if (releaseFails) throw new Error("pool says no");
+    releases.push({ input: cfg, ...(ctx.job ? { job: ctx.job } : {}) });
+    return { ok: true };
+  },
+});
+
+/** Test-only: what a claiming tool does — hold something on the run's job. */
+const holder = defineStep({
+  type: "holder",
+  input: z.object({ id: z.string() }),
+  output: z.any(),
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
+    await ctx.services.jobs!.hold(ctx.job!, { id: cfg.id, kind: "pod", release: { type: "fake/release", input: { podId: cfg.id } } });
+    return { held: cfg.id };
   },
 });
 
@@ -236,6 +262,79 @@ describe("jobs — the directory", () => {
       assert.ok(existsSync(join(heldJob, "hive")));
       assert.ok(!existsSync(old));
     });
+
+    // ── holds (§6) ──────────────────────────────────────────────────────
+
+    /** Re-age a job after a hold stamped it used. */
+    const age = async (r: string, days: number) => {
+      const rec = (await readJobRecord(r))!;
+      rec.usedAt = new Date(Date.now() - days * DAY).toISOString();
+      await writeFile(`${r}.json`, JSON.stringify(rec));
+    };
+    const release = releaseWith({ "fake/release": releaser }, { probe: true });
+    beforeEach(() => {
+      releases.length = 0;
+      releaseFails = false;
+    });
+
+    it("ctx.services.jobs records a hold with its release step beside the directory; the same id replaces; release drops it", async () => {
+      const jobs = jobsCapability(dataDir);
+      const pod = (id: string, podId = id) => ({ id, kind: "pod", release: { type: "fake/release", input: { podId } } });
+      await jobs.hold("h-1", pod("pod-a"));
+      await jobs.hold("h-1", { ...pod("pod-b"), note: "the second" });
+      let holds = await jobs.holds("h-1");
+      assert.deepEqual(holds.map((h) => [h.id, h.kind, h.note]), [["pod-a", "pod", undefined], ["pod-b", "pod", "the second"]]);
+      assert.ok(holds.every((h) => !Number.isNaN(Date.parse(h.since))));
+      assert.ok(existsSync(`${jobRoot(dataDir, "h-1")}.json`), "the record, before any job/dir");
+      assert.ok(!existsSync(jobRoot(dataDir, "h-1")));
+
+      await jobs.hold("h-1", pod("pod-a", "pod-a-again"));
+      holds = await jobs.holds("h-1");
+      assert.deepEqual(holds.map((h) => h.release.input), [{ podId: "pod-b" }, { podId: "pod-a-again" }], "a re-claim replaces");
+
+      await jobs.release("h-1", "pod-b");
+      await jobs.release("h-1", "never");
+      assert.deepEqual((await jobs.holds("h-1")).map((h) => h.id), ["pod-a"]);
+      await jobs.release("h-1", "pod-a");
+      assert.equal("holds" in (await readJobRecord(jobRoot(dataDir, "h-1")))!, false);
+      assert.deepEqual(await jobs.holds("nobody"), []);
+      await assert.rejects(jobs.hold("/bad", pod("x")), /jobs: job id "\/bad"/);
+    });
+
+    it("the sweep lets an idle job's holds go through their release step — with a registry — then removes its repositories", async () => {
+      const jobs = jobsCapability(dataDir);
+      const r = await seed("podded", { files: ["plan.md"], repos: ["hive"], idleDays: 8 });
+      await jobs.hold("podded", { id: "pod-1", kind: "pod", release: { type: "fake/release", input: { podId: "pod-1" } } });
+      await age(r, 8);
+      // Without a runner the job is left alone: only a caller with a registry can release.
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY), []);
+      assert.ok(existsSync(join(r, "hive")));
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY, { release }), ["podded"]);
+      assert.deepEqual(releases, [{ input: { podId: "pod-1" }, job: "podded" }]);
+      assert.deepEqual(await jobs.holds("podded"), []);
+      assert.ok(!existsSync(join(r, "hive")));
+      assert.equal(await readFile(join(r, "plan.md"), "utf8"), "plan.md");
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY, { release }), []);
+    });
+
+    it("a hold that will not release stays for the next sweep and keeps the job", async () => {
+      const jobs = jobsCapability(dataDir);
+      const r = await seed("stuck", { repos: ["hive"], idleDays: 8 });
+      await jobs.hold("stuck", { id: "pod-2", kind: "pod", release: { type: "fake/release", input: { podId: "pod-2" } } });
+      await jobs.hold("stuck", { id: "pod-3", kind: "pod", release: { type: "no/such-step", input: {} } });
+      await age(r, 8);
+      releaseFails = true;
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY, { release }), ["stuck"], "the repositories still go");
+      assert.ok(!existsSync(join(r, "hive")));
+      assert.deepEqual((await jobs.holds("stuck")).map((h) => h.id), ["pod-2", "pod-3"]);
+      assert.ok(existsSync(`${r}.json`), "a job with holds is not 'nothing left'");
+      // Next time: pod-2 releases; pod-3's step is still not there.
+      releaseFails = false;
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY, { release }), ["stuck"]);
+      assert.deepEqual((await jobs.holds("stuck")).map((h) => h.id), ["pod-3"]);
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY, { release }), [], "nothing changed: not reported");
+      assert.ok(existsSync(`${r}.json`));
+    });
   });
 
   it("listJobFiles: every file, recursive and sorted, skipping the job's repositories", async () => {
@@ -360,7 +459,7 @@ describe("jobs — over HTTP", () => {
   const boot = async () => {
     const strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),
-      registry: await createRegistry([writer, probe, pack]),
+      registry: await createRegistry([writer, probe, pack, holder, releaser]),
       store: new MemoryRunStore(),
       serveUi: false,
       enableChat: false,
@@ -454,6 +553,55 @@ describe("jobs — over HTTP", () => {
       assert.equal(await readFile(join(tempDir, "artifacts", runId, "plan.md"), "utf8"), "# plan 3");
       assert.equal("job" in (await api(`/workflows/deliver/runs/${runId}/artifacts`)).json, false);
       assert.ok(!existsSync(join(tempDir, "jobs")));
+    } finally {
+      host.close();
+    }
+  });
+
+  it("DELETE /jobs/:id lets every hold go through its release step, then removes the job; 409 while a run holds it, kept when a release fails", async () => {
+    const { strut, api } = await boot();
+    await strut.workspace.publishWorkflow("claim", "v1", {
+      steps: [
+        { id: "dir", type: "job/dir", config: {} },
+        { id: "w", type: "writer", config: { dir: "{{ dir.path }}", name: "plan.md", text: "plan" } },
+        { id: "h", type: "holder", config: { id: "pod-9" } },
+      ],
+    });
+    const host = await callbackHost();
+    try {
+      releases.length = 0;
+      const run = await api("/workflows/claim/run", { body: { job: "j-del", input: {}, callback: { url: host.url } } });
+      assert.equal(run.status, 202, JSON.stringify(run.json));
+      await until(() => host.posts.length === 1);
+      assert.equal(host.posts[0].status, "success", JSON.stringify(host.posts[0]));
+      assert.deepEqual((await jobsCapability(tempDir).holds("j-del")).map((h) => h.id), ["pod-9"]);
+
+      // A run holds the job: not now.
+      const disposers: Array<() => unknown> = [];
+      holdJob({ runId: "r-live", onRunEnd: (fn) => void disposers.push(fn) }, jobRoot(tempDir, "j-del"), "j-del");
+      const busy = await api("/jobs/j-del", { method: "DELETE" });
+      assert.equal(busy.status, 409);
+      assert.match(busy.json.error, /job_busy: job "j-del" is in use by run r-live/);
+      for (const d of disposers) d();
+
+      // The pod will not release: the job is kept, with the hold, so it is not forgotten.
+      releaseFails = true;
+      const stuck = await api("/jobs/j-del", { method: "DELETE" });
+      releaseFails = false;
+      assert.equal(stuck.status, 500);
+      assert.match(stuck.json.error, /could not release "pod-9" \(pool says no\); job "j-del" is kept/);
+      assert.deepEqual((await api("/jobs/j-del/files")).json, { job: "j-del", files: ["plan.md"] });
+      assert.deepEqual((await jobsCapability(tempDir).holds("j-del")).map((h) => h.id), ["pod-9"]);
+
+      const gone = await api("/jobs/j-del", { method: "DELETE" });
+      assert.deepEqual(gone.json, { ok: true, job: "j-del", released: ["pod-9"] });
+      assert.deepEqual(releases, [{ input: { podId: "pod-9" }, job: "j-del" }]);
+      assert.ok(!existsSync(join(tempDir, "jobs", "j-del")));
+      assert.ok(!existsSync(join(tempDir, "jobs", "j-del.json")));
+      assert.equal((await api("/jobs/j-del/files")).status, 404);
+      assert.equal((await api("/jobs/j-del", { method: "DELETE" })).status, 404);
+      // The run's record is untouched.
+      assert.equal((await api(`/workflows/claim/runs/${run.json.runId}`)).json.job, "j-del");
     } finally {
       host.close();
     }

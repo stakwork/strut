@@ -76,7 +76,8 @@ import { attachAudioWebSocket } from "./audio/ws.js";
 import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
-import { jobFilePath, jobRoot, listJobFiles, readJobRecord } from "./jobs.js";
+import { shellCapability, type ShellCapability } from "./capabilities.js";
+import { deleteJob, jobFilePath, jobRoot, listJobFiles, readJobRecord, releaseWith } from "./jobs.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -1734,11 +1735,12 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
-  // ── Jobs (plans/jobs.md §2.2) ────────────────────────────────────────────
+  // ── Jobs (plans/jobs.md §2.2, §6) ────────────────────────────────────────
   // The files in a job's directory — what a session-carrying agent wrote
   // across runs (`job/dir`; src/jobs.ts). Read-only, and served sandboxed
   // like a run's artifacts: an agent wrote them. The listing skips the
-  // repositories checked out into the job.
+  // repositories checked out into the job. A job exists once it has a
+  // directory or a record (a hold can come before the first `job/dir`).
 
   const jobRoute = (c: Context): { id: string; root: string } | Response => {
     let id: string;
@@ -1750,7 +1752,7 @@ export async function createStrut<TServices = unknown>(
     const problem = idProblem(id);
     if (problem) return c.json({ error: `job id "${id}" ${problem}` }, 400);
     const root = jobRoot(dataDir, id);
-    if (!existsSync(root)) return c.json({ error: `No job "${id}"` }, 404);
+    if (!existsSync(root) && !existsSync(`${root}.json`)) return c.json({ error: `No job "${id}"` }, 404);
     return { id, root };
   };
 
@@ -1776,6 +1778,25 @@ export async function createStrut<TServices = unknown>(
         return c.json({ error: `no file "${relPath}" in job "${at.id}"` }, 404);
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // Close a job (§6): let every hold go — each through its release step, in
+  // this process, with the registry and the bag — then remove its
+  // repositories, directory and record. Runs, chats and sessions are
+  // records of their own and stay. 409 while a run holds the directory; a
+  // hold that will not release keeps the job (500, the error names it), so
+  // a pod is never forgotten silently.
+  app.delete("/jobs/:id", async (c) => {
+    const at = jobRoute(c);
+    if (at instanceof Response) return at;
+    const shell = ((services as Record<string, unknown>)["shell"] as ShellCapability | undefined) ?? shellCapability();
+    try {
+      const { released } = await deleteJob(shell, at.root, at.id, releaseWith(registry, services));
+      return c.json({ ok: true, job: at.id, released });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, message.startsWith("job_busy:") ? 409 : 500);
     }
   });
 

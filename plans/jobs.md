@@ -17,6 +17,9 @@
 > `meta/run-workflow`, which stamps the child with the job and lets it share
 > the job directory (§4, §2) — the separate `strut/run-workflow` and
 > `LaunchCapability` an earlier draft of §4 had are not needed.
+> **Update (2026-10-07):** §6 built — `ctx.services.jobs` (hold / release /
+> holds on the job record), the sweep releasing holds before it removes
+> repositories, `DELETE /jobs/:id` (`deleteJob`); `src/jobs.test.ts`.
 > Current behaviour was re-read on
 > this checkout (`fe24cb6`, main), `hive@b210ddab6` (master, the merge of
 > [stakwork/hive#5375](https://github.com/stakwork/hive/pull/5375)) and the
@@ -392,8 +395,9 @@ holds(job): Promise<Hold[]>;
 
 Recorded in the manifest (§2). `release` names a registry STEP and its
 input — `{ type: "hive/release-pod", input: { workspaceId, podId } }` —
-which strut runs, through `resolveStep`, with a minimal context and no
-services beyond the standard bag, when the job is deleted or swept (§2.1):
+which strut runs — a bare type, its active version, under a minimal
+context (the standard bag, the registry, the job; no run) — when the job is
+deleted or swept (§2.1):
 each guarded and logged, a failure leaves the hold for the next sweep.
 Strut knows nothing about pods; it knows a hold has a way to be released.
 
@@ -512,9 +516,9 @@ revises the same file.
 
 **V2 — repositories and pods.** `git/checkout { workdir: "{{ $job }}" }` in
 the YAML (works today). `JobsCapability.hold` / `release`, the sweep
-running release actions, `DELETE /jobs/:id` (§6); the `hive/*` pod steps
-into the seed with the hold registered and the plain `password` gone;
-`hive/*` and `browser/*` in `params.tools`.
+running release actions, `DELETE /jobs/:id` (§6) — built 2026-10-07. Left:
+the `hive/*` pod steps into the seed with the hold registered and the plain
+`password` gone; `hive/*` and `browser/*` in `params.tools`.
 
 **V3 — running and authoring workflows.** `meta/run-workflow` stamps the
 job and its child shares the directory — built (§4, §2; `authoring.test.ts`,

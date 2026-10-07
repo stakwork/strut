@@ -1,5 +1,6 @@
 import type { SttService } from "./audio/stt.js";
 import type { SessionsCapability } from "./session-store.js";
+import { jobsCapability, type JobsCapability } from "./jobs.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -362,6 +363,11 @@ export interface StrutCapabilities {
    *  server; a bare in-code bag may not carry one (steps fall back to the OS
    *  temp dir). */
   dataDir?: string;
+  /** A job's holds (jobs.ts; plans/jobs.md §6): what a tool claimed that must
+   *  outlive the run — a pod — recorded with the step that lets it go, which
+   *  strut runs when the job is deleted or swept. Present wherever the bag
+   *  has a `dataDir`. */
+  jobs?: JobsCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
@@ -388,6 +394,6 @@ export function standardServices(
     http: httpCapability(opts.fetchImpl),
     secrets,
     shell: shellCapability(),
-    ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
+    ...(opts.dataDir ? { dataDir: opts.dataDir, jobs: jobsCapability(opts.dataDir) } : {}),
   };
 }
