@@ -206,10 +206,13 @@ describe("migrateVeinToStrut (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
 
   it("refuses to run over a node_key collision and changes nothing", async () => {
     await seedStrutDomain(bolt());
-    const ws = new Neo4jWorkspaceStore(backend, { materializeDir: join(scratch, "steps") });
-    await ws.publishStep("s", LEGACY_STEP.replace("legacy/step", "s"));
+    // The holder: a step `s` as a strut between the rename and exact keys
+    // wrote it (sanitized key) — what the legacy node would be renamed to.
+    // A current node (`strutstep-73`) is exact-key-migration's collision.
     await bolt().run(
-      `CREATE (:VeinStep:Node:Data_Bank:\`${LEGACY_DOMAIN_LABEL}\`
+      `CREATE (:StrutStep:Node:Data_Bank:Domain_strut
+        {node_key: 'strutstep-s', namespace: $ns, ref_id: 'current-ref', step_type: 's'})
+       CREATE (:VeinStep:Node:Data_Bank:\`${LEGACY_DOMAIN_LABEL}\`
         {node_key: 'veinstep-s', namespace: $ns, ref_id: 'legacy-ref', step_type: 's'})`,
       { ns: cfg!.namespace },
     );

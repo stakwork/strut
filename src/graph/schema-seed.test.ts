@@ -71,6 +71,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     for (const s of schemas) {
       assert.deepEqual(s.labels, ["Schema"], "Schema nodes carry no other label");
       assert.equal(s.properties["attributes"], undefined);
+      assert.equal(s.properties["exact_key"], undefined, "strut's key rule never reaches the Schema node");
     }
     const run = schemas.find((s) => s.properties["type"] === "StrutRun")!;
     assert.equal(run.properties["domain"], "Strut");

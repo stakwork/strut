@@ -101,7 +101,7 @@ describe("backfillEmbeddings (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
     assert.deepEqual(rows, [
       { k: "strutrun-1", t0: "wf\nok".length, i0: null, o: null },
       { k: "strutrun-2", t0: "wf\nok".length, i0: null, o: null },
-      { k: "strutstep-s", t0: "s".length, i0: "Input:\n{in}".length, o: null },
+      { k: "strutstep-73", t0: "s".length, i0: "Input:\n{in}".length, o: null }, // an exact_key type: hex("s")
       { k: "strutturn-c-0", t0: "c\n0".length, i0: null, o: null },
     ]);
     const r2 = await backfillEmbeddings(bolt, fake);

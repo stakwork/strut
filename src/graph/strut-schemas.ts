@@ -25,6 +25,17 @@ export interface StrutSchema {
   domain: "Strut";
   /** `-`-joined spec: token 0 = type.lower(), then attribute names. */
   node_key: string;
+  /** Compose the key from the HEX of each token's exact value instead of
+   *  jarvis's sanitized form (`node-writer.ts` `keyToken`). The sanitizer
+   *  strips every non-alphanumeric character, so without this `pod/test`,
+   *  `pod-test`, `pod_test` and `podtest` are ONE node and the second name
+   *  published lands on the first's (swarm38, 2026-10-07). Hex is
+   *  alphanumeric — every other node_key rule holds — injective, and
+   *  reversible. Strut's own rule, never flattened onto the Schema node:
+   *  jarvis cannot recompute these keys from the spec and never needs to;
+   *  strut is the only writer of its workspace types, and
+   *  workspace-store.ts matches on the name attribute, never the key. */
+  exact_key?: true;
   /** Fields that build `Data_Bank` (search text + `text_embeddings`), in
    *  declared order. Keep large payloads OUT of here. */
   index: string[];
@@ -146,6 +157,15 @@ export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "
 export const PREVIEW_MAX_CHARS = 500;
 
 // ── The nine Strut node types ────────────────────────────────────────────────
+//
+// Keys. The four WORKSPACE types — `StrutWorkflow`, `StrutWorkflowVersion`,
+// `StrutStep`, `StrutStepVersion` — are `exact_key`: `strutstep-<hex of the
+// step type>`, `strutworkflowversion-<hex of the name>-<hex of the content
+// hash>`, so two names never share a node (`exact-key-migration.ts` moves
+// the nodes an older strut keyed on the sanitized name). The run/chat types
+// keep jarvis's composition (`strutrun-<run id>`): the collision this guards
+// against is between NAMES a person publishes, and the parity fixtures pin
+// the sanitizer on them.
 
 const base = {
   parent: "Thing",
@@ -160,6 +180,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     ...base,
     type: "StrutWorkflow",
     node_key: "strutworkflow-name",
+    exact_key: true,
     index: ["name", "description"],
     title_key: "name",
     description_key: "description",
@@ -186,6 +207,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     ...base,
     type: "StrutWorkflowVersion",
     node_key: "strutworkflowversion-name-content_hash",
+    exact_key: true,
     index: ["name", "description"],
     vector_index: ["input_schema", "output_schema"],
     title_key: "name",
@@ -212,6 +234,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     ...base,
     type: "StrutStep",
     node_key: "strutstep-step_type",
+    exact_key: true,
     index: ["step_type", "description"],
     vector_index: ["input_schema", "output_schema"],
     title_key: "step_type",
@@ -231,6 +254,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     ...base,
     type: "StrutStepVersion",
     node_key: "strutstepversion-step_type-content_hash",
+    exact_key: true,
     index: ["step_type", "description"],
     title_key: "step_type",
     description_key: "description",

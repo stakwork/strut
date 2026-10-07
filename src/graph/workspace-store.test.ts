@@ -4,7 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openGraphBackend, type GraphBackend } from "./backend.js";
+import { composeNodeKey } from "./node-writer.js";
 import { seedStrutDomain } from "./schema-seed.js";
+import { getStrutSchema } from "./strut-schemas.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
 import { workspaceConformance } from "../test-util/workspace-conformance.js";
@@ -45,6 +47,8 @@ workspaceConformance({
 });
 
 const STEP = (type: string) => `export default { type: ${JSON.stringify(type)}, input: {}, output: {}, async run() { return 1; } };`;
+/** The key the writer composes for a workspace node (`exact_key`: hex of the name). */
+const key = (type: string, data: Record<string, unknown>) => composeNodeKey(getStrutSchema(type)!, data);
 
 describe("Neo4jWorkspaceStore (graph-specific)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
   let ws: Neo4jWorkspaceStore;
@@ -64,8 +68,8 @@ describe("Neo4jWorkspaceStore (graph-specific)", { skip: cfg ? false : "STRUT_TE
     assert.deepEqual(
       rows.map((r) => [(r["labels"] as string[]).filter((l) => l.startsWith("Strut"))[0], r["key"], r["ns"]]),
       [
-        ["StrutWorkflow", "strutworkflow-wf", cfg!.namespace],
-        ["StrutWorkflowVersion", `strutworkflowversion-wf-${await ws.getWorkflowHash("wf")}`, cfg!.namespace],
+        ["StrutWorkflow", key("StrutWorkflow", { name: "wf" }), cfg!.namespace],
+        ["StrutWorkflowVersion", key("StrutWorkflowVersion", { name: "wf", content_hash: await ws.getWorkflowHash("wf") }), cfg!.namespace],
       ],
     );
     assert.equal((await edgesOf("VERSION_OF")).length, 1);
@@ -77,11 +81,11 @@ describe("Neo4jWorkspaceStore (graph-specific)", { skip: cfg ? false : "STRUT_TE
     await ws.publishWorkflow("wf", "v2", { steps: [{ id: "a", type: "log", config: { message: "2" } }] });
     let active = await edgesOf("ACTIVE_VERSION");
     assert.equal(active.length, 1);
-    assert.equal(active[0]!["b"], `strutworkflowversion-wf-${await ws.getWorkflowHash("wf", "v2")}`);
+    assert.equal(active[0]!["b"], key("StrutWorkflowVersion", { name: "wf", content_hash: await ws.getWorkflowHash("wf", "v2") }));
     await ws.setActiveVersion("wf", "v1");
     active = await edgesOf("ACTIVE_VERSION");
     assert.equal(active.length, 1);
-    assert.equal(active[0]!["b"], `strutworkflowversion-wf-${await ws.getWorkflowHash("wf", "v1")}`);
+    assert.equal(active[0]!["b"], key("StrutWorkflowVersion", { name: "wf", content_hash: await ws.getWorkflowHash("wf", "v1") }));
     assert.equal((await edgesOf("VERSION_OF")).length, 2);
   });
 
@@ -97,11 +101,11 @@ describe("Neo4jWorkspaceStore (graph-specific)", { skip: cfg ? false : "STRUT_TE
     });
     assert.deepEqual(
       (await edgesOf("USES_STEP")).map((r) => [r["a"], r["b"]]),
-      [[`strutworkflowversion-parent-${await ws.getWorkflowHash("parent")}`, "strutstep-mytool"]],
+      [[key("StrutWorkflowVersion", { name: "parent", content_hash: await ws.getWorkflowHash("parent") }), key("StrutStep", { step_type: "my/tool" })]],
     );
     assert.deepEqual(
       (await edgesOf("DEPENDS_ON")).map((r) => [r["a"], r["b"]]),
-      [[`strutworkflowversion-parent-${await ws.getWorkflowHash("parent")}`, "strutworkflow-child"]],
+      [[key("StrutWorkflowVersion", { name: "parent", content_hash: await ws.getWorkflowHash("parent") }), key("StrutWorkflow", { name: "child" })]],
     );
   });
 

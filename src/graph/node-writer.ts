@@ -125,7 +125,7 @@ export function validateNode(typeOrSchema: string | NodeSchema, data: Record<str
     const lower = field.toLowerCase();
     const hit = Object.keys(values).find((k) => k.toLowerCase() === lower);
     if (!hit) throw new GraphValidationError("MISSING_REQUIRED", type, "attribute referenced in node_key is missing", field);
-    if (sanitizeKeyValue(values[hit]).length === 0) {
+    if (keyToken(schema, values[hit]).length === 0) {
       throw new GraphValidationError("EMPTY_NODE_KEY_TOKEN", type, "node_key attribute sanitizes to an empty token", field);
     }
   }
@@ -219,11 +219,23 @@ export function sanitizeKeyValue(v: unknown): string {
 }
 
 /**
- * `sanitize_node_key` + `_compose_node_key`, verbatim. Property lookup is
- * case-insensitive; a missing property is an error. If the composed key
- * exceeds 200 chars, the value portion collapses to a 32-hex sha256 prefix.
+ * One node_key token: jarvis's sanitizer, unless the schema is `exact_key`
+ * (strut's workspace types — strut-schemas.ts), then the hex of the exact
+ * value, so `pod/test` and `pod_test` never share a key. Hex is
+ * alphanumeric, so every rule below still holds; `Buffer.from(token, "hex")`
+ * gives the value back.
  */
-export function composeNodeKey(schema: { type: string; node_key: string }, values: Record<string, unknown>): string {
+function keyToken(schema: { exact_key?: boolean }, v: unknown): string {
+  return schema.exact_key ? Buffer.from(String(v), "utf8").toString("hex") : sanitizeKeyValue(v);
+}
+
+/**
+ * `sanitize_node_key` + `_compose_node_key`, verbatim (the token encoding
+ * aside — `keyToken`). Property lookup is case-insensitive; a missing
+ * property is an error. If the composed key exceeds 200 chars, the value
+ * portion collapses to a 32-hex sha256 prefix.
+ */
+export function composeNodeKey(schema: { type: string; node_key: string; exact_key?: boolean }, values: Record<string, unknown>): string {
   const lower = new Map(Object.entries(values).map(([k, v]) => [k.toLowerCase(), v]));
   const parts: string[] = [];
   const tokens = schema.node_key.split("-");
@@ -233,7 +245,7 @@ export function composeNodeKey(schema: { type: string; node_key: string }, value
       return;
     }
     if (!lower.has(tok.toLowerCase())) throw new GraphValidationError("MISSING_REQUIRED", schema.type, "node_key property missing", tok);
-    parts.push(sanitizeKeyValue(lower.get(tok.toLowerCase())));
+    parts.push(keyToken(schema, lower.get(tok.toLowerCase())));
   });
   const composed = parts.join("-");
   if (composed.length <= MAX_NODE_KEY_LENGTH || parts.length < 2) return composed;

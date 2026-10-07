@@ -7,6 +7,8 @@
  *   2. with `seedOntology`: `upgradeClaimSchema` (one-shot, the standalone
  *      mirror of jarvis migration 124), then `seedJarvisOntology`;
  *   2b. `migrateRunStatus` — one-shot `StrutRun.status` → `run_status`;
+ *   2c. `migrateExactKeys` — one-shot re-key of the workspace nodes from the
+ *       sanitized name to the exact one (hex);
  *   3. `seedStrutDomain` — schema meta-graph, constraints, indexes (§4);
  *   4. `backfillEmbeddings` — heal any NULL vectors left by a crash (§2).
  *
@@ -24,6 +26,7 @@ import { seedStrutDomain, type SeedReport } from "./schema-seed.js";
 import { GraphReader } from "./search.js";
 import { migrateVeinToStrut, type VeinMigrationReport } from "./vein-migration.js";
 import { migrateRunStatus, type RunStatusMigrationReport } from "./run-status-migration.js";
+import { migrateExactKeys, type ExactKeyMigrationReport } from "./exact-key-migration.js";
 
 export interface GraphBackendOptions {
   /** `false` disables embeddings entirely (vectors stay NULL, search is
@@ -52,6 +55,7 @@ export interface GraphBackend {
   readonly seed: SeedReport | undefined;
   readonly veinMigration: VeinMigrationReport | undefined;
   readonly runStatusMigration: RunStatusMigrationReport | undefined;
+  readonly exactKeyMigration: ExactKeyMigrationReport | undefined;
   readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
   readonly ontologySeed: OntologySeedReport | undefined;
   readonly backfill: BackfillReport | undefined;
@@ -116,6 +120,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
     let seed: SeedReport | undefined;
     let veinMigration: VeinMigrationReport | undefined;
     let runStatusMigration: RunStatusMigrationReport | undefined;
+    let exactKeyMigration: ExactKeyMigrationReport | undefined;
     let claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
     let ontologySeed: OntologySeedReport | undefined;
     let backfill: BackfillReport | undefined;
@@ -147,6 +152,12 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       if (runStatusMigration.status === "migrated") {
         console.warn(`[graph] moved StrutRun.status to run_status: ${JSON.stringify(runStatusMigration)}`);
       }
+      // Workspace nodes an older strut keyed on the sanitized name (one
+      // node for `pod/test` and `pod_test`) move to their exact keys.
+      exactKeyMigration = await migrateExactKeys(bolt);
+      if (exactKeyMigration.status === "migrated") {
+        console.warn(`[graph] re-keyed workspace nodes on their exact names: ${JSON.stringify(exactKeyMigration)}`);
+      }
       seed = await seedStrutDomain(bolt);
       if (embedder) backfill = await backfillEmbeddings(bolt, embedder);
     }
@@ -162,6 +173,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       seed,
       veinMigration,
       runStatusMigration,
+      exactKeyMigration,
       claimSchemaUpgrade,
       ontologySeed,
       backfill,

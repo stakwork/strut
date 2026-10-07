@@ -58,6 +58,9 @@ export interface NodeSchema {
   type: string;
   parent?: string;
   node_key: string;
+  /** Strut's `exact_key` (strut-schemas.ts): node_key tokens are the hex of
+   *  their exact value, not jarvis's sanitized form. */
+  exact_key?: boolean;
   /** `get_index_fields`: declared index list (a string becomes a one-item
    *  list); `["node_key"]` when unset. */
   index: string[];
@@ -351,6 +354,7 @@ export function fromStrut(strut: StrutSchema, hidden?: { domains: Set<string>; t
     type: strut.type,
     parent: strut.parent,
     node_key: strut.node_key,
+    ...(strut.exact_key ? { exact_key: true } : {}),
     index: [...strut.index],
     vector_index: [...(strut.vector_index ?? [])],
     attributes: { ...effectiveAttributes(strut) },
