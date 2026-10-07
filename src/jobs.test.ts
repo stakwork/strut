@@ -285,7 +285,7 @@ describe("jobs — artifact refs", () => {
     ]);
   });
 
-  it("passes urls and content through, keeps label/summary and a given kind, and reports what it cannot resolve", async () => {
+  it("passes urls and content through (both when both are given — the fields are not exclusive; a path takes a url's place), keeps label/summary and a given kind, and reports what it cannot resolve", async () => {
     const output = {
       artifacts: [
         { id: "pod", kind: "url", title: "Pod", label: "Sandbox", summary: "the app", url: "https://pod.example/" },
@@ -295,6 +295,8 @@ describe("jobs — artifact refs", () => {
         { id: "bad", title: "Bad", url: "ftp://x/y" },
         { id: "up", title: "Up", path: "../secrets.json" },
         { id: "both", title: "Both", path: "a.md", url: "/x" },
+        { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", content: '{"url":"https://github.com/a/b/pull/5","repo":"a/b","number":5,"state":"open"}' },
+        { id: "gone-but-inline", title: "Gone", path: "nope.md", content: "# still here" },
         { id: "none", title: "None" },
         { id: "big", title: "Big", content: "x".repeat(50_001) },
         { title: "no id", path: "a.md" },
@@ -308,7 +310,9 @@ describe("jobs — artifact refs", () => {
       { id: "gone", kind: "markdown", title: "Gone", error: "not found" },
       { id: "bad", kind: "url", title: "Bad", error: "bad url" },
       { id: "up", kind: "json", title: "Up", error: "bad path" },
-      { id: "both", kind: "url", title: "Both", error: "only one of path, url or content" },
+      { id: "both", kind: "markdown", title: "Both", url: "/jobs/j-1/files/a.md" },
+      { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", content: '{"url":"https://github.com/a/b/pull/5","repo":"a/b","number":5,"state":"open"}' },
+      { id: "gone-but-inline", kind: "markdown", title: "Gone", content: "# still here" },
       { id: "none", kind: "url", title: "None", error: "one of path, url or content is required" },
       { id: "big", kind: "url", title: "Big", error: "too large" },
     ]);
