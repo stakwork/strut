@@ -187,6 +187,26 @@ export { requireApiKey, apiKeyMatches, actorFromHeader } from "./auth.js";
 // pushes, resolved for a run's principal by the ordinary secrets boundary.
 export { actorSecretStore, ACTOR_SECRETS_FILE, type ActorSecretStore } from "./actor-secrets.js";
 
+// Peers (plans/federation.md §2.2, §3): the struts this one may call — the
+// record store, the capability steps get, and the client the step and the
+// builder's `peer` tools share.
+export {
+  peerStore,
+  peersCapability,
+  launchOnPeer,
+  tailPeerRun,
+  cancelOnPeer,
+  runOnPeer,
+  parsePeersEnv,
+  PEERS_FILE,
+  type Peer,
+  type PeerInfo,
+  type PeerStore,
+  type PeersCapability,
+  type PeerRunHandle,
+  type PeerRunResult,
+} from "./peers.js";
+
 // Standard capabilities — the http + secrets + artifacts + shell services adapter steps build on.
 export {
   standardServices,

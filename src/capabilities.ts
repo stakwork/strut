@@ -1,6 +1,7 @@
 import type { SttService } from "./audio/stt.js";
 import type { SessionsCapability } from "./session-store.js";
 import { jobsCapability, type JobsCapability } from "./jobs.js";
+import type { PeersCapability } from "./peers.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -368,6 +369,12 @@ export interface StrutCapabilities {
    *  strut runs when the job is deleted or swept. Present wherever the bag
    *  has a `dataDir`. */
   jobs?: JobsCapability;
+  /** The other struts this one may call (peers.ts; plans/federation.md
+   *  §2.2): name a peer, make a request with its token injected — the
+   *  token itself is readable by nothing. Set by the standard server; a
+   *  bare in-code bag may not carry one (`strut/run-workflow` then fails
+   *  naming it). */
+  peers?: PeersCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local

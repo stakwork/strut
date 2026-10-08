@@ -71,6 +71,7 @@ strut/
 │   ├── auth.ts            # requireApiKey middleware — createStrut puts it in front of EVERY route, reads included — + carriesApiKey (Bearer or `?key=`) + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── session-store.ts   # agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
+│   ├── peers.ts           # PEERS (plans/federation.md §2.2, §3): the other struts this one may call — `{ id, baseUrl, token, label? }` in a fourth encrypted file, peers.json (`P_<hex(id)>`), behind PUT/DELETE/GET /peers (GET: ids, labels, base URLs — never a token) + `STRUT_PEERS` / `createStrut({ peers })`, the paste door for a strut nobody pushes to. `ctx.services.peers` names a peer and makes a request with its token injected (readable by nothing; what a step can do through it is the token's scope on the peer). The client the step and the builder's `peer` tools share: launchOnPeer (POST …/run, `x-strut-actor: ctx.principal`), tailPeerRun (the peer's SSE tail, reattached with `?skip=N` after a drop — reader-initiated, so a strut behind NAT can call a cloud one), cancelOnPeer, runOnPeer, listPeerWorkflows / readPeerWorkflow
 │   ├── actor-secrets.ts   # per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses), jobs (a job's holds, jobs.ts) — every one recordable by cassette.ts + secret-safe
 │   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
@@ -80,6 +81,7 @@ strut/
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, github/create-pr — open a PR or return the open one for that head, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
+│   │   │   ├── strut/     # strut/run-workflow: dispatch-through (plans/federation.md §2.2) — run a workflow on a PEER and return { peer, workflow, runId, status, output?, error?, durationMs }; waits on the peer's tail, cancel of this run cancels the peer's, `wait: false` returns the handle, `job` is explicit (never this run's own: no shared directory across struts); grantable to an agent as `agentTools: ["strut/*"]`
 │   │   │   ├── job/       # job/dir: the run's JOB directory (jobs.ts) for an agent's cwd — `<dataDir>/jobs/<job>/`, the same path every run launched with that `job`; a run with no job gets its own artifact dir, so a job workflow is also a one-shot
 │   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree under <dataDir>/worktrees/<runId>, removed by ctx.onRunEnd — or, with `workdir`, a KEPT one inside a job's directory, <dataDir>/jobs/<name>/<repo>, reused by the next run that names it, one run at a time (`job_busy:`), the repository removed when the job is idle; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
 │   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus four strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, move-node re-homes a node (the one edge that places it — any type, either direction — is muted and written again to the new place, one transaction, cycles refused; graph reads skip muted edges, as jarvis's do), walk gathers context for a goal hop by hop with a decision model (jev via experimental_evaluate, or a wrapped LLM) judging relevance/next/enough — plans/graph-walk.md — and two strut-only INPUTS on graph-get: node_type + name, an exact lookup by node_key for types keyed by name, never a search; and `children: <EDGE_TYPE>`, which adds the nodes it points to along that edge as { ref_id, node_type, name, description } sorted by name — a node and its table of contents in one call); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
@@ -129,7 +131,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1336 unit tests across 74 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1360 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -288,6 +290,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a job (`job/dir`, `git/checkout` with `workdir`) may sit unused before its REPOSITORIES are removed — its other files are kept, and a job with nothing left goes with its record. Swept by the next `job/dir` or kept checkout — no timer. `0` keeps them forever. |
+| `STRUT_PEERS` | (unset) | Peers to put on file at boot (plans/federation.md §3): a JSON array of `{ id, baseUrl, token, label? }` — the paste door for a strut a host cannot push to (a desktop strut behind NAT). Each replaces the record of the same id; `PUT /peers/:id` is the same door over HTTP. A bad entry fails the boot. |
 | `STRUT_AUTO_RESUME` | `1` (persistent run store) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): on whenever the run store outlives the process — anything but `MemoryRunStore`, whatever the workspace's kind, so the lab's graph workspace + `FileRunStore` counts — the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
@@ -1418,6 +1421,32 @@ and the child env is scrubbed by construction).
   an id, a kind and a way to be released. Not yet: `job` on chats, a job
   index, the projector stamp — plans/jobs.md §11.
 
+- **Peers — calling a workflow on another strut** (`plans/federation.md`
+  §2.2, §3; `src/peers.ts`, `src/steps/lib/strut/run-workflow.ts`). A strut
+  knows nothing about other struts, not even its own name. A **peer** is a
+  record someone put here — `PUT /peers/:id { baseUrl, token, label? }`
+  (hive pushes one per workspace swarm, id = the workspace slug, what a
+  person types as `@slug`) or `STRUT_PEERS` / `createStrut({ peers })` on a
+  strut nobody can push to — kept in a fourth encrypted file, `peers.json`.
+  `GET /peers` lists ids, labels and base URLs; a token has no read route.
+  Steps get `ctx.services.peers`: name a peer, make a request, the token
+  injected inside; the builder gets `list_peers` and `peer` on
+  `list_workflows` / `get_workflow` / `run_workflow`. **`strut/run-workflow`**
+  launches `POST {peer}/workflows/:name/run` with this run's principal as
+  `x-strut-actor` — so the peer bills that person from its own delegation
+  and binds `secrets` to them; nothing crosses — and waits on the peer's
+  SSE tail, reattaching with `?skip=N` after a dropped connection. The tail
+  is reader-initiated by design: a desktop strut behind NAT can call a cloud
+  one, while a callback would need a route back. Cancelling the caller's
+  run POSTs cancel to the peer; `wait: false` returns the handle;
+  `job` is explicit and never this run's own (no shared directory across
+  struts — the peer's job is a different job of the same name). The output
+  is the peer's result; an artifact path in it is the peer's. A refused
+  launch fails the step with the peer's message (`job_busy:`); an id not on
+  file is `peer_unknown:`; a peer that stays unreachable is
+  `peer_unreachable:`. Not yet: read-through (`/peers/:id/…`, the UI
+  selector), a Peers dialog, the `lab:peer` scope — a peer token today is
+  the peer's whole key, so a laptop should not hold one until that lands.
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
   workflow-*builder* chat above. It explores a working dir (`cwd`)
@@ -1713,7 +1742,7 @@ provider-routing gotcha.
 4. Document it in `specs/API.md` — request and response shapes, from the
    types, not retyped.
 5. The Vite dev proxy in `web/vite.config.ts` only proxies known
-   prefixes (`/workflows`, `/steps`, `/secrets`, `/sessions`, `/graph`, `/chat`, `/llm`, `/health`). Runs are
+   prefixes (`/workflows`, `/steps`, `/secrets`, `/sessions`, `/peers`, `/graph`, `/chat`, `/llm`, `/health`). Runs are
    under `/workflows/` and chat reattach under `/chat/` so they're
    already proxied. SSE responses get `cache-control: no-cache` +
    `x-accel-buffering: no` injected by the shared `sseConfigure` —

@@ -898,3 +898,89 @@ describe("run control tools", () => {
     assert.deepEqual(calls, [["wf", "r1", "cancel"], ["wf", "r2", "pause"], ["wf", "r3", "resume"]]);
   });
 });
+
+// ── peers: list_peers + `peer` on list_workflows / get_workflow / run_workflow ──
+
+describe("AI peer tools", () => {
+  const enc = new TextEncoder();
+  const sse = (frames: string[]) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const f of frames) c.enqueue(enc.encode(f));
+          c.close();
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  /** A fake peer: one workflow, `echo`, whose run ends at once. */
+  function fakePeers() {
+    const seen: Array<{ path: string; method: string; actor?: string; body?: unknown }> = [];
+    const peers = {
+      list: async () => [{ id: "cloud", baseUrl: "http://cloud.test", label: "Cloud" }],
+      fetch: async (id: string, path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+        if (id !== "cloud") throw new Error(`peer_unknown: no peer "${id}"`);
+        seen.push({ path, method: init?.method ?? "GET", actor: init?.headers?.["x-strut-actor"], body: init?.body ? JSON.parse(init.body) : undefined });
+        const u = new URL(`http://cloud.test${path}`);
+        if (u.pathname === "/workflows") return json([{ name: "echo", activeVersion: "v1", versions: ["v1"], description: "echoes" }]);
+        if (u.pathname === "/workflows/echo") return json({ active: "v1", versions: { v1: { description: "echoes" } } });
+        if (u.pathname === "/workflows/echo/v1") return new Response("steps: []\n", { headers: { "content-type": "text/yaml" } });
+        if (u.pathname === "/workflows/echo/run") return json({ runId: "r-cloud" }, 202);
+        if (u.pathname === "/workflows/echo/runs/r-cloud/stream") {
+          return sse([
+            `data: ${JSON.stringify({ ts: "t", runId: "r-cloud", path: "echo", type: "run.start" })}\n\n`,
+            `event: done\ndata: ${JSON.stringify({ runId: "r-cloud", status: "success", output: "hi" })}\n\n`,
+          ]);
+        }
+        return json({ error: "nope" }, 404);
+      },
+    };
+    return { peers, seen };
+  }
+
+  function makeDeps(peers?: ReturnType<typeof fakePeers>["peers"]) {
+    const registry = {} as any;
+    return { workspace: {} as any, registry, store: new MemoryRunStore(), getRegistry: async () => registry, actor: "alice-1", ...(peers ? { peers } : {}) };
+  }
+
+  it("list_peers names them, never a token; without the capability it says so", async () => {
+    const { peers } = fakePeers();
+    const tools = buildTools(makeDeps(peers)) as any;
+    assert.deepEqual(await tools.list_peers.execute({}), { peers: [{ id: "cloud", baseUrl: "http://cloud.test", label: "Cloud" }] });
+    const bare = buildTools(makeDeps()) as any;
+    assert.match((await bare.list_peers.execute({})).error, /No peers are configured/);
+    assert.match((await bare.list_workflows.execute({ peer: "cloud", limit: 10 })).error, /No peers/);
+  });
+
+  it("list_workflows / get_workflow with `peer` read the peer", async () => {
+    const { peers, seen } = fakePeers();
+    const tools = buildTools(makeDeps(peers)) as any;
+    const list = await tools.list_workflows.execute({ query: "echo", limit: 10, peer: "cloud" });
+    assert.deepEqual(list, { peer: "cloud", workflows: [{ name: "echo", activeVersion: "v1", description: "echoes" }], total: 1 });
+    const wf = await tools.get_workflow.execute({ name: "echo", peer: "cloud" });
+    assert.equal(wf.peer, "cloud");
+    assert.equal(wf.yaml, "steps: []\n");
+    assert.deepEqual(wf.versions, ["v1"]);
+    assert.deepEqual(seen.map((s) => s.path), ["/workflows?q=echo", "/workflows/echo", "/workflows/echo/v1"]);
+  });
+
+  it("run_workflow with `peer` launches there as the chat's actor and waits for the result", async () => {
+    const { peers, seen } = fakePeers();
+    const tools = buildTools(makeDeps(peers)) as any;
+    const res = await lastYield(tools.run_workflow.execute({ name: "echo", input: { q: "x" }, peer: "cloud" }, {}));
+    assert.equal(res.peer, "cloud");
+    assert.equal(res.runId, "r-cloud");
+    assert.equal(res.status, "success");
+    assert.equal(res.output, "hi");
+    const launch = seen.find((s) => s.path === "/workflows/echo/run");
+    assert.equal(launch?.method, "POST");
+    assert.equal(launch?.actor, "alice-1");
+    assert.deepEqual(launch?.body, { input: { q: "x" } });
+
+    const bad = await lastYield(tools.run_workflow.execute({ name: "echo", input: {}, peer: "nope" }, {}));
+    assert.equal(bad.ok, false);
+    assert.match(bad.error, /peer_unknown/);
+  });
+});
