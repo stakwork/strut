@@ -161,12 +161,12 @@ describe("createStrut", () => {
 
     const get = async (file: string) => (await strut.app.request(`/artifacts/run-1/${file}`)).headers;
 
-    // Everything opens with no origin. Only HTML runs script — the page an
-    // agent built, whose URL holds a file token and never the key — and
-    // nothing else does (an svg opened as a document could). A page may
-    // fetch a sibling file from its opaque origin.
+    // Everything opens with no origin and, read without a file token, runs
+    // no script — the key, or a host's credential, may be in that URL. (HTML
+    // read by its token runs: the gate tests.) A page may fetch a sibling
+    // file from its opaque origin.
     for (const [file, type, csp] of [
-      ["page.html", "text/html; charset=utf-8", "sandbox allow-scripts"],
+      ["page.html", "text/html; charset=utf-8", "sandbox"],
       ["drawing.svg", "image/svg+xml", "sandbox"],
       ["notes.txt", "text/plain; charset=utf-8", "sandbox"],
       ["page.xhtml", "application/octet-stream", "sandbox"],
@@ -1265,6 +1265,11 @@ describe("the API key gate", () => {
     assert.equal(page.status, 200);
     assert.equal(page.headers.get("content-security-policy"), "sandbox allow-scripts");
 
+    // The key opens the same file, but a key in a URL must never meet a script.
+    const keyed = await strut.app.request(`/artifacts/run-1/page.html?key=${KEY}`);
+    assert.equal(keyed.status, 200);
+    assert.equal(keyed.headers.get("content-security-policy"), "sandbox");
+
     // Nothing else: another run, a non-file route, a write, a token in the
     // key's place, a tampered one.
     assert.equal(await status(`/artifacts/run-2/other.txt?t=${t}`), 401);
@@ -1286,6 +1291,47 @@ describe("the API key gate", () => {
     assert.equal(await status(`/jobs/j1/files/plan.md?t=${t}`), 401);
     assert.equal(await status(`/artifacts/run-1/page.html?t=${jt}`), 401);
     assert.equal(await status(`/artifacts/j1?t=${jt}`), 401); // a run named like the job is another scope
+  });
+
+  it("behind a host's gate — no API key, the secret key set — strut still signs, and judges every ?t= itself", async () => {
+    const savedSecret = process.env["STRUT_SECRET_KEY"];
+    process.env["STRUT_SECRET_KEY"] = "lab-secret";
+    try {
+      const strut = await boot();
+      const artifacts = (strut.services as { artifacts: { write(r: string, p: string, c: string): Promise<string> } }).artifacts;
+      await artifacts.write("run-1", "page.html", "<script>1</script>");
+
+      // The gate is open (no API key): a bare read serves — with no script,
+      // since whatever let it in may be in its URL.
+      const bare = await strut.app.request("/artifacts/run-1/page.html");
+      assert.equal(bare.status, 200);
+      assert.equal(bare.headers.get("content-security-policy"), "sandbox");
+
+      // The listing mints a token under the secret key, which opens the
+      // file WITH script; a token strut cannot vouch for is refused though
+      // the gate is open — what lets a host hand `?t=` reads through.
+      const listed = (await (await strut.app.request("/artifacts/run-1")).json()) as { token: string };
+      assert.match(listed.token, /^[A-Za-z0-9_-]{43}$/);
+      const t = encodeURIComponent(listed.token);
+      const page = await strut.app.request(`/artifacts/run-1/page.html?t=${t}`);
+      assert.equal(page.status, 200);
+      assert.equal(page.headers.get("content-security-policy"), "sandbox allow-scripts");
+      assert.equal((await strut.app.request("/artifacts/run-1/page.html?t=nope")).status, 401);
+      assert.equal((await strut.app.request(`/artifacts/run-2/page.html?t=${t}`)).status, 401);
+      assert.equal((await strut.app.request("/artifacts/run-1?t=nope")).status, 401);
+      assert.equal((await strut.app.request("/jobs/j1/files?t=nope")).status, 401);
+
+      // With no secret at all nothing is minted and every ?t= is refused;
+      // the bare read still serves.
+      delete process.env["STRUT_SECRET_KEY"];
+      const open = (await (await strut.app.request("/artifacts/run-1")).json()) as Record<string, unknown>;
+      assert.equal("token" in open, false);
+      assert.equal((await strut.app.request(`/artifacts/run-1/page.html?t=${t}`)).status, 401);
+      assert.equal((await strut.app.request("/artifacts/run-1/page.html")).status, 200);
+    } finally {
+      if (savedSecret === undefined) delete process.env["STRUT_SECRET_KEY"];
+      else process.env["STRUT_SECRET_KEY"] = savedSecret;
+    }
   });
 
   it("the UI's own files and a bare /health are all that is served without it", async () => {

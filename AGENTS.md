@@ -331,9 +331,12 @@ container in the compose (strut and any service that registers steps).
   browser can't set headers on an upgrade; the request log prints `key=…`,
   never the value. An artifact link — an `<img>`, a frame, a new tab —
   carries a **file token** instead (`fileToken`, `auth.ts`): the key
-  attenuated to that one run's (or job's) files, reads only, minted by the
-  listing (`GET /artifacts/:runId` → `token`) and accepted as `?t=` on that
-  scope by the same gate (`carriesFileToken`). A served page can read its
+  attenuated to that one run's (or job's) files, reads only, signed by the
+  API key (else `STRUT_SECRET_KEY`), minted by the listing (`GET
+  /artifacts/:runId` → `token`) and accepted as `?t=` on that scope by the
+  same gate (`carriesFileToken`); a `?t=` strut cannot vouch for is refused
+  by the file routes even with the gate open, which is what lets a host's
+  gate (mcp's `/lab`) hand such reads through. A served page can read its
   own URL, so the key itself must never be in one; the token is worth the
   files the page already shows.
 
@@ -517,17 +520,24 @@ services bag can override it, same as `http`/`secrets`).
 - **Retention:** artifacts survive the run (they're part of its record);
   `onRunEnd` does not touch them.
 - **HTTP:** `GET /artifacts/:runId` lists (recursive relative paths) and
-  mints the run's **file token** (`token`, when a key is configured);
+  mints the run's **file token** (`token`, when there is a secret to sign
+  it: `STRUT_API_KEY`, else `STRUT_SECRET_KEY` — never its dev default);
   `GET /artifacts/:runId/<path>` serves the file (minimal content-type map).
   Read-only — steps are the only writers. Behind the key like every route,
   or behind the token: a read of the listing or any file under it with
   `?t=<token>` opens (`carriesFileToken` in the gate), which is what the
   UI's links carry — a browser cannot set a header on an `<a>`, an `<img>`
   or a frame, and the key must never ride in a URL a served page can read.
-  The token is an HMAC of the scope under the key (`fileToken`, `auth.ts`):
-  no store, rotates with the key, worth exactly that run's files. The UI
-  fetches it once per run (`web/src/use-artifact-url.ts`). `/jobs/:id/files`
-  is the same for a job.
+  The token is an HMAC of the scope under the secret (`fileToken`,
+  `auth.ts`): no store, rotates with it, worth exactly that run's files. The
+  UI fetches it once per run (`web/src/use-artifact-url.ts`); when the
+  listing minted none (a strut with no secret behind a host's gate that
+  takes its credential as `?key=`) the link carries the key as it used to.
+  `/jobs/:id/files` is the same for a job. **A `?t=` strut cannot vouch for
+  is refused by every file route whatever the gate's mode**
+  (`carriesBadFileToken`), so a host gate in front of an open strut (mcp's
+  `/lab`, which derives `STRUT_SECRET_KEY` from its `API_TOKEN`) hands a
+  token-bearing file read straight through and strut judges it.
 - **An artifact is untrusted content on strut's own origin** — a step or an
   agent wrote it, and the UI keeps the API key in that origin's storage. So
   the file route answers with `Content-Security-Policy: sandbox` and
@@ -535,10 +545,13 @@ services bag can override it, same as `http`/`secrets`).
   opened as a document — the "Open in new tab" link, a pasted URL, a frame
   — it gets an opaque origin, so it cannot read the UI's storage, navigate
   the top window, open a popup, submit a form, or send its URL as a
-  referrer. An `.html` file also gets `allow-scripts` (the viewer's frame is
-  `sandbox="allow-scripts"` too), so a page an agent built runs — a script
-  can read its own URL, and all it finds there is the run's file token.
-  Never add `allow-same-origin`: that would hand the page the storage.
+  referrer. An `.html` file read by its file token also gets
+  `allow-scripts` (the viewer's frame is `sandbox="allow-scripts"` too), so
+  a page an agent built runs — a script can read its own URL, and all it
+  finds there is that token. Read any other way — the key as `?key=`, a
+  host's own credential in the URL — it runs no script: strut cannot know
+  what else that URL holds. Never add `allow-same-origin`: that would hand
+  the page the storage.
   Everything else runs no script (an `.svg` opened as a document could).
   Sandboxed unless exempt, so a type added to the map is covered; the one
   exemption is `video/*` and `audio/*`, which cannot script and whose

@@ -23,10 +23,15 @@ export { isArtifactPath } from "./artifact-view";
 
 /** Browser URL for an artifact path. Mount-path aware (works under `/lab`).
  *  An `<a href>` / `<img src>` cannot set a header, so the read token for
- *  the run's (or job's) files rides as `?t=` — never the key: a page an
- *  agent wrote can read its own URL. `useArtifactUrl` fetches the token. */
+ *  the run's (or job's) files rides as `?t=` — not the key: a page an agent
+ *  wrote can read its own URL. `useArtifactUrl` fetches the token. When the
+ *  server minted none (a strut with no secret to sign one, behind a host's
+ *  gate that takes the key as `?key=`) the key rides as it used to, and the
+ *  server serves such a page with no script. */
 export function artifactUrl(path: string, token = ""): string {
-  return `${BASE}${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`;
+  const key = token ? "" : getApiKey();
+  const q = token ? `?t=${encodeURIComponent(token)}` : key ? `?key=${encodeURIComponent(key)}` : "";
+  return `${BASE}${path}${q}`;
 }
 
 /** The scope a served-file path reads from — `/artifacts/<runId>` or
