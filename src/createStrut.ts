@@ -32,7 +32,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { requireApiKey, carriesApiKey, warnIfUnconfigured, actorFromHeader } from "./auth.js";
+import { requireApiKey, carriesApiKey, carriesFileToken, fileToken, warnIfUnconfigured, actorFromHeader } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -790,12 +790,17 @@ export async function createStrut<TServices = unknown>(
   // This one gate is in front of every route, those a host mounts on `app`
   // later too. Two things pass: `/health`, which tells a probe `{ ok: true }`
   // and nothing else, and the UI's own files — they hold no data, and a
-  // person has to load the page to give it the key.
+  // person has to load the page to give it the key. A third opens with a
+  // FILE TOKEN in place of the key (`carriesFileToken`, auth.ts): a read of
+  // one run's artifacts or one job's files, with the token their listing
+  // minted for that scope — what the UI's links carry, since a browser
+  // cannot set a header on them and the key must never sit in a URL a
+  // served page can read.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   app.use("*", (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
-    const open = read && (path === "/health" || (serveUi && UI_FILE.test(path)));
+    const open = read && (path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c));
     return open ? next() : requireApiKey(c, next);
   });
 
@@ -1729,13 +1734,16 @@ export async function createStrut<TServices = unknown>(
   // Files a run wrote via `ctx.services.artifacts` (keyed by runId alone —
   // artifacts are run-scoped, not workflow-scoped). Read-only: steps are the
   // only writers — so a file's content is untrusted, and it is served
-  // sandboxed (`artifactHeaders`).
+  // sandboxed (`artifactHeaders`). The listing mints the run's file token
+  // (`fileToken`, auth.ts; absent with no key configured): what a link to
+  // any of these files carries as `?t=` instead of the key.
 
   app.get("/artifacts/:runId", async (c) => {
     if (!artifacts) return c.json({ error: "artifacts capability not available" }, 501);
     const runId = c.req.param("runId");
     try {
-      return c.json({ runId, files: await artifacts.list(runId) });
+      const token = fileToken({ kind: "run", id: runId });
+      return c.json({ runId, files: await artifacts.list(runId), ...(token ? { token } : {}) });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -1784,7 +1792,8 @@ export async function createStrut<TServices = unknown>(
   app.get("/jobs/:id/files", async (c) => {
     const at = jobRoute(c);
     if (at instanceof Response) return at;
-    return c.json({ job: at.id, files: await listJobFiles(at.root, await readJobRecord(at.root)) });
+    const token = fileToken({ kind: "job", id: at.id });
+    return c.json({ job: at.id, files: await listJobFiles(at.root, await readJobRecord(at.root)), ...(token ? { token } : {}) });
   });
 
   app.get("/jobs/:id/files/:path{.+}", async (c) => {
@@ -3499,22 +3508,30 @@ export async function createStrut<TServices = unknown>(
 /**
  * Response headers for an artifact. A step or an agent wrote the file, and it
  * is served from strut's own origin, where the UI keeps the API key.
- * `sandbox` with no allowances: opened as a document (a new tab, a frame) it
- * gets an opaque origin and runs no script, so it cannot read the UI's
- * storage or its own URL, call the API, or send its URL as a referrer.
- * `nosniff`: the browser never reads a file as a type the map did not say.
- * Sandboxed unless exempt, so a type added to the map is sandboxed too. The
- * one exemption is video and audio: they cannot script, and the player a
- * browser builds for one in its own tab cannot load the file from an opaque
- * origin.
+ * `sandbox`: opened as a document (a new tab, a frame) it gets an opaque
+ * origin, so it cannot read the UI's storage, navigate the top window, open
+ * a popup, submit a form, or send its URL as a referrer. An HTML page also
+ * gets `allow-scripts` — never `allow-same-origin` — so a page an agent
+ * built can run: a script can read its own URL, and what it finds there is
+ * the run's file token (auth.ts), worth the files the page already shows,
+ * never the key. Everything else runs no script (an `.svg` opened as a
+ * document could). `nosniff`: the browser never reads a file as a type the
+ * map did not say. Sandboxed unless exempt, so a type added to the map is
+ * sandboxed too. The one exemption is video and audio: they cannot script,
+ * and the player a browser builds for one in its own tab cannot load the
+ * file from an opaque origin. `access-control-allow-origin: *`: a page's
+ * script can `fetch` a sibling file (its data) from its opaque origin — the
+ * token in the URL gates the read, not the origin.
  */
 function artifactHeaders(path: string): Record<string, string> {
   const type = contentTypeFor(path);
   const headers: Record<string, string> = {
     "content-type": type,
     "x-content-type-options": "nosniff",
+    "access-control-allow-origin": "*",
   };
-  if (!/^(video|audio)\//.test(type)) headers["content-security-policy"] = "sandbox";
+  if (type.startsWith("text/html")) headers["content-security-policy"] = "sandbox allow-scripts";
+  else if (!/^(video|audio)\//.test(type)) headers["content-security-policy"] = "sandbox";
   return headers;
 }
 

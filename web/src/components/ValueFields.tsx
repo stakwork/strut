@@ -2,10 +2,10 @@ import { useCallback, useRef, useState } from "preact/hooks";
 import { formatJson, humanize } from "../helpers";
 import { CopyButton } from "./CopyButton";
 import { ArtifactViewer } from "./ArtifactViewer";
-import { artifactUrl } from "../api";
 import { artifactKind, artifactLabel, findArtifacts, isArtifactPath } from "../artifact-view";
 import { EyeIcon } from "../icons";
 import { useDismiss } from "../use-dismiss";
+import { useArtifactUrl } from "../use-artifact-url";
 
 // ── Copyable value rendering ────────────────────────────────────────────────
 //
@@ -28,6 +28,7 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
 export function CopyBlock(props: { value: unknown; label?: string; blockClass?: string }) {
   const text = formatJson(props.value);
   const artifact = isArtifactPath(props.value) ? props.value : null;
+  const href = useArtifactUrl(artifact) ?? undefined; // plain text until the token is in
   const viewable = findArtifacts(props.value).filter((p) => artifactKind(p) != null);
   const [viewing, setViewing] = useState<string | null>(null);
   return (
@@ -42,7 +43,7 @@ export function CopyBlock(props: { value: unknown; label?: string; blockClass?: 
       <pre class={props.blockClass ?? "flyout-json"}>
         {artifact
           ? <>
-              <a class="artifact-link" href={artifactUrl(artifact)} target="_blank" rel="noopener">{text}</a>
+              <a class="artifact-link" href={href} target="_blank" rel="noopener">{text}</a>
               {viewable.length > 0 && (
                 <button class="artifact-view-btn" onClick={() => setViewing(artifact)} aria-label="View" title="View">
                   <EyeIcon />

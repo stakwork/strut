@@ -108,8 +108,9 @@ export function SettingsDialog(props: {
         <div class="settings-section-title">Connection</div>
         <div class="dialog-hint">
           Needed when the server sets <code>STRUT_API_KEY</code>: nothing is served without
-          it. Sent as a bearer token on every request (and as <code>?key=</code> on artifact
-          links and the dictation socket).
+          it. Sent as a bearer token on every request (and as <code>?key=</code> on the
+          dictation socket; an artifact link carries a read token for that run's files
+          instead, never the key).
           {keySource === "url" && " This session's key came from the launch URL."}
         </div>
         <div class="dialog-field">

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import yaml from "js-yaml";
 import * as api from "../api";
+import { useArtifactUrl } from "../use-artifact-url";
 
 // ── Claims panel ───────────────────────────────────────────────────────────
 //
@@ -155,6 +156,12 @@ function CheckEditor(props: { draft: CheckDraft; onChange: (d: CheckDraft) => vo
   );
 }
 
+/** A run's artifact listing in a new tab, with the run's file token. */
+function ArtifactsLink(props: { runId: string }) {
+  const href = useArtifactUrl(`/artifacts/${props.runId}`) ?? undefined;
+  return <a class="claim-link" href={href} target="_blank" rel="noreferrer">artifacts</a>;
+}
+
 export function ClaimsPanel(props: {
   subject: api.ClaimSubject;
   /** Open a run in the app (workflow runs only). */
@@ -240,7 +247,7 @@ export function ClaimsPanel(props: {
           <div class="claim-todo-question">{slot.question ?? "An external check is waiting on this run."}</div>
           <div class="claim-todo-run">
             {runLink(slot.run)}
-            {slot.run?.runId && <a class="claim-link" href={api.artifactUrl(`/artifacts/${slot.run.runId}/`)} target="_blank" rel="noreferrer">artifacts</a>}
+            {slot.run?.runId && <ArtifactsLink runId={slot.run.runId} />}
           </div>
           <textarea
             rows={2}

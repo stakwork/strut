@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
-import { requireApiKey, _resetAuthState } from "./auth.js";
+import type { Context } from "hono";
+import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, _resetAuthState } from "./auth.js";
 
 /**
  * Tests for the deployment-scoped shared-secret middleware.
@@ -163,5 +164,84 @@ describe("requireApiKey middleware", () => {
       const res = await app.request("/steps", { method: "GET" });
       assert.equal(res.status, 200);
     });
+  });
+});
+
+// ── File read tokens ─────────────────────────────────────────────────────
+// The key attenuated to one run's (or job's) files — what an artifact link
+// carries, since a served page can read its own URL.
+
+describe("file tokens", () => {
+  const originalKey = process.env["STRUT_API_KEY"];
+  const KEY = "k_test_abc_123";
+
+  beforeEach(() => {
+    process.env["STRUT_API_KEY"] = KEY;
+  });
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = originalKey;
+  });
+
+  it("is the key attenuated to one scope: none without a key, one per scope, rotates with the key", () => {
+    delete process.env["STRUT_API_KEY"];
+    assert.equal(fileToken({ kind: "run", id: "1" }), undefined);
+    process.env["STRUT_API_KEY"] = KEY;
+    const t = fileToken({ kind: "run", id: "1" })!;
+    assert.match(t, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(fileToken({ kind: "run", id: "1" }), t);
+    assert.notEqual(fileToken({ kind: "run", id: "2" }), t);
+    assert.notEqual(fileToken({ kind: "job", id: "1" }), t);
+    process.env["STRUT_API_KEY"] = "another";
+    assert.notEqual(fileToken({ kind: "run", id: "1" }), t);
+  });
+
+  it("reads the scope off a path — the listing or anything under it, the id decoded", () => {
+    assert.deepEqual(fileScopeOf("/artifacts/123"), { kind: "run", id: "123" });
+    assert.deepEqual(fileScopeOf("/artifacts/123/a/b.html"), { kind: "run", id: "123" });
+    assert.deepEqual(fileScopeOf("/jobs/a%2Fb/files"), { kind: "job", id: "a/b" });
+    assert.deepEqual(fileScopeOf("/jobs/a%2Fb/files/plan.md"), { kind: "job", id: "a/b" });
+    for (const path of [
+      "/artifacts", "/artifacts/", "/jobs/x", "/jobs/x/files-x", "/jobs/x/holds",
+      "/workflows/x/runs/1/events", "/artifacts/%E0%A4%A/x",
+    ]) {
+      assert.equal(fileScopeOf(path), undefined, path);
+    }
+  });
+
+  it("opens a read under its scope and nothing else", async () => {
+    const app = new Hono();
+    app.use("*", (c, next) => (carriesFileToken(c) ? next() : requireApiKey(c, next)));
+    const hit = (c: Context) => c.json({ ok: true });
+    app.get("/artifacts/:runId", hit);
+    app.get("/artifacts/:runId/:path{.+}", hit);
+    app.get("/jobs/:id/files", hit);
+    app.get("/jobs/:id/files/:path{.+}", hit);
+    app.get("/workflows", hit);
+    app.delete("/artifacts/:runId/:path{.+}", hit);
+    const t = encodeURIComponent(fileToken({ kind: "run", id: "r1" })!);
+    const j = encodeURIComponent(fileToken({ kind: "job", id: "a/b" })!);
+    const status = async (path: string, method = "GET") => (await app.request(path, { method })).status;
+
+    assert.equal(await status(`/artifacts/r1?t=${t}`), 200);
+    assert.equal(await status(`/artifacts/r1/deep/page.html?t=${t}`), 200);
+    assert.equal(await status(`/jobs/a%2Fb/files?t=${j}`), 200);
+    assert.equal(await status(`/jobs/a%2Fb/files/plan.md?t=${j}`), 200);
+    assert.equal(await status(`/artifacts/r1/page.html?key=${KEY}`), 200); // the key still does
+
+    const tampered = `${t.slice(0, -1)}${t.endsWith("A") ? "B" : "A"}`;
+    for (const [path, method] of [
+      [`/artifacts/r2/page.html?t=${t}`], // another run
+      [`/artifacts/r1/page.html?t=${j}`], // a job's token on a run
+      [`/jobs/a/files/plan.md?t=${j}`], // another job
+      [`/artifacts/r1/page.html`], // no token
+      [`/artifacts/r1/page.html?t=`],
+      [`/artifacts/r1/page.html?t=${tampered}`],
+      [`/artifacts/r1/page.html?key=${t}`], // a token is not the key
+      [`/workflows?t=${t}`], // not a file route
+      [`/artifacts/r1/page.html?t=${t}`, "DELETE"], // not a read
+    ] as [string, string?][]) {
+      assert.equal(await status(path, method), 401, `${method ?? "GET"} ${path}`);
+    }
   });
 });

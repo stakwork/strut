@@ -22,11 +22,41 @@ const BASE = deriveBase();
 export { isArtifactPath } from "./artifact-view";
 
 /** Browser URL for an artifact path. Mount-path aware (works under `/lab`).
- *  An `<a href>` / `<img src>` cannot set a header, so the key rides as
- *  `?key=`, like the dictation socket's. */
-export function artifactUrl(path: string): string {
-  const key = getApiKey();
-  return `${BASE}${path}${key ? `?key=${encodeURIComponent(key)}` : ""}`;
+ *  An `<a href>` / `<img src>` cannot set a header, so the read token for
+ *  the run's (or job's) files rides as `?t=` — never the key: a page an
+ *  agent wrote can read its own URL. `useArtifactUrl` fetches the token. */
+export function artifactUrl(path: string, token = ""): string {
+  return `${BASE}${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`;
+}
+
+/** The scope a served-file path reads from — `/artifacts/<runId>` or
+ *  `/jobs/<id>/files` — whose listing mints the token for every file under
+ *  it; null for anything else. */
+export function fileScopeOf(path: string): string | null {
+  const m = path.match(/^\/artifacts\/[^/]+/) ?? path.match(/^\/jobs\/[^/]+\/files/);
+  return m ? m[0] : null;
+}
+
+// One token per scope, fetched once (the listing route) and kept for the
+// page's life; dropped when the key changes, since the token is derived
+// from it. With no key here there is nothing to fetch: the server is open,
+// or will say 401 to the next API call and open Settings.
+const fileTokens = new Map<string, Promise<string>>();
+
+/** The read token for the files `path` belongs to; "" when none is needed
+ *  or the path is not a served file. */
+export function fileToken(path: string): Promise<string> {
+  const scope = fileScopeOf(path);
+  if (!scope || !getApiKey()) return Promise.resolve("");
+  let p = fileTokens.get(scope);
+  if (!p) {
+    p = apiFetch(scope)
+      .then((res): Promise<{ token?: unknown }> => (res.ok ? res.json() : Promise.resolve({})))
+      .then((body) => (typeof body.token === "string" ? body.token : ""));
+    p.catch(() => fileTokens.delete(scope));
+    fileTokens.set(scope, p);
+  }
+  return p;
 }
 
 /** The text of an artifact, for the inline viewer (markdown / text files). */
@@ -69,6 +99,7 @@ export function getApiKey(): string {
 /** Save a user-entered key (Settings). Empty clears it. */
 export function setApiKey(key: string): void {
   refused = false;
+  fileTokens.clear();
   try {
     if (key) localStorage.setItem(KEY_STORAGE, key);
     else {
