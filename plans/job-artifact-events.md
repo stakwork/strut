@@ -5,8 +5,10 @@
 > 2: stakwork/stakgraph#1751 (the pod steps claim and release as the job,
 > `pod/push` notes the pull request on the hold, the `Pod` page's rules);
 > 3: stakwork/hive#5447 (the index, the line, the door, the launch as a
-> service, the origin row, the event-aware wake); 4: stakwork/hive#5448
-> (Fix on the pull-request card; stacked on #5447). Item 5 is not taken.
+> service, the origin row, the event-aware wake; merged); 4: stakwork/hive#5450
+> (Fix on the pull-request card — #5448 was stacked on #5447's branch and
+> merged into it after #5447 had landed, so the same commit was re-opened
+> against master). Item 5 is not taken.
 > Built as written, with two things decided while building: the origin
 > row is written AFTER the dispatch (§3 said before), so a launch strut
 > refuses leaves no card waiting on a turn that never started — and the
