@@ -86,19 +86,35 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
 // ATTENUATED to one scope — the files of one run (`/artifacts/:runId` and
 // everything under it) or of one job (`/jobs/:id/files` and under) — reads
 // only. Leaked, it is worth exactly the files the page already shows. It is
-// an HMAC of the scope under the key, so it needs no store, rotates with the
-// key, and is minted by the listing routes (`GET /artifacts/:runId`,
-// `GET /jobs/:id/files` → `token`) for whoever holds the key.
+// an HMAC of the scope under a deployment secret, so it needs no store and
+// is minted by the listing routes (`GET /artifacts/:runId`,
+// `GET /jobs/:id/files` → `token`) for whoever got past the gate.
+//
+// The secret is `STRUT_API_KEY`, else `STRUT_SECRET_KEY` when set: a strut
+// behind a HOST's gate (mcp's `/lab`) has no API key of its own but does
+// have the secret-store key, and the host hands a file read carrying `?t=`
+// straight to strut to judge. So the invariant every file route keeps is:
+// a `?t=` strut cannot vouch for is refused, whatever the gate's mode — and
+// with no secret at all nothing is minted and every `?t=` is refused.
 
 /** What a file token opens: one run's artifacts or one job's files. */
 export type FileScope = { kind: "run" | "job"; id: string };
 
-/** The read token for a scope; undefined with no key configured (dev mode:
- *  everything is open, there is nothing to attenuate). */
+const SECRET_ENV = "STRUT_SECRET_KEY";
+
+/** What signs a file token: the API key, else the secret-store key when it
+ *  is set (never its dev default — a forgeable token is no credential). */
+function tokenSecret(): string | undefined {
+  const secret = process.env[SECRET_ENV];
+  return configuredKey() ?? (secret && secret.length > 0 ? secret : undefined);
+}
+
+/** The read token for a scope; undefined with no secret to sign it (dev
+ *  mode: everything is open, there is nothing to attenuate). */
 export function fileToken(scope: FileScope): string | undefined {
-  const key = configuredKey();
-  if (!key) return undefined;
-  return createHmac("sha256", key).update(`${scope.kind}:${scope.id}`).digest("base64url");
+  const secret = tokenSecret();
+  if (!secret) return undefined;
+  return createHmac("sha256", secret).update(`${scope.kind}:${scope.id}`).digest("base64url");
 }
 
 /** The scope a path reads from — `/artifacts/<runId>[/…]` or
@@ -126,6 +142,13 @@ export function carriesFileToken(c: Context): boolean {
   const expected = fileToken(scope);
   if (!expected || expected.length !== got.length) return false;
   return timingSafeEqual(Buffer.from(expected), Buffer.from(got));
+}
+
+/** Does this request carry a `?t=` strut cannot vouch for? The file routes
+ *  refuse such a request whatever the gate's mode: a host that delegates
+ *  token-bearing reads to an open strut relies on it. */
+export function carriesBadFileToken(c: Context): boolean {
+  return c.req.query("t") !== undefined && !carriesFileToken(c);
 }
 
 /**

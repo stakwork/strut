@@ -32,7 +32,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { requireApiKey, carriesApiKey, carriesFileToken, fileToken, warnIfUnconfigured, actorFromHeader } from "./auth.js";
+import { requireApiKey, carriesApiKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -1735,11 +1735,19 @@ export async function createStrut<TServices = unknown>(
   // artifacts are run-scoped, not workflow-scoped). Read-only: steps are the
   // only writers — so a file's content is untrusted, and it is served
   // sandboxed (`artifactHeaders`). The listing mints the run's file token
-  // (`fileToken`, auth.ts; absent with no key configured): what a link to
-  // any of these files carries as `?t=` instead of the key.
+  // (`fileToken`, auth.ts; absent with no secret to sign it): what a link to
+  // any of these files carries as `?t=` instead of the key. A `?t=` strut
+  // cannot vouch for is refused here even when the gate is open — a host
+  // gate in front of this strut (mcp's `/lab`) hands token-bearing file
+  // reads through on that promise.
+
+  const badToken = (c: Context) =>
+    carriesBadFileToken(c) ? c.json({ error: "unauthorized: that file token does not open this path" }, 401) : undefined;
 
   app.get("/artifacts/:runId", async (c) => {
     if (!artifacts) return c.json({ error: "artifacts capability not available" }, 501);
+    const refused = badToken(c);
+    if (refused) return refused;
     const runId = c.req.param("runId");
     try {
       const token = fileToken({ kind: "run", id: runId });
@@ -1751,6 +1759,8 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/artifacts/:runId/:path{.+}", async (c) => {
     if (!artifacts) return c.json({ error: "artifacts capability not available" }, 501);
+    const refused = badToken(c);
+    if (refused) return refused;
     const runId = c.req.param("runId");
     const relPath = c.req.param("path");
     try {
@@ -1758,7 +1768,7 @@ export async function createStrut<TServices = unknown>(
       return c.body(
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
         200,
-        artifactHeaders(relPath),
+        artifactHeaders(relPath, carriesFileToken(c)),
       );
     } catch (err: any) {
       if (err?.code === "ENOENT") {
@@ -1790,6 +1800,8 @@ export async function createStrut<TServices = unknown>(
   };
 
   app.get("/jobs/:id/files", async (c) => {
+    const refused = badToken(c);
+    if (refused) return refused;
     const at = jobRoute(c);
     if (at instanceof Response) return at;
     const token = fileToken({ kind: "job", id: at.id });
@@ -1797,6 +1809,8 @@ export async function createStrut<TServices = unknown>(
   });
 
   app.get("/jobs/:id/files/:path{.+}", async (c) => {
+    const refused = badToken(c);
+    if (refused) return refused;
     const at = jobRoute(c);
     if (at instanceof Response) return at;
     const relPath = c.req.param("path");
@@ -1805,7 +1819,7 @@ export async function createStrut<TServices = unknown>(
       return c.body(
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
         200,
-        artifactHeaders(relPath),
+        artifactHeaders(relPath, carriesFileToken(c)),
       );
     } catch (err: any) {
       if (err?.code === "ENOENT" || err?.code === "EISDIR") {
@@ -3511,26 +3525,29 @@ export async function createStrut<TServices = unknown>(
  * `sandbox`: opened as a document (a new tab, a frame) it gets an opaque
  * origin, so it cannot read the UI's storage, navigate the top window, open
  * a popup, submit a form, or send its URL as a referrer. An HTML page also
- * gets `allow-scripts` — never `allow-same-origin` — so a page an agent
- * built can run: a script can read its own URL, and what it finds there is
- * the run's file token (auth.ts), worth the files the page already shows,
- * never the key. Everything else runs no script (an `.svg` opened as a
- * document could). `nosniff`: the browser never reads a file as a type the
- * map did not say. Sandboxed unless exempt, so a type added to the map is
- * sandboxed too. The one exemption is video and audio: they cannot script,
- * and the player a browser builds for one in its own tab cannot load the
- * file from an opaque origin. `access-control-allow-origin: *`: a page's
- * script can `fetch` a sibling file (its data) from its opaque origin — the
- * token in the URL gates the read, not the origin.
+ * gets `allow-scripts` — never `allow-same-origin` — when the request was
+ * opened by a FILE TOKEN (`tokenRead`): then a page an agent built can run,
+ * because a script can read its own URL, and all it finds there is that
+ * token (auth.ts), worth the files the page already shows. A request the
+ * key let in, or a host's gate did, may carry that credential in its URL
+ * (`?key=`, a host's own `?key=<jwt>`), so it runs no script. Everything
+ * else runs no script either (an `.svg` opened as a document could).
+ * `nosniff`: the browser never reads a file as a type the map did not say.
+ * Sandboxed unless exempt, so a type added to the map is sandboxed too. The
+ * one exemption is video and audio: they cannot script, and the player a
+ * browser builds for one in its own tab cannot load the file from an opaque
+ * origin. `access-control-allow-origin: *`: a page's script can `fetch` a
+ * sibling file (its data) from its opaque origin — the token in the URL
+ * gates the read, not the origin.
  */
-function artifactHeaders(path: string): Record<string, string> {
+function artifactHeaders(path: string, tokenRead = false): Record<string, string> {
   const type = contentTypeFor(path);
   const headers: Record<string, string> = {
     "content-type": type,
     "x-content-type-options": "nosniff",
     "access-control-allow-origin": "*",
   };
-  if (type.startsWith("text/html")) headers["content-security-policy"] = "sandbox allow-scripts";
+  if (type.startsWith("text/html") && tokenRead) headers["content-security-policy"] = "sandbox allow-scripts";
   else if (!/^(video|audio)\//.test(type)) headers["content-security-policy"] = "sandbox";
   return headers;
 }

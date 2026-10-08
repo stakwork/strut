@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, _resetAuthState } from "./auth.js";
+import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, _resetAuthState } from "./auth.js";
 
 /**
  * Tests for the deployment-scoped shared-secret middleware.
@@ -173,14 +173,42 @@ describe("requireApiKey middleware", () => {
 
 describe("file tokens", () => {
   const originalKey = process.env["STRUT_API_KEY"];
+  const originalSecret = process.env["STRUT_SECRET_KEY"];
   const KEY = "k_test_abc_123";
 
   beforeEach(() => {
     process.env["STRUT_API_KEY"] = KEY;
+    delete process.env["STRUT_SECRET_KEY"];
   });
   afterEach(() => {
     if (originalKey === undefined) delete process.env["STRUT_API_KEY"];
     else process.env["STRUT_API_KEY"] = originalKey;
+    if (originalSecret === undefined) delete process.env["STRUT_SECRET_KEY"];
+    else process.env["STRUT_SECRET_KEY"] = originalSecret;
+  });
+
+  it("signs with the secret-store key when there is no API key — never with its dev default", () => {
+    delete process.env["STRUT_API_KEY"];
+    assert.equal(fileToken({ kind: "run", id: "1" }), undefined);
+    process.env["STRUT_SECRET_KEY"] = "lab-secret";
+    const t = fileToken({ kind: "run", id: "1" })!;
+    assert.match(t, /^[A-Za-z0-9_-]{43}$/);
+    process.env["STRUT_API_KEY"] = KEY; // the API key signs when both are set
+    assert.notEqual(fileToken({ kind: "run", id: "1" }), t);
+  });
+
+  it("a ?t= strut cannot vouch for is a bad token, whatever the gate would say", async () => {
+    const app = new Hono();
+    app.get("/artifacts/:runId/:path{.+}", (c) => c.json({ bad: carriesBadFileToken(c) }));
+    const bad = async (path: string) => ((await (await app.request(path)).json()) as { bad: boolean }).bad;
+    const t = encodeURIComponent(fileToken({ kind: "run", id: "r1" })!);
+    assert.equal(await bad("/artifacts/r1/page.html"), false); // no token: the gate's business
+    assert.equal(await bad(`/artifacts/r1/page.html?t=${t}`), false);
+    assert.equal(await bad(`/artifacts/r2/page.html?t=${t}`), true);
+    assert.equal(await bad("/artifacts/r1/page.html?t="), true);
+    delete process.env["STRUT_API_KEY"]; // no secret at all: nothing can be vouched for
+    assert.equal(await bad(`/artifacts/r1/page.html?t=${t}`), true);
+    assert.equal(await bad("/artifacts/r1/page.html"), false);
   });
 
   it("is the key attenuated to one scope: none without a key, one per scope, rotates with the key", () => {
