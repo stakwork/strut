@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**
  * Deployment-scoped shared-secret auth. `createStrut` puts `requireApiKey`
@@ -73,6 +74,58 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
   const match = (authorization ?? "").match(/^Bearer\s+(.+)$/i);
   const got = match?.[1]?.trim() || queryKey?.trim();
   return !!got && got === expected;
+}
+
+// ── File read tokens ─────────────────────────────────────────────────────
+//
+// A browser loads an artifact without headers — a link, an `<img>`, a frame
+// — so something has to ride in the URL. It used to be the deployment key,
+// which made `allow-scripts` on an HTML artifact impossible: a document can
+// always read its own `location`, so a page an agent wrote could have lifted
+// the key and sent it anywhere. A file token is the deployment key
+// ATTENUATED to one scope — the files of one run (`/artifacts/:runId` and
+// everything under it) or of one job (`/jobs/:id/files` and under) — reads
+// only. Leaked, it is worth exactly the files the page already shows. It is
+// an HMAC of the scope under the key, so it needs no store, rotates with the
+// key, and is minted by the listing routes (`GET /artifacts/:runId`,
+// `GET /jobs/:id/files` → `token`) for whoever holds the key.
+
+/** What a file token opens: one run's artifacts or one job's files. */
+export type FileScope = { kind: "run" | "job"; id: string };
+
+/** The read token for a scope; undefined with no key configured (dev mode:
+ *  everything is open, there is nothing to attenuate). */
+export function fileToken(scope: FileScope): string | undefined {
+  const key = configuredKey();
+  if (!key) return undefined;
+  return createHmac("sha256", key).update(`${scope.kind}:${scope.id}`).digest("base64url");
+}
+
+/** The scope a path reads from — `/artifacts/<runId>[/…]` or
+ *  `/jobs/<id>/files[/…]`, the id decoded as the route decodes it — or
+ *  undefined for any other path. */
+export function fileScopeOf(path: string): FileScope | undefined {
+  const m = path.match(/^\/artifacts\/([^/]+)(?:\/|$)/) ?? path.match(/^\/jobs\/([^/]+)\/files(?:\/|$)/);
+  if (!m) return undefined;
+  try {
+    return { kind: path.startsWith("/jobs/") ? "job" : "run", id: decodeURIComponent(m[1]!) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Does this request carry a valid file token (`?t=`) for the scope its
+ *  path reads from? A read (GET / HEAD) under a scope only; a token on any
+ *  other path, or for another run or job, opens nothing. */
+export function carriesFileToken(c: Context): boolean {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") return false;
+  const got = c.req.query("t")?.trim();
+  if (!got) return false;
+  const scope = fileScopeOf(c.req.path);
+  if (!scope) return false;
+  const expected = fileToken(scope);
+  if (!expected || expected.length !== got.length) return false;
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(got));
 }
 
 /**

@@ -15,8 +15,10 @@ how-tos: `CALLBACKS.md` (the result pushed to your endpoint),
 With `STRUT_API_KEY` set there are **no public endpoints**: every request in
 this document — reads, runs, streams, transcripts, artifacts — needs
 `Authorization: Bearer <STRUT_API_KEY>`, and gets a `401` without it. Where a
-header cannot be set (a link, an `<img>`, the dictation socket) the key may
-ride as `?key=` instead. Unset (dev mode) everything is open. The only
+header cannot be set the key may ride as `?key=` (the dictation socket) — but
+a run's or a job's files take a scoped read token instead, `?t=`, minted by
+their listing, so the key never sits in a URL a served page could read
+(`/artifacts/:runId` below). Unset (dev mode) everything is open. The only
 things served without the key are the web UI's own files and `GET /health`
 (§8). The examples below leave the header out for brevity; add
 `-H "Authorization: Bearer $STRUT_API_KEY"`.
@@ -176,10 +178,10 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none. For a step that continued a `session` (§9) this is its system prompt + THAT TURN; `?full=1` is the thread up to and including it (404 once the session is deleted) |
 | GET    | `/workflows/:name/runs/:runId/artifacts`               | `{ workflow, runId, job?, artifacts: [{ id, kind, title, label?, summary?, url? \| content? \| error? }] }` — the deliverables the run's output declared, resolved as the run callback resolves them (`CALLBACKS.md` §4); 404 until the run has a summary |
 | GET    | `/workflows/:name/evidence[?runId=&limit=&before=]`   | what the checks said about the workflow's runs (§5.4) |
-| GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …] }` — what the run's steps wrote; 501 when the deployment has no artifact store |
-| GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension (unknown → `application/octet-stream`), with `X-Content-Type-Options: nosniff`. A step wrote it, so everything but `video/*` and `audio/*` also carries `Content-Security-Policy: sandbox`: opened in a browser it runs no script and has no origin — an HTML artifact is a static page. A host that frames or proxies artifacts must keep both headers |
-| GET    | `/jobs/:id/files`                                      | `{ job, files: ["plan.md", …] }` — every file in a job's directory (`job/dir`, `plans/jobs.md`), recursive, skipping the repositories checked out into it; 404 for a job with no directory, 400 for a malformed id (percent-encode a `/`) |
-| GET    | `/jobs/:id/files/<path>`                               | the file, served exactly like `/artifacts/:runId/<path>` — same content types, same two headers |
+| GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …], token? }` — what the run's steps wrote, and the run's **file token** (present when a key is configured): a `GET` of this listing or of any file under it with `?t=<token>` needs no key — the link form, worth this run's files and nothing else (an HMAC of the run id under the key: no store, rotates with the key); 501 when the deployment has no artifact store |
+| GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension (unknown → `application/octet-stream`), with `X-Content-Type-Options: nosniff` and `Access-Control-Allow-Origin: *`. A step wrote it, so everything but `video/*` and `audio/*` also carries `Content-Security-Policy: sandbox`: opened in a browser it has no origin, and only `text/html` runs script (`sandbox allow-scripts`) — a page an agent built runs, and the one thing in its URL is the file token. A host that frames or proxies artifacts must keep these headers |
+| GET    | `/jobs/:id/files`                                      | `{ job, files: ["plan.md", …], token? }` — every file in a job's directory (`job/dir`, `plans/jobs.md`), recursive, skipping the repositories checked out into it, and the job's file token, as `/artifacts/:runId` mints the run's; 404 for a job with no directory, 400 for a malformed id (percent-encode a `/`) |
+| GET    | `/jobs/:id/files/<path>`                               | the file, served exactly like `/artifacts/:runId/<path>` — same content types, same headers, the job's token as `?t=` |
 | DELETE | `/jobs/:id`                                            | `{ ok: true, job, released: [<hold id>, …] }` — close a job (`plans/jobs.md` §6): every hold a tool registered on it (a pod) is released through its release step, then the repositories, the directory and the record are removed; runs, chats and sessions are records of their own and stay. 409 while a run holds the job; 500 and nothing removed when a hold will not release (the error names it — call again); 404 for a job with neither a directory nor a record |
 
 ### 5.1 Summary (`RunSummary`, `src/core.ts`)

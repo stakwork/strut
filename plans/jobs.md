@@ -260,11 +260,13 @@ advises.
 skipping the repositories in the manifest (a checkout is not a deliverable
 and can be enormous). `GET /jobs/:id/files/<path>` serves any path under
 the directory — a screenshot the agent saved inside a repo dir included —
-with `artifactHeaders` (`Content-Security-Policy: sandbox`,
-`X-Content-Type-Options: nosniff`; the video/audio exemption): an HTML page
-an agent wrote is a static page here as it is under `/artifacts`. Same
-path guard as `artifactPath` (no `..`, no escape). Behind the key like
-every route; the UI's links carry it as `?key=`.
+with `artifactHeaders` (`Content-Security-Policy: sandbox`, `allow-scripts`
+for HTML only, `X-Content-Type-Options: nosniff`; the video/audio
+exemption): an HTML page an agent wrote runs with no origin here as it
+does under `/artifacts`. Same path guard as `artifactPath` (no `..`, no
+escape). Behind the key like every route, or the job's **file token** —
+the listing mints it (`token`), a link carries it as `?t=`, and it opens
+reads of this job's files and nothing else (`auth.ts`).
 
 ## 3. Deliverables — `artifacts[]` in the output
 

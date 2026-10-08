@@ -68,7 +68,7 @@ strut/
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (holds released, repositories removed, files kept), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
 │   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
-│   ├── auth.ts            # requireApiKey middleware — createStrut puts it in front of EVERY route, reads included — + carriesApiKey (Bearer or `?key=`) + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key)
+│   ├── auth.ts            # requireApiKey middleware — createStrut puts it in front of EVERY route, reads included — + carriesApiKey (Bearer or `?key=`) + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── session-store.ts   # agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
 │   ├── peers.ts           # PEERS (plans/federation.md §2.2, §3): the other struts this one may call — `{ id, baseUrl, token, label? }` in a fourth encrypted file, peers.json (`P_<hex(id)>`), behind PUT/DELETE/GET /peers (GET: ids, labels, base URLs — never a token) + `STRUT_PEERS` / `createStrut({ peers })`, the paste door for a strut nobody pushes to. `ctx.services.peers` names a peer and makes a request with its token injected (readable by nothing; what a step can do through it is the token's scope on the peer). The client the step and the builder's `peer` tools share: launchOnPeer (POST …/run, `x-strut-actor: ctx.principal`), tailPeerRun (the peer's SSE tail, reattached with `?skip=N` after a drop — reader-initiated, so a strut behind NAT can call a cloud one), cancelOnPeer, runOnPeer, listPeerWorkflows / readPeerWorkflow
@@ -327,9 +327,15 @@ container in the compose (strut and any service that registers steps).
   that spawns strut hands it over as `?key=` on the first page load (stored
   in `sessionStorage`, stripped from the URL), or a user pastes it under
   Settings → Connection (`localStorage`) — which the UI opens by itself on
-  the first `401`. Artifact links and the dictation WebSocket send it as
-  `?key=`, since a browser can't set headers on an `<img>`, a new tab or an
-  upgrade; the request log prints `key=…`, never the value.
+  the first `401`. The dictation WebSocket sends it as `?key=`, since a
+  browser can't set headers on an upgrade; the request log prints `key=…`,
+  never the value. An artifact link — an `<img>`, a frame, a new tab —
+  carries a **file token** instead (`fileToken`, `auth.ts`): the key
+  attenuated to that one run's (or job's) files, reads only, minted by the
+  listing (`GET /artifacts/:runId` → `token`) and accepted as `?t=` on that
+  scope by the same gate (`carriesFileToken`). A served page can read its
+  own URL, so the key itself must never be in one; the token is worth the
+  files the page already shows.
 
 The same secret authenticates **both directions** within a deployment:
 
@@ -510,25 +516,37 @@ services bag can override it, same as `http`/`secrets`).
   (path separators, `..`) are rejected.
 - **Retention:** artifacts survive the run (they're part of its record);
   `onRunEnd` does not touch them.
-- **HTTP:** `GET /artifacts/:runId` lists (recursive relative paths);
+- **HTTP:** `GET /artifacts/:runId` lists (recursive relative paths) and
+  mints the run's **file token** (`token`, when a key is configured);
   `GET /artifacts/:runId/<path>` serves the file (minimal content-type map).
-  Read-only — steps are the only writers. Behind the key like every route;
-  the UI's links carry it as `?key=`.
+  Read-only — steps are the only writers. Behind the key like every route,
+  or behind the token: a read of the listing or any file under it with
+  `?t=<token>` opens (`carriesFileToken` in the gate), which is what the
+  UI's links carry — a browser cannot set a header on an `<a>`, an `<img>`
+  or a frame, and the key must never ride in a URL a served page can read.
+  The token is an HMAC of the scope under the key (`fileToken`, `auth.ts`):
+  no store, rotates with the key, worth exactly that run's files. The UI
+  fetches it once per run (`web/src/use-artifact-url.ts`). `/jobs/:id/files`
+  is the same for a job.
 - **An artifact is untrusted content on strut's own origin** — a step or an
   agent wrote it, and the UI keeps the API key in that origin's storage. So
-  the file route answers with `Content-Security-Policy: sandbox` (no
-  allowances) and `X-Content-Type-Options: nosniff` (`artifactHeaders` in
-  `createStrut.ts`): opened as a document — the "Open in new tab" link, a
-  pasted URL, a frame — an `.html` or `.svg` gets an opaque origin and runs no
-  script, so it cannot read the key from storage or from its own URL, call
-  the API, or send its URL as a referrer. Sandboxed unless exempt, so a type
-  added to the map is covered; the one exemption is `video/*` and `audio/*`,
-  which cannot script and whose player, in a tab of its own, cannot load the
-  file from an opaque origin. An HTML artifact is therefore a STATIC page
-  everywhere (the viewer's frame is `sandbox=""` too); never add
-  `allow-scripts` or `allow-same-origin` to either. The UI's viewers are
-  unaffected — the header only applies to a document, not to an `<img>` /
-  `<video>` / `fetch`.
+  the file route answers with `Content-Security-Policy: sandbox` and
+  `X-Content-Type-Options: nosniff` (`artifactHeaders` in `createStrut.ts`):
+  opened as a document — the "Open in new tab" link, a pasted URL, a frame
+  — it gets an opaque origin, so it cannot read the UI's storage, navigate
+  the top window, open a popup, submit a form, or send its URL as a
+  referrer. An `.html` file also gets `allow-scripts` (the viewer's frame is
+  `sandbox="allow-scripts"` too), so a page an agent built runs — a script
+  can read its own URL, and all it finds there is the run's file token.
+  Never add `allow-same-origin`: that would hand the page the storage.
+  Everything else runs no script (an `.svg` opened as a document could).
+  Sandboxed unless exempt, so a type added to the map is covered; the one
+  exemption is `video/*` and `audio/*`, which cannot script and whose
+  player, in a tab of its own, cannot load the file from an opaque origin.
+  `Access-Control-Allow-Origin: *` on the file route lets a page `fetch` a
+  sibling file (its data) from its opaque origin — the token gates the read,
+  not the origin. The header only applies to a document, not to an `<img>`
+  / `<video>` / `fetch`.
 
 ## Shell (subprocesses)
 

@@ -161,17 +161,21 @@ describe("createStrut", () => {
 
     const get = async (file: string) => (await strut.app.request(`/artifacts/run-1/${file}`)).headers;
 
-    // The two types a browser runs script from, and everything else by default.
-    for (const [file, type] of [
-      ["page.html", "text/html; charset=utf-8"],
-      ["drawing.svg", "image/svg+xml"],
-      ["notes.txt", "text/plain; charset=utf-8"],
-      ["page.xhtml", "application/octet-stream"],
+    // Everything opens with no origin. Only HTML runs script — the page an
+    // agent built, whose URL holds a file token and never the key — and
+    // nothing else does (an svg opened as a document could). A page may
+    // fetch a sibling file from its opaque origin.
+    for (const [file, type, csp] of [
+      ["page.html", "text/html; charset=utf-8", "sandbox allow-scripts"],
+      ["drawing.svg", "image/svg+xml", "sandbox"],
+      ["notes.txt", "text/plain; charset=utf-8", "sandbox"],
+      ["page.xhtml", "application/octet-stream", "sandbox"],
     ]) {
       const h = await get(file);
       assert.equal(h.get("content-type"), type, file);
-      assert.equal(h.get("content-security-policy"), "sandbox", file);
+      assert.equal(h.get("content-security-policy"), csp, file);
       assert.equal(h.get("x-content-type-options"), "nosniff", file);
+      assert.equal(h.get("access-control-allow-origin"), "*", file);
     }
 
     // Video and audio are exempt (a sandboxed media tab cannot load its own
@@ -1234,6 +1238,54 @@ describe("the API key gate", () => {
       assert.equal((await strut.app.request(`${path}?key=${KEY}`)).status, 200, `${path}?key=`);
       assert.equal((await strut.app.request(`${path}?key=nope`)).status, 401, `${path}?key=nope`);
     }
+  });
+
+  it("a run's file token opens that run's files, the way a link carries it — and nothing else", async () => {
+    const strut = await boot();
+    const artifacts = (strut.services as { artifacts: { write(r: string, p: string, c: string): Promise<string> } }).artifacts;
+    await artifacts.write("run-1", "page.html", "<script>document.title = 'ran'</script>");
+    await artifacts.write("run-2", "other.txt", "other");
+    await mkdir(join(tempDir, "ws", "jobs", "j1"), { recursive: true });
+    await writeFile(join(tempDir, "ws", "jobs", "j1", "plan.md"), "# plan");
+
+    // Dev mode: the listing has no token — there is nothing to attenuate.
+    const open = (await (await strut.app.request("/artifacts/run-1")).json()) as Record<string, unknown>;
+    assert.equal("token" in open, false);
+
+    process.env["STRUT_API_KEY"] = KEY;
+    const listed = (await (await strut.app.request("/artifacts/run-1", auth)).json()) as { files: string[]; token: string };
+    assert.deepEqual(listed.files, ["page.html"]);
+    assert.match(listed.token, /^[A-Za-z0-9_-]{43}$/);
+    const t = encodeURIComponent(listed.token);
+    const status = async (path: string, method = "GET") => (await strut.app.request(path, { method })).status;
+
+    // The token opens the run's listing and files, no key.
+    assert.equal(await status(`/artifacts/run-1?t=${t}`), 200);
+    const page = await strut.app.request(`/artifacts/run-1/page.html?t=${t}`);
+    assert.equal(page.status, 200);
+    assert.equal(page.headers.get("content-security-policy"), "sandbox allow-scripts");
+
+    // Nothing else: another run, a non-file route, a write, a token in the
+    // key's place, a tampered one.
+    assert.equal(await status(`/artifacts/run-2/other.txt?t=${t}`), 401);
+    assert.equal(await status(`/artifacts/run-2?t=${t}`), 401);
+    assert.equal(await status(`/workflows?t=${t}`), 401);
+    assert.equal(await status(`/workflows/x/runs/run-1/events?t=${t}`), 401);
+    assert.equal(await status(`/artifacts/run-1/page.html?t=${t}`, "DELETE"), 401);
+    assert.equal(await status(`/artifacts/run-1/page.html?key=${t}`), 401);
+    assert.equal(await status(`/artifacts/run-1/page.html?t=${t.slice(0, -1)}${t.endsWith("A") ? "B" : "A"}`), 401);
+    assert.equal(await status("/artifacts/run-1/page.html"), 401);
+
+    // A job's files the same way, with the job's own token.
+    const job = (await (await strut.app.request("/jobs/j1/files", auth)).json()) as { files: string[]; token: string };
+    assert.deepEqual(job.files, ["plan.md"]);
+    assert.notEqual(job.token, listed.token);
+    const jt = encodeURIComponent(job.token);
+    assert.equal(await status(`/jobs/j1/files?t=${jt}`), 200);
+    assert.equal(await status(`/jobs/j1/files/plan.md?t=${jt}`), 200);
+    assert.equal(await status(`/jobs/j1/files/plan.md?t=${t}`), 401);
+    assert.equal(await status(`/artifacts/run-1/page.html?t=${jt}`), 401);
+    assert.equal(await status(`/artifacts/j1?t=${jt}`), 401); // a run named like the job is another scope
   });
 
   it("the UI's own files and a bare /health are all that is served without it", async () => {
