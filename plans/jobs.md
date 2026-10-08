@@ -20,6 +20,10 @@
 > **Update (2026-10-07):** §6 built — `ctx.services.jobs` (hold / release /
 > holds on the job record), the sweep releasing holds before it removes
 > repositories, `DELETE /jobs/:id` (`deleteJob`); `src/jobs.test.ts`.
+> **Update (2026-10-08):** what happens to a held pod when its pull request
+> merges, and how failing checks reach the job, is `job-artifact-events.md`
+> — an event about an artifact a job reported is a turn on that job, one
+> door for every kind; strut unchanged.
 > Current behaviour was re-read on
 > this checkout (`fe24cb6`, main), `hive@b210ddab6` (master, the merge of
 > [stakwork/hive#5375](https://github.com/stakwork/hive/pull/5375)) and the
