@@ -33,8 +33,13 @@ const EXAMPLE = `- id: checkout
  * A fresh, isolated working copy of a repository at a ref — what an `agent`
  * or `exec` step works in (`cwd`). Internally a credential-free bare cache
  * per remote under `<dataDir>/repos/` (cloned once, fetched after) plus a
- * detached worktree per run under `<dataDir>/worktrees/<runId>/`, removed
- * when the run ends (`ctx.onRunEnd`) — success, error or cancel.
+ * detached worktree per run INSIDE THE RUN'S OWN DIRECTORY — its artifact
+ * dir, `<artifacts>/<runId>/<repo>`, the directory `job/dir` hands a run
+ * that has no job, so `cwd: "{{ dir.path }}"` holds the repositories either
+ * way (plans/jobs.md §2: a run has one directory, the job's or its own) —
+ * removed when the run ends (`ctx.onRunEnd`): success, error or cancel. A
+ * bare bag with no `artifacts` capability falls back to
+ * `<dataDir>/worktrees/<runId>/`.
  *
  * The token (the `tokenSecret` secret — the run's principal's when the
  * deployment has actor secrets) reaches git through the child env and an
@@ -52,7 +57,7 @@ export default defineStep({
   type: "git/checkout",
   description:
     `Check out a git repository into a fresh, isolated working copy for this run and return its path — the cwd for an agent or exec step. ` +
-    `Clones once into a credential-free cache and fetches on later runs; the working copy is removed when the run ends. ` +
+    `Clones once into a credential-free cache and fetches on later runs; the working copy lives inside the run's own directory (the one job/dir returns on a run without a job: <artifacts>/<runId>/<repo>) and is removed when the run ends. ` +
     `ref: a branch, tag or commit sha (default: the remote's default branch). ` +
     `workdir: the JOB whose directory keeps the working copy (usually "{{ $job }}") — the next run naming it finds the same path with every edit, untracked and ignored file in place (reused: true), which is how the files follow an agent's \`session\`. ` +
     `Auth: the tokenSecret secret (default GITHUB_TOKEN), needed for private repos — the value only ever reaches git's child env, never the log or the checkout. ` +
@@ -94,7 +99,12 @@ export default defineStep({
       const problem = idProblem(kept);
       if (problem) throw new Error(`git/checkout: workdir "${kept}" ${problem}`);
     }
-    const wtRoot = kept !== undefined ? jobRoot(dataDir, kept) : worktreeRoot(dataDir, ctx.runId);
+    // A run has one directory: the job's (kept, `workdir`), or its own — the
+    // artifact dir, where `job/dir` points a run with no job, so a workflow's
+    // `cwd: "{{ dir.path }}"` holds the repositories in both cases.
+    const artifacts = (ctx.services as Partial<StrutCapabilities> | undefined)?.artifacts;
+    const ownRoot = kept === undefined ? await artifacts?.dir(ctx.runId) : undefined;
+    const wtRoot = kept !== undefined ? jobRoot(dataDir, kept) : (ownRoot ?? worktreeRoot(dataDir, ctx.runId));
     const wtDir = join(wtRoot, r.name);
 
     if (kept !== undefined) {
@@ -113,7 +123,8 @@ export default defineStep({
             await git(shell, ["worktree", "prune"], { cwd: cacheDir, timeoutMs: 60_000 });
           }
           await rm(wtDir, { recursive: true, force: true });
-          await rmdir(wtRoot).catch(() => {}); // only when this was the run's last working copy
+          // The fallback root is this step's own; the artifact dir is the run's.
+          if (ownRoot === undefined) await rmdir(wtRoot).catch(() => {}); // only when this was the run's last working copy
         });
       });
     }

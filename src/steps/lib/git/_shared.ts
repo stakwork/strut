@@ -80,7 +80,9 @@ export function cachePath(dataDir: string, r: RepoRef): string {
   return join(dataDir, "repos", r.host, r.owner, `${r.name}.git`);
 }
 
-/** Where a run's working copies live: `<dataDir>/worktrees/<runId>/`. */
+/** Where a run's working copies live when the bag has no `artifacts`
+ *  capability to name the run's own directory: `<dataDir>/worktrees/<runId>/`.
+ *  The standard server never gets here — see checkout.ts. */
 export function worktreeRoot(dataDir: string, runId: string): string {
   return join(dataDir, "worktrees", runId);
 }

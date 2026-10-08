@@ -221,9 +221,15 @@ calls that strut directly (`plans/code-change.md` §5, "Keeping the target a
 policy"). The cases that do, in the order they are wanted: **a local strut
 asking a cloud strut's explorer agent a question** — a desktop strut names
 a swarm as a peer, and a workflow or an agent on it runs the swarm's seeded
-`explore` workflow, an `agent` over `graph/*` tools (or a `graph/walk`
-step) that walks that swarm's knowledge graph and returns what is
-relevant; an org workflow that runs a check on every workspace's swarm; a
+`explore` workflow: the `job` workflow's launch (`prompt`, `repos?`,
+`session?`, `job` on the launch) and skeleton (`job/dir` → one
+`git/checkout` per repository INTO the run's directory → `agent` → `pack`),
+with a read-only agent over the graph's read steps and the read-only file
+tools that walks that swarm's knowledge graph and reads the repositories
+named, and returns what is relevant with its sources (mcp
+`src/lab/explore/`, 2026-10-08; the one-shot case made `git/checkout` put a
+fresh copy in the run's own directory, so `cwd: dir.path` holds it with or
+without a job); an org workflow that runs a check on every workspace's swarm; a
 central reflection that wants a fresh measurement on a leaf; a builder on
 the org strut testing a template where the data lives.
 
@@ -825,9 +831,12 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    `list_peers` + `peer` on the three tools, `specs/API.md` §10): the
    two-strut test runs over real HTTP; a Peers dialog (the UI half of the
    paste door) and pause/resume forwarding are not in it.
-2. **mcp: the seeded `explore` workflow** — an `agent` over `graph/*` (or
-   a `graph/walk` step) taking a question and returning text — the
-   workflow a peer is asked to run. Beside 1.
+2. **mcp: the seeded `explore` workflow** — the workflow a peer is asked
+   to run: the job's launch and skeleton, a read-only agent over the graph
+   reads and the file tools, `{ answer, sources, confidence, cost }` back.
+   Beside 1. **Built 2026-10-08** (mcp `src/lab/explore/`; `repos` added to
+   the seeded `job` the same way, plans/jobs.md §2 as written; strut's
+   `git/checkout` fresh copy moved under the run's directory).
 3. **Hive: `ensureStrutPeers`** beside the delegation push, cloud struts
    only, id = workspace slug. **Hive: the workspace selector** (§7) is
    independent of everything here: `embed-url?workspace=`,

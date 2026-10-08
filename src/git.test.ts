@@ -10,7 +10,7 @@ import { z } from "zod";
 import { flow, step, defineStep, type RunEvent, type Step, type StepRegistry } from "./core.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
-import { standardServices } from "./capabilities.js";
+import { fileArtifactsCapability, standardServices } from "./capabilities.js";
 import checkout from "./steps/lib/git/checkout.js";
 import gitDiff from "./steps/lib/git/diff.js";
 import pack from "./steps/core/pack.js";
@@ -115,6 +115,22 @@ describe("git/checkout + git/diff", () => {
       }),
     );
 
+  it("on the standard bag the copy lives in the run's own directory — its artifact dir — and is removed at run end, the dir kept", async () => {
+    const artifactsRoot = join(dataDir, "artifacts");
+    const withArtifacts = { ...services(), artifacts: fileArtifactsCapability(artifactsRoot) };
+    const res = await runWorkflow(proposeFlow(), { repo: originUrl }, registry, { services: withArtifacts });
+    assert.equal(res.status, "success", JSON.stringify(res));
+    const out = res.output as Record<string, unknown>;
+    const path = out["path"] as string;
+    // <artifacts>/<runId>/<repo>: what `job/dir` returns on a run with no job, plus the repo's name.
+    assert.equal(path, join(artifactsRoot, res.runId, "origin"));
+    assert.ok(!existsSync(path), "working copy removed by ctx.onRunEnd");
+    assert.ok(existsSync(join(artifactsRoot, res.runId)), "the run's artifact dir is the run's, not the checkout's to remove");
+    assert.ok(!existsSync(join(dataDir, "worktrees")), "no fallback worktree dir was made");
+    const cache = cachePath(dataDir, parseRepo(originUrl));
+    assert.equal(sh(["worktree", "list", "--porcelain"], cache).split("\n").filter((l) => l.startsWith("worktree ")).length, 1);
+  });
+
   it("checks out the default branch into an isolated working copy, captures the diff, removes the copy at run end", async () => {
     const res = await runWorkflow(proposeFlow(), { repo: originUrl }, registry, { services: services() });
     assert.equal(res.status, "success", JSON.stringify(res));
@@ -132,7 +148,8 @@ describe("git/checkout + git/diff", () => {
     assert.equal(out["sha256"], sha256(diff));
     assert.equal(out["scanned"], hasGitleaks);
 
-    // The working copy was under the run's worktree dir, and is gone now.
+    // A bare bag (no artifacts capability): the working copy was under the
+    // fallback worktree dir, and is gone now, root and all.
     const path = out["path"] as string;
     assert.ok(path.startsWith(join(dataDir, "worktrees", res.runId)), path);
     assert.ok(!existsSync(path), "worktree removed by ctx.onRunEnd");

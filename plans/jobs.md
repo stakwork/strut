@@ -118,8 +118,9 @@ steps:
     config:
       items: "{{ input.repos || [] }}"
       body:
+        id: checkout
         type: git/checkout
-        config: { repo: "{{ item }}", workdir: "{{ $job }}" }   # lands INSIDE the job dir
+        config: { repo: "{{ $current }}", workdir: "{{ $job }}" }   # lands INSIDE the job dir; without a job, in the run's own dir (2026-10-08: git/checkout's fresh copy goes under the artifact dir, so `cwd: dir.path` holds it either way)
   - id: work
     type: agent
     config:
