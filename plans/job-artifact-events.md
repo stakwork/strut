@@ -15,7 +15,13 @@
 > read against the code: how a busy job queues an event (§3), the launch as
 > a service the webhook and a card both call (§3, §5), check links (§5),
 > the hold `pod/push` notes found from `control` (§2), and two one-line
-> fixes in the pool API (§2) — each on its work item in §9.
+> fixes in the pool API (§2) — each on its work item in §9. **Reviewed the
+> same day** against `hive@d1649a94b` (master, the job row of hive#5444
+> landed) and `stakgraph@329d52de`: the check events hive subscribes to
+> (§3, §5), the Fix route's actor (§3, §5), the hold note appended rather
+> than replaced (§2), the `reason` through two functions (§2), the viewer's
+> job id (§5), the indexed URL and the one-slot rule (§3), and the wake
+> at settle kept and told its origin, with an entry at launch (§3).
 
 ## Problem
 
@@ -104,7 +110,8 @@ system tells hive something happened to a URL — GitHub, that a pull
 request merged, closed or failed its checks — hive looks the URL up and
 launches one more turn on each job that reported it, as the job's owner,
 with one `[artifact-event]` line and the specifics below it; the reply
-lands on the same Job entry. The `Pod` page tells the agent what each event means: release the
+lands on the same Job entry, and Jamie wakes on it as after any turn, to
+tell the person in one line. The `Pod` page tells the agent what each event means: release the
 pod when nothing else pushed from it is open; on failing checks, reproduce
 in the pod, fix, and push with `stay_on_branch` so the same pull request
 gains the commit. A job nobody comes back to is swept by strut as today.
@@ -143,9 +150,9 @@ the flattest thing that is right in every case.
 `usage_status_marked_at` is already set on claim, so "since when" is
 nearly free: the capacity view (`capacity-queries.ts`) reports the pod's
 `createdAt` as `marked_at` today — one line, read the column instead.
-The reason is one more argument: `claimAvailablePod` takes `userInfo` and
-an exclusion list, so `claimPodAndGetFrontend` threads `reason` through
-to the `UPDATE`. The task path is untouched: its ownership check compares
+The reason is one more argument through two functions:
+`claimPodAndGetFrontend` → `attemptClaimWithKarpenter(swarmId, userInfo,
+exclude, swarm)` → `claimAvailablePod`, which writes the `UPDATE`. The task path is untouched: its ownership check compares
 against a task id, which a `job:` value never equals.
 
 **The steps** (`mcp/src/lab/pods/steps/`):
@@ -159,9 +166,11 @@ against a task id, which a `job:` value never equals.
   release — `releaseWith`, a minimal context with the job — goes through
   the same step, so a late sweep can no longer drop a recycled pod.
 - `pod/push` re-registers the pod's hold with the pull request on it:
-  `jobs.hold(job, { ...existing, note: <pr urls> })`, `since` carried over
-  from `jobs.holds` (a `hold` with an id that exists replaces, `jobs.md`
-  §6). The step has no `podId` input and gets none: every URL hive hands
+  `jobs.hold(job, { ...existing, since: existing.since, note: <existing
+  note + pr urls> })` — the note APPENDED, since `pod/claim` already
+  writes the frontend URL as the note, and `since` given, since a `hold`
+  with an id that exists replaces the whole record and resets `since`
+  when it is left out (`jobs.md` §6). The step has no `podId` input and gets none: every URL hive hands
   out for a pod is `https://<podId>-<port>.<domain>` (`buildPodUrl`, the
   one function behind `portMappings`), so the hold is the job's `pod`
   hold whose id is the leading label of `control`'s hostname — matched
@@ -182,7 +191,12 @@ whatever the kind: a pull request, a page, a document, a deploy. One table
 busy job (below) — one query: *which jobs reported URL X*. The deleted
 `jobReportedPullRequest` scan was this for one kind; this is it for all,
 and it carries nothing but the ref and what is waiting on it — never a
-token.
+token. The URL stored is the one `mapStrutArtifacts` settles on, not the
+raw entry's: for a pull request the form `pullRequestContent` rebuilds
+from `repo` and `number`, `https://github.com/<owner>/<name>/pull/<n>` —
+what the webhook's `html_url` is — so a ref reported as `{ repo, number }`
+with no `url` indexes the same; matched case-insensitively on the owner
+and name.
 
 **The shape.** One first line any source emits and any Concept page can
 read, the specifics on the lines below:
@@ -215,9 +229,13 @@ hive's canvas agent dictated the format.
 the system's event, name the artifact's URL and what happened, look the
 URL up, deliver. The first is the per-workspace GitHub webhook, where
 tasks are handled today: `pull_request closed` (merged or not) → one event
-per matching job. Check failures (`check_suite` completed) join once
-auto-fix is automatic (§5); until then the card action (§5) is the
-trigger, composed from the live status route
+per matching job. Check failures join once auto-fix is automatic (§5):
+`check_run` and `workflow_run` completed — the two check events hive
+subscribes to (`WebhookService`'s list; there is no `check_suite`), which
+the route already handles, each calling `monitorSinglePR` for the
+task-side PR monitor, and whose payloads carry `pull_requests[]`, the head
+sha, the conclusion and the run's `html_url`. Until then the card action
+(§5) is the trigger, composed from the live status route
 (`api/orgs/[githubLogin]/strut/pull-request`). A second source adds an
 adapter and nothing else.
 
@@ -235,7 +253,9 @@ so the reply has somewhere to land.
 **Who it runs as.** A system-launched turn has no caller: it runs as the
 job's owner — `StrutRun.userId` of the job's first row — which is whose
 GitHub token pushes the fix and whose LLM delegation pays. A job started
-by one person is never continued as another by an event.
+by one person is never continued as another by an event — nor by a
+person: `continue_job` refuses a job that is not the caller's, and the
+Fix route (§5) keeps that rule.
 
 **Busy.** A turn in flight (a PENDING row of the job — `continue_job`'s
 `live` check) makes the launch `job_busy:`. Hive cannot wait it out: the
@@ -246,16 +266,48 @@ artifact's index row, the event text and when it arrived — and the
 ends, launches what is pending as the next turn: the chat notifier's rule,
 hive-side — a notification queues behind a live turn and goes when it
 ends; several waiting on one job go as one turn, one `[artifact-event]`
-line each. A hive restart between the two loses nothing stored; a row the
-reconcile cron settles later (LOST) runs the handler then. The idle sweep
-is the backstop. The card action says "a turn is running, try again in a
+line each. One slot per (job, ref): a second event on the same artifact
+while the job is busy replaces the first — the latest state is the one
+worth a turn (a pull request that failed its checks and then merged is
+merged). A hive restart between the two loses nothing stored; a row the
+reconcile cron settles later (LOST) runs the handler then (`loseRow` and
+`applyProbe` both do). The idle sweep is the backstop. The card action says "a turn is running, try again in a
 minute", the note `continue_job` already returns.
 
-**Where the reply lands.** On the same Job entry, through the `job_turn`
-handler as any turn's reply: `text` (one line for a release: which pod,
-why), `artifacts` with the same `pr` id when the pull request changed.
-The row's prompt carries the `[artifact-event]` line, which the card can
-show as the turn's origin instead of a person's words.
+**Where the reply lands, and who tells the user.** On the same Job entry,
+through the `job_turn` handler as any turn's reply: `text` (one line for
+a release: which pod, why), `artifacts` with the same `pr` id when the
+pull request changed. Two things frame it, both hive-side:
+
+- **At launch, one entry in the conversation** — the `[artifact-event]`
+  line and that the job is on it — appended by the launch service before
+  it dispatches. It is the turn's origin, shown where a person's words
+  would be, and the anchor the "working" card hangs on: today
+  `getPendingJobTurnsFromMessages` draws that card from Jamie's
+  `start_job` / `continue_job` tool calls, and an event-launched turn has
+  none, so without this entry nothing shows between the webhook and the
+  settle (Stop still works: the launch registers the active run on its
+  own). The row that settles clears it as it clears a tool call's today.
+- **At settle, Jamie wakes on the row, as after every job turn**
+  (`handleJobTurnSettled` → `scheduleJobWake` →
+  `invokeCanvasAgentOnJobTurn`). This is how the user is told, in the one
+  voice they read, and it stays — decided: Jamie is where the person is
+  informed correctly. The handler reads the row's prompt, sees the
+  `[artifact-event]` first line and hands it to the wake (`JobWake`);
+  `buildJobWakeMessage` then says the turn was started by that event —
+  not by Jamie, not by the user — and offers two choices: one line in
+  Jamie's own words, or silence. Never Continue from an event wake:
+  today's prompt says the job is one "which you started" and offers
+  `continue_job` "when the user's request is not yet met", and a reply
+  that reads "merged, pod released" is not an unmet request. Skipping the
+  wake instead would be one Jamie turn cheaper and leave a collapsed row
+  nobody mentions.
+
+The loop guard holds: an event turn is not a tool call, so the canvas
+agent's four-dispatch breaker (`countTrailingStrutDispatches`) never sees
+it, and with Continue off the event wake nothing launches the next turn
+but another real event — bounded by the per-(artifact, state) cap once
+forwarding is automatic (§5).
 
 **Later, the door moves into strut.** The fully generic form is a job
 inbox — `POST /jobs/:id/events { text }` — with strut launching the turn
@@ -291,7 +343,11 @@ it, not a release of anything.
 
 A card in hive's org canvas belongs to a Job entry, so the job id is at
 hand for any action on it (the live-status change removed `jobId` /
-`swarmId` from the ref on purpose; the entry carries the job). The generic
+`swarmId` from the ref on purpose; the entry carries the job) — on the
+ENTRY: a viewer gets `{ artifact, content }` (`ArtifactViewerProps`) and
+`MessageArtifacts` hands a card only its ref, so the Job row's
+`source.jobId`, one level up, is threaded down as a prop to the card and
+its viewer. The row is the one hive#5444 landed. The generic
 action is *send to the job*: compose a prompt from the card's current
 state and `continue_job` — the same launch as "also rename the helper".
 Each viewer decides what its prompt says; nothing else is per kind.
@@ -302,12 +358,15 @@ route (`useArtifactContent`) and shows failing checks, so the prompt is
 request, the head sha, the failing checks, their URLs. One gap: a
 `PullRequestCheck` is `{ name, status }` today — `pullRequestStatus.ts`
 gains `url` (a check run's `html_url`, a commit status's `target_url`) so
-the event can point at the run; the webhook's `check_suite` payload
+the event can point at the run; the webhook's `check_run` payload
 carries the same. The button needs a door: `continue_job` is a tool of
 the canvas agent, not a route, so the card POSTs to a route of its own
-that calls the launch service of §3 as the person who clicked, into the
-Job entry's conversation — exactly what a `continue_job` message would
-do, a click instead of prose. Nothing strut-side; the job's next turn is
+that calls the launch service of §3, into the Job entry's conversation —
+exactly what a `continue_job` message would do, a click instead of
+prose, under the tool's rule: the job must be the clicker's (the first
+row's `userId`; "only the person who started a job can continue it"),
+403 for anyone else, so the turn runs as the owner, whose token pushes
+and whose delegation pays. Nothing strut-side; the job's next turn is
 the fix.
 
 **Automatic, later.** A source forwards failures as §3 events, with a cap
@@ -351,7 +410,8 @@ Worth doing when it earns its place, none required here:
   thread; `cacheTtl: 1h` on the `job` agent means a merge that arrives an
   hour after the last turn pays a cold full-context input call. Cents to
   a dollar on sonnet for a long job; a release is otherwise a few tool
-  calls.
+  calls. Plus Jamie's wake on the settled row (§3), a short conversation
+  turn — the price of the person hearing about it.
 - **Judgment.** The agent can keep a pod it should release. The sweep is
   for that. It can also release one it should keep; the page's rule errs
   on keeping, and a re-claim is cheap.
@@ -378,25 +438,30 @@ Worth doing when it earns its place, none required here:
 In this order; each lands on its own.
 
 1. **Hive, pool API** — `?job=` on claim and drop (§2): the stamp, the
-   `reason` argument through `claimPodAndGetFrontend`, the ownership
+   `reason` argument through `claimPodAndGetFrontend` and
+   `attemptClaimWithKarpenter`, the ownership
    check, the pod list resolving `job:` claimants and reading
    `usage_status_marked_at` for `marked_at`. One PR, the pool's contract,
    not a per-capability change.
 2. **mcp, pod steps** — `pod/claim` / `pod/release` send the job and run;
-   `pod/release` treats 404 and 409 as released; `pod/push` notes the pull
-   request on the hold it finds from `control` (§2). `Pod.md` §4. Seeded
+   `pod/release` treats 404 and 409 as released; `pod/push` appends the
+   pull request to the note of the hold it finds from `control` (§2). `Pod.md` §4. Seeded
    as the next versions. Deploy after 1: before that hive ignores `?job=`,
    harmlessly, and the 409 does not exist yet.
 3. **Hive, the door** — `launchJobTurn` as a service (§3); the index of
-   every artifact ref with a URL, written at settle (a migration); the
-   GitHub adapter in the webhook's `closed` branch, launching as the owner
+   every artifact ref with a URL — the normalized one — written at settle
+   (a migration); the GitHub adapter in the webhook's `closed` branch, launching as the owner
    into the job's conversation with the `[artifact-event]` line; the
    pending event on the index row and its launch from the settle handler
-   (§3). The card shows the origin.
+   (§3); the launch-time entry (the origin, the working card's anchor) and
+   the event-aware wake — the event line on `JobWake`, the two-choice
+   prompt, no Continue (§3).
 4. **Hive, the Fix action** on the pull-request card (§5): `url` on
-   `PullRequestCheck`, the card's route onto the service of 3, the button.
-5. **Later** — automatic check-failure forwarding with the per-(artifact,
-   state) cap (§5); strut's hold TTL if pods are seen idling (§6); the job
+   `PullRequestCheck`, the job id threaded from the Job row to the viewer,
+   the card's route onto the service of 3 (the owner's, 403 otherwise),
+   the button.
+5. **Later** — automatic check-failure forwarding (`check_run` /
+   `workflow_run`) with the per-(artifact, state) cap (§5); strut's hold TTL if pods are seen idling (§6); the job
    inbox in strut when a second host wants the door (§3).
 
 ## 10. Validation
@@ -415,6 +480,10 @@ installed on both repositories — `WebhookService` — or no event arrives):
 - Merge while a turn is running → nothing launches; the event sits on the
   index row; when the turn settles, the next turn opens with the
   `[artifact-event]` line.
+- While an event turn runs, the conversation shows the `[artifact-event]`
+  entry with a working card under it; when it settles, the Job row takes
+  the card's place and Jamie says one line (or nothing) and never calls
+  `continue_job` from it.
 - A pull request whose checks fail → "Fix" → a commit on the same branch,
   the same `pr` card, checks green.
 - A stale release: release the pod by hand in hive, let a task claim it,
