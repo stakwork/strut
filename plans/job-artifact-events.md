@@ -1,6 +1,18 @@
 # Artifact events reach the job — a pod released on merge, auto-fix on failing checks
 
-> **Status (2026-10-08): a plan, nothing built.** Decided with the owner in
+> **Status (2026-10-08): built, in review.** The four work items of §9 are
+> open PRs — 1: stakwork/hive#5446 (the pool API's `?job=` claimant);
+> 2: stakwork/stakgraph#1751 (the pod steps claim and release as the job,
+> `pod/push` notes the pull request on the hold, the `Pod` page's rules);
+> 3: stakwork/hive#5447 (the index, the line, the door, the launch as a
+> service, the origin row, the event-aware wake); 4: stakwork/hive#5448
+> (Fix on the pull-request card; stacked on #5447). Item 5 is not taken.
+> Built as written, with two things decided while building: the origin
+> row is written AFTER the dispatch (§3 said before), so a launch strut
+> refuses leaves no card waiting on a turn that never started — and the
+> row names the run, so a job row that landed first still settles it;
+> and a turn strut refused as `job_busy:` (the race the live check cannot
+> close) gives its event back to the ref's slot at settle. Decided with the owner in
 > one sitting (§Decided). Strut changes nothing on the critical path: the
 > mechanism is the job model's — *an event about an artifact a job reported
 > is a turn on that job* — and the policy lives in the seeded `Pod` page,
