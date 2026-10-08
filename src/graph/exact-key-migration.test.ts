@@ -98,7 +98,7 @@ describe("exact-key-migration (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_N
     // … and a republish of the deleted name restores ITS node (found by key).
     await ws.publishStep("old/one", STEP("old/one"), "back");
     assert.equal(
-      (await bolt.run(`MATCH (s:StrutStep {step_type: "old/one"}) WHERE s.is_deleted = false RETURN s.ref_id AS r`))[0]!["r"],
+      (await bolt.run(`MATCH (s:StrutStep {step_type: "old/one"}) WHERE s.is_deleted IS NULL AND s.deleted_at IS NULL RETURN s.ref_id AS r`))[0]!["r"],
       deletedRef,
     );
   });
