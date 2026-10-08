@@ -565,9 +565,9 @@ export function createVerifier(deps: VerifierDeps) {
     });
     if (written !== "written") return { skipped: "unknown-version" };
     // A slot about an older run is a question whose answer would be born
-    // stale: mute it (the node holds no observation) — one open slot per check.
+    // stale: retire it (the node holds no observation) — one open slot per check.
     for (const old of mine.filter((e) => e.evidence_status === "planned" && e.id !== id)) {
-      if (old.edge_ref_id) await graph.edges.mute(old.edge_ref_id);
+      await graph.nodes.retirePlannedEvidence(old.ref_id);
     }
     pass.result.slots++;
     return { planned: id };

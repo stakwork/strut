@@ -376,10 +376,17 @@ describe("claims graph: node contract + reads (live Neo4j)", { skip: cfg ? false
     s = (await reader.statusFor(STEP))[0]!.status;
     assert.deepEqual([s.status, s.assertedOnly, s.latest?.check_id], ["refuted", true, undefined]);
 
-    // Mute its EVIDENCED_BY edge (jarvis's soft delete) → invisible to every read.
-    assert.ok(await edges.mute(said[0]!.ref_id));
+    // A legacy muted EVIDENCED_BY edge → invisible to every read.
+    await bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true`, { r: said[0]!.ref_id });
     assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
-    assert.ok(!(await reader.evidenceFor("c1")).some((e) => e.id === eSay.id));
+    assert.ok(!(await reader.evidenceFor("c1")).some((e) => e.ref_id === eSay.ref_id));
+
+    // So is evidence whose node carries only `deleted_at` (no is_deleted).
+    await bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = null`, { r: said[0]!.ref_id });
+    assert.equal((await reader.statusFor(STEP))[0]!.status.status, "refuted");
+    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.deleted_at = 1`, { r: eSay.ref_id });
+    assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
+    assert.ok(!(await reader.evidenceFor("c1")).some((e) => e.ref_id === eSay.ref_id));
   });
 
   it("an external check's planned slot: EVIDENCED_BY with no strength, openSlot, filled in place", async () => {

@@ -22,7 +22,12 @@
  * active custom step into a scratch directory (`materializeCustomSteps`) for
  * the module loader; the graph stays the record.
  *
- * Deletion is soft (`is_deleted = true`) — nothing is ever DETACH DELETEd.
+ * Deleting a workflow or step soft-deletes its nodes (`deletion.ts`: they
+ * stay, stamped `deleted_at`) and hard-deletes their edges. A re-publish
+ * under the same name restores the nodes and writes back the edges the store
+ * reads (`VERSION_OF`, `ACTIVE_VERSION`, the version's own `USES_STEP` /
+ * `DEPENDS_ON`); edges other nodes had to it (another version's `USES_STEP`
+ * or `DEPENDS_ON`, a claim's `ABOUT`) do not come back.
  */
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { ensureEsmScope } from "../workspace.js";
@@ -52,14 +57,13 @@ import { readStepSourceFromDisk, type StepSource } from "../steps/registry.js";
 import { contentHash, nextVersionLabel } from "../version.js";
 import type { GraphBackend } from "./backend.js";
 import type { Row } from "./bolt.js";
+import { NODE_LIVE } from "./deletion.js";
 
 export interface Neo4jWorkspaceStoreOptions {
   /** Where active custom steps are written for the module loader. Default:
    *  a per-(uri, namespace) dir under the OS temp dir. */
   materializeDir?: string;
 }
-
-const NOT_DELETED = (v: string) => `(${v}.is_deleted IS NULL OR ${v}.is_deleted = false)`;
 
 interface WorkflowRow {
   ref_id: string;
@@ -189,7 +193,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async workflowRow(name: string): Promise<WorkflowRow | null> {
     const rows = await this.backend.bolt.run(
-      `MATCH (w:StrutWorkflow {namespace: $ns, name: $name}) WHERE ${NOT_DELETED("w")}
+      `MATCH (w:StrutWorkflow {namespace: $ns, name: $name}) WHERE ${NODE_LIVE("w")}
        RETURN properties(w) AS p LIMIT 1`,
       { ns: this.ns, name },
     );
@@ -198,7 +202,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async versionRows(name: string): Promise<VersionRow[]> {
     const rows = await this.backend.bolt.run(
-      `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $name}) WHERE ${NOT_DELETED("v")}
+      `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $name}) WHERE ${NODE_LIVE("v")}
        RETURN properties(v) AS p ORDER BY v.created_at, v.date_added_to_graph`,
       { ns: this.ns, name },
     );
@@ -207,8 +211,8 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   async listWorkflows(): Promise<WorkflowListEntry[]> {
     const rows = await this.backend.bolt.run(
-      `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE ${NOT_DELETED("w")}
-       OPTIONAL MATCH (v:StrutWorkflowVersion {namespace: $ns, name: w.name}) WHERE ${NOT_DELETED("v")}
+      `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE ${NODE_LIVE("w")}
+       OPTIONAL MATCH (v:StrutWorkflowVersion {namespace: $ns, name: w.name}) WHERE ${NODE_LIVE("v")}
        WITH w, v ORDER BY v.created_at, v.date_added_to_graph
        RETURN properties(w) AS w, collect(properties(v)) AS versions ORDER BY w.name`,
       { ns: this.ns },
@@ -433,14 +437,14 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     const inputs: Array<{ edge: string; source_ref_id: string; target_ref_id: string }> = [];
     if (stepTypes.length) {
       const rows = await this.backend.bolt.run(
-        `MATCH (s:StrutStep {namespace: $ns}) WHERE s.step_type IN $types AND ${NOT_DELETED("s")} RETURN s.ref_id AS ref_id`,
+        `MATCH (s:StrutStep {namespace: $ns}) WHERE s.step_type IN $types AND ${NODE_LIVE("s")} RETURN s.ref_id AS ref_id`,
         { ns: this.ns, types: stepTypes },
       );
       for (const r of rows) inputs.push({ edge: "USES_STEP", source_ref_id: versionRef, target_ref_id: r["ref_id"] as string });
     }
     if (subflows.length) {
       const rows = await this.backend.bolt.run(
-        `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE w.name IN $names AND ${NOT_DELETED("w")} RETURN w.ref_id AS ref_id`,
+        `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE w.name IN $names AND ${NODE_LIVE("w")} RETURN w.ref_id AS ref_id`,
         { ns: this.ns, names: subflows },
       );
       for (const r of rows) inputs.push({ edge: "DEPENDS_ON", source_ref_id: versionRef, target_ref_id: r["ref_id"] as string });
@@ -506,9 +510,9 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     if (patch) await this.backend.nodes.update(w.ref_id, patch);
   }
 
-  /** Soft, like `deleteStep`: the nodes stay, flagged `is_deleted`. A later
-   *  publish under the same name RESTORES the workflow node (the node writer
-   *  clears the flag on a key match), so the metadata that would otherwise
+  /** Soft, like `deleteStep`: the nodes stay, stamped `deleted_at`, and
+   *  their edges go. A later publish under the same name RESTORES the
+   *  workflow node (the node writer clears the markers on a key match), so the metadata that would otherwise
    *  ride along — schedules, owner, cap, category — is cleared first: the
    *  new workflow is a new one, not this one back. Versions stay deleted
    *  unless their exact content is published again. */
@@ -559,7 +563,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async stepRow(type: string): Promise<StepRow | null> {
     const rows = await this.backend.bolt.run(
-      `MATCH (s:StrutStep {namespace: $ns, step_type: $type}) WHERE ${NOT_DELETED("s")} RETURN properties(s) AS p LIMIT 1`,
+      `MATCH (s:StrutStep {namespace: $ns, step_type: $type}) WHERE ${NODE_LIVE("s")} RETURN properties(s) AS p LIMIT 1`,
       { ns: this.ns, type },
     );
     return rows.length ? (rows[0]!["p"] as StepRow) : null;
@@ -567,7 +571,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
 
   private async stepVersionRows(type: string): Promise<StepVersionRow[]> {
     const rows = await this.backend.bolt.run(
-      `MATCH (v:StrutStepVersion {namespace: $ns, step_type: $type}) WHERE ${NOT_DELETED("v")}
+      `MATCH (v:StrutStepVersion {namespace: $ns, step_type: $type}) WHERE ${NODE_LIVE("v")}
        RETURN properties(v) AS p ORDER BY v.created_at, v.date_added_to_graph`,
       { ns: this.ns, type },
     );
@@ -578,9 +582,9 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
    *  pointer dangles). Helpers (`_`-prefixed segments) included. */
   private async stepsWithActive(): Promise<Array<{ step: StepRow; active: StepVersionRow | null }>> {
     const rows = await this.backend.bolt.run(
-      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NOT_DELETED("s")}
+      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NODE_LIVE("s")}
        OPTIONAL MATCH (v:StrutStepVersion {namespace: $ns, step_type: s.step_type, content_hash: s.active_version})
-       WHERE ${NOT_DELETED("v")}
+       WHERE ${NODE_LIVE("v")}
        RETURN properties(s) AS s, properties(v) AS v ORDER BY s.step_type`,
       { ns: this.ns },
     );
@@ -610,7 +614,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     // `active_version` IS the active version's content hash (it mirrors the
     // ACTIVE_VERSION edge), so this is one read of the step nodes.
     const rows = await this.backend.bolt.run(
-      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NOT_DELETED("s")} AND s.active_version IS NOT NULL
+      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NODE_LIVE("s")} AND s.active_version IS NOT NULL
        RETURN s.step_type AS type, s.active_version AS hash`,
       { ns: this.ns },
     );

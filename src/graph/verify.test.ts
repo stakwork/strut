@@ -382,15 +382,20 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     // Same version again: on_change, already answered → no new question.
     const r2 = await strut.run("clipper", { start: 6, len: 19 });
     assert.deepEqual((await verify("clipper", r2.runId)).checks.map((k) => k.lastVerify), [{ skipped: "policy" }]);
-    // A new version → a fresh question. Left unanswered, a still-newer run REPLACES it (the old edge is muted).
+    // A new version → a fresh question. Left unanswered, a still-newer run REPLACES it (the old slot is retired).
     await ws.publishStep("clip/compute-times", SRC("clip/compute-times", "v2"), "v2");
     const r3 = await strut.run("clipper", { start: 7, len: 19 });
     const s3 = ((await verify("clipper", r3.runId)).checks[0]!.lastVerify as { planned: string }).planned;
     const r4 = await strut.run("clipper", { start: 8, len: 19 });
     const s4 = ((await verify("clipper", r4.runId)).checks[0]!.lastVerify as { planned: string }).planned;
     assert.notEqual(s3, s4);
-    const open = await rows(`MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence {evidence_status: "planned"}) RETURN e.id AS id, coalesce(eb.is_muted, false) AS muted ORDER BY id`, { c: c.id });
-    assert.deepEqual(open.sort((a, b) => Number(a["muted"]) - Number(b["muted"])), [{ id: s4, muted: false }, { id: s3, muted: true }]);
+    const open = await rows(`MATCH (:Claim {id: $c})-[:EVIDENCED_BY]->(e:Evidence {evidence_status: "planned"}) RETURN e.id AS id`, { c: c.id });
+    assert.deepEqual(open, [{ id: s4 }]);
+    const retired = await rows(
+      `MATCH (e:Evidence {id: $id}) OPTIONAL MATCH (e)-[r]-() RETURN e.is_deleted AS deleted, e.deleted_at IS NOT NULL AS stamped, count(r) AS edges`,
+      { id: s3 },
+    );
+    assert.deepEqual(retired, [{ deleted: true, stamped: true, edges: 0 }], "the stale slot is soft-deleted and its edges are gone");
     assert.deepEqual((await statusOf(STEP))[0]!.slice(1), ["stale", true, 1, true], "at most one open slot per external check");
     const refused = await tools["add_evidence"]!.execute({ claim: c.id, name: "clipper", runId: r4.runId, supports: true, content: "x", slot: slotId });
     assert.match(String(refused["error"]), /not an open slot/);

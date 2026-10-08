@@ -120,20 +120,54 @@ describe("Neo4jWorkspaceStore (graph-specific)", { skip: cfg ? false : "STRUT_TE
     assert.equal(count[0]!["c"], 1);
   });
 
-  it("deleteStep is a soft delete: nodes stay, flagged, and a republish restores the identity", async () => {
+  it("deleteStep is a soft delete: nodes stay, stamped, edges go, and a republish restores the identity with its edges", async () => {
     await ws.publishStep("s", STEP("s"), "one");
     const before = await backend.bolt.run(`MATCH (n:StrutStep) RETURN n.ref_id AS ref_id`);
     assert.equal(await ws.deleteStep("s"), true);
-    const flagged = await backend.bolt.run(`MATCH (n) WHERE n:StrutStep OR n:StrutStepVersion RETURN n.is_deleted AS d`);
-    assert.deepEqual(flagged.map((r) => r["d"]), [true, true]);
+    const flagged = await backend.bolt.run(`MATCH (n) WHERE n:StrutStep OR n:StrutStepVersion RETURN n.is_deleted AS d, n.deleted_at IS NOT NULL AS stamped`);
+    assert.deepEqual(flagged, [{ d: true, stamped: true }, { d: true, stamped: true }]);
+    assert.deepEqual([(await edgesOf("VERSION_OF")).length, (await edgesOf("ACTIVE_VERSION")).length], [0, 0], "a delete removes the edges");
     assert.deepEqual(await ws.listSteps(), []);
     assert.equal(await ws.getStepSource("s"), null);
 
     await ws.publishStep("s", STEP("s"), "again");
-    const after = await backend.bolt.run(`MATCH (n:StrutStep) WHERE n.is_deleted = false RETURN n.ref_id AS ref_id`);
+    const after = await backend.bolt.run(`MATCH (n:StrutStep) WHERE n.is_deleted IS NULL AND n.deleted_at IS NULL RETURN n.ref_id AS ref_id`);
     assert.equal(after[0]!["ref_id"], before[0]!["ref_id"], "same node_key → restored, ref_id preserved");
+    assert.deepEqual([(await edgesOf("VERSION_OF")).length, (await edgesOf("ACTIVE_VERSION")).length], [1, 1], "the re-create writes the edges it needs");
     assert.deepEqual((await ws.listSteps()).map((s) => [s.type, s.description]), [["s", "again"]]);
     assert.deepEqual(await ws.listStepVersions("s"), { active: "v1", versions: ["v1"] });
+  });
+
+  it("deleteWorkflow: a re-publish of the same content comes back with its own edges, not the ones other nodes had to it", async () => {
+    await ws.publishStep("my/tool", STEP("my/tool"));
+    const content = { steps: [{ id: "t", type: "my/tool", config: {} }] };
+    await ws.publishWorkflow("child", "v1", content);
+    await ws.publishWorkflow("parent", "v1", { steps: [{ id: "s", type: "subflow", config: { workflow: "child" } }] });
+    assert.equal((await edgesOf("DEPENDS_ON")).length, 1);
+
+    assert.equal(await ws.deleteWorkflow("child"), true);
+    assert.equal(await ws.getWorkflowMetadata("child"), null);
+    const childEdges = await backend.bolt.run(`MATCH (n:Data_Bank)-[r]-() WHERE (n:StrutWorkflow OR n:StrutWorkflowVersion) AND n.name = "child" RETURN count(r) AS c`);
+    assert.equal(childEdges[0]!["c"], 0, "every edge of the deleted workflow is gone");
+
+    await ws.publishWorkflow("child", "v1", content);
+    assert.equal((await ws.getWorkflowMetadata("child"))!.active, "v1");
+    const hash = await ws.getWorkflowHash("child");
+    const v = key("StrutWorkflowVersion", { name: "child", content_hash: hash });
+    const w = key("StrutWorkflow", { name: "child" });
+    assert.deepEqual((await edgesOf("VERSION_OF")).filter((r) => r["b"] === w).map((r) => r["a"]), [v]);
+    assert.deepEqual((await edgesOf("ACTIVE_VERSION")).filter((r) => r["a"] === w).map((r) => r["b"]), [v]);
+    assert.deepEqual((await edgesOf("USES_STEP")).filter((r) => r["a"] === v).length, 1);
+    assert.equal((await edgesOf("DEPENDS_ON")).length, 0, "parent's DEPENDS_ON to it does not come back");
+  });
+
+  it("a node with only deleted_at (no is_deleted) is hidden", async () => {
+    await ws.publishStep("s", STEP("s"));
+    await ws.publishWorkflow("wf", "v1", { steps: [{ id: "a", type: "log", config: { message: "x" } }] });
+    await backend.bolt.run(`MATCH (n) WHERE n:StrutStep OR n:StrutWorkflow SET n.deleted_at = 1`);
+    assert.deepEqual(await ws.listSteps(), []);
+    assert.deepEqual(await ws.listWorkflows(), []);
+    assert.equal(await ws.getWorkflowMetadata("wf"), null);
   });
 
   it("is persistent: a second store over the same backend sees everything, and materialization prunes stale files", async () => {

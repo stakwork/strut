@@ -154,9 +154,11 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     for (const [args, code] of cases) {
       await assert.rejects(edges.update(...args), (e: unknown) => e instanceof GraphValidationError && e.code === code, `${JSON.stringify(args)} → ${code}`);
     }
-    // A muted edge is invisible to the triple lookup.
-    await edges.mute(a.ref_id);
-    await assert.rejects(edges.update({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run }, { set: { x: 1 } }), (e: any) => e.code === "NOT_FOUND");
+    // A legacy flagged edge (muted, or is_deleted) is invisible to the triple lookup.
+    for (const flag of ["is_muted", "is_deleted"]) {
+      await bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = null, r.is_deleted = null SET r.${flag} = true`, { r: a.ref_id });
+      await assert.rejects(edges.update({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run }, { set: { x: 1 } }), (e: any) => e.code === "NOT_FOUND", flag);
+    }
   });
 
   it("ACCESSED may point at any node, including a jarvis-owned one; source must still be a Strut node", async () => {
@@ -199,15 +201,28 @@ describe("EdgeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     const r = await rel(a.ref_id);
     assert.equal((r["props"] as Record<string, unknown>)["weight"], 3);
     assert.equal(r["weightType"], "INTEGER NOT NULL");
-    await edges.mute(a.ref_id);
+    await edges.delete(a.ref_id);
     const b = await edges.write({ edge: "IN_SESSION", source_ref_id: call, target_ref_id: session, weight: 0.5 });
     assert.equal((await rel(b.ref_id))["weightType"], "FLOAT NOT NULL");
   });
 
-  it("mute is the edge soft delete", async () => {
+  it("delete removes the edge; an unknown ref_id is a miss", async () => {
     const a = await edges.write({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run });
-    assert.equal(await edges.mute(a.ref_id), true);
-    assert.equal(((await rel(a.ref_id))["props"] as Record<string, unknown>)["is_muted"], true);
-    assert.equal(await edges.mute("nope"), false);
+    assert.equal(await edges.delete(a.ref_id), true);
+    const left = await bolt.run(`MATCH ()-[r {ref_id: $r}]->() RETURN count(r) AS c`, { r: a.ref_id });
+    assert.equal(left[0]!["c"], 0);
+    assert.equal(await edges.delete(a.ref_id), false);
+    assert.equal(await edges.delete("nope"), false);
+    const again = await edges.write({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run });
+    assert.equal(again.created, true, "a re-write after a delete is a new edge");
+  });
+
+  it("a write onto a legacy flagged edge makes it live", async () => {
+    const a = await edges.write({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run, properties: { note: "x" } });
+    await bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true, r.is_deleted = true, r.muted_by_delete_of = "n1"`, { r: a.ref_id });
+    const b = await edges.write({ edge: "IN_RUN", source_ref_id: session, target_ref_id: run });
+    assert.deepEqual([b.created, b.ref_id], [false, a.ref_id]);
+    const p = (await rel(a.ref_id))["props"] as Record<string, unknown>;
+    assert.deepEqual(Object.keys(p).sort(), ["date_added_to_graph", "edge_key", "note", "ref_id", "weight"], "flags cleared, nothing else touched");
   });
 });

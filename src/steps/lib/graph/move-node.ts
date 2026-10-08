@@ -19,7 +19,7 @@ export default defineStep({
     "link as graph/graph-neighbors reports it from the moved node's side: `edge_type`, and `direction` 'reverse' when the " +
     "edge points AT the node ((parent)-[PARENT_OF]->(node), (folder)-[CONTAINS]->(node)) or 'forward' when it points OUT " +
     "of it ((node)-[CHILD_OF]->(parent)). `from_ref_id` (the current one) is needed only when the node has several live " +
-    "edges of that type that way. The old edge is muted (kept as history, no longer read) and a new one is written the " +
+    "edges of that type that way. The old edge is deleted and a new one is written the " +
     "same way round, carrying the old edge's properties — the new triple must be valid like any graph/create-triplet. " +
     "Everything hanging under the node moves with it; no other edge changes. Refused when `to_ref_id` hangs under the " +
     "node along that edge (a cycle). Status 'Warning' when it already hangs there (nothing written).\n\n" +

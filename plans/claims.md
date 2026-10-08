@@ -307,7 +307,11 @@ boot until the YAML changes — the file is the declaration.
   least one check), `edit_claim(id, text)`, `retire_claim(id)`,
   `list_claims(subject)` (each claim with its checks),
   `attach_claim(id, subject)` / `detach_claim(id, subject)` — attaching is
-  how a contract is shared, never by copying the node;
+  how a contract is shared, never by copying the node; detaching deletes
+  the `ABOUT` edge (edges are hard-deleted, `src/graph/deletion.ts`), and
+  re-attaching writes a fresh one (a legacy muted edge is made live). Deleting
+  a workflow or step deletes its claims' `ABOUT` edges too, and re-creating
+  it does not bring them back;
 - checks: `add_check(claim, spec)`, `edit_check(id, …)`,
   `retire_check(id)`. Retiring a claim's LAST active check is refused: add
   the replacement first, or retire the claim.
@@ -700,14 +704,15 @@ writes everything it knows, so that filling is small:
 
 **At most one open slot per (external check, subject).** A slot about an
 old run is a question whose answer would be born `stale`, so when the
-policy fires again on a newer run the old slot's `EVIDENCED_BY` edge is
-muted (jarvis's soft delete; the node holds no observation) and a fresh
-slot is opened. Re-verifying the same run opens nothing. Slots cost no
+policy fires again on a newer run the old slot's Evidence node is retired
+(`NodeWriter.retirePlannedEvidence`: soft-deleted with `deleted_at`, its
+edges — `EVIDENCED_BY`, `PRODUCED_BY`, `ABOUT`, `HAS_SOURCE` — hard-deleted;
+the node holds no observation) and a fresh slot is opened. Re-verifying the same run opens nothing. Slots cost no
 money and never count against the budget.
 
-Every read in `claims.ts` filters `r.is_muted IS NULL OR r.is_muted = false`
-(as `EdgeWriter.update` already does) — a muted slot is neither evidence nor
-an open slot.
+Every read in `claims.ts` hides deleted nodes (`NODE_LIVE`) and skips legacy
+muted edges (`EDGE_LIVE`, as `EdgeWriter.update` does) — a retired slot is
+neither evidence nor an open slot.
 
 **Filling.** Patch the node (`content`, `evidence_status: collected`,
 `evidence_mode: asserted`, `observed_at` — the node writer's ON MATCH path)
@@ -1014,7 +1019,7 @@ number exists).
   `step.replayed` yields none; `run.start` carries `stepHashes` /
   `cassette` / `origin`; a run with no `stepHashes` entry for a step →
   `skipped: "unknown-version"` and no Evidence, even when the step has an
-  active version; muted edges are invisible to every read;
+  active version; deleted nodes and legacy muted edges are invisible to every read;
   `claim-schema-upgrade` — old-shape `Claim` schema → upgraded once, a
   second boot is a no-op, a jarvis-hosted (already `claim-id`) graph is
   untouched.
@@ -1047,7 +1052,7 @@ number exists).
   with no `strength`, `PRODUCED_BY` the external check, status still
   `unknown`; `add_evidence` on it → the SAME node now `collected`, the edge
   patched to ±1, status `supported` + `assertedOnly`; a new version + run →
-  the old slot's edge muted, one fresh slot.
+  the old slot retired (soft-deleted, its edges gone), one fresh slot.
 - **The youtube-clip rerun, judged by transcript:** ≥3 claims authored
   before the first run; each fixed failure adds one; final ledger has no
   `unknown`; the clip-contains-quote claim has an OBSERVED check

@@ -149,8 +149,9 @@ export const SCHEMA_CORE_PROPERTIES = new Set([
   "ref_id",
 ]);
 
-/** Attribute names a schema may not declare (jarvis reserved keys). */
-export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "index"]);
+/** Attribute names a schema may not declare (jarvis reserved keys, plus the
+ *  delete markers `deletion.ts` owns). */
+export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "index", "deleted_at", "deleted_at_backfilled"]);
 
 /** Preview fields are capped so search/embedding text stays light; full
  *  payloads stay in the run/chat log behind `log_ref`. */

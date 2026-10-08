@@ -252,23 +252,67 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     assert.ok(!("is_deleted" in after), "upsert on a live node does not add is_deleted");
   });
 
-  it("soft delete + create restores in place; muted+deleted stays put", async () => {
+  it("soft delete stamps deleted_at (ms Integer, first time kept) + is_deleted and deletes only in-scope edges", async () => {
     const a = await writer.write({ type: "StrutRun", data: RUN });
+    const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_id: "2" } });
+    // In scope: another Data_Bank node in this namespace. Out of scope (R4):
+    // a Schema node, and a Data_Bank node in another namespace.
+    await bolt.run(
+      `MATCH (a:Data_Bank {ref_id: $a}), (b:Data_Bank {ref_id: $b})
+       CREATE (s:Schema {type: "Scratch", ref_id: "schema-x"})
+       CREATE (o:Concept:Node:Data_Bank {ref_id: "other-ns", node_key: "concept-o", namespace: "elsewhere"})
+       CREATE (a)-[:IN_RUN {ref_id: "e-in"}]->(b), (a)-[:INSTANCE_OF {ref_id: "e-schema"}]->(s), (o)-[:MENTIONS {ref_id: "e-ns"}]->(a)`,
+      { a: a.ref_id, b: b.ref_id },
+    );
+    const t0 = Date.now();
+    assert.equal(await writer.softDelete(a.ref_id), true);
+    const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
+    assert.equal(p["is_deleted"], true);
+    assert.ok(typeof p["deleted_at"] === "number" && p["deleted_at"] >= t0 && p["deleted_at"] <= Date.now(), `deleted_at in ms, got ${p["deleted_at"]}`);
+    const vt = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN valueType(n.deleted_at) AS t`, { r: a.ref_id });
+    assert.equal(vt[0]!["t"], "INTEGER NOT NULL");
+    const left = await bolt.run(`MATCH ()-[r]-() WHERE r.ref_id STARTS WITH "e-" RETURN DISTINCT r.ref_id AS r ORDER BY r`);
+    assert.deepEqual(left.map((r) => r["r"]), ["e-ns", "e-schema"], "the in-scope edge is gone; Schema and other-namespace edges stay");
+
+    // A second delete keeps the first time.
+    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.deleted_at = 1`, { r: a.ref_id });
+    assert.equal(await writer.softDelete(a.ref_id), true);
+    assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["deleted_at"], 1);
+  });
+
+  it("soft delete + create restores in place (both markers cleared, no edges back); a muted one is restored but stays muted", async () => {
+    const a = await writer.write({ type: "StrutRun", data: RUN });
+    const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_id: "2" } });
+    await bolt.run(`MATCH (a:Data_Bank {ref_id: $a}), (b:Data_Bank {ref_id: $b}) CREATE (a)-[:IN_RUN {ref_id: "e-in"}]->(b)`, { a: a.ref_id, b: b.ref_id });
     assert.equal(await writer.softDelete(a.ref_id), true);
     assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["is_deleted"], true);
     const r = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "back" } });
     assert.equal(r.outcome, "restored");
     assert.equal(r.ref_id, a.ref_id);
     const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p["is_deleted"], false);
+    assert.ok(!("is_deleted" in p) && !("deleted_at" in p), "a restore clears both markers");
     assert.equal(p["summary"], "back");
+    const edges = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r})-[e]-() RETURN count(e) AS c`, { r: a.ref_id });
+    assert.equal(edges[0]!["c"], 0, "a restore brings back no edges");
 
-    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.is_deleted = true, n.is_muted = true`, { r: a.ref_id });
-    const r2 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "nope" } });
-    assert.equal(r2.outcome, "existing");
+    // A node with only deleted_at (no is_deleted) is deleted, and restored.
+    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.deleted_at = 5`, { r: a.ref_id });
+    const r1 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "again" } });
+    assert.equal(r1.outcome, "restored");
+    const p1 = (await node(a.ref_id))["props"] as Record<string, unknown>;
+    assert.ok(!("deleted_at" in p1));
+    assert.equal(p1["summary"], "again");
+
+    // Delete and mute are independent: a muted, deleted node is restored
+    // (deleted_at cleared) but stays muted.
+    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.is_muted = true`, { r: a.ref_id });
+    assert.equal(await writer.softDelete(a.ref_id), true);
+    const r2 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "muted" } });
+    assert.equal(r2.outcome, "restored");
     const p2 = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p2["is_deleted"], true);
-    assert.equal(p2["summary"], "back");
+    assert.ok(!("deleted_at" in p2) && !("is_deleted" in p2));
+    assert.equal(p2["is_muted"], true);
+    assert.equal(p2["summary"], "muted");
     assert.equal(await writer.softDelete("not-a-ref"), false);
   });
 
