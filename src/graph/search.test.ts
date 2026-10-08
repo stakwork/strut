@@ -183,6 +183,19 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     });
   });
 
+  it("a node with only deleted_at is hidden, and counts exclude deleted neighbours", async () => {
+    // Backfilled/jarvis-deleted shape: deleted_at, no is_deleted, edges still there.
+    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.deleted_at = 1`, { r: ids["stepEmail"]! });
+    try {
+      assert.equal(await reader.getNode(ids["stepEmail"]!), null);
+      assert.ok(!(await reader.connectionCounts(ids["wfv"]!)).some((c) => c.edge_type === "USES_STEP"));
+      assert.ok(!("USES_STEP" in ((await reader.edgeCounts([ids["wfv"]!], "default"))[ids["wfv"]!] ?? {})));
+      assert.ok(!(await reader.neighbors(ids["wfv"]!)).nodes.some((n) => n.ref_id === ids["stepEmail"]));
+    } finally {
+      await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) REMOVE n.deleted_at`, { r: ids["stepEmail"]! });
+    }
+  });
+
   it("neighbors: importance order, filters, exclusions, limit, counts; source included", async () => {
     const all = await reader.neighbors(ids["wfv"]!, { include_edge_counts: true });
     assert.equal(all.nodes.length, 4);

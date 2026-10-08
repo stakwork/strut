@@ -17,6 +17,7 @@
 import { randomUUID } from "node:crypto";
 import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, int, txRows, type Row } from "./bolt.js";
+import { EDGE_LIVE, NODE_LIVE } from "./deletion.js";
 import { typeLabelOf } from "./edge-writer.js";
 import { renderVectorField, type Embedder } from "./node-writer.js";
 import type { SchemaResolver } from "./schema-resolver.js";
@@ -330,15 +331,10 @@ function serializeEdge(type: string, props: Record<string, unknown>, source: str
   return out;
 }
 
-/** A live edge — jarvis's traversals skip soft-deleted edges too. */
-function liveEdge(alias: string): string {
-  return `(${alias}.is_muted IS NULL OR ${alias}.is_muted <> true) AND (${alias}.is_deleted IS NULL OR ${alias}.is_deleted <> true)`;
-}
-
 function visibility(alias: string): string {
   return [
+    NODE_LIVE(alias),
     `(${alias}.is_muted IS NULL OR ${alias}.is_muted <> true)`,
-    `(${alias}.is_deleted IS NULL OR ${alias}.is_deleted <> true)`,
     `(${alias}.status IS NULL OR NOT ${alias}.status IN $blocked_statuses)`,
   ].join(" AND ");
 }
@@ -470,7 +466,7 @@ export class GraphReader {
     const visible = await this.visibleDomainLabels();
     const rows = await this.bolt.run(
       `MATCH (n:Data_Bank {ref_id: $ref_id})-[r]-(m)
-       WHERE coalesce(n.namespace, $default_ns) = $namespace AND ${liveEdge("r")}
+       WHERE coalesce(n.namespace, $default_ns) = $namespace AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("m")}
          AND coalesce(m.namespace, $default_ns) = $namespace
          ${visible.length ? "AND ANY(lbl IN labels(m) WHERE lbl IN $visible_labels)" : ""}
        RETURN type(r) AS edge_type, labels(m) AS m_labels, startNode(r) = n AS out, count(*) AS cnt`,
@@ -501,7 +497,7 @@ export class GraphReader {
     const rows = await this.rows(
       tx,
       `MATCH (n:Data_Bank)-[r]-(m)
-       WHERE n.ref_id IN $ref_ids AND ${nsCond} AND ${liveEdge("r")}
+       WHERE n.ref_id IN $ref_ids AND ${nsCond} AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("m")}
          ${visible.length ? "AND ANY(lbl IN labels(m) WHERE lbl IN $visible_labels)" : ""}
        RETURN n.ref_id AS ref_id, type(r) AS edge_type, count(*) AS cnt`,
       { ref_ids, namespace, default_ns: DEFAULT_NAMESPACE, visible_labels: visible },
@@ -519,7 +515,7 @@ export class GraphReader {
    * node included in `nodes`, like jarvis.
    */
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [visibility("node"), liveEdge("r")];
+    const where = [visibility("node"), EDGE_LIVE("r")];
     const params: Record<string, unknown> = { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES };
     if (p.node_types?.length) {
       params["imp_node_types"] = (await this.canonicalTypes(p.node_types)).map((n) => n.replace(/[-+/>]/g, ""));

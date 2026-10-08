@@ -465,7 +465,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     );
     const movedEdge = out.edge_ref_id;
     assert.deepEqual([await children(a), await children(b), await children(a1)], [[], ["a1"], ["a1x"]]);
-    assert.deepEqual((await run("graph/graph-get", { ref_id: a })).edges, { "<-PARENT_OF": 1 }, "its own parent; the muted edge to a1 is not counted");
+    assert.deepEqual((await run("graph/graph-get", { ref_id: a })).edges, { "<-PARENT_OF": 1 }, "its own parent; the deleted edge to a1 is gone");
     assert.deepEqual(
       (await run("graph/graph-neighbors", { ref_id: a1 })).map((n: any) => [n.name, n.direction]).sort(),
       [["a1x", "forward"], ["b", "reverse"]],
@@ -473,15 +473,12 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     );
     const bolt = new Bolt(cfg!);
     try {
-      const rows = await bolt.run(
-        `MATCH ()-[r {ref_id: $old}]->() MATCH ()-[n {ref_id: $new}]->() RETURN properties(r) AS old, properties(n) AS new, valueType(n.weight) AS wt`,
-        { old: firstEdge, new: movedEdge },
-      );
-      const { old, new: moved, wt } = rows[0]! as { old: Record<string, unknown>; new: Record<string, unknown>; wt: string };
-      assert.equal(old["is_muted"], true, "the old edge is kept, muted");
+      const gone = await bolt.run(`MATCH ()-[r {ref_id: $old}]->() RETURN count(r) AS c`, { old: firstEdge });
+      assert.equal(gone[0]!["c"], 0, "the old edge is deleted");
+      const rows = await bolt.run(`MATCH ()-[n {ref_id: $new}]->() RETURN properties(n) AS new, valueType(n.weight) AS wt`, { new: movedEdge });
+      const { new: moved, wt } = rows[0]! as { new: Record<string, unknown>; wt: string };
       assert.deepEqual([moved["weight"], moved["importance"], moved["edge_key"], "is_muted" in moved], [3, 0.5, "parent_of", false], "properties carried over");
       assert.equal(wt, "INTEGER NOT NULL", "an Integer stays an Integer");
-      assert.notEqual(moved["date_added_to_graph"], old["date_added_to_graph"]);
     } finally {
       await bolt.close();
     }
@@ -505,9 +502,21 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.equal(out.status, "Success", JSON.stringify(out));
     assert.deepEqual([await children(a), await children(a1), await children(b)], [["a1x"], ["a1x"], ["a1"]]);
 
-    // Back where it started: the muted edge is restored, not duplicated.
-    out = await run("graph/move-node", { ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a });
-    assert.equal(out.edge_ref_id, firstEdge);
+    // Back to a, where a legacy muted edge (from before moves deleted edges)
+    // still points at a1: it is made live, not duplicated.
+    const legacy = new Bolt(cfg!);
+    try {
+      await legacy.run(
+        `MATCH (p:Data_Bank {ref_id: $a}), (n:Data_Bank {ref_id: $a1}) CREATE (p)-[:PARENT_OF {ref_id: "legacy-edge", edge_key: "parent_of", is_muted: true}]->(n)`,
+        { a, a1 },
+      );
+      out = await run("graph/move-node", { ref_id: a1, edge_type: "PARENT_OF", direction: "reverse", to_ref_id: a });
+      assert.equal(out.edge_ref_id, "legacy-edge");
+      const live = await legacy.run(`MATCH (:Data_Bank {ref_id: $a})-[r:PARENT_OF]->(:Data_Bank {ref_id: $a1}) RETURN r.ref_id AS r, r.is_muted AS muted`, { a, a1 });
+      assert.deepEqual(live, [{ r: "legacy-edge", muted: null }]);
+    } finally {
+      await legacy.close();
+    }
     assert.deepEqual([await children(a), await children(b)], [["a1", "a1x"], []]);
 
     // Forward: (node)-[PART_OF]->(group).

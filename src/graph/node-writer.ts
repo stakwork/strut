@@ -17,7 +17,8 @@
  * Two modes:
  *   - `create`: no-op on an existing node (returns its ref_id) — except a
  *     soft-deleted, non-muted node, which is restored in place
- *     (`schema_node_helper.py:620-657`).
+ *     (`schema_node_helper.py:620-657`). A restore brings back the node,
+ *     not its edges: a delete removed those for good (`deletion.ts`).
  *   - `upsert`: jarvis `reprocess` semantics — SET everything except the
  *     preserved identity (`ref_id`, `node_key`, `namespace`,
  *     `date_added_to_graph`). Unlike jarvis's reprocess, `Data_Bank` and
@@ -32,6 +33,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, int, txRows } from "./bolt.js";
+import { EVIDENCE_TYPE } from "./claims.js";
+import { DELETE_NODE_TAIL, NODE_LIVE, nowMs } from "./deletion.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
 import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, typeLabelOf, vectorStem } from "./strut-schemas.js";
 
@@ -489,7 +492,7 @@ export class NodeWriter {
    * whole, `node_key` is recomposed (an identity edit that collides with
    * another node fails with DUPLICATE_KEY, nothing written), and
    * `Data_Bank` + vectors are rebuilt. Identity stamps (`ref_id`,
-   * `namespace`, `date_added_to_graph`) and `is_deleted` are untouched.
+   * `namespace`, `date_added_to_graph`) and the delete markers are untouched.
    */
   async update(ref_id: string, patch: NodeUpdate): Promise<NodeUpdateResult> {
     const remove = patch.remove ?? [];
@@ -547,11 +550,25 @@ export class NodeWriter {
     });
   }
 
-  /** Soft delete (`is_deleted = true`). Scoped to Strut's own nodes. */
+  /** Soft delete (`deletion.ts`): stamps `deleted_at` (the first delete
+   *  time is kept) + `is_deleted`, and hard-deletes the node's in-scope edges
+   *  in the same statement. Scoped to Strut's own nodes in this namespace. */
   async softDelete(ref_id: string): Promise<boolean> {
     const rows = await this.bolt.run(
-      `MATCH (n:\`${STRUT_DOMAIN_LABEL}\` {ref_id: $ref_id}) SET n.is_deleted = true RETURN n.ref_id AS ref_id`,
-      { ref_id },
+      `MATCH (n:\`${STRUT_DOMAIN_LABEL}\` {ref_id: $ref_id, namespace: $ns}) ${DELETE_NODE_TAIL("n")}`,
+      { ref_id, ns: this.bolt.namespace, now_ms: nowMs() },
+    );
+    return rows.length > 0;
+  }
+
+  /** `softDelete` for the one non-Strut node strut retires: a stale
+   *  `planned` Evidence slot (`verify.ts`). Evidence is jarvis's epistemic
+   *  domain, so `softDelete`'s `Domain_strut` guard stays; this matches only
+   *  a planned slot in this namespace. */
+  async retirePlannedEvidence(ref_id: string): Promise<boolean> {
+    const rows = await this.bolt.run(
+      `MATCH (n:\`${EVIDENCE_TYPE}\` {ref_id: $ref_id, namespace: $ns, evidence_status: 'planned'}) ${DELETE_NODE_TAIL("n")}`,
+      { ref_id, ns: this.bolt.namespace, now_ms: nowMs() },
     );
     return rows.length > 0;
   }
@@ -562,9 +579,10 @@ export class NodeWriter {
  * + the schema's Domain_* labels; identity = (node_key, namespace). ON
  * CREATE gets the full stamped payload; ON MATCH gets the non-identity
  * payload only when the mode is `upsert` or the node is soft-deleted-and-
- * not-muted (restore). `is_deleted` is cleared only in those cases and is
- * otherwise left exactly as it was (a SET to its own value is a no-op, so
- * absent stays absent).
+ * not-muted (restore). A restore clears both delete markers (`deleted_at`,
+ * `is_deleted`); otherwise they are left exactly as they were. Whether the
+ * node was deleted is read in a WITH before the MERGE: SET items apply in
+ * order, so a CASE reading a marker an earlier item cleared would never fire.
  *
  * Outcome per row comes from a pre-read in the same transaction; the MERGE
  * itself stays race-safe (a concurrent create just turns into a match).
@@ -582,7 +600,7 @@ async function mergeBatch(
     tx,
     `UNWIND $keys AS k
      MATCH (n:\`${type}\` {node_key: k, namespace: $ns})
-     RETURN k AS node_key, coalesce(n.is_deleted, false) AS deleted, coalesce(n.is_muted, false) AS muted`,
+     RETURN k AS node_key, NOT ${NODE_LIVE("n")} AS deleted, coalesce(n.is_muted, false) AS muted`,
     { keys: nodes.map((n) => n.node_key), ns: namespace },
   );
   const state = new Map(before.map((r) => [r["node_key"] as string, { deleted: r["deleted"] as boolean, muted: r["muted"] as boolean }]));
@@ -590,16 +608,14 @@ async function mergeBatch(
   const rows = await txRows(
     tx,
     `UNWIND $rows AS row
+     OPTIONAL MATCH (prior:\`${type}\` {node_key: row.node_key, namespace: $ns})
+     WITH row, prior IS NOT NULL AND NOT ${NODE_LIVE("prior")} AND NOT coalesce(prior.is_muted, false) AS restore
      MERGE (node:${labels} {node_key: row.node_key, namespace: $ns})
      ON CREATE SET node += row.on_create
      ON MATCH SET
-       node += CASE
-         WHEN $mode = 'upsert' THEN row.on_match
-         WHEN coalesce(node.is_deleted, false) AND NOT coalesce(node.is_muted, false) THEN row.on_match
-         ELSE {} END,
-       node.is_deleted = CASE
-         WHEN coalesce(node.is_deleted, false) AND NOT coalesce(node.is_muted, false) THEN false
-         ELSE node.is_deleted END
+       node += CASE WHEN $mode = 'upsert' OR restore THEN row.on_match ELSE {} END,
+       node.deleted_at = CASE WHEN restore THEN null ELSE node.deleted_at END,
+       node.is_deleted = CASE WHEN restore THEN null ELSE node.is_deleted END
      RETURN row.node_key AS node_key, node.ref_id AS ref_id, node.ref_id = row.on_create.ref_id AS created`,
     {
       rows: nodes.map((n) => ({ node_key: n.node_key, on_create: n.onCreate, on_match: n.onMatch })),

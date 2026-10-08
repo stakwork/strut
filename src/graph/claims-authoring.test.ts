@@ -337,18 +337,30 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.match(errOf(await claims.retireCheck(k1, chat)), /retired or superseded/);
   });
 
-  it("attach / detach: one node shared across subjects, idempotent, restorable, and never orphaned", async () => {
+  it("attach / detach: one node shared across subjects, idempotent, re-attachable, and never orphaned", async () => {
     const id = idOf(await claims.addClaim({ subjects: [SEEDED], text: "answer is a bare string", checks: [EXEC] }, human));
     assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true });
     assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: false }, "idempotent");
     assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
     assert.equal((await backend.bolt.run(`MATCH (c:Claim) RETURN count(c) AS c`))[0]!["c"], 1, "attached, never copied");
 
+    const about = `MATCH (:Claim {id: $id})-[r:ABOUT]->(s) WHERE s.name = $name OR s.step_type = $name RETURN r.ref_id AS r, r.is_muted AS muted`;
+    const [before] = await backend.bolt.run(about, { id, name: CANDIDATE.name });
     assert.deepEqual(await claims.detachClaim(id, CANDIDATE, chat), { ok: true, id, detached: true });
+    assert.deepEqual(await backend.bolt.run(about, { id, name: CANDIDATE.name }), [], "detach deletes the ABOUT edge");
     assert.deepEqual(await listed(CANDIDATE), []);
     assert.deepEqual(await claims.detachClaim(id, CANDIDATE, chat), { ok: true, id, detached: false });
     assert.match(errOf(await claims.detachClaim(id, SEEDED, chat)), /only subject — retire the claim/);
-    assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true }, "a detached (muted) edge is restored");
+    assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true }, "re-attaching writes a fresh edge");
+    const [fresh] = await backend.bolt.run(about, { id, name: CANDIDATE.name });
+    assert.notEqual(fresh!["r"], before!["r"]);
+    assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
+
+    // A legacy muted edge (from before detach deleted edges) is made live by a re-attach.
+    await backend.bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true`, { r: fresh!["r"] });
+    assert.deepEqual(await listed(CANDIDATE), []);
+    assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true });
+    assert.deepEqual(await backend.bolt.run(about, { id, name: CANDIDATE.name }), [{ r: fresh!["r"], muted: null }]);
     assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
   });
 

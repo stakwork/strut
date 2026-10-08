@@ -231,13 +231,26 @@ overwrite `ref_id`/`date_added_to_graph` — put those only in the
 ON CREATE clause (jarvis has a latent race bug here; we fix it, the
 resulting state is what jarvis intends).
 
-Soft delete = `SET n.is_deleted = true`; readers filter
-`(n.is_deleted IS NULL OR n.is_deleted = false)`. Never DETACH DELETE
-except an explicit destructive admin path. **Restore semantics**
-(mirroring jarvis `schema_node_helper.py:620-657`): a `create` that
-hits a soft-deleted node with the same node_key restores it —
-`is_deleted = false`, new payload applied, preserving `ref_id`,
-`node_key`, `namespace`, `date_added_to_graph`.
+**Delete model** (shared with jarvis; `src/graph/deletion.ts`, the one
+place strut defines it). A node delete is soft:
+`SET n.deleted_at = coalesce(n.deleted_at, <now, epoch ms Integer>),
+n.is_deleted = true` (the coalesce keeps the first delete time;
+`is_deleted` is dual-written until the contract step). In the same
+statement the node's edges are **hard-deleted** — only edges whose two
+ends are both `:Data_Bank` in the caller's namespace (`EDGE_IN_SCOPE`);
+anything else (Schema, other namespaces) is out of scope. Readers hide a
+node when either marker is set (`NODE_LIVE`). Never DETACH DELETE a
+node except an explicit destructive admin path. `NodeWriter.softDelete`
+only touches `Domain_strut` nodes; `retirePlannedEvidence` is the one
+exception (a stale `planned` Evidence slot, `verify.ts`). `deleted_at`
+and `deleted_at_backfilled` are reserved attribute names. **Restore
+semantics** (mirroring jarvis `schema_node_helper.py:620-657`): a
+`create` that hits a soft-deleted, non-muted node with the same node_key
+restores it — both markers cleared, new payload applied, preserving
+`ref_id`, `node_key`, `namespace`, `date_added_to_graph`. A restore
+brings back **no edges**: the delete removed them for good, and only
+what the re-create writes is there afterwards. A muted, deleted node
+stays deleted.
 
 **Idempotent projector writes**: stamp `unique_source_id` on projected
 nodes (e.g. `"strutrun:<runId>"`, `"struttoolcall:<runId>:<path>:<seq>"`)
@@ -329,11 +342,15 @@ RETURN r.ref_id = $on_create.ref_id AS created
 - `edge_key = edgeType.toLowerCase()` (no Strut edge schema declares an
   `edge_key` pattern — matching jarvis, where effectively none do).
 - Invariant: **one edge per (src, type, tgt)**. On-match is a no-op —
-  existing edges are never mutated.
+  existing edges are never mutated — except that a legacy muted/flagged
+  edge (`is_muted`, `is_deleted`, `muted_by_delete_of`) has its flags
+  cleared, so a re-write makes it live.
 - On-create stamps: `ref_id` (uuid4), `edge_key`, `weight: 1` (int),
   `date_added_to_graph` (epoch ms int). **No `namespace` on edges** —
   scoping goes through the source node.
-- Edge soft delete = `SET r.is_muted = true`.
+- Edge delete = `DELETE r` (`EdgeWriter.delete`). Edges are never
+  muted or flagged; reads still skip legacy flagged edges (`EDGE_LIVE`)
+  until jarvis's purge removes them.
 - Edge attributes beyond the stamps are unvalidated passthrough (same
   as jarvis).
 
@@ -531,7 +548,7 @@ Everything in jarvis NOT reached by these tools stays out of scope.
 | `edit-node`                                      | `POST /v2/nodes/:ref_id`                 | §1 upsert (reprocess semantics) |
 | `create-schema` (strut-only, no jarvis/* twin)    | `POST /v2/schema`                        | `schema-crud.ts`: register a non-Strut node type (parent must exist, jarvis attribute grammar, node_key tokens, CHILD_OF, per-type constraint), or add-only extend an existing one — the ontology CRUD the mcp lab deliberately left to humans, exposed because a workflow may need a type (e.g. `Evidence`) the seed lacks |
 | `edit-edge` (strut-only, no jarvis/* twin)        | `PATCH /v2/edges/:ref_id`                | `EdgeWriter.update()`: patch an edge's properties by ref_id or by (source, EDGE, target); identity stamps protected. The only way to change an edge after the ON-CREATE-only MERGE |
-| `move-node` (strut-only, no jarvis/* twin)        | `DELETE` + `POST /v2/edges`              | `EdgeWriter.move()`: in one transaction, mute the one live edge of a type that places a node (`direction` from the node's side, as graph-neighbors reports it; `from_ref_id` when it has several) and MERGE the same edge to the new place carrying the old one's properties; refuses a cycle; an edge an earlier move muted is restored, not duplicated. `neighbors` / edge counts skip muted edges, as jarvis's reads do |
+| `move-node` (strut-only, no jarvis/* twin)        | `DELETE` + `POST /v2/edges`              | `EdgeWriter.move()`: in one transaction, delete the one live edge of a type that places a node (`direction` from the node's side, as graph-neighbors reports it; `from_ref_id` when it has several) and MERGE the same edge to the new place carrying the old one's properties; refuses a cycle; a legacy muted edge to the new place is made live, not duplicated. `neighbors` / edge counts skip legacy muted edges and deleted neighbours |
 | `register-namespace`                             | `POST/GET /namespace`                    | trivial: idempotent namespace registry (mirror jarvis's storage — verify whether it's a node or derived from distinct `n.namespace` before building) |
 | `get-ontology`, `get-ontology-type`              | `GET /v2/schema[/{type}]`                | list `:Schema` nodes + inherited attrs via `CHILD_OF` walk (read side of §4) |
 | `graph-get`, `graph-get-batched`                 | `GET /v2/nodes/:ref_id` + `/connection-counts` | fetch by ref_id; response envelope = properties minus `GENERIC_NODE_PROPERTIES`; `{EDGE_TYPE: count}` map. Strut-only: `graph-get` also takes `node_type` + `name` — an exact `node_key` lookup in the namespace, for types keyed by name — and `children: <EDGE_TYPE>`, the outgoing neighbors along that edge with name + description, sorted by name, capped at 50 (`children_truncated`) |
@@ -559,7 +576,7 @@ Everything in jarvis NOT reached by these tools stays out of scope.
   bucket by `usage_count_30d` desc → `usage_count` desc → best rank →
   `ref_id`.
 - Filters: `type` (label list), `domains` (validated against the
-  distinct-domain registry), `namespace`, soft-delete/mute exclusion.
+  distinct-domain registry), `namespace`, delete/mute exclusion (`NODE_LIVE` + `is_muted`).
 
 Consequence for §2/§5 (supersedes §2's "do not implement
 `vector_index`"): `input_q`/`output_q` only work on types whose schema

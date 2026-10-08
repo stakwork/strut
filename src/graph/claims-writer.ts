@@ -187,17 +187,15 @@ export class ClaimsWriter {
     return { id };
   }
 
-  /** Share a claim with another subject — never by copying the node. An
-   *  existing edge is a no-op; a detached (muted) one is restored. */
+  /** Share a claim with another subject — never by copying the node. A
+   *  live edge is a no-op; a legacy muted one (from before detach deleted
+   *  edges) is made live again by the write and counts as attached. */
   async attachClaim(id: string, subject: SubjectRef): Promise<{ id: string; attached: boolean }> {
     const claim = await this.activeClaim(id);
     const [subjectRef] = await this.subjectRefs([subject]);
+    const live = (await this.reader.subjectsOf(id)).some((a) => a.ref_id === subjectRef);
     const written = await this.graph.edges.write({ edge: CLAIM_EDGES.ABOUT, source_ref_id: claim.ref_id, target_ref_id: subjectRef! });
-    if (written.created) return { id, attached: true };
-    const rows = await this.graph.bolt.run(`MATCH ()-[r {ref_id: $r}]->() RETURN coalesce(r.is_muted, false) AS muted`, { r: written.ref_id });
-    if (rows[0]?.["muted"] !== true) return { id, attached: false };
-    await this.graph.edges.update({ ref_id: written.ref_id }, { set: { is_muted: false } });
-    return { id, attached: true };
+    return { id, attached: written.created || !live };
   }
 
   /** Detach a claim from ONE subject. Its last subject cannot be detached —
@@ -210,7 +208,7 @@ export class ClaimsWriter {
     if (attached.length === 1) {
       throw new ClaimsError("REFUSED", `${describeSubject(subject)} is this claim's only subject — retire the claim instead of detaching it`);
     }
-    await this.graph.edges.mute(hit.edge_ref_id);
+    await this.graph.edges.delete(hit.edge_ref_id);
     return { id, detached: true };
   }
 

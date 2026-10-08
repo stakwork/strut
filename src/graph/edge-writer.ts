@@ -12,11 +12,11 @@
  *   - `edge_key` = the edge schema's `edge_key` pattern sanitized over the
  *     edge properties when it declares one, else `edgeType.toLowerCase()`;
  *   - one edge per (src, type, tgt): ON CREATE only — existing edges are
- *     never mutated;
+ *     never mutated, except that a legacy flagged one is made live again;
  *   - stamps: `ref_id`, `edge_key`, `weight` (1 unless given),
  *     `date_added_to_graph` (epoch ms), and `unique_source_id` when both
  *     endpoints carry the same one; NO `namespace` on edges;
- *   - soft delete = `is_muted = true`.
+ *   - delete = `DELETE r` (`deletion.ts`): edges are never muted or flagged.
  *
  * Validation: an edge whose SOURCE is a Strut type must be a row of the
  * closed Strut registry (§6 item 6; `ACCESSED` accepts any target). Any
@@ -28,6 +28,7 @@
 import { randomUUID } from "node:crypto";
 import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, int, txRows, type Row } from "./bolt.js";
+import { EDGE_LIVE } from "./deletion.js";
 import { GraphValidationError } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { STRUT_EDGES, WILDCARD_TARGET_EDGES, isStrutType, typeLabelOf } from "./strut-schemas.js";
@@ -100,7 +101,7 @@ export interface EdgeMoveResult {
   to_ref_id: string;
   /** The live edge to `to_ref_id`. */
   edge_ref_id: string;
-  /** The edge to `from_ref_id` — muted by the move, kept as history. */
+  /** The edge to `from_ref_id` — deleted by the move. */
   previous_edge_ref_id: string;
 }
 
@@ -113,8 +114,6 @@ const STAMPS = new Set(["ref_id", "edge_key", "weight", "date_added_to_graph", "
 const PROTECTED = new Set(["ref_id", "edge_key", "date_added_to_graph", "unique_source_id"]);
 const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
-/** A live edge: not soft-deleted (jarvis reads skip both flags). */
-const LIVE = (r: string) => `(${r}.is_muted IS NULL OR ${r}.is_muted <> true) AND (${r}.is_deleted IS NULL OR ${r}.is_deleted <> true)`;
 
 /** Registry check for one (source type, edge, target type) triple. */
 export function isRegisteredEdge(edge: string, sourceType: string, targetType: string): boolean {
@@ -189,8 +188,8 @@ export class EdgeWriter {
    * Patch an existing edge's properties — jarvis `PATCH /v2/edges/:ref_id`
    * (`set_edge_properties`), the one way to change an edge after the
    * ON-CREATE-only MERGE. Located by `ref_id`, or by the
-   * `(source, EDGE, target)` triple (alias-rewritten like a write; muted
-   * edges are skipped; more than one live edge of that type between the
+   * `(source, EDGE, target)` triple (alias-rewritten like a write; legacy
+   * flagged edges are skipped; more than one live edge of that type between the
    * endpoints — distinct edge_keys — is an error: pass the ref_id).
    * Identity stamps (`ref_id`, `edge_key`, `date_added_to_graph`,
    * `unique_source_id`) cannot be set or removed; `weight` can. Numbers
@@ -231,7 +230,7 @@ export class EdgeWriter {
            OPTIONAL MATCH (target)-[:IS_ALIAS]->(ta)
            WITH COALESCE(sa, source) AS s, COALESCE(ta, target) AS t
            MATCH (s)-[r:\`${edge}\`]->(t)
-           WHERE r.is_muted IS NULL OR r.is_muted = false
+           WHERE ${EDGE_LIVE("r")}
            RETURN r.ref_id AS ref_id`,
           { src: where.source_ref_id, tgt: where.target_ref_id },
         );
@@ -252,20 +251,20 @@ export class EdgeWriter {
     });
   }
 
-  /** Edge soft delete (`is_muted = true`), by edge ref_id. */
-  async mute(ref_id: string): Promise<boolean> {
-    const rows = await this.bolt.run(`MATCH ()-[r {ref_id: $ref_id}]->() SET r.is_muted = true RETURN r.ref_id AS ref_id`, { ref_id });
-    return rows.length > 0;
+  /** Edge delete (`DELETE r`), by edge ref_id. false: no such edge. */
+  async delete(ref_id: string): Promise<boolean> {
+    const rows = await this.bolt.run(`MATCH ()-[r {ref_id: $ref_id}]->() DELETE r RETURN count(r) AS n`, { ref_id });
+    return Number(rows[0]?.["n"] ?? 0) > 0;
   }
 
   /**
    * Move a node: re-point the live `edge` that ties it to where it hangs now
    * at `to_ref_id`, in one transaction. Edges cannot be re-pointed in place,
-   * so the old edge is muted and a new one written the same way round,
+   * so the old edge is deleted and a new one written the same way round,
    * carrying the old edge's properties (the triple is validated like any
    * write). Refused when `to_ref_id` is the node itself or hangs under it
-   * along `edge` (a cycle would cut the subtree loose). A muted edge to
-   * `to_ref_id` from an earlier move is restored rather than duplicated.
+   * along `edge` (a cycle would cut the subtree loose). A legacy muted edge
+   * to `to_ref_id` is made live rather than duplicated (`mergeEdges`).
    */
   async move(m: EdgeMove): Promise<EdgeMoveResult> {
     const edge = m.edge.toUpperCase().replace(/ /g, "_");
@@ -281,7 +280,7 @@ export class EdgeWriter {
         `MATCH (x:Data_Bank {ref_id: $ref_id})
          OPTIONAL MATCH (x)-[:IS_ALIAS]->(xa)
          WITH COALESCE(xa, x) AS n
-         OPTIONAL MATCH (n)${hop}(p) WHERE ${LIVE("r")}
+         OPTIONAL MATCH (n)${hop}(p) WHERE ${EDGE_LIVE("r")}
          RETURN n.ref_id AS node, p.ref_id AS other, r.ref_id AS edge_ref_id, properties(r) AS props`,
         { ref_id: m.ref_id },
       );
@@ -315,7 +314,7 @@ export class EdgeWriter {
          WITH COALESCE(ta, t0) AS t
          MATCH (n:Data_Bank {ref_id: $node})
          MATCH path = shortestPath(${forward ? `(t)-[:\`${edge}\`*1..]->(n)` : `(n)-[:\`${edge}\`*1..]->(t)`})
-         WHERE ALL(rel IN relationships(path) WHERE ${LIVE("rel")})
+         WHERE ALL(rel IN relationships(path) WHERE ${EDGE_LIVE("rel")})
          RETURN t.ref_id AS t LIMIT 1`,
         { to: m.to_ref_id, node },
       );
@@ -346,14 +345,7 @@ export class EdgeWriter {
           { ...params, uid: resolved[0]!.unique_source_id ?? null },
         );
       }
-      // An edge to `to_ref_id` that an earlier move muted comes back.
-      await txRows(
-        tx,
-        `MATCH ()-[old {ref_id: $old}]->()
-         MATCH ()-[new {ref_id: $new}]->()
-         SET old.is_muted = true, new.is_muted = CASE WHEN new.is_muted = true THEN false ELSE new.is_muted END`,
-        params,
-      );
+      await txRows(tx, `MATCH ()-[old {ref_id: $old}]->() DELETE old`, params);
       return {
         moved: true,
         ref_id: node,
@@ -432,6 +424,7 @@ async function mergeEdges(tx: ManagedTransaction, edge: string, edges: ResolvedE
      WITH COALESCE(sa, source) AS ns, COALESCE(ta, target) AS nt, e
      MERGE (ns)-[r:\`${edge}\` {edge_key: e.edge_key}]->(nt)
      ON CREATE SET r += e.on_create
+     ON MATCH SET r.is_muted = null, r.is_deleted = null, r.muted_by_delete_of = null
      RETURN e.k AS k, r.ref_id AS ref_id, r.ref_id = e.on_create.ref_id AS created,
             ns.ref_id AS source_ref_id, nt.ref_id AS target_ref_id`,
     { edges: rows },

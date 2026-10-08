@@ -20,14 +20,16 @@
  *
  * Status is COMPUTED ON READ, per (claim, subject) — `claimStatus` is one
  * pure function and no verdict is ever stored on a node. Every read here
- * skips muted edges: a muted slot is neither evidence nor an open slot.
+ * skips deleted nodes and legacy muted edges (`deletion.ts`): a retired slot
+ * is neither evidence nor an open slot.
  *
- * Type-only imports: this module never loads neo4j-driver, so `createStrut`
- * can import it on a filesystem workspace.
+ * Type-only imports (plus the import-free `deletion.ts`): this module never
+ * loads neo4j-driver, so `createStrut` can import it on a filesystem workspace.
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { CassetteMode } from "../cassette.js";
 import type { GraphBackend } from "./backend.js";
+import { EDGE_LIVE, NODE_LIVE } from "./deletion.js";
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -379,9 +381,6 @@ export function claimStatus(input: ClaimStatusInput): ClaimStatus {
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 
-const LIVE = (r: string) => `(${r}.is_muted IS NULL OR ${r}.is_muted = false)`;
-const NOT_DELETED = (n: string) => `(${n}.is_deleted IS NULL OR ${n}.is_deleted = false)`;
-
 const CLAIM_FIELDS = ["ref_id", "id", "name", "claim_text", "speaker_name", "belief_valid_from", "belief_valid_to"] as const;
 const CHECK_FIELDS = [
   "ref_id", "id", "name", "description", "step_type", "step_config", "run_when", "policy", "freshness_days",
@@ -436,7 +435,7 @@ export class ClaimsReader {
   async activeVersion(subject: SubjectRef): Promise<string | null> {
     const n = SUBJECT_NODE[subject.kind];
     const rows = await this.graph.bolt.run(
-      `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NOT_DELETED("s")}
+      `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NODE_LIVE("s")}
        RETURN s.active_version AS v LIMIT 1`,
       { ns: this.ns, name: subjectName(subject) },
     );
@@ -449,7 +448,7 @@ export class ClaimsReader {
   async subjectRefId(subject: SubjectRef): Promise<string | null> {
     const n = SUBJECT_NODE[subject.kind];
     const rows = await this.graph.bolt.run(
-      `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NOT_DELETED("s")} RETURN s.ref_id AS r LIMIT 1`,
+      `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NODE_LIVE("s")} RETURN s.ref_id AS r LIMIT 1`,
       { ns: this.ns, name: subjectName(subject) },
     );
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
@@ -459,7 +458,7 @@ export class ClaimsReader {
   async versionRefId(version: VersionRef): Promise<string | null> {
     const n = SUBJECT_NODE[version.kind];
     const rows = await this.graph.bolt.run(
-      `MATCH (v:\`${n.version}\` {namespace: $ns, \`${n.key}\`: $name, content_hash: $hash}) WHERE ${NOT_DELETED("v")} RETURN v.ref_id AS r LIMIT 1`,
+      `MATCH (v:\`${n.version}\` {namespace: $ns, \`${n.key}\`: $name, content_hash: $hash}) WHERE ${NODE_LIVE("v")} RETURN v.ref_id AS r LIMIT 1`,
       { ns: this.ns, name: version.name, hash: version.content_hash },
     );
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
@@ -468,7 +467,7 @@ export class ClaimsReader {
   /** One claim by id (active or not), or null. */
   async getClaim(id: string): Promise<ClaimRow | null> {
     const rows = await this.graph.bolt.run(
-      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NOT_DELETED("c")} RETURN ${project("c", CLAIM_FIELDS)} AS claim LIMIT 1`,
+      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NODE_LIVE("c")} RETURN ${project("c", CLAIM_FIELDS)} AS claim LIMIT 1`,
       { ns: this.ns, id },
     );
     return rows.length ? compact<ClaimRow>(rows[0]!["claim"] as Record<string, unknown>) : null;
@@ -477,7 +476,7 @@ export class ClaimsReader {
   /** One check by id (active or not), or null. */
   async getCheck(id: string): Promise<CheckRow | null> {
     const rows = await this.graph.bolt.run(
-      `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NOT_DELETED("k")} RETURN ${project("k", CHECK_FIELDS)} AS chk LIMIT 1`,
+      `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NODE_LIVE("k")} RETURN ${project("k", CHECK_FIELDS)} AS chk LIMIT 1`,
       { ns: this.ns, id },
     );
     return rows.length ? compact<CheckRow>(rows[0]!["chk"] as Record<string, unknown>) : null;
@@ -488,7 +487,7 @@ export class ClaimsReader {
   async subjectsOf(claimId: string): Promise<Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }>> {
     const rows = await this.graph.bolt.run(
       `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})-[a:\`${CLAIM_EDGES.ABOUT}\`]->(s)
-       WHERE ${LIVE("a")} AND ${NOT_DELETED("s")} AND (s:StrutStep OR s:StrutWorkflow)
+       WHERE ${EDGE_LIVE("a")} AND ${NODE_LIVE("s")} AND (s:StrutStep OR s:StrutWorkflow)
        RETURN s:StrutStep AS is_step, s.step_type AS step_type, s.name AS name, s.ref_id AS ref_id, a.ref_id AS edge_ref_id
        ORDER BY is_step, name, step_type`,
       { ns: this.ns, id: claimId },
@@ -505,7 +504,7 @@ export class ClaimsReader {
   async claimsTestedBy(checkId: string): Promise<ClaimRow[]> {
     const rows = await this.graph.bolt.run(
       `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id})-[t:\`${CLAIM_EDGES.TESTS}\`]->(c:\`${CLAIM_TYPE}\`)
-       WHERE ${LIVE("t")} AND ${NOT_DELETED("c")} AND c.belief_valid_to IS NULL
+       WHERE ${EDGE_LIVE("t")} AND ${NODE_LIVE("c")} AND c.belief_valid_to IS NULL
        RETURN ${project("c", CLAIM_FIELDS)} AS claim ORDER BY c.belief_valid_from, c.id`,
       { ns: this.ns, id: checkId },
     );
@@ -517,7 +516,7 @@ export class ClaimsReader {
     const n = SUBJECT_NODE[subject.kind];
     const rows = await this.graph.bolt.run(
       `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns})-[a:\`${CLAIM_EDGES.ABOUT}\`]->(s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name})
-       WHERE ${LIVE("a")} AND ${NOT_DELETED("c")} AND ${NOT_DELETED("s")}
+       WHERE ${EDGE_LIVE("a")} AND ${NODE_LIVE("c")} AND ${NODE_LIVE("s")}
          AND ($retired OR c.belief_valid_to IS NULL)
        RETURN ${project("c", CLAIM_FIELDS)} AS claim
        ORDER BY c.belief_valid_from, c.id`,
@@ -530,7 +529,7 @@ export class ClaimsReader {
   async checksFor(claimId: string, opts: { includeRetired?: boolean } = {}): Promise<CheckRow[]> {
     const rows = await this.graph.bolt.run(
       `MATCH (k:\`${CHECK_TYPE}\`)-[t:\`${CLAIM_EDGES.TESTS}\`]->(c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})
-       WHERE ${LIVE("t")} AND ${NOT_DELETED("k")} AND ($retired OR k.retired_at IS NULL)
+       WHERE ${EDGE_LIVE("t")} AND ${NODE_LIVE("k")} AND ($retired OR k.retired_at IS NULL)
        RETURN ${project("k", CHECK_FIELDS)} AS chk
        ORDER BY k.created_at, k.id`,
       { ns: this.ns, id: claimId, retired: opts.includeRetired === true },
@@ -547,7 +546,7 @@ export class ClaimsReader {
   async evidenceFor(claimId: string, subject?: SubjectRef): Promise<EvidenceRow[]> {
     const rows = await this.evidenceRows(
       `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e:\`${EVIDENCE_TYPE}\`)
-       WHERE ${LIVE("eb")} AND ${NOT_DELETED("e")}`,
+       WHERE ${EDGE_LIVE("eb")} AND ${NODE_LIVE("e")}`,
       { ns: this.ns, id: claimId },
     );
     const out = rows.map(({ claim_text: _, ...e }): EvidenceRow => e).sort(newestFirst);
@@ -570,11 +569,11 @@ export class ClaimsReader {
        WHERE ($runId IS NULL OR r.run_id = $runId) AND ($before IS NULL OR r.run_id < $before)
          AND EXISTS {
            MATCH (:\`${CLAIM_TYPE}\`)-[eb0:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e0:\`${EVIDENCE_TYPE}\`)-[hs0:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
-           WHERE ${LIVE("eb0")} AND ${LIVE("hs0")} AND ${NOT_DELETED("e0")}
+           WHERE ${EDGE_LIVE("eb0")} AND ${EDGE_LIVE("hs0")} AND ${NODE_LIVE("e0")}
          }
        WITH r ORDER BY r.run_id DESC LIMIT toInteger($limit)
        MATCH (c:\`${CLAIM_TYPE}\`)-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e:\`${EVIDENCE_TYPE}\`)-[hr:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
-       WHERE ${LIVE("eb")} AND ${LIVE("hr")} AND ${NOT_DELETED("e")}`,
+       WHERE ${EDGE_LIVE("eb")} AND ${EDGE_LIVE("hr")} AND ${NODE_LIVE("e")}`,
       { ns: this.ns, key: runKey, runId: opts.runId ?? null, before: opts.before ?? null, limit: opts.limit ?? 50 },
     );
     const runMs = (e: RunEvidenceRow) => Number(e.source?.run_id) || 0;
@@ -591,9 +590,9 @@ export class ClaimsReader {
   private async evidenceRows(match: string, params: Record<string, unknown>): Promise<RunEvidenceRow[]> {
     const rows = await this.graph.bolt.run(
       `${match}
-       OPTIONAL MATCH (e)-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->(k:\`${CHECK_TYPE}\`) WHERE ${LIVE("pb")}
-       OPTIONAL MATCH (e)-[ab:\`${CLAIM_EDGES.ABOUT}\`]->(v) WHERE ${LIVE("ab")} AND (v:StrutStepVersion OR v:StrutWorkflowVersion)
-       OPTIONAL MATCH (e)-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src) WHERE ${LIVE("hs")}
+       OPTIONAL MATCH (e)-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->(k:\`${CHECK_TYPE}\`) WHERE ${EDGE_LIVE("pb")}
+       OPTIONAL MATCH (e)-[ab:\`${CLAIM_EDGES.ABOUT}\`]->(v) WHERE ${EDGE_LIVE("ab")} AND (v:StrutStepVersion OR v:StrutWorkflowVersion)
+       OPTIONAL MATCH (e)-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src) WHERE ${EDGE_LIVE("hs")}
        RETURN ${project("e", EVIDENCE_FIELDS)} AS ev, c.id AS claim_id, c.claim_text AS claim_text,
               eb.strength AS strength, eb.ref_id AS edge_ref_id, k.id AS check_id,
               v:StrutStepVersion AS v_is_step, v.name AS v_name, v.step_type AS v_step_type, v.content_hash AS v_hash,
