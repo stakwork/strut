@@ -16,8 +16,9 @@
  *
  * Two modes:
  *   - `create`: no-op on an existing node (returns its ref_id) — except a
- *     soft-deleted, non-muted node, which is restored in place
- *     (`schema_node_helper.py:620-657`). A restore brings back the node,
+ *     soft-deleted node, which is restored in place
+ *     (`schema_node_helper.py:620-657`). Delete and mute are independent:
+ *     `is_muted` is left as it is, so a muted node stays hidden. A restore brings back the node,
  *     not its edges: a delete removed those for good (`deletion.ts`).
  *   - `upsert`: jarvis `reprocess` semantics — SET everything except the
  *     preserved identity (`ref_id`, `node_key`, `namespace`,
@@ -578,9 +579,10 @@ export class NodeWriter {
  * The one Cypher template, UNWIND form. Labels = `Type` + Node + Data_Bank
  * + the schema's Domain_* labels; identity = (node_key, namespace). ON
  * CREATE gets the full stamped payload; ON MATCH gets the non-identity
- * payload only when the mode is `upsert` or the node is soft-deleted-and-
- * not-muted (restore). A restore clears both delete markers (`deleted_at`,
- * `is_deleted`); otherwise they are left exactly as they were. Whether the
+ * payload only when the mode is `upsert` or the node is soft-deleted
+ * (restore). A restore clears both delete markers (`deleted_at`,
+ * `is_deleted`) and never touches `is_muted`; otherwise the markers are left
+ * exactly as they were. Whether the
  * node was deleted is read in a WITH before the MERGE: SET items apply in
  * order, so a CASE reading a marker an earlier item cleared would never fire.
  *
@@ -600,16 +602,16 @@ async function mergeBatch(
     tx,
     `UNWIND $keys AS k
      MATCH (n:\`${type}\` {node_key: k, namespace: $ns})
-     RETURN k AS node_key, NOT ${NODE_LIVE("n")} AS deleted, coalesce(n.is_muted, false) AS muted`,
+     RETURN k AS node_key, NOT ${NODE_LIVE("n")} AS deleted`,
     { keys: nodes.map((n) => n.node_key), ns: namespace },
   );
-  const state = new Map(before.map((r) => [r["node_key"] as string, { deleted: r["deleted"] as boolean, muted: r["muted"] as boolean }]));
+  const deleted = new Set(before.filter((r) => r["deleted"] === true).map((r) => r["node_key"] as string));
 
   const rows = await txRows(
     tx,
     `UNWIND $rows AS row
      OPTIONAL MATCH (prior:\`${type}\` {node_key: row.node_key, namespace: $ns})
-     WITH row, prior IS NOT NULL AND NOT ${NODE_LIVE("prior")} AND NOT coalesce(prior.is_muted, false) AS restore
+     WITH row, prior IS NOT NULL AND NOT ${NODE_LIVE("prior")} AS restore
      MERGE (node:${labels} {node_key: row.node_key, namespace: $ns})
      ON CREATE SET node += row.on_create
      ON MATCH SET
@@ -627,10 +629,9 @@ async function mergeBatch(
   return nodes.map((n) => {
     const r = byKey.get(n.node_key)!;
     const created = r["created"] as boolean;
-    const prior = state.get(n.node_key);
     let outcome: WriteOutcome;
     if (created) outcome = "created";
-    else if (prior?.deleted && !prior.muted) outcome = "restored";
+    else if (deleted.has(n.node_key)) outcome = "restored";
     else if (mode === "upsert") outcome = "updated";
     else outcome = "existing";
     return { ref_id: r["ref_id"] as string, node_key: n.node_key, outcome };

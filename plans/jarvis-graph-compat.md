@@ -245,12 +245,13 @@ only touches `Domain_strut` nodes; `retirePlannedEvidence` is the one
 exception (a stale `planned` Evidence slot, `verify.ts`). `deleted_at`
 and `deleted_at_backfilled` are reserved attribute names. **Restore
 semantics** (mirroring jarvis `schema_node_helper.py:620-657`): a
-`create` that hits a soft-deleted, non-muted node with the same node_key
-restores it — both markers cleared, new payload applied, preserving
-`ref_id`, `node_key`, `namespace`, `date_added_to_graph`. A restore
-brings back **no edges**: the delete removed them for good, and only
-what the re-create writes is there afterwards. A muted, deleted node
-stays deleted.
+`create` that hits a soft-deleted node with the same node_key restores
+it — both markers cleared, new payload applied, preserving `ref_id`,
+`node_key`, `namespace`, `date_added_to_graph`. A restore brings back
+**no edges**: the delete removed them for good, and only what the
+re-create writes is there afterwards. Delete and mute are independent:
+a restore never touches `is_muted`, so a muted, deleted node is
+restored but stays hidden because it is muted.
 
 **Idempotent projector writes**: stamp `unique_source_id` on projected
 nodes (e.g. `"strutrun:<runId>"`, `"struttoolcall:<runId>:<path>:<seq>"`)

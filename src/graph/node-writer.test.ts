@@ -280,7 +280,7 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["deleted_at"], 1);
   });
 
-  it("soft delete + create restores in place (both markers cleared, no edges back); muted+deleted stays put", async () => {
+  it("soft delete + create restores in place (both markers cleared, no edges back); a muted one is restored but stays muted", async () => {
     const a = await writer.write({ type: "StrutRun", data: RUN });
     const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_id: "2" } });
     await bolt.run(`MATCH (a:Data_Bank {ref_id: $a}), (b:Data_Bank {ref_id: $b}) CREATE (a)-[:IN_RUN {ref_id: "e-in"}]->(b)`, { a: a.ref_id, b: b.ref_id });
@@ -303,12 +303,16 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     assert.ok(!("deleted_at" in p1));
     assert.equal(p1["summary"], "again");
 
-    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.is_deleted = true, n.is_muted = true`, { r: a.ref_id });
-    const r2 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "nope" } });
-    assert.equal(r2.outcome, "existing");
+    // Delete and mute are independent: a muted, deleted node is restored
+    // (deleted_at cleared) but stays muted.
+    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.is_muted = true`, { r: a.ref_id });
+    assert.equal(await writer.softDelete(a.ref_id), true);
+    const r2 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "muted" } });
+    assert.equal(r2.outcome, "restored");
     const p2 = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p2["is_deleted"], true);
-    assert.equal(p2["summary"], "again");
+    assert.ok(!("deleted_at" in p2) && !("is_deleted" in p2));
+    assert.equal(p2["is_muted"], true);
+    assert.equal(p2["summary"], "muted");
     assert.equal(await writer.softDelete("not-a-ref"), false);
   });
 
