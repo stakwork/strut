@@ -35,6 +35,21 @@
 > changes: a run still executes and reads secrets where the workflow
 > lives, dispatch-through still forwards the actor, and read-through, the
 > roll-up and the library are as they were.
+>
+> **Revised 2026-10-08:** the **order flips** — dispatch-through (§2.2) is
+> the first strut milestone, and read-through (§2.1) follows on the same
+> peer record. The first use case is a **local strut calling an explorer
+> agent on a cloud strut**: a desktop strut asks a swarm's strut to walk
+> that swarm's knowledge graph and return what is relevant. That case
+> fixed three rulings: the step waits on the peer's **SSE tail, not a
+> callback** (a strut behind NAT can reach a cloud strut and cannot
+> receive a POST); a peer is named by the hive **workspace slug** (what a
+> person types as `@slug`); and a local strut gets its peers through a
+> **paste door**, since hive cannot push to it. `job` is an explicit field
+> on the step, never forwarded. Billing across the call — the peer needs
+> the caller's principal's delegation — and actor secrets are **deferred**:
+> an explorer needs no secret, and the delegation question is
+> `plans/org-gateway.md` §3 / `plans/presented-delegations.md`.
 
 ## Problem
 
@@ -71,23 +86,23 @@ two processes.
 | --- | --- |
 | Tiers | A tier is a **role** of an ordinary strut, set by what it points at (its peers) and what it is granted. No new server kind, no central-only code path (§1) |
 | The one mechanism | **Read-through**: a remote, read-only `WorkspaceStore` + `RunStore` over another strut's existing HTTP API (`src/remote.ts`). The UI's peer view, the builder's library search and pull, the summary roll-up, and dispatch-through's drill-down all sit on it (§2) |
-| Order | hive workspace selector → read-through → library pull → roll-up projection + the first reflection → dispatch-through. **Gateway chaining: not at all** (§5) |
-| Peer identity | **Assigned by whoever registers the peer** — hive uses `swarmId`. No self-declared strut id (strut has none today and would have to coordinate one). A run's cross-strut handle is `(peer, workflow, runId)` as the reader names the peer: hive's handle, unchanged (§3, §4) |
+| Order | **Dispatch-through first** (peers + `strut/run-workflow` + `@slug` in the builder), the seeded `explore` workflow beside it, then read-through on the same record, the scoped peer token, library via git, roll-up + reflection. The hive workspace selector is independent. **Gateway chaining: not at all** (§5). Revised 2026-10-08 — the original order put read-through first, for the org-wide runs view |
+| Peer identity | **Assigned by whoever registers the peer** — hive uses the **workspace slug** (what a person types as `@slug`; one swarm per workspace, and hive maps slug ↔ `swarmId` when it stores a handle). No self-declared strut id (strut has none today and would have to coordinate one). A run's cross-strut handle is `(peer, workflow, runId)` as the reader names the peer (§3, §4) |
 | Version identity | `name` + `contentHash` — already the dedup key in both stores (`src/version.ts:9-11`; content-addressed version nodes, `src/graph/workspace-store.ts` header). Same YAML anywhere = same version (§4) |
-| Peer credential | A bearer token the host pushes into a fourth encrypted `FileSecretStore` file, `peers.json` — the delegation and actor-secret pattern. Peers should hold a **read-scoped** token; today's tokens are all-or-nothing, and the fix is a `lab:read` JWT scope in mcp. A central strut never holds a swarm key (§3) |
+| Peer credential | A bearer token in a fourth encrypted `FileSecretStore` file, `peers.json` — pushed by the host (the delegation and actor-secret pattern) or, on a **local strut hive cannot reach, pasted** (`STRUT_PEERS`, a Peers dialog). Peers should hold a **scoped** token — `lab:peer`: read, launch, control what it launched; `lab:read` for a central that only reads. Today's tokens are all-or-nothing, and the fix is the JWT scope in mcp; it matters most for a laptop, which must never hold a swarm's admin key (§3) |
 | Actor across the chain | The same opaque string everywhere: hive derives it from the global `User` (`{login}-{id}`, `hive/src/services/bifrost/reconciler.ts:676-682`), so it is valid on every strut in every org. Forwarded as `x-strut-actor` on peer calls; the peer's own `resolveActor` decides whether to honor it. The delegation for that string is on every strut in the org (the fan-out, `plans/org-gateway.md` §3), so a peer bills the forwarded principal without a per-dispatch push (§3) |
-| Cost | **One gateway per org** (`plans/org-gateway.md`): every strut in the org bills through it, under a delegation hive fans out to every strut for every member. A run still executes where the workflow lives; the org gateway's log, split by a `workspace` dim, is the LLM-side truth across the org. `RunSummary.costUsd` stays for strut-side per-run spend (§5) |
+| Cost | **One gateway per org** (`plans/org-gateway.md`): every strut in the org bills through it, under a delegation hive fans out to every strut for every member. A run still executes where the workflow lives; the org gateway's log, split by a `workspace` dim, is the LLM-side truth across the org. `RunSummary.costUsd` stays for strut-side per-run spend. **Deferred (2026-10-08):** a cross-strut call needs the caller's principal's delegation on the peer, and the fan-out that would put it there is not built; the explorer milestone does not wait on it (§5) |
 | Secrets | **Never cross a boundary.** A dispatch-through run reads the executing leaf's own deployment and actor secrets, pushed there by hive (§6) |
 | Library | **Git is the hub.** A workflow's origin is `WorkflowMetadata.source: { repo, path }`, set by the seeder beside `category` and `owner`; a strut seeds from several repos; an **export** is a PR to the file the workflow came from (else `STRUT_HOME_REPO` + a directory convention), authored with the actor's `GITHUB_TOKEN`, never a push to the default branch. Distribution is the next reseed everywhere. No strut-to-strut copy and no `visibility` flag: the repo is the visibility (§2.3, §8) |
 | Roll-up store | The existing projector over a remote `RunStore`, each peer into its **own graph namespace** on the central's Neo4j — uniqueness is already per `(node_key, namespace)`, so no schema change and no id rewriting. Summaries only: never events, transcripts, artifacts, secrets (§9) |
-| Dispatch-through | A lib step, `strut/run-workflow`, later. The child runs on the peer under the peer's secrets and its own fanned-out delegation, billed at the org gateway; the parent's log records the handle; cancel propagates cooperatively. **Hive keeps dispatching directly** (§2.2) |
+| Dispatch-through | A lib step, `strut/run-workflow` — **the first milestone**. The child runs on the peer under the peer's secrets and whatever delegation the peer holds for the forwarded principal; the step waits on the peer's **SSE tail** (reattaching with `?skip=N`), never a callback; `job` is explicit, never forwarded; the parent's log records the handle; cancel propagates cooperatively. **Hive keeps dispatching directly** (§2.2) |
 | Leaf independence | Nothing on a leaf ever awaits a peer: reads are initiated by the reader, the library is pulled, automations need no peer. A central being down costs a stale library, never a broken leaf (§10) |
 
 ## Design in one paragraph
 
 A strut names the struts it may read as **peers** — `{ id, baseUrl, token }`
 — pushed by its host the way delegations and actor secrets are pushed
-today. `src/remote.ts` implements the read half of `WorkspaceStore` and
+today, or pasted on a local strut hive cannot reach. `src/remote.ts` implements the read half of `WorkspaceStore` and
 `RunStore` over a peer's existing HTTP API, so everything that already
 consumes those interfaces works on a peer by being handed a different
 store: the run list and drill-down, the SSE tail, `step-stats`, the
@@ -115,6 +130,7 @@ server, not a shared database (`plans/docs/paper.md:46-48`).
 | **Leaf** | A swarm's `/lab` strut: `createLabStrut` (`mcp/src/lab/createLabStrut.ts:213-233`), graph workspace by default on the swarm's Neo4j (`:158-162`), file-backed runs/chats/secrets under `STRUT_LAB_WORKSPACE` (`:225-232`), gated by `labAuth` on the swarm's `API_TOKEN` (`mcp/src/lab/mount.ts:124-138`), seeded inside `createLabStrut` (`:144-199`), which the mount builds on the first request (`mount.ts:10-14`) | Unchanged. It may gain peers if hive pushes some (a workspace that wants to browse a sibling), but nothing requires it |
 | **Org strut** | The org's default workspace's leaf — `resolveOrgSwarmWorkspaceForUser` tries `defaultWorkspaceId`, else `findFirst` with no ordering (`hive/src/lib/helpers/org-workspace.ts:69-85`). Nothing in strut distinguishes it | The same leaf, with a peer per other swarm in the org, pushed by hive. It is where the org-wide runs view and the org library live |
 | **Central** | Does not exist | An ordinary strut deployment (`src/server.ts`, the standalone image in `Dockerfile`) with peers across orgs, holding read tokens only, running the reflection automations of §9 |
+| **Local** | A desktop strut (`plans/local-desktop-and-stt.md`): behind NAT, reachable by nobody | A **caller only**: holds pasted peers (§3), runs `strut/run-workflow` against cloud struts, is never anyone's peer. The first user of dispatch-through (§2.2) |
 
 **A tier is a role, not a kind**, for three reasons. mcp gives strut no
 identity and hive keys everything by swarm, so there is nothing a "central
@@ -140,10 +156,11 @@ do not know about each other unless someone pushes one as the other's peer.
 | **(d) Summary roll-up** | `projectRuns` — "a post-hoc consumer of any `RunStore`" (`src/graph/projector.ts:1-13`) — over a remote store | The long-horizon view; step regressions and params winners across the fleet | Projector tests over a remote store; a live graph case |
 
 **(a) is the mechanism for everything that reads a strut; (c) rides git,
-not a peer.** (b) and (d) are consumers of (a). Order: (a) first, (c)
-beside it (it needs only the git steps), (d) next, (b) last because it is
-the only one that makes a strut act on another. Each ships alone (§Step
-order).
+not a peer.** (d) is a consumer of (a); (b) needs only the peer record
+and the peer's run routes. Order (revised 2026-10-08): (b) first — it is
+the use case in hand, and the only one a local strut needs — then (a) on
+the same record, (c) beside it (it needs only the git steps), (d) last.
+Each ships alone (§Step order).
 
 ### 2.1 Read-through — `src/remote.ts`
 
@@ -197,22 +214,51 @@ Every method is one existing endpoint — the same ones hive already reads
   the token is the swarm key or a `scope: api` JWT, both full access. §3
   says what to do about that.
 
-### 2.2 Dispatch-through — `strut/run-workflow` (later)
+### 2.2 Dispatch-through — `strut/run-workflow` (first)
 
 Hive does **not** need this: it resolves the target once at dispatch and
 calls that strut directly (`plans/code-change.md` §5, "Keeping the target a
-policy"). The cases that do: an org workflow that runs a check on every
-workspace's swarm; a central reflection that wants a fresh measurement on a
-leaf; a builder on the org strut testing a template where the data lives.
+policy"). The cases that do, in the order they are wanted: **a local strut
+asking a cloud strut's explorer agent a question** — a desktop strut names
+a swarm as a peer, and a workflow or an agent on it runs the swarm's seeded
+`explore` workflow, an `agent` over `graph/*` tools (or a `graph/walk`
+step) that walks that swarm's knowledge graph and returns what is
+relevant; an org workflow that runs a check on every workspace's swarm; a
+central reflection that wants a fresh measurement on a leaf; a builder on
+the org strut testing a template where the data lives.
 
 A lib step under `src/steps/lib/strut/`:
 
-- `strut/run-workflow { peer, workflow, input?, params?, version?, wait?: boolean }`
+- `strut/run-workflow { peer, workflow, input?, params?, version?, job?, wait?: boolean }`
   → `POST {peer}/workflows/:name[/:version]/run` (`src/createStrut.ts:1897,1916`)
-  with `x-strut-actor: ctx.principal`, then awaits the peer's SSE tail and
-  returns `{ peer, workflow, runId, status, output?, error?, durationMs }`.
-  The tail is reader-initiated, so the peer never needs a route back to the
-  caller (a callback would). `wait: false` returns the handle at once.
+  with `x-strut-actor: ctx.principal`, then waits on the peer's SSE tail
+  (`GET …/runs/:runId/stream`) and returns `{ peer, workflow, runId,
+  status, output?, error?, durationMs }`. `wait: false` returns the handle
+  at once. Granted to an agent (`agentTools: ["strut/*"]`) it is how a
+  local agent asks a cloud graph a question mid-turn.
+- **Why a tail, not a callback (decided 2026-10-08).** The tail is
+  reader-initiated: the caller needs to reach the peer, and nothing else.
+  A callback would need the reverse — a route on the caller the peer can
+  POST to, outside the key gate with a nonce as its credential, and the
+  caller knowing its own public URL, which no strut does — and a local
+  strut behind NAT can do neither. Strut's run callbacks stay what they
+  are, a host's contract. The cost is a held connection for the run's
+  length, so the step **reattaches** after a dropped connection: it counts
+  the events it has read and reopens the stream with `?skip=N`
+  (`TailOpts.skip`, the join the web UI already makes); a reattach that
+  finds the run finished reads the summary instead. A `job_busy:` or any
+  other refusal from the peer fails the step with the peer's message.
+- **`job` is explicit, never forwarded.** `meta/run-workflow` carries
+  `ctx.job` because the child shares the parent's directory
+  (`plans/jobs.md` §4). Across struts there is no shared directory: the
+  same id on the peer would be a different job of the same name, with its
+  own files and thread there. So the caller names the job it means, or
+  none, and the handle for a later turn is `(peer, workflow, runId)` plus
+  that id. The job's files, thread and holds live on the peer, and the
+  `artifacts` in its output resolve there (`/jobs/<id>/files/…`), so the
+  step returns them tagged with the peer rather than rewritten to the
+  caller; the read-through routes (§2.1) are how a caller's UI reaches
+  them.
 - **Control.** The step polls `ctx.control.state` between tail events the
   way `exec` does around its child process and POSTs `/cancel` (`/pause`,
   `/resume`, `:1092-1104`) to the peer; `ctx.onRunEnd` cancels a child still
@@ -229,11 +275,18 @@ A lib step under `src/steps/lib/strut/`:
   — §5, §6. That is why the step forwards `ctx.principal`, exactly as
   `meta/run-workflow` forwards it within one process
   (`src/steps/lib/meta/run-workflow.ts:29-35`). The peer's Mothership
-  finds that principal in its own file — the fan-out put it there
-  (`plans/org-gateway.md` §3) — and calls the org gateway stamped with
-  the peer's `workspace`. The child run carries its own cap, not the
-  parent's; the forwarded per-run grant that would bound the tree is
-  deferred (`plans/org-gateway.md` §6).
+  looks that principal up in its own file; under
+  `STRUT_MOTHERSHIP_REQUIRED=1` a principal it has no record for fails the
+  child's first model call, honestly. The fan-out that would put every
+  member's record on every strut in the org (`plans/org-gateway.md` §3) is
+  **not built** — hive pushes delegations and actor secrets per target,
+  only before its own dispatches — and the first milestone does not wait
+  on it: how a cross-strut call is billed is deferred, with the fan-out
+  and the presented grant (`plans/presented-delegations.md`) as the two
+  candidates. An explorer needs no actor secret; a job that pushes code
+  does (§6). The child run carries its own cap, not the parent's; the
+  forwarded per-run grant that would bound the tree is the presented
+  grant's job (`plans/org-gateway.md` §6).
 - **Hive's handle if hive ever dispatched through an org strut:** the row
   would hold the org strut's `(swarmId, workflow, runId)`, the leaf run
   being that run's child; the org run's own callback fires when it ends.
@@ -361,11 +414,18 @@ already pushes per-target state before it needs it (`ensureStrutDelegation`,
 is the third push of that family: for the org strut, one peer per other
 workspace swarm in the org (`GET /api/orgs/[login]/workspaces` already
 knows which have a swarm, `hive/src/app/api/orgs/[githubLogin]/workspaces/route.ts:18-67`);
-reconciled by the delegations cron when members and swarms change.
+reconciled by the delegations cron when members and swarms change — cloud
+struts only. A **local strut** (a desktop strut behind NAT, §1) is one hive
+cannot reach, so it gets its peers through a **paste door**: `STRUT_PEERS`
+set by the desktop host, or a Peers dialog beside Secrets where a person
+pastes a swarm's URL and token. The record is the same either way; hive
+handing it over the way it hands the embed its `?key=` is a later
+convenience.
 
 **Identity.** A peer is named by the strut that holds the record. Hive
-names them by `swarmId`, so a handle a central records is the handle hive
-stores. Strut does not declare an id for itself: mcp has none to give it,
+names them by the **workspace slug** — what a person types as `@slug` in
+a prompt (§8); one swarm per workspace, and hive maps the slug to its
+`swarmId` when it stores a handle. Strut does not declare an id for itself: mcp has none to give it,
 and a self-declared one is a global namespace with nobody administering
 it. The one place this bites — a child run naming its caller — is the
 deferred `launchedBy` stamp of §2.2.
@@ -377,24 +437,29 @@ mints from it with `scope: "api"` (`mcp/src/index.ts:204-223`,
 forty swarms would hold forty full keys, and a swarm key is admin of that
 lab (register a step that reads any secret). So:
 
-- **mcp: a `lab:read` scope.** `/mint-token` gains `scope: "lab:read"`;
-  `labAuth` accepts it for `GET` and the SSE stream only, and the actor is
-  still the JWT's `sub`. Long-lived (60 days, the delegation's lifetime),
-  re-minted by hive's cron. This is the token hive pushes as a peer token.
+- **mcp: a `lab:peer` scope.** `/mint-token` gains `scope: "lab:peer"`;
+  `labAuth` accepts it for `GET`, the SSE stream, `POST …/run` and the
+  control routes of runs it launched, and honors `x-strut-actor` beside it
+  (a launch must name the person, not the machine). `lab:read` is the same
+  minus launch, for a central that only reads. Long-lived (60 days, the
+  delegation's lifetime), re-minted by hive's cron. This is the token hive
+  pushes, or a person pastes, as a peer token — and the only kind a laptop
+  may hold.
 - **strut: `createStrut({ resolveScope?(c) → "full" | "peer" })`**, the
   twin of `resolveActor` and the only new hook. Default: `"full"` — today's
   behaviour, unchanged for every existing deployment. mcp passes a hook that
   maps the JWT scope. Standalone deployments that want peers can set
   `STRUT_PEER_KEY`, a read-only twin of `STRUT_API_KEY`; nothing else in
-  strut learns a new kind of auth. A `peer`-scoped caller may read and
-  nothing else; the gated routes (`requireApiKey`, `src/auth.ts:38-46`)
-  already refuse it.
-- **Milestone 2 may ship before the scope exists.** The org strut is one of
-  the org's own swarms, and hive already holds every key in the org; hive
-  pushing full tokens to it adds no new class of exposure (one swarm holding
-  its siblings' keys is new; a stolen org strut is already an org-wide
-  problem). A cross-org central waits for the scope — it must never hold
-  a swarm key.
+  strut learns a new kind of auth. A `peer`-scoped caller may read, launch
+  a run and control a run it launched, and nothing else; every other gated
+  route (`requireApiKey`, `src/auth.ts:38-46`) refuses it.
+- **The first milestone may ship before the scope exists, inside an org.**
+  The org strut is one of the org's own swarms, and hive already holds
+  every key in the org; hive pushing full tokens to it adds no new class of
+  exposure (one swarm holding its siblings' keys is new; a stolen org strut
+  is already an org-wide problem). A **local strut** and a cross-org
+  central wait for the scope — a laptop must never hold a swarm's admin
+  key.
 
 **Actors across the chain.** One string per person everywhere — hive's
 actor is built from the global `User` and the GitHub login, not from any
@@ -481,6 +546,15 @@ org gateway's log; no cross-swarm aggregator is needed. The `dims`
 mechanism this section once proposed for swarm grouping is the `workspace`
 dim of `plans/org-gateway.md` §4, riding on the delegation record.
 
+**Deferred for the first milestone (2026-10-08).** A cross-strut call is
+billed on the peer, for the forwarded principal, from the delegation the
+peer holds — and today the peer holds one only if hive pushed it there
+before one of its own dispatches; the org fan-out is designed, not built.
+The explorer milestone ships without an answer: a principal the peer has
+no record for fails at its first model call with the Mothership error, and
+the fix is the fan-out or a presented grant
+(`plans/presented-delegations.md`), decided when billing is taken up.
+
 ## 6. Secrets across the chain
 
 Confirmed, and made a rule:
@@ -492,6 +566,11 @@ Confirmed, and made a rule:
   actor's `GITHUB_TOKEN`, which is hive's `ensureStrutActorSecret(target,
   actor)` before dispatch (`plans/code-change.md` §3.2), per target. A
   central never pushes one.
+- **The first milestone needs none of this on the peer.** An explorer
+  workflow reads the peer's graph with the peer's own deployment secrets
+  (its Neo4j, its model keys or delegation); no actor secret crosses or is
+  needed. A job that pushes code on a peer is where the per-target push
+  matters, and that is later.
 - **Read-through carries no secret.** Run logs mask `secretsEnv` values
   (`specs/EVOLVE_SPEC.md` §4.3), `GET /secrets` and `GET /actors/:actor/secrets`
   return names only (`src/createStrut.ts:1446-1451,1490-1497`), and
@@ -561,6 +640,15 @@ pushes the delegation (`:124-129`), returns `{ url, workspaceSlug }`
 
 Three verbs — **search, learn, contribute** — with git carrying the
 artifacts and peers carrying the track record.
+
+**Naming a peer.** `GET /peers` is what the builder reads: the prompt (or
+a `list_peers` tool, since the prompt is frozen per chat) lists each
+peer's id and label, and `@<id>` in the user's message is that peer — hive
+registers peers by workspace slug (§3), so `@acme-web` is what a person
+would type anyway. `run_workflow`, `list_workflows` and `get_workflow`
+take an optional `peer`; `run_workflow({ peer })` is `strut/run-workflow`
+(§2.2) as a chat tool, and a workflow grants the step to its agents with
+`agentTools: ["strut/*"]`.
 
 **Search.** The library is already local: every workflow a deployment
 seeds from its repos is in `list_workflows` (`src/ai/prompts.ts:254-257`),
@@ -711,27 +799,40 @@ nothing it has.
 - The reverse edge from a child run to its cross-strut caller
   (`launchedBy`).
 - An org-wide per-user spend cap (needs a shared counter, §5).
-- Callbacks from a peer to a caller; dispatch-through tails instead.
+- Callbacks from a peer to a caller; dispatch-through tails instead
+  (§2.2: a local strut cannot receive one).
 - Peer views inside the *chat* flyout (a peer's chats are that swarm's).
 - Anything about swarm ↔ swarm graph federation beyond what the paper
   already describes; this plan is about strut's records.
 
 ## Step order
 
-1. **Hive: the workspace selector** (§7). `embed-url?workspace=`,
+Revised 2026-10-08: dispatch first, for the local-strut explorer case.
+
+1. **Strut: dispatch-through** (§2.2, §3, §8). `peers.json` +
+   `PUT/DELETE/GET /peers` + `STRUT_PEERS`; the `strut/run-workflow` lib
+   step (the tail with reattach, explicit `job`, cancel propagation); the
+   builder's `@slug` convention and `peer?` on `run_workflow` /
+   `list_workflows` / `get_workflow`. Useful alone: a local strut — or any
+   strut — runs a workflow on a swarm and gets the result.
+2. **mcp: the seeded `explore` workflow** — an `agent` over `graph/*` (or
+   a `graph/walk` step) taking a question and returning text — the
+   workflow a peer is asked to run. Beside 1.
+3. **Hive: `ensureStrutPeers`** beside the delegation push, cloud struts
+   only, id = workspace slug. **Hive: the workspace selector** (§7) is
+   independent of everything here: `embed-url?workspace=`,
    `resolveStrutTarget({ purpose: "embed" })`, the select in `StrutView`,
-   the URL state. Lands with `code-change.md` phase 3, which introduces the
-   resolver. No strut change. Useful alone: any workspace's strut, from the
-   org page.
-2. **Strut: read-through** (§2.1, §3, §4). `src/remote.ts`; `peers.json` +
-   `PUT/DELETE/GET /peers`; `mountReadRoutes` mounted at `/` and
-   `/peers/:id`; `RunSummary.costUsd`; the UI peer selector, read-only
-   mode, `peer` deep link. Hive: `ensureStrutPeers` for the org strut.
-   Useful alone: "any strut could view runs and workflows from other
-   struts", and the org-wide view in hive.
-3. **mcp: `lab:read`** and **strut: `resolveScope`** (§3). Small, and the
-   precondition for a peer that is not one of the org's own swarms.
-4. **Library via git** (§2.3, §8). `source` on workflows and steps
+   the URL state, landing with `code-change.md` phase 3.
+4. **mcp: `lab:peer`** and **strut: `resolveScope`** (§3). Small, and the
+   precondition for a local strut or a cross-org central holding a peer
+   token.
+5. **Strut: read-through** (§2.1, §4). `src/remote.ts`; `mountReadRoutes`
+   mounted at `/` and `/peers/:id` over the record step 1 created;
+   `RunSummary.costUsd`; the UI peer selector, read-only mode, `peer` deep
+   link. Useful alone: "any strut could view runs and workflows from other
+   struts", the org-wide view in hive, and the artifact links of a
+   dispatched job.
+6. **Library via git** (§2.3, §8). `source` on workflows and steps
    (metadata, schema attribute, the seeders setting it); `STRUT_SEED_REPOS`
    + `strut/seed`; `strut/export-files` + the seeded `strut-export`
    workflow; `export_workflow` / `search_library` chat tools and their
@@ -739,20 +840,19 @@ nothing it has.
    `plans/code-change.md` phase 2 (`git/push`, `github/create-pr`). Useful
    alone: an edit made on any swarm reaches every swarm through one
    reviewed PR.
-5. **Roll-up projection + the first reflection** (§2.4, §9). The
+7. **Roll-up projection + the first reflection** (§2.4, §9). The
    projector over a remote store into a per-peer namespace; the projection
    automation; one weekly reflection workflow producing the report and its
    claims. Useful alone: the long view, on the org strut first.
-6. **Dispatch-through** (§2.2). `strut/run-workflow` with control
-   propagation; the UI drill-through over `/peers/:id`.
-7. **Gateway dims** — folded into `plans/org-gateway.md` (the `workspace`
-   dim on the delegation record: its steps 0 and 4). That plan's rollout is
-   independent of every step above and unblocks `repo_agent` on workspace
-   struts, so it goes first.
+8. **Billing across a call** (§5): the fan-out (`plans/org-gateway.md`
+   §3) or the presented grant (`plans/presented-delegations.md`), decided
+   when taken up; the `workspace` dim (`plans/org-gateway.md` §4) rides
+   with it.
 
-1, 2 and 4 are independent of each other; 4's export half waits on
-`code-change.md` phase 2, its seeding half does not. 3 gates cross-org
-peers, nothing within an org. 6 depends on 2 only.
+1, 2 and 3 are independent of each other; 4 gates a local strut's token,
+not the step; 5 depends on 1 only; 6's export half waits on
+`code-change.md` phase 2, its seeding half does not; 8 is independent of
+every step above.
 
 ## Validation
 
@@ -792,15 +892,23 @@ peers, nothing within an org. 6 depends on 2 only.
   peer's namespace, `run_id` unchanged, `costUsd` carried; two peers with
   colliding run ids project without conflict; `skipSettled` skips on the
   second pass. Live graph case under `npm run test:graph`.
-- **Dispatch-through.** Offline against an in-process peer: the handle in
+- **Peers.** `GET /peers` never returns a token; `STRUT_PEERS` loads at
+  boot and a `PUT` replaces one record; a peer id not on file fails the
+  step before any request leaves.
+- **Dispatch-through.** Offline against an in-process peer (the client
+  takes a `fetch`, and `strut.app.request` is one): the handle in
   `step.end`; cancel of the parent cancels the child (`run-control`'s
   cooperative assertions, across the two apps); a peer that refuses the
-  actor fails the step with the peer's message. End to end through the
-  compose gateway (`npm run test:gateway`): the child run's calls land
-  on the org gateway with the forwarded principal as `user_id` and the
-  leaf's `workspace` dim, and a principal with no delegation on the leaf is
-  a step error — the
-  smoke script gains that case.
+  actor, or answers `job_busy:`, fails the step with the peer's message;
+  a tail cut mid-run reattaches with `?skip=N` and the step sees every
+  event once; a reattach after the run finished returns the summary's
+  result; a `job` given reaches the peer's launch body, and the caller's
+  own `ctx.job` never does; the output's artifacts are tagged with the
+  peer. When billing is taken up (step 8), end to end through the compose
+  gateway (`npm run test:gateway`): the child run's calls land on the org
+  gateway with the forwarded principal as `user_id` and the leaf's
+  `workspace` dim, and a principal with no delegation on the leaf is a
+  step error — the smoke script gains that case.
 - **Costs.** `costUsd` on the summary equals `reportedCost` over the same
   run's events; absent on summaries written before the field.
 - **Hive.** The selector route: a slug the user cannot access is 403; no
@@ -834,7 +942,7 @@ what puts the exporting person's token on the swarm.
 - Hive's deep-link mirror ([stakwork/hive#5334](https://github.com/stakwork/hive/pull/5334),
   `hive@59a7e6b81`) carries `wf`/`run`/`v`/`chat` but not `elicit`
   (`StrutView.tsx:18`), so a host link to an open builder question does
-  not survive a reload yet; `peer` joins the same list in milestone 2.
+  not survive a reload yet; `peer` joins the same list with read-through (step 5).
 - The installed `gatekey` 0.1.1 lacks upstream's `Claims.chain`
   (`node_modules/gatekey` vs `gateway/auth/ts/src/types.ts:216-251`);
   `mothership.test.ts` decodes the chain by hand for that reason. Not
@@ -862,3 +970,8 @@ what puts the exporting person's token on the swarm.
   projection, not a change to this one.
 - **Qualification bar.** Three supported runs is a placeholder; the first
   library automation will say what the org's real distribution looks like.
+- **Billing a cross-strut call** (§5): the fan-out or the presented grant.
+  Deferred 2026-10-08; the explorer milestone does not wait on it.
+- **How a local strut gets a peer record** beyond pasting: hive handing
+  it over on the embed, or a desktop host minting it. The paste door is
+  enough for the explorer case.
