@@ -399,13 +399,19 @@ Two details make it cheap and collision-free:
 **The record.** `Peer { id, baseUrl, token, label? }`, kept in a fourth
 encrypted `FileSecretStore` file, `peers.json`, beside `secrets.json`,
 `mothership.json` and `actor-secrets.json`; memory when the workspace is not
-file-backed, injectable as `createStrut({ peerStore })`. Not on the services
-bag and not in `GET /secrets` — a step must never read a peer token, for
-the same reason it must never read a delegation (`plans/mothership-cost-control.md`
-§3). Routes, behind `requireApiKey`: `PUT /peers/:id { baseUrl, token,
-label? }`, `DELETE /peers/:id`, `GET /peers` (ids and labels, never tokens;
-the same GET the UI selector reads). Standalone and dev: `STRUT_PEERS` as a
-JSON list, loaded at boot.
+file-backed, injectable as `createStrut({ peerStore })`. Not in `GET
+/secrets`, and never READABLE by a step — the same reason a step must never
+read a delegation (`plans/mothership-cost-control.md` §3). What is on the
+services bag is a capability, `ctx.services.peers`, that names a peer and
+makes a request with its token injected (built 2026-10-08: the step has to
+reach the peer somehow, and this keeps the token inside the process); what
+a step can do through it is bounded by the token's scope on the peer, which
+is why `lab:peer` below matters. Routes, behind `requireApiKey`: `PUT
+/peers/:id { baseUrl, token, label? }`, `DELETE /peers/:id`, `GET /peers`
+(ids, labels and base URLs — the URL is not a secret and is what a person
+tells peers apart by — never tokens; the same GET the UI selector reads).
+Standalone and dev: `STRUT_PEERS` as a JSON list, loaded at boot, and
+`createStrut({ peers })`.
 
 **Who pushes.** Hive: it already holds every swarm's URL and key
 (`Swarm.swarmUrl`, `swarmApiKey`, `hive/prisma/schema.prisma:443,449`) and
@@ -814,7 +820,11 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    step (the tail with reattach, explicit `job`, cancel propagation); the
    builder's `@slug` convention and `peer?` on `run_workflow` /
    `list_workflows` / `get_workflow`. Useful alone: a local strut — or any
-   strut — runs a workflow on a swarm and gets the result.
+   strut — runs a workflow on a swarm and gets the result. **Built
+   2026-10-08** (`src/peers.ts`, `src/steps/lib/strut/run-workflow.ts`,
+   `list_peers` + `peer` on the three tools, `specs/API.md` §10): the
+   two-strut test runs over real HTTP; a Peers dialog (the UI half of the
+   paste door) and pause/resume forwarding are not in it.
 2. **mcp: the seeded `explore` workflow** — an `agent` over `graph/*` (or
    a `graph/walk` step) taking a question and returning text — the
    workflow a peer is asked to run. Beside 1.

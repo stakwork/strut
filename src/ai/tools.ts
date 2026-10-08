@@ -19,6 +19,7 @@ import { graphWalkTool } from "./walk-tool.js";
 import { secretLikeProperty, validateRequestedSchema } from "./elicitation.js";
 import { isValidSecretName } from "../secret-store.js";
 import { capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
+import { listPeerWorkflows, readPeerWorkflow, runOnPeer } from "../peers.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
 // the run-history reads. The chat tools layer their own policy on top (no
@@ -320,6 +321,20 @@ export function buildTools(deps: AiDeps): ToolSet {
         }
         const secrets = await deps.secrets.list();
         return { secrets: secrets.map((s) => ({ name: s.name, updatedAt: s.updatedAt })) };
+      },
+    }),
+
+    list_peers: tool({
+      description:
+        "List the OTHER strut instances this one can call (plans/federation.md): each { id, label?, baseUrl }. \"@<id>\" in the user's message names one. Pass `peer` to list_workflows / get_workflow / run_workflow to act on that strut instead of this one. Never a token: those stay on the server.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        if (!deps.peers) return { error: "No peers are configured on this strut (PUT /peers/:id, or STRUT_PEERS)." };
+        const peers = await deps.peers.list();
+        return {
+          peers,
+          ...(peers.length === 0 ? { hint: "No peers on file. A host pushes them (PUT /peers/:id) or a person sets STRUT_PEERS." } : {}),
+        };
       },
     }),
 
@@ -760,8 +775,15 @@ export function buildTools(deps: AiDeps): ToolSet {
           .positive()
           .default(DEFAULT_WORKFLOW_LIST_LIMIT)
           .describe("Max workflows to return (default 100)."),
+        peer: z.string().optional().describe("List the workflows of THAT peer strut instead (an id from list_peers)."),
       }),
-      execute: async ({ query, limit }) => listWorkflowEntries(deps.workspace, query, limit),
+      execute: async ({ query, limit, peer }) => {
+        if (peer) {
+          if (!deps.peers) return { error: "No peers are configured on this strut." };
+          return listPeerWorkflows(deps.peers, peer, query, limit);
+        }
+        return listWorkflowEntries(deps.workspace, query, limit);
+      },
     }),
 
     get_workflow: tool({
@@ -773,14 +795,22 @@ export function buildTools(deps: AiDeps): ToolSet {
           .string()
           .optional()
           .describe("Optional specific version. Defaults to the active version."),
+        peer: z.string().optional().describe("Read the workflow from THAT peer strut instead (an id from list_peers)."),
       }),
-      execute: async ({ name, version }) => readWorkflow(deps.workspace, name, version),
+      execute: async ({ name, version, peer }) => {
+        if (peer) {
+          if (!deps.peers) return { error: "No peers are configured on this strut." };
+          return readPeerWorkflow(deps.peers, peer, name, version);
+        }
+        return readWorkflow(deps.workspace, name, version);
+      },
     }),
 
     run_workflow: tool({
       description:
         "Run a published workflow with a given input and return the result. Use this to test workflows you just created. Returns status (success/error), output (on success), error details (on failure), and the runId. " +
-        "Long runs AUTO-DETACH: if the run is still executing after the wait window, this returns { status: 'running', detached: true, runId } and the run continues in the background — when it finishes, a [run-notification] user message starts your next turn with the outcome. Do NOT poll get_run in a loop while waiting; finish your turn normally.",
+        "Long runs AUTO-DETACH: if the run is still executing after the wait window, this returns { status: 'running', detached: true, runId } and the run continues in the background — when it finishes, a [run-notification] user message starts your next turn with the outcome. Do NOT poll get_run in a loop while waiting; finish your turn normally. " +
+        "With `peer` the workflow runs on THAT strut (list_peers) and this call waits for its result — never detached; the run, its files and artifacts stay on the peer.",
       inputSchema: z.object({
         name: z.string().describe("Workflow name to run"),
         input: z
@@ -799,11 +829,37 @@ export function buildTools(deps: AiDeps): ToolSet {
           .string()
           .optional()
           .describe("Optional specific version. Defaults to the active version."),
+        peer: z.string().optional().describe("Run the workflow on THAT peer strut instead (an id from list_peers); awaited to completion."),
       }),
       // A generator: every yield but the last is a PRELIMINARY result (a
       // `tool-progress` chat event) — the first says the run exists, so the
       // UI opens it while it executes. Only the last yield reaches the model.
-      execute: async function* ({ name, input, params, version }) {
+      execute: async function* ({ name, input, params, version, peer }, callOpts) {
+        if (peer) {
+          if (!deps.peers) {
+            yield { ok: false, error: "No peers are configured on this strut." };
+            return;
+          }
+          // The run is the peer's: launched there as this chat's actor,
+          // followed over its event stream (plans/federation.md §2.2).
+          try {
+            yield await runOnPeer(
+              deps.peers,
+              {
+                peer,
+                workflow: name,
+                ...(version ? { version } : {}),
+                input: coerceJsonArg(input) ?? {},
+                ...(params ? { params: coerceJsonArg(params) as Record<string, unknown> } : {}),
+                ...(deps.actor ? { actor: deps.actor } : {}),
+              },
+              callOpts?.abortSignal ? { signal: callOpts.abortSignal } : {},
+            );
+          } catch (err) {
+            yield { ok: false, peer, workflow: name, error: err instanceof Error ? err.message : String(err) };
+          }
+          return;
+        }
         let flow;
         try {
           flow = version

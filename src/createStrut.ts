@@ -58,6 +58,7 @@ import { createAutomations, type Automations } from "./scheduler.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
+import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerStore, peersCapability, type Peer } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
@@ -172,6 +173,17 @@ export interface StrutOptions<TServices = unknown> {
    *  otherwise. So a graph-workspace host that keeps its deployment
    *  secrets on disk keeps actor secrets across restarts too. */
   actorSecretStore?: SecretStore;
+
+  /** The peer records (peers.ts; plans/federation.md §3) — the struts this
+   *  one may call through `ctx.services.peers` and `strut/run-workflow`,
+   *  behind `PUT/DELETE/GET /peers`. Defaults like `actorSecretStore`: an
+   *  encrypted `peers.json` beside `secrets.json` when the deployment's
+   *  secrets are on disk, memory otherwise. */
+  peerStore?: SecretStore;
+  /** Peers to put on file at boot, beside `STRUT_PEERS` — the paste door
+   *  for a strut nobody pushes to (a desktop host, a test). Each replaces
+   *  the record of the same id. */
+  peers?: Peer[];
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -534,6 +546,18 @@ export async function createStrut<TServices = unknown>(
         ? new FileSecretStore(dataDir, ACTOR_SECRETS_FILE)
         : new MemorySecretStore()),
   );
+  // Peers (plans/federation.md §3): the struts this one may call, in a
+  // fourth encrypted file beside the deployment's secrets — the actor-secret
+  // default. Tokens never leave this process: steps and the builder get a
+  // capability that names a peer and makes the request.
+  const peerRecords = peerStore(
+    opts.peerStore ??
+      (secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, PEERS_FILE) : new MemorySecretStore()),
+  );
+  for (const peer of [...parsePeersEnv(process.env["STRUT_PEERS"]), ...(opts.peers ?? [])]) {
+    await peerRecords.set(peer);
+  }
+  const peersCap = peersCapability(peerRecords);
   // Agent sessions follow the chat store's kind: both are conversations a
   // host expects to find again after a restart.
   const sessionStore: SessionStore =
@@ -565,6 +589,7 @@ export async function createStrut<TServices = unknown>(
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
     sessions,
+    peers: peersCap,
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
@@ -1900,6 +1925,36 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, name });
   });
 
+  // ── Peers (plans/federation.md §3) ───────────────────────────────────────
+  //
+  // The struts this one may call. A host pushes them (hive, by workspace
+  // slug) or a person pastes one on a strut the host cannot reach. GET
+  // returns ids, labels and base URLs — never a token; the token has no
+  // read route at all.
+
+  app.get("/peers", async (c) => c.json({ peers: await peerRecords.list() }));
+
+  app.put("/peers/:id", async (c) => {
+    const id = c.req.param("id");
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    let peer: Peer;
+    try {
+      peer = checkPeer({ ...body, id });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    await peerRecords.set(peer);
+    return c.json({ ok: true, id, baseUrl: peer.baseUrl, ...(peer.label ? { label: peer.label } : {}) });
+  });
+
+  app.delete("/peers/:id", async (c) => {
+    const id = c.req.param("id");
+    const problem = peerIdProblem(id);
+    if (problem) return c.json({ error: `peer id ${problem}` }, 400);
+    if (!(await peerRecords.delete(id))) return c.json({ error: `peer "${id}" not found` }, 404);
+    return c.json({ ok: true, id });
+  });
+
   // ── Actor secrets (plans/code-change.md §3.2) ────────────────────────────
   //
   // A host pushes a PERSON's credential here (hive: the user's GitHub token,
@@ -2557,6 +2612,9 @@ export async function createStrut<TServices = unknown>(
             toolResultMaxChars: resultCapChars(toolResultMaxCharsFromEnv(), llm.contextLimit, compactAt),
             ...(actor ? { actor } : {}),
             secrets: secretsInjected ? undefined : secretStore,
+            // The other struts this one may call: list_peers + `peer` on
+            // list_workflows / get_workflow / run_workflow.
+            peers: peersCap,
             // Build-time bash for the chat builder, cwd'd at the local data
             // dir (scrubbed env — see shell.ts).
             shell: { cwd: dataDir },

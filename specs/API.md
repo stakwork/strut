@@ -477,3 +477,46 @@ injected its own `sessions` capability.
 What the run view opens when a node in a step's **Nodes** list is clicked: a
 run's events say which nodes a step touched (`nodes`, above), never their
 content.
+
+## 10. Peers — calling a workflow on another strut
+
+A strut may call workflows on other struts it has on file as **peers**
+(`plans/federation.md` §2.2, §3). A peer is `{ id, baseUrl, token, label? }`:
+the caller's own name for it (hive registers a workspace's strut by its
+slug), the peer's base URL, and a bearer the peer accepts. The record is
+kept encrypted; the token has no read route.
+
+| Method | Path | Response |
+| ------ | ---- | -------- |
+| GET    | `/peers` | `{ peers: [{ id, baseUrl, label? }] }` — never a token |
+| PUT    | `/peers/:id` | `{ baseUrl, token, label? }` → `{ ok, id, baseUrl, label? }`; replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
+| DELETE | `/peers/:id` | `{ ok, id }`; 404 |
+
+`STRUT_PEERS` (a JSON array of the same records) puts peers on file at boot
+for a strut nobody pushes to — a desktop strut behind NAT.
+
+**The call** is a step, `strut/run-workflow { peer, workflow, input?,
+params?, version?, job?, wait? }`, or the builder's `run_workflow` with
+`peer` (and `list_workflows` / `get_workflow` with `peer`, `list_peers`).
+It makes two requests of this API on the peer:
+
+1. `POST {baseUrl}/workflows/:name[/:version]/run { input, params?, job? }`
+   with `x-strut-actor: <the caller run's principal>` — the peer stamps that
+   person as the run's actor and principal, bills them from its own
+   delegation and binds `secrets` to them. Nothing of the caller's secrets
+   crosses.
+2. `GET {baseUrl}/workflows/:name/runs/:runId/stream` (§4), until `done`.
+   A dropped connection is reattached with `?skip=<events read so far>`,
+   so every event reaches the caller once. The wait is reader-initiated: the
+   caller needs to reach the peer and nothing else (no callback, no route
+   back).
+
+The step's output is `{ peer, workflow, runId, status, output?, error?,
+durationMs }` — the peer's `RunResult` under the handle; an `artifacts`
+path in it is the peer's (`/jobs/<id>/files/…` or `/artifacts/<runId>/…`
+THERE). `wait: false` returns `{ peer, workflow, runId, status: "running" }`
+at once. Cancelling the caller's run POSTs `…/cancel` on the peer. `job`
+names a job ON THE PEER; the caller's own job is never forwarded (no shared
+directory across struts). A launch the peer refuses fails the step with the
+peer's message (`job_busy:`, an unknown workflow); an id not on file is
+`peer_unknown:`; a peer that stays unreachable is `peer_unreachable:`.
