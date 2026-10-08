@@ -21,7 +21,11 @@
 > (§3, §5), the Fix route's actor (§3, §5), the hold note appended rather
 > than replaced (§2), the `reason` through two functions (§2), the viewer's
 > job id (§5), the indexed URL and the one-slot rule (§3), and the wake
-> at settle kept and told its origin, with an entry at launch (§3).
+> at settle kept and told its origin, with an entry at launch (§3). **Checked
+> once more before building** (same commits; nothing had moved): the lookup
+> scoped to the webhook's workspace (§3), the pod claimed before the steps
+> sent a job (§2), the launch-time entry's shape (§3), the branch to start
+> from (§9).
 
 ## Problem
 
@@ -144,7 +148,7 @@ the flattest thing that is right in every case.
 | | today | with `?job=<id>` |
 | --- | --- | --- |
 | claim | `?taskId=` → marks the pod, writes `Task.podId` + agent credentials | marks the pod `job:<id>` (`claimAvailablePod`'s `userInfo`), `usage_status_reason` = the strut run id when given; no task writes |
-| drop | with `?taskId=`: `releaseTaskPod`, ownership-checked; without: `releasePodById`, unconditional | with `?job=`: release only when `usage_status_marked_by === "job:<id>"`, else 409 `reassigned` — the task path's rule, for jobs |
+| drop | with `?taskId=`: `releaseTaskPod`, ownership-checked; without: `releasePodById`, unconditional | with `?job=`: release when `usage_status_marked_by` is `job:<id>` — or null, a pod nobody claimed (below) — else 409 `reassigned`: the task path's rule, for jobs |
 | pod list | resolves every claimant in the tasks table; misses show nothing | a `job:` claimant resolves through `strut_runs.jobId` (indexed; `input.title`, `userId`) to a title and a person |
 
 `usage_status_marked_at` is already set on claim, so "since when" is
@@ -154,6 +158,15 @@ The reason is one more argument through two functions:
 `claimPodAndGetFrontend` → `attemptClaimWithKarpenter(swarmId, userInfo,
 exclude, swarm)` → `claimAvailablePod`, which writes the `UPDATE`. The task path is untouched: its ownership check compares
 against a task id, which a `job:` value never equals.
+
+The null claimant is the transition. A pod `pod/claim` took before the
+steps send a job (item 2 of §9) has no claimant at all — `userInfo` is
+`undefined` today — and a 409 on it would make `pod/release` drop the
+hold and leave the pod USED for good: hive's 24 h sweep is keyed on
+`Task.podId` and never sees it. Only a pre-deploy strut claim leaves the
+column null (a task claim always writes its id), so a null claimant is
+nobody's and any job holding the pod may release it — today's rule, kept
+for those pods only.
 
 **The steps** (`mcp/src/lab/pods/steps/`):
 
@@ -185,10 +198,15 @@ the first case, not the shape.
 
 **The index.** Hive's `job_turn` handler (`services/strut-runs/job-turn.ts`,
 `mapStrutArtifacts`) already parses every ref a turn reports. It records
-each one that has a URL — `(jobId, swarmId, artifactId, kind, url)` —
-whatever the kind: a pull request, a page, a document, a deploy. One table
-— a row per (job, ref), since a row also holds the event waiting on a
-busy job (below) — one query: *which jobs reported URL X*. The deleted
+each one that has a URL — `(workspaceId, swarmId, jobId, artifactId, kind,
+url)` — whatever the kind: a pull request, a page, a document, a deploy.
+One table — a row per (job, ref), since a row also holds the event waiting
+on a busy job (below) — one query: *which jobs of this workspace reported
+URL X*. Scoped to the workspace because the source is: the webhook route
+is per workspace (`webhook/[workspaceId]`), the row's `workspaceId` is the
+launch's (`StrutRun.workspaceId`, the `workspace` on the input — the same
+id), and a repository two workspaces share must not fire one merge into
+both. The deleted
 `jobReportedPullRequest` scan was this for one kind; this is it for all,
 and it carries nothing but the ref and what is waiting on it — never a
 token. The URL stored is the one `mapStrutArtifacts` settles on, not the
@@ -288,6 +306,17 @@ pull request changed. Two things frame it, both hive-side:
   none, so without this entry nothing shows between the webhook and the
   settle (Stop still works: the launch registers the active run on its
   own). The row that settles clears it as it clears a tool call's today.
+  Its shape is the one hive already has for a row no person wrote: an
+  assistant row with a `source` kind of its own — the job row is
+  `source: { kind: "job", jobId, title }` (`appendJobRow`), the stopped
+  turn `{ kind: "stopped" }` — say `{ kind: "job_event", jobId, title }`
+  with the event line as its content. The pending-card projection
+  (`getPendingJobTurnsFromMessages` walks the conversation in order and
+  pairs each accepted `start_job` / `continue_job` call with the job row
+  that follows) takes it as a launch marker, and the job row that follows
+  settles it. Replayed to the model as the stopped row is — a notice from
+  the user (`toModelMessages`) — so on the next human turn Jamie reads
+  the event in its history as well as in the wake.
 - **At settle, Jamie wakes on the row, as after every job turn**
   (`handleJobTurnSettled` → `scheduleJobWake` →
   `invokeCanvasAgentOnJobTurn`). This is how the user is told, in the one
@@ -435,12 +464,16 @@ Worth doing when it earns its place, none required here:
 
 ## 9. Work items
 
-In this order; each lands on its own.
+In this order; each lands on its own. Each hive item branches from
+`master` at `d1649a94b` or later — not from a feature or worktree branch
+that predates it; the lenient pull-request read some of those carry is
+already on master by another path.
 
 1. **Hive, pool API** — `?job=` on claim and drop (§2): the stamp, the
    `reason` argument through `claimPodAndGetFrontend` and
    `attemptClaimWithKarpenter`, the ownership
-   check, the pod list resolving `job:` claimants and reading
+   check (a null claimant releasable — the pre-deploy pods), the pod
+   list resolving `job:` claimants and reading
    `usage_status_marked_at` for `marked_at`. One PR, the pool's contract,
    not a per-capability change.
 2. **mcp, pod steps** — `pod/claim` / `pod/release` send the job and run;
@@ -449,11 +482,14 @@ In this order; each lands on its own.
    as the next versions. Deploy after 1: before that hive ignores `?job=`,
    harmlessly, and the 409 does not exist yet.
 3. **Hive, the door** — `launchJobTurn` as a service (§3); the index of
-   every artifact ref with a URL — the normalized one — written at settle
-   (a migration); the GitHub adapter in the webhook's `closed` branch, launching as the owner
+   every artifact ref with a URL — the normalized one, keyed on the
+   workspace — written at settle (a migration); the GitHub adapter in the
+   webhook's `closed` branch, looking the URL up within its workspace and
+   launching as the owner
    into the job's conversation with the `[artifact-event]` line; the
    pending event on the index row and its launch from the settle handler
-   (§3); the launch-time entry (the origin, the working card's anchor) and
+   (§3); the launch-time entry (a row with its own `source` kind — the
+   origin, the working card's anchor) and
    the event-aware wake — the event line on `JobWake`, the two-choice
    prompt, no Continue (§3).
 4. **Hive, the Fix action** on the pull-request card (§5): `url` on
@@ -489,5 +525,7 @@ installed on both repositories — `WebhookService` — or no event arrives):
 - A stale release: release the pod by hand in hive, let a task claim it,
   then `pod/release` from the job → 409 `reassigned`, the task keeps its
   pod, the job's hold is dropped.
+- A pod claimed before the deploy (no claimant on its row) → `pod/release`
+  from its job → released; the pool shows it UNUSED.
 - A job left alone with a pod → swept after the TTL, the pod back in the
   pool, the directory kept.
