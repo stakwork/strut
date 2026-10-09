@@ -20,6 +20,9 @@
 > **Update (2026-10-07):** §6 built — `ctx.services.jobs` (hold / release /
 > holds on the job record), the sweep releasing holds before it removes
 > repositories, `DELETE /jobs/:id` (`deleteJob`); `src/jobs.test.ts`.
+> **Update (2026-10-08):** the index of §1 and the projector attribute —
+> a job you can name, find and read back, with a `StrutJob` node for
+> search — are proposed in `job-index.md`, nothing built or ruled yet.
 > Current behaviour was re-read on
 > this checkout (`fe24cb6`, main), `hive@b210ddab6` (master, the merge of
 > [stakwork/hive#5375](https://github.com/stakwork/hive/pull/5375)) and the
