@@ -66,6 +66,11 @@ export async function* tailJsonl<T>(
      *  producer (a registered run controller) means a resume is in flight —
      *  keep following instead of closing. Default: close at EOF. */
     stillLive?: () => boolean;
+    /** Consulted at EOF BEFORE any terminal event: when given and false, the
+     *  log has no live producer — a run cut off by a crash and not resumed —
+     *  and the tail closes instead of following a stale log forever.
+     *  Default: keep following (the producer is assumed live). */
+    live?: () => boolean;
     /** Events the caller already has: the first `skip` are read (terminality
      *  tracked) but not yielded. */
     skip?: number;
@@ -129,6 +134,12 @@ export async function* tailJsonl<T>(
     if (sawTerminal) {
       if (chunk) continue;
       if (!(opts.stillLive?.() ?? false)) return;
+    } else if (opts.live && !opts.live()) {
+      // No terminal event and nobody producing: a stale log. Drain what was
+      // read, then close — a reader must not wait forever on a run that
+      // died with its process (a peer's tail would).
+      if (chunk) continue;
+      return;
     }
 
     await sleep(intervalMs);
@@ -147,6 +158,13 @@ export interface TailOpts {
    *  registered run controller) means a resume is in flight — keep following
    *  instead of closing. Default: close at EOF. */
   stillLive?: () => boolean;
+  /** Consulted at EOF BEFORE any terminal event: when given and false, the
+   *  log has no live producer (no run controller in this process) — a run
+   *  cut off by a crash and not resumed, "stale" — and the tail closes
+   *  instead of following forever. The stream route passes it so a reader
+   *  (a peer's `strut/run-workflow`, the UI) gets `done { status: "stale" }`
+   *  rather than a hang. Default: keep following. */
+  live?: () => boolean;
   /** Events the caller already has (it read `getRunEvents` first): the first
    *  `skip` are consumed — terminality tracked through them — but not
    *  yielded. The log is append-only, so a count is a race-free cursor: a
@@ -232,6 +250,9 @@ export async function* tailFromPolling(
     if (sawTerminal) {
       if (fresh.length > 0) continue; // drain immediately, no poll delay
       if (!(opts.stillLive?.() ?? false)) return;
+    } else if (opts.live && !opts.live()) {
+      if (fresh.length > 0) continue;
+      return; // a stale log: nobody producing, nothing terminal
     }
     await sleep(intervalMs);
   }

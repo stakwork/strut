@@ -281,17 +281,35 @@ export interface TailPeerOpts {
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+const TERMINAL = new Set<string>(["success", "error", "cancelled"]);
+
+/** The stream's `done` frame as the peer sends it: a `RunResult` once the
+ *  run has a summary, else its live state — `stale`, `running`, … */
+interface DoneFrame {
+  runId: string;
+  status: string;
+  output?: unknown;
+  error?: { message: string };
+}
+
 /**
  * Follow a peer's run to its end over `GET …/stream`, reattaching after a
  * dropped connection with `?skip=<events read>`, and resolve with the
  * `done` frame's `RunResult`. Aborting `signal` rejects with an AbortError.
+ *
+ * A `done` that is not terminal is not an answer: `stale` means the peer's
+ * run has no live process (cut off by a crash and not resumed) — retried
+ * with the same backoff, since a peer mid-boot resumes its runs after it
+ * starts serving, then `peer_run_stale:`; any other live state is the
+ * summary not yet written behind the terminal event — reattached at once.
  */
 export async function tailPeerRun(peers: PeersCapability, h: PeerRunHandle, opts: TailPeerOpts = {}): Promise<RunResult> {
   const { signal, onEvent } = opts;
   const maxAttempts = opts.maxAttempts ?? 20;
   const sleep = opts.sleep ?? defaultSleep;
   let seen = 0;
-  let failures = 0;
+  let failures = 0; // consecutive failed opens — reset by one that succeeds
+  let staleChecks = 0; // `done { status: "stale" }` answers — never reset: each is a successful open
   const throwIfAborted = () => {
     if (signal?.aborted) throw abortError();
   };
@@ -329,7 +347,7 @@ export async function tailPeerRun(peers: PeersCapability, h: PeerRunHandle, opts
       continue;
     }
     failures = 0;
-    let result: RunResult | null;
+    let result: DoneFrame | null;
     try {
       result = await readSse(res, (event) => {
         seen += 1;
@@ -341,9 +359,20 @@ export async function tailPeerRun(peers: PeersCapability, h: PeerRunHandle, opts
       await sleep(backoffMs(1));
       continue;
     }
-    if (result) return result;
-    // Closed cleanly without `done` (a proxy's idle timeout): reattach.
+    if (result && TERMINAL.has(result.status)) return result as RunResult;
     throwIfAborted();
+    if (result?.status === "stale") {
+      staleChecks += 1;
+      if (staleChecks >= maxAttempts) {
+        throw new Error(
+          `peer_run_stale: run ${h.runId} on peer "${h.peer}" has no live process there and was not resumed (${staleChecks} checks) — resume it on the peer, or launch again`,
+        );
+      }
+      await sleep(backoffMs(staleChecks));
+      continue;
+    }
+    // Closed cleanly without `done` (a proxy's idle timeout), or a `done`
+    // whose summary was not written yet: reattach.
     await sleep(backoffMs(1));
   }
 }
@@ -375,7 +404,7 @@ function abortError(): Error {
 
 /** Read one SSE response: every unnamed `data:` frame is an event; the
  *  `done` frame is the result. Null when the stream ended without one. */
-async function readSse(res: Response, onEvent: (event: RunEvent) => void): Promise<RunResult | null> {
+async function readSse(res: Response, onEvent: (event: RunEvent) => void): Promise<DoneFrame | null> {
   const reader = res.body?.getReader();
   if (!reader) throw new Error("the tail has no body");
   const decoder = new TextDecoder();
@@ -395,7 +424,7 @@ async function readSse(res: Response, onEvent: (event: RunEvent) => void): Promi
         const data = JSON.parse(line.slice(5).trim()) as unknown;
         if (eventType === "done") {
           await reader.cancel().catch(() => undefined);
-          return data as RunResult;
+          return data as DoneFrame;
         }
         onEvent(data as RunEvent);
         eventType = "message";

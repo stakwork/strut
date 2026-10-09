@@ -88,6 +88,23 @@ describe("projectRunEvents (pure)", () => {
     assert.equal(p.toolCalls[0]!.accessed[0]!.node_type, "Concept");
   });
 
+  it("a ref tagged with a peer is another strut's graph's: never accessed here", () => {
+    const events: RunEvent[] = [
+      ev(0, "run.start", WF, { input: {} }),
+      ev(1, "step.start", `${WF}/plan`, { stepType: "agent", input: { prompt: "ask" } }),
+      ev(2, "step.start", `${WF}/plan/001-far`, { stepType: "tool:strut/run-workflow", input: { peer: "cloud", workflow: "explore" } }),
+      ev(3, "step.end", `${WF}/plan/001-far`, {
+        stepType: "tool:strut/run-workflow",
+        output: { peer: "cloud", status: "success" },
+        nodes: [{ ref_id: CONCEPT_A, node_type: "Concept" }, { ref_id: CONCEPT_B, node_type: "Concept", peer: "cloud" }],
+      }),
+      ev(4, "step.end", `${WF}/plan`, { stepType: "agent", output: "done" }),
+      ev(5, "run.end", WF, { output: "done" }),
+    ];
+    const p = projectRunEvents(WF, RUN, events, null)!;
+    assert.deepEqual(p.toolCalls.map((t) => t.accessed.map((n) => n.ref_id)), [[CONCEPT_A]]);
+  });
+
   it("stamps an agent's thread: the id from its config, the turn from its output", () => {
     const agent = (i: number, id: string, input: Record<string, unknown>, end: Partial<RunEvent>): RunEvent[] => [
       ev(i, "step.start", `${WF}/${id}`, { stepType: "agent", input: { prompt: "go", ...input } }),

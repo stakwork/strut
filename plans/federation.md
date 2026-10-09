@@ -50,6 +50,25 @@
 > the caller's principal's delegation — and actor secrets are **deferred**:
 > an explorer needs no secret, and the delegation question is
 > `plans/org-gateway.md` §3 / `plans/presented-delegations.md`.
+>
+> **Revised 2026-10-09:** steps 1 and 2 are **built and merged** —
+> [stakwork/strut#123](https://github.com/stakwork/strut/pull/123) (peers +
+> `strut/run-workflow`), [stakwork/strut#124](https://github.com/stakwork/strut/pull/124)
+> (the fresh checkout under the run's directory),
+> [stakwork/stakgraph#1752](https://github.com/stakwork/stakgraph/pull/1752)
+> (the seeded `explore`) and the strut bump in
+> [stakwork/stakgraph#1753](https://github.com/stakwork/stakgraph/pull/1753);
+> the status line above is history. One ruling added: **provenance across
+> a call** — the graph nodes a peer's run touched reach the caller's log
+> **tagged with the peer id, never a URL** (§2.2 "Provenance", §4). A
+> `ref_id` is meaningful only against the graph of the strut that recorded
+> it, and a cross-strut step recorded none at all. A second: **a caller that
+> restarts mid-call reattaches** (§2.2 "Resume") — the handle is journaled
+> at launch, a resumed step tails the same run instead of launching a
+> second one, and a peer's tail of a run that died there closes with
+> `done { status: "stale" }` instead of hanging. **Both built 2026-10-09**
+> (the step, the tail's `live` option, the peer client's stale retry, the
+> projector's skip, the flyout's badge; hive's one-line skip is not in it).
 
 ## Problem
 
@@ -96,6 +115,8 @@ two processes.
 | Library | **Git is the hub.** A workflow's origin is `WorkflowMetadata.source: { repo, path }`, set by the seeder beside `category` and `owner`; a strut seeds from several repos; an **export** is a PR to the file the workflow came from (else `STRUT_HOME_REPO` + a directory convention), authored with the actor's `GITHUB_TOKEN`, never a push to the default branch. Distribution is the next reseed everywhere. No strut-to-strut copy and no `visibility` flag: the repo is the visibility (§2.3, §8) |
 | Roll-up store | The existing projector over a remote `RunStore`, each peer into its **own graph namespace** on the central's Neo4j — uniqueness is already per `(node_key, namespace)`, so no schema change and no id rewriting. Summaries only: never events, transcripts, artifacts, secrets (§9) |
 | Dispatch-through | A lib step, `strut/run-workflow` — **the first milestone**. The child runs on the peer under the peer's secrets and whatever delegation the peer holds for the forwarded principal; the step waits on the peer's **SSE tail** (reattaching with `?skip=N`), never a callback; `job` is explicit, never forwarded; the parent's log records the handle; cancel propagates cooperatively. **Hive keeps dispatching directly** (§2.2) |
+| Provenance across a call | A `ref_id` names a node in ONE strut's graph. `AccessedNode` gains an optional **`peer`** — the caller's id for the peer, the handle's first element, never a URL — and `strut/run-workflow` folds the child's `step.end.nodes` off the tail it already reads onto its own `step.end`, each tagged. No reader resolves a tagged ref locally: the projector writes no `ACCESSED` edge for it, the flyout groups it under the peer and opens it through read-through, hive's fold skips it (§2.2, §4) |
+| Resume across a call | In-process, a child dies with its parent, so relaunching it on resume is right. Across struts the child SURVIVES, so a re-executed `strut/run-workflow` must reattach: it journals the handle at launch (a synthetic `step.end` at `<path>#launch`, no stepType) and, handed it back as `ctx.journal` on resume, tails that run instead of launching again. The reverse — the PEER restarts — was already a reattach with `?skip=N`; what was missing is a tail that ends: a run with no terminal event and no controller is stale, and its stream now closes with `done { status: "stale" }` (`TailOpts.live`), which the client retries with backoff before failing `peer_run_stale:` (§2.2) |
 | Leaf independence | Nothing on a leaf ever awaits a peer: reads are initiated by the reader, the library is pulled, automations need no peer. A central being down costs a stale library, never a broken leaf (§10) |
 
 ## Design in one paragraph
@@ -172,6 +193,7 @@ export function remoteStrut(peer: Peer, opts?: { fetch?: typeof fetch; actor?: s
   store: ReadonlyRunStore;             // Pick<RunStore, listRuns | getRunSummary | getRunEvents | tailEvents | lastRunAt>
   claims: (q: { kind: "workflow" | "step"; name: string }) => Promise<unknown>;  // GET /claims, or { enabled: false }
   stepStats: (type: string) => Promise<StepStats>;                                // GET /steps/:type/stats
+  node: (ref_id: string) => Promise<GraphNode | null>;                            // GET /graph/nodes/:ref_id — what a peer-tagged ref opens (§2.2)
 }
 ```
 
@@ -277,6 +299,103 @@ A lib step under `src/steps/lib/strut/`:
   v1 links parent → child only; the child records nothing about its caller
   (it does not know the caller by id). A `launchedBy` stamp on the child's
   `run.start` is a later addition if the roll-up ever needs the reverse edge.
+- **Provenance — `nodes` across the call (decided 2026-10-09).** A step
+  that touches the graph marks its output with the nodes it NAMED
+  (`withAccessedNodes`, `src/core.ts`); the runner and `wrapToolsWithEmit`
+  lift the marker onto `step.end.nodes`; three readers fold it — the run
+  flyout (`web/src/accessed-nodes.ts`, content through `GET
+  /graph/nodes/:ref_id`), the projector (one `ACCESSED` edge per ref the
+  local graph holds, `unresolved` otherwise — `src/graph/projector.ts`)
+  and hive's run graph (`hive/src/lib/strut-run-graph/project.ts`,
+  hydrated from the workspace swarm's graph). So a `ref_id` means
+  something only against the graph of the strut that recorded it, an
+  assumption that held because log and graph shared a swarm. Across a
+  call it fails silently: the peer's `explore` run records every node its
+  agent read and the peer's projector writes the edges there, correctly;
+  the peer's stream carries those events to the caller
+  (`withTranscriptLink` replaces `messages` only), but the step tails
+  with no `onEvent`, so the caller's `step.end` holds the handle and the
+  output and no `nodes` — an empty Nodes section for the step, nothing
+  projected, nothing for hive. And `explore`'s output carries `sources:
+  [{ ref_id, node_type, … }]` as data regardless: a local agent that hands
+  one to its own `graph_get` reads the wrong graph.
+  **The rule: a foreign ref is tagged with the peer, by id, never by
+  URL.** `AccessedNode` gains an optional `peer` — absent, the reader's
+  own graph; present, the named peer's — the handle rule applied to a
+  node: the caller's name for the peer, resolved to a URL through `GET
+  /peers` at read time. A URL in a log would be a second identity for one
+  thing and would go stale when a peer is re-registered.
+  `strut/run-workflow` folds the child's `step.end.nodes` from the tail it
+  already reads (`tailPeerRun`'s `onEvent`, `src/peers.ts`), deduplicates
+  by `ref_id`, tags each with `cfg.peer` and marks its output with
+  `withAccessedNodes`: one list on its own `step.end`, zero extra
+  requests, and the child's events still never copied — the marker is the
+  one thing the tail carries that the caller keeps. A `wait: false`
+  launch reports none; they are on the peer, under the handle. Every
+  reader treats a tagged ref as foreign: the projector skips it rather
+  than probing the local graph (never an edge, never `unresolved`); the
+  flyout groups them under a peer badge and, once read-through exists
+  (§2.1, step 5), opens one through `/peers/:id/graph/nodes/:ref_id`,
+  until then showing the recorded name and type; hive's fold skips them
+  (one line in `nodesOf`). `sources` needs no shape change: it arrives
+  under the step's `{ peer, workflow, runId, output }` envelope, and the
+  builder's prompt says a ref in a peer's output is the peer's. A ref the
+  peer's run itself got from a third strut arrives already tagged with the
+  peer's name for that strut, which the caller cannot resolve: recorded as
+  it came, opened by nothing here — a transitive name is read-through's
+  question if it ever matters. The alternative — lift nothing and let the
+  Nodes section say "on @slug, open the run" through read-through — keeps
+  the marker untouched but leaves the caller's log blind to what a call
+  read, which the central's reflection (§9) wants in one place. So the
+  tagged list.
+- **Resume — the caller restarts mid-call (decided 2026-10-09).** The
+  tail is in-memory state inside the step and dies with the process; the
+  peer's run does not (runs are detached from connections — the stream
+  dropping only ends its tail there). What boot-time auto-resume
+  (RUN_CONTROL_SPEC §5.3) then did was WRONG for this step: the handle was
+  only written on `step.end`, so a crashed step had a `step.start` and
+  nothing else; the resume re-executed it, which launched a SECOND run on
+  the peer, and the first went on there with nobody tailing it and no
+  cancel (the step's `onRunEnd` is an in-process finally a kill skips) —
+  double spend, its result in the peer's store only. The in-process
+  analogue is right: a `meta/run-workflow` child died with its parent, so
+  relaunch is correct there. Across struts the child survived, so relaunch
+  is wrong and reattach is right. The fix uses what the runner already
+  hands a re-executed step — its own journaled sub-events under
+  `<path>#…`, how the evolve loop skips finished iterations: right after
+  the launch, before the wait, the step emits a synthetic `step.end` at
+  `<path>#launch` whose output is `{ peer, workflow, runId, launchedAt }`
+  (no `stepType`, so `stepCounts`, verify and the projector see no step
+  execution; `buildJournal` journals it like any `step.end`). On
+  re-execution, a record for THIS peer and workflow in `ctx.journal` means
+  the run is already going or done: the step tails it from skip zero (a
+  finished run replays and answers at once), times `durationMs` from the
+  recorded launch, and reports the whole `nodes` list — no duplicate, the
+  orphan is adopted. A record for another target is a changed config and
+  is left alone. `wait: false` journals nothing: its output is the handle
+  already. Not healed: a parent auto-resume does not apply to (paused,
+  over the age cap, past the resume cap, not the newest root run of its
+  workflow) stays stale, and the peer's run finishes unobserved — the
+  posture of any detached run whose watcher went away.
+  **The peer restarts** was already mostly healed — the client retries
+  with backoff (1 s doubling to 30 s, 20 attempts, about eight minutes)
+  and reopens with `?skip=N`; if the peer auto-resumed the run, the log
+  grows past the gap and the tail reaches `done`. Two holes: an outage
+  longer than the retry budget fails the step `peer_unreachable:`
+  (accepted — the budget is the knob), and a run the peer did NOT resume
+  (it resumes only the newest root run per workflow) had a log with no
+  terminal event that the tail followed FOREVER. So the tail now ends: the
+  stream route passes `TailOpts.live` (`controllers.has(key)`), consulted
+  at EOF before any terminal event — no producer, close — and the `done`
+  frame says `stale` (`liveStatus`). `trackRun` registers the controller
+  before the 202 that names a run, so a run just launched is never
+  mistaken for one. The client treats a stale `done` as a drop with the
+  same backoff, since a peer mid-boot resumes its runs after it starts
+  serving, counted separately from failed opens, and fails
+  `peer_run_stale:` after `maxAttempts`; a `done` naming any other live
+  state is the summary not yet written behind the terminal event (the
+  finalize race) and is reattached at once. The UI's tail of a stale run
+  ends the same way instead of polling forever.
 - **Secrets and billing** happen on the peer, for the forwarded principal
   — §5, §6. That is why the step forwards `ctx.principal`, exactly as
   `meta/run-workflow` forwards it within one process
@@ -491,6 +610,9 @@ per member, so a dispatch pushes nothing (`plans/org-gateway.md` §3, §5).
   the workflow name, the id the peer minted. Never parsed. Hive's
   `(swarmId, workflow, strutRunId)` (`plans/code-change.md` §5) is this
   handle with hive as the reader.
+- **A node:** its `ref_id`, on the strut whose graph holds it. Across a
+  call, `(peer, ref_id)` — the `peer` tag on `AccessedNode` (§2.2), the
+  caller's name for the peer; an untagged ref is the reader's own graph.
 - **A workflow:** its name — names are the seeded library's identity
   across swarms today, and the graph keys `StrutWorkflow` by name
   (`src/graph/strut-schemas.ts:159-162`). **A version:** `contentHash`
@@ -830,7 +952,11 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    2026-10-08** (`src/peers.ts`, `src/steps/lib/strut/run-workflow.ts`,
    `list_peers` + `peer` on the three tools, `specs/API.md` §10): the
    two-strut test runs over real HTTP; a Peers dialog (the UI half of the
-   paste door) and pause/resume forwarding are not in it.
+   paste door), pause/resume forwarding and the peer-tagged `nodes` on the
+   step's `step.end` and the launch journal + reattach (§2.2, decided
+   2026-10-09) were not in it. **Both built 2026-10-09**, plus the tail's
+   stale end (`TailOpts.live`) and the client's `peer_run_stale:`; hive's
+   one-line skip of a tagged ref is still to do there.
 2. **mcp: the seeded `explore` workflow** — the workflow a peer is asked
    to run: the job's launch and skeleton, a read-only agent over the graph
    reads and the file tools, `{ answer, sources, confidence, cost }` back.
@@ -846,7 +972,9 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    precondition for a local strut or a cross-org central holding a peer
    token.
 5. **Strut: read-through** (§2.1, §4). `src/remote.ts`; `mountReadRoutes`
-   mounted at `/` and `/peers/:id` over the record step 1 created;
+   mounted at `/` and `/peers/:id` over the record step 1 created
+   (`/graph/nodes/:ref_id` among them — what a peer-tagged ref opens,
+   §2.2);
    `RunSummary.costUsd`; the UI peer selector, read-only mode, `peer` deep
    link. Useful alone: "any strut could view runs and workflows from other
    struts", the org-wide view in hive, and the artifact links of a
@@ -923,7 +1051,20 @@ every step above.
   event once; a reattach after the run finished returns the summary's
   result; a `job` given reaches the peer's launch body, and the caller's
   own `ctx.job` never does; the output's artifacts are tagged with the
-  peer. When billing is taken up (step 8), end to end through the compose
+  peer; the child's `step.end.nodes` land on the parent step's `step.end`
+  deduplicated and each tagged with the peer id, and a `wait: false`
+  launch carries none; the projector over that log writes no `ACCESSED`
+  edge for a tagged ref and counts it neither accessed nor unresolved; the
+  flyout's fold groups a tagged ref under its peer. Resume: a normal run
+  leaves a `step.end` at `<path>#launch` with the handle and no stepType,
+  and `stepCounts` counts the step once; a caller log cut off after that
+  event, resumed through `POST …/resume` (the path boot-time auto-resume
+  takes), ends with the SAME peer run's result, `durationMs` from the
+  recorded launch, and the peer holds one run, not two; a peer log with no
+  terminal event and no controller streams to `done { status: "stale" }`;
+  the client retries a stale `done` and fails `peer_run_stale:` at the
+  cap, and a `done` naming a live state reattaches and delivers each event
+  once. When billing is taken up (step 8), end to end through the compose
   gateway (`npm run test:gateway`): the child run's calls land on the org
   gateway with the forwarded principal as `user_id` and the leaf's
   `workspace` dim, and a principal with no delegation on the leaf is a

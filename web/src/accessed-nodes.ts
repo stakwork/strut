@@ -8,6 +8,10 @@ export interface AccessedNode {
   ref_id: string;
   node_type?: string;
   name?: string;
+  /** Set when the node is in ANOTHER strut's graph: the peer's id as this
+   *  strut names it (a `strut/run-workflow` step tags what the peer's run
+   *  touched). Such a ref is never opened against this strut's graph. */
+  peer?: string;
 }
 
 interface NodeEvent {
@@ -49,6 +53,7 @@ export function foldAccessedNodes(events: NodeEvent[], stepPath: string): Touche
       if (!node) byRef.set(n.ref_id, (node = { ref_id: n.ref_id, touches: [] }));
       if (n.node_type) node.node_type = n.node_type;
       if (n.name) node.name = n.name;
+      if (n.peer) node.peer = n.peer;
       node.touches.push({ tool, path: e.path, ts: e.ts });
     }
   }
