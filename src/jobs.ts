@@ -8,12 +8,16 @@
  * its repositories).
  *
  * The record sits BESIDE the directory (`<encoded name>.json`), outside the
- * reach of an agent working inside: when the job was last used, and which
- * of its subdirectories are git worktrees. The sweep (`sweepJobs`) reads it
- * to remove the REPOSITORIES of an idle job — re-checkout-able, and big —
- * and keep its FILES; a job directory with nothing left is removed with its
- * record. `DELETE /jobs/:id` (`deleteJob`) is the only other thing that
- * removes a job's files.
+ * reach of an agent working inside: the job's title and who started it,
+ * one line per run launched under it (plans/job-index.md §1 — the runner
+ * appends it at `run.start` through `ctx.services.jobs.recordRun`), when
+ * it was last used, and which of its subdirectories are git worktrees. The
+ * sweep (`sweepJobs`) reads it to remove the REPOSITORIES of an idle job —
+ * re-checkout-able, and big — and keep its FILES; a job directory with
+ * nothing left is removed, and so is the record unless it holds the job's
+ * history (runs or holds). `DELETE /jobs/:id` (`deleteJob`) is the only
+ * other thing that removes a job's files, and the only thing that removes
+ * a record with runs. The read side — the index — is `job-index.ts`.
  *
  * A job also keeps HOLDS (§6): what a tool claimed that must outlive the
  * run — a pod — recorded through `ctx.services.jobs.hold` with the step
@@ -34,15 +38,36 @@ import type { StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
 import { encodeId, idProblem } from "./session-store.js";
+import type { JobIndex } from "./job-index.js";
 
 export interface JobRecord {
   name: string;
+  /** The host's name for the job (`POST …/run { job, title }`): the latest
+   *  launch that carried one. Absent until a launch names it. */
+  title?: string;
+  /** The actor of the first run recorded under the job. Recorded, never checked. */
+  createdBy?: string;
+  /** When the record was first written. */
+  createdAt?: string;
   usedAt: string;
   /** Working copy dir → the cache it is a worktree of, and the ref it was
    *  created at (`git/checkout`). */
   repos: Record<string, { cache: string; ref: string }>;
   /** What the job keeps alive beyond a run (§6). Absent when nothing is held. */
   holds?: JobHold[];
+  /** Every run launched under the job, oldest first (plans/job-index.md §1).
+   *  Absent until the first. */
+  runs?: JobRun[];
+}
+
+/** One run of a job, as the runner records it at `run.start`. A child run
+ *  (one `meta/run-workflow` launched from a turn) names its parent, so a
+ *  reader can tell a turn from what the turn ran. */
+export interface JobRun {
+  workflow: string;
+  runId: string;
+  at: string;
+  parentRunId?: string;
 }
 
 /**
@@ -84,48 +109,71 @@ async function writeJobRecord(root: string, rec: JobRecord): Promise<void> {
   await writeFile(`${root}.json`, JSON.stringify(rec, null, 2), "utf-8");
 }
 
+/** Every write to a record: under its lock, the record (created now when
+ *  there is none), `edit` applied, `usedAt` stamped — a write is a use. */
+async function updateJobRecord(root: string, name: string, edit: (rec: JobRecord) => void): Promise<JobRecord> {
+  return withLock(`${root}.json`, async () => {
+    const now = new Date().toISOString();
+    const rec = (await readJobRecord(root)) ?? { name, createdAt: now, usedAt: now, repos: {} };
+    edit(rec);
+    rec.usedAt = now;
+    await writeJobRecord(root, rec);
+    return rec;
+  });
+}
+
 /** Stamp a job as used now, adding `repo` when given. Returns the record. */
 export async function touchJob(
   root: string,
   name: string,
   repo?: { dir: string; cache: string; ref: string },
 ): Promise<JobRecord> {
-  return withLock(`${root}.json`, async () => {
-    const rec = (await readJobRecord(root)) ?? { name, usedAt: "", repos: {} };
-    rec.usedAt = new Date().toISOString();
+  return updateJobRecord(root, name, (rec) => {
     if (repo) rec.repos[repo.dir] = { cache: repo.cache, ref: repo.ref };
-    await writeJobRecord(root, rec);
-    return rec;
   });
 }
 
 // ── holds (§6) ────────────────────────────────────────────────────────────
 
-/** `ctx.services.jobs`: the holds of a job, for the tools that claim and
- *  release what outlives a run. */
-export interface JobsCapability {
+/** `ctx.services.jobs`: the writes to a job's record — its holds, for the
+ *  tools that claim and release what outlives a run, and its run lines, for
+ *  the runner — and, on a server, the index that reads it all back
+ *  (`job-index.ts`; absent on a bare bag, which keeps no stores to read). */
+export interface JobsCapability extends Partial<JobIndex> {
   /** Record a hold. The same `id` again replaces the earlier hold. */
   hold(job: string, hold: Omit<JobHold, "since"> & { since?: string }): Promise<void>;
   /** Drop a hold whose resource the caller already let go of — the tool that
    *  released the pod says so. Nothing happens when there is none. */
   release(job: string, id: string): Promise<void>;
   holds(job: string): Promise<JobHold[]>;
+  /** One line for a run launched under the job — the runner's call at
+   *  `run.start` (plans/job-index.md §1). The launch's `title` names the
+   *  job (kept until a later launch carries another); its `actor` is the
+   *  job's `createdBy` when it is the first. */
+  recordRun(job: string, run: Omit<JobRun, "at"> & { title?: string; actor?: string }): Promise<void>;
 }
 
-export function jobsCapability(dataDir: string): JobsCapability {
+/** The record's own writer, index or not. `index` (a server's stores) adds
+ *  `list` / `get` / `read` — what the `/jobs` routes and the `job/*` steps
+ *  read through. */
+export function jobsCapability(dataDir: string, index?: JobIndex): JobsCapability {
   const rootOf = (job: string) => {
     const problem = idProblem(job);
     if (problem) throw new Error(`jobs: job id "${job}" ${problem}`);
     return jobRoot(dataDir, job);
   };
   return {
+    ...index,
     async hold(job, hold) {
-      const root = rootOf(job);
-      await withLock(`${root}.json`, async () => {
-        const rec = (await readJobRecord(root)) ?? { name: job, usedAt: "", repos: {} };
-        rec.usedAt = new Date().toISOString();
-        rec.holds = [...(rec.holds ?? []).filter((h) => h.id !== hold.id), { ...hold, since: hold.since ?? rec.usedAt }];
-        await writeJobRecord(root, rec);
+      await updateJobRecord(rootOf(job), job, (rec) => {
+        rec.holds = [...(rec.holds ?? []).filter((h) => h.id !== hold.id), { ...hold, since: hold.since ?? new Date().toISOString() }];
+      });
+    },
+    async recordRun(job, { title, actor, ...run }) {
+      await updateJobRecord(rootOf(job), job, (rec) => {
+        if (title) rec.title = title;
+        if (actor && !rec.createdBy) rec.createdBy = actor;
+        rec.runs = [...(rec.runs ?? []), { ...run, at: new Date().toISOString() }];
       });
     },
     async release(job, id) {
@@ -263,7 +311,9 @@ export interface SweepOptions {
 /**
  * The idle sweep: for every job nobody has used for `ttlMs` and nobody
  * holds, let its holds go (§6), remove its repositories and keep its
- * files; a job with nothing left is removed with its record. Run by every
+ * files; a job with nothing left is removed, with its record unless the
+ * record is the job's history (it has runs — the index, plans/job-index.md;
+ * only `DELETE /jobs/:id` removes that). Run by every
  * `job/dir` and kept checkout, so disk — and a pod — is reclaimed without
  * a timer. Returns the names it touched. Never throws: a job that cannot
  * be swept, and a hold that will not release, are tried again next time.
@@ -301,7 +351,7 @@ export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: 
       } catch {
         /* the directory is already gone */
       }
-      if (left.length === 0 && !rec.holds?.length) {
+      if (left.length === 0 && !rec.holds?.length && !rec.runs?.length) {
         await rm(root, { recursive: true, force: true });
         await rm(`${root}.json`, { force: true });
         swept.push(rec.name);

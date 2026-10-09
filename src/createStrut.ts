@@ -78,7 +78,8 @@ import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { deleteJob, jobFilePath, jobRoot, listJobFiles, readJobRecord, releaseWith } from "./jobs.js";
+import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, type JobsCapability } from "./jobs.js";
+import { createJobIndex } from "./job-index.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -422,6 +423,9 @@ export interface StrutRunOptions<TServices = unknown> {
   /** The job to launch under (plans/jobs.md §1) — the in-process twin of
    *  `POST …/run { job }`. Not format-checked here, as the route's is. */
   job?: string;
+  /** The job's name, recorded on the job (plans/job-index.md §1) — the twin
+   *  of `POST …/run { title }`. Ignored without `job`. */
+  title?: string;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -594,6 +598,16 @@ export async function createStrut<TServices = unknown>(
   // Speech-to-text: sessions + hotword lists live under dataDir; models under
   // STRUT_MODEL_DIR. Nothing loads until a stream or transcribe call.
   const stt: SttService | null = opts.stt === false ? null : (opts.stt ?? createStt({ dataDir }));
+  // What the job index may not read past a run's status (plans/job-index.md
+  // §2): a sealed workflow's runs — `job/get` is the meta surface from
+  // inside a run (src/sealed.ts).
+  const isSealedWorkflow = async (name: string): Promise<boolean> => {
+    try {
+      return (await workspace.getWorkflow(name)).sealed === true;
+    } catch {
+      return false;
+    }
+  };
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -603,6 +617,15 @@ export async function createStrut<TServices = unknown>(
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
     sessions,
+    // The job record's writer (standardServices gives a bare one) plus the
+    // INDEX that reads it back (plans/job-index.md): the run store for
+    // each run's status, the session store for the job's threads, the
+    // workspace for what is sealed. What `GET /jobs[/:id]` and the
+    // `job/*` steps read through.
+    jobs: jobsCapability(
+      dataDir,
+      createJobIndex({ dataDir, store, sessions: sessionStore, sessionHolder: sessions.holder, sealed: isSealedWorkflow }),
+    ),
     peers: peersCap,
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
@@ -1848,6 +1871,26 @@ export async function createStrut<TServices = unknown>(
     return { id, root };
   };
 
+  // The index (plans/job-index.md §2): every job, and one job read back —
+  // its runs with their status, its threads, holds, files and current
+  // deliverables. Thin over the capability the `job/*` steps read through;
+  // 501 when a consumer's own `jobs` capability keeps no index.
+  const jobsCap = (services as Record<string, unknown>)["jobs"] as JobsCapability | undefined;
+  const NO_JOB_INDEX = "jobs are managed by an injected capability with no index";
+  app.get("/jobs", async (c) => {
+    if (!jobsCap?.list) return c.json({ error: NO_JOB_INDEX }, 501);
+    const limit = Number(c.req.query("limit"));
+    return c.json({ jobs: await jobsCap.list({ q: c.req.query("q"), ...(limit > 0 ? { limit } : {}) }) });
+  });
+
+  app.get("/jobs/:id", async (c) => {
+    if (!jobsCap?.get) return c.json({ error: NO_JOB_INDEX }, 501);
+    const at = jobRoute(c);
+    if (at instanceof Response) return at;
+    const view = await jobsCap.get(at.id);
+    return view ? c.json(view) : c.json({ error: `No job "${at.id}"` }, 404);
+  });
+
   app.get("/jobs/:id/files", async (c) => {
     const refused = badToken(c);
     if (refused) return refused;
@@ -2283,6 +2326,11 @@ export async function createStrut<TServices = unknown>(
     /** The job to launch the run under (plans/jobs.md §1): a flat, global
      *  id the caller minted, the format of a session id. */
     job?: string;
+    /** The job's name (plans/job-index.md §1), recorded on the job — not
+     *  the run. A launch-level field like `job` and `callback`: what
+     *  describes the job and the host, not the run's subject. 400 without
+     *  `job`. */
+    title?: string;
   }
 
   /**
@@ -2348,6 +2396,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
+        ...(body.job && body.title ? { title: body.title } : {}),
         ...(callback ? { callback: { origin: callbackOrigin(callback.url) } } : {}),
       });
     })()
@@ -2419,11 +2468,16 @@ export async function createStrut<TServices = unknown>(
   const runCallbackOf = (body: RunBody): { url: string } | undefined =>
     body.callback == null ? undefined : parseCallback(body.callback);
 
-  /** A run body's `job`, validated (the session-id format); absent = none. */
+  /** A run body's `job`, validated (the session-id format); absent = none.
+   *  A `title` names the job, so it needs one. */
   const runJobOf = (body: RunBody): string | undefined => {
-    if (body.job === undefined || body.job === null) return undefined;
+    if (body.job === undefined || body.job === null) {
+      if (body.title !== undefined && body.title !== null) throw new Error("title names a job: pass it with `job`");
+      return undefined;
+    }
     const problem = idProblem(body.job);
     if (problem) throw new Error(`job "${String(body.job)}" ${problem}`);
+    if (body.title !== undefined && body.title !== null && typeof body.title !== "string") throw new Error("title must be a string");
     return body.job;
   };
 
@@ -3481,6 +3535,7 @@ export async function createStrut<TServices = unknown>(
         ...(runOpts?.actor ? { actor: runOpts.actor } : {}),
         ...(principal ? { principal } : {}),
         ...(runOpts?.job ? { job: runOpts.job } : {}),
+        ...(runOpts?.job && runOpts.title ? { title: runOpts.title } : {}),
       });
     } finally {
       untrack();

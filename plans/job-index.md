@@ -1,6 +1,21 @@
 # Job index — a job you can name, find, and read back
 
-> **Status (2026-10-08): proposed, nothing built, nothing ruled.** Written
+> **Status (2026-10-09): BUILT, in strut — the record, the routes, the
+> steps and the graph (§9's two commits). Rulings 1–7 confirmed as
+> proposed (StrutJob, no StrutArtifact).** What was built departs from the
+> text below in four small ways, all simplifications: ONE write instead of
+> two — the runner's `recordRun` carries the launch's `title` and `actor`,
+> so there is no `describe` and `title` is a `RunOptions` field beside
+> `job` (the route and `strut.run` pass it through); a folded artifact
+> carries `path` (relative to the job's directory, what `job/read` takes)
+> and `job/get` adds `dir`, instead of an absolute `file` per ref;
+> `SessionInfo.jobs` is present only when a turn carried a job; the sweep
+> keeps a record with runs and leaves its (empty) directory in place.
+> `GET /jobs/:id` also carries `text`, the newest successful top-level
+> run's `output.text` — the latest reply, what the `StrutJob` summary is
+> built from beside the artifacts. Still to do outside strut: the mcp seed's
+> `params.tools` + system line (§5) and hive's `title` on the launch body
+> (§7). Written 2026-10-08
 > after an exploration of how jobs and artifacts are stored today, on this
 > checkout (`efce3f1`, main), `hive@d1649a94b` (master) and the mcp lab
 > (`stakgraph@329d52de`, the `job` seed v6 and its `Job` Concept). The

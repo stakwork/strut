@@ -67,6 +67,7 @@ strut/
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — default filesystem-backed server. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either) — a host whose own entry is called `server.js` and imports the barrel never starts it (server.test.ts spawns that host)
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (holds released, repositories removed, files kept), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
+│   ├── job-index.ts       # the job INDEX (plans/job-index.md), the read side of jobs.ts: createJobIndex({ dataDir, store, sessions, sealed }) → list (every job newest-used first, `q` through src/search.ts over the title + current deliverables) / get (runs with status from the run store, threads from the session store — a turn line's `job`, or a thread named after the job — holds, files, and the ARTIFACT FOLD: the successful top-level runs' `artifacts[]` newest first, the first of each id winning, resolved like …/runs/:runId/artifacts; a sealed workflow's run shows its status and nothing more) / read (one file: text head+tail-capped, an image as bytes for withMedia). createStrut builds it into `ctx.services.jobs` beside the record's writes; `GET /jobs[/:id]` and the job/* steps are thin over it; the projector builds `StrutJob` from `get`
 │   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
 │   ├── auth.ts            # the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches, controls a run a peer launched, and the gate 403s the rest) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
@@ -82,7 +83,7 @@ strut/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, github/create-pr — open a PR or return the open one for that head, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
 │   │   │   ├── strut/     # strut/run-workflow: dispatch-through (plans/federation.md §2.2) — run a workflow on a PEER and return { peer, workflow, runId, status, output?, error?, durationMs }; waits on the peer's tail, cancel of this run cancels the peer's, `wait: false` returns the handle, `job` is explicit (never this run's own: no shared directory across struts); grantable to an agent as `agentTools: ["strut/*"]`. Two things ride on the tail it reads anyway: the peer run's `step.end.nodes` are folded onto THIS step's `step.end`, each tagged `peer: <id>` (a ref is only meaningful against the graph that recorded it — the projector skips a tagged ref, the flyout badges it, nothing here opens it), and the handle is journaled at launch as a synthetic `step.end` at `<path>#launch` (no stepType) so a resumed caller REATTACHES to the same peer run instead of launching a second one — the child did not die with the caller. A peer run that died there and was not resumed is `peer_run_stale:` (its tail ends with `done { status: "stale" }`, retried with backoff first)
-│   │   │   ├── job/       # job/dir: the run's JOB directory (jobs.ts) for an agent's cwd — `<dataDir>/jobs/<job>/`, the same path every run launched with that `job`; a run with no job gets its own artifact dir, so a job workflow is also a one-shot
+│   │   │   ├── job/       # job/dir: the run's JOB directory (jobs.ts) for an agent's cwd — `<dataDir>/jobs/<job>/`, the same path every run launched with that `job`; a run with no job gets its own artifact dir, so a job workflow is also a one-shot. job/list, job/get, job/read: the job INDEX (job-index.ts) as steps — find an earlier job by words, read what it produced and the thread to continue, open one of its files (an image is SHOWN to the model via withMedia) — thin over `ctx.services.jobs`, the same reads `GET /jobs[/:id]` serves
 │   │   │   ├── git/       # git/checkout (a fresh isolated working copy per run: credential-free bare cache under <dataDir>/repos + a detached worktree INSIDE THE RUN'S OWN DIRECTORY — <artifacts>/<runId>/<repo>, the dir job/dir hands a run with no job, so `cwd: "{{ dir.path }}"` holds the repositories with or without a job; <dataDir>/worktrees/<runId> only on a bare bag with no artifacts capability — removed by ctx.onRunEnd — or, with `workdir`, a KEPT one inside a job's directory, <dataDir>/jobs/<name>/<repo>, reused by the next run that names it, one run at a time (`job_busy:`), the repository removed when the job is idle; the token reaches git through the child env + an inline credential helper ONLY), git/diff (stage all, one unified diff, caps, gitleaks when on PATH), git/apply (a unified diff on stdin, --index --check then --index, `patch_conflict:` when it no longer applies, sha256 of the bytes as given) and git/push (commit the index as the token's GitHub identity — GET /user via ctx.services.http — push HEAD to a new branch, never --force; `push_rejected:` / `no_push_permission:`). The landing primitives (plans/code-change.md §6): the error codes are a contract hive classifies on. _shared.ts: the git runner over ctx.services.shell, parseRepo, one lock per cache
 │   │   │   └── graph/     # graph/* knowledge-graph steps over src/graph (the strut-native twins of the mcp lab's jarvis/* steps — same names, inputs, outputs — plus four strut-only ones: create-schema registers/extends a node type, edit-edge patches an edge's properties, move-node re-homes a node (the one edge that places it — any type, either direction — is muted and written again to the new place, one transaction, cycles refused; graph reads skip muted edges, as jarvis's do), walk gathers context for a goal hop by hop with a decision model (jev via experimental_evaluate, or a wrapped LLM) judging relevance/next/enough — plans/graph-walk.md — and two strut-only INPUTS on graph-get: node_type + name, an exact lookup by node_key for types keyed by name, never a search; and `children: <EDGE_TYPE>`, which adds the nodes it points to along that edge as { ref_id, node_type, name, description } sorted by name — a node and its table of contents in one call); _shared.ts lazy-imports the backend; graph-steps.test.ts is a live end-to-end test
 │   │   └── registry.ts    # auto-discovery: buildRegistry() core (static) + lib (dynamic) + workspace custom/ (dynamic); createRegistry() for in-code steps
@@ -131,7 +132,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1386 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1415 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -1472,8 +1473,30 @@ and the child env is scrubbed by construction).
   from the idle sweep, which lets holds go before it removes repositories
   (a hold that fails stays for the next sweep; a bare run with no registry
   leaves jobs with holds alone). Strut knows nothing about pods: a hold is
-  an id, a kind and a way to be released. Not yet: `job` on chats, a job
-  index, the projector stamp — plans/jobs.md §11.
+  an id, a kind and a way to be released.
+  **The index** (plans/job-index.md; `src/job-index.ts`): a job you can
+  name, find and read back. `POST …/run { job, title }` names it — the
+  title is a launch-level field like `job` and `callback`, never in `input`
+  (the workflow's `input:` block would strip it, and strut must write it
+  onto the record without knowing the workflow); the RUNNER records every
+  run launched under a job as one line on its record, at `run.start`,
+  through `ctx.services.jobs.recordRun` (children with `parentRunId`;
+  a resume records nothing), so a job's record is the job's history and the
+  sweep keeps one that has runs. A session's turn line records the `job` it
+  was made under (`SessionInfo.jobs`). `GET /jobs?q=` and `GET /jobs/:id`
+  read it all back — runs with status, threads, holds, files, and the
+  job's CURRENT deliverables folded from its runs' outputs (the "same id =
+  newer version" rule of §3 made real: newest run first, first id wins,
+  nothing stored) — and `job/list` / `job/get` / `job/read` are the same
+  reads as steps the job seed grants, so a turn can find an earlier job by
+  words, see what it produced, look at a screenshot it took, and learn the
+  thread id to continue. On a graph workspace the projector stamps `job` on
+  `StrutRun` / `StrutAgentSession` and upserts one `StrutJob` node per job
+  (title + a summary of its deliverables and latest reply; `IN_JOB` from
+  each run) in the run-end hook, so `graph/graph-search` finds a job by
+  meaning. No `StrutArtifact` node until something must point at one. Not
+  yet: `job` on chats, a jobs sidebar, continuing ANOTHER job's thread from
+  inside a turn (its files are in the other directory; `session_busy:`).
 
 - **Peers — calling a workflow on another strut** (`plans/federation.md`
   §2.2, §3; `src/peers.ts`, `src/steps/lib/strut/run-workflow.ts`). A strut

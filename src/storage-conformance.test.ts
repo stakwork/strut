@@ -335,7 +335,7 @@ for (const impl of sessionImpls) {
       assert.equal(await store.load("s1"), null);
       assert.deepEqual(await store.list(), []);
 
-      const t0 = await store.appendTurn("s1", { system: "first", messages: [user("a"), reply("b")], record: turnOf("1", { principal: "ann" }) });
+      const t0 = await store.appendTurn("s1", { system: "first", messages: [user("a"), reply("b")], record: turnOf("1", { principal: "ann", job: "j-1" }) });
       assert.deepEqual([t0.turn, t0.offset, t0.count], [0, 0, 2]);
       const t1 = await store.appendTurn("s1", { system: "IGNORED", messages: [user("c"), reply("d"), reply("e")], record: turnOf("2", { principal: "bob" }) });
       assert.deepEqual([t1.turn, t1.offset, t1.count], [1, 2, 3]);
@@ -343,12 +343,12 @@ for (const impl of sessionImpls) {
       const s = await store.load("s1");
       assert.equal(s?.system, "first");
       assert.deepEqual(s?.messages, [user("a"), reply("b"), user("c"), reply("d"), reply("e")]);
-      assert.deepEqual(s?.turns.map((t) => [t.turn, t.runId, t.principal]), [[0, "1", "ann"], [1, "2", "bob"]]);
+      assert.deepEqual(s?.turns.map((t) => [t.turn, t.runId, t.principal, t.job]), [[0, "1", "ann", "j-1"], [1, "2", "bob", undefined]]);
 
       const [info] = await store.list();
       assert.deepEqual(
-        [info?.id, info?.turns, info?.messages, info?.createdBy, info?.createdAt, info?.updatedAt],
-        ["s1", 2, 5, "ann", t0.at, t1.at],
+        [info?.id, info?.turns, info?.messages, info?.createdBy, info?.createdAt, info?.updatedAt, info?.jobs],
+        ["s1", 2, 5, "ann", t0.at, t1.at, ["j-1"]],
       );
     });
 
