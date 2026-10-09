@@ -14,7 +14,10 @@ import { readRunStart } from "./journal.js";
 import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, sweepJobs, touchJob } from "./jobs.js";
 import { RunController } from "./run-control.js";
 import { artifactKind, resolveArtifactRefs } from "./artifact-refs.js";
+import { mediaOf } from "./core.js";
+import { MemorySessionStore } from "./session-store.js";
 import jobDir from "./steps/lib/job/dir.js";
+import jobRead from "./steps/lib/job/read.js";
 import pack from "./steps/core/pack.js";
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
@@ -95,6 +98,29 @@ describe("jobs — the `job` a run is launched under", () => {
     const events = await store.getRunEvents("stamped", res.runId);
     assert.equal("job" in events.find((e) => e.type === "run.start")!, false);
     assert.equal("job" in (await store.getRunSummary("stamped", res.runId))!, false);
+  });
+
+  it("records the run on the job through services.jobs at run.start — the launch's title and actor, a child's parent — and nothing on a resume (plans/job-index.md §1)", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const jobs = { recordRun: async (job: string, run: object) => void calls.push({ job, ...run }) };
+    const store = new MemoryRunStore();
+    const res = await runWorkflow(wf, {}, registry, { store, job: "j-1", title: "First", actor: "ann", services: { jobs } });
+    assert.equal(res.status, "success");
+    assert.deepEqual(calls, [{ job: "j-1", workflow: "stamped", runId: res.runId, actor: "ann", title: "First" }]);
+
+    const parent = new RunController("p", "job");
+    const child = await runWorkflow(wf, {}, registry, { store, job: "j-1", controller: new RunController("c", "stamped", parent), services: { jobs } });
+    assert.deepEqual(calls[1], { job: "j-1", workflow: "stamped", runId: child.runId, parentRunId: "p" });
+
+    await runWorkflow(wf, {}, registry, { store, runId: res.runId, job: "j-1", resume: true, services: { jobs } });
+    assert.equal(calls.length, 2, "a resume is already on the list");
+
+    await runWorkflow(wf, {}, registry, { store, services: { jobs } });
+    assert.equal(calls.length, 2, "no job, nothing to record");
+
+    // Bookkeeping never fails a run.
+    const broken = { recordRun: async () => { throw new Error("disk full"); } };
+    assert.equal((await runWorkflow(wf, {}, registry, { store, job: "j-1", services: { jobs: broken } })).status, "success");
   });
 });
 
@@ -249,6 +275,18 @@ describe("jobs — the directory", () => {
       assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY), ["bare"]);
       assert.ok(!existsSync(r));
       assert.ok(!existsSync(`${r}.json`));
+    });
+
+    it("keeps the record of a job with nothing left when it is the job's history — it has runs (plans/job-index.md, ruling 7)", async () => {
+      const r = await seed("remembered", { repos: ["hive"], idleDays: 8 });
+      const rec = (await readJobRecord(r))!;
+      rec.runs = [{ workflow: "turn", runId: "1", at: rec.usedAt }];
+      await writeFile(`${r}.json`, JSON.stringify(rec));
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY), ["remembered"], "the repository still goes");
+      assert.ok(!existsSync(join(r, "hive")));
+      assert.ok(existsSync(`${r}.json`));
+      assert.equal((await readJobRecord(r))!.runs!.length, 1);
+      assert.deepEqual(await sweepJobs(shell, dataDir, 7 * DAY), [], "nothing left to change");
     });
 
     it("leaves a job that is not idle, a held one, and everything when the TTL is 0", async () => {
@@ -623,5 +661,191 @@ describe("jobs — over HTTP", () => {
     assert.equal((await api("/jobs/j-files/files/nope.txt")).status, 404);
     assert.equal((await api("/jobs/never/files")).status, 404);
     assert.equal((await api("/jobs/%2Freview/files")).status, 400);
+  });
+});
+
+// ── the index (plans/job-index.md) ───────────────────────────────────────
+
+describe("jobs — the index (plans/job-index.md)", () => {
+  let tempDir: string;
+  let sessionStore: MemorySessionStore;
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "strut-job-index-"));
+    sessionStore = new MemorySessionStore();
+  });
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const boot = async () => {
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      registry: await createRegistry([writer, probe, pack]),
+      store: new MemoryRunStore(),
+      sessionStore,
+      serveUi: false,
+      enableChat: false,
+      scheduler: false,
+    });
+    // One turn of a job: writes a file into its directory, declares what it
+    // delivered, and replies.
+    await strut.workspace.publishWorkflow("turn", "v1", {
+      steps: [
+        { id: "dir", type: "job/dir", config: {} },
+        { id: "w", type: "writer", config: { dir: "{{ dir.path }}", name: "{{ input.name }}", text: "{{ input.text }}" } },
+        { id: "result", type: "pack", config: { text: "{{ input.reply }}", artifacts: "{{ input.artifacts }}" } },
+      ],
+    });
+    // The agent's door, from inside a run.
+    await strut.workspace.publishWorkflow("inspect", "v1", {
+      steps: [
+        { id: "list", type: "job/list", config: { q: "{{ input.q }}" } },
+        { id: "get", type: "job/get", config: { job: "{{ input.job }}" } },
+        { id: "result", type: "pack", config: { list: "{{ list.jobs }}", get: "{{ get }}" } },
+      ],
+    });
+    const api = async (path: string, init?: { body?: unknown }) => {
+      const res = await strut.app.request(path, {
+        method: init?.body ? "POST" : "GET",
+        headers: { "content-type": "application/json" },
+        ...(init?.body ? { body: JSON.stringify(init.body) } : {}),
+      });
+      return { status: res.status, json: (await res.json().catch(() => null)) as any };
+    };
+    const settled = async (workflow: string, runId: string) => {
+      for (let i = 0; i < 400 && !(await strut.store.getRunSummary(workflow, runId)); i++) await new Promise((r) => setTimeout(r, 10));
+      assert.ok(await strut.store.getRunSummary(workflow, runId), `run ${runId} never settled`);
+    };
+    /** A turn of `job`, settled. */
+    const turn = async (job: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<string> => {
+      const res = await api("/workflows/turn/run", { body: { job, input, ...extra } });
+      assert.equal(res.status, 202, JSON.stringify(res.json));
+      await settled("turn", res.json.runId);
+      // Distinct `usedAt` stamps, for the ordering checks.
+      await new Promise((r) => setTimeout(r, 5));
+      return res.json.runId as string;
+    };
+    return { strut, api, settled, turn };
+  };
+
+  const plan = (text: string, summary?: string) => ({ id: "plan", title: "Plan", ...(summary ? { summary } : {}), path: "plan.md" });
+
+  it("a launch with job + title names the job and records the run; later launches keep the title, or rename; a title without a job is a 400", async () => {
+    const { api, turn } = await boot();
+    const r1 = await turn("j-a", { name: "plan.md", text: "v1", reply: "drafted", artifacts: [plan("v1")] }, { title: "Landing page" });
+    let rec = (await readJobRecord(jobRoot(tempDir, "j-a")))!;
+    assert.equal(rec.title, "Landing page");
+    assert.ok(rec.createdAt);
+    assert.deepEqual(rec.runs!.map((r) => [r.workflow, r.runId, "parentRunId" in r]), [["turn", r1, false]]);
+
+    const r2 = await turn("j-a", { name: "plan.md", text: "v2", reply: "revised", artifacts: [plan("v2")] });
+    rec = (await readJobRecord(jobRoot(tempDir, "j-a")))!;
+    assert.equal(rec.title, "Landing page", "kept");
+    assert.deepEqual(rec.runs!.map((r) => r.runId), [r1, r2]);
+
+    await turn("j-a", { name: "plan.md", text: "v3", reply: "final", artifacts: [plan("v3")] }, { title: "Landing page, final" });
+    assert.equal((await readJobRecord(jobRoot(tempDir, "j-a")))!.title, "Landing page, final", "renamed");
+
+    const bad = await api("/workflows/turn/run", { body: { title: "Nameless", input: {} } });
+    assert.equal(bad.status, 400);
+    assert.match(bad.json.error, /title/);
+    assert.equal((await api("/jobs")).json.jobs.length, 1, "nothing launched");
+  });
+
+  it("GET /jobs lists newest-used first with counts; ?q= matches the title and a deliverable's words, every word required", async () => {
+    const { api, turn } = await boot();
+    await turn("j-old", { name: "shot.png", text: "png", reply: "looked", artifacts: [{ id: "shot", title: "Screenshot", summary: "the checkout button", path: "shot.png" }] }, { title: "Checkout audit" });
+    await turn("j-new", { name: "plan.md", text: "v1", reply: "planned", artifacts: [plan("v1", "a landing page for the beta")] }, { title: "Beta launch" });
+    const all = await api("/jobs");
+    assert.equal(all.status, 200);
+    assert.deepEqual(
+      all.json.jobs.map((j: any) => [j.job, j.title, j.runs, j.holds, "busy" in j]),
+      [["j-new", "Beta launch", 1, 0, false], ["j-old", "Checkout audit", 1, 0, false]],
+    );
+    const ids = async (q: string) => (await api(`/jobs?${q}`)).json.jobs.map((j: any) => j.job);
+    assert.deepEqual(await ids("q=landing%20page"), ["j-new"], "an artifact's summary");
+    assert.deepEqual(await ids("q=checkout"), ["j-old"], "the title");
+    assert.deepEqual(await ids("q=screenshot"), ["j-old"], "an artifact's title");
+    assert.deepEqual(await ids("q=checkout%20beta"), [], "every word must hit one job");
+    assert.deepEqual(await ids("q=j-old"), ["j-old"], "the id");
+    assert.deepEqual(await ids("limit=1"), ["j-new"]);
+  });
+
+  it("GET /jobs/:id: runs with status, threads by the turn line's job and by name, deliverables folded newest-first by id behind one live file", async () => {
+    const { api, turn } = await boot();
+    const r1 = await turn("j-b", { name: "plan.md", text: "v1", reply: "first", artifacts: [plan("v1"), { id: "pod", kind: "url", title: "Pod", url: "https://pod.example/" }] }, { title: "B" });
+    const r2 = await turn("j-b", { name: "plan.md", text: "v2", reply: "second", artifacts: [{ id: "plan", title: "Plan, revised", summary: "now with a budget", path: "plan.md" }] });
+    const line = (job?: string) => ({ workflow: "turn", runId: r2, path: "turn/work", provider: "anthropic", model: "anthropic/x", routed: false, ...(job ? { job } : {}) });
+    await sessionStore.appendTurn("thread-1", { system: "s", messages: [{ role: "user", content: "a" }], record: line("j-b") });
+    await sessionStore.appendTurn("j-b/review", { system: "s", messages: [{ role: "user", content: "b" }], record: line() });
+    await sessionStore.appendTurn("other", { system: "s", messages: [{ role: "user", content: "c" }], record: line("j-z") });
+
+    const res = await api("/jobs/j-b");
+    assert.equal(res.status, 200, JSON.stringify(res.json));
+    const v = res.json;
+    assert.equal(v.title, "B");
+    assert.deepEqual(v.runs.map((r: any) => [r.runId, r.status, typeof r.durationMs]), [[r2, "success", "number"], [r1, "success", "number"]]);
+    assert.deepEqual(v.sessions.map((s: any) => s.id).sort(), ["j-b/review", "thread-1"]);
+    assert.deepEqual(v.artifacts, [
+      { id: "plan", kind: "markdown", title: "Plan, revised", summary: "now with a budget", url: "/jobs/j-b/files/plan.md", runId: r2, path: "plan.md" },
+      { id: "pod", kind: "url", title: "Pod", url: "https://pod.example/", runId: r1 },
+    ]);
+    assert.equal(v.text, "second");
+    assert.deepEqual(v.files, ["plan.md"]);
+    assert.deepEqual([v.holds, v.repos], [[], []]);
+    assert.equal(await readFile(join(tempDir, "jobs", "j-b", "plan.md"), "utf8"), "v2", "one live file behind the link");
+    assert.equal((await api("/jobs/nope")).status, 404);
+    assert.equal((await api("/jobs/bad%20id")).status, 400);
+  });
+
+  it("a run in flight is `running` and holds the job; a sealed workflow's run shows its status and nothing more", async () => {
+    const { strut, api, settled } = await boot();
+    await strut.workspace.publishWorkflowByContent(
+      "harness",
+      "name: harness\nsealed: true\nsteps:\n  - id: result\n    type: pack\n    config:\n      text: graded\n      artifacts:\n        - { id: verdict, title: Verdict, content: \"4/5\" }\n",
+    );
+    const graded = await api("/workflows/harness/run", { body: { job: "j-s", input: {}, title: "Graded" } });
+    assert.equal(graded.status, 202);
+    await settled("harness", graded.json.runId);
+    const sealed = (await api("/jobs/j-s")).json;
+    assert.deepEqual(sealed.runs, [{ workflow: "harness", runId: graded.json.runId, at: sealed.runs[0].at, status: "success", sealed: true }]);
+    assert.deepEqual([sealed.artifacts, sealed.text], [[], undefined]);
+
+    await strut.workspace.publishWorkflow("slow", "v1", {
+      steps: [{ id: "dir", type: "job/dir", config: {} }, { id: "z", type: "wait", config: { durationMs: 300 } }],
+    });
+    const slow = await api("/workflows/slow/run", { body: { job: "j-w", input: {} } });
+    assert.equal(slow.status, 202);
+    for (let i = 0; i < 100 && !jobHolder(jobRoot(tempDir, "j-w")); i++) await new Promise((r) => setTimeout(r, 5));
+    const live = (await api("/jobs/j-w")).json;
+    assert.deepEqual([live.busy, live.runs[0].status], [slow.json.runId, "running"]);
+    assert.equal((await api("/jobs")).json.jobs.find((j: any) => j.job === "j-w").busy, slow.json.runId);
+    await settled("slow", slow.json.runId);
+    assert.equal("busy" in (await api("/jobs/j-w")).json, false);
+  });
+
+  it("the agent's door: job/list and job/get from inside a run; job/read as text, as an image the model sees, capped, never outside the job", async () => {
+    const { strut, turn } = await boot();
+    await turn("j-c", { name: "notes.md", text: "# notes", reply: "ok", artifacts: [{ id: "notes", title: "Notes", path: "notes.md" }] }, { title: "C" });
+    const res = await strut.run("inspect", { job: "j-c" });
+    assert.equal(res.status, "success", JSON.stringify(res));
+    const out = res.output as any;
+    assert.deepEqual(out.list.map((j: any) => [j.job, j.title]), [["j-c", "C"]]);
+    assert.equal(out.get.title, "C");
+    assert.equal(out.get.dir, jobRoot(tempDir, "j-c"));
+    assert.deepEqual(out.get.artifacts.map((a: any) => a.path), ["notes.md"]);
+
+    const ctx = { runId: "r", path: "inspect/read", services: strut.services } as any;
+    assert.deepEqual(await jobRead.run({ job: "j-c", path: "notes.md" }, ctx), { path: "notes.md", kind: "markdown", text: "# notes" });
+    const capped = (await jobRead.run({ job: "j-c", path: "notes.md", maxChars: 4 }, ctx)) as any;
+    assert.equal(capped.truncated, true);
+    assert.match(capped.text, /^# \n\[\.\.\. 3 chars truncated \.\.\.\]\nes$/);
+    await writeFile(join(tempDir, "jobs", "j-c", "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const shot = (await jobRead.run({ job: "j-c", path: "shot.png" }, ctx)) as any;
+    assert.deepEqual([shot.kind, shot.mediaType, shot.bytes, "image" in shot], ["image", "image/png", 4, false]);
+    assert.equal(mediaOf(shot)![0]!.mediaType, "image/png");
+    assert.equal(JSON.stringify(shot).includes("data"), false, "the bytes ride on the marker, not the output");
+    await assert.rejects(() => jobRead.run({ job: "j-c", path: "../j-b/plan.md" }, ctx), /escapes/);
+    await assert.rejects(() => jobRead.run({ job: "j-c", path: "nope.md" }, ctx), /No file/);
   });
 });

@@ -1627,6 +1627,7 @@ export default defineStep({
               path: ctx?.path ?? "",
               ...(ctx?.actor ? { actor: ctx.actor } : {}),
               ...(ctx?.principal ? { principal: ctx.principal } : {}),
+              ...(ctx?.job ? { job: ctx.job } : {}),
               provider: resolved.provider,
               model: resolved.name,
               routed: resolved.routed,

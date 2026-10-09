@@ -17,6 +17,9 @@ import { resolveStep } from "./steps/registry.js";
 import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, generateRunId, tallyStep } from "./store.js";
 import { RunController, isCancelledError } from "./run-control.js";
+import type { JobsCapability } from "./jobs.js";
+
+type JobsRecordRun = JobsCapability["recordRun"];
 
 // ── Runner ─────────────────────────────────────────────────────────────────
 
@@ -95,8 +98,12 @@ export interface RunOptions<TServices = unknown> {
   principal?: string;
   /** The job the run is launched under (plans/jobs.md §1). Recorded on
    *  `run.start` and the summary, handed to every step as `ctx.job` and to
-   *  templates as `$job`. */
+   *  templates as `$job`, and — through `services.jobs.recordRun`, when the
+   *  bag has it — as one line on the job's record (plans/job-index.md §1),
+   *  with `title`, the launch's name for the job. A resume records nothing:
+   *  the run is already on the list. */
   job?: string;
+  title?: string;
   /** The launch asked for the result to be posted to a host (`POST …/run
    *  { callback }`). The runner records the URL's ORIGIN on `run.start` / `run.resumed` and
    *  nothing more; the launcher keeps the URL and does the posting. */
@@ -269,6 +276,22 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.params ? { params: opts.params } : {}),
       ...(opts?.paramOverrides ? { paramOverrides: opts.paramOverrides } : {}),
     });
+    // The job's own record of the run (plans/job-index.md §1) — every
+    // launch site passes through here, children included. Bookkeeping: a
+    // record that cannot be written is a warning, never a failed run.
+    const jobs = (services as { jobs?: { recordRun?: JobsRecordRun } } | undefined)?.jobs;
+    if (opts?.job && jobs?.recordRun) {
+      const parent = opts.controller?.parent?.runId;
+      await jobs
+        .recordRun(opts.job, {
+          workflow: wfName,
+          runId,
+          ...(parent ? { parentRunId: parent } : {}),
+          ...(opts.actor ? { actor: opts.actor } : {}),
+          ...(opts.title ? { title: opts.title } : {}),
+        })
+        .catch((err: unknown) => console.warn(`[runner] run ${runId} was not recorded on job "${opts.job}":`, err));
+    }
   }
 
   const exec: Exec = {

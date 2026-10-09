@@ -64,6 +64,10 @@ export interface NewTurn {
   path: string;
   actor?: string;
   principal?: string;
+  /** The job the run was launched under (plans/jobs.md §1): which job the
+   *  turn was made under, so a thread is found from its job whatever its
+   *  id (plans/job-index.md §4). Records, ties nothing. */
+  job?: string;
   provider: string;
   /** Canonical `provider/id`. */
   model: string;
@@ -108,6 +112,9 @@ export interface SessionInfo {
   updatedAt: string;
   /** The principal (else the actor) of turn 0. Recorded, never checked. */
   createdBy?: string;
+  /** The distinct jobs its turns were made under, in order of first
+   *  appearance. Absent when no turn carried one. */
+  jobs?: string[];
   provider: string;
   model: string;
   context?: { used: number; limit: number };
@@ -118,6 +125,7 @@ export function sessionInfo(id: string, turns: SessionTurn[]): SessionInfo | nul
   const last = turns[turns.length - 1];
   if (!first || !last) return null;
   const createdBy = first.principal ?? first.actor;
+  const jobs = [...new Set(turns.map((t) => t.job).filter((j): j is string => typeof j === "string" && j.length > 0))];
   return {
     id,
     turns: turns.length,
@@ -125,6 +133,7 @@ export function sessionInfo(id: string, turns: SessionTurn[]): SessionInfo | nul
     createdAt: first.at,
     updatedAt: last.at,
     ...(createdBy ? { createdBy } : {}),
+    ...(jobs.length ? { jobs } : {}),
     provider: first.provider,
     model: last.model,
     ...(last.context ? { context: last.context } : {}),

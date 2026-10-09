@@ -167,7 +167,7 @@ describe("migrateVeinToStrut (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
     const golden = normalize(await graphSnapshot(bolt()));
 
     await demigrate(bolt());
-    assert.deepEqual(await countLegacy(), { nodes: 4, schemas: 9 });
+    assert.deepEqual(await countLegacy(), { nodes: 4, schemas: 10 });
     assert.equal(await countStrut(), 0);
     assert.deepEqual((await ws.listWorkflows()), [], "sanity: the renamed store cannot see legacy rows");
 
@@ -176,9 +176,9 @@ describe("migrateVeinToStrut (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
     assert.deepEqual(r.schemasRenamed.sort(), STRUT_SCHEMAS.map((s) => s.type).sort());
     assert.deepEqual(r.schemasDropped, []);
     assert.deepEqual(r.relabeled, { StrutWorkflow: 1, StrutWorkflowVersion: 1, StrutStep: 1, StrutStepVersion: 1 });
-    assert.equal(r.droppedConstraints.length, 9);
-    // 9 node_key range indexes + domain vector + domain fulltext + 4 per-stem vector.
-    assert.equal(r.droppedIndexes.length, 15);
+    assert.equal(r.droppedConstraints.length, 10);
+    // 10 node_key range indexes + domain vector + domain fulltext + 4 per-stem vector.
+    assert.equal(r.droppedIndexes.length, 16);
     assert.ok(r.droppedIndexes.includes("domain_vein_vector_index"));
     assert.ok(r.droppedIndexes.includes("veinstep_input_vector_index"));
     assert.equal(r.strays, 0);

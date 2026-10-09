@@ -297,6 +297,10 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       error_message: "?string",
       /** Pointer into the raw run log (store-specific locator). */
       log_ref: "?string",
+      /** The job the run was launched under (`run.start.job`,
+       *  plans/jobs.md §1) — "everything in job X" is one match
+       *  (plans/job-index.md §6). */
+      job: "?string",
     },
   },
   {
@@ -325,6 +329,9 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       /** Its 0-based turn in that thread. Absent when the turn failed:
        *  nothing was committed, so it has no number. */
       session_turn: "?int",
+      /** The run's job (plans/job-index.md §6): the thread's turns under a
+       *  job are one match, whatever the thread's id. */
+      job: "?string",
     },
   },
   {
@@ -386,6 +393,35 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       log_ref: "?string",
     },
   },
+  {
+    ...base,
+    type: "StrutJob",
+    node_key: "strutjob-job_id",
+    // Ids may hold `/`, `.` and `-` (the session-id format): the sanitizer
+    // would fold `abc/review` and `abc-review` into one node.
+    exact_key: true,
+    index: ["title", "summary"],
+    title_key: "title",
+    description_key: "summary",
+    type_description: "A strut job — one directory and one history across many runs (plans/job-index.md §6)",
+    attributes: {
+      job_id: "string",
+      /** The record's title, else the id. */
+      title: "?string",
+      /** The search text: each current deliverable as `title — summary`,
+       *  then the latest reply, capped. Built by the projector from the
+       *  job index's `get`; as fresh as the job's last finished run. */
+      summary: "?string",
+      created_by: "?string",
+      created_at: "datetime",
+      /** The record's `usedAt`. (`updated_at` is a generic node property.) */
+      last_used_at: "?datetime",
+      run_count: "?int",
+      artifact_count: "?int",
+      /** The job id — `GET /jobs/:id` is the record. */
+      log_ref: "?string",
+    },
+  },
 ];
 
 // ── Edge registry ───────────────────────────────────────────────────────────
@@ -410,6 +446,7 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "IN_SESSION", source: "StrutToolCall", target: "StrutAgentSession" },
   { edge: "SPAWNED", source: "StrutChat", target: "StrutRun" },
   { edge: "IN_CHAT", source: "StrutTurn", target: "StrutChat" },
+  { edge: "IN_JOB", source: "StrutRun", target: "StrutJob" },
   { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
 ];
 

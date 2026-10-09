@@ -88,7 +88,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.ok(out.domains.includes("strut"));
     assert.deepEqual(
       out.node_types.strut.map((n: any) => n.type).sort(),
-      ["StrutAgentSession", "StrutChat", "StrutRun", "StrutStep", "StrutStepVersion", "StrutToolCall", "StrutTurn", "StrutWorkflow", "StrutWorkflowVersion"],
+      ["StrutAgentSession", "StrutChat", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutToolCall", "StrutTurn", "StrutWorkflow", "StrutWorkflowVersion"],
     );
     assert.ok(out.edges.some((e: any) => e.edge_type === "VERSION_OF" && e.source_type === "StrutWorkflowVersion" && e.target_type === "StrutWorkflow"));
     const runType = out.node_types.strut.find((n: any) => n.type === "StrutRun");
