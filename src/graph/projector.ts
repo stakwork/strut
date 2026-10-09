@@ -21,6 +21,8 @@
  * the event untruncated) gets one `ACCESSED` edge per node that exists in
  * this graph. Refs the graph doesn't hold (another database, a deleted
  * node) are counted as `unresolved`, never written — explicit over clever.
+ * A ref tagged with a `peer` (another strut's graph, plans/federation.md
+ * §2.2) is skipped outright: neither an edge nor `unresolved`.
  *
  * Threads: a `StrutAgentSession` is ONE execution of an agent step — one
  * turn. An agent that continued a thread (`session`, plans/agent-sessions.md)
@@ -202,6 +204,10 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     const seenRef = new Set<string>();
     for (const n of end?.nodes ?? []) {
       if (!n || typeof n.ref_id !== "string" || !n.ref_id || seenRef.has(n.ref_id)) continue;
+      // A ref tagged with a peer is in ANOTHER strut's graph
+      // (plans/federation.md §2.2): never resolved here — no edge, and not
+      // counted unresolved either; it is simply not this graph's.
+      if (n.peer) continue;
       seenRef.add(n.ref_id);
       accessed.push(n);
     }

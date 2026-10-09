@@ -46,6 +46,14 @@ describe("foldAccessedNodes", () => {
     assert.deepEqual(own.map((n) => [n.name, touchSummary(n.touches)]), [["Billing", "graph-get"]]);
   });
 
+  it("a node another strut's run touched keeps its peer tag", () => {
+    const far = foldAccessedNodes(
+      [ev(0, "step.end", "wf/ask", { stepType: "strut/run-workflow", nodes: [{ ref_id: A, node_type: "Concept", name: "Billing", peer: "cloud" }, { ref_id: B }] })],
+      "wf/ask",
+    );
+    assert.deepEqual(far.map((n) => [n.ref_id, n.peer]), [[A, "cloud"], [B, undefined]]);
+  });
+
   it("a sub-agent's reads are under the agent that called it", () => {
     const sub = foldAccessedNodes([ev(0, "step.end", "wf/plan/003-agent/001-graph_graph_get", { stepType: "tool:graph/graph-get", nodes: [{ ref_id: A }] })], "wf/plan");
     assert.equal(sub.length, 1);

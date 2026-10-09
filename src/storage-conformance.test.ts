@@ -196,6 +196,33 @@ for (const impl of runImpls) {
       await t2;
       assert.deepEqual(aborted, [], "no events yet and aborted → nothing, and it returns");
     });
+
+    it("tailEvents: `live` false at EOF before any terminal event closes a stale log; true keeps following", async () => {
+      // A run cut off by a crash: a log with no terminal event and nobody
+      // producing. Without `live` the tail would follow it forever.
+      await store.append(WF, "1", ev("1", "run.start"));
+      await store.append(WF, "1", ev("1", "step.start", { path: `${WF}/a` }));
+      const stale: string[] = [];
+      for await (const e of store.tailEvents(WF, "1", { intervalMs: 5, live: () => false })) stale.push(e.type);
+      assert.deepEqual(stale, ["run.start", "step.start"], "drained, then closed");
+
+      // Live: the same log is followed until its terminal event.
+      let live = true;
+      const seen: string[] = [];
+      const tail = (async () => {
+        for await (const e of store.tailEvents(WF, "1", { intervalMs: 5, live: () => live })) seen.push(e.type);
+      })();
+      await new Promise((r) => setTimeout(r, 25));
+      await store.append(WF, "1", ev("1", "step.end", { path: `${WF}/a`, output: 1 }));
+      await store.append(WF, "1", ev("1", "run.end"));
+      await tail;
+      assert.deepEqual(seen, ["run.start", "step.start", "step.end", "run.end"]);
+      // A terminal event still closes the tail; `live` is only asked before one.
+      live = false;
+      const again: string[] = [];
+      for await (const e of store.tailEvents(WF, "1", { intervalMs: 5, live: () => live })) again.push(e.type);
+      assert.equal(again.length, 4);
+    });
   });
 }
 

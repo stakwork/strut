@@ -10,7 +10,10 @@ import { ValueFields } from "./ValueFields";
 // The graph nodes a step chose to read or write, from the run log (which
 // node, its type, its name, which calls). Filtered to one node type —
 // Concept until the user picks another. A row opens the node's content in
-// place, read from the graph as it is NOW: the log never held it.
+// place, read from the graph as it is NOW: the log never held it. A node
+// another strut's run touched (`peer` set — a strut/run-workflow step) is
+// that peer's graph's: shown under its badge, opened by nothing here until
+// read-through lands (plans/federation.md §2.1).
 
 type Loaded = { node: api.GraphNode } | { error: string } | "loading";
 
@@ -23,10 +26,14 @@ export function AccessedNodes(props: { nodes: TouchedNode[] }) {
     nodeTypeFilter.set(type);
     setFilter(type);
   };
-  const toggle = (refId: string) => {
+  const toggle = (refId: string, peer?: string) => {
     if (open === refId) return setOpen(null);
     setOpen(refId);
     if (loaded[refId] && loaded[refId] !== "loading") return;
+    if (peer) {
+      setLoaded((l) => ({ ...l, [refId]: { error: `On @${peer}'s graph — this strut cannot open it yet.` } }));
+      return;
+    }
     setLoaded((l) => ({ ...l, [refId]: "loading" }));
     api.getGraphNode(refId).then(
       (node) => setLoaded((l) => ({ ...l, [refId]: { node } })),
@@ -57,8 +64,9 @@ export function AccessedNodes(props: { nodes: TouchedNode[] }) {
         const state = open === n.ref_id ? loaded[n.ref_id] : undefined;
         return (
           <div key={n.ref_id} class={`node-row${open === n.ref_id ? " is-open" : ""}`}>
-            <button class="node-row-head" onClick={() => toggle(n.ref_id)} aria-expanded={open === n.ref_id}>
+            <button class="node-row-head" onClick={() => toggle(n.ref_id, n.peer)} aria-expanded={open === n.ref_id}>
               <span class="node-row-name">{nodeLabel(n)}</span>
+              {n.peer && <span class="node-row-peer" title={`On peer ${n.peer}`}>@{n.peer}</span>}
               {filter === ALL_NODE_TYPES && n.node_type && <span class="node-row-type">{n.node_type}</span>}
               <span class="node-row-tools">{touchSummary(n.touches)}</span>
             </button>

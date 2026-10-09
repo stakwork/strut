@@ -149,11 +149,16 @@ data: {"runId":"1790436489808","status":"success","output":"Bye World after 3000
 - `done` carries `{ runId, status, output?, error? }` (`RunResult`), with
   `status` one of `success`, `error`, `cancelled`. If the run has no summary
   yet (it was resumed and is still going) `status` is its live state instead.
+- **A stale run's tail ends.** A log with no terminal event and no live
+  process behind it — a run cut off by a crash that was not resumed — is
+  replayed and then closed with `done { runId, status: "stale" }` rather
+  than followed forever. Resume it (`POST …/resume`) and tail again.
 - A resumed run appends past its old terminal event; a tail open at the
   time keeps following.
-- **An unknown run id never errors: the tail waits for its log to appear.**
-  Launch first, or check `GET …/runs/:runId`, before streaming an id you
-  did not just get from a 202.
+- **An unknown run id never errors.** With no log and no live run behind
+  it, the tail closes at once with `done { status: "stale" }` (above) —
+  it does not wait for a log to appear. Launch first, or check `GET
+  …/runs/:runId`, before streaming an id you did not just get from a 202.
 - `?skip=N` leaves out the first N events. SSE is never compressed and
   every event is its own frame, so for a big log read `GET …/runs/:runId/events`
   first (one gzipped response, §5) and tail with `skip` set to its length:
@@ -516,9 +521,21 @@ It makes two requests of this API on the peer:
 The step's output is `{ peer, workflow, runId, status, output?, error?,
 durationMs }` — the peer's `RunResult` under the handle; an `artifacts`
 path in it is the peer's (`/jobs/<id>/files/…` or `/artifacts/<runId>/…`
-THERE). `wait: false` returns `{ peer, workflow, runId, status: "running" }`
-at once. Cancelling the caller's run POSTs `…/cancel` on the peer. `job`
-names a job ON THE PEER; the caller's own job is never forwarded (no shared
-directory across struts). A launch the peer refuses fails the step with the
-peer's message (`job_busy:`, an unknown workflow); an id not on file is
-`peer_unknown:`; a peer that stays unreachable is `peer_unreachable:`.
+THERE), and a graph `ref_id` in it is the peer's graph's. `wait: false`
+returns `{ peer, workflow, runId, status: "running" }` at once. Cancelling
+the caller's run POSTs `…/cancel` on the peer. `job` names a job ON THE
+PEER; the caller's own job is never forwarded (no shared directory across
+struts). A launch the peer refuses fails the step with the peer's message
+(`job_busy:`, an unknown workflow); an id not on file is `peer_unknown:`; a
+peer that stays unreachable is `peer_unreachable:`; a peer run that died
+with its process and was not resumed there is `peer_run_stale:`.
+
+Two things ride on the tail. The graph nodes the peer's run touched
+(`nodes` on its `step.end` events, §5.3) are folded onto the step's own
+`step.end` as `nodes`, each tagged `peer: <id>` — a ref another strut's
+graph holds, never opened against this one. And the handle is journaled
+right after the launch, as a `step.end` at `<step path>#launch` with
+`output: { peer, workflow, runId, launchedAt }` and no `stepType`: a
+durable resume of the caller's run (§6, boot-time auto-resume included)
+re-executes the step, which REATTACHES to that run instead of launching a
+second one.
