@@ -39,6 +39,9 @@ export function readRunStart(
   principal?: string;
   /** The job the run was launched under (plans/jobs.md §1) — kept by a resume. */
   job?: string;
+  /** Who launched it, when not a person or an API call — a peer's run stays
+   *  the peer's to control after a resume (plans/federation.md §3). */
+  origin?: RunEvent["origin"];
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -52,6 +55,7 @@ export function readRunStart(
     actor: start.actor,
     principal: start.principal,
     job: start.job,
+    origin: start.origin,
   };
 }
 

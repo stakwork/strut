@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, _resetAuthState } from "./auth.js";
+import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState } from "./auth.js";
 
 /**
  * Tests for the deployment-scoped shared-secret middleware.
@@ -170,6 +170,55 @@ describe("requireApiKey middleware", () => {
 // ── File read tokens ─────────────────────────────────────────────────────
 // The key attenuated to one run's (or job's) files — what an artifact link
 // carries, since a served page can read its own URL.
+
+describe("the peer key (plans/federation.md §3)", () => {
+  const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
+  beforeEach(() => {
+    delete process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_PEER_KEY"];
+  });
+  afterEach(() => {
+    for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  /** One read and one write behind requireApiKey, each saying what it saw. */
+  const app = () => {
+    const a = new Hono();
+    const seen = (c: Context) => c.json({ scope: scopeFromKey(c), actor: actorFromHeader(c) ?? null });
+    a.get("/r", requireApiKey, seen);
+    a.post("/w", requireApiKey, seen);
+    return a;
+  };
+  const as = (key: string, actor?: string) => ({
+    headers: { authorization: `Bearer ${key}`, ...(actor ? { "x-strut-actor": actor } : {}) },
+  });
+
+  it("a peer's read, never its write; its actor is honored; the deployment key stays full", async () => {
+    process.env["STRUT_API_KEY"] = "api";
+    process.env["STRUT_PEER_KEY"] = "peer";
+    const a = app();
+    assert.deepEqual(await (await a.request("/r", as("peer", "alice-1"))).json(), { scope: "peer", actor: "alice-1" });
+    assert.deepEqual(await (await a.request("/r?key=peer")).json(), { scope: "peer", actor: null });
+    assert.equal((await a.request("/w", { method: "POST", ...as("peer") })).status, 401);
+    assert.deepEqual(await (await a.request("/w", { method: "POST", ...as("api", "hive-1") })).json(), { scope: "full", actor: "hive-1" });
+    assert.equal((await a.request("/r", as("nope", "mallory-9"))).status, 401);
+  });
+
+  it("unset, it opens nothing; with no API key it only narrows the request that carries it", async () => {
+    process.env["STRUT_API_KEY"] = "api";
+    const a = app();
+    assert.equal((await a.request("/r", as("peer"))).status, 401);
+    delete process.env["STRUT_API_KEY"];
+    // Dev mode: everything is open, and nobody's word on who pays is taken...
+    assert.deepEqual(await (await a.request("/r", as("whoever", "mallory-9"))).json(), { scope: "full", actor: null });
+    // ...but a configured peer key still marks its request a peer's.
+    process.env["STRUT_PEER_KEY"] = "peer";
+    assert.deepEqual(await (await a.request("/r", as("peer", "alice-1"))).json(), { scope: "peer", actor: "alice-1" });
+  });
+});
 
 describe("file tokens", () => {
   const originalKey = process.env["STRUT_API_KEY"];

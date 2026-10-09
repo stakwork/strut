@@ -68,7 +68,7 @@ strut/
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (holds released, repositories removed, files kept), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
 │   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
-│   ├── auth.ts            # requireApiKey middleware — createStrut puts it in front of EVERY route, reads included — + carriesApiKey (Bearer or `?key=`) + warnIfUnconfigured (STRUT_API_KEY shared secret) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read
+│   ├── auth.ts            # the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches, controls a run a peer launched, and the gate 403s the rest) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── session-store.ts   # agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
 │   ├── peers.ts           # PEERS (plans/federation.md §2.2, §3): the other struts this one may call — `{ id, baseUrl, token, label? }` in a fourth encrypted file, peers.json (`P_<hex(id)>`), behind PUT/DELETE/GET /peers (GET: ids, labels, base URLs — never a token) + `STRUT_PEERS` / `createStrut({ peers })`, the paste door for a strut nobody pushes to. `ctx.services.peers` names a peer and makes a request with its token injected (readable by nothing; what a step can do through it is the token's scope on the peer). The client the step and the builder's `peer` tools share: launchOnPeer (POST …/run, `x-strut-actor: ctx.principal`), tailPeerRun (the peer's SSE tail, reattached with `?skip=N` after a drop — reader-initiated, so a strut behind NAT can call a cloud one), cancelOnPeer, runOnPeer, listPeerWorkflows / readPeerWorkflow
@@ -275,6 +275,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_HOST`         | (all interfaces) | Bind address. A desktop host passes `127.0.0.1` to keep a local strut off the LAN. |
 | `STRUT_WEB_DIST`     | `<module>/../web/dist` | Where the built UI is served from, for packagers that relocate it. |
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
+| `STRUT_PEER_KEY`     | (unset)        | The key ANOTHER strut holds for this one (plans/federation.md §3): presented like `STRUT_API_KEY`, but a request carrying it is `peer`-scoped — every read, a launch, and cancel / pause / resume of a run a peer launched; anything else is 403. Unset, it opens nothing. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
 | `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
 | `STRUT_MOTHERSHIP` | (unset) | `1` = the default server (`src/server.ts`) builds `createMothership({ dataDir })`, passes its `llmAuth` to `createStrut` and mounts `/llm/delegations` — every LLM call of an actor with a delegation goes through the gateway. See "Mothership cost control". |
@@ -339,6 +340,21 @@ container in the compose (strut and any service that registers steps).
   gate (mcp's `/lab`) hand such reads through. A served page can read its
   own URL, so the key itself must never be in one; the token is worth the
   files the page already shows.
+- **Scope — what another strut may do** (plans/federation.md §3). Past the
+  credential, the gate asks `createStrut({ resolveScope(c) })` — the twin of
+  `resolveActor`, the host's call (mcp maps its JWT's scope) — whether the
+  request is `full` or `peer`. The default (`scopeFromKey`) says `peer` for
+  a request carrying `STRUT_PEER_KEY`, the key a peer record on another
+  strut holds for this one. A `peer` may read every route (`GET`/`HEAD`;
+  `requireApiKey` lets the peer key read too), launch a run (`POST
+  /workflows/:name[/:version]/run` — stamped `origin: "peer"` on
+  `run.start`, its `x-strut-actor` honored) and cancel / pause / resume a
+  run a peer launched — the control routes read the stamp, or for a run
+  just launched, a mark on its controller. Anything else is `403`, a route
+  a host mounts later included; `createStrut.test.ts` sweeps the routes
+  with the peer key like it does without one. The known gap (decided
+  2026-10-09): a launch is not narrowed by workflow, so a peer that can
+  launch one whose agent has `bash` reaches whatever the server can.
 
 The same secret authenticates **both directions** within a deployment:
 
@@ -1475,9 +1491,11 @@ and the child env is scrubbed by construction).
   is the peer's result; an artifact path in it is the peer's. A refused
   launch fails the step with the peer's message (`job_busy:`); an id not on
   file is `peer_unknown:`; a peer that stays unreachable is
-  `peer_unreachable:`. Not yet: read-through (`/peers/:id/…`, the UI
-  selector), a Peers dialog, the `lab:peer` scope — a peer token today is
-  the peer's whole key, so a laptop should not hold one until that lands.
+  `peer_unreachable:`. The token to give a peer record is the peer's
+  `STRUT_PEER_KEY` (see "Auth": read, launch, control what it launched),
+  never its deployment key. Not yet: read-through (`/peers/:id/…`, the UI
+  selector), a Peers dialog, mcp's `lab:peer` JWT (the lab's peer token,
+  mapped through `resolveScope`).
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
   workflow-*builder* chat above. It explores a working dir (`cwd`)

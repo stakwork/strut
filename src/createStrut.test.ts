@@ -1176,12 +1176,16 @@ describe("listen()", () => {
 
 describe("the API key gate", () => {
   const KEY = "gate-key";
+  const PEER = "peer-key";
   const auth = { headers: { authorization: `Bearer ${KEY}` } };
   let tempDir: string;
   let savedKey: string | undefined;
+  let savedPeerKey: string | undefined;
   beforeEach(async () => {
     savedKey = process.env["STRUT_API_KEY"];
+    savedPeerKey = process.env["STRUT_PEER_KEY"];
     delete process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_PEER_KEY"];
     tempDir = join(tmpdir(), `strut-gate-${randomUUID()}`);
     await mkdir(join(tempDir, "dist", "assets"), { recursive: true });
     await writeFile(join(tempDir, "dist", "index.html"), "<html>the strut ui</html>");
@@ -1190,6 +1194,8 @@ describe("the API key gate", () => {
   afterEach(async () => {
     if (savedKey === undefined) delete process.env["STRUT_API_KEY"];
     else process.env["STRUT_API_KEY"] = savedKey;
+    if (savedPeerKey === undefined) delete process.env["STRUT_PEER_KEY"];
+    else process.env["STRUT_PEER_KEY"] = savedPeerKey;
     await rm(tempDir, { recursive: true, force: true });
   });
 
@@ -1202,6 +1208,7 @@ describe("the API key gate", () => {
       scheduler: false,
     });
     strut.app.get("/host/mounted", (c) => c.json({ ok: true }));
+    strut.app.post("/host/mounted", (c) => c.json({ ok: true }));
     return strut;
   };
 
@@ -1226,6 +1233,59 @@ describe("the API key gate", () => {
     // A path no route answers is not the UI either.
     assert.equal((await strut.app.request("/nope")).status, 401);
     assert.equal((await strut.app.request("/", { method: "POST" })).status, 401);
+  });
+
+  it("the peer key reads every route, launches, and reaches a run's control — every other route is 403", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    process.env["STRUT_PEER_KEY"] = PEER;
+    const routes = [...new Set(
+      strut.app.routes
+        .filter((r) => r.method !== "ALL" && r.path !== "*")
+        .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
+    )];
+    const peerPost = /^POST \/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))$/;
+    const allowed = routes.filter((r) => r.startsWith("GET ") || peerPost.test(r));
+    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 5, allowed.join(", "));
+    assert.ok(allowed.includes("GET /host/mounted"));
+    assert.ok(routes.includes("POST /host/mounted") && !allowed.includes("POST /host/mounted"));
+    for (const route of routes) {
+      const [method, path] = route.split(" ") as [string, string];
+      const write = method !== "GET" && method !== "HEAD";
+      const res = await strut.app.request(path, {
+        method,
+        headers: { authorization: `Bearer ${PEER}`, "content-type": "application/json" },
+        ...(write ? { body: "{}" } : {}),
+      });
+      await res.body?.cancel(); // a stream route answers at once and tails
+      if (allowed.includes(route)) assert.ok(res.status !== 401 && res.status !== 403, `${route} → ${res.status}`);
+      else assert.equal(res.status, 403, route);
+    }
+    // A host's route is covered like strut's own: the deployment key writes it.
+    assert.equal((await strut.app.request("/host/mounted", { method: "POST", ...auth })).status, 200);
+    // `?key=` carries it like the deployment key; unset, it opens nothing.
+    assert.equal((await strut.app.request(`/workflows?key=${PEER}`)).status, 200);
+    delete process.env["STRUT_PEER_KEY"];
+    assert.equal((await strut.app.request("/workflows", { headers: { authorization: `Bearer ${PEER}` } })).status, 401);
+  });
+
+  it("a host's resolveScope decides who is a peer — behind its own gate, with no key here", async () => {
+    // mcp's shape: labAuth authenticates and maps its JWT's scope; strut
+    // runs open (no STRUT_API_KEY) and enforces what the scope may do.
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(join(tempDir, "ws")),
+      store: new MemoryRunStore(),
+      serveUi: false,
+      scheduler: false,
+      resolveScope: (c) => (c.req.header("x-test-scope") === "peer" ? "peer" : undefined),
+    });
+    const peer = { "x-test-scope": "peer", "content-type": "application/json" };
+    const put = (headers: Record<string, string>) =>
+      strut.app.request("/secrets/X", { method: "PUT", headers, body: JSON.stringify({ value: "v" }) });
+    assert.equal((await strut.app.request("/workflows", { headers: peer })).status, 200);
+    assert.equal((await put(peer)).status, 403);
+    assert.equal((await strut.app.request("/workflows/nope/run", { method: "POST", headers: peer, body: "{}" })).status, 404);
+    assert.equal((await put({ "content-type": "application/json" })).status, 200, "undefined is full");
   });
 
   it("the key opens them, as a Bearer header or as ?key=; unset, everything is open", async () => {

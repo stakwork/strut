@@ -1109,6 +1109,73 @@ describe("run control endpoints", () => {
     }
   });
 
+  it("a peer controls the runs a peer launched, and only those (plans/federation.md §3)", async () => {
+    const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    process.env["STRUT_PEER_KEY"] = "peer-key";
+    const gate = createGateStep();
+    const { strut, workspace, store, cleanup } = await makeServer({ gate: gate.stepDef });
+    const post = (path: string, key: string, body: unknown = {}, headers: Record<string, string> = {}) =>
+      strut.app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}`, ...headers },
+        body: JSON.stringify(body),
+      });
+    const startOf = async (wf: string, runId: string) =>
+      (await store.getRunEvents(wf, runId)).find((e) => e.type === "run.start")!;
+    try {
+      for (const wf of ["mine", "theirs"]) {
+        await workspace.publishWorkflowByContent(
+          wf,
+          // Two steps: a cancel lands on the checkpoint between them.
+          [`name: ${wf}`, "steps:", "  - id: a", "    type: gate", `    config: { name: ${wf} }`, "  - id: b", "    type: value", "    config: { result: 1 }"].join("\n"),
+        );
+      }
+
+      // A peer's launch is stamped, and names the person it is for. Its
+      // cancel right after the launch — maybe before run.start is in the
+      // log — is honored.
+      const launch = await post("/workflows/mine/run", "peer-key", { input: {} }, { "x-strut-actor": "alice-1" });
+      assert.equal(launch.status, 202);
+      const { runId: mine } = (await launch.json()) as { runId: string };
+      assert.equal((await post(`/workflows/mine/runs/${mine}/cancel`, "peer-key")).status, 202);
+      gate.release("mine");
+      assert.equal((await waitForSummary(store, "mine", mine)).status, "cancelled");
+      const start = await startOf("mine", mine);
+      assert.equal(start.origin, "peer");
+      assert.equal(start.actor, "alice-1");
+
+      // A run the deployment launched is not the peer's to control.
+      const { runId: theirs } = (await (await post("/workflows/theirs/run", "deploy-key", { input: {} })).json()) as { runId: string };
+      await gate.waitForStart("theirs");
+      assert.equal((await startOf("theirs", theirs)).origin, undefined);
+      for (const action of ["cancel", "pause", "resume"]) {
+        assert.equal((await post(`/workflows/theirs/runs/${theirs}/${action}`, "peer-key")).status, 403, action);
+      }
+      assert.equal((await post(`/workflows/theirs/runs/${theirs}/cancel`, "deploy-key")).status, 202);
+      gate.release("theirs");
+      assert.equal((await waitForSummary(store, "theirs", theirs)).status, "cancelled");
+      assert.equal((await post(`/workflows/theirs/runs/${theirs}/resume`, "peer-key")).status, 403, "nor its durable resume");
+
+      // The peer's own run resumes, and finishes.
+      assert.equal((await post(`/workflows/mine/runs/${mine}/resume`, "peer-key")).status, 202);
+      await waitForLog(store, "mine", mine, (events) => events.some((e) => e.type === "run.end"));
+
+      // A version's launch is a peer's launch too.
+      const versioned = await post("/workflows/mine/v1/run", "peer-key", { input: {} });
+      assert.equal(versioned.status, 202);
+      const { runId: pinned } = (await versioned.json()) as { runId: string };
+      assert.equal((await waitForSummary(store, "mine", pinned)).status, "success");
+      assert.equal((await startOf("mine", pinned)).origin, "peer");
+    } finally {
+      for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await cleanup();
+    }
+  });
+
   it("POST pause parks a run (listing shows paused, log records the gap); resume releases it", async () => {
     const gate = createGateStep();
     const { strut, workspace, store, cleanup } = await makeServer({ gate: gate.stepDef });

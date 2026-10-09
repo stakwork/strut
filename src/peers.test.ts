@@ -425,6 +425,41 @@ describe("strut/run-workflow across two struts", () => {
     assert.equal(theirs.job, undefined);
   });
 
+  it("the peer's STRUT_PEER_KEY is enough: launch as the principal, follow, cancel its own run", async () => {
+    const saved = process.env["STRUT_PEER_KEY"];
+    process.env["STRUT_PEER_KEY"] = "peer-scoped-key";
+    try {
+      const { peers } = (await (await caller.app.request("/peers", { headers: auth })).json()) as { peers: Array<{ baseUrl: string }> };
+      const put = await caller.app.request("/peers/cloud", {
+        method: "PUT",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify({ baseUrl: peers[0]!.baseUrl, token: "peer-scoped-key" }),
+      });
+      assert.equal(put.status, 200);
+
+      const far = (await settled(caller, "call", await launch("call", { input: { name: "p" } }, "alice-1"))).output as Far;
+      assert.equal(far.output, "hi p");
+      const start = (await peer.store.getRunEvents("echo", far.runId)).find((e) => e.type === "run.start")!;
+      assert.equal(start.origin, "peer");
+      assert.equal(start.actor, "alice-1", "the forwarded principal is honored with the peer key");
+
+      const runId = await launch("callslow", { input: {} });
+      let peerRun: { workflow: string; runId: string } | undefined;
+      for (let i = 0; i < 200 && !peerRun; i++) {
+        const active = (await (await peer.app.request("/runs/active", { headers: auth })).json()) as Array<{ workflow: string; runId: string }>;
+        peerRun = active.find((r) => r.workflow === "slow");
+        if (!peerRun) await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(peerRun, "the peer is running `slow`");
+      assert.equal((await caller.app.request(`/workflows/callslow/runs/${runId}/cancel`, { method: "POST", headers: auth })).status, 202);
+      assert.equal((await settled(caller, "callslow", runId)).status, "cancelled");
+      assert.equal((await settled(peer, "slow", peerRun!.runId)).status, "cancelled", "the peer key cancels the run it launched");
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_PEER_KEY"];
+      else process.env["STRUT_PEER_KEY"] = saved;
+    }
+  });
+
   it("`job` reaches the peer only when the step names one — never the caller's own", async () => {
     const runId = await launch("call", { input: { name: "x" }, job: "callers-job" });
     const far = (await settled(caller, "call", runId)).output as Far;

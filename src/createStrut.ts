@@ -32,7 +32,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { requireApiKey, carriesApiKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader } from "./auth.js";
+import { carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -277,6 +277,15 @@ export interface StrutOptions<TServices = unknown> {
    *  request: mcp reads its verified JWT. Default: the `x-strut-actor`
    *  header, honored only alongside a configured, matching `STRUT_API_KEY`. */
   resolveActor?: (c: Context) => string | undefined | Promise<string | undefined>;
+
+  /** What this request may do (plans/federation.md §3), the twin of
+   *  `resolveActor`: `"full"`, or `"peer"` — another strut, which may read
+   *  every route, launch a run, and cancel / pause / resume a run a peer
+   *  launched; everything else answers 403. Asked by the one gate, after the
+   *  request has a credential; `undefined` is `"full"`. mcp maps its JWT's
+   *  scope. Default: `"peer"` for a request carrying `STRUT_PEER_KEY`
+   *  (`scopeFromKey`), else `"full"`. */
+  resolveScope?: (c: Context) => Scope | undefined | Promise<Scope | undefined>;
 }
 
 export interface AutoResumeOptions {
@@ -485,13 +494,18 @@ export async function createStrut<TServices = unknown>(
   // Secondary index for tree linkage: a nested launch names only its
   // `parentRunId` (the calling step's ctx.runId), not the parent workflow.
   const controllersByRunId = new Map<string, RunController>();
+  /** The live runs a peer launched (`origin: "peer"`), known from the
+   *  launch — before `run.start` reaches the log — so a peer's cancel of the
+   *  run it has just launched is never refused. A dead run is judged by its
+   *  log. */
+  const peerLaunched = new WeakSet<RunController>();
   /** Register a run as in-flight, creating its controller (attached to the
    *  launching run's controller when `parentRunId` resolves — controls apply
    *  to whole subtrees). Every launch path must register: HTTP
    *  (launchDetached), programmatic (strut.run), in-process nested runs
    *  (authoring's meta/run-workflow), and chat-detached runs. The returned
    *  untrack fn belongs in the launcher's finally. */
-  const trackRun = (workflow: string, runId: string, parentRunId?: string) => {
+  const trackRun =(workflow: string, runId: string, parentRunId?: string) => {
     const key = `${workflow}/${runId}`;
     const parent = parentRunId ? controllersByRunId.get(parentRunId) : undefined;
     const controller = new RunController(runId, workflow, parent);
@@ -610,6 +624,10 @@ export async function createStrut<TServices = unknown>(
   // not ask for. A run's spend lands on the actor who launched it, else on
   // the workflow's owner (an automation has no actor, so the owner pays).
   const resolveActor = opts.resolveActor ?? actorFromHeader;
+  // And what it may do: a `peer` (another strut) reads, launches, and
+  // controls the runs a peer launched (plans/federation.md §3).
+  const resolveScope = opts.resolveScope ?? scopeFromKey;
+  const isPeer = async (c: Context) => (await resolveScope(c)) === "peer";
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
     if (actor) return actor;
     return (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.owner;
@@ -796,12 +814,27 @@ export async function createStrut<TServices = unknown>(
   // minted for that scope — what the UI's links carry, since a browser
   // cannot set a header on them and the key must never sit in a URL a
   // served page can read.
+  //
+  // Past the credential, the SCOPE (plans/federation.md §3): a `peer` —
+  // another strut, holding `STRUT_PEER_KEY` or whatever the host's
+  // `resolveScope` maps (mcp's `lab:peer` JWT) — may read every route,
+  // launch a run, and cancel / pause / resume one; the control routes then
+  // refuse it a run no peer launched. Anything else is 403, a route a host
+  // mounts later included. Launch is not narrowed by workflow: a workflow
+  // whose agent has `bash` reaches whatever the server can (decided
+  // 2026-10-09, plan as written).
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
-  app.use("*", (c, next) => {
+  const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
+  app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
     const open = read && (path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c));
-    return open ? next() : requireApiKey(c, next);
+    if (open) return next();
+    if (!carriesApiKey(c) && !carriesPeerKey(c)) return unauthorized(c);
+    if (!read && !(c.req.method === "POST" && PEER_POST.test(path)) && (await isPeer(c))) {
+      return c.json({ error: "forbidden: a peer may read, launch a run, and control a run a peer launched" }, 403);
+    }
+    return next();
   });
 
   // ── Workflows ────────────────────────────────────────────────────────────
@@ -1182,6 +1215,7 @@ export async function createStrut<TServices = unknown>(
         resume: true,
         ...(p.version ? { version: p.version } : {}),
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
+        ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -1334,8 +1368,13 @@ export async function createStrut<TServices = unknown>(
     }
     const controller = controllers.get(key) ?? null;
     const summary = await store.getRunSummary(name, runId);
-    return { controller, summary, exists: controller != null || events.length > 0 };
+    const byPeer =
+      (controller != null && peerLaunched.has(controller)) ||
+      events.find((e) => e.type === "run.start")?.origin === "peer";
+    return { controller, summary, exists: controller != null || events.length > 0, byPeer };
   };
+  /** A peer controls only the runs a peer launched (plans/federation.md §3). */
+  const NOT_A_PEER_RUN = "forbidden: a peer may only control a run a peer launched";
 
   /** Cancel / pause / resume a run that is LIVE in this process — the shared
    *  core of the HTTP control endpoints and the chat builder's cancel_run /
@@ -1345,12 +1384,14 @@ export async function createStrut<TServices = unknown>(
     name: string,
     runId: string,
     action: "cancel" | "pause" | "resume",
+    peer = false,
   ): Promise<
     | { ok: true; runId: string; state: string; quiesced?: boolean; status: 202 }
-    | { ok: false; error: string; status: 404 | 409 }
+    | { ok: false; error: string; status: 403 | 404 | 409 }
   > => {
-    const { controller, summary, exists } = await findRun(name, runId);
+    const { controller, summary, exists, byPeer } = await findRun(name, runId);
     if (!exists) return { ok: false, error: `Run "${runId}" not found`, status: 404 };
+    if (peer && !byPeer) return { ok: false, error: NOT_A_PEER_RUN, status: 403 };
     if (!controller) {
       return {
         ok: false,
@@ -1383,13 +1424,13 @@ export async function createStrut<TServices = unknown>(
 
   app.post("/workflows/:name/runs/:runId/cancel", async (c) => {
     const { name, runId } = c.req.param();
-    const { status, ...body } = await controlLiveRun(name, runId, "cancel");
+    const { status, ...body } = await controlLiveRun(name, runId, "cancel", await isPeer(c));
     return c.json(body, status);
   });
 
   app.post("/workflows/:name/runs/:runId/pause", async (c) => {
     const { name, runId } = c.req.param();
-    const { status, ...body } = await controlLiveRun(name, runId, "pause");
+    const { status, ...body } = await controlLiveRun(name, runId, "pause", await isPeer(c));
     return c.json(body, status);
   });
 
@@ -1399,7 +1440,8 @@ export async function createStrut<TServices = unknown>(
       .json<{ from?: string; force?: boolean }>()
       .catch(() => ({}) as { from?: string; force?: boolean });
 
-    const { controller, summary, exists } = await findRun(name, runId);
+    const { controller, summary, exists, byPeer } = await findRun(name, runId);
+    if (exists && !byPeer && (await isPeer(c))) return c.json({ error: NOT_A_PEER_RUN }, 403);
 
     // Live controller → in-memory resume of a paused run (§4).
     if (controller) {
@@ -2253,8 +2295,9 @@ export async function createStrut<TServices = unknown>(
       journal?: Record<string, unknown>;
       resume?: boolean;
       version?: string;
-      /** An automation's fire (plans/automations.md §3). */
-      origin?: "schedule";
+      /** An automation's fire (plans/automations.md §3), or a peer's launch
+       *  (plans/federation.md §3). */
+      origin?: "schedule" | "peer";
       automation?: { id: string };
       /** The request actor, and (on resume) the principal recorded at the
        *  original launch; otherwise the principal rule decides (§2). */
@@ -2270,6 +2313,7 @@ export async function createStrut<TServices = unknown>(
   ): string {
     const runId = body.runId ?? generateRunId();
     const { controller, untrack } = trackRun(flow.name, runId);
+    if (extra?.origin === "peer") peerLaunched.add(controller);
     const launchedAt = Date.now();
     const callback = extra?.callback;
     void (async () => {
@@ -2490,7 +2534,11 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-    const runId = launchDetached(flow, body, { actor: await resolveActor(c), ...(callback ? { callback } : {}) });
+    const runId = launchDetached(flow, body, {
+      actor: await resolveActor(c),
+      ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
+      ...(callback ? { callback } : {}),
+    });
     return c.json({ runId, ...(callback ? { callback: true } : {}) }, 202);
   });
 
@@ -2510,7 +2558,12 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-    const runId = launchDetached(flow, body, { version, actor: await resolveActor(c), ...(callback ? { callback } : {}) });
+    const runId = launchDetached(flow, body, {
+      version,
+      actor: await resolveActor(c),
+      ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
+      ...(callback ? { callback } : {}),
+    });
     return c.json({ runId, ...(callback ? { callback: true } : {}) }, 202);
   });
 

@@ -166,7 +166,8 @@ running in its process group after it returns is killed when the run ends,
 so nothing a run spawned outlives it.
 
 **API/UI.** `POST /workflows/:name/runs/:runId/cancel` (404 unknown, 409
-already terminal). UI: a Cancel button in the topbar of an active run's
+already terminal; 403 for a `peer`-scoped caller on a run no peer launched —
+the same rule for pause and resume, plans/federation.md §3). UI: a Cancel button in the topbar of an active run's
 view; confirm dialog states the subtree consequence ("cancels N nested
 runs").
 

@@ -15,9 +15,16 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * The same secret authenticates first-party services in both directions
  * within a deployment: mcp uses it to register steps with strut, and strut's
  * uploaded step files use it to call back to mcp. See AGENTS.md.
+ *
+ * A second, narrower key, `STRUT_PEER_KEY`, is what ANOTHER strut holds for
+ * this one (plans/federation.md §3): it authenticates like the deployment
+ * key, but the request it carries is `peer`-scoped (`scopeFromKey`) — the
+ * gate in createStrut lets it read, launch a run, and control a run a peer
+ * launched, nothing else.
  */
 
 const ENV_VAR = "STRUT_API_KEY";
+const PEER_ENV = "STRUT_PEER_KEY";
 
 let warned = false;
 
@@ -25,6 +32,18 @@ let warned = false;
 function configuredKey(): string | undefined {
   const v = process.env[ENV_VAR];
   return v && v.length > 0 ? v : undefined;
+}
+
+/** Read the configured peer key at request time. Returns undefined if unset. */
+function configuredPeerKey(): string | undefined {
+  const v = process.env[PEER_ENV];
+  return v && v.length > 0 ? v : undefined;
+}
+
+/** The key a request presents: `Authorization: Bearer`, else `?key=`. */
+function presentedKey(authorization: string | undefined, queryKey?: string | null): string | undefined {
+  const match = (authorization ?? "").match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || queryKey?.trim() || undefined;
 }
 
 /** Emit a one-time stderr warning if running without a configured key. */
@@ -48,17 +67,28 @@ export function carriesApiKey(c: Context): boolean {
 }
 
 /**
- * Hono middleware that gates a route on the deployment key. Permissive when
- * the env var is unset.
+ * Does this request carry the PEER key (`STRUT_PEER_KEY`)? As Bearer or
+ * `?key=`, like the deployment key. False when the env var is unset: an
+ * unset peer key opens nothing.
+ */
+export function carriesPeerKey(c: Context): boolean {
+  const expected = configuredPeerKey();
+  return !!expected && presentedKey(c.req.header("authorization"), c.req.query("key")) === expected;
+}
+
+/** The 401 every gate answers a request with no credential it accepts. */
+export function unauthorized(c: Context) {
+  return c.json({ error: "unauthorized: valid Authorization: Bearer <STRUT_API_KEY> required" }, 401);
+}
+
+/**
+ * Hono middleware that gates a route on the deployment key — or, for a
+ * read, the peer key (a peer may read every route). Permissive when
+ * `STRUT_API_KEY` is unset.
  */
 export async function requireApiKey(c: Context, next: Next) {
-  if (!carriesApiKey(c)) {
-    return c.json(
-      { error: "unauthorized: valid Authorization: Bearer <STRUT_API_KEY> required" },
-      401,
-    );
-  }
-
+  const read = c.req.method === "GET" || c.req.method === "HEAD";
+  if (!carriesApiKey(c) && !(read && carriesPeerKey(c))) return unauthorized(c);
   return next();
 }
 
@@ -71,9 +101,27 @@ export async function requireApiKey(c: Context, next: Next) {
 export function apiKeyMatches(authorization: string | undefined, queryKey?: string | null): boolean {
   const expected = configuredKey();
   if (!expected) return true;
-  const match = (authorization ?? "").match(/^Bearer\s+(.+)$/i);
-  const got = match?.[1]?.trim() || queryKey?.trim();
+  const got = presentedKey(authorization, queryKey);
   return !!got && got === expected;
+}
+
+// ── Scope ────────────────────────────────────────────────────────────────
+
+/**
+ * What a request may do (plans/federation.md §3). `full`: everything — the
+ * deployment key, and every request in dev mode. `peer`: what another strut
+ * needs to dispatch work here and read it back — every read, launching a
+ * run, and cancel / pause / resume of a run a peer launched (`origin:
+ * "peer"` on its `run.start`); every other route answers 403. Enforced by
+ * the one gate in createStrut; a host decides it per request through
+ * `createStrut({ resolveScope })`, as it decides the actor.
+ */
+export type Scope = "full" | "peer";
+
+/** The default `resolveScope`: `peer` for a request that carries the peer
+ *  key and not the deployment key, else `full`. */
+export function scopeFromKey(c: Context): Scope {
+  return carriesPeerKey(c) && !(configuredKey() && carriesApiKey(c)) ? "peer" : "full";
 }
 
 // ── File read tokens ─────────────────────────────────────────────────────
@@ -154,12 +202,14 @@ export function carriesBadFileToken(c: Context): boolean {
 /**
  * The default `resolveActor` (plans/mothership-cost-control.md §2): the
  * `x-strut-actor` header, honored only when the request also carries the
- * deployment key AND a key is configured. With `STRUT_API_KEY` unset nothing
+ * deployment key AND a key is configured, or carries the peer key — a
+ * peer's launch names the person it is for (`strut/run-workflow` sends its
+ * run's principal), never the machine. With neither key configured nothing
  * is honored — an unauthenticated caller must never pick who pays. A host
  * that authenticates requests itself (mcp's JWT) passes its own hook.
  */
 export function actorFromHeader(c: Context): string | undefined {
-  if (!configuredKey() || !carriesApiKey(c)) return undefined;
+  if (!(configuredKey() && carriesApiKey(c)) && !carriesPeerKey(c)) return undefined;
   const v = c.req.header("x-strut-actor")?.trim();
   return v ? v : undefined;
 }

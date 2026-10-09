@@ -79,7 +79,8 @@ export interface RunOptions<TServices = unknown> {
   /** Cassette mode this run executes under — recorded on `run.start`. */
   cassette?: "record" | "replay";
   /** `"verify"` when the verify pass launches this run (a check);
-   *  `"schedule"` when an automation does. Recorded on `run.start`. */
+   *  `"schedule"` when an automation does; `"peer"` when another strut does
+   *  over HTTP. Recorded on `run.start`. */
   origin?: RunOrigin;
   /** The automation firing this run — recorded on `run.start` and on the
    *  summary (see `RunSummary.automation`). */
