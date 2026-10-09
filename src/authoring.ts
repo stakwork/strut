@@ -264,6 +264,47 @@ export async function searchRunEvents(
   };
 }
 
+// ── Targeted edits (shared mechanism) ──────────────────────────────────────
+
+/** One exact-string replacement — the `edits` arg of edit_workflow / edit_step. */
+export interface TextEdit {
+  old: string;
+  new: string;
+}
+
+/**
+ * Apply `edits` in order to a workflow's YAML or a step's source: each `old`
+ * must occur exactly once in the text as it stands when that edit is
+ * applied. This is what lets the builder change one line of a 50k-char
+ * workflow without resending it — a document that size is cut by the tool
+ * result cap, so "read it whole, send it back whole" could not work. An
+ * error names the edit and, for a repeated match, every line it matched, so
+ * the model adds context rather than guessing; nothing is published on one.
+ */
+export function applyEdits(text: string, edits: TextEdit[], what: string): { text: string } | { error: string } {
+  for (const [i, e] of edits.entries()) {
+    const at: number[] = [];
+    for (let j = text.indexOf(e.old); j !== -1; j = text.indexOf(e.old, j + 1)) at.push(j);
+    if (at.length === 0) {
+      return {
+        error:
+          `Edit ${i + 1}: no match for the text to replace — it must match the current ${what} exactly, ` +
+          `whitespace and indentation included. Nothing was published. Copy the text verbatim from the source.`,
+      };
+    }
+    if (at.length > 1) {
+      const lines = [...new Set(at.map((j) => text.slice(0, j).split("\n").length))];
+      return {
+        error:
+          `Edit ${i + 1}: the text to replace matches ${at.length} times (lines ${lines.join(", ")}) — ` +
+          `include more surrounding text so it matches exactly once. Nothing was published.`,
+      };
+    }
+    text = text.slice(0, at[0]) + e.new + text.slice(at[0] + e.old.length);
+  }
+  return { text };
+}
+
 // ── Step publishing (shared mechanism) ─────────────────────────────────────
 
 /** LLMs sometimes pass an object-valued arg as a JSON *string* (e.g.

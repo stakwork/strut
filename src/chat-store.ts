@@ -198,6 +198,14 @@ export function toolResultMaxCharsFromEnv(): number {
  * once it sat beyond the provider's lookback), and on models that bind
  * thinking blocks to the prefix, every later block invalidated.
  */
+/** The builder's DOCUMENT reads — what edit_workflow / edit_step work
+ *  from. Capped where they are made by the window's headroom alone, never
+ *  the env ceiling (`capToolResults`, ai/tools.ts: 176k chars on a 1M
+ *  window against the 50k every other result gets), and never re-cut on
+ *  replay (`truncateToolMessages`): the number they were cut to follows the
+ *  model, so a fixed cap here could rewrite what the model already read. */
+export const DOCUMENT_TOOLS: ReadonlySet<string> = new Set(["get_workflow", "get_step"]);
+
 export function capToolOutput<T>(value: T, maxChars = toolResultMaxCharsFromEnv()): T {
   if (maxChars <= 0) return value;
   const walk = (v: unknown): unknown => {
@@ -224,14 +232,23 @@ function capString(s: string, maxChars: number): string {
  * The same cap over a stored history's `role: "tool"` messages, on what a
  * turn replays. A no-op on anything recorded since the tools cap at the
  * source; it keeps a history recorded before then (full results on disk) at
- * the size the model has been reading.
+ * the size the model has been reading. A DOCUMENT read (`DOCUMENT_TOOLS`)
+ * is left as recorded: it was cut to the window, not this number.
  */
 export function truncateToolMessages(
   messages: StoredMessage[],
   maxChars = toolResultMaxCharsFromEnv(),
 ): StoredMessage[] {
   if (maxChars <= 0) return messages;
-  return messages.map((m) => (m.role === "tool" ? { ...m, content: capToolOutput(m.content, maxChars) } : m));
+  const isDocument = (part: unknown) =>
+    !!part && typeof part === "object" && DOCUMENT_TOOLS.has((part as { toolName?: string }).toolName ?? "");
+  return messages.map((m) => {
+    if (m.role !== "tool") return m;
+    const content = Array.isArray(m.content)
+      ? m.content.map((part) => (isDocument(part) ? part : capToolOutput(part, maxChars)))
+      : capToolOutput(m.content, maxChars);
+    return { ...m, content };
+  });
 }
 
 // ── Filesystem implementation ──────────────────────────────────────────────

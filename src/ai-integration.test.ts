@@ -292,6 +292,42 @@ describe("AI create_step / edit_step tools", () => {
     assert.deepEqual(versions, ["v1", "v2"]);
   });
 
+  it("edit_step takes `edits` over the active source; a missing or repeated match publishes nothing", async () => {
+    const deps = makeDeps();
+    const tools = buildTools(deps) as any;
+    await tools.create_step.execute({ name: "my/step", code: code(1) });
+
+    // Neither / both → refused before anything is read.
+    assert.match((await tools.edit_step.execute({ type: "my/step" })).error, /Pass the full step source or `edits`/);
+    assert.match(
+      (await tools.edit_step.execute({ type: "my/step", code: code(2), edits: [{ old: "1", new: "2" }] })).error,
+      /not both/,
+    );
+    // No match: nothing published, the message says to copy verbatim.
+    const miss = await tools.edit_step.execute({ type: "my/step", edits: [{ old: "return 9;", new: "return 2;" }] });
+    assert.match(miss.error, /^Edit 1: no match .*Nothing was published/);
+    // Repeated match: every line named.
+    const dup = await tools.edit_step.execute({ type: "my/step", edits: [{ old: "z", new: "zz" }] });
+    assert.match(dup.error, /^Edit 1: the text to replace matches 3 times \(lines 1, 2\)/);
+    assert.equal((await deps.workspace.listStepVersions("my/step")).active, "v1");
+
+    // One exact match → v2 with the edit applied; edits apply in order.
+    const edited = await tools.edit_step.execute({
+      type: "my/step",
+      edits: [
+        { old: "return 1;", new: "return 2;" },
+        { old: "return 2;", new: "return 3;" },
+      ],
+    });
+    assert.equal(edited.ok, true);
+    assert.equal(edited.version, "v2");
+    assert.match((await deps.workspace.getStepSource("my/step"))!.code, /return 3;/);
+    assert.match(
+      (await tools.edit_step.execute({ type: "nope/step", edits: [{ old: "a", new: "b" }] })).error,
+      /Step "nope\/step" not found/,
+    );
+  });
+
   it("set_active_version rolls a custom step back and refreshes the registry", async () => {
     const deps = makeDeps();
     let refreshed = 0;
@@ -484,6 +520,67 @@ describe("AI list_workflows / get_workflow tools", () => {
     assert.equal(clean.ok, true);
     assert.equal(clean.version, "v2");
     assert.equal("warnings" in clean, false);
+  });
+
+  it("get_workflow is capped by the document cap, every other tool by the ordinary one", async () => {
+    const { ws, deps } = makeDeps();
+    const big = wfYaml("big") + "  - id: more\n    type: log\n    config:\n      message: " + "m".repeat(3000) + "\n";
+    await ws.createWorkflow("big", big, "d".repeat(400));
+    // What the model reads: the capped output, or the raw one where the tool is left uncapped.
+    const read = async (tools: any, name: string, input: any) => {
+      const output = await tools[name].execute(input);
+      const cap = tools[name].toModelOutput;
+      return cap ? (await cap({ toolCallId: "c", input, output })).value : output;
+    };
+    // The ordinary cap alone (no document cap given): the document is cut like anything else.
+    const plain = buildTools({ ...deps, toolResultMaxChars: 1000 }) as any;
+    assert.ok((await read(plain, "get_workflow", { name: "big" })).yaml.includes("[TRUNCATED"));
+    // The document cap: get_workflow comes back whole, a listing's long string is still cut.
+    const tools = buildTools({ ...deps, toolResultMaxChars: 300, documentMaxChars: 100_000 }) as any;
+    assert.equal((await read(tools, "get_workflow", { name: "big" })).yaml, big);
+    const listed = await read(tools, "list_workflows", {});
+    assert.ok(listed.workflows[0].description.includes("[TRUNCATED"));
+    // `0` for the document cap leaves documents uncapped while the rest is still capped.
+    const open = buildTools({ ...deps, toolResultMaxChars: 300, documentMaxChars: 0 }) as any;
+    assert.equal((await read(open, "get_workflow", { name: "big" })).yaml, big);
+    assert.ok((await read(open, "list_workflows", {})).workflows[0].description.includes("[TRUNCATED"));
+  });
+
+  it("edit_workflow takes `edits` over the active version's YAML — one line of a big file, never resent", async () => {
+    const { ws, deps } = makeDeps();
+    const echo = defineStep({ type: "echo", input: z.object({ message: z.string(), pages: z.number().optional() }), output: z.any(), async run(c) { return c; } });
+    const registry = await createRegistry([echo]);
+    const tools = buildTools({ ...deps, registry, getRegistry: async () => registry }) as any;
+    const yaml =
+      "name: study\nparams:\n  max_pages: 3\nsteps:\n  - id: a\n    type: echo\n    config: { message: x, pages: \"{{ params.max_pages }}\" }\n";
+    await ws.createWorkflow("study", yaml);
+
+    assert.match((await tools.edit_workflow.execute({ name: "study" })).error, /Pass the full workflow YAML or `edits`/);
+    assert.match((await tools.edit_workflow.execute({ name: "study", yaml, edits: [{ old: "3", new: "100" }] })).error, /not both/);
+    assert.match(
+      (await tools.edit_workflow.execute({ name: "nope", edits: [{ old: "3", new: "100" }] })).error,
+      /Workflow "nope" not found/,
+    );
+    // A no-match or a repeated match publishes nothing.
+    assert.match((await tools.edit_workflow.execute({ name: "study", edits: [{ old: "max_pages: 4", new: "max_pages: 100" }] })).error, /^Edit 1: no match/);
+    assert.match((await tools.edit_workflow.execute({ name: "study", edits: [{ old: "max_pages", new: "pages" }] })).error, /matches 2 times \(lines 3, 7\)/);
+    // A validation error after the edit publishes nothing either.
+    const broken = await tools.edit_workflow.execute({ name: "study", edits: [{ old: "type: echo", new: "type: nope" }] });
+    assert.match(broken.error, /Unknown step type "nope"/);
+    assert.equal((await tools.get_workflow.execute({ name: "study" })).activeVersion, "v1");
+
+    const res = await tools.edit_workflow.execute({ name: "study", edits: [{ old: "max_pages: 3", new: "max_pages: 100" }] });
+    assert.equal(res.ok, true);
+    assert.equal(res.version, "v2");
+    assert.equal(res.changed, true);
+    const after = await tools.get_workflow.execute({ name: "study" });
+    assert.equal(after.activeVersion, "v2");
+    assert.equal(after.yaml, yaml.replace("max_pages: 3", "max_pages: 100"));
+    // Edits apply to the ACTIVE version: rolled back to v1, the same edit lands on v1's text as v3.
+    await tools.set_active_version.execute({ kind: "workflow", name: "study", version: "v1" });
+    const again = await tools.edit_workflow.execute({ name: "study", edits: [{ old: "max_pages: 3", new: "max_pages: 50" }] });
+    assert.equal(again.version, "v3");
+    assert.match((await tools.get_workflow.execute({ name: "study" })).yaml, /max_pages: 50/);
   });
 
   it("set_active_version rolls a workflow back without publishing", async () => {

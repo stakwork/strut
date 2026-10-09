@@ -5,7 +5,13 @@
 > (`steps/core/agent.ts`). Builds on `plans/compaction.md` §4 (caps follow
 > the window) and the append-only rule (strut#76). Written after chat
 > `muwr8dzn-20rzt5` on swarm38; the first fix, `run_step` returning a step's
-> output once instead of three times, is strut#110 (merged).
+> output once instead of three times, is strut#110 (merged). Since 2026-10-09
+> `edit_workflow` / `edit_step` take `edits` (exact-string replacements over
+> the active version), so a document the builder changes need not come back
+> whole, and `get_workflow` / `get_step` are capped by the window's headroom
+> alone (176k on 1M, never the 50k ceiling; `DOCUMENT_TOOLS`) and never
+> re-cut on replay. The exemption below — an ERROR past the budget instead
+> of a cut — is superseded: with `edits`, a cut document is still editable.
 
 ## Problem
 
