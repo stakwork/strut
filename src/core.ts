@@ -302,6 +302,13 @@ export interface AccessedNode {
   ref_id: string;
   node_type?: string;
   name?: string;
+  /** Set when the node is in ANOTHER strut's graph (plans/federation.md
+   *  §2.2): the caller's id for that peer — the handle rule, never a URL.
+   *  Absent: this strut's own graph. A `ref_id` means something only against
+   *  the graph of the strut that recorded it, so no reader resolves a tagged
+   *  ref locally: the projector writes no edge for it, the run flyout shows
+   *  it under the peer. `strut/run-workflow` tags what a peer's run touched. */
+  peer?: string;
 }
 
 const ACCESSED_NAME_MAX = 200;
@@ -334,6 +341,7 @@ export function withAccessedNodes<T>(output: T, nodes: Array<AccessedNode | null
       ref_id: n.ref_id,
       ...(typeof n.node_type === "string" && n.node_type ? { node_type: n.node_type } : {}),
       ...(typeof n.name === "string" && n.name.trim() ? { name: n.name.trim().slice(0, ACCESSED_NAME_MAX) } : {}),
+      ...(typeof n.peer === "string" && n.peer.trim() ? { peer: n.peer.trim() } : {}),
     });
   }
   if (list.length === 0) return output;

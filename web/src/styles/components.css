@@ -1307,6 +1307,16 @@ body.is-resizing-flyout * {
   color: var(--text-muted);
   font-size: 11px;
 }
+/* A node on another strut's graph: the peer's id, as this strut names it. */
+.node-row-peer {
+  flex: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
 .node-row-tools {
   flex: none;
   color: var(--text-dim);

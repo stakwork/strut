@@ -208,6 +208,11 @@ describe("withAccessedNodes()", () => {
     assert.equal(arr.length, 1);
   });
 
+  it("carries a peer tag — a node in another strut's graph — and drops an empty one", () => {
+    const obj = withAccessedNodes({}, [{ ref_id: "a", node_type: "Concept", peer: " cloud " }, { ref_id: "b", peer: "" }, { ref_id: "c" }]);
+    assert.deepEqual(accessedNodesOf(obj), [{ ref_id: "a", node_type: "Concept", peer: "cloud" }, { ref_id: "b" }, { ref_id: "c" }]);
+  });
+
   it("leaves primitives, empty lists, and junk refs unmarked", () => {
     assert.equal(withAccessedNodes("error text", [{ ref_id: "a" }]), "error text");
     assert.equal(accessedNodesOf("error text"), undefined);

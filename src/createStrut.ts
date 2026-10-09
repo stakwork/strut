@@ -1075,6 +1075,13 @@ export async function createStrut<TServices = unknown>(
         // A resumed run appends past its old terminal event — keep following
         // while a live controller exists (§5.2 tail terminality).
         stillLive: () => controllers.has(`${name}/${runId}`),
+        // A log with no terminal event and no controller is a STALE run
+        // (cut off by a crash, not resumed): close with `done { status:
+        // "stale" }` instead of following it forever — a peer's
+        // `strut/run-workflow` waits on this tail (plans/federation.md
+        // §2.2). A run not yet launched is never this: `trackRun` registers
+        // the controller before the 202 that names the run.
+        live: () => controllers.has(`${name}/${runId}`),
       })) {
         await stream.writeSSE({ data: JSON.stringify(withTranscriptLink(name, event)) });
       }

@@ -9,7 +9,9 @@ import { createStrut, type Strut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import { MemorySecretStore, FileSecretStore } from "./secret-store.js";
-import type { RunEvent, RunSummary } from "./core.js";
+import { defineStep, withAccessedNodes, type RunEvent, type RunSummary } from "./core.js";
+import { createRegistry } from "./steps/registry.js";
+import { z } from "zod";
 import {
   launchOnPeer,
   listPeerWorkflows,
@@ -220,6 +222,42 @@ describe("tailPeerRun", () => {
     await assert.rejects(tailPeerRun(dead, handle, { sleep: noSleep, maxAttempts: 3 }), /peer_unreachable: .* after 3 attempts: ECONNREFUSED/);
   });
 
+  it("a `done` that says stale is retried, then peer_run_stale; a summary-less done reattaches", async () => {
+    // The peer's run died with its process and nobody resumed it: its tail
+    // closes with `done { status: "stale" }` instead of hanging (TailOpts.live).
+    let n = 0;
+    const { cap, ready } = capabilityOver(async () => {
+      n += 1;
+      return sseResponse([sseDone({ runId: "r1", status: "stale" })]);
+    });
+    await ready;
+    await assert.rejects(tailPeerRun(cap, handle, { sleep: noSleep, maxAttempts: 3 }), /peer_run_stale: run r1 on peer "cloud" has no live process there and was not resumed \(3 checks\)/);
+    assert.equal(n, 3);
+
+    // A peer mid-boot resumes its runs after it starts serving: stale, then live.
+    let m = 0;
+    const { cap: boot, ready: ready2 } = capabilityOver(async () => {
+      m += 1;
+      if (m < 3) return sseResponse([sseDone({ runId: "r1", status: "stale" })]);
+      return sseResponse([...events.map(sseEvent), sseDone(result)]);
+    });
+    await ready2;
+    assert.deepEqual(await tailPeerRun(boot, handle, { sleep: noSleep }), result);
+
+    // The terminal event read before its summary was written: `done` names
+    // the live state — reattach, and the next `done` has the result.
+    let k = 0;
+    const { cap: racy, ready: ready3 } = capabilityOver(async () => {
+      k += 1;
+      if (k === 1) return sseResponse([...events.map(sseEvent), sseDone({ runId: "r1", status: "running" })]);
+      return sseResponse([sseDone(result)]);
+    });
+    await ready3;
+    const got: string[] = [];
+    assert.deepEqual(await tailPeerRun(racy, handle, { sleep: noSleep, onEvent: (e) => got.push(e.type) }), result);
+    assert.equal(got.length, 4, "each event once across the reattach");
+  });
+
   it("a 4xx on the stream is a refusal, not a drop", async () => {
     const { cap, ready } = capabilityOver(async () => json({ error: "unauthorized" }, 401));
     await ready;
@@ -351,9 +389,33 @@ describe("strut/run-workflow across two struts", () => {
     dirs = [0, 1].map(() => join(tmpdir(), `strut-peer-e2e-${randomUUID()}`));
     await Promise.all(dirs.map((d) => mkdir(d, { recursive: true })));
 
-    peer = await createStrut({ workspace: new WorkspaceManager(dirs[0]!), store: new MemoryRunStore(), serveUi: false, enableChat: false, scheduler: false });
+    // A step on the peer that touches its graph (the provenance marker),
+    // one ref of which the peer itself got from a third strut.
+    const touch = defineStep({
+      type: "test/touch",
+      description: "reports nodes",
+      input: z.object({}),
+      output: z.any(),
+      async run() {
+        return withAccessedNodes({ ok: true }, [
+          { ref_id: "n1", node_type: "Concept", name: "Billing" },
+          { ref_id: "n2", node_type: "Feature", peer: "third" },
+        ]);
+      },
+    });
+    peer = await createStrut({
+      workspace: new WorkspaceManager(dirs[0]!),
+      store: new MemoryRunStore(),
+      registry: await createRegistry([touch]),
+      serveUi: false,
+      enableChat: false,
+      scheduler: false,
+    });
     await peer.workspace.publishWorkflow("echo", "v1", {
       steps: [{ id: "g", type: "log", config: { message: "hi {{ input.name }}" } }],
+    });
+    await peer.workspace.publishWorkflow("touch", "v1", {
+      steps: [{ id: "t", type: "test/touch" }, { id: "again", type: "test/touch" }],
     });
     await peer.workspace.publishWorkflow("slow", "v1", {
       steps: [{ id: "many", type: "foreach", config: { items: 200, body: { id: "w", type: "wait", config: { durationMs: 50 } } } }],
@@ -375,6 +437,7 @@ describe("strut/run-workflow across two struts", () => {
     await caller.workspace.publishWorkflow("withjob", "v1", far({ input: { name: "j" }, job: "job-on-peer" }));
     await caller.workspace.publishWorkflow("nopeer", "v1", far({ peer: "nope" }));
     await caller.workspace.publishWorkflow("missing", "v1", far({ workflow: "nope" }));
+    await caller.workspace.publishWorkflow("calltouch", "v1", far({ workflow: "touch" }));
   });
 
   afterEach(async () => {
@@ -497,6 +560,73 @@ describe("strut/run-workflow across two struts", () => {
 
     assert.equal((await settled(caller, "callslow", runId)).status, "cancelled");
     assert.equal((await settled(peer, "slow", peerRun!.runId)).status, "cancelled");
+  });
+
+  it("the peer run's nodes land on the step's step.end tagged with the peer, and the launch is journaled", async () => {
+    const runId = await launch("calltouch", { input: {} });
+    const summary = await settled(caller, "calltouch", runId);
+    assert.equal(summary.status, "success", JSON.stringify(summary.error));
+    const far = summary.output as Far;
+    const events = await caller.store.getRunEvents("calltouch", runId);
+
+    // Deduplicated across the peer's two steps; a ref the peer itself got
+    // from a third strut keeps that tag.
+    const end = events.find((e) => e.type === "step.end" && e.path === "calltouch/far")!;
+    assert.deepEqual(end.nodes, [
+      { ref_id: "n1", node_type: "Concept", name: "Billing", peer: "cloud" },
+      { ref_id: "n2", node_type: "Feature", peer: "third" },
+    ]);
+    assert.ok(!("nodes" in (end.output as object)), "the marker is not in the output");
+
+    // The handle, journaled before the wait: no stepType, so no step counted.
+    const launched = events.find((e) => e.type === "step.end" && e.path === "calltouch/far#launch")!;
+    assert.ok(launched, "a step.end at <path>#launch");
+    assert.equal(launched.stepType, undefined);
+    const record = launched.output as { peer: string; workflow: string; runId: string; launchedAt: number };
+    assert.deepEqual([record.peer, record.workflow, record.runId], ["cloud", "touch", far.runId]);
+    assert.ok(typeof record.launchedAt === "number");
+    assert.ok(Date.parse(launched.ts) <= Date.parse(end.ts));
+    assert.equal(summary.stepCounts?.["strut/run-workflow"]?.success, 1);
+  });
+
+  it("a resumed caller reattaches to the peer's run instead of launching it again", async () => {
+    // A finished run on the peer, and a caller log cut off while waiting on
+    // it — what a crash of the caller leaves behind — resumed through the
+    // same path boot-time auto-resume takes.
+    const first = await launch("call", { input: { name: "x" } });
+    const theirs = (await settled(caller, "call", first)).output as Far;
+    assert.equal((await peer.store.listRuns("echo")).length, 1);
+
+    const stale = "1700000000000";
+    const workflowHash = await caller.workspace.getWorkflowHash("call");
+    const at = (i: number) => new Date(Date.now() - 10_000 + i).toISOString();
+    const ev = (i: number, e: Partial<RunEvent> & { type: RunEvent["type"] }): RunEvent => ({ ts: at(i), runId: stale, path: "call", ...e });
+    await caller.store.append("call", stale, ev(0, { type: "run.start", input: { name: "x" }, ...(workflowHash ? { workflowHash } : {}) }));
+    await caller.store.append("call", stale, ev(1, { type: "step.start", path: "call/far", stepType: "strut/run-workflow", input: { peer: "cloud", workflow: "echo" } }));
+    await caller.store.append("call", stale, ev(2, {
+      type: "step.end",
+      path: "call/far#launch",
+      output: { peer: "cloud", workflow: "echo", runId: theirs.runId, launchedAt: Date.now() - 5000 },
+    }));
+
+    const res = await caller.app.request(`/workflows/call/runs/${stale}/resume`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" });
+    assert.equal(res.status, 202, await res.text());
+    const summary = await settled(caller, "call", stale);
+    assert.equal(summary.status, "success", JSON.stringify(summary.error));
+    const far = summary.output as Far;
+    assert.equal(far.runId, theirs.runId, "the SAME run on the peer");
+    assert.equal(far.output, "hi x");
+    assert.ok((far.durationMs ?? 0) >= 5000, "timed from the original launch");
+    assert.equal((await peer.store.listRuns("echo")).length, 1, "nothing was launched again");
+  });
+
+  it("the tail of a run that died on the peer ends with done { status: stale }", async () => {
+    await peer.store.append("echo", "8888", { ts: new Date().toISOString(), runId: "8888", path: "echo", type: "run.start", input: {} });
+    const res = await peer.app.request("/workflows/echo/runs/8888/stream", { headers: auth });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.match(text, /"type":"run.start"/);
+    assert.match(text, /event: done\ndata: \{"runId":"8888","status":"stale"\}/);
   });
 
   it("an unknown peer, or a refusal from the peer, fails the step with the message", async () => {

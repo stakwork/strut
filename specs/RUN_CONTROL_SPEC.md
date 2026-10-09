@@ -325,7 +325,15 @@ adds is lifecycle bookkeeping:
   unconditionally terminal: a later `run.resumed` in the log reopens
   the stream (historical tails scan ahead; live tails consult the
   controllers map). Without this, the UI would freeze a resumed run's
-  event panel at the old failure.
+  event panel at the old failure. The converse, added 2026-10-09: a log
+  with NO terminal event and no controller is a stale run, and a live
+  tail of it CLOSES (`TailOpts.live`, consulted at EOF before any
+  terminal event) with `done { status: "stale" }` instead of following
+  forever — a peer's `strut/run-workflow` waits on that tail
+  (plans/federation.md §2.2). A step that waits on something outside the
+  process journals its handle at launch (`<path>#launch`) and reattaches
+  on re-execution: in-process a child dies with its parent and relaunch
+  is right; across struts the child survives and relaunch is wrong.
 - **`from`: forced invalidation (the "re-run from this step" gesture).**
   Resume accepts an optional step path: that path, its transitive
   dependents, and its iteration children are DROPPED from the journal
