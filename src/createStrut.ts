@@ -2693,6 +2693,9 @@ export async function createStrut<TServices = unknown>(
             store,
             services,
             toolResultMaxChars: resultCapChars(toolResultMaxCharsFromEnv(), llm.contextLimit, compactAt),
+            // A document read (get_workflow / get_step) is bound by the
+            // window alone — no env ceiling; uncapped with compaction off.
+            documentMaxChars: resultCapChars(0, llm.contextLimit, compactAt),
             ...(actor ? { actor } : {}),
             secrets: secretsInjected ? undefined : secretStore,
             // The other struts this one may call: list_peers + `peer` on

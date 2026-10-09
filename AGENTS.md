@@ -92,7 +92,7 @@ strut/
 │   │   ├── tools.ts       # buildTools(deps): list_steps, search_steps, get_step,
 │   │   │                  #                   list_secrets (NAMES only), create_step, edit_step,
 │   │   │                  #                   list_workflows (query?/limit?: slim entries — name/description/category/activeVersion — cut at 100 with `total` + a `hint` the model reads; the sidebar's matcher, src/search.ts) / get_workflow (one metadata read; both shared with the meta/* twins through authoring.ts),
-│   │   │                  #                   create_workflow, run_workflow (threads ctx.services),
+│   │   │                  #                   create_workflow / edit_workflow (the full YAML, or `edits`: exact-string replacements over the active version, each matching once — a one-line change to a 50k workflow without resending it; edit_step takes the same), run_workflow (threads ctx.services),
 │   │   │                  #                   graph_query (read-only Cypher; only when deps.graph is wired),
 │   │   │                  #                   graph_get (the graph/graph-get STEP as a chat tool — its schema, its run(); one node by ref_id or type + name, with `children`; same gate),
 │   │   │                  #                   graph_walk (graph/walk as a chat tool; same gate),
@@ -131,7 +131,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1382 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1386 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -285,7 +285,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
 | `STRUT_CHAT_MAX_STEPS` | `100`        | Max agent tool-call iterations per chat turn |
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
-| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string CEILING on the builder's tool RESULTS, applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. The cap in force is this bounded by the window's headroom below the compaction mark (`STRUT_COMPACT_AT`): 50k on a 1M window, 16k on 200k. `0` removes the ceiling; the window's cap still applies while compaction is on. |
+| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string CEILING on the builder's tool RESULTS, applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. The cap in force is this bounded by the window's headroom below the compaction mark (`STRUT_COMPACT_AT`): 50k on a 1M window, 16k on 200k. `0` removes the ceiling; the window's cap still applies while compaction is on. The builder's DOCUMENT reads — `get_workflow`, `get_step` (`DOCUMENT_TOOLS`, `chat-store.ts`), what `edit_workflow` / `edit_step` work from — are bound by the window's headroom alone, never this ceiling (176k on a 1M window), and are never re-cut on replay. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
 | `STRUT_COMPACT_AT` | `0.9` | Compaction (plans/compaction.md): the share of the model's window past which the builder chat and the `agent` step fold everything the model has seen into its own summary and go on from it — one APPENDED `[compaction]` user message and a replay boundary (`ChatMeta.replayFrom`; `replayFrom` on an agent session's turn line). Nothing is edited: the whole history stays, the read endpoints serve it, and the prompt cache and prefix-bound thinking blocks hold. Also sizes the per-result caps: one `bash` / `view` / builder-tool result may be at most `((1 − at) × window − 12k) × 2` chars (the 12k reserves the summary and one generation), under each surface's own ceiling. `1` disables it: the provider's limit and `session_full:` are the backstops. |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
@@ -1118,7 +1118,12 @@ and the child env is scrubbed by construction).
   the model reads the capped result in its own turn and `messages.jsonl`
   records exactly that (the uncapped output is in `events.jsonl`);
   `truncateToolMessages` applies the same cap on replay, a no-op except
-  for histories recorded before the cap moved. (2) The system prompt is
+  for histories recorded before the cap moved. The two DOCUMENT reads
+  (`get_workflow`, `get_step` — `DOCUMENT_TOOLS`) get the window's headroom
+  with no ceiling at the source (`AiDeps.documentMaxChars`) and are skipped
+  on replay: a 50k workflow is read whole, and `edit_workflow` /
+  `edit_step` take `edits` (exact-string replacements) so even a cut one
+  is editable without being resent. (2) The system prompt is
   rendered on a chat's first turn and stored (`ChatStore.getSystem` /
   `setSystem`, `chats/<id>/system.md`), then replayed verbatim: a step
   published mid-chat never re-renders the steps tree, and the model

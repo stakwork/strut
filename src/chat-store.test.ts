@@ -228,6 +228,24 @@ describe("truncateToolMessages", () => {
     assert.deepEqual(truncateToolMessages(msgs, 4000), msgs);
   });
 
+  it("never re-cuts a document read (get_workflow / get_step): it was cut to the window, not this number", () => {
+    const big = "y".repeat(5000);
+    const msgs = [
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolName: "get_workflow", toolCallId: "a", output: { type: "json", value: { yaml: big } } },
+          { type: "tool-result", toolName: "list_runs", toolCallId: "b", output: { type: "json", value: { log: big } } },
+        ],
+      },
+    ];
+    const out = truncateToolMessages(msgs, 4000);
+    const [doc, other] = out[0]!.content as any[];
+    assert.equal(doc.output.value.yaml.length, 5000);
+    assert.equal(other.output.value.log.length, 4000);
+    assert.ok(other.output.value.log.includes("[TRUNCATED"));
+  });
+
   it("defaults to 50k chars and can be disabled with 0", () => {
     const big = "x".repeat(60_000);
     const msgs = [{ role: "tool", content: [{ type: "tool-result", output: big }] }];

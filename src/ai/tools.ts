@@ -18,7 +18,7 @@ import { resolveEvaluationModel } from "../llm.js";
 import { graphWalkTool } from "./walk-tool.js";
 import { secretLikeProperty, validateRequestedSchema } from "./elicitation.js";
 import { isValidSecretName } from "../secret-store.js";
-import { capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
+import { DOCUMENT_TOOLS, capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
 import { listPeerWorkflows, readPeerWorkflow, runOnPeer } from "../peers.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
@@ -27,6 +27,7 @@ import { listPeerWorkflows, readPeerWorkflow, runOnPeer } from "../peers.js";
 import {
   AI_PUBLISHER,
   DEFAULT_WORKFLOW_LIST_LIMIT,
+  applyEdits,
   coerceJsonArg,
   listRunSummaries,
   listWorkflowEntries,
@@ -165,12 +166,20 @@ function elicitationTools(deps: AiDeps) {
  * later turn replays those same bytes: history is never rewritten. The
  * tool's own output — the `tool-output` event, the flyout's live view — is
  * untouched. Provider-executed tools (no `execute`) are the provider's.
+ * A DOCUMENT read (`DOCUMENT_TOOLS`: get_workflow, get_step — what the
+ * builder edits from) gets `documentMaxChars`, the window's headroom with no
+ * env ceiling, so a 50k workflow is read whole; everything else gets
+ * `maxChars`. `0` leaves that group uncapped.
  */
-export function capToolResults(tools: ToolSet, maxChars = toolResultMaxCharsFromEnv()): ToolSet {
-  if (maxChars <= 0) return tools;
+export function capToolResults(
+  tools: ToolSet,
+  maxChars = toolResultMaxCharsFromEnv(),
+  documentMaxChars = maxChars,
+): ToolSet {
   const out: ToolSet = {};
   for (const [name, t] of Object.entries(tools) as [string, any][]) {
-    if (!t.execute) {
+    const cap = DOCUMENT_TOOLS.has(name) ? documentMaxChars : maxChars;
+    if (!t.execute || cap <= 0) {
       out[name] = t;
       continue;
     }
@@ -185,7 +194,7 @@ export function capToolResults(tools: ToolSet, maxChars = toolResultMaxCharsFrom
             : typeof o.output === "string"
               ? { type: "text", value: o.output }
               : { type: "json", value: JSON.parse(JSON.stringify(o.output ?? null) ?? "null") },
-          maxChars,
+          cap,
         ),
     };
   }
@@ -213,6 +222,24 @@ export function buildTools(deps: AiDeps): ToolSet {
   const actor: ClaimActor = { publisher: AI_PUBLISHER, scoped: false };
   const claimsArg = claims ? { claims: claimsArgSchema } : {};
   const verifier = claims ? (deps.verifier ?? null) : null;
+  /** `edits` on edit_workflow / edit_step (`applyEdits`, authoring.ts): a
+   *  small change to a big document without resending it — the document a
+   *  read returns is cut at the tool result cap, so "send it back whole"
+   *  cannot be the only way to a new version. */
+  const editsSchema = z
+    .array(
+      z.object({
+        old: z.string().min(1).describe("Text to replace — must match the current source exactly once (whitespace and indentation included)."),
+        new: z.string().describe("Replacement text (empty to delete)."),
+      }),
+    )
+    .min(1)
+    .optional()
+    .describe(
+      "Exact-string replacements applied in order to the ACTIVE version's source — for a small change to a big file, instead of resending it whole. Pass this OR the full source, not both.",
+    );
+  const bothSources = (what: string) => `Pass either the full ${what} or \`edits\`, not both. Nothing was published.`;
+  const noSource = (what: string) => `Pass the full ${what} or \`edits\` (exact-string replacements). Nothing was published.`;
   /** The contract of what a launch can execute, every check `pending` — so
    *  the model reads what its work is claimed to do in the RESULT of the run
    *  it just made, and knows a verdict is coming (plans/claims.md §5). */
@@ -372,20 +399,31 @@ export function buildTools(deps: AiDeps): ToolSet {
 
     edit_step: tool({
       description:
-        "Publish a NEW VERSION of an EXISTING custom step (e.g. tweak its prompt, logic, or config schema). Same self-contained rules as create_step. Call get_step(type, source:true) first to read the current source. Identical content is a no-op; a change increments the version (v1 → v2 → …) and prior versions are kept for rollback. Built-in core/lib steps cannot be edited.",
+        "Publish a NEW VERSION of an EXISTING custom step (e.g. tweak its prompt, logic, or config schema). Same self-contained rules as create_step. Pass EITHER `code` (the full updated source) OR `edits` (exact-string replacements applied in order to the ACTIVE version's source — for a small change, so you never resend the file; each must match exactly once). Call get_step(type, source:true) first to read the current source. Identical content is a no-op; a change increments the version (v1 → v2 → …) and prior versions are kept for rollback. Built-in core/lib steps cannot be edited.",
       inputSchema: z.object({
         type: z.string().describe("Existing custom step type to edit, e.g. 'concepts/decide'."),
         code: z
           .string()
-          .describe("Full updated TypeScript source (same self-contained shape as create_step)."),
+          .optional()
+          .describe("Full updated TypeScript source (same self-contained shape as create_step). Omit when passing `edits`."),
+        edits: editsSchema,
         description: z.string().optional(),
         ...claimsArg,
       }),
-      execute: async ({ type, code, description, ...rest }) => {
+      execute: async ({ type, code, edits, description, ...rest }) => {
         const contract = (rest as { claims?: ClaimsArg }).claims;
         const invalid = await claims?.validateClaimsArg(contract, actor);
         if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
-        const result = await publishStepVersion(deps, type, code, description);
+        let source = code;
+        if (edits) {
+          if (source !== undefined) return { error: bothSources("step source") };
+          const current = await deps.workspace.getStepSource(type);
+          if (!current) return { error: `Step "${type}" not found. Use create_step to author a new step.` };
+          const r = applyEdits(current.code, edits, "step source");
+          if ("error" in r) return r;
+          source = r.text;
+        } else if (source === undefined) return { error: noSource("step source") };
+        const result = await publishStepVersion(deps, type, source, description);
         deps.registry = await deps.getRegistry();
         const ledger = result.ok && claims ? { claims: await claims.applyClaimsArg({ kind: "step", name: type }, contract, actor), ...(await publishChecks("step", type)) } : {};
         if (result.ok && result.loaded === false) {
@@ -468,8 +506,12 @@ export function buildTools(deps: AiDeps): ToolSet {
 
     edit_workflow: tool({
       description:
-        "Publish a NEW VERSION of an EXISTING workflow from YAML. Call " +
-        "get_workflow first to read the current source. Identical content is " +
+        "Publish a NEW VERSION of an EXISTING workflow. Pass EITHER `yaml` " +
+        "(the full updated YAML) OR `edits` (exact-string replacements " +
+        "applied in order to the ACTIVE version's YAML — for a small change, " +
+        "e.g. one params default, so you never resend the file; each must " +
+        "match exactly once). Call get_workflow first to read the current " +
+        "source. Identical content is " +
         "a no-op; a change increments the version (v1 → v2 → …) and activates " +
         "it, retaining prior versions for rollback. Use this for STRUCTURAL " +
         "changes (adding/removing steps, rewiring `depends`, or promoting a " +
@@ -481,7 +523,8 @@ export function buildTools(deps: AiDeps): ToolSet {
         "on success.",
       inputSchema: z.object({
         name: z.string().describe("Existing workflow name to edit"),
-        yaml: z.string().describe("Full updated workflow YAML"),
+        yaml: z.string().optional().describe("Full updated workflow YAML. Omit when passing `edits`."),
+        edits: editsSchema,
         description: z.string().optional(),
         category: z
           .string()
@@ -491,15 +534,20 @@ export function buildTools(deps: AiDeps): ToolSet {
           ),
         ...claimsArg,
       }),
-      execute: async ({ name, yaml, description, category, ...rest }) => {
-        const exists = (await deps.workspace.listWorkflows()).some(
-          (w) => w.name === name,
-        );
-        if (!exists) {
+      execute: async ({ name, yaml: whole, edits, description, category, ...rest }) => {
+        const meta = await deps.workspace.getWorkflowMetadata(name);
+        if (!meta) {
           return {
             error: `Workflow "${name}" not found. Use create_workflow to author a new one.`,
           };
         }
+        let yaml = whole;
+        if (edits) {
+          if (yaml !== undefined) return { error: bothSources("workflow YAML") };
+          const r = applyEdits(await deps.workspace.getWorkflowSource(name, meta.active), edits, "workflow YAML");
+          if ("error" in r) return r;
+          yaml = r.text;
+        } else if (yaml === undefined) return { error: noSource("workflow YAML") };
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
         // The YAML's own `claims:` block and the arg are one contract (merged by text).
@@ -1227,5 +1275,5 @@ export function buildTools(deps: AiDeps): ToolSet {
     // reading API docs while authoring adapters. Built by the host per turn
     // for the chat's provider (createWebTools); absent → not offered.
     ...((deps.webTools ?? {}) as Record<string, any>),
-  }, deps.toolResultMaxChars);
+  }, deps.toolResultMaxChars, deps.documentMaxChars);
 }
