@@ -131,7 +131,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1376 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1382 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
