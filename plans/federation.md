@@ -575,8 +575,9 @@ lab (register a step that reads any secret). So:
   minus launch, for a central that only reads. Long-lived (60 days, the
   delegation's lifetime), re-minted by hive's cron. This is the token hive
   pushes, or a person pastes, as a peer token — and the only kind a laptop
-  may hold. **Built 2026-10-09** (stakgraph `feature/lab-peer-scope`), simpler
-  than written: `labAuth` takes a `lab:peer` JWT as `Authorization: Bearer`
+  may hold. **Built 2026-10-09**
+  ([stakwork/stakgraph#1754](https://github.com/stakwork/stakgraph/pull/1754)),
+  simpler than written: `labAuth` takes a `lab:peer` JWT as `Authorization: Bearer`
   only (never `?key=`; the dictation socket refuses it) and stashes strut's
   `peer` scope for `resolveScope`; strut, not `labAuth`, decides what a peer
   may do. Its actor is the token's `sub`, else the caller's
@@ -999,9 +1000,10 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
 4. **mcp: `lab:peer`** and **strut: `resolveScope`** (§3). Small, and the
    precondition for a local strut or a cross-org central holding a peer
    token. **Built 2026-10-09**: strut's half (`resolveScope`,
-   `STRUT_PEER_KEY`, the gate's 403, `origin: "peer"`) and mcp's (`/mint-token
-   { scope: "lab:peer" }`, `labAuth`, the hook — stakgraph
-   `feature/lab-peer-scope`, pinned to this branch until it merges).
+   `STRUT_PEER_KEY`, the gate's 403, `origin: "peer"`; stakwork/strut#129)
+   and mcp's (`/mint-token { scope: "lab:peer" }`, `labAuth`, the hook;
+   [stakwork/stakgraph#1754](https://github.com/stakwork/stakgraph/pull/1754),
+   which pins #129's merge).
 5. **Strut: read-through** (§2.1, §4). `src/remote.ts`; `mountReadRoutes`
    mounted at `/` and `/peers/:id` over the record step 1 created
    (`/graph/nodes/:ref_id` among them — what a peer-tagged ref opens,
