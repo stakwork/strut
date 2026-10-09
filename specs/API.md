@@ -6,7 +6,7 @@ lifted from are named so the two can be kept together (`src/core.ts`,
 `src/store.ts`, `src/workspace.ts`, the routes in `src/createStrut.ts`).
 
 Everything is JSON unless a row says otherwise. An error is
-`{ "error": "<message>" }` with a 400 / 404 / 409 / 401 status. Companion
+`{ "error": "<message>" }` with a 400 / 401 / 403 / 404 / 409 status. Companion
 how-tos: `CALLBACKS.md` (the result pushed to your endpoint),
 `RUN_CONTROL_SPEC.md` (why control is cooperative), `SPEC.md` (the engine).
 
@@ -26,6 +26,17 @@ things served without the key are the web UI's own files and `GET /health`
 `x-strut-actor: <id>` names who a request is from — honored only alongside a
 matching key — and is recorded on the run (`actor`, `principal`) and on the
 workflow it publishes (`owner`). AGENTS.md "Auth" has the whole model.
+
+**A peer's key.** `STRUT_PEER_KEY` is the key another strut holds for this
+one (§10). It is presented like `STRUT_API_KEY` (Bearer or `?key=`) but is
+**peer-scoped**: every `GET`, a launch (`POST /workflows/:name[/:version]/run`),
+and cancel / pause / resume (§6) of a run a peer launched — that run's
+`run.start` carries `origin: "peer"`. Anything else is a `403`.
+`x-strut-actor` is honored beside it: a peer's launch names the person it
+is for. A host that authenticates requests itself decides the scope per
+request instead (`createStrut({ resolveScope })`). A launch is not narrowed
+by workflow: a peer can run any workflow here, and one whose agent has
+`bash` reaches whatever this server can.
 
 ## 1. Publish
 
@@ -268,7 +279,7 @@ One object per line of the run's append-only log. Common fields:
 
 | Type              | Meaning |
 | ----------------- | ------- |
-| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify`), `automation`, `callback: { origin }`, `parentRunId` when nested |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `automation`, `callback: { origin }`, `parentRunId` when nested |
 | `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
 | `step.retry`      | an attempt failed and another follows |
 | `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |
@@ -335,7 +346,8 @@ first and by step path within a run:
 | POST   | `/workflows/:name/runs/:runId/resume`     | 202 `{ ok, runId, state, resumed: "in-memory" }` |
 
 404 when there is no such run; 409 when it is not live — already terminal
-(`Run already terminal (success)`) or `stale`.
+(`Run already terminal (success)`) or `stale`; 403 for a peer (Auth) on a
+run no peer launched, here and in §6.2.
 
 Control is **cooperative**. A request marks the run (`run.cancelling`,
 `run.paused`, `run.resumed` in the log) and takes effect at the next
@@ -501,6 +513,10 @@ kept encrypted; the token has no read route.
 
 `STRUT_PEERS` (a JSON array of the same records) puts peers on file at boot
 for a strut nobody pushes to — a desktop strut behind NAT.
+
+**The token** is whatever the peer accepts as a bearer. Give it the peer's
+`STRUT_PEER_KEY` (Auth), not its deployment key: that is everything a call
+needs — read, launch, cancel what it launched — and nothing more.
 
 **The call** is a step, `strut/run-workflow { peer, workflow, input?,
 params?, version?, job?, wait? }`, or the builder's `run_workflow` with

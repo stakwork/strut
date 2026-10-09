@@ -108,7 +108,7 @@ two processes.
 | Order | **Dispatch-through first** (peers + `strut/run-workflow` + `@slug` in the builder), the seeded `explore` workflow beside it, then read-through on the same record, the scoped peer token, library via git, roll-up + reflection. The hive workspace selector is independent. **Gateway chaining: not at all** (§5). Revised 2026-10-08 — the original order put read-through first, for the org-wide runs view |
 | Peer identity | **Assigned by whoever registers the peer** — hive uses the **workspace slug** (what a person types as `@slug`; one swarm per workspace, and hive maps slug ↔ `swarmId` when it stores a handle). No self-declared strut id (strut has none today and would have to coordinate one). A run's cross-strut handle is `(peer, workflow, runId)` as the reader names the peer (§3, §4) |
 | Version identity | `name` + `contentHash` — already the dedup key in both stores (`src/version.ts:9-11`; content-addressed version nodes, `src/graph/workspace-store.ts` header). Same YAML anywhere = same version (§4) |
-| Peer credential | A bearer token in a fourth encrypted `FileSecretStore` file, `peers.json` — pushed by the host (the delegation and actor-secret pattern) or, on a **local strut hive cannot reach, pasted** (`STRUT_PEERS`, a Peers dialog). Peers should hold a **scoped** token — `lab:peer`: read, launch, control what it launched; `lab:read` for a central that only reads. Today's tokens are all-or-nothing, and the fix is the JWT scope in mcp; it matters most for a laptop, which must never hold a swarm's admin key (§3) |
+| Peer credential | A bearer token in a fourth encrypted `FileSecretStore` file, `peers.json` — pushed by the host (the delegation and actor-secret pattern) or, on a **local strut hive cannot reach, pasted** (`STRUT_PEERS`, a Peers dialog). Peers should hold a **scoped** token — `lab:peer`: read, launch, control what it launched; `lab:read` for a central that only reads. Today's tokens are all-or-nothing, and the fix is the JWT scope in mcp; it matters most for a laptop, which must never hold a swarm's admin key (§3). Strut's half — `resolveScope` + `STRUT_PEER_KEY` — built 2026-10-09; a launch is **not** narrowed by workflow (decided 2026-10-09, §3) |
 | Actor across the chain | The same opaque string everywhere: hive derives it from the global `User` (`{login}-{id}`, `hive/src/services/bifrost/reconciler.ts:676-682`), so it is valid on every strut in every org. Forwarded as `x-strut-actor` on peer calls; the peer's own `resolveActor` decides whether to honor it. The delegation for that string is on every strut in the org (the fan-out, `plans/org-gateway.md` §3), so a peer bills the forwarded principal without a per-dispatch push (§3) |
 | Cost | **One gateway per org** (`plans/org-gateway.md`): every strut in the org bills through it, under a delegation hive fans out to every strut for every member. A run still executes where the workflow lives; the org gateway's log, split by a `workspace` dim, is the LLM-side truth across the org. `RunSummary.costUsd` stays for strut-side per-run spend. **Deferred (2026-10-08):** a cross-strut call needs the caller's principal's delegation on the peer, and the fan-out that would put it there is not built; the explorer milestone does not wait on it (§5) |
 | Secrets | **Never cross a boundary.** A dispatch-through run reads the executing leaf's own deployment and actor secrets, pushed there by hive (§6) |
@@ -580,10 +580,30 @@ lab (register a step that reads any secret). So:
   twin of `resolveActor` and the only new hook. Default: `"full"` — today's
   behaviour, unchanged for every existing deployment. mcp passes a hook that
   maps the JWT scope. Standalone deployments that want peers can set
-  `STRUT_PEER_KEY`, a read-only twin of `STRUT_API_KEY`; nothing else in
+  `STRUT_PEER_KEY`, the peer twin of `STRUT_API_KEY`; nothing else in
   strut learns a new kind of auth. A `peer`-scoped caller may read, launch
-  a run and control a run it launched, and nothing else; every other gated
-  route (`requireApiKey`, `src/auth.ts:38-46`) refuses it.
+  a run and control a run it launched, and nothing else; every other route
+  refuses it. **Built 2026-10-09:** the default resolver is `scopeFromKey`
+  (`src/auth.ts`: `peer` for a request carrying `STRUT_PEER_KEY`, which
+  authenticates like the deployment key); the one gate in `createStrut`
+  answers a `peer` `403` on anything but a `GET`/`HEAD`, a launch, or a
+  run's cancel / pause / resume, a route a host mounts later included. "A
+  run it launched" is recorded, not inferred from the forwarded actor: a
+  peer's launch is stamped `origin: "peer"` on `run.start` (kept by a
+  resume), which the control routes read — and, for a run just launched
+  whose `run.start` is not yet in the log, a mark on its controller (a
+  caller's cancel right after its launch landed in that window five times
+  out of five in the test). The stamp says a peer launched it, not which
+  one: strut cannot tell two holders of one key apart. `x-strut-actor` is
+  honored with the peer key. **Launch is not narrowed by workflow (decided
+  2026-10-09, the plan as written):** a peer that can launch a workflow
+  whose agent has `bash` — the lab's seeded `job` — reaches whatever the
+  server's user can; on Linux that includes the server's own environment
+  (`/proc/<pid>/environ`, the lab's `API_TOKEN` among it — reasoned, not
+  demonstrated on a swarm). What the scope does keep from a peer:
+  publishing workflows or steps, the builder chat, writing secrets, actor
+  secrets, delegations, peers, owners and caps, deleting anything, and
+  control of every run it did not launch.
 - **The first milestone may ship before the scope exists, inside an org.**
   The org strut is one of the org's own swarms, and hive already holds
   every key in the org; hive pushing full tokens to it adds no new class of
@@ -911,7 +931,8 @@ nothing it has.
   registries and auth in strut — the "new auth system" this list forbids —
   to save the cost of a container that already exists per swarm.
 - **No new auth system in strut.** Hosts resolve actors; the one addition is
-  a read scope, resolved by the host too (`resolveScope`).
+  a peer scope, resolved by the host too (`resolveScope`), with
+  `STRUT_PEER_KEY` as its standalone default.
 - **Nothing that makes a leaf depend on a central.** No push from leaves,
   no registration with a central, no central-issued ids, no library that
   must be reachable for a workflow to run.
@@ -970,7 +991,8 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    the URL state, landing with `code-change.md` phase 3.
 4. **mcp: `lab:peer`** and **strut: `resolveScope`** (§3). Small, and the
    precondition for a local strut or a cross-org central holding a peer
-   token.
+   token. **Strut half built 2026-10-09** (`resolveScope`, `STRUT_PEER_KEY`,
+   the gate's 403, `origin: "peer"`); mcp's `lab:peer` mint + hook next.
 5. **Strut: read-through** (§2.1, §4). `src/remote.ts`; `mountReadRoutes`
    mounted at `/` and `/peers/:id` over the record step 1 created
    (`/graph/nodes/:ref_id` among them — what a peer-tagged ref opens,
@@ -1016,9 +1038,13 @@ every step above.
   summary, events, versions and source responses at `/…` and at
   `/peers/p/…`; a peer id not on file is a 404; the token is never in any
   response; write routes do not exist under `/peers`.
-- **Scope.** With a `peer`-scoped caller: every read route serves, every
-  gated route is 401, and no write route exists under `/peers`. With no
-  `resolveScope`: byte-identical behaviour to today's suite.
+- **Scope.** With a `peer`-scoped caller: every read route serves, a launch
+  and the control of a run a peer launched are allowed, every other route
+  is 403 — not 401: the caller is known, the act is not allowed
+  (`createStrut.test.ts` sweeps every route with the peer key;
+  `run-control.test.ts` the control of a peer's run and of a run it did not
+  launch) — and, with read-through, no write route exists under `/peers`.
+  With no peer key and no `resolveScope`: today's suite, unchanged.
 - **Seed + export, offline against a local bare repo** (the `git/*`
   tests' fixture). `strut/seed` publishes the convention's files with
   `source` set and stamps nothing else; an identical reseed is a no-op; a

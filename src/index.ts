@@ -181,7 +181,7 @@ export {
 } from "./mothership.js";
 
 // Auth: the deployment-key middleware and the default actor resolver.
-export { requireApiKey, apiKeyMatches, actorFromHeader } from "./auth.js";
+export { requireApiKey, apiKeyMatches, actorFromHeader, scopeFromKey, type Scope } from "./auth.js";
 
 // Actor secrets (plans/code-change.md §3.2): per-actor credentials a host
 // pushes, resolved for a run's principal by the ordinary secrets boundary.

@@ -203,7 +203,7 @@ export type RunEventType =
   | "run.cancelling";
 
 /** Who launched a run, when it was not a person or an API call. */
-export type RunOrigin = "verify" | "schedule";
+export type RunOrigin = "verify" | "schedule" | "peer";
 
 /** A single event in the run log. */
 export interface RunEvent {
@@ -241,7 +241,10 @@ export interface RunEvent {
   /** Who launched the run, on `run.start`; absent = a person or an API call.
    *  `"verify"`: the verify pass (a check) — such runs are never themselves
    *  verified, the recursion guard. `"schedule"`: an automation's fire
-   *  (plans/automations.md) — a real execution, verified like any other. */
+   *  (plans/automations.md) — a real execution, verified like any other.
+   *  `"peer"`: launched over HTTP by another strut (a `peer`-scoped
+   *  request, plans/federation.md §3) — the only runs a peer may cancel,
+   *  pause or resume. */
   origin?: RunOrigin;
   /** On a scheduled run's `run.start`: the automation that fired it. */
   automation?: { id: string };
