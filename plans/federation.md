@@ -68,7 +68,32 @@
 > second one, and a peer's tail of a run that died there closes with
 > `done { status: "stale" }` instead of hanging. **Both built 2026-10-09**
 > (the step, the tail's `live` option, the peer client's stale retry, the
-> projector's skip, the flyout's badge; hive's one-line skip is not in it).
+> projector's skip, the flyout's badge; hive's one-line skip landed
+> separately as [stakwork/hive#5466](https://github.com/stakwork/hive/pull/5466)).
+>
+> **Revised later on 2026-10-09 — hive's half.** Step 3's peer push is
+> **built, as a daily cron**:
+> [stakwork/hive#5470](https://github.com/stakwork/hive/pull/5470), which
+> replaced the per-request fan-out of
+> [stakwork/hive#5468](https://github.com/stakwork/hive/pull/5468) and
+> [stakwork/hive#5469](https://github.com/stakwork/hive/pull/5469).
+> `GET /api/cron/strut-peers`, 03:50 UTC (after the delegations cron),
+> behind `CRON_SECRET` and `STRUT_PEERS_CRON_ENABLED=true`, `?org=` for one
+> org. Per org, the org strut is the default workspace's active swarm; for
+> every other active swarm in the org it mints a `lab:peer` token on that
+> swarm's mcp and `PUT`s it on the org strut by slug (an mcp older than
+> stakgraph#1754 answers with an `api` token, which is never stored), and
+> it pushes the org strut's users' delegations onto that swarm's strut,
+> minted for the org workspace and billed through the org strut's gateway,
+> when missing or due. That is the half of step 8 a call **from the org
+> strut** needs — a narrower fan-out than `plans/org-gateway.md` §3's
+> every member on every strut. The trade-off: a new swarm, or a person's
+> first use of the org strut, is picked up by the next nightly pass, and
+> until then that person's cross-strut call fails billing on the target.
+> The first manual pass on stakwork: 8 peers and 37 delegations pushed, 3
+> swarms timed out on both their mint and `GET /llm/delegations` (10 s)
+> and are retried by the next pass. The workspace selector (§7) is not
+> built.
 
 ## Problem
 
@@ -110,7 +135,7 @@ two processes.
 | Version identity | `name` + `contentHash` — already the dedup key in both stores (`src/version.ts:9-11`; content-addressed version nodes, `src/graph/workspace-store.ts` header). Same YAML anywhere = same version (§4) |
 | Peer credential | A bearer token in a fourth encrypted `FileSecretStore` file, `peers.json` — pushed by the host (the delegation and actor-secret pattern) or, on a **local strut hive cannot reach, pasted** (`STRUT_PEERS`, a Peers dialog). Peers should hold a **scoped** token — `lab:peer`: read, launch, control what it launched; `lab:read` for a central that only reads. Today's tokens are all-or-nothing, and the fix is the JWT scope in mcp; it matters most for a laptop, which must never hold a swarm's admin key (§3). Strut's half — `resolveScope` + `STRUT_PEER_KEY` — built 2026-10-09; a launch is **not** narrowed by workflow (decided 2026-10-09, §3) |
 | Actor across the chain | The same opaque string everywhere: hive derives it from the global `User` (`{login}-{id}`, `hive/src/services/bifrost/reconciler.ts:676-682`), so it is valid on every strut in every org. Forwarded as `x-strut-actor` on peer calls; the peer's own `resolveActor` decides whether to honor it. The delegation for that string is on every strut in the org (the fan-out, `plans/org-gateway.md` §3), so a peer bills the forwarded principal without a per-dispatch push (§3) |
-| Cost | **One gateway per org** (`plans/org-gateway.md`): every strut in the org bills through it, under a delegation hive fans out to every strut for every member. A run still executes where the workflow lives; the org gateway's log, split by a `workspace` dim, is the LLM-side truth across the org. `RunSummary.costUsd` stays for strut-side per-run spend. **Deferred (2026-10-08):** a cross-strut call needs the caller's principal's delegation on the peer, and the fan-out that would put it there is not built; the explorer milestone does not wait on it (§5) |
+| Cost | **One gateway per org** (`plans/org-gateway.md`): every strut in the org bills through it, under a delegation hive fans out to every strut for every member. A run still executes where the workflow lives; the org gateway's log, split by a `workspace` dim, is the LLM-side truth across the org. `RunSummary.costUsd` stays for strut-side per-run spend. **Deferred (2026-10-08):** a cross-strut call needs the caller's principal's delegation on the peer, and the fan-out that would put it there is not built; the explorer milestone does not wait on it (§5). **Partly built 2026-10-09:** hive's nightly cron (hive#5470) puts the org strut's users' delegations on every other swarm's strut, so a call from the org strut bills; other directions still have no answer |
 | Secrets | **Never cross a boundary.** A dispatch-through run reads the executing leaf's own deployment and actor secrets, pushed there by hive (§6) |
 | Library | **Git is the hub.** A workflow's origin is `WorkflowMetadata.source: { repo, path }`, set by the seeder beside `category` and `owner`; a strut seeds from several repos; an **export** is a PR to the file the workflow came from (else `STRUT_HOME_REPO` + a directory convention), authored with the actor's `GITHUB_TOKEN`, never a push to the default branch. Distribution is the next reseed everywhere. No strut-to-strut copy and no `visibility` flag: the repo is the visibility (§2.3, §8) |
 | Roll-up store | The existing projector over a remote `RunStore`, each peer into its **own graph namespace** on the central's Neo4j — uniqueness is already per `(node_key, namespace)`, so no schema change and no id rewriting. Summaries only: never events, transcripts, artifacts, secrets (§9) |
@@ -408,7 +433,10 @@ A lib step under `src/steps/lib/strut/`:
   only before its own dispatches — and the first milestone does not wait
   on it: how a cross-strut call is billed is deferred, with the fan-out
   and the presented grant (`plans/presented-delegations.md`) as the two
-  candidates. An explorer needs no actor secret; a job that pushes code
+  candidates. (2026-10-09: hive's nightly peer cron, hive#5470, now pushes
+  the org strut's users' delegations onto every peer it records, so a call
+  from the org strut bills; a call in any other direction does not yet.)
+  An explorer needs no actor secret; a job that pushes code
   does (§6). The child run carries its own cap, not the parent's; the
   forwarded per-run grant that would bound the tree is the presented
   grant's job (`plans/org-gateway.md` §6).
@@ -546,7 +574,10 @@ is the third push of that family: for the org strut, one peer per other
 workspace swarm in the org (`GET /api/orgs/[login]/workspaces` already
 knows which have a swarm, `hive/src/app/api/orgs/[githubLogin]/workspaces/route.ts:18-67`);
 reconciled by the delegations cron when members and swarms change — cloud
-struts only. A **local strut** (a desktop strut behind NAT, §1) is one hive
+struts only. **Built 2026-10-09** as a cron of its own,
+`GET /api/cron/strut-peers` (hive#5470, daily after the delegations cron):
+the org strut only, a fresh `lab:peer` token minted on each other swarm
+every pass, never on a request path. A **local strut** (a desktop strut behind NAT, §1) is one hive
 cannot reach, so it gets its peers through a **paste door**: `STRUT_PEERS`
 set by the desktop host, or a Peers dialog beside Secrets where a person
 pastes a swarm's URL and token. The record is the same either way; hive
@@ -716,6 +747,14 @@ The explorer milestone ships without an answer: a principal the peer has
 no record for fails at its first model call with the Mothership error, and
 the fix is the fan-out or a presented grant
 (`plans/presented-delegations.md`), decided when billing is taken up.
+
+**Partly answered 2026-10-09.** Hive's nightly peer cron (hive#5470)
+pushes the org strut's users' delegations onto every other swarm's strut
+it records as a peer, minted for the org workspace and billed through the
+org strut's gateway, when missing or due. So a call from the org strut to
+a peer bills, from the next nightly pass after a person's first use. A
+call from any other strut, a local strut's call, and the `workspace` dim
+are still open.
 
 ## 6. Secrets across the chain
 
@@ -985,7 +1024,7 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    step's `step.end` and the launch journal + reattach (§2.2, decided
    2026-10-09) were not in it. **Both built 2026-10-09**, plus the tail's
    stale end (`TailOpts.live`) and the client's `peer_run_stale:`; hive's
-   one-line skip of a tagged ref is still to do there.
+   one-line skip of a tagged ref is hive#5466 (merged 2026-10-09).
 2. **mcp: the seeded `explore` workflow** — the workflow a peer is asked
    to run: the job's launch and skeleton, a read-only agent over the graph
    reads and the file tools, `{ answer, sources, confidence, cost }` back.
@@ -996,7 +1035,12 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    only, id = workspace slug. **Hive: the workspace selector** (§7) is
    independent of everything here: `embed-url?workspace=`,
    `resolveStrutTarget({ purpose: "embed" })`, the select in `StrutView`,
-   the URL state, landing with `code-change.md` phase 3.
+   the URL state, landing with `code-change.md` phase 3. **Peers built
+   2026-10-09** as a nightly cron, not beside the delegation push
+   (hive#5470, replacing the per-request hive#5468 + #5469; needs
+   `STRUT_PEERS_CRON_ENABLED=true`); it also pushes the org strut's users'
+   delegations onto each peer, a first slice of step 8. **The selector is
+   not built.**
 4. **mcp: `lab:peer`** and **strut: `resolveScope`** (§3). Small, and the
    precondition for a local strut or a cross-org central holding a peer
    token. **Built 2026-10-09**: strut's half (`resolveScope`,
@@ -1027,7 +1071,10 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
 8. **Billing across a call** (§5): the fan-out (`plans/org-gateway.md`
    §3) or the presented grant (`plans/presented-delegations.md`), decided
    when taken up; the `workspace` dim (`plans/org-gateway.md` §4) rides
-   with it.
+   with it. **Partly built 2026-10-09:** hive#5470's cron puts the org
+   strut's users' delegations on every peer it records, so a call from the
+   org strut bills. Open: every other direction, a local strut's call, the
+   `workspace` dim, and the end-to-end gateway check under Validation.
 
 1, 2 and 3 are independent of each other; 4 gates a local strut's token,
 not the step; 5 depends on 1 only; 6's export half waits on
@@ -1169,6 +1216,10 @@ what puts the exporting person's token on the swarm.
   library automation will say what the org's real distribution looks like.
 - **Billing a cross-strut call** (§5): the fan-out or the presented grant.
   Deferred 2026-10-08; the explorer milestone does not wait on it.
+  2026-10-09: hive#5470 took a narrow fan-out for calls from the org
+  strut. Whether that grows into `plans/org-gateway.md` §3's full fan-out
+  or gives way to the presented grant for the other directions is still
+  open.
 - **How a local strut gets a peer record** beyond pasting: hive handing
   it over on the embed, or a desktop host minting it. The paste door is
   enough for the explorer case.
