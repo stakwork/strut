@@ -575,7 +575,14 @@ lab (register a step that reads any secret). So:
   minus launch, for a central that only reads. Long-lived (60 days, the
   delegation's lifetime), re-minted by hive's cron. This is the token hive
   pushes, or a person pastes, as a peer token — and the only kind a laptop
-  may hold.
+  may hold. **Built 2026-10-09** (stakgraph `feature/lab-peer-scope`), simpler
+  than written: `labAuth` takes a `lab:peer` JWT as `Authorization: Bearer`
+  only (never `?key=`; the dictation socket refuses it) and stashes strut's
+  `peer` scope for `resolveScope`; strut, not `labAuth`, decides what a peer
+  may do. Its actor is the token's `sub`, else the caller's
+  `x-strut-actor` — mint with `sub` to bind a laptop's token to its owner.
+  `verifyApiToken` accepts `api` unless told otherwise, so the token opens
+  nothing outside `/lab`. `lab:read` is not built.
 - **strut: `createStrut({ resolveScope?(c) → "full" | "peer" })`**, the
   twin of `resolveActor` and the only new hook. Default: `"full"` — today's
   behaviour, unchanged for every existing deployment. mcp passes a hook that
@@ -991,8 +998,10 @@ Revised 2026-10-08: dispatch first, for the local-strut explorer case.
    the URL state, landing with `code-change.md` phase 3.
 4. **mcp: `lab:peer`** and **strut: `resolveScope`** (§3). Small, and the
    precondition for a local strut or a cross-org central holding a peer
-   token. **Strut half built 2026-10-09** (`resolveScope`, `STRUT_PEER_KEY`,
-   the gate's 403, `origin: "peer"`); mcp's `lab:peer` mint + hook next.
+   token. **Built 2026-10-09**: strut's half (`resolveScope`,
+   `STRUT_PEER_KEY`, the gate's 403, `origin: "peer"`) and mcp's (`/mint-token
+   { scope: "lab:peer" }`, `labAuth`, the hook — stakgraph
+   `feature/lab-peer-scope`, pinned to this branch until it merges).
 5. **Strut: read-through** (§2.1, §4). `src/remote.ts`; `mountReadRoutes`
    mounted at `/` and `/peers/:id` over the record step 1 created
    (`/graph/nodes/:ref_id` among them — what a peer-tagged ref opens,
