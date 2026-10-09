@@ -10,7 +10,8 @@ import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
-import { messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, spawnedRunIds } from "./projector.js";
+import { jobNode, messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, spawnedRunIds } from "./projector.js";
+import type { JobView } from "../job-index.js";
 import { runStep } from "../run-step.js";
 import { buildRegistry, coreRegistry } from "../steps/registry.js";
 import { createStrut } from "../createStrut.js";
@@ -133,6 +134,38 @@ describe("projectRunEvents (pure)", () => {
         [`${WF}/refused`, undefined, undefined],
       ],
     );
+  });
+
+  it("stamps the run and its sessions with the job, and builds a StrutJob from the index's view (plans/job-index.md §6)", () => {
+    const events = sampleEvents("h").map((e) => (e.type === "run.start" ? { ...e, job: "j-1" } : e));
+    const p = projectRunEvents(WF, RUN, events, null)!;
+    assert.equal(p.job, "j-1");
+    assert.equal(p.run.data["job"], "j-1");
+    assert.equal(p.sessions[0]!.data["job"], "j-1");
+    const bare = projectRunEvents(WF, RUN, sampleEvents("h"), null)!;
+    assert.deepEqual([bare.job, "job" in bare.run.data, "job" in bare.sessions[0]!.data], [undefined, false, false]);
+
+    const view: JobView = {
+      job: "j-1", title: "Landing page", createdBy: "ann", createdAt: ts(0), usedAt: ts(5),
+      holds: [], repos: [], files: ["plan.md"],
+      runs: [{ workflow: WF, runId: RUN, at: ts(0), status: "success" }],
+      sessions: [],
+      artifacts: [
+        { id: "plan", kind: "markdown", title: "Plan", summary: "the landing page", url: "/jobs/j-1/files/plan.md", runId: RUN, path: "plan.md" },
+        { id: "pod", kind: "url", title: "Pod", url: "https://pod.example/", runId: RUN },
+      ],
+      text: "drafted",
+    };
+    assert.deepEqual(jobNode(view), {
+      type: "StrutJob",
+      data: {
+        job_id: "j-1", title: "Landing page", summary: "Plan — the landing page\nPod\ndrafted", created_by: "ann",
+        created_at: ts(0), last_used_at: ts(5), run_count: 1, artifact_count: 2, log_ref: "j-1", unique_source_id: "strutjob:j-1",
+      },
+    });
+    // No title: the id names it. No record stamp: the oldest run's time.
+    const { title: _t, createdAt: _c, ...nameless } = view;
+    assert.deepEqual([jobNode(nameless).data["title"], jobNode(nameless).data["created_at"]], ["j-1", ts(0)]);
   });
 
   it("uses the summary when present, and marks a finalize-less log stale", () => {
@@ -471,5 +504,86 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.equal(chatNode!["created_by"], "evanfeenstra-s8fhs8efhs8ehf", "who started the chat is projected whole");
     assert.equal(await count("StrutTurn"), 2);
     assert.equal(await edges("IN_CHAT"), 2);
+  });
+
+  it("a run under a job upserts ONE StrutJob from the index, IN_JOB from each run; no index or no record writes nothing (plans/job-index.md §6)", async () => {
+    const hash = (await ws.getWorkflowHash(WF))!;
+    const RUN2 = "1788307097999";
+    const withJob = (runId: string) => sampleEvents(hash).map((e) => ({ ...e, runId, ...(e.type === "run.start" ? { job: "j-g" } : {}) }));
+    for (const e of withJob(RUN)) await store.append(WF, RUN, e);
+    for (const e of withJob(RUN2)) await store.append(WF, RUN2, e);
+    const view = (runs: string[], text: string): JobView => ({
+      job: "j-g", title: "Landing page", usedAt: ts(9), holds: [], repos: [], files: [],
+      runs: runs.map((r) => ({ workflow: WF, runId: r, at: ts(0), status: "success" as const })),
+      sessions: [],
+      artifacts: [{ id: "plan", kind: "markdown", title: "Plan", summary: "the landing page", url: "/jobs/j-g/files/plan.md", runId: runs[0]!, path: "plan.md" }],
+      text,
+    });
+    let current: JobView | null = view([RUN2, RUN], "revised");
+    const jobs = { get: async (id: string) => (id === "j-g" ? current : null) };
+
+    const report = await projectRuns(backend, store, { workflows: [WF], jobs });
+    assert.deepEqual([report.runs, report.jobs], [2, 2]);
+    assert.equal(await count("StrutJob"), 1, "one node per job, upserted per run");
+    assert.equal(await edges("IN_JOB"), 2);
+    const [node] = await backend.bolt.run(`MATCH (j:StrutJob) RETURN properties(j) AS p`);
+    const p = node!["p"] as Record<string, unknown>;
+    assert.deepEqual(
+      [p["job_id"], p["title"], p["summary"], p["run_count"], p["artifact_count"], p["log_ref"]],
+      ["j-g", "Landing page", "Plan — the landing page\nrevised", 2, 1, "j-g"],
+    );
+    assert.deepEqual(
+      await backend.bolt.run(`MATCH (r:StrutRun)-[:IN_JOB]->(j:StrutJob) RETURN r.run_id AS run, r.job AS job ORDER BY run`),
+      [{ run: RUN, job: "j-g" }, { run: RUN2, job: "j-g" }],
+    );
+    // A job's id can hold what the sanitizer would strip: the key is exact.
+    const [key] = await backend.bolt.run(`MATCH (j:StrutJob) RETURN j.node_key AS k`);
+    assert.match(String(key!["k"]), /^strutjob-[0-9a-f]+$/);
+
+    // Without an index nothing is written, and the node stays; a deleted
+    // job (no record) likewise.
+    assert.equal((await projectRuns(backend, store, { workflows: [WF], skipSettled: false })).jobs, 0);
+    current = null;
+    assert.equal((await projectRuns(backend, store, { workflows: [WF], skipSettled: false, jobs })).jobs, 0);
+    assert.equal(await count("StrutJob"), 1);
+    assert.equal(await edges("IN_JOB"), 2, "re-projection does not duplicate the edges");
+  });
+
+  it("createStrut: a run launched under a job refreshes its StrutJob through the run-end hook — title from the launch, summary from the fold; a plain run touches no job", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-project-job-"));
+    await ws.publishWorkflowByContent(
+      "deliver",
+      "name: deliver\nsteps:\n  - id: result\n    type: pack\n    config:\n      text: \"{{ input.text }}\"\n      artifacts:\n        - { id: \"{{ input.id }}\", title: \"{{ input.title }}\", summary: \"{{ input.summary }}\", content: \"x\" }\n",
+    );
+    const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, serveUi: false, enableChat: false, stt: false, scheduler: false });
+    const jobNodes = () => backend.bolt.run(`MATCH (j:StrutJob) RETURN properties(j) AS p`);
+    try {
+      const first = await strut.run("deliver", { id: "plan", title: "Plan", summary: "the landing page", text: "drafted" }, { job: "j-h", title: "Landing page" });
+      assert.equal(first.status, "success");
+      await projectRunOnce(backend, store, "deliver", first.runId);
+      let [node] = await jobNodes();
+      let p = node!["p"] as Record<string, unknown>;
+      assert.deepEqual([p["job_id"], p["title"], p["summary"], p["run_count"], p["artifact_count"], typeof p["created_at"]], ["j-h", "Landing page", "Plan — the landing page\ndrafted", 1, 1, "number"]);
+      assert.equal(await edges("IN_JOB"), 1);
+
+      // The next turn: a newer deliverable first, the earlier one kept, the title kept.
+      const second = await strut.run("deliver", { id: "pod", title: "Pod", summary: "pod-7", text: "booted" }, { job: "j-h" });
+      await projectRunOnce(backend, store, "deliver", second.runId);
+      assert.equal(await count("StrutJob"), 1);
+      [node] = await jobNodes();
+      p = node!["p"] as Record<string, unknown>;
+      assert.deepEqual([p["title"], p["summary"], p["run_count"], p["artifact_count"]], ["Landing page", "Pod — pod-7\nPlan — the landing page\nbooted", 2, 2]);
+      assert.equal(await edges("IN_JOB"), 2);
+
+      const plain = await strut.run("deliver", { id: "x", title: "X", summary: "", text: "" });
+      await projectRunOnce(backend, store, "deliver", plain.runId);
+      assert.equal(await count("StrutJob"), 1);
+      assert.equal(await edges("IN_JOB"), 2);
+      const [run] = await backend.bolt.run(`MATCH (r:StrutRun {run_id: $id}) RETURN r.job AS job`, { id: plain.runId });
+      assert.equal(run!["job"], null);
+    } finally {
+      await strut.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 });

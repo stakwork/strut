@@ -36,10 +36,19 @@ import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatStore, StoredMessage } from "../chat-store.js";
 import { idProblem } from "../session-store.js";
+import type { JobIndex, JobView } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
 import { PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
+
+/** What the projector needs of the job index (plans/job-index.md §6): a
+ *  job read back, to upsert its `StrutJob`. `createStrut` hands its
+ *  `services.jobs`; a bare caller hands nothing and no job node is written. */
+export type JobReader = Pick<Partial<JobIndex>, "get">;
+
+/** The cap on a `StrutJob.summary` — the search text. */
+const JOB_SUMMARY_MAX_CHARS = 2000;
 
 export interface ProjectRunsOptions {
   /** Workflows to project. Default: every workflow with runs is unknown to a
@@ -50,6 +59,8 @@ export interface ProjectRunsOptions {
   /** Skip runs the graph already holds with a terminal status (cheap
    *  incremental re-runs; default true). Pass false to force re-projection. */
   skipSettled?: boolean;
+  /** The job index, for the `StrutJob` of each run launched under a job. */
+  jobs?: JobReader;
 }
 
 export interface ProjectReport {
@@ -65,9 +76,11 @@ export interface ProjectReport {
   /** Node refs tool calls reported that this graph does not hold — no edge. */
   unresolved: number;
   skipped: number;
+  /** `StrutJob` nodes upserted (one per run of a job, from the index). */
+  jobs: number;
 }
 
-const emptyReport = (): ProjectReport => ({ runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0 });
+const emptyReport = (): ProjectReport => ({ runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0 });
 
 /** A bounded text preview of any value — the only shape of payload that
  *  reaches the graph. */
@@ -110,6 +123,8 @@ interface RunProjection {
   toolCalls: Array<{ node: NodeInput; sessionPath: string; accessed: AccessedNode[] }>;
   workflowHash?: string;
   stepHashes?: Record<string, string>;
+  /** The job the run was launched under (`run.start.job`), if any. */
+  job?: string;
 }
 
 /** Pure: the nodes one run contributes (no graph access). */
@@ -125,11 +140,14 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     ? `${status}: ${errorMessage}`.slice(0, PREVIEW_MAX_CHARS)
     : `${status} · ${stepEnds} step${stepEnds === 1 ? "" : "s"} completed${durationMs != null ? ` in ${durationMs}ms` : ""}`;
   const logRef = `${workflow}/${runId}`;
+  // The job (plans/jobs.md §1): on `run.start`, and on the summary.
+  const job = typeof start?.job === "string" ? start.job : summary?.job;
 
   const run: NodeInput = {
     type: "StrutRun",
     data: compact({
       run_id: runId,
+      job,
       workflow_name: workflow,
       run_status: status,
       summary: summaryText,
@@ -181,6 +199,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
         log_ref: logRef,
         session_id: thread,
         session_turn: thread !== undefined && typeof turn === "number" ? turn : undefined,
+        job,
         unique_source_id: `strutagentsession:${runId}:${keyOf(e)}`,
       }),
     });
@@ -233,7 +252,30 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     });
   }
 
-  return { run, sessions, toolCalls, workflowHash: start?.workflowHash, stepHashes: start?.stepHashes };
+  return { run, sessions, toolCalls, workflowHash: start?.workflowHash, stepHashes: start?.stepHashes, job };
+}
+
+/** The job's node (plans/job-index.md §6), from the index's view: the
+ *  title, a summary made of its current deliverables and its latest reply
+ *  (the search text), counts, and the id as `log_ref` — `GET /jobs/:id` is
+ *  the record. */
+export function jobNode(view: JobView): NodeInput {
+  const lines = [...view.artifacts.map((a) => [a.title, a.summary].filter(Boolean).join(" — ")), ...(view.text ? [view.text] : [])];
+  return {
+    type: "StrutJob",
+    data: compact({
+      job_id: view.job,
+      title: view.title ?? view.job,
+      summary: preview(lines.join("\n"), JOB_SUMMARY_MAX_CHARS),
+      created_by: view.createdBy,
+      created_at: view.createdAt ?? view.runs[view.runs.length - 1]?.at ?? new Date().toISOString(),
+      last_used_at: view.usedAt || undefined,
+      run_count: view.runs.length,
+      artifact_count: view.artifacts.length,
+      log_ref: view.job,
+      unique_source_id: `strutjob:${view.job}`,
+    }),
+  };
 }
 
 /** Project runs from a `RunStore` into the graph. */
@@ -260,7 +302,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
         report.skipped++;
         continue;
       }
-      await projectRun(backend, store, workflow, runId, report);
+      await projectRun(backend, store, workflow, runId, report, opts.jobs);
     }
   }
   return report;
@@ -281,6 +323,7 @@ export async function projectRun(
   workflow: string,
   runId: string,
   report: ProjectReport = emptyReport(),
+  jobs?: JobReader,
 ): Promise<string | null> {
   const ns = backend.cfg.namespace;
   const [events, summary] = await Promise.all([store.getRunEvents(workflow, runId), store.getRunSummary(workflow, runId)]);
@@ -336,6 +379,18 @@ export async function projectRun(
     );
     if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
   }
+  // The job (plans/job-index.md §6): one `StrutJob` per job, upserted from
+  // the index on every run of it — as fresh as the job's last finished run
+  // — and `IN_JOB` from this run. No index, or no record (the job was
+  // deleted): nothing written, and the node the graph holds stays.
+  if (p.job && jobs?.get) {
+    const view = await jobs.get(p.job);
+    if (view) {
+      const [node] = await backend.nodes.writeMany([jobNode(view)], "upsert");
+      edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: node!.ref_id });
+      report.jobs++;
+    }
+  }
   if (edges.length) {
     await backend.edges.writeMany(edges);
     report.edges += edges.length;
@@ -351,14 +406,14 @@ const projecting = new WeakMap<GraphBackend, Map<string, Promise<string | null>>
  * written side by side. What the run-end hook calls (`createStrut` projects
  * every top-level run); the verify pass goes through `runRef`.
  */
-export function projectRunOnce(backend: GraphBackend, store: RunStore, workflow: string, runId: string): Promise<string | null> {
+export function projectRunOnce(backend: GraphBackend, store: RunStore, workflow: string, runId: string, jobs?: JobReader): Promise<string | null> {
   let runs = projecting.get(backend);
   if (!runs) projecting.set(backend, (runs = new Map()));
   const inFlight = runs;
   const key = `${workflow}/${runId}`;
   const running = inFlight.get(key);
   if (running) return running;
-  const p = projectRun(backend, store, workflow, runId).finally(() => inFlight.delete(key));
+  const p = projectRun(backend, store, workflow, runId, emptyReport(), jobs).finally(() => inFlight.delete(key));
   inFlight.set(key, p);
   return p;
 }
@@ -500,10 +555,10 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
 /** Runs first (so chats can link to them), then chats. */
 export async function projectAll(
   backend: GraphBackend,
-  src: { store: RunStore; chatStore?: ChatStore; workflows: string[] },
-  opts: Omit<ProjectRunsOptions, "workflows"> = {},
+  src: { store: RunStore; chatStore?: ChatStore; workflows: string[]; jobs?: JobReader },
+  opts: Omit<ProjectRunsOptions, "workflows" | "jobs"> = {},
 ): Promise<ProjectReport> {
-  const a = await projectRuns(backend, src.store, { ...opts, workflows: src.workflows });
+  const a = await projectRuns(backend, src.store, { ...opts, workflows: src.workflows, jobs: src.jobs });
   const b = src.chatStore ? await projectChats(backend, src.chatStore) : emptyReport();
   return {
     runs: a.runs + b.runs,
@@ -515,5 +570,6 @@ export async function projectAll(
     accessed: a.accessed + b.accessed,
     unresolved: a.unresolved + b.unresolved,
     skipped: a.skipped + b.skipped,
+    jobs: a.jobs + b.jobs,
   };
 }

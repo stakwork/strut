@@ -30,7 +30,7 @@ export default defineStep({
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const dataDir = cfg.dataDir ?? process.env["STRUT_WORKSPACE"] ?? "./workspace";
-      const [{ FileRunStore }, { FileChatStore }, { FileWorkspaceStore }, { Neo4jWorkspaceStore }, { projectAll }, { graphWorkspaceRequested }] =
+      const [{ FileRunStore }, { FileChatStore }, { FileWorkspaceStore }, { Neo4jWorkspaceStore }, { projectAll }, { graphWorkspaceRequested }, { createJobIndex }] =
         await Promise.all([
           import("../../../store.js"),
           import("../../../chat-store.js"),
@@ -38,13 +38,17 @@ export default defineStep({
           import("../../../graph/workspace-store.js"),
           import("../../../graph/projector.js"),
           import("../../../graph/wiring.js"),
+          import("../../../job-index.js"),
         ]);
       const workflows =
         cfg.workflows ??
         (await (graphWorkspaceRequested() ? new Neo4jWorkspaceStore(b) : new FileWorkspaceStore(dataDir)).listWorkflows()).map((w) => w.name);
+      const store = new FileRunStore(dataDir);
       const report = await projectAll(
         b,
-        { store: new FileRunStore(dataDir), chatStore: cfg.chats === false ? undefined : new FileChatStore(dataDir), workflows },
+        // The job index over the same data dir, for the `StrutJob` of every
+        // run launched under a job (plans/job-index.md §6).
+        { store, chatStore: cfg.chats === false ? undefined : new FileChatStore(dataDir), workflows, jobs: createJobIndex({ dataDir, store }) },
         { limitPerWorkflow: cfg.limitPerWorkflow, skipSettled: cfg.skipSettled },
       );
       return { dataDir, workflows, ...report };

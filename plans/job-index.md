@@ -308,7 +308,7 @@ exist — the `session_id` precedent, `agent-sessions.md` §4.
     summary: "?string",     // the search text: each current artifact as `title — summary`, then the latest turn's `text`, cut at a cap of its own (2000)
     created_by: "?string",
     created_at: "datetime",
-    updated_at: "?datetime",
+    last_used_at: "?datetime",   // `updated_at` is a generic node property the seed refuses
     run_count: "?int",
     artifact_count: "?int",
     log_ref: "?string",     // the job id — `GET /jobs/:id` is the record

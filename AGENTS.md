@@ -117,7 +117,7 @@ strut/
 │   ├── graph/             # jarvis-compatible Neo4j graph backend over bolt, no jarvis in the loop (plans/jarvis-graph-compat.md). Opt-in via openGraphBackend
 │   │   ├── bolt.ts        # neo4j-driver wrapper; int() for Integer writes (plain JS numbers write as FLOAT)
 │   │   ├── deletion.ts    # the one delete model (shared with jarvis): NODE_LIVE / EDGE_LIVE filters, EDGE_IN_SCOPE (both ends :Data_Bank in $ns), nowMs, DELETE_NODE_TAIL (stamp deleted_at ms + is_deleted, hard-delete in-scope edges). Edges are never muted
-│   │   ├── strut-schemas.ts# the 9 Strut node types + 15-row edge registry (label registry in plans/generic-storage.md); author-time checks. The four WORKSPACE types (StrutWorkflow/-Version, StrutStep/-Version) are `exact_key`: their node_key tokens are the HEX of the exact name (`strutstep-706f642f74657374` for `pod/test`), not jarvis's sanitized form, which strips every non-alphanumeric and made `pod/test` and `pod_test` ONE node (swarm38, 2026-10-07); the run/chat types keep jarvis's composition. The flag never reaches the Schema node
+│   │   ├── strut-schemas.ts# the 10 Strut node types (StrutJob is the newest: exact_key on the job id, indexed title + summary, plans/job-index.md §6) + 16-row edge registry (label registry in plans/generic-storage.md); author-time checks. The four WORKSPACE types (StrutWorkflow/-Version, StrutStep/-Version) are `exact_key`: their node_key tokens are the HEX of the exact name (`strutstep-706f642f74657374` for `pod/test`), not jarvis's sanitized form, which strips every non-alphanumeric and made `pod/test` and `pod_test` ONE node (swarm38, 2026-10-07); the run/chat types keep jarvis's composition. The flag never reaches the Schema node
 │   │   ├── schema-seed.ts # idempotent domain registration: Thing root, Schema nodes, CHILD_OF, constraints, vector/fulltext indexes, migration stamp
 │   │   ├── node-writer.ts # §6 validation gate + node_key composition (jarvis's sanitizer, verbatim; hex tokens for an `exact_key` type — `keyToken`) + Data_Bank + MERGE (create/upsert/restore/update), UNWIND batches; softDelete (Domain_strut only) + retirePlannedEvidence
 │   │   ├── edge-writer.ts # edge MERGE by ref_id with IS_ALIAS rewrite (ON CREATE only; a legacy muted edge is made live); delete() = DELETE r; closed (source, edge, target) registry; update() = jarvis PATCH /v2/edges/:ref_id (stamps protected)
@@ -132,7 +132,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1415 unit tests across 75 files (+ 229 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1415 unit tests across 75 files (+ 243 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)

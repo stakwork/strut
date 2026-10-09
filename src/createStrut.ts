@@ -781,7 +781,10 @@ export async function createStrut<TServices = unknown>(
         // real store.
         if (info?.workflow && info.origin !== "verify" && info.workflow !== RUN_STEP_FLOW) {
           const key = info.workflow;
-          void projectRunOnce(runGraph, store, key, runId).catch((err) => console.error(`[projector] run ${key}/${runId} was not projected:`, err));
+          // With the job index, so a run launched under a job refreshes
+          // its `StrutJob` (plans/job-index.md §6).
+          const jobs = (services as Record<string, unknown>)["jobs"] as JobsCapability | undefined;
+          void projectRunOnce(runGraph, store, key, runId, jobs).catch((err) => console.error(`[projector] run ${key}/${runId} was not projected:`, err));
           verifier?.schedule(key, runId);
         }
       }
