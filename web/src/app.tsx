@@ -979,7 +979,7 @@ export function App() {
                 onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
                 <div class="list-item-stack">
                   <span class="list-item-name">
-                    {run.runId.slice(0, 10)}
+                    {run.runId}
                     {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
                   </span>
                   <span class="list-item-sub">
