@@ -349,6 +349,28 @@ export function withAccessedNodes<T>(output: T, nodes: Array<AccessedNode | null
   return output;
 }
 
+/** Fold one run event's `nodes` into `into`, one entry per ref_id carrying
+ *  the latest call's type and name — how a step that launched another run
+ *  reports what that run touched (`strut/run-workflow` over a peer's tail,
+ *  `meta/run-workflow` over a child's log). `peer` tags a ref that carries no
+ *  tag of its own; a ref already tagged keeps it, as it was recorded. */
+export function foldAccessedNodes(into: Map<string, AccessedNode>, event: RunEvent, peer?: string): void {
+  if (event.type !== "step.end" || !Array.isArray(event.nodes)) return;
+  for (const n of event.nodes) {
+    if (!n || typeof n.ref_id !== "string" || !n.ref_id) continue;
+    const prev = into.get(n.ref_id);
+    const node_type = n.node_type ?? prev?.node_type;
+    const name = n.name ?? prev?.name;
+    const tag = n.peer ?? peer;
+    into.set(n.ref_id, {
+      ref_id: n.ref_id,
+      ...(node_type ? { node_type } : {}),
+      ...(name ? { name } : {}),
+      ...(tag ? { peer: tag } : {}),
+    });
+  }
+}
+
 /** The nodes a step output was marked with (see `withAccessedNodes`), else
  *  undefined. */
 export function accessedNodesOf(output: unknown): AccessedNode[] | undefined {

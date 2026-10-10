@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineStep, withAccessedNodes, type AccessedNode, type RunEvent, type StepContext } from "../../../core.js";
+import { defineStep, foldAccessedNodes, withAccessedNodes, type AccessedNode, type RunEvent, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { cancelOnPeer, launchOnPeer, tailPeerRun, type PeerRunHandle, type PeersCapability } from "../../../peers.js";
 
@@ -152,19 +152,7 @@ export default defineStep({
     // keeps the peer's tag for it: recorded as it came). A reattach reads
     // the log from its start, so the list is whole either way.
     const touched = new Map<string, AccessedNode>();
-    const onEvent = (e: RunEvent) => {
-      if (e.type !== "step.end" || !Array.isArray(e.nodes)) return;
-      for (const n of e.nodes) {
-        if (!n || typeof n.ref_id !== "string" || !n.ref_id) continue;
-        const prev = touched.get(n.ref_id);
-        touched.set(n.ref_id, {
-          ref_id: n.ref_id,
-          ...(n.node_type ?? prev?.node_type ? { node_type: n.node_type ?? prev?.node_type } : {}),
-          ...(n.name ?? prev?.name ? { name: n.name ?? prev?.name } : {}),
-          peer: n.peer ?? cfg.peer,
-        });
-      }
-    };
+    const onEvent = (e: RunEvent) => foldAccessedNodes(touched, e, cfg.peer);
 
     try {
       const result = await tailPeerRun(peers, handle, { signal: ac.signal, onEvent });

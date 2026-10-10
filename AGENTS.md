@@ -661,7 +661,10 @@ and the child env is scrubbed by construction).
   (`core.ts`; a non-enumerable marker — invisible to the model, `{{ }}`
   expressions, and JSON). `wrapToolsWithEmit` lifts it onto the tool call's
   `step.end` event as `nodes`, untruncated — the runner does the same for a
-  graph step the workflow itself ran — and the projector writes one
+  graph step the workflow itself ran, and a step that launched another run
+  reports that run's nodes as its own (`meta/run-workflow` from the child's
+  log, `strut/run-workflow` from the peer's tail, peer-tagged;
+  `foldAccessedNodes`) — and the projector writes one
   `ACCESSED` edge per ref the graph holds (`StrutToolCall → any node`; a
   workflow step's `nodes` are in the log only). Every
   `graph/*` (and mcp `jarvis/*`) node-touching step does this; a step that
