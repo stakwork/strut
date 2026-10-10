@@ -53,7 +53,7 @@ function buildOntologyPayload(schemaData: any, includeEdges: boolean, includeAtt
 export default defineStep({
   type: "graph/get-ontology",
   description:
-    "Fetch the ontology of the strut knowledge graph: node types grouped by domain " +
+    "Fetch the ontology of the knowledge graph: node types grouped by domain " +
     "and the canonical list of valid `domains`. " +
     "Call this once before graph_graph_search to discover valid values for both the `type` and `domains` parameters. " +
     "Node types are grouped by domain key in `node_types[<domain>]`; types with no domain land in the `ungrouped` bucket. " +

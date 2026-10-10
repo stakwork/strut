@@ -9,7 +9,7 @@ const CHILD_DESCRIPTION_MAX = 300;
 export default defineStep({
   type: "graph/graph-get",
   description:
-    "Resolve a single node in the strut knowledge graph to its full content by ref_id. " +
+    "Resolve a single node in the knowledge graph to its full content by ref_id. " +
     "Use the ref_id from graph_graph_search or graph_graph_neighbors results. " +
     "When you know a node's NAME instead, pass node_type + name (e.g. node_type \"Concept\", " +
     "name \"Janitor\"): an exact lookup by the node's key, never a search — for types keyed by name. " +

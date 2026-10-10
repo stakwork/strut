@@ -22,7 +22,8 @@ function descriptionOf(nodeType: string | undefined, p: Record<string, any>): st
 export default defineStep({
   type: "graph/graph-search",
   description:
-    "Search the strut knowledge graph for nodes — workflows, workflow versions, steps, runs, agent sessions, tool calls, chats, turns, and any jarvis-owned types sharing the database. " +
+    "Search the knowledge graph for nodes of any type it holds — what this deployment ingested (on a swarm: the code parsed from its repositories — File, Function, Endpoint, … with written descriptions — plus documents, concepts, tasks, …) and strut's own workflows, steps, runs and chats. " +
+    "Narrow with `type` to find one kind (e.g. 'Function,File,Endpoint' for code). " +
     "Provide at least one of `q`, `input_q`, `output_q` — they can be combined, each acting as its own " +
     "retriever fused into one ranked result set. " +
     "Each result includes an `edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
