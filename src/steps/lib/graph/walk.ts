@@ -552,7 +552,7 @@ const EXAMPLE = `- id: gather
 export default defineStep({
   type: "graph/walk",
   description:
-    "Walk the strut knowledge graph to GATHER CONTEXT for a goal. Seeds from ref_ids (start) or a graph search (query), then hop by hop " +
+    "Walk the knowledge graph to GATHER CONTEXT for a goal. Seeds from ref_ids (start) or a graph search (query), then hop by hop " +
     "expands one node's neighbors while a small decision model judges each neighbor's relevance (kept or not), which node to expand next, " +
     "and whether enough has been gathered. Traversal is code and the model only answers typed choice/boolean questions, so it is cheap and " +
     "bounded (maxHops decision rounds, maxNodes kept). Output: { goal, nodes: [{ref_id, node_type, name, relevance, hop, via, properties}] " +

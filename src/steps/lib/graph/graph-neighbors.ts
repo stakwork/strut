@@ -8,7 +8,7 @@ const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn"];
 export default defineStep({
   type: "graph/graph-neighbors",
   description:
-    "Return all nodes adjacent (one hop) to a node in the strut knowledge graph, " +
+    "Return all nodes adjacent (one hop) to a node in the knowledge graph, " +
     "with edge_type and direction. Use the ref_id from graph_graph_search or graph_graph_get. " +
     "Each neighbor also includes an `edges` map ({EDGE_TYPE: count}) showing how " +
     "connected that neighbor is and which relationship types you can hop along next. " +
