@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { coerceJsonArg, type AnyStepDef, type Flow, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
+import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, type AccessedNode, type AnyStepDef, type Flow, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
@@ -796,7 +796,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // on the parent reach it (RUN_CONTROL_SPEC §2.2).
       const tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId);
       try {
-        return await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
+        const result = await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
           runId,
           store,
           workspace,
@@ -810,6 +810,19 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.principal ? { principal: opts.principal } : {}),
           ...(opts?.job ? { job: opts.job } : {}),
         });
+        // The graph nodes the child run touched, off its log — what its
+        // steps and agents' tool calls reported (`step.end.nodes`), so the
+        // launching step reports them too and a reader of THIS run (the run
+        // flyout, hive's run graph) sees what the whole tree read or wrote.
+        // A ref the child got from a peer keeps its peer tag. A log that
+        // cannot be read leaves the result unmarked.
+        const touched = new Map<string, AccessedNode>();
+        try {
+          for (const e of await store.getRunEvents(flow.name, runId)) foldAccessedNodes(touched, e);
+        } catch {
+          // the result stands without them
+        }
+        return withAccessedNodes(result, [...touched.values()]);
       } finally {
         tracked?.untrack();
       }

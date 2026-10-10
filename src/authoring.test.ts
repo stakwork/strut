@@ -339,6 +339,52 @@ describe("authoring capability (the meta surface)", () => {
     assert.equal("job" in plainStart, false);
   });
 
+  it("meta/run-workflow reports the graph nodes the child run touched on its own step.end — deduplicated, peer tags kept", async () => {
+    // A step that reports nodes the way a graph step does (withAccessedNodes'
+    // non-enumerable marker), with no imports.
+    const touchStep = `export default {
+  type: "cand/touch",
+  description: "reports the nodes in its config",
+  input: { parse: (v) => v },
+  output: { parse: (v) => v },
+  run: async (cfg) => { const out = { ok: true }; Object.defineProperty(out, "_nodes", { value: cfg.nodes, enumerable: false }); return out; },
+};
+`;
+    assert.equal(((await authoring.createStep("cand/touch", touchStep)) as any).error, undefined);
+    await strut.workspace.createWorkflow(
+      "touch-child",
+      `name: touch-child
+steps:
+  - id: a
+    type: cand/touch
+    config:
+      nodes: [{ ref_id: "n1", node_type: "Concept" }, { ref_id: "n2" }]
+  - id: b
+    type: cand/touch
+    config:
+      nodes: [{ ref_id: "n2", node_type: "Function", name: "verify" }, { ref_id: "p1", node_type: "File", peer: "acme" }]
+`,
+    );
+    await strut.workspace.createWorkflow("touch-parent", `name: touch-parent\nsteps:\n  - id: child\n    type: meta/run-workflow\n    config:\n      name: "{{ input.name }}"\n      input: {}\n`);
+
+    const res = await strut.run("touch-parent", { name: "touch-child" });
+    assert.equal(res.status, "success", JSON.stringify(res.error));
+    const end = (await strut.store.getRunEvents("touch-parent", res.runId)).find((e) => e.type === "step.end" && e.path === "touch-parent/child")!;
+    assert.deepEqual(end.nodes, [
+      { ref_id: "n1", node_type: "Concept" },
+      { ref_id: "n2", node_type: "Function", name: "verify" },
+      { ref_id: "p1", node_type: "File", peer: "acme" },
+    ]);
+    assert.equal("_nodes" in JSON.parse(JSON.stringify(res.output)), false, "the marker never reaches the output");
+
+    // A child that touched nothing reports nothing.
+    await strut.workspace.createWorkflow("touch-none", logFlow("touch-none", "hi"));
+    const none = await strut.run("touch-parent", { name: "touch-none" });
+    assert.equal((none.output as any).status, "success", JSON.stringify(none.output));
+    const noneEnd = (await strut.store.getRunEvents("touch-parent", none.runId)).find((e) => e.type === "step.end" && e.path === "touch-parent/child");
+    assert.equal(noneEnd?.nodes, undefined);
+  });
+
   it("runWorkflow sees a step authored moments before (fresh registry, §5.3.1)", async () => {
     const created = (await authoring.createStep("cand/echo2", echoStep("cand/echo2", 7))) as any;
     assert.equal(created.ok, true);
