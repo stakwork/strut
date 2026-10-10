@@ -168,6 +168,17 @@ describe("launchOnPeer", () => {
     assert.deepEqual(JSON.parse(seen!.init?.body ?? ""), { input: { a: 1 }, params: { p: 2 }, job: "j1" });
   });
 
+  it("an input or params a model handed as a JSON string is sent as the object", async () => {
+    let body: unknown;
+    const { cap, ready } = capabilityOver(async (_url, init) => {
+      body = JSON.parse(init?.body ?? "");
+      return json({ runId: "r1" }, 202);
+    });
+    await ready;
+    await launchOnPeer(cap, { peer: "cloud", workflow: "explore", input: '{"prompt":"how?","repos":["a"]}', params: ' {"p":2}' });
+    assert.deepEqual(body, { input: { prompt: "how?", repos: ["a"] }, params: { p: 2 } });
+  });
+
   it("a refusal throws with the peer's message", async () => {
     const { cap, ready } = capabilityOver(async () => json({ error: "job_busy: job j1 is held by run 5" }, 409));
     await ready;

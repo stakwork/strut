@@ -31,7 +31,7 @@
  * lives.
  */
 
-import type { RunEvent, RunResult } from "./core.js";
+import { coerceJsonArg, type RunEvent, type RunResult } from "./core.js";
 import type { SecretStore } from "./secret-store.js";
 
 /** The peers file, beside `secrets.json` under `dataDir`. */
@@ -243,8 +243,10 @@ export async function launchOnPeer(peers: PeersCapability, launch: PeerLaunch): 
       ...(launch.actor ? { "x-strut-actor": launch.actor } : {}),
     },
     body: JSON.stringify({
-      input: launch.input ?? {},
-      ...(launch.params ? { params: launch.params } : {}),
+      // A model calling strut/run-workflow as a tool may hand the input as a
+      // JSON string; the peer's input schema would refuse it.
+      input: coerceJsonArg(launch.input) ?? {},
+      ...(launch.params ? { params: coerceJsonArg(launch.params) } : {}),
       ...(launch.job ? { job: launch.job } : {}),
     }),
   });
