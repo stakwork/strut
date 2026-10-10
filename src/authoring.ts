@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { AnyStepDef, Flow, RunEvent, RunResult, RunSummary, StepRegistry } from "./core.js";
+import { coerceJsonArg, type AnyStepDef, type Flow, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
@@ -307,21 +307,8 @@ export function applyEdits(text: string, edits: TextEdit[], what: string): { tex
 
 // ── Step publishing (shared mechanism) ─────────────────────────────────────
 
-/** LLMs sometimes pass an object-valued arg as a JSON *string* (e.g.
- *  run_workflow's `input`). The template engine then sees a string, so
- *  `{{ input.owner }}` resolves to undefined and every field fails validation.
- *  Defensively parse a JSON string back into the object/array it represents;
- *  leave anything else untouched. */
-export function coerceJsonArg(v: unknown): unknown {
-  if (typeof v !== "string") return v;
-  const t = v.trim();
-  if (!(t.startsWith("{") || t.startsWith("["))) return v;
-  try {
-    return JSON.parse(t);
-  } catch {
-    return v;
-  }
-}
+// coerceJsonArg lives in core.ts (peers.ts needs it without this module).
+export { coerceJsonArg };
 
 /** What both publish paths need. The chat builder's `AiDeps` satisfies it
  *  structurally; the authoring capability builds its own. `getRegistry` must

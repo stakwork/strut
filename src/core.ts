@@ -573,3 +573,19 @@ export function flow(
     ...(opts.params != null ? { params: opts.params } : {}),
   };
 }
+
+/** LLMs sometimes pass an object-valued arg as a JSON *string* (e.g.
+ *  run_workflow's `input`). The template engine then sees a string, so
+ *  `{{ input.owner }}` resolves to undefined and every field fails validation.
+ *  Defensively parse a JSON string back into the object/array it represents;
+ *  leave anything else untouched. */
+export function coerceJsonArg(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  const t = v.trim();
+  if (!(t.startsWith("{") || t.startsWith("["))) return v;
+  try {
+    return JSON.parse(t);
+  } catch {
+    return v;
+  }
+}
