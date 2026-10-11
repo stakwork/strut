@@ -8,7 +8,7 @@ import { Bolt, int } from "./bolt.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { seedJarvisOntology } from "./ontology-seed.js";
 import { NodeWriter, buildSearchText, type Embedder } from "./node-writer.js";
-import { EMBEDDING_DIM, EmbeddingPass, MiniLMEmbedder, cosine, decideRow, meanPoolNormalize } from "./embeddings.js";
+import { EMBEDDING_DIM, EmbeddingPass, MiniLMEmbedder, WorkerEmbedder, cosine, decideRow, meanPoolNormalize } from "./embeddings.js";
 import { SchemaResolver, fromStrut } from "./schema-resolver.js";
 import { getStrutSchema } from "./strut-schemas.js";
 import { openGraphBackend } from "./backend.js";
@@ -71,6 +71,17 @@ describe("MiniLMEmbedder parity vs sentence-transformers", { skip: runModel ? fa
     const [head] = await embedder.embed([words.slice(0, 40).join(" ")]);
     assert.ok(cosine(truncated!, head!) < 0.999, "40-word prefix should differ from the 256-token vector");
     assert.ok(cosine(truncated!, golden.vectors["long_truncated"]!) >= 0.999);
+  });
+
+  it("in a worker thread (the pass's), the same vectors", async () => {
+    const worker = new WorkerEmbedder();
+    try {
+      const texts = Object.values(golden.texts);
+      const [inline, inWorker] = [await embedder.embed(texts), await worker.embed(texts)];
+      inline.forEach((v, i) => assert.ok(cosine(v, inWorker[i]!) >= 0.99999, `${i}: cosine ${cosine(v, inWorker[i]!)}`));
+    } finally {
+      await worker.close();
+    }
   });
 });
 
@@ -236,7 +247,8 @@ describe("EmbeddingPass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_U
 
   it("pages by node_key: every node once, a tick resumes at the cursor, the code types first", async () => {
     await pass.stop();
-    pass = new EmbeddingPass(bolt, fake, resolver, { autoStart: false, sweepEveryMs: 1e12, pageSize: 1000, tickBudgetMs: 0, log: (l) => lines.push(l) });
+    // One batch per page, so budget 0 = one page per tick.
+    pass = new EmbeddingPass(bolt, fake, resolver, { autoStart: false, sweepEveryMs: 1e12, pageSize: 1000, batchSize: 1000, tickBudgetMs: 0, log: (l) => lines.push(l) });
     await bolt.run(
       `UNWIND range(1, 2500) AS i
        CREATE (n:Function:Node:Data_Bank)
@@ -265,6 +277,33 @@ describe("EmbeddingPass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_U
     assert.equal(missing[0]!["c"], 0);
   });
 
+  it("a spent budget stops a tick between batches, not at the end of a page; the next resumes at the last batch", async () => {
+    await pass.stop();
+    // Budget 0 = one batch of 100 per tick, inside pages of 1,000.
+    pass = new EmbeddingPass(bolt, fake, resolver, { autoStart: false, sweepEveryMs: 1e12, pageSize: 1000, batchSize: 100, tickBudgetMs: 0, log: (l) => lines.push(l) });
+    await bolt.run(
+      `UNWIND range(1, 250) AS i
+       CREATE (n:Function:Node:Data_Bank)
+       SET n.name = 'fn' + i, n.file = 'f.ts', n.Data_Bank = 'fn' + i, n.node_key = 'function-' + right('000' + toString(i), 3),
+           n.ref_id = 'function-' + i, n.namespace = 'default', n.date_added_to_graph = $now`,
+      { now: int(BEFORE) },
+    );
+    let ticks = 0;
+    while (pass.status().current["Function"]?.seen !== 100) {
+      await pass.tick();
+      assert.ok(++ticks < 100, `no Function batch after ${ticks} ticks: ${JSON.stringify(pass.status())}`);
+    }
+    let s = pass.status();
+    assert.deepEqual([s.sweep.type, s.sweep.cursor, s.current["Function"]!.embedded], ["Function", "function-100", 100]);
+    const embedded = await bolt.run(`MATCH (n:Function) WHERE n.text_embeddings IS NOT NULL RETURN max(n.node_key) AS k, count(n) AS c`);
+    assert.deepEqual([embedded[0]!["k"], embedded[0]!["c"]], ["function-100", 100]);
+    await pass.tick();
+    s = pass.status();
+    assert.deepEqual([s.current["Function"]!.seen, s.sweep.cursor], [200, "function-200"]);
+    await pass.sweep();
+    assert.deepEqual(pass.status().last["Function"], { seen: 250, stale: 250, embedded: 250, removed: 0, errors: 0 });
+  });
+
   it("embeds newcomers between sweeps, within a tick, without a sweep", async () => {
     await fn("function-old", "oldFn", "there before");
     await pass.sweep();
@@ -280,6 +319,38 @@ describe("EmbeddingPass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_U
     assert.ok(typeof s.newcomers.since === "number");
     await pass.tick();
     assert.equal(pass.status().newcomers.embedded, 1, "nothing new: nothing done");
+  });
+
+  it("newcomers: rows the pass never embeds do not hide the code ingested beside them; a stamp a whole batch shares is read through; blank rows on one stamp are stepped past", async () => {
+    await pass.stop();
+    pass = new EmbeddingPass(bolt, fake, resolver, { autoStart: false, sweepEveryMs: 1e12, pageSize: 3, log: (l) => lines.push(l) });
+    await pass.sweep();
+    const t = Date.now();
+    // A run's agent log (no-embed) and blank code, more than a page of each, first.
+    for (let i = 0; i < 5; i++) await raw("Turn", `turn-${i}`, { content: `ran ${i}`, tool: "shell", Data_Bank: `ran ${i}\nshell` }, t);
+    for (let i = 0; i < 4; i++) await fn(`function-blank-${i}`, "  ", undefined, t);
+    // stakgraph's ingest: one `$now` for the batch.
+    for (let i = 0; i < 7; i++) await fn(`function-batch-${i}`, `batched${i}`, "one ingest batch, one stamp", t + 1);
+    await fn("function-late", "late", "after the batch", t + 2);
+    await pass.tick();
+    for (const k of [...[0, 1, 2, 3, 4, 5, 6].map((i) => `function-batch-${i}`), "function-late"]) assert.ok(vectorOf((await node(k)).p), k);
+    for (let i = 0; i < 5; i++) assert.equal(vectorOf((await node(`turn-${i}`)).p), undefined);
+    for (let i = 0; i < 4; i++) assert.equal(vectorOf((await node(`function-blank-${i}`)).p), undefined);
+    assert.equal(pass.status().newcomers.embedded, 8);
+  });
+
+  it("newcomers: a spent budget stops the tick between batches, and the next resumes", async () => {
+    await pass.stop();
+    pass = new EmbeddingPass(bolt, fake, resolver, { autoStart: false, sweepEveryMs: 1e12, batchSize: 2, tickBudgetMs: 0, log: (l) => lines.push(l) });
+    await pass.sweep();
+    const t = Date.now();
+    for (let i = 0; i < 5; i++) await fn(`function-n${i}`, `n${i}`, "new", t + i);
+    const embedded: number[] = [];
+    for (let k = 0; k < 4; k++) {
+      await pass.tick();
+      embedded.push(pass.status().newcomers.embedded);
+    }
+    assert.deepEqual(embedded, [2, 4, 5, 5]);
   });
 
   it("no-embed: strut's execution records get text and no vector (write and update); a marked jarvis type too; a vector found on one is removed, the text kept", async () => {

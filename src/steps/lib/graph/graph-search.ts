@@ -33,7 +33,10 @@ export default defineStep({
     q: z
       .string()
       .optional()
-      .describe("General hybrid (keyword + semantic) search query over node names, descriptions, summaries, and schemas."),
+      .describe(
+        "General hybrid (keyword + semantic) search query over node names, descriptions, summaries, and schemas. " +
+          "Ask in plain words to search by meaning; put an exact string (an error message, a header name, a config key) in double quotes to match it as written.",
+      ),
     input_q: z
       .string()
       .optional()

@@ -8,13 +8,17 @@ import { EdgeWriter } from "./edge-writer.js";
 import {
   GraphReadError,
   GraphReader,
+  PROSE_RRF_WEIGHTS,
+  RRF_WEIGHTS,
   applyTitleBoost,
   applyUsageTiebreak,
   buildFulltextQuery,
   escapeLucene,
   fetchLimit,
   fuseHits,
+  fusionWeights,
   inheritedAttributes,
+  isExactQuery,
   overfetch,
   pyRound,
   rankHits,
@@ -25,6 +29,7 @@ import {
   type Hit,
 } from "./search.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
+import { seedJarvisOntology } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 
@@ -58,6 +63,28 @@ describe("search helpers (pure)", () => {
     assert.equal(buildFulltextQuery("DomainSrchEpisode_74aced4f"), "DomainSrchEpisode_74aced4f");
     assert.equal(buildFulltextQuery("  harvey deliver "), "+harvey +deliver");
     assert.equal(buildFulltextQuery(""), "");
+  });
+  it("phrases: a quoted span, and a word the analyzer would split; an exact query is one of them alone", () => {
+    assert.equal(buildFulltextQuery("x-hub-signature-256"), '"x-hub-signature-256"');
+    assert.equal(buildFulltextQuery('return "Invalid signature" from it'), '+return +"Invalid signature" +from +it');
+    assert.equal(buildFulltextQuery("how do real-time updates work?"), '+how +do +"real-time" +updates +work\\?');
+    assert.equal(buildFulltextQuery("workspace's data"), "+workspace's +data");
+    assert.equal(buildFulltextQuery('"Invalid signature'), '+\\"Invalid +signature', "an unclosed quote is a character");
+    assert.deepEqual(
+      ["x-hub-signature-256", '"Invalid signature"', "Invalid signature", 'return "Invalid signature"', "harvey"].map(isExactQuery),
+      [true, true, false, false, false],
+    );
+  });
+  it("fusion weights by shape: a question of four words or more halves the keyword half; a short or exact query keeps jarvis's", () => {
+    assert.deepEqual(fusionWeights("how do live updates reach the browser"), { fulltext: 0.5, semantic: 1.0 });
+    assert.deepEqual(fusionWeights('where do we return "Invalid signature"'), { fulltext: 0.5, semantic: 1.0 });
+    assert.equal(fusionWeights("Invalid signature"), RRF_WEIGHTS);
+    assert.equal(fusionWeights("x-hub-signature-256"), RRF_WEIGHTS);
+    assert.equal(fusionWeights('"the user is not a member of this workspace"'), RRF_WEIGHTS, "one quoted span is exact, however long");
+    // jarvis's weights put a keyword-only first hit above a semantic-only one; the prose weights do not.
+    const order = (w?: Record<string, number>) => fuseHits([hit("kw", 9)], [hit("sem", 0.9)], {}, w).map((e) => e.node.properties["ref_id"]);
+    assert.deepEqual(order(), ["kw", "sem"]);
+    assert.deepEqual(order(PROSE_RRF_WEIGHTS), ["sem", "kw"]);
   });
   it("fetch limit mirrors jarvis", () => {
     assert.equal(fetchLimit(10, 0), 120);
@@ -470,5 +497,78 @@ describe("typed search routes through the type's domain index (live Neo4j)", { s
       await bolt.run(`MATCH (a:About) DELETE a`);
       resolver.invalidate();
     }
+  });
+});
+
+describe("query shape: a prose question vs an exact string (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
+  let bolt: Bolt;
+  let reader: GraphReader;
+  /** Every Lucene query the reader ran. */
+  const lucene: string[] = [];
+  const names = (r: Awaited<ReturnType<GraphReader["search"]>>) => r.nodes.map((n) => String(n.properties["name"]));
+  const matchOf = (r: Awaited<ReturnType<GraphReader["search"]>>, name: string) =>
+    (r.nodes.find((n) => n.properties["name"] === name) as { match_type?: string } | undefined)?.match_type;
+  before(async () => {
+    bolt = new Bolt(cfg!);
+    await bolt.verify();
+    await wipeGraph(bolt);
+    await seedJarvisOntology(bolt);
+    await seedStrutDomain(bolt);
+    const resolver = new SchemaResolver(bolt);
+    await new NodeWriter(bolt, { embedder: bow, resolver }).writeMany([
+      // Wide semantic margins: the vector index scores approximately (by
+      // ~0.01 on these sparse vectors), so near-ties can swap.
+      { type: "Function", data: { name: "usePusherConnection", file: "src/hooks/usePusherConnection.ts", description: "Pushes live updates to the browser over a websocket" } },
+      { type: "Function", data: { name: "handleWebhook", file: "src/app/api/github/webhook/route.ts", description: "Verifies a GitHub webhook", body: 'const signature = req.headers.get("x-hub-signature-256")' } },
+      { type: "Function", data: { name: "X", file: "src/x.ts", description: "Posts to X", body: "const x = 256" } },
+    ]);
+    // A prompt constant (swarm38's getPlannerCapabilitySnippet): its body
+    // holds every word of the question, its own text nothing like it. No
+    // vector, so only the keyword half finds it — on a graph of thousands
+    // it sits far down the semantic list.
+    await bolt.run(
+      `CREATE (n:Function:Node:Data_Bank:Domain_codeartifact)
+       SET n.name = 'getPlannerPrompt', n.file = 'src/prompt.ts', n.node_key = 'function-getplannerprompt', n.ref_id = 'prompt-1',
+           n.namespace = 'default', n.Data_Bank = 'getPlannerPrompt', n.body = $body, n.date_added_to_graph = 1`,
+      { body: "Explain how we do live updates: they reach the browser while a task is running. " + "More planner prompt text. ".repeat(50) },
+    );
+    await bolt.run(`CALL db.awaitIndexes(60)`);
+    const spy = new Proxy(bolt, {
+      get(t, k, r) {
+        if (k !== "run") return Reflect.get(t, k, r);
+        return (cypher: string, params?: Record<string, unknown>) => {
+          if (params && typeof params["q_lucene"] === "string") lucene.push(params["q_lucene"]);
+          return t.run(cypher, params);
+        };
+      },
+    });
+    reader = new GraphReader(spy, { embedder: bow, resolver });
+  });
+  after(async () => {
+    await bolt?.close();
+  });
+
+  it("a prose question: the semantic hit ranks above a keyword-only match on a long body", async () => {
+    // Six terms after the analyzer: the seeded index spans 158 properties,
+    // and Lucene refuses past 1,024 clauses (the keyword half then drops out).
+    const r = await reader.search({ q: "how do live updates reach the browser", types: ["Function"] });
+    assert.equal(names(r)[0], "usePusherConnection");
+    assert.ok(names(r).indexOf("getPlannerPrompt") > 0, names(r).join(", "));
+    assert.deepEqual([matchOf(r, "usePusherConnection"), matchOf(r, "getPlannerPrompt")], ["semantic", "fulltext"]);
+  });
+
+  it("an exact string is matched as a phrase, not by its fragments, and gets no any-word fallback", async () => {
+    lucene.length = 0;
+    const r = await reader.search({ q: "x-hub-signature-256", types: ["Function"] });
+    assert.equal(names(r)[0], "handleWebhook");
+    assert.equal(matchOf(r, "X"), "semantic", "`x` and `256` alone are not a keyword match");
+    assert.deepEqual(lucene, ['"x-hub-signature-256"']);
+    lucene.length = 0;
+    await reader.search({ q: "no-such-header", types: ["Function"] });
+    assert.deepEqual(lucene, ['"no-such-header"'], "nothing found, no fallback");
+    lucene.length = 0;
+    await reader.search({ q: "how are api keys rotated", types: ["Function"] });
+    assert.equal(lucene.length, 2, "a question that finds nothing still falls back");
+    assert.ok(lucene[1]!.endsWith("~"));
   });
 });

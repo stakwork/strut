@@ -144,13 +144,22 @@ removed — at the cost of the extra work.
    both jarvis and strut read for "the search text of a node of this type"
    (`get_search_fields_for_node`; strut's `searchFieldsFor` /
    `buildSearchText` in `src/graph/node-writer.ts`). A type whose Schema
-   declares `index` is embedded from those fields. The pass never falls
-   back to jarvis's catch-all text (every property, joined) for a type
-   without one: on swarm38, 193 of 255 types declare `index`, and the 62
-   that do not (61 `Cloud`-domain Advisor*/Kn* types and `Content`) and the
-   types with no Schema node (`Context`, `Chunk`) are skipped — and named
-   in the status read (§1), so a graph where the code types have no Schema
-   node says so instead of silently embedding nothing.
+   declares `index` — its own, or one inherited through `CHILD_OF` — is
+   embedded from those fields. Inheritance is jarvis's rule as much as
+   strut's: jarvis's `get_schema` merges the parent chain into the dict
+   `get_index_fields` reads (only `type_description` is skipped), and
+   strut's resolver does the same. So the 62 swarm38 types with no `index`
+   of their own (61 `Cloud`-domain Advisor*/Kn* types and `Content`)
+   inherit `Thing`'s `[name, description]`, and the pass embeds them from
+   those fields — the text jarvis composes for them too (validated
+   2026-10-11; this ruling first said they were skipped). On swarm38 the
+   Cloud types' 22,268 nodes carry no `node_key`, so the sweep never reaches
+   them (see "First look" under the validation). The pass never
+   falls back to jarvis's catch-all text (every property, joined): a type
+   whose whole chain declares no `index` is skipped (`no_index`), as are
+   the types with no Schema node (`Context`, `Chunk`, …), and both are
+   named in the status read (§1), so a graph where the code types have no
+   Schema node says so instead of silently embedding nothing.
 2. **Execution records get no vector — decided (Evan, 2026-10-11):
    `Turn`, `StrutToolCall`, `StrutTurn`.** Too fine-grained to search by
    meaning. `AgentSession` and `StrutAgentSession` (one per agent run) stay
@@ -301,15 +310,23 @@ already turns a string `index` into a one-item list):
   started when the graph backend opens — today's awaited
   `backfillEmbeddings` call in `openGraphBackend` becomes the start of the
   timer, so it never holds up boot. Every minute a tick resumes the sweep
-  where the last tick stopped and works for up to 15 s; when the sweep
-  ends, the next begins an hour later. Between sweeps the same tick embeds
+  where the last tick stopped and works for up to 15 s — the budget
+  checked between batches of 100 rows, each finished (text, vector,
+  label) before the cursor moves past it, since a page of 1,000 long
+  texts is half a minute of inference on a swarm's CPU (swarm38,
+  `UnitTest`: ticks of 28–35 s while the budget was checked per page);
+  when the sweep ends, the next begins an hour later. Between sweeps the same tick embeds
   **newcomers**: nodes with `date_added_to_graph` past the last tick's
   high-water mark (stakgraph, jarvis — `TimeFormatter.now_epoch_ms()` —
   and strut all stamp it on create, as epoch milliseconds; the pass creates `CREATE INDEX IF NOT EXISTS FOR (n:Data_Bank) ON
   (n.date_added_to_graph)` at open, so this is an index range seek) that
-  carry a marked label and no vector — so a freshly ingested function is
-  searchable by meaning within a minute, and a description mcp fills in
-  later is caught by the next sweep. A node jarvis writes has no vector
+  carry a marked label and no vector — the label in the query, not after
+  it, or a run's vector-less `StrutToolCall`s (1,563 in one minute on
+  swarm38) fill a page and end the tick; and from a `>=` cursor on the
+  stamp, because stakgraph stamps a whole ingest batch with one `$now` —
+  so a freshly ingested function is searchable by meaning within a
+  minute, and a description mcp fills in later is caught by the next
+  sweep. A node jarvis writes has no vector
   until its worker drains the queue; when the newcomer tick gets there
   first, both compute the same vector — bounded duplicate work, one
   result. Pages of 1,000; embed batches of 100. One pass at a time per backend (`openGraphBackend` is cached per
@@ -320,7 +337,14 @@ already turns a string `index` into a one-item list):
   default is every core. `MiniLMEmbedder.load` passes `session_options:
   { intraOpNumThreads: 2 }` (transformers.js hands it to the ONNX session)
   so hours of inference share the host with chat turns and runs; the
-  search path embeds one query at a time and does not notice.
+  search path embeds one query at a time and does not notice. The cap was
+  not enough: onnxruntime-node runs a model synchronously (its `run()` is
+  the native call inside a `setImmediate`), so on the main thread every
+  forward pass stalls the event loop — on swarm38, while a tick ran,
+  mcp's `GET /lab/health` went from 0.34 s to 1.74 s and a graph search
+  from 0.6 s to 5.6 s. So the pass embeds in a worker thread
+  (`WorkerEmbedder`, a second model instance: ~90 MB of weights), and the
+  writer and search keep the in-process one.
 - **Observability.** One log line per tick: the sweep position (type,
   cursor), embedded / removed / newcomers this tick, and types still
   dirty. `GET /graph/embeddings` (behind the key, mounted in `createStrut`
@@ -419,6 +443,24 @@ Schemas as they then are — the lists jarvis's own library declares.
   again with the larger `k`. Constants to tune on swarm38. The domain route
   is what keeps this from starving: `Endpoint` is 642 of ~330k vectors
   globally and a few hundred of ~40k in `Domain_codeartifact`.
+- **Weights by query shape** (added after the swarm38 first look). Under
+  jarvis's RRF weights (keyword 1.15, semantic 1.0) any of the top ten
+  keyword-only hits outranks the best semantic-only one, so a prompt
+  constant whose `body` holds every word of a question ranked first. A
+  query of four words or more now fuses at keyword 0.5 / semantic 1.0
+  (`fusionWeights`); a shorter or exact one keeps jarvis's. Measured on
+  five questions: 9 targets in the top five became 12; of eight
+  weightings tried, from keyword-only to semantic-only, 0.5 was best.
+  Strut's ranking of a question now differs from jarvis's `/v2/nodes`, on
+  purpose.
+- **Exact strings as phrases.** The `english` analyzer splits
+  `x-hub-signature-256` into `x`, `hub`, `signatur`, `256`, and each
+  matched alone — every function named `X`. A word with a separator inside
+  it, and a span the caller put in double quotes (escaped away before), go
+  to Lucene as phrases (`queryParts`), and an exact query gets no any-word
+  fallback (its fragments ORed again). The header went from #17 to #6, a
+  quoted error message from #13 to #3; exact names were #1 throughout.
+  `graph/graph-search`'s `q` says so to the caller.
 - `input_q` / `output_q` are unchanged (per-label indexes from
   `vector_index`).
 
@@ -580,6 +622,29 @@ routing table (type → domain index, no-domain → global).
    one graph search") made one search and went back to grep. Rerun it on a
    question with no keyword.
 
+**First look (2026-10-11, read-only; the pin booted 21:14Z).** The boot
+did its part: `strut_index_reconcile_m125` stamped, no live `index` left a
+strict subset of the library's (47 types before), `Turn` still `embed:
+false`. `Function` converged in 14 minutes (15,536 / 15,536 vectors /
+15,536 labeled, from 3,533 / 3,953), errors 0. The question above does
+NOT find the access functions: `resolveWorkspaceAccess` ranks 170th — the
+fulltext half's every-word match puts two prompt constants first (their
+`body` holds every word), and MiniLM ranks hive's 64 `useWorkspace` jest
+mocks (cosine 0.81) above it (0.71); leaving test files out only moves it
+to 84th, so this is the model on an indirect question, not the vectors or
+the routing. Direct questions (field encryption, GitHub webhook checks,
+Pusher updates) find what a person would name. The first sweep ended
+after 85 minutes: 947,739 nodes read, 98,453 re-embedded, the 410,738
+`Turn` and 37,128 `StrutToolCall` vectors removed, 0 errors; between
+sweeps `/lab/health` is back to 0.36 s. It cannot see 27,438 nodes: the
+63 types whose nodes carry no `node_key` (the Cloud `Advisor*`/`Kn*`
+types, `PullRequest`, `Commit`) never match `node_key > $cursor`, and
+nothing reports it — not yet fixed. Found and fixed in code:
+the event-loop stall and the tick overrun (§1, CPU and Schedule), the
+newcomer page that unembeddable rows could fill (§1, Schedule), ruling 1's
+`no_index` claim. Still to read: a second sweep with nothing stale, and
+a re-sync.
+
 ## Not doing
 
 - **Healing through jarvis's Schema API.** A one-shot with the costs in §2;
@@ -590,10 +655,12 @@ routing table (type → domain index, no-domain → global).
 - **Per-type vector indexes.** The domain route (ruling 5) is the
   pre-filter; a per-type index is the escape hatch if measured recall on
   a rare type within a big domain says so.
-- **The keyword half.** A question already falls back to a fuzzy any-word
-  match when the every-word query finds nothing; whether that fallback
-  should weigh less than the semantic half is a tuning question after this
-  lands.
+- **The keyword half, beyond §3's two rules.** The weights and the
+  four-word threshold were picked on nine queries; a fixed set of real
+  `graph-search` queries from swarm38's runs comes next, to pick them on
+  data and keep them honest. Leaving test-file code out of a typed code
+  search (34% of swarm38's Functions; 64 `useWorkspace` mocks) and a
+  retrieval-tuned model are open decisions, not tuning.
 - **Embedding at ingest in stakgraph.** The pass covers any writer; a writer
   that embeds itself is adoption, not a dependency. (§5 is not that: it
   stops stakgraph from undoing a write, it does not teach it to embed.)
