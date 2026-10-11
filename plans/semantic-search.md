@@ -13,7 +13,11 @@
 > scanning (§1); typed searches go through the domain vector indexes, not
 > the global one (ruling 5); the no-embed mark goes on the Schema node
 > through a jarvis PR (§4); the reconcile is stamped per fixture version
-> (§2); a status read for debugging (§1). Every number below was read from
+> (§2); a status read for debugging (§1). Third pass, jarvis-backend read
+> end to end: §4's mechanics are verified, not assumed — the boot sync, the
+> validators, the enqueue sites, and what an older jarvis does with the
+> mark — and `date_added_to_graph` is milliseconds in all three writers.
+> Every number below was read from
 > swarm38's graph that day (read-only Cypher through stakgraph's
 > `/api/hive/query`), from jarvis-backend (`04317241`), from stakgraph
 > (`15cfb17b`), or from this checkout (`1c04946`, main). The choices still
@@ -141,14 +145,16 @@ removed — at the cost of the extra work.
    mark lives:
    - **On the Schema node, as `embed: false`, through a jarvis PR (§4).**
      jarvis reads every Schema property outside its
-     `SCHEMA_CORE_PROPERTIES` as an attribute declaration, so the key must
+     `SCHEMA_CORE_PROPERTIES` as an attribute declaration — an older
+     jarvis would read `embed: false` as a required attribute of type
+     `false` and refuse every node of that type (§4) — so the key must
      join that list in jarvis before anything writes it to a node jarvis
      reads; strut mirrors the list (`SCHEMA_CORE_PROPERTIES` in
      `strut-schemas.ts`) and gains the key at the same time, so a Schema
      carrying it is read as a mark by both. The jarvis PR puts the mark on
-     `Turn` in its library and on the live `Turn` Schema; the fixture is
-     re-dumped after it lands, so a graph with no jarvis gets it from the
-     ontology seed.
+     `Turn` in its library; jarvis's own boot sync carries it onto the
+     live `Turn` Schema (§4, verified); the fixture is re-dumped after it
+     lands, so a graph with no jarvis gets it from the ontology seed.
    - **In strut's code for strut's own two types, permanently** — a
      strut-only field on the `StrutToolCall` / `StrutTurn` registry
      entries, never written to their Schema nodes (as `exact_key` is not:
@@ -281,13 +287,15 @@ already turns a string `index` into a one-item list):
   where the last tick stopped and works for up to 15 s; when the sweep
   ends, the next begins an hour later. Between sweeps the same tick embeds
   **newcomers**: nodes with `date_added_to_graph` past the last tick's
-  high-water mark (stakgraph, jarvis and strut all stamp it on create;
-  the pass creates `CREATE INDEX IF NOT EXISTS FOR (n:Data_Bank) ON
+  high-water mark (stakgraph, jarvis — `TimeFormatter.now_epoch_ms()` —
+  and strut all stamp it on create, as epoch milliseconds; the pass creates `CREATE INDEX IF NOT EXISTS FOR (n:Data_Bank) ON
   (n.date_added_to_graph)` at open, so this is an index range seek) that
   carry a marked label and no vector — so a freshly ingested function is
   searchable by meaning within a minute, and a description mcp fills in
-  later is caught by the next sweep. Pages of 1,000; embed batches of
-  100. One pass at a time per backend (`openGraphBackend` is cached per
+  later is caught by the next sweep. A node jarvis writes has no vector
+  until its worker drains the queue; when the newcomer tick gets there
+  first, both compute the same vector — bounded duplicate work, one
+  result. Pages of 1,000; embed batches of 100. One pass at a time per backend (`openGraphBackend` is cached per
   process). Constants, not settings, until a swarm says otherwise.
   `STRUT_GRAPH_EMBEDDINGS=off` turns it off with the embedder.
 - **CPU.** The pass runs inside the serving process (mcp's
@@ -356,14 +364,21 @@ still not the route:
 - it adds no `Domain_*` label, so jarvis's own search still misses the code
   added since May.
 
-Written directly, the new `index` triggers nothing in jarvis: it has no
-repair job (its embedding worker drains the Redis queue its own API writes
-fill, `embedding_queue.py`; its startup backfill is a migration-tracked
-one-shot that ran on Apr 11). jarvis uses the new lists for nodes later
-written through its API, composing the same text the pass does. The next
-Schema update anyone makes through jarvis's API rebuilds its keyword index
-from the Schemas as they then are — the lists jarvis's own library
-declares.
+Written directly, the new `index` triggers nothing in jarvis — verified
+against its boot path (`gunicorn.conf.py` → `setup_jarvis`): the schema
+sync (`SchemaHelper._synchronize_schemas` → `_get_missing_schema_updates`)
+adds only keys ABSENT from a live Schema and never touches an existing
+`index`; the keyword and domain indexes are ensured create-if-missing
+(`ensure_data_bank_attribute_index_on_startup`,
+`ensure_domain_indexes_on_startup`), so no rebuild; the two startup
+backfill threads are migration-tracked one-shots
+(`backfill_focused_index_embeddings_v1` ran on Apr 11); and the embedding
+worker drains the Redis queue its own API writes fill
+(`embedding_queue.py`), with no NULL rescan anywhere outside migrations.
+`get_schema` is uncached, so jarvis composes with the new list from its
+very next node write — the same text the pass does. The next Schema update
+anyone makes through jarvis's API rebuilds its keyword index from the
+Schemas as they then are — the lists jarvis's own library declares.
 
 ## 3. Search — `src/graph/search.ts`
 
@@ -393,25 +408,75 @@ declares.
 ## 4. The jarvis PR — the no-embed mark
 
 Small, and strut does not wait for it (ruling 2 says what happens until it
-lands):
+lands). Read against jarvis-backend `04317241`:
 
-- `embed` joins `SCHEMA_KNOWN_PROPERTIES` (`application_constant.py`), so
-  it is a Schema key, not an attribute declaration.
-- A Schema with `embed: false` still gets `Data_Bank` (keyword search
-  unchanged) and never a `text_embeddings` job: the enqueue in
-  `schema_node_helper.py` (`push_embedding_job` after the node write) and
-  `attribute_index_helper.py` skip it, as does
-  `migrate_existing_data_bank_index` for that type.
-- `Turn` carries `embed: false` in `schema_library.py`, and the PR puts it
-  on the live `Turn` Schema at the next boot (a new key is what add-only
-  seeding adds).
-- Nothing else: jarvis's search is untouched (a `Turn` with no vector is
-  simply not a semantic hit, as the 131k unembedded ones already are).
+**How a library key reaches a live graph.** jarvis boots through
+`setup_jarvis` (`gunicorn.conf.py`; `app.py` outside gunicorn):
+`Migration.run()` (ledger one-shots), then `SchemaHelper.run()` —
+`create_schema` for each library type the graph lacks (the whole entry,
+core keys and attributes), then `_synchronize_schemas`, which for every
+library type that exists compares the entry with the live Schema
+(`_get_missing_schema_updates`) and sends the keys the live node LACKS —
+every `SCHEMA_KNOWN_PROPERTIES` key but `type` / `parent` / `attributes` /
+`ref_id`, plus absent attributes — to `schema_crud.update_schema`. So a
+new key on a library entry lands on the live Schema at the next boot, and
+an existing value (`index`) is never changed. That call is the crud
+function, not the HTTP route: `sync_indexes_for_schema` (the keyword index
+drop and recreate) runs only in `schema_service` on a PUT, and
+`index_changed` fires only when `index` is in the update — never from the
+sync. So the mark lands with no index rebuild and no re-embed.
+
+**Why the key must be in jarvis's list first.** Two validators sit in front
+of every Schema write, the sync's included: `_validate_schema_properties`
+refuses any top-level key outside `SCHEMA_KNOWN_PROPERTIES`
+(`ERROR_SCHEMA_PROPERTY`), and `_assert_is_valid_schema` requires every key
+not in that list to carry a type string (`"?string"`, `"int"`, …) —
+`false` is neither, so a sync carrying `embed: false` without the list
+change fails for that type (logged, not fatal; the key never lands). And a
+Schema node that already carries the key, written by anyone, is read by an
+older jarvis through `_split_schema_properties` as an attribute `embed` of
+type `false`; `assert_is_valid_schema_of_type` then treats an attribute
+that is not `?`-optional and absent from the payload as REQUIRED, and every
+node create of that type through jarvis's API fails with "Missing required
+attribute 'embed'". For `Turn` that would stop the agent-log writes. Hence:
+the key reaches a node only through jarvis's own sync, after jarvis knows
+it; strut never writes it (ruling 2).
+
+**The PR:**
+
+- `embed` joins `SCHEMA_KNOWN_PROPERTIES` (`application_constant.py`;
+  `SCHEMA_CORE_PROPERTIES` is that list plus `ref_id`, so
+  `_split_schema_properties`, `_schema_attribute_names` and
+  `get_searchable_attributes_from_schema` all keep it out of the
+  attributes).
+- A Schema with `embed: false` still gets `Data_Bank` and
+  `_search_fields_used` (keyword search unchanged) and never a
+  `text_embeddings` job. The sites, each of which already holds the node's
+  schema from an uncached `get_schema`: the create path in
+  `schema_node_helper.py` (`push_embedding_job(ref_id, data_bank_value)`
+  after the MERGE), the v1 update path in `node_service.py` (the same call
+  when `Data_Bank` changed), `migrate_existing_data_bank_index`
+  (`schema_migration_helper.py`, the inline encode on an API `index`
+  change), and the v1 bulk edge path in `node_service.py` that builds
+  `Data_Bank` for both endpoints. The per-property `vector_index` kinds
+  (`input` / `output`) are unaffected by the mark, and the worker needs no
+  change — it only sees jobs.
+- `Turn` carries `embed: false` in `schema_library.py`. Nothing else in the
+  library changes: a type without the key embeds, as today.
+- jarvis's search is untouched (a `Turn` with no vector is simply not a
+  semantic hit, as the 131k unembedded ones already are).
 
 strut's side of the same change: `embed` in its mirror of the core list,
-the resolver reading it onto `NodeSchema`, the writer and the pass
-honoring it, and the fixture re-dumped once the PR has landed in jarvis's
-default seed.
+the resolver reading it onto `NodeSchema`, the writer and the pass honoring
+it, and the fixture re-dumped once the PR has landed in jarvis's default
+seed.
+
+**Precedent.** jarvis already repairs, at every boot and ungated, the one
+label drift it knows about: `ensure_concept_domain_labels_on_startup`
+re-applies `Domain_*` to `Concept` nodes because stakgraph's gitree writes
+them over bolt without one, "and an unlabeled node is absent from every
+domain vector index". The pass is that repair for every marked type —
+vectors included, continuous instead of boot-only.
 
 ## 5. The stakgraph PR — `Data_Bank` on create only
 
@@ -522,7 +587,3 @@ routing table (type → domain index, no-domain → global).
 - **Two strut processes on one graph** would both run the pass. The writes
   are idempotent and the cursor is per process, so this is wasted CPU, not
   corruption; the scheduler has the same single-process stance.
-- **`date_added_to_graph` units.** strut and stakgraph stamp epoch
-  milliseconds; if jarvis stamps seconds, its nodes never pass the
-  newcomer tick's high-water mark — harmless (jarvis embeds its own, and
-  the hourly sweep covers them), but worth one query on swarm38.
