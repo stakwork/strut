@@ -300,20 +300,16 @@ vector) to prove parity with jarvis's encoder.
 compatible: a jarvis backfill would simply find nothing NULL. Never
 invent a pending-marker property.
 
-**Crash-safe backfill sweep** (replaces the durability the queue gave
-jarvis): a crash between the node MERGE and the vector write leaves
-`text_embeddings` NULL permanently. At every boot of the graph
-backend, sweep and heal:
-
-```cypher
-MATCH (n:Domain_strut)
-WHERE n.Data_Bank IS NOT NULL AND n.text_embeddings IS NULL
-RETURN n.ref_id, n.Data_Bank
-```
-
-→ embed in batches → `SET n.text_embeddings` (matching jarvis's own
-NULL-scan backfill idiom, `migration.py:857-861`). Idempotent, cheap
-when clean.
+**The pass** (replaces the durability the queue gave jarvis, and the
+boot-time `Domain_strut` NULL-scan backfill this plan first specified):
+a crash between the node MERGE and the vector write leaves
+`text_embeddings` NULL — and so does every node another writer puts in
+the graph. `EmbeddingPass` (`embeddings.ts`; `plans/semantic-search.md`
+§1) runs on a timer inside the serving process, started when the graph
+backend opens: every node of a Schema-marked type, whoever wrote it, is
+stale when its stored `Data_Bank` is not the writer's composition from
+the Schema's `index` fields or its vector is missing, and is rewritten
+the way the writer would have written it. Idempotent, cheap when clean.
 
 **Do not implement**: `edge_text_embeddings`; metaphone3.
 Per-property `vector_index` embeddings (`{stem}_embeddings`) ARE

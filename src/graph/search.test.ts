@@ -15,14 +15,17 @@ import {
   fetchLimit,
   fuseHits,
   inheritedAttributes,
+  overfetch,
   pyRound,
   rankHits,
+  routeIndexes,
   serializeNode,
   splitSchema,
   titleMatchMultiplier,
   type Hit,
 } from "./search.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
+import { SchemaResolver } from "./schema-resolver.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 
 const cfg = testGraphConfig();
@@ -323,5 +326,149 @@ describe("GraphReader (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.equal((await reader.getSchema("thing"))?.type, "Thing");
     assert.equal((await reader.getSchema("Thing"))?.type, "Thing");
     assert.equal(await reader.getSchema("Nope"), null);
+  });
+});
+
+describe("index routing + typed over-fetch (pure)", () => {
+  const existing = new Set(["data_bank_attribute_index_v2", "text_embeddings_vector_index", "domain_strut_vector_index", "domain_codeartifact_vector_index", "domain_strut_attribute_index_v2"]);
+  const vec = (r: Partial<Parameters<typeof routeIndexes>[0]>) =>
+    routeIndexes({ domains: [], visibleDomains: ["strut", "codeartifact"], existing, suffix: "_vector_index", global: "text_embeddings_vector_index", ...r });
+
+  it("an explicit domains filter → those domains' indexes", () => {
+    assert.deepEqual(vec({ domains: ["strut"] }), ["domain_strut_vector_index"]);
+    assert.deepEqual(vec({ domains: ["strut", "nope"] }), ["domain_strut_vector_index"], "absent ones dropped");
+  });
+  it("a typed search → the union of the types' domain indexes; no domain, hidden, or no index → the global one", () => {
+    assert.deepEqual(vec({ typeDomains: new Map([["Function", "codeartifact"]]) }), ["domain_codeartifact_vector_index"]);
+    assert.deepEqual(vec({ typeDomains: new Map([["Function", "codeartifact"], ["Endpoint", "codeartifact"]]) }), ["domain_codeartifact_vector_index"]);
+    assert.deepEqual(vec({ typeDomains: new Map([["Context", null]]) }), ["text_embeddings_vector_index"]);
+    assert.deepEqual(vec({ typeDomains: new Map([["Document", "content"]]) }), ["text_embeddings_vector_index"], "a domain whose index is absent");
+    assert.deepEqual(vec({ typeDomains: new Map([["Function", "codeartifact"], ["Context", null]]) }), ["domain_codeartifact_vector_index", "text_embeddings_vector_index"]);
+  });
+  it("neither → the global index, or the visible domains' union where it is absent", () => {
+    assert.deepEqual(vec({}), ["text_embeddings_vector_index"]);
+    const noGlobal = new Set([...existing].filter((i) => i !== "text_embeddings_vector_index"));
+    assert.deepEqual(vec({ existing: noGlobal }), ["domain_strut_vector_index", "domain_codeartifact_vector_index"]);
+    assert.deepEqual(vec({ existing: noGlobal, typeDomains: new Map([["Context", null]]) }), ["domain_strut_vector_index", "domain_codeartifact_vector_index"]);
+    assert.deepEqual(routeIndexes({ domains: [], visibleDomains: ["strut"], existing, suffix: "_attribute_index_v2", global: "data_bank_attribute_index_v2" }), ["data_bank_attribute_index_v2"]);
+  });
+  it("overfetch widens from cap × 10 by × 4 until cap survive or k reaches 2000; the query is run with each k", async () => {
+    const ks: number[] = [];
+    const survivors = (n: number) => Array.from({ length: n }, (_, i) => i);
+    assert.equal((await overfetch(120, async (k) => (ks.push(k), survivors(k >= 2000 ? 120 : 3)))).length, 120);
+    assert.deepEqual(ks, [1200, 2000]);
+    ks.length = 0;
+    assert.equal((await overfetch(120, async (k) => (ks.push(k), survivors(120)))).length, 120);
+    assert.deepEqual(ks, [1200], "stops as soon as cap survive");
+    ks.length = 0;
+    assert.equal((await overfetch(5000, async (k) => (ks.push(k), survivors(1)))).length, 1);
+    assert.deepEqual(ks, [2000], "a cap past the ceiling is one query at the ceiling");
+    ks.length = 0;
+    await overfetch(10, async (k) => (ks.push(k), []), { start: 2, growth: 3, maxK: 100 });
+    assert.deepEqual(ks, [20, 60, 100]);
+  });
+});
+
+describe("typed search routes through the type's domain index (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
+  let bolt: Bolt;
+  let resolver: SchemaResolver;
+  let reader: GraphReader;
+  /** Every vector query the reader ran: the index and its k. */
+  const calls: Array<{ index: string; k: number }> = [];
+  const Q = "workspace access check";
+  before(async () => {
+    bolt = new Bolt(cfg!);
+    await bolt.verify();
+    await wipeGraph(bolt);
+    await seedStrutDomain(bolt);
+    // Two jarvis-typed Schemas by hand: a code type in CodeArtifact (with
+    // the domain's vector index, as jarvis's seed and strut's ontology seed
+    // create it) and a type with no domain at all.
+    await bolt.run(
+      `MATCH (t:Schema {type: "Thing"})
+       CREATE (f:Schema {type: "Function", parent: "Thing", domain: "CodeArtifact", node_key: "function-name-file", index: ["name", "summary", "description"], name: "string", file: "string", summary: "?string", description: "?string", ref_id: "schema-function"})-[:CHILD_OF {ref_id: "e1"}]->(t)
+       CREATE (c:Schema {type: "Context", parent: "Thing", node_key: "context-name", index: ["name"], name: "string", ref_id: "schema-context"})-[:CHILD_OF {ref_id: "e2"}]->(t)`,
+    );
+    await bolt.run(
+      `CREATE VECTOR INDEX domain_codeartifact_vector_index IF NOT EXISTS FOR (n:Domain_codeartifact) ON n.text_embeddings
+       OPTIONS { indexConfig: { \`vector.dimensions\`: 384, \`vector.similarity_function\`: 'cosine' } }`,
+    );
+    resolver = new SchemaResolver(bolt);
+    const nodes = new NodeWriter(bolt, { embedder: bow, resolver });
+    await nodes.writeMany([
+      { type: "Function", data: { name: "resolveWorkspaceAccess", file: "src/access.ts", description: Q } },
+      { type: "Context", data: { name: "unrelated gamma delta" } },
+    ]);
+    // 1,300 decoys NEARER to the query than the function (their text IS the
+    // query), in another domain and on the global index — more than a
+    // typed search's first k (cap × 10 = 1,200).
+    const [v] = await bow.embed([Q]);
+    await bolt.run(
+      `UNWIND range(1, 1300) AS i
+       CREATE (n:StrutRun:Node:Data_Bank:Domain_strut)
+       SET n.node_key = 'strutrun-decoy-' + i, n.ref_id = 'decoy-' + i, n.namespace = 'default', n.run_id = 'decoy-' + i,
+           n.Data_Bank = $q, n.text_embeddings = $v, n.date_added_to_graph = 1`,
+      { q: Q, v },
+    );
+    await bolt.run(`CALL db.awaitIndexes(60)`);
+    const spy = new Proxy(bolt, {
+      get(t, k, r) {
+        if (k !== "run") return Reflect.get(t, k, r);
+        return (cypher: string, params?: Record<string, unknown>) => {
+          if (params && typeof params["index"] === "string" && "k" in params) calls.push({ index: params["index"], k: Number(String(params["k"])) });
+          return t.run(cypher, params);
+        };
+      },
+    });
+    reader = new GraphReader(spy, { embedder: bow, resolver });
+  });
+  after(async () => {
+    await bolt?.close();
+  });
+
+  it("a code type is found through its domain index among nearer decoys elsewhere", async () => {
+    calls.length = 0;
+    const r = await reader.search({ q: Q, types: ["Function"] });
+    assert.deepEqual(r.nodes.map((n) => n.properties["name"]), ["resolveWorkspaceAccess"]);
+    assert.deepEqual(calls.map((c) => c.index), ["domain_codeartifact_vector_index", "domain_codeartifact_vector_index"]);
+    assert.deepEqual(calls.map((c) => c.k), [1200, 2000], "widened once: one node can never make cap");
+  });
+
+  it("a type with no domain goes to the global index, and the over-fetch reaches past the decoys", async () => {
+    calls.length = 0;
+    const r = await reader.search({ q: Q, types: ["Context"] });
+    assert.deepEqual(r.nodes.map((n) => n.properties["name"]), ["unrelated gamma delta"]);
+    assert.deepEqual(calls, [{ index: "text_embeddings_vector_index", k: 1200 }, { index: "text_embeddings_vector_index", k: 2000 }]);
+    calls.length = 0;
+    const both = await reader.search({ q: Q, types: ["Function", "Context"] });
+    assert.deepEqual(both.nodes.map((n) => n.properties["name"]).sort(), ["resolveWorkspaceAccess", "unrelated gamma delta"]);
+    assert.deepEqual(new Set(calls.map((c) => c.index)), new Set(["domain_codeartifact_vector_index", "text_embeddings_vector_index"]));
+  });
+
+  it("an untyped search reads the global index with no over-fetch; a domains filter its domain's", async () => {
+    calls.length = 0;
+    const r = await reader.search({ q: Q, limit: 5 });
+    assert.equal(r.nodes.length, 5);
+    assert.deepEqual(calls, [{ index: "text_embeddings_vector_index", k: 120 }]);
+    calls.length = 0;
+    const d = await reader.search({ q: Q, domains: ["codeartifact"] });
+    assert.deepEqual(d.nodes.map((n) => n.properties["name"]), ["resolveWorkspaceAccess"]);
+    assert.deepEqual(calls.map((c) => c.index), ["domain_codeartifact_vector_index"]);
+  });
+
+  it("a hidden domain's types stay out of an untyped search, and a typed search for one falls back to the global index", async () => {
+    await bolt.run(`CREATE (:About {hidden_domains: ["CodeArtifact"]})`);
+    resolver.invalidate();
+    try {
+      const r = await reader.search({ q: Q, limit: 2000 });
+      assert.ok(!r.nodes.some((n) => n.node_type === "Function"), "hidden");
+      calls.length = 0;
+      const typed = await reader.search({ q: Q, types: ["Function"] });
+      assert.deepEqual(typed.nodes.map((n) => n.properties["name"]), ["resolveWorkspaceAccess"]);
+      assert.deepEqual(calls.map((c) => c.index), ["text_embeddings_vector_index", "text_embeddings_vector_index"]);
+    } finally {
+      await bolt.run(`MATCH (a:About) DELETE a`);
+      resolver.invalidate();
+    }
   });
 });

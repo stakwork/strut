@@ -495,6 +495,7 @@ injected its own `sessions` capability.
 | Method | Path | Response |
 | ------ | ---- | -------- |
 | GET    | `/graph/nodes/:ref_id` | `{ ref_id, node_type, name, properties }` — the node as the graph holds it NOW (vectors and internal stamps stripped); 404 when it is gone; 501 on a deployment with no graph |
+| GET    | `/graph/embeddings` | the embedding pass's status (`plans/semantic-search.md` §1; a debugging read): `{ enabled: true, sweep: { n, startedAt, finishedAt, phase, type, cursor }, current, last, skipped, newcomers: { since, embedded }, lastError, ticks }` — `current` / `last` are per type `{ seen, stale, embedded, removed, errors }` for the sweep in flight / the last complete one; `skipped` is `[{ type, reason: "no_schema" \| "no_index" \| "no_embed" \| "invalid_label" }]`. `{ enabled: false }` with `STRUT_GRAPH_EMBEDDINGS=off`; 501 on a deployment with no graph |
 
 What the run view opens when a node in a step's **Nodes** list is clicked: a
 run's events say which nodes a step touched (`nodes`, above), never their

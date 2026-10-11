@@ -1,6 +1,23 @@
 # Semantic search without jarvis — strut keeps the graph's vectors
 
-> **Status (2026-10-11): PROPOSED, nothing built.** Written after a seeded
+> **Status (2026-10-11): the strut side is BUILT** — §1 (`src/graph/embeddings.ts`,
+> `EmbeddingPass`), §2 (`src/graph/index-reconcile.ts`), §3 (`routeIndexes` /
+> `overfetch` in `search.ts`), strut's half of §4 (`embed` in the core-key
+> mirror, the resolver, the writer, the two registry entries), `GET
+> /graph/embeddings`. Not yet: the jarvis PR (§4), the stakgraph PR (§5), the
+> fixture re-dump after the jarvis PR lands (until then a test sets `Turn`'s
+> mark by hand), the swarm38 validation (after the mcp pin). Where the build
+> differs from the text below: the reconcile only WIDENS (a string `index`
+> equal to the library's one-item list is left as it is — fewer writes to
+> jarvis's nodes, same meaning); the pass addresses a node by `elementId`,
+> never by `ref_id` or `(node_key, namespace)` (stakgraph writes both, but
+> nothing here should depend on it); the newcomer tick is one range seek over
+> `Data_Bank` reading every marked type's index fields at once, not one query
+> per type; a tick logs only when it did something, and a page that fails
+> moves the sweep to the next type (the next sweep retries); the per-field
+> `vector_index` vectors are filled by the sweep, not by the newcomer tick;
+> `GET /graph/embeddings` has no web client. Before this it was PROPOSED,
+> written after a seeded
 > `explore` run on swarm38 never used the graph (job run `1791735838490` →
 > explore run `1791735843683`, a question about hive's GitHub integration:
 > 0 graph calls, 16 file reads), and revised twice the same day. First

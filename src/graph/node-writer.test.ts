@@ -411,6 +411,31 @@ describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI 
     assert.ok(!("text_embeddings" in ((await node(a.ref_id))["props"] as Record<string, unknown>)));
   });
 
+  it("the no-embed mark: an execution record gets Data_Bank and no vector, with an embedder, on write and on update", async () => {
+    const seen: string[] = [];
+    const fake: Embedder = { async embed(texts) { seen.push(...texts); return texts.map((t) => Array.from({ length: 384 }, (_, i) => (i === 0 ? t.length : 0))); } };
+    const w = new NodeWriter(bolt, { embedder: fake });
+    const tc = await w.write({ type: "StrutToolCall", data: { run_id: "r", path: "wf/agent", seq: 1, tool_name: "bash", input_preview: "ls" } });
+    const turn = await w.write({ type: "StrutTurn", data: { chat_id: "c", turn: 1, user_text_preview: "hello" } });
+    assert.deepEqual(seen, [], "nothing embedded");
+    const p = (await node(tc.ref_id))["props"] as Record<string, unknown>;
+    assert.equal(p["Data_Bank"], "bash\nls");
+    assert.deepEqual(p["_search_fields_used"], ["tool_name", "input_preview"]);
+    assert.ok(!("text_embeddings" in p));
+    assert.equal(((await node(turn.ref_id))["props"] as Record<string, unknown>)["Data_Bank"], "hello");
+    assert.ok(!("text_embeddings" in ((await node(turn.ref_id))["props"] as Record<string, unknown>)));
+    // A vector an earlier strut left on one goes with the next update.
+    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.text_embeddings = [1.0]`, { r: tc.ref_id });
+    await w.update(tc.ref_id, { set: { input_preview: "pwd" } });
+    const p2 = (await node(tc.ref_id))["props"] as Record<string, unknown>;
+    assert.equal(p2["Data_Bank"], "bash\npwd");
+    assert.ok(!("text_embeddings" in p2));
+    assert.deepEqual(seen, []);
+    // An embedded type still is.
+    await w.write({ type: "StrutRun", data: RUN });
+    assert.deepEqual(seen, ["harvey-deliver\nsuccess\nDelivered 60 of 60"]);
+  });
+
   it("per-write namespace overrides the backend default", async () => {
     const r = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
     assert.equal(((await node(r.ref_id))["props"] as Record<string, unknown>)["namespace"], "tenant-z");

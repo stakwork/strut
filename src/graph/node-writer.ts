@@ -287,7 +287,7 @@ const nonBlank = (v: unknown) => v !== null && v !== undefined && String(v).trim
  * real index (`["node_key"]`) or none of its index fields are usable, fall
  * through to jarvis's priority list + every other non-excluded property.
  */
-export function searchFieldsFor(schema: NodeSchema, values: Record<string, unknown>): string[] {
+export function searchFieldsFor(schema: Pick<NodeSchema, "index">, values: Record<string, unknown>): string[] {
   if (!(schema.index.length === 1 && schema.index[0] === "node_key")) {
     const focused = schema.index.filter((f) => nonBlank(values[f]));
     if (focused.length) return focused;
@@ -309,8 +309,11 @@ export function searchFieldsFor(schema: NodeSchema, values: Record<string, unkno
 }
 
 /** `build_search_text`: values of the chosen fields, trimmed, joined with
- *  "\n" — no field-name prefixes. Null when nothing qualifies. */
-export function buildSearchText(schema: NodeSchema, values: Record<string, unknown>): { text: string | null; fields: string[] } {
+ *  "\n" — no field-name prefixes. Null when nothing qualifies. The ONE
+ *  composition: the writer, the pass (`embeddings.ts`) and jarvis's
+ *  `build_search_text` all produce this text, which is why "stored
+ *  `Data_Bank` ≠ composed text" is the pass's stale test. */
+export function buildSearchText(schema: Pick<NodeSchema, "index">, values: Record<string, unknown>): { text: string | null; fields: string[] } {
   const fields = searchFieldsFor(schema, values);
   const parts = fields.map((f) => String(values[f]).trim()).filter(Boolean);
   return { text: parts.length ? parts.join("\n") : null, fields };
@@ -424,7 +427,8 @@ export class NodeWriter {
       if (text !== null) {
         props["Data_Bank"] = text;
         props["_search_fields_used"] = fields;
-        jobs.push({ idx, column: "text_embeddings", text });
+        // The no-embed mark: keyword text, never a vector.
+        if (v.schema.embed) jobs.push({ idx, column: "text_embeddings", text });
       }
       for (const vi of v.schema.vector_index) {
         const raw = v.values[vi];
@@ -535,6 +539,7 @@ export class NodeWriter {
       const setMap: Record<string, unknown> = { ...p!.onMatch, node_key };
       const drop = new Set<string>(remove);
       if (!("Data_Bank" in setMap)) for (const k of ["Data_Bank", "_search_fields_used", "text_embeddings"]) drop.add(k);
+      else if (!schema.embed) drop.add("text_embeddings"); // a vector an earlier writer left on a no-embed node goes with the update
       else if (!this.opts.embedder && setMap["Data_Bank"] !== props["Data_Bank"]) drop.add("text_embeddings");
       for (const vi of schema.vector_index) {
         const col = embeddingColumn(vi);
