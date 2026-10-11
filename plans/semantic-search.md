@@ -82,6 +82,13 @@ without that writer knowing about embeddings. One source of truth (the live
 Schema's `index`), one rule (MiniLM over the text of those fields, the rule
 jarvis, strut's writer and the pass share), one repair job (the pass).
 
+**All of it is code that runs by itself.** Nothing is run by hand on any
+swarm: no API call, no script, no migration command. It reaches every swarm
+with the next strut pin in mcp. At that boot the reconcile (§2) updates the
+stale `index` lists in seconds, and the pass (§1) starts in the background,
+catches up, and keeps up from then on. The one switch is the existing
+`STRUT_GRAPH_EMBEDDINGS=off`.
+
 ## Rulings
 
 1. **The text is the Schema's `index`.** It is already the declaration
@@ -188,9 +195,12 @@ already turns a string `index` into a one-item list):
 - **Per-field vectors** (`vector_index` → `{stem}_embeddings`, what
   `input_q` / `output_q` read): the same pass, missing vectors only, as
   today, from live Schemas instead of strut's list alone.
-- **Schedule.** Once at backend open, then every minute. Each tick takes
-  one batch (100) from each type that has work, round-robin, until 15 s
-  are spent. A type found clean is checked again after 15 minutes, not
+- **Schedule.** A timer in the strut process, started when the graph
+  backend opens; the first tick runs right away, then every minute. It never
+  holds up boot: today's awaited `backfillEmbeddings` call in
+  `openGraphBackend` becomes the start of the timer. Each tick takes one
+  batch (100) from each type that has work, round-robin, until 15 s are
+  spent. A type found clean is checked again after 15 minutes, not
   every tick: a clean check of a big type is a scan of all its nodes. One
   pass at a time per backend (`openGraphBackend` is cached per process).
   Constants, not settings, until a swarm says otherwise. One log line per
@@ -212,9 +222,11 @@ the rest in an hour or a few. The ~448k vector removals are writes only.
 
 ## 2. The Schema reconcile — `src/graph/ontology-seed.ts`
 
-A new step beside `seedJarvisOntology`, run at every backend open — not
-gated on `STRUT_GRAPH_SEED_ONTOLOGY`, since swarm38 is the graph that needs
-it: for each live `:Schema` whose type the bundled library has, normalize
+A new boot step in `openGraphBackend`, beside the migrations that already
+run there (`migrateRunStatus`, `migrateExactKeys`), before the pass starts —
+not gated on `STRUT_GRAPH_SEED_ONTOLOGY`, since swarm38 is the graph that
+needs it. A few dozen property writes at most, so it runs inline: for each
+live `:Schema` whose type the bundled library has, normalize
 `index` (string → list), and set the library's list when the live one is
 non-empty and a strict subset. It only ever touches `index`, needs no
 ledger (the subset test is idempotent), and returns what it widened for
@@ -304,8 +316,9 @@ the over-fetch widening stops at `cap` survivors or the ceiling.
 
 ## Validation on swarm38
 
-1. Before enabling the timer, run the stale query as a `count` per type and
-   check it against "Problem" above.
+1. The pass's first log lines give the stale count per type, and the boot
+   log lists the `index` lists the reconcile widened; check both against
+   "Problem" above.
 2. After deploy: the question above, `type: Function,Endpoint`, returns
    `resolveWorkspaceAccess` / `validateWorkspaceAccess` in the top five,
    through strut's `graph/graph-search` and through jarvis's search (the
