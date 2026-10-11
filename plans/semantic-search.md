@@ -144,13 +144,20 @@ removed — at the cost of the extra work.
    both jarvis and strut read for "the search text of a node of this type"
    (`get_search_fields_for_node`; strut's `searchFieldsFor` /
    `buildSearchText` in `src/graph/node-writer.ts`). A type whose Schema
-   declares `index` is embedded from those fields. The pass never falls
-   back to jarvis's catch-all text (every property, joined) for a type
-   without one: on swarm38, 193 of 255 types declare `index`, and the 62
-   that do not (61 `Cloud`-domain Advisor*/Kn* types and `Content`) and the
-   types with no Schema node (`Context`, `Chunk`) are skipped — and named
-   in the status read (§1), so a graph where the code types have no Schema
-   node says so instead of silently embedding nothing.
+   declares `index` — its own, or one inherited through `CHILD_OF` — is
+   embedded from those fields. Inheritance is jarvis's rule as much as
+   strut's: jarvis's `get_schema` merges the parent chain into the dict
+   `get_index_fields` reads (only `type_description` is skipped), and
+   strut's resolver does the same. So the 62 swarm38 types with no `index`
+   of their own (61 `Cloud`-domain Advisor*/Kn* types and `Content`)
+   inherit `Thing`'s `[name, description]` and are embedded from those
+   fields, ~25k nodes — the text jarvis composes for them too (validated
+   2026-10-11; this ruling first said they were skipped). The pass never
+   falls back to jarvis's catch-all text (every property, joined): a type
+   whose whole chain declares no `index` is skipped (`no_index`), as are
+   the types with no Schema node (`Context`, `Chunk`, …), and both are
+   named in the status read (§1), so a graph where the code types have no
+   Schema node says so instead of silently embedding nothing.
 2. **Execution records get no vector — decided (Evan, 2026-10-11):
    `Turn`, `StrutToolCall`, `StrutTurn`.** Too fine-grained to search by
    meaning. `AgentSession` and `StrutAgentSession` (one per agent run) stay
@@ -301,15 +308,23 @@ already turns a string `index` into a one-item list):
   started when the graph backend opens — today's awaited
   `backfillEmbeddings` call in `openGraphBackend` becomes the start of the
   timer, so it never holds up boot. Every minute a tick resumes the sweep
-  where the last tick stopped and works for up to 15 s; when the sweep
-  ends, the next begins an hour later. Between sweeps the same tick embeds
+  where the last tick stopped and works for up to 15 s — the budget
+  checked between batches of 100 rows, each finished (text, vector,
+  label) before the cursor moves past it, since a page of 1,000 long
+  texts is half a minute of inference on a swarm's CPU (swarm38,
+  `UnitTest`: ticks of 28–35 s while the budget was checked per page);
+  when the sweep ends, the next begins an hour later. Between sweeps the same tick embeds
   **newcomers**: nodes with `date_added_to_graph` past the last tick's
   high-water mark (stakgraph, jarvis — `TimeFormatter.now_epoch_ms()` —
   and strut all stamp it on create, as epoch milliseconds; the pass creates `CREATE INDEX IF NOT EXISTS FOR (n:Data_Bank) ON
   (n.date_added_to_graph)` at open, so this is an index range seek) that
-  carry a marked label and no vector — so a freshly ingested function is
-  searchable by meaning within a minute, and a description mcp fills in
-  later is caught by the next sweep. A node jarvis writes has no vector
+  carry a marked label and no vector — the label in the query, not after
+  it, or a run's vector-less `StrutToolCall`s (1,563 in one minute on
+  swarm38) fill a page and end the tick; and from a `>=` cursor on the
+  stamp, because stakgraph stamps a whole ingest batch with one `$now` —
+  so a freshly ingested function is searchable by meaning within a
+  minute, and a description mcp fills in later is caught by the next
+  sweep. A node jarvis writes has no vector
   until its worker drains the queue; when the newcomer tick gets there
   first, both compute the same vector — bounded duplicate work, one
   result. Pages of 1,000; embed batches of 100. One pass at a time per backend (`openGraphBackend` is cached per
@@ -320,7 +335,14 @@ already turns a string `index` into a one-item list):
   default is every core. `MiniLMEmbedder.load` passes `session_options:
   { intraOpNumThreads: 2 }` (transformers.js hands it to the ONNX session)
   so hours of inference share the host with chat turns and runs; the
-  search path embeds one query at a time and does not notice.
+  search path embeds one query at a time and does not notice. The cap was
+  not enough: onnxruntime-node runs a model synchronously (its `run()` is
+  the native call inside a `setImmediate`), so on the main thread every
+  forward pass stalls the event loop — on swarm38, while a tick ran,
+  mcp's `GET /lab/health` went from 0.34 s to 1.74 s and a graph search
+  from 0.6 s to 5.6 s. So the pass embeds in a worker thread
+  (`WorkerEmbedder`, a second model instance: ~90 MB of weights), and the
+  writer and search keep the in-process one.
 - **Observability.** One log line per tick: the sweep position (type,
   cursor), embedded / removed / newcomers this tick, and types still
   dirty. `GET /graph/embeddings` (behind the key, mounted in `createStrut`
@@ -579,6 +601,23 @@ routing table (type → domain index, no-domain → global).
    `feature/explore-graph-first-search` (`c31b98fe`, unpushed — "begin with
    one graph search") made one search and went back to grep. Rerun it on a
    question with no keyword.
+
+**First look (2026-10-11, read-only; the pin booted 21:14Z).** The boot
+did its part: `strut_index_reconcile_m125` stamped, no live `index` left a
+strict subset of the library's (47 types before), `Turn` still `embed:
+false`. `Function` converged in 14 minutes (15,536 / 15,536 vectors /
+15,536 labeled, from 3,533 / 3,953), errors 0. The question above does
+NOT find the access functions: `resolveWorkspaceAccess` ranks 170th — the
+fulltext half's every-word match puts two prompt constants first (their
+`body` holds every word), and MiniLM ranks hive's 64 `useWorkspace` jest
+mocks (cosine 0.81) above it (0.71); leaving test files out only moves it
+to 84th, so this is the model on an indirect question, not the vectors or
+the routing. Direct questions (field encryption, GitHub webhook checks,
+Pusher updates) find what a person would name. Found and fixed in code:
+the event-loop stall and the tick overrun (§1, CPU and Schedule), the
+newcomer page that unembeddable rows could fill (§1, Schedule), ruling 1's
+`no_index` claim. Still to read: the sweep's end (no `Turn` vectors; a
+second sweep with nothing stale) and a re-sync.
 
 ## Not doing
 

@@ -16,6 +16,9 @@
  * some OTHER writer put in the graph with no vector at all — is the
  * `EmbeddingPass`'s job (below; plans/semantic-search.md).
  */
+import { extname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { modelDirFromEnv } from "../model-dir.js";
 import { int, type Bolt } from "./bolt.js";
 import { buildSearchText, renderVectorField, type Embedder } from "./node-writer.js";
@@ -74,9 +77,9 @@ export class MiniLMEmbedder implements Embedder {
       tf.AutoTokenizer.from_pretrained(model),
       // fp32 explicitly: quantized weights would drift from jarvis's encoder.
       // Two intra-op threads, not onnxruntime's default of every core: the
-      // pass runs hours of inference inside the serving process, beside
-      // chat turns and runs; the search path embeds one query at a time
-      // and does not notice.
+      // pass runs hours of inference in the serving process (in a worker
+      // thread, `WorkerEmbedder`), beside chat turns and runs; the search
+      // path embeds one query at a time and does not notice.
       tf.AutoModel.from_pretrained(model, { dtype: "fp32", session_options: { intraOpNumThreads: 2 } }),
     ]);
     // Special-token ids via the public API: an empty input encodes to
@@ -180,6 +183,99 @@ export function cosine(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
+/** `MiniLMEmbedder.load` as a plain export — the factory `WorkerEmbedder`'s
+ *  worker calls by default. */
+export function loadMiniLM(opts: MiniLMOptions = {}): Promise<MiniLMEmbedder> {
+  return MiniLMEmbedder.load(opts);
+}
+
+/** What builds the embedder inside the worker: an export of `module` that
+ *  takes `options` and resolves to an `Embedder`. */
+export interface WorkerEmbedderSpec {
+  module: string;
+  factory: string;
+  options?: unknown;
+}
+
+// Beside this file in `src/` (tsx) and in `build/` alike.
+const WORKER_ENTRY = new URL(`./embed-worker${extname(fileURLToPath(import.meta.url))}`, import.meta.url);
+
+type WorkerReply = { ready: true } | { id: number; vectors: number[][] } | { id: number; error: string } | { error: string };
+
+/**
+ * An `Embedder` in a worker thread — what the pass embeds with (backend.ts).
+ * onnxruntime-node runs a model synchronously (its `run()` is the native
+ * call inside a `setImmediate`), so on the main thread every forward pass
+ * blocks the event loop of the process serving requests: on swarm38, mcp's
+ * whole server (2026-10-11, a tick of catch-up took `GET /lab/health` from
+ * 0.34 s to 1.74 s and a graph search from 0.6 s to 5.6 s). Here the main
+ * thread only posts texts and receives vectors. The worker starts on the
+ * first `embed`, and again after it dies (its calls in flight fail); it
+ * holds the process open only while it starts or a call is in flight.
+ */
+export class WorkerEmbedder implements Embedder {
+  private worker: Worker | null = null;
+  private starting: Promise<Worker> | null = null;
+  private readonly pending = new Map<number, { resolve: (v: number[][]) => void; reject: (e: Error) => void }>();
+  private next = 0;
+
+  constructor(private readonly spec: WorkerEmbedderSpec = { module: import.meta.url, factory: "loadMiniLM" }) {}
+
+  async embed(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    const worker = await this.start();
+    return new Promise((resolve, reject) => {
+      const id = this.next++;
+      this.pending.set(id, { resolve, reject });
+      worker.ref();
+      worker.postMessage({ id, texts });
+    });
+  }
+
+  /** Stop the worker; calls in flight fail. */
+  async close(): Promise<void> {
+    const worker = this.worker;
+    this.drop(worker, new Error("embedding worker closed"));
+    await worker?.terminate();
+  }
+
+  private start(): Promise<Worker> {
+    return (this.starting ??= new Promise<Worker>((resolve, reject) => {
+      const worker = new Worker(WORKER_ENTRY, { workerData: this.spec });
+      this.worker = worker;
+      const fail = (e: Error) => {
+        this.drop(worker, e);
+        reject(e);
+      };
+      worker.on("message", (m: WorkerReply) => {
+        if ("ready" in m) {
+          worker.unref();
+          return resolve(worker);
+        }
+        if (!("id" in m)) return fail(new Error(`embedding worker: ${m.error}`));
+        const call = this.pending.get(m.id);
+        if (!call) return;
+        this.pending.delete(m.id);
+        if (this.pending.size === 0) worker.unref();
+        if ("error" in m) call.reject(new Error(`embedding worker: ${m.error}`));
+        else call.resolve(m.vectors);
+      });
+      worker.on("error", (e) => fail(e instanceof Error ? e : new Error(String(e))));
+      worker.on("exit", (code) => fail(new Error(`embedding worker exited with code ${code}`)));
+    }));
+  }
+
+  /** Forget a worker that died or was closed: its calls in flight fail, and
+   *  the next `embed` starts another. */
+  private drop(worker: Worker | null, e: Error): void {
+    if (!worker || worker !== this.worker) return;
+    this.worker = null;
+    this.starting = null;
+    for (const call of this.pending.values()) call.reject(e);
+    this.pending.clear();
+  }
+}
+
 
 // ── The pass ────────────────────────────────────────────────────────────────
 //
@@ -198,9 +294,10 @@ export function cosine(a: number[], b: number[]): number {
 //
 // It pages by `node_key` (an index seek per page, never a scan), decides
 // in strut, runs inside the serving process on a timer with a per-tick
-// budget, and nothing waits on it: a sweep walks every marked type (the
-// code types first, then the rest, then the no-embed removals); between
-// sweeps each tick embeds the NEWCOMERS — nodes stamped
+// budget checked between batches of rows (its inference in a worker
+// thread, `WorkerEmbedder`), and nothing waits on it: a sweep walks every
+// marked type (the code types first, then the rest, then the no-embed
+// removals); between sweeps each tick embeds the NEWCOMERS — nodes stamped
 // `date_added_to_graph` past the last tick's high-water mark, so a freshly
 // ingested function is searchable by meaning within a minute. The cursor
 // is memory-only: a restart begins the sweep again, cheap on a clean graph.
@@ -538,9 +635,10 @@ export class EmbeddingPass {
 
   /** Pages until the budget is spent or the sweep ends. */
   private async work(start: number, did: { embedded: number; removed: number; ended: boolean }): Promise<void> {
+    const spent = () => this.now() - start >= this.tickBudgetMs;
     let pages = 0;
     while (this.plan && !this.stopped) {
-      if (pages > 0 && this.now() - start >= this.tickBudgetMs) return;
+      if (pages > 0 && spent()) return;
       const list = this.pos.phase === "embed" ? this.plan.embed : this.plan.remove;
       const m = list[this.pos.i];
       if (!m) {
@@ -552,7 +650,7 @@ export class EmbeddingPass {
         continue;
       }
       try {
-        const exhausted = this.pos.phase === "embed" ? await this.embedPage(m, did) : await this.removePage(m, did);
+        const exhausted = this.pos.phase === "embed" ? await this.embedPage(m, did, spent) : await this.removePage(m, did);
         if (exhausted) this.pos = { ...this.pos, i: this.pos.i + 1, cursor: "" };
       } catch (e) {
         // On to the next type; the next sweep retries this one.
@@ -569,8 +667,12 @@ export class EmbeddingPass {
     return (this.current[type] ??= { seen: 0, stale: 0, embedded: 0, removed: 0, errors: 0 });
   }
 
-  /** One page of a marked type from the cursor. True when the type is done. */
-  private async embedPage(m: Marked, did: { embedded: number }): Promise<boolean> {
+  /** One page of a marked type from the cursor, repaired a batch of rows at
+   *  a time: a batch is finished (text, vector, per-field vectors, label)
+   *  and the cursor moved past it before the next begins, so a tick that has
+   *  spent its budget stops between batches — a page of 1,000 long texts is
+   *  half a minute of inference on a swarm's CPU. True when the type is done. */
+  private async embedPage(m: Marked, did: { embedded: number }, spent: () => boolean): Promise<boolean> {
     const rows = (await this.bolt.run(
       `MATCH (n:\`${m.type}\`) WHERE n.node_key > $cursor
        WITH n ORDER BY n.node_key LIMIT $page
@@ -578,9 +680,14 @@ export class EmbeddingPass {
       this.pageParams(m, { cursor: this.pos.cursor }),
     )) as unknown as PageRow[];
     if (rows.length === 0) return true;
-    this.counts(m.type).seen += rows.length;
-    did.embedded += await this.repair(m, rows, this.counts(m.type));
-    this.pos = { ...this.pos, cursor: rows[rows.length - 1]!.node_key };
+    const counts = this.counts(m.type);
+    for (let i = 0; i < rows.length; i += this.batchSize) {
+      if (i > 0 && spent()) return false;
+      const batch = rows.slice(i, i + this.batchSize);
+      counts.seen += batch.length;
+      did.embedded += await this.repair(m, batch, counts);
+      this.pos = { ...this.pos, cursor: batch[batch.length - 1]!.node_key };
+    }
     return rows.length < this.pageSize;
   }
 
@@ -661,51 +768,71 @@ export class EmbeddingPass {
   // ── between sweeps ────────────────────────────────────────────────────
 
   /** Embed what was stamped since the last tick and carries a marked label
-   *  and no vector — one range seek on `date_added_to_graph` per page, the
-   *  index fields of every marked type read at once. A node that gets no
-   *  vector here (blank) waits for the next sweep. */
+   *  and no vector — a range seek on `date_added_to_graph` from a cursor,
+   *  the index fields of every marked type read at once. Marked labels
+   *  only: rows the pass never embeds (a run's `StrutToolCall`s, agent-log
+   *  `Turn`s) would fill a page and hide the code ingested beside them. The
+   *  cursor is `>=` because stakgraph stamps a whole ingest batch with one
+   *  `$now`: a row embedded here leaves `text_embeddings IS NULL`, so a
+   *  stamp is read again at most once, and a full page of blank rows on one
+   *  stamp steps past it. Batches as in `embedPage`, so a spent budget stops
+   *  the tick between them and the next resumes at the last batch's stamp.
+   *  A node that gets no vector here (blank) waits for the next sweep. */
   private async newcomers(start: number, did: { newcomers: number }): Promise<void> {
     if (this.since === null || this.embedList.length === 0) return;
     const until = this.now();
     const byLabel = new Map(this.embedList.map((m) => [m.type, m]));
     const fields = [...new Set(this.embedList.flatMap((m) => m.index))];
-    let pages = 0;
-    for (;;) {
-      if (pages > 0 && this.now() - start >= this.tickBudgetMs) return; // keep `since`; the next tick resumes
-      const rows = await this.bolt.run(
-        `MATCH (n:Data_Bank) WHERE n.date_added_to_graph > $since AND n.text_embeddings IS NULL
-         WITH n ORDER BY n.date_added_to_graph LIMIT $page
-         RETURN elementId(n) AS eid, labels(n) AS labels, n.Data_Bank AS text, [f IN $F | n[f]] AS values`,
-        { since: int(this.since), page: int(this.pageSize), F: fields },
-      );
-      pages++;
-      if (rows.length === 0) break;
-      const byType = new Map<Marked, PageRow[]>();
-      for (const r of rows) {
-        const labels = r["labels"] as string[];
-        const m = labels.map((l) => byLabel.get(l)).find((x): x is Marked => !!x);
-        if (!m) continue;
-        const all = r["values"] as unknown[];
-        const row: PageRow = {
-          eid: String(r["eid"]),
-          node_key: "",
-          text: r["text"],
-          values: m.index.map((f) => all[fields.indexOf(f)]),
-          unembedded: true,
-          labeled: !m.label || labels.includes(m.label),
-          vvalues: [],
-          vnull: [],
-        };
-        byType.set(m, [...(byType.get(m) ?? []), row]);
+    const scratch: TypeCounts = { seen: 0, stale: 0, embedded: 0, removed: 0, errors: 0 }; // `current` is the sweep's
+    const spent = () => this.now() - start >= this.tickBudgetMs;
+    let after = this.since;
+    for (let pages = 0; ; pages++) {
+      if (pages > 0 && spent()) {
+        this.since = after;
+        return;
       }
+      const rows = await this.bolt.run(
+        `MATCH (n:Data_Bank) WHERE n.date_added_to_graph >= $after AND n.text_embeddings IS NULL
+           AND any(l IN labels(n) WHERE l IN $types)
+         WITH n ORDER BY n.date_added_to_graph LIMIT $page
+         RETURN elementId(n) AS eid, labels(n) AS labels, n.date_added_to_graph AS at, n.Data_Bank AS text, [f IN $F | n[f]] AS values`,
+        { after: int(after), types: [...byLabel.keys()], page: int(this.pageSize), F: fields },
+      );
+      const from = after;
       let embedded = 0;
-      const scratch: TypeCounts = { seen: 0, stale: 0, embedded: 0, removed: 0, errors: 0 }; // `current` is the sweep's
-      for (const [m, typed] of byType) embedded += await this.repair({ ...m, vectorIndex: [] }, typed, scratch);
-      this.newcomersEmbedded += embedded;
-      did.newcomers += embedded;
-      // A full page that embedded nothing is all blank or unmarked: stop,
-      // or this loop would read it again.
-      if (rows.length < this.pageSize || embedded === 0) break;
+      for (let i = 0; i < rows.length; i += this.batchSize) {
+        if (i > 0 && spent()) {
+          this.since = after;
+          return;
+        }
+        const batch = rows.slice(i, i + this.batchSize);
+        const byType = new Map<Marked, PageRow[]>();
+        for (const r of batch) {
+          const labels = r["labels"] as string[];
+          const m = labels.map((l) => byLabel.get(l)).find((x): x is Marked => !!x);
+          if (!m) continue;
+          const all = r["values"] as unknown[];
+          const row: PageRow = {
+            eid: String(r["eid"]),
+            node_key: "",
+            text: r["text"],
+            values: m.index.map((f) => all[fields.indexOf(f)]),
+            unembedded: true,
+            labeled: !m.label || labels.includes(m.label),
+            vvalues: [],
+            vnull: [],
+          };
+          byType.set(m, [...(byType.get(m) ?? []), row]);
+        }
+        let n = 0;
+        for (const [m, typed] of byType) n += await this.repair({ ...m, vectorIndex: [] }, typed, scratch);
+        embedded += n;
+        this.newcomersEmbedded += n;
+        did.newcomers += n;
+        after = Number(batch[batch.length - 1]!["at"]);
+      }
+      if (rows.length < this.pageSize) break;
+      if (embedded === 0 && after === from) after += 1;
     }
     this.since = until;
   }

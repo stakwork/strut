@@ -22,7 +22,7 @@
 import { Bolt, graphConfigFromEnv, type GraphConfig } from "./bolt.js";
 import { upgradeClaimSchema, type ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
 import { EdgeWriter } from "./edge-writer.js";
-import { EmbeddingPass, MiniLMEmbedder, type EmbeddingPassOptions } from "./embeddings.js";
+import { EmbeddingPass, MiniLMEmbedder, WorkerEmbedder, type EmbeddingPassOptions } from "./embeddings.js";
 import { reconcileIndexLists, type IndexReconcileReport } from "./index-reconcile.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
@@ -179,8 +179,13 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
     }
     const schemas = new SchemaResolver(bolt);
     // The pass starts now and runs in the background; the old awaited
-    // backfill held the boot for as long as the sweep took.
-    const embeddings = embedder && !opts.skipBoot ? new EmbeddingPass(bolt, embedder, schemas, opts.pass) : undefined;
+    // backfill held the boot for as long as the sweep took. It embeds in a
+    // worker thread: onnxruntime runs a model synchronously, and hours of
+    // catch-up on this thread would stall every request the process serves.
+    // The writer and search keep `embedder` (a query is one short text). An
+    // injected embedder is used as it is.
+    const passWorker = embedder && !opts.skipBoot && typeof opts.embeddings !== "object" ? new WorkerEmbedder() : undefined;
+    const embeddings = embedder && !opts.skipBoot ? new EmbeddingPass(bolt, passWorker ?? embedder, schemas, opts.pass) : undefined;
     const backend: GraphBackend = {
       cfg,
       bolt,
@@ -200,6 +205,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       async close() {
         for (const [k, p] of cache) if ((await p.catch(() => null)) === backend) cache.delete(k);
         await embeddings?.stop();
+        await passWorker?.close();
         await bolt.close();
       },
     };
