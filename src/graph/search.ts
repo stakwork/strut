@@ -213,14 +213,55 @@ export function escapeLucene(value: string): string {
   return out;
 }
 
-/** `_build_fulltext_query` (gs=false): one token escaped as-is; several →
- *  each `+`-prefixed (all required). */
+/** A word with a separator inside it: the `english` analyzer splits it, and
+ *  each fragment would match on its own. */
+const SPLIT_WORD = /[\p{L}\p{N}][^\p{L}\p{N}\s'_]+[\p{L}\p{N}]/u;
+
+/** The keyword half's view of a query: a double-quoted span is a phrase,
+ *  and so is a word with a separator inside it (`x-hub-signature-256`,
+ *  `src/lib/x.ts`, `real-time`) — sent as words, `x-hub-signature-256`
+ *  matched every function named `X` (swarm38, 2026-10-11). The rest are
+ *  words. */
+export function queryParts(q: string): Array<{ text: string; phrase: boolean }> {
+  const parts: Array<{ text: string; phrase: boolean }> = [];
+  for (const m of (q ?? "").matchAll(/"([^"]+)"|(\S+)/g)) {
+    if (m[1] !== undefined) {
+      const text = m[1].trim();
+      if (text) parts.push({ text, phrase: true });
+    } else parts.push({ text: m[2]!, phrase: SPLIT_WORD.test(m[2]!) });
+  }
+  return parts;
+}
+
+/** One phrase or one split word: the caller wants that string as written. */
+export function isExactQuery(q: string): boolean {
+  const parts = queryParts(q);
+  return parts.length === 1 && parts[0]!.phrase;
+}
+
+/** `_build_fulltext_query` (gs=false): one part as-is; several → each
+ *  `+`-prefixed (all required). A phrase part is quoted, a word escaped. */
 export function buildFulltextQuery(q: string): string {
-  const raw = (q ?? "").trim();
-  if (!raw) return raw;
-  const words = raw.split(/\s+/);
-  if (words.length === 1) return escapeLucene(raw);
-  return words.map((w) => `+${escapeLucene(w)}`).join(" ");
+  const parts = queryParts(q);
+  const clause = (p: { text: string; phrase: boolean }) => (p.phrase ? `"${p.text.replace(/[\\"]/g, (c) => `\\${c}`)}"` : escapeLucene(p.text));
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return clause(parts[0]!);
+  return parts.map((p) => `+${clause(p)}`).join(" ");
+}
+
+/** The keyword half at half weight for a question of four words or more;
+ *  jarvis's `RRF_WEIGHTS` (keyword ahead) for anything shorter or exact.
+ *  Measured on swarm38 (plans/semantic-search.md §3): under jarvis's
+ *  weights any of the top ten keyword-only hits outranks the best
+ *  semantic-only one, so a prompt constant whose `body` holds every word
+ *  of a question ranked first; a code string (a header, an error message)
+ *  is the opposite case — the semantic half has nothing to say about it. */
+export const PROSE_RRF_WEIGHTS: Record<string, number> = { fulltext: 0.5, semantic: 1.0 };
+export const PROSE_MIN_WORDS = 4;
+
+export function fusionWeights(q: string): Record<string, number> {
+  const words = (q ?? "").trim().split(/\s+/).filter(Boolean).length;
+  return words >= PROSE_MIN_WORDS && !isExactQuery(q) ? { ...RRF_WEIGHTS, ...PROSE_RRF_WEIGHTS } : RRF_WEIGHTS;
 }
 
 /** `_search_fetch_limit`. */
@@ -279,8 +320,10 @@ export function rankHits(hits: Hit[]): Hit[] {
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** `_fuse_search_hits`: weighted RRF, `(-score, best_rank, ref_id)` order,
- *  score normalized to the top entry. */
-export function fuseHits(fulltext: Hit[], semantic: Hit[], buckets: Record<string, Hit[]> = {}): RankedEntry[] {
+ *  score normalized to the top entry. `weights` per source; a source it
+ *  does not name (the `input_q` / `output_q` buckets) weighs
+ *  `DEFAULT_VECTOR_WEIGHT`. */
+export function fuseHits(fulltext: Hit[], semantic: Hit[], buckets: Record<string, Hit[]> = {}, weights: Record<string, number> = RRF_WEIGHTS): RankedEntry[] {
   const sources: Array<[string, Hit[]]> = [
     ["fulltext", rankHits(fulltext)],
     ["semantic", rankHits(semantic)],
@@ -288,7 +331,7 @@ export function fuseHits(fulltext: Hit[], semantic: Hit[], buckets: Record<strin
   ];
   const fused = new Map<string, RankedEntry>();
   for (const [source, hits] of sources) {
-    const weight = RRF_WEIGHTS[source] ?? DEFAULT_VECTOR_WEIGHT;
+    const weight = weights[source] ?? DEFAULT_VECTOR_WEIGHT;
     hits.forEach((hit, i) => {
       const rank = i + 1;
       const id = refIdOf(hit.node);
@@ -707,8 +750,10 @@ export class GraphReader {
       if (q && ftIndexes.length) {
         fulltext = await layer("fulltext", async () => {
           let hits = await runFulltext(ftIndexes, buildFulltextQuery(q));
-          // Fuzzy fallback on zero hits (no gs operators → always eligible).
-          if (hits.length === 0) hits = await runFulltext(ftIndexes, `${q}~`);
+          // Fuzzy fallback on zero hits (no gs operators → always eligible),
+          // except for an exact query: its fragments ORed back together are
+          // the noise the phrase left out.
+          if (hits.length === 0 && !isExactQuery(q)) hits = await runFulltext(ftIndexes, `${q}~`);
           return hits;
         }, []);
         if (fulltext.length >= cap) ftTruncated = true;
@@ -764,7 +809,7 @@ export class GraphReader {
         }
       }
 
-      let ranked = fuseHits(fulltext, semantic, buckets);
+      let ranked = fuseHits(fulltext, semantic, buckets, fusionWeights(q));
       const titleKeys = new Map<string, string>();
       const titleKeyFor = (t: string | undefined) => (t ? titleKeys.get(t) ?? "name" : "name");
       for (const t of new Set(ranked.map((e) => typeLabelOf(e.node.labels)).filter((t): t is string => !!t))) {

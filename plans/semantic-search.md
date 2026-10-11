@@ -441,6 +441,24 @@ Schemas as they then are — the lists jarvis's own library declares.
   again with the larger `k`. Constants to tune on swarm38. The domain route
   is what keeps this from starving: `Endpoint` is 642 of ~330k vectors
   globally and a few hundred of ~40k in `Domain_codeartifact`.
+- **Weights by query shape** (added after the swarm38 first look). Under
+  jarvis's RRF weights (keyword 1.15, semantic 1.0) any of the top ten
+  keyword-only hits outranks the best semantic-only one, so a prompt
+  constant whose `body` holds every word of a question ranked first. A
+  query of four words or more now fuses at keyword 0.5 / semantic 1.0
+  (`fusionWeights`); a shorter or exact one keeps jarvis's. Measured on
+  five questions: 9 targets in the top five became 12; of eight
+  weightings tried, from keyword-only to semantic-only, 0.5 was best.
+  Strut's ranking of a question now differs from jarvis's `/v2/nodes`, on
+  purpose.
+- **Exact strings as phrases.** The `english` analyzer splits
+  `x-hub-signature-256` into `x`, `hub`, `signatur`, `256`, and each
+  matched alone — every function named `X`. A word with a separator inside
+  it, and a span the caller put in double quotes (escaped away before), go
+  to Lucene as phrases (`queryParts`), and an exact query gets no any-word
+  fallback (its fragments ORed again). The header went from #17 to #6, a
+  quoted error message from #13 to #3; exact names were #1 throughout.
+  `graph/graph-search`'s `q` says so to the caller.
 - `input_q` / `output_q` are unchanged (per-label indexes from
   `vector_index`).
 
@@ -629,10 +647,12 @@ second sweep with nothing stale) and a re-sync.
 - **Per-type vector indexes.** The domain route (ruling 5) is the
   pre-filter; a per-type index is the escape hatch if measured recall on
   a rare type within a big domain says so.
-- **The keyword half.** A question already falls back to a fuzzy any-word
-  match when the every-word query finds nothing; whether that fallback
-  should weigh less than the semantic half is a tuning question after this
-  lands.
+- **The keyword half, beyond §3's two rules.** The weights and the
+  four-word threshold were picked on nine queries; a fixed set of real
+  `graph-search` queries from swarm38's runs comes next, to pick them on
+  data and keep them honest. Leaving test-file code out of a typed code
+  search (34% of swarm38's Functions; 64 `useWorkspace` mocks) and a
+  retrieval-tuned model are open decisions, not tuning.
 - **Embedding at ingest in stakgraph.** The pass covers any writer; a writer
   that embeds itself is adoption, not a dependency. (§5 is not that: it
   stops stakgraph from undoing a write, it does not teach it to embed.)
