@@ -182,6 +182,28 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.match(await run("graph/graph-search", { q: "x", domains: "legal" }), /INVALID_DOMAIN/);
   });
 
+  it("graph-search: a code hit carries where it lives (file, start, end); a hit without them carries none", async () => {
+    const schema = await run("graph/create-schema", {
+      type: "Function",
+      attributes: { name: "string", file: "string", start: "?int", end: "?int", description: "?string" },
+      node_key: "name-file",
+      index: ["name", "description"],
+      domain: "CodeArtifact",
+    });
+    assert.equal(schema.status, "Success", JSON.stringify(schema));
+    const file = "stakwork/hive/src/lib/auth/workspace-access.ts";
+    const node = await run("graph/create-node", { node_type: "Function", namespace: NS, node_data: { name: "resolveWorkspaceAccess", file, start: 43, end: 120, description: "Decides what a user may see in a workspace" } });
+    assert.equal(node.status, "Success", JSON.stringify(node));
+    const bolt = new Bolt(cfg!);
+    await bolt.run(`CALL db.awaitIndexes(60)`);
+    await bolt.close();
+    const out = await run("graph/graph-search", { q: "resolveWorkspaceAccess", namespace: NS, type: "Function" });
+    assert.ok(Array.isArray(out) && out.length > 0, JSON.stringify(out));
+    assert.deepEqual([out[0].name, out[0].file, out[0].start, out[0].end], ["resolveWorkspaceAccess", file, 43, 120]);
+    const [wf] = await run("graph/graph-search", { q: "harvey-deliver", namespace: NS, type: "StrutWorkflow" });
+    assert.deepEqual(["file", "start", "end"].filter((k) => k in wf), [], JSON.stringify(wf));
+  });
+
   it("create-triplet: inline side, idempotent edge, registry gate", async () => {
     let out = await run("graph/create-triplet", {
       source_type: "StrutWorkflowVersion",
