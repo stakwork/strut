@@ -150,9 +150,11 @@ removed — at the cost of the extra work.
    `get_index_fields` reads (only `type_description` is skipped), and
    strut's resolver does the same. So the 62 swarm38 types with no `index`
    of their own (61 `Cloud`-domain Advisor*/Kn* types and `Content`)
-   inherit `Thing`'s `[name, description]` and are embedded from those
-   fields, ~25k nodes — the text jarvis composes for them too (validated
-   2026-10-11; this ruling first said they were skipped). The pass never
+   inherit `Thing`'s `[name, description]`, and the pass embeds them from
+   those fields — the text jarvis composes for them too (validated
+   2026-10-11; this ruling first said they were skipped). On swarm38 the
+   Cloud types' ~25k nodes carry no `node_key`, so the sweep never reaches
+   them (see "First look" under the validation). The pass never
    falls back to jarvis's catch-all text (every property, joined): a type
    whose whole chain declares no `index` is skipped (`no_index`), as are
    the types with no Schema node (`Context`, `Chunk`, …), and both are
@@ -631,11 +633,17 @@ fulltext half's every-word match puts two prompt constants first (their
 mocks (cosine 0.81) above it (0.71); leaving test files out only moves it
 to 84th, so this is the model on an indirect question, not the vectors or
 the routing. Direct questions (field encryption, GitHub webhook checks,
-Pusher updates) find what a person would name. Found and fixed in code:
+Pusher updates) find what a person would name. The first sweep ended
+after 85 minutes: 947,739 nodes read, 98,453 re-embedded, the 410,738
+`Turn` and 37,128 `StrutToolCall` vectors removed, 0 errors; between
+sweeps `/lab/health` is back to 0.36 s. It cannot see 27,438 nodes: the
+63 types whose nodes carry no `node_key` (the Cloud `Advisor*`/`Kn*`
+types, `PullRequest`, `Commit`) never match `node_key > $cursor`, and
+nothing reports it — not yet fixed. Found and fixed in code:
 the event-loop stall and the tick overrun (§1, CPU and Schedule), the
 newcomer page that unembeddable rows could fill (§1, Schedule), ruling 1's
-`no_index` claim. Still to read: the sweep's end (no `Turn` vectors; a
-second sweep with nothing stale) and a re-sync.
+`no_index` claim. Still to read: a second sweep with nothing stale, and
+a re-sync.
 
 ## Not doing
 
