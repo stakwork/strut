@@ -153,7 +153,7 @@ removed — at the cost of the extra work.
    inherit `Thing`'s `[name, description]`, and the pass embeds them from
    those fields — the text jarvis composes for them too (validated
    2026-10-11; this ruling first said they were skipped). On swarm38 the
-   Cloud types' ~25k nodes carry no `node_key`, so the sweep never reaches
+   Cloud types' 22,268 nodes carry no `node_key`, so the sweep never reaches
    them (see "First look" under the validation). The pass never
    falls back to jarvis's catch-all text (every property, joined): a type
    whose whole chain declares no `index` is skipped (`no_index`), as are
