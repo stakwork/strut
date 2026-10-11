@@ -82,8 +82,12 @@ export function flattenSchema(schema: StrutSchema | typeof THING_SCHEMA): Record
   const { attributes, ...core } = schema;
   const flat: Record<string, unknown> = { ...core, ...attributes };
   // `exact_key` is strut's composition rule (strut-schemas.ts), not a
-  // jarvis schema key: on the node it would read as an attribute.
+  // jarvis schema key: on the node it would read as an attribute. `embed`
+  // IS a jarvis key, but only once jarvis knows it: on a Schema node an
+  // older jarvis reads it as a required attribute, so strut's own types
+  // keep their mark in code (plans/semantic-search.md ruling 2).
   delete flat["exact_key"];
+  delete flat["embed"];
   return flat;
 }
 

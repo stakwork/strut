@@ -11,16 +11,17 @@
  * `embeddings.test.ts` against a Python-produced golden vector.
  *
  * No Redis queue: vectors are computed in-process before the node write.
- * jarvis's "pending" state is purely `text_embeddings IS NULL`, so a crash
- * between MERGE and vector write is healed by `backfillEmbeddings` at boot —
- * the same NULL-scan idiom jarvis's own migration uses (`migration.py:857`).
+ * jarvis's "pending" state is purely `text_embeddings IS NULL`. What that
+ * leaves behind — a crash between MERGE and vector write, and every node
+ * some OTHER writer put in the graph with no vector at all — is the
+ * `EmbeddingPass`'s job (below; plans/semantic-search.md).
  */
 import { modelDirFromEnv } from "../model-dir.js";
-import { join } from "node:path";
 import { int, type Bolt } from "./bolt.js";
-import type { Embedder } from "./node-writer.js";
-import { renderVectorField } from "./node-writer.js";
-import { STRUT_DOMAIN_LABEL, embeddingColumn, vectorIndexedPairs } from "./strut-schemas.js";
+import { buildSearchText, renderVectorField, type Embedder } from "./node-writer.js";
+import type { SchemaResolver } from "./schema-resolver.js";
+import { schemaStatement } from "./schema-seed.js";
+import { STRUT_SCHEMAS, THING_TYPE, embeddingColumn } from "./strut-schemas.js";
 
 export const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBEDDING_DIM = 384;
@@ -72,7 +73,11 @@ export class MiniLMEmbedder implements Embedder {
     const [tokenizer, net] = await Promise.all([
       tf.AutoTokenizer.from_pretrained(model),
       // fp32 explicitly: quantized weights would drift from jarvis's encoder.
-      tf.AutoModel.from_pretrained(model, { dtype: "fp32" }),
+      // Two intra-op threads, not onnxruntime's default of every core: the
+      // pass runs hours of inference inside the serving process, beside
+      // chat turns and runs; the search path embeds one query at a time
+      // and does not notice.
+      tf.AutoModel.from_pretrained(model, { dtype: "fp32", session_options: { intraOpNumThreads: 2 } }),
     ]);
     // Special-token ids via the public API: an empty input encodes to
     // exactly [CLS, SEP].
@@ -175,59 +180,537 @@ export function cosine(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
-export interface BackfillReport {
-  /** Nodes whose `text_embeddings` was filled. */
-  text_embeddings: number;
-  /** Per `{stem}_embeddings` column, nodes filled. */
-  vector_fields: Record<string, number>;
+
+// ── The pass ────────────────────────────────────────────────────────────────
+//
+// plans/semantic-search.md §1 — the one repair job for everything semantic
+// search needs, for every node type the live `:Schema` meta-graph marks for
+// search, whoever wrote the node (strut, stakgraph's ingest over bolt,
+// jarvis, an import). A node is STALE when its stored `Data_Bank` is not
+// the text the writer would compose today from the schema's `index`
+// fields, or its vector is missing — one comparison that catches a node
+// never embedded, one embedded before its Schema's `index` widened, a
+// field filled in or edited since, and a text another writer reset. The
+// pass writes what the writer writes and nothing else: `Data_Bank`,
+// `text_embeddings`, `_search_fields_used` (jarvis's record, kept for
+// parity) and the resolver's domain label. A type marked `embed: false` is
+// never embedded, and a vector found on one is removed.
+//
+// It pages by `node_key` (an index seek per page, never a scan), decides
+// in strut, runs inside the serving process on a timer with a per-tick
+// budget, and nothing waits on it: a sweep walks every marked type (the
+// code types first, then the rest, then the no-embed removals); between
+// sweeps each tick embeds the NEWCOMERS — nodes stamped
+// `date_added_to_graph` past the last tick's high-water mark, so a freshly
+// ingested function is searchable by meaning within a minute. The cursor
+// is memory-only: a restart begins the sweep again, cheap on a clean graph.
+
+export interface EmbeddingPassOptions {
+  /** Nodes per page read (one index seek each). */
+  pageSize?: number;
+  /** Texts per embedder call and rows per write. */
+  batchSize?: number;
+  /** How often a tick runs. */
+  tickMs?: number;
+  /** How long one tick may work before it yields; at least one page runs. */
+  tickBudgetMs?: number;
+  /** Pause between the end of one sweep and the start of the next. */
+  sweepEveryMs?: number;
+  /** Start the timer at construction (the default). Tests pass `false` and
+   *  drive `tick()` / `sweep()` by hand. */
+  autoStart?: boolean;
+  log?: (line: string) => void;
+  now?: () => number;
+}
+
+export type SkipReason = "no_schema" | "no_index" | "no_embed" | "invalid_label";
+
+export interface TypeCounts {
+  /** Nodes the sweep read. */
+  seen: number;
+  /** Of those, stale: text or vector rewritten. */
+  stale: number;
+  embedded: number;
+  /** Vectors removed (no-embed types). */
+  removed: number;
+  /** Pages that failed (the type is left for the next sweep). */
+  errors: number;
+}
+
+/** `GET /graph/embeddings`. */
+export interface EmbeddingPassStatus {
+  enabled: true;
+  sweep: {
+    /** Sweeps begun since the process started (the one in flight included). */
+    n: number;
+    startedAt: number | null;
+    finishedAt: number | null;
+    phase: "embed" | "remove" | "idle";
+    type: string | null;
+    cursor: string | null;
+  };
+  /** The sweep in flight, per type. */
+  current: Record<string, TypeCounts>;
+  /** The last complete sweep, per type. */
+  last: Record<string, TypeCounts>;
+  /** Types the sweep does not embed, and why: no Schema node (a label with
+   *  `Data_Bank` nodes and no schema), no `index` on its Schema (the
+   *  catch-all text is never embedded by the pass), the no-embed mark, or
+   *  a type name that is not a label. */
+  skipped: Array<{ type: string; reason: SkipReason }>;
+  newcomers: { since: number | null; embedded: number };
+  lastError: string | null;
+  ticks: number;
+}
+
+export const PASS_DEFAULTS = {
+  pageSize: 1000,
+  batchSize: 100,
+  tickMs: 60_000,
+  tickBudgetMs: 15_000,
+  sweepEveryMs: 3_600_000,
+} as const;
+
+const LABEL = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Labels every node carries beside its type, and the meta-graph's own. */
+const NON_TYPE_LABELS = new Set(["Node", "Data_Bank", "Schema", "Migration", "About", "Namespace", THING_TYPE]);
+const CODE_DOMAIN_LABEL = "Domain_codeartifact";
+
+interface Marked {
+  type: string;
+  index: string[];
+  /** The resolver's domain label, none for a hidden type or domain. */
+  label: string | undefined;
+  /** `vector_index` properties with their own `{stem}_embeddings`. */
+  vectorIndex: string[];
+}
+
+interface PageRow {
+  eid: string;
+  node_key: string;
+  text: unknown;
+  values: unknown[];
+  unembedded: boolean;
+  labeled: boolean;
+  vvalues: unknown[];
+  vnull: boolean[];
 }
 
 /**
- * Crash-safe sweep: embed every Strut node whose search text exists but
- * whose vector is NULL, in batches, until none remain. Idempotent and cheap
- * when clean. Run at every boot of the graph backend. Also covers the
- * per-property `{stem}_embeddings` of the `vector_index` types.
+ * The stale decision for one page row — pure. `values` holds the index
+ * fields ALONE, never the node's other properties: the writer's
+ * composition falls through to jarvis's catch-all text when none of the
+ * index fields is usable, and with nothing else to find it composes
+ * nothing, which is what "a node whose index fields are all blank is left
+ * alone" rests on. A list-valued field renders as the writer renders it.
  */
-export async function backfillEmbeddings(bolt: Bolt, embedder: Embedder, batchSize = 100): Promise<BackfillReport> {
-  const report: BackfillReport = { text_embeddings: 0, vector_fields: {} };
+export function decideRow(index: string[], row: { text: unknown; values: unknown[]; unembedded: boolean }): { text: string; fields: string[] } | "clean" | "blank" {
+  const values: Record<string, unknown> = {};
+  index.forEach((f, i) => {
+    const v = row.values[i];
+    if (v !== null && v !== undefined) values[f] = v;
+  });
+  const { text, fields } = buildSearchText({ index }, values);
+  if (text === null) return "blank";
+  if (!row.unembedded && row.text === text) return "clean";
+  return { text, fields };
+}
 
-  for (;;) {
-    const rows = await bolt.run(
-      `MATCH (n:\`${STRUT_DOMAIN_LABEL}\`)
-       WHERE n.Data_Bank IS NOT NULL AND n.text_embeddings IS NULL
-       RETURN n.ref_id AS ref_id, n.Data_Bank AS text LIMIT $limit`,
-      { limit: int(batchSize) },
-    );
-    if (rows.length === 0) break;
-    const vectors = await embedder.embed(rows.map((r) => String(r["text"])));
-    await bolt.run(
-      `UNWIND $rows AS row
-       MATCH (n:Data_Bank {ref_id: row.ref_id})
-       SET n.text_embeddings = row.vector`,
-      { rows: rows.map((r, i) => ({ ref_id: r["ref_id"], vector: vectors[i] })) },
-    );
-    report.text_embeddings += rows.length;
+const PAGE_COLUMNS = `elementId(n) AS eid, n.node_key AS node_key, n.Data_Bank AS text,
+         [f IN $F | n[f]] AS values, n.text_embeddings IS NULL AS unembedded,
+         CASE WHEN $L IS NULL THEN true ELSE $L IN labels(n) END AS labeled,
+         [p IN $V | n[p]] AS vvalues, [c IN $C | n[c] IS NULL] AS vnull`;
+
+export class EmbeddingPass {
+  private readonly pageSize: number;
+  private readonly batchSize: number;
+  private readonly tickMs: number;
+  private readonly tickBudgetMs: number;
+  private readonly sweepEveryMs: number;
+  private readonly log: (line: string) => void;
+  private readonly now: () => number;
+
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private first: ReturnType<typeof setTimeout> | null = null;
+  private inflight: Promise<void> | null = null;
+  private stopped = false;
+  private ddlDone = false;
+
+  private sweepN = 0;
+  private startedAt: number | null = null;
+  private finishedAt: number | null = null;
+  private plan: { embed: Marked[]; remove: Marked[] } | null = null;
+  /** The last plan's embed list — what the newcomer tick covers. */
+  private embedList: Marked[] = [];
+  private pos: { phase: "embed" | "remove" | "idle"; i: number; cursor: string } = { phase: "idle", i: 0, cursor: "" };
+  private current: Record<string, TypeCounts> = {};
+  private last: Record<string, TypeCounts> = {};
+  private skipped: Array<{ type: string; reason: SkipReason }> = [];
+  private since: number | null = null;
+  private newcomersEmbedded = 0;
+  private lastError: string | null = null;
+  private ticks = 0;
+
+  constructor(
+    private readonly bolt: Bolt,
+    private readonly embedder: Embedder,
+    private readonly resolver: SchemaResolver,
+    opts: EmbeddingPassOptions = {},
+  ) {
+    this.pageSize = opts.pageSize ?? PASS_DEFAULTS.pageSize;
+    this.batchSize = opts.batchSize ?? PASS_DEFAULTS.batchSize;
+    this.tickMs = opts.tickMs ?? PASS_DEFAULTS.tickMs;
+    this.tickBudgetMs = opts.tickBudgetMs ?? PASS_DEFAULTS.tickBudgetMs;
+    this.sweepEveryMs = opts.sweepEveryMs ?? PASS_DEFAULTS.sweepEveryMs;
+    this.log = opts.log ?? ((line) => console.log(`[graph embeddings] ${line}`));
+    this.now = opts.now ?? Date.now;
+    if (opts.autoStart !== false) this.start();
   }
 
-  for (const { type, prop } of vectorIndexedPairs()) {
-    const column = embeddingColumn(prop);
-    for (;;) {
-      const rows = await bolt.run(
-        `MATCH (n:\`${type}\`)
-         WHERE n.\`${prop}\` IS NOT NULL AND trim(n.\`${prop}\`) <> '' AND n.\`${column}\` IS NULL
-         RETURN n.ref_id AS ref_id, n.\`${prop}\` AS text LIMIT $limit`,
-        { limit: int(batchSize) },
-      );
-      if (rows.length === 0) break;
-      const vectors = await embedder.embed(rows.map((r) => renderVectorField(prop, String(r["text"]))!));
-      await bolt.run(
-        `UNWIND $rows AS row
-         MATCH (n:Data_Bank {ref_id: row.ref_id})
-         SET n.\`${column}\` = row.vector`,
-        { rows: rows.map((r, i) => ({ ref_id: r["ref_id"], vector: vectors[i] })) },
-      );
-      report.vector_fields[column] = (report.vector_fields[column] ?? 0) + rows.length;
+  /** Start the timer: a first tick right away, then every `tickMs`. The
+   *  timers never hold the process open. */
+  start(): void {
+    if (this.timer) return;
+    this.stopped = false;
+    this.first = setTimeout(() => void this.tick(), 0);
+    this.first.unref?.();
+    this.timer = setInterval(() => void this.tick(), this.tickMs);
+    this.timer.unref?.();
+  }
+
+  /** Stop the timer and wait for the tick in flight to end (it yields at
+   *  the next page boundary). */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    if (this.first) clearTimeout(this.first);
+    if (this.timer) clearInterval(this.timer);
+    this.first = null;
+    this.timer = null;
+    await this.inflight?.catch(() => undefined);
+  }
+
+  status(): EmbeddingPassStatus {
+    const copy = (c: Record<string, TypeCounts>) => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, { ...v }]));
+    const list = this.plan ? (this.pos.phase === "embed" ? this.plan.embed : this.plan.remove) : [];
+    return {
+      enabled: true,
+      sweep: {
+        n: this.sweepN,
+        startedAt: this.startedAt,
+        finishedAt: this.finishedAt,
+        phase: this.pos.phase,
+        type: list[this.pos.i]?.type ?? null,
+        cursor: this.plan ? this.pos.cursor : null,
+      },
+      current: copy(this.current),
+      last: copy(this.last),
+      skipped: this.skipped.map((s) => ({ ...s })),
+      newcomers: { since: this.since, embedded: this.newcomersEmbedded },
+      lastError: this.lastError,
+      ticks: this.ticks,
+    };
+  }
+
+  /** One tick: resume the sweep in flight (or begin one when the pause has
+   *  passed, else embed the newcomers) for up to the budget. Ticks never
+   *  overlap — a call during one joins it. */
+  tick(): Promise<void> {
+    if (this.inflight) return this.inflight;
+    this.inflight = this.run()
+      .catch((e) => {
+        this.lastError = errorMessage(e);
+        this.log(`tick failed: ${this.lastError}`);
+      })
+      .finally(() => {
+        this.inflight = null;
+      });
+    return this.inflight;
+  }
+
+  /** Run the sweep in flight — or a new one — to its end. What a caller
+   *  that wants the graph repaired NOW uses; the timer never needs it. */
+  async sweep(): Promise<void> {
+    if (!this.plan) await this.beginSweep();
+    while (this.plan && !this.stopped) await this.tick();
+  }
+
+  private async run(): Promise<void> {
+    this.ticks++;
+    const start = this.now();
+    const did = { embedded: 0, removed: 0, newcomers: 0, ended: false };
+    if (!this.plan && (this.finishedAt === null || this.now() - this.finishedAt >= this.sweepEveryMs)) await this.beginSweep();
+    const was = this.plan ? `sweep ${this.sweepN}` : "between sweeps";
+    if (this.plan) await this.work(start, did);
+    else await this.newcomers(start, did);
+    if (did.embedded || did.removed || did.newcomers || did.ended) {
+      const at = this.plan ? ` at ${this.pos.phase} ${this.status().sweep.type ?? "-"} ${JSON.stringify(this.pos.cursor)}` : "";
+      this.log(`tick ${this.ticks} (${was}${at}): embedded ${did.embedded}, removed ${did.removed}, newcomers ${did.newcomers}${did.ended ? "; sweep done" : ""}`);
     }
   }
-  return report;
+
+  // ── the sweep ─────────────────────────────────────────────────────────
+
+  private async beginSweep(): Promise<void> {
+    this.resolver.invalidate();
+    const { embed, remove, skipped } = await this.planSweep();
+    if (!this.ddlDone) {
+      // The cursor seeks on `node_key`; every seeded type has the index
+      // (jarvis's `add_node_key_indexes`, strut's two seeds), and this
+      // makes it so on any graph. The newcomer tick seeks on the stamp.
+      for (const m of [...embed, ...remove]) await schemaStatement(this.bolt, `CREATE INDEX IF NOT EXISTS FOR (n:\`${m.type}\`) ON (n.node_key)`);
+      await schemaStatement(this.bolt, `CREATE INDEX IF NOT EXISTS FOR (n:Data_Bank) ON (n.date_added_to_graph)`);
+      this.ddlDone = true;
+    }
+    this.sweepN++;
+    this.startedAt = this.now();
+    this.finishedAt = null;
+    // Everything stamped after this is a newcomer; the sweep covers what
+    // exists now (a node written behind the cursor is caught after it).
+    if (this.since === null) this.since = this.startedAt;
+    this.plan = { embed, remove };
+    this.embedList = embed;
+    this.skipped = skipped;
+    this.current = {};
+    this.pos = { phase: embed.length ? "embed" : remove.length ? "remove" : "idle", i: 0, cursor: "" };
+    this.log(
+      `sweep ${this.sweepN} begins: ${embed.length} type(s) to embed (${embed.map((m) => m.type).join(", ")}), ` +
+        `${remove.length} no-embed (${remove.map((m) => m.type).join(", ")}), ${skipped.length} skipped`,
+    );
+    if (!embed.length && !remove.length) this.endSweep();
+  }
+
+  /** Every type with a live Schema, through the resolver: what to embed
+   *  (its `index`, its domain label), what to strip, what to leave alone. */
+  private async planSweep(): Promise<{ embed: Marked[]; remove: Marked[]; skipped: Array<{ type: string; reason: SkipReason }> }> {
+    const types = new Set<string>(STRUT_SCHEMAS.map((s) => s.type));
+    const live = await this.bolt.run(
+      `MATCH (s:Schema) WHERE s.type IS NOT NULL AND s.type <> '*' AND (s.is_deleted IS NULL OR s.is_deleted = false)
+       RETURN DISTINCT s.type AS t`,
+    );
+    for (const r of live) types.add(String(r["t"]));
+    const embed: Marked[] = [];
+    const remove: Marked[] = [];
+    const skipped: Array<{ type: string; reason: SkipReason }> = [];
+    for (const t of [...types].sort()) {
+      if (NON_TYPE_LABELS.has(t)) continue;
+      if (!LABEL.test(t)) {
+        skipped.push({ type: t, reason: "invalid_label" });
+        continue;
+      }
+      const s = await this.resolver.schema(t);
+      if (!s) {
+        skipped.push({ type: t, reason: "no_schema" });
+        continue;
+      }
+      const m: Marked = { type: s.type, index: s.index, label: s.domainLabels[0], vectorIndex: s.vector_index };
+      if (!s.embed) {
+        remove.push(m);
+        skipped.push({ type: s.type, reason: "no_embed" });
+      } else if (s.index.length === 1 && s.index[0] === "node_key") {
+        skipped.push({ type: s.type, reason: "no_index" });
+      } else embed.push(m);
+    }
+    // A label with `Data_Bank` nodes and no Schema node (stakgraph's
+    // `Context`, `Chunk`): named, never embedded — the status read says so.
+    const labels = (await this.bolt.run(`CALL db.labels() YIELD label RETURN label`)).map((r) => String(r["label"]));
+    for (const l of labels.sort()) {
+      if (types.has(l) || NON_TYPE_LABELS.has(l) || l.startsWith("Domain_") || !LABEL.test(l)) continue;
+      const any = await this.bolt.run(`MATCH (n:\`${l}\`:Data_Bank) RETURN true AS x LIMIT 1`);
+      if (any.length) skipped.push({ type: l, reason: "no_schema" });
+    }
+    const code = (m: Marked) => (m.label === CODE_DOMAIN_LABEL ? 0 : 1);
+    embed.sort((a, b) => code(a) - code(b) || a.type.localeCompare(b.type));
+    return { embed, remove, skipped };
+  }
+
+  private endSweep(): void {
+    this.last = this.current;
+    this.current = {};
+    this.finishedAt = this.now();
+    this.plan = null;
+    this.pos = { phase: "idle", i: 0, cursor: "" };
+    const total = (k: keyof TypeCounts) => Object.values(this.last).reduce((s, c) => s + c[k], 0);
+    this.log(
+      `sweep ${this.sweepN} done in ${this.finishedAt - (this.startedAt ?? this.finishedAt)} ms: ` +
+        `seen ${total("seen")}, stale ${total("stale")}, embedded ${total("embedded")}, removed ${total("removed")}, errors ${total("errors")}`,
+    );
+  }
+
+  /** Pages until the budget is spent or the sweep ends. */
+  private async work(start: number, did: { embedded: number; removed: number; ended: boolean }): Promise<void> {
+    let pages = 0;
+    while (this.plan && !this.stopped) {
+      if (pages > 0 && this.now() - start >= this.tickBudgetMs) return;
+      const list = this.pos.phase === "embed" ? this.plan.embed : this.plan.remove;
+      const m = list[this.pos.i];
+      if (!m) {
+        if (this.pos.phase === "embed" && this.plan.remove.length) this.pos = { phase: "remove", i: 0, cursor: "" };
+        else {
+          this.endSweep();
+          did.ended = true;
+        }
+        continue;
+      }
+      try {
+        const exhausted = this.pos.phase === "embed" ? await this.embedPage(m, did) : await this.removePage(m, did);
+        if (exhausted) this.pos = { ...this.pos, i: this.pos.i + 1, cursor: "" };
+      } catch (e) {
+        // On to the next type; the next sweep retries this one.
+        this.counts(m.type).errors++;
+        this.lastError = `${m.type}: ${errorMessage(e)}`;
+        this.log(`page failed, ${this.lastError}`);
+        this.pos = { ...this.pos, i: this.pos.i + 1, cursor: "" };
+      }
+      pages++;
+    }
+  }
+
+  private counts(type: string): TypeCounts {
+    return (this.current[type] ??= { seen: 0, stale: 0, embedded: 0, removed: 0, errors: 0 });
+  }
+
+  /** One page of a marked type from the cursor. True when the type is done. */
+  private async embedPage(m: Marked, did: { embedded: number }): Promise<boolean> {
+    const rows = (await this.bolt.run(
+      `MATCH (n:\`${m.type}\`) WHERE n.node_key > $cursor
+       WITH n ORDER BY n.node_key LIMIT $page
+       RETURN ${PAGE_COLUMNS}`,
+      this.pageParams(m, { cursor: this.pos.cursor }),
+    )) as unknown as PageRow[];
+    if (rows.length === 0) return true;
+    this.counts(m.type).seen += rows.length;
+    did.embedded += await this.repair(m, rows, this.counts(m.type));
+    this.pos = { ...this.pos, cursor: rows[rows.length - 1]!.node_key };
+    return rows.length < this.pageSize;
+  }
+
+  private pageParams(m: Marked, extra: Record<string, unknown>): Record<string, unknown> {
+    return { ...extra, page: int(this.pageSize), F: m.index, V: m.vectorIndex, C: m.vectorIndex.map(embeddingColumn), L: m.label ?? null };
+  }
+
+  /** Rewrite the stale rows of a page (text, record, vector, per-field
+   *  vectors), label the unlabeled ones. Returns how many were embedded. */
+  private async repair(m: Marked, rows: PageRow[], counts: TypeCounts): Promise<number> {
+    const stale: Array<{ eid: string; text: string; fields: string[] }> = [];
+    const unlabeled: string[] = [];
+    const fieldJobs = new Map<string, Array<{ eid: string; text: string }>>();
+    for (const r of rows) {
+      const d = decideRow(m.index, r);
+      if (d === "blank") continue;
+      if (d !== "clean") stale.push({ eid: r.eid, ...d });
+      if (!r.labeled) unlabeled.push(r.eid);
+      m.vectorIndex.forEach((p, i) => {
+        const v = r.vvalues[i];
+        if (!r.vnull[i] || v === null || v === undefined) return;
+        const rendered = renderVectorField(p, String(v));
+        if (rendered) (fieldJobs.get(embeddingColumn(p)) ?? fieldJobs.set(embeddingColumn(p), []).get(embeddingColumn(p))!).push({ eid: r.eid, text: rendered });
+      });
+    }
+    counts.stale += stale.length;
+    let embedded = 0;
+    for (let i = 0; i < stale.length; i += this.batchSize) {
+      const batch = stale.slice(i, i + this.batchSize);
+      const vectors = await this.embedder.embed(batch.map((b) => b.text));
+      await this.bolt.run(
+        `UNWIND $rows AS row
+         MATCH (n) WHERE elementId(n) = row.eid
+         SET n.Data_Bank = row.text, n._search_fields_used = row.fields, n.text_embeddings = row.vector`,
+        { rows: batch.map((b, j) => ({ eid: b.eid, text: b.text, fields: b.fields, vector: vectors[j] })) },
+      );
+      counts.embedded += batch.length;
+      embedded += batch.length;
+    }
+    for (const [column, jobs] of fieldJobs) {
+      for (let i = 0; i < jobs.length; i += this.batchSize) {
+        const batch = jobs.slice(i, i + this.batchSize);
+        const vectors = await this.embedder.embed(batch.map((b) => b.text));
+        await this.bolt.run(
+          `UNWIND $rows AS row MATCH (n) WHERE elementId(n) = row.eid SET n.\`${column}\` = row.vector`,
+          { rows: batch.map((b, j) => ({ eid: b.eid, vector: vectors[j] })) },
+        );
+      }
+    }
+    if (m.label && unlabeled.length) {
+      await this.bolt.run(`UNWIND $eids AS eid MATCH (n) WHERE elementId(n) = eid SET n:\`${m.label}\``, { eids: unlabeled });
+    }
+    return embedded;
+  }
+
+  /** One page of a no-embed type: strip the vectors it holds. */
+  private async removePage(m: Marked, did: { removed: number }): Promise<boolean> {
+    const rows = await this.bolt.run(
+      `MATCH (n:\`${m.type}\`) WHERE n.node_key > $cursor
+       WITH n ORDER BY n.node_key LIMIT $page
+       RETURN elementId(n) AS eid, n.node_key AS node_key, n.text_embeddings IS NOT NULL AS embedded`,
+      { cursor: this.pos.cursor, page: int(this.pageSize) },
+    );
+    if (rows.length === 0) return true;
+    const counts = this.counts(m.type);
+    counts.seen += rows.length;
+    const eids = rows.filter((r) => r["embedded"] === true).map((r) => String(r["eid"]));
+    for (let i = 0; i < eids.length; i += this.batchSize) {
+      const batch = eids.slice(i, i + this.batchSize);
+      await this.bolt.run(`UNWIND $eids AS eid MATCH (n) WHERE elementId(n) = eid REMOVE n.text_embeddings`, { eids: batch });
+      counts.removed += batch.length;
+      did.removed += batch.length;
+    }
+    this.pos = { ...this.pos, cursor: String(rows[rows.length - 1]!["node_key"]) };
+    return rows.length < this.pageSize;
+  }
+
+  // ── between sweeps ────────────────────────────────────────────────────
+
+  /** Embed what was stamped since the last tick and carries a marked label
+   *  and no vector — one range seek on `date_added_to_graph` per page, the
+   *  index fields of every marked type read at once. A node that gets no
+   *  vector here (blank) waits for the next sweep. */
+  private async newcomers(start: number, did: { newcomers: number }): Promise<void> {
+    if (this.since === null || this.embedList.length === 0) return;
+    const until = this.now();
+    const byLabel = new Map(this.embedList.map((m) => [m.type, m]));
+    const fields = [...new Set(this.embedList.flatMap((m) => m.index))];
+    let pages = 0;
+    for (;;) {
+      if (pages > 0 && this.now() - start >= this.tickBudgetMs) return; // keep `since`; the next tick resumes
+      const rows = await this.bolt.run(
+        `MATCH (n:Data_Bank) WHERE n.date_added_to_graph > $since AND n.text_embeddings IS NULL
+         WITH n ORDER BY n.date_added_to_graph LIMIT $page
+         RETURN elementId(n) AS eid, labels(n) AS labels, n.Data_Bank AS text, [f IN $F | n[f]] AS values`,
+        { since: int(this.since), page: int(this.pageSize), F: fields },
+      );
+      pages++;
+      if (rows.length === 0) break;
+      const byType = new Map<Marked, PageRow[]>();
+      for (const r of rows) {
+        const labels = r["labels"] as string[];
+        const m = labels.map((l) => byLabel.get(l)).find((x): x is Marked => !!x);
+        if (!m) continue;
+        const all = r["values"] as unknown[];
+        const row: PageRow = {
+          eid: String(r["eid"]),
+          node_key: "",
+          text: r["text"],
+          values: m.index.map((f) => all[fields.indexOf(f)]),
+          unembedded: true,
+          labeled: !m.label || labels.includes(m.label),
+          vvalues: [],
+          vnull: [],
+        };
+        byType.set(m, [...(byType.get(m) ?? []), row]);
+      }
+      let embedded = 0;
+      const scratch: TypeCounts = { seen: 0, stale: 0, embedded: 0, removed: 0, errors: 0 }; // `current` is the sweep's
+      for (const [m, typed] of byType) embedded += await this.repair({ ...m, vectorIndex: [] }, typed, scratch);
+      this.newcomersEmbedded += embedded;
+      did.newcomers += embedded;
+      // A full page that embedded nothing is all blank or unmarked: stop,
+      // or this loop would read it again.
+      if (rows.length < this.pageSize || embedded === 0) break;
+    }
+    this.since = until;
+  }
+}
+
+function errorMessage(e: unknown): string {
+  return ((e as Error)?.message ?? String(e)).split("\n")[0]!;
 }

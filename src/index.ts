@@ -518,7 +518,8 @@ export { EdgeWriter, type EdgeInput, type EdgeWriteResult } from "./graph/edge-w
 export { SchemaResolver, EDGE_TYPES_ALLOWLIST, type NodeSchema, type EdgeSchemaMatch } from "./graph/schema-resolver.js";
 export { seedJarvisOntology, type OntologySeedReport } from "./graph/ontology-seed.js";
 export { JARVIS_ONTOLOGY, type OntologyFixture } from "./graph/fixtures/jarvis-ontology.js";
-export { MiniLMEmbedder, backfillEmbeddings, EMBEDDING_DIM, type BackfillReport } from "./graph/embeddings.js";
+export { MiniLMEmbedder, EmbeddingPass, EMBEDDING_DIM, type EmbeddingPassOptions, type EmbeddingPassStatus } from "./graph/embeddings.js";
+export { reconcileIndexLists, widenedIndex, type IndexReconcileReport } from "./graph/index-reconcile.js";
 export {
   GraphReader,
   GraphReadError,

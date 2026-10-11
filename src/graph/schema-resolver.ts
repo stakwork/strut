@@ -65,6 +65,11 @@ export interface NodeSchema {
    *  list); `["node_key"]` when unset. */
   index: string[];
   vector_index: string[];
+  /** False when the schema carries the no-embed mark (`embed: false`, a
+   *  core Schema key — `SCHEMA_CORE_PROPERTIES`): the writer composes
+   *  `Data_Bank` but computes no `text_embeddings`, and the pass removes any
+   *  vector such a node holds. */
+  embed: boolean;
   /** Attribute name → type string (`?`-prefixed = optional). Includes
    *  everything inherited via CHILD_OF. */
   attributes: Record<string, string>;
@@ -210,6 +215,7 @@ export class SchemaResolver {
       node_key: String(merged["node_key"] ?? `${type.toLowerCase()}-name`),
       index: index.length ? index : ["node_key"],
       vector_index: Array.isArray(rawVi) ? rawVi.map(String) : [],
+      embed: merged["embed"] !== false,
       attributes,
       title_key: typeof merged["title_key"] === "string" ? (merged["title_key"] as string) : undefined,
       description_key: typeof merged["description_key"] === "string" ? (merged["description_key"] as string) : undefined,
@@ -357,6 +363,7 @@ export function fromStrut(strut: StrutSchema, hidden?: { domains: Set<string>; t
     ...(strut.exact_key ? { exact_key: true } : {}),
     index: [...strut.index],
     vector_index: [...(strut.vector_index ?? [])],
+    embed: strut.embed !== false,
     attributes: { ...effectiveAttributes(strut) },
     title_key: strut.title_key,
     description_key: strut.description_key,

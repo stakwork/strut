@@ -109,6 +109,27 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     assert.ok(!(written[0]!["l"] as string[]).includes("Evalset"));
   });
 
+  it("reads the no-embed mark: a Schema's `embed: false` is a mark, not an attribute; strut's two execution records carry it in code only", async () => {
+    assert.equal((await resolver.schema("Turn"))!.embed, true, "the bundled fixture predates the jarvis PR");
+    await bolt.run(`MATCH (s:Schema {type: "Turn"}) SET s.embed = false`);
+    resolver.invalidate();
+    try {
+      const turn = (await resolver.schema("Turn"))!;
+      assert.equal(turn.embed, false);
+      assert.ok(!("embed" in turn.attributes));
+      assert.deepEqual(turn.index, ["content", "tool"], "keyword text unchanged");
+      assert.equal((await resolver.schema("StrutToolCall"))!.embed, false);
+      assert.equal((await resolver.schema("StrutTurn"))!.embed, false);
+      assert.equal((await resolver.schema("StrutRun"))!.embed, true);
+      assert.equal((await resolver.schema("Document"))!.embed, true);
+      const seeded = await bolt.run(`MATCH (s:Schema) WHERE s.type IN ["StrutToolCall", "StrutTurn"] RETURN collect(s.embed) AS e`);
+      assert.deepEqual(seeded[0]!["e"], [], "never flattened onto the Schema node (an older jarvis would read a required attribute)");
+    } finally {
+      await bolt.run(`MATCH (s:Schema {type: "Turn"}) REMOVE s.embed`);
+      resolver.invalidate();
+    }
+  });
+
   it("merges CHILD_OF ancestors, exposes index/domain, forces name optional", async () => {
     const doc = (await resolver.schema("document"))!;
     assert.equal(doc.type, "Document");

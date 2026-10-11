@@ -43,6 +43,15 @@ export interface StrutSchema {
    *  index (jarvis `vector_index`). Only the `input_q`/`output_q` search
    *  types declare this. */
   vector_index?: string[];
+  /** `false`: nodes of this type get `Data_Bank` (keyword search) but never
+   *  a `text_embeddings` vector — the execution records (`StrutToolCall`,
+   *  `StrutTurn`) are too fine-grained to search by meaning, and the pass
+   *  (`embeddings.ts`) removes any vector they hold. Strut's own rule for
+   *  its own types, never flattened onto the Schema node: an older jarvis
+   *  reads an unknown Schema key as a REQUIRED attribute and refuses every
+   *  node of the type. jarvis-typed nodes carry the same mark on their
+   *  Schema node, which the resolver reads (plans/semantic-search.md §4). */
+  embed?: false;
   icon: string;
   shape: string;
   primary_color: string;
@@ -147,6 +156,11 @@ export const SCHEMA_CORE_PROPERTIES = new Set([
   "shape", "index", "node_key", "conditional_formatting", "action", "type_description", "description",
   "display_name", "title_key", "description_key", "paid_properties", "domain", "vector_index", "volatility",
   "ref_id",
+  // The no-embed mark (plans/semantic-search.md ruling 2): `embed: false`
+  // on a Schema means its nodes keep their search text and never get a
+  // `text_embeddings` vector. In this list so the resolver reads it as a
+  // mark, not as an attribute named `embed` of type `false`.
+  "embed",
 ]);
 
 /** Attribute names a schema may not declare (jarvis reserved keys, plus the
@@ -339,6 +353,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     type: "StrutToolCall",
     node_key: "struttoolcall-run_id-path-seq",
     index: ["tool_name", "input_preview"],
+    embed: false,
     title_key: "tool_name",
     description_key: "input_preview",
     type_description: "One tool call inside a strut agent session",
@@ -381,6 +396,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     type: "StrutTurn",
     node_key: "strutturn-chat_id-turn",
     index: ["user_text_preview"],
+    embed: false,
     title_key: "user_text_preview",
     description_key: "assistant_text_preview",
     type_description: "One turn of a strut chat",

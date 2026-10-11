@@ -10,7 +10,11 @@
  *   2c. `migrateExactKeys` — one-shot re-key of the workspace nodes from the
  *       sanitized name to the exact one (hex);
  *   3. `seedStrutDomain` — schema meta-graph, constraints, indexes (§4);
- *   4. `backfillEmbeddings` — heal any NULL vectors left by a crash (§2).
+ *   3b. `reconcileIndexLists` — stale Schema `index` lists widened to the
+ *       bundled library's, once per fixture version (semantic-search.md §2);
+ *   4. the `EmbeddingPass` is STARTED (semantic-search.md §1): a timer in
+ *      this process that embeds every marked node whoever wrote it, strips
+ *      the no-embed types, and keeps up with newcomers. Nothing waits on it.
  *
  * Consumers (the `graph/*` lab steps, a future `Neo4jWorkspaceStore` and
  * run projector) call `openGraphBackend(cfg)` and share the instance.
@@ -18,7 +22,8 @@
 import { Bolt, graphConfigFromEnv, type GraphConfig } from "./bolt.js";
 import { upgradeClaimSchema, type ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
 import { EdgeWriter } from "./edge-writer.js";
-import { MiniLMEmbedder, backfillEmbeddings, type BackfillReport } from "./embeddings.js";
+import { EmbeddingPass, MiniLMEmbedder, type EmbeddingPassOptions } from "./embeddings.js";
+import { reconcileIndexLists, type IndexReconcileReport } from "./index-reconcile.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
@@ -40,6 +45,9 @@ export interface GraphBackendOptions {
    *  host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis
    *  process. Env: `STRUT_GRAPH_SEED_ONTOLOGY=1`. */
   seedOntology?: boolean;
+  /** Tuning for the embedding pass (page sizes, the tick, `autoStart`) —
+   *  tests. Not part of the cache key. */
+  pass?: EmbeddingPassOptions;
 }
 
 export interface GraphBackend {
@@ -58,7 +66,10 @@ export interface GraphBackend {
   readonly exactKeyMigration: ExactKeyMigrationReport | undefined;
   readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
   readonly ontologySeed: OntologySeedReport | undefined;
-  readonly backfill: BackfillReport | undefined;
+  readonly indexReconcile: IndexReconcileReport | undefined;
+  /** The pass, running on its timer; undefined with embeddings off or the
+   *  boot skipped. `status()` is `GET /graph/embeddings`. */
+  readonly embeddings: EmbeddingPass | undefined;
   close(): Promise<void>;
 }
 
@@ -108,7 +119,7 @@ export function openGraphBackendFromEnv(
 export async function closeGraphBackends(): Promise<void> {
   const all = [...cache.values()];
   cache.clear();
-  await Promise.all(all.map((p) => p.then((b) => b.bolt.close()).catch(() => undefined)));
+  await Promise.all(all.map((p) => p.then((b) => b.close()).catch(() => undefined)));
 }
 
 async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphBackend> {
@@ -123,7 +134,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
     let exactKeyMigration: ExactKeyMigrationReport | undefined;
     let claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
     let ontologySeed: OntologySeedReport | undefined;
-    let backfill: BackfillReport | undefined;
+    let indexReconcile: IndexReconcileReport | undefined;
     if (!opts.skipBoot) {
       // Legacy names first, so the seed below extends the renamed Schema
       // nodes instead of creating twins beside them.
@@ -159,9 +170,17 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
         console.warn(`[graph] re-keyed workspace nodes on their exact names: ${JSON.stringify(exactKeyMigration)}`);
       }
       seed = await seedStrutDomain(bolt);
-      if (embedder) backfill = await backfillEmbeddings(bolt, embedder);
+      // Not gated on `seedOntology`: a jarvis-hosted graph is the one that
+      // needs it (its Schemas predate jarvis's own widening).
+      indexReconcile = await reconcileIndexLists(bolt);
+      if (indexReconcile.status === "reconciled") {
+        console.warn(`[graph] widened stale Schema index lists to the bundled library's: ${JSON.stringify(indexReconcile.widened)}`);
+      }
     }
     const schemas = new SchemaResolver(bolt);
+    // The pass starts now and runs in the background; the old awaited
+    // backfill held the boot for as long as the sweep took.
+    const embeddings = embedder && !opts.skipBoot ? new EmbeddingPass(bolt, embedder, schemas, opts.pass) : undefined;
     const backend: GraphBackend = {
       cfg,
       bolt,
@@ -176,9 +195,11 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       exactKeyMigration,
       claimSchemaUpgrade,
       ontologySeed,
-      backfill,
+      indexReconcile,
+      embeddings,
       async close() {
         for (const [k, p] of cache) if ((await p.catch(() => null)) === backend) cache.delete(k);
+        await embeddings?.stop();
         await bolt.close();
       },
     };

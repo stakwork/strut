@@ -473,6 +473,7 @@ describe("createStrut", () => {
     const res = await strut.app.request("/graph/nodes/n-1");
     assert.equal(res.status, 501);
     assert.match(((await res.json()) as { error: string }).error, /no graph/);
+    assert.equal((await strut.app.request("/graph/embeddings")).status, 501);
   });
 
   it("exposes /steps with registered types", async () => {

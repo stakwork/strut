@@ -2000,6 +2000,16 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, properties: node.properties });
   });
 
+  // The embedding pass (plans/semantic-search.md §1) as the graph backend
+  // reports it: the sweep's position, per-type counts, the types it skips
+  // and why, the newcomer mark, the last error. `{ enabled: false }` with
+  // embeddings off. Read-only — a debugging read. 501 without a graph.
+  app.get("/graph/embeddings", async (c) => {
+    const graph = opts.graph ?? workspace.graph;
+    if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+    return c.json(graph.embeddings ? graph.embeddings.status() : { enabled: false });
+  });
+
   // ── Secrets ──────────────────────────────────────────────────────────────
   // Deployment-scoped credential store behind `ctx.services.secrets`. Values
   // are write-only over the API: GET returns NAMES + metadata only, never the

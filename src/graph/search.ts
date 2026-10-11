@@ -21,6 +21,7 @@ import { EDGE_LIVE, NODE_LIVE } from "./deletion.js";
 import { typeLabelOf } from "./edge-writer.js";
 import { renderVectorField, type Embedder } from "./node-writer.js";
 import type { SchemaResolver } from "./schema-resolver.js";
+import { GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
 import { SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
 
 // ── Constants (jarvis) ──────────────────────────────────────────────────────
@@ -56,8 +57,13 @@ export { SCHEMA_CORE_PROPERTIES };
 const SCHEMA_PARENT_PROPERTIES_TO_IGNORE = new Set(["type_description"]);
 
 const DATA_BANK_FULLTEXT_INDEX_V2 = "data_bank_attribute_index_v2";
-const DOMAIN_ALL_VECTOR_INDEX = "domain_all_vector_index";
 const LUCENE_SPECIAL = new Set('+-!(){}[]^"~*?:\\/'.split(""));
+
+/** A typed search's semantic over-fetch (plans/semantic-search.md ruling
+ *  5): the database cannot filter a vector query, so `type` is applied
+ *  after the nearest-k cut. Start at `cap × start`, multiply by `growth`
+ *  until `cap` survive or `k` reaches `maxK`. Constants to tune on a swarm. */
+export const TYPED_OVERFETCH = { start: 10, growth: 4, maxK: 2000 } as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -152,6 +158,54 @@ export class GraphReadError extends Error {
 }
 
 // ── Pure helpers (exported for tests) ───────────────────────────────────────
+
+export interface RouteInput {
+  /** The explicit `domains` filter (lowercased suffixes). */
+  domains: string[];
+  /** For a typed search: each requested type → the lowercased domain its
+   *  Schema's label names, or null (no domain, or hidden). */
+  typeDomains?: Map<string, string | null>;
+  visibleDomains: string[];
+  /** Index names the database has (`SHOW INDEXES`, read once up front). */
+  existing: Set<string>;
+  suffix: "_attribute_index_v2" | "_vector_index";
+  global: string;
+}
+
+/**
+ * Which indexes one retriever reads (jarvis `_resolve_index_names`, with
+ * `type` as a reason to route): an explicit `domains` filter → those
+ * domains'; a typed search → the union of the requested types' domain
+ * indexes, a type with no domain (or a hidden one, or a domain whose index
+ * is absent) contributing the global index instead; neither → the global
+ * index. When the global index is absent (jarvis never mounted it, a strut
+ * DB seeded without it) the visible domains' union stands in, for fulltext
+ * and vectors alike. The domain route is what lets a typed search see a
+ * rare type: `Endpoint` is a few hundred of ~40k vectors in
+ * `Domain_codeartifact`, and a few hundred of ~330k globally.
+ */
+export function routeIndexes(r: RouteInput): string[] {
+  const domain = (d: string) => `domain_${d}${r.suffix}`;
+  const fallback = () => (r.existing.has(r.global) ? [r.global] : r.visibleDomains.map(domain));
+  let out: string[];
+  if (r.domains.length) out = r.domains.map(domain);
+  else if (r.typeDomains) {
+    out = [];
+    for (const d of r.typeDomains.values()) out.push(...(d && r.existing.has(domain(d)) ? [domain(d)] : fallback()));
+  } else out = fallback();
+  return [...new Set(out)].filter((i) => r.existing.has(i));
+}
+
+/** Widen `k` until `cap` hits survive the caller's filter or the ceiling
+ *  is reached; `run` queries the index with the given `k`. */
+export async function overfetch<T>(cap: number, run: (k: number) => Promise<T[]>, o: { start: number; growth: number; maxK: number } = TYPED_OVERFETCH): Promise<T[]> {
+  let k = Math.min(cap * o.start, o.maxK);
+  for (;;) {
+    const hits = await run(k);
+    if (hits.length >= cap || k >= o.maxK) return hits;
+    k = Math.min(k * o.growth, o.maxK);
+  }
+}
 
 export function escapeLucene(value: string): string {
   let out = "";
@@ -612,17 +666,12 @@ export class GraphReader {
       const filter = clauses.join(" AND ");
       const cap = fetchLimit(limit, skip);
 
-      // Index routing (`_resolve_index_names`): none → global, one → domain,
-      // many → per-domain union. When the global index is absent (jarvis
-      // never mounted, or Neo4j too old for the multi-label vector index),
-      // fall back to the per-domain union over visible domains — jarvis does
-      // this for vectors; we do it for fulltext too so a strut-only DB needs
-      // no global index. Existence is read once, up front.
+      // Index routing — `routeIndexes` above. Existence is read once, up
+      // front; a typed search routes through the types' domain indexes.
       const existing = new Set((await this.rows(tx, `SHOW INDEXES YIELD name RETURN name`)).map((r) => String(r["name"])));
-      const route = (suffix: string, global: string) =>
-        domains.length ? domains.map((d) => `domain_${d}${suffix}`) : existing.has(global) ? [global] : visibleDomains.map((d) => `domain_${d}${suffix}`);
-      const ftIndexes = route("_attribute_index_v2", DATA_BANK_FULLTEXT_INDEX_V2).filter((i) => existing.has(i));
-      const vecIndexes = route("_vector_index", DOMAIN_ALL_VECTOR_INDEX).filter((i) => existing.has(i));
+      const typeDomains = types?.length ? await this.typeDomains(types) : undefined;
+      const ftIndexes = routeIndexes({ domains, typeDomains, visibleDomains, existing, suffix: "_attribute_index_v2", global: DATA_BANK_FULLTEXT_INDEX_V2 });
+      const vecIndexes = routeIndexes({ domains, typeDomains, visibleDomains, existing, suffix: "_vector_index", global: GLOBAL_VECTOR_INDEX });
 
       let fulltext: Hit[] = [];
       let semantic: Hit[] = [];
@@ -680,7 +729,11 @@ export class GraphReader {
       if (q && this.opts.embedder && vecIndexes.length) {
         semantic = await layer("semantic", async () => {
           const [embedding] = await this.opts.embedder!.embed([q]);
-          return runVector(vecIndexes, cap, embedding!);
+          // `type` is a WHERE after the nearest-k cut (the database cannot
+          // filter a vector query), so a typed search asks for more and
+          // widens until `cap` survive — the query embedded once.
+          if (!types?.length) return runVector(vecIndexes, cap, embedding!);
+          return overfetch(cap, (k) => runVector(vecIndexes, k, embedding!));
         }, []);
         if (semantic.length >= cap) semTruncated = true;
       }
@@ -831,6 +884,18 @@ export class GraphReader {
     for (const [k, v] of Object.entries(split.attributes)) if (!own.has(k)) inherited[k] = v;
     split.inherited_attributes = inherited;
     return split;
+  }
+
+  /** Each canonical type → the lowercased domain its Schema's label names
+   *  (the resolver's: null for a hidden type or domain, or no domain; null
+   *  for every type without a resolver). */
+  private async typeDomains(types: string[]): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    for (const t of types) {
+      const label = this.opts.resolver ? (await this.opts.resolver.schema(t))?.domainLabels[0] : undefined;
+      out.set(t, label ? label.slice("Domain_".length) : null);
+    }
+    return out;
   }
 
   /** Resolve each type name to its canonical label; unresolved kept as-is. */
