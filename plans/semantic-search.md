@@ -3,14 +3,18 @@
 > **Status (2026-10-11): PROPOSED, nothing built.** Written after a seeded
 > `explore` run on swarm38 never used the graph (job run `1791735838490` →
 > explore run `1791735843683`, a question about hive's GitHub integration:
-> 0 graph calls, 16 file reads). Every number below was read from swarm38's
-> graph that day (read-only Cypher through stakgraph's `/api/hive/query`) or
-> from this checkout (`d9eaec4`, main). The choices to confirm before
-> building are under "Proposed rulings". Companions this stands on:
-> `jarvis-graph-compat.md` (§2 embeddings parity — MiniLM, `Data_Bank`, the
-> `index` fields; the bundled ontology seed), `generic-storage.md` (the
-> label registry). No host changes: it reaches a swarm with the next strut
-> pin in mcp.
+> 0 graph calls, 16 file reads), and revised the same day after review:
+> execution records (`Turn`, `StrutToolCall`, `StrutTurn`) get no vector
+> (decided); the mark for that lives in strut's code while jarvis is on a
+> graph; the pass writes the domain label strut's writer would; and jarvis's
+> Schema API is not the route to current `index` lists (§2 says why). Every
+> number below was read from swarm38's graph that day (read-only Cypher
+> through stakgraph's `/api/hive/query`), from jarvis-backend (`04317241`),
+> or from this checkout (`d9eaec4`, main). The choices still to confirm are
+> under "Rulings". Companions this stands on: `jarvis-graph-compat.md` (§2
+> embeddings parity — MiniLM, `Data_Bank`, the `index` fields; the bundled
+> ontology seed), `generic-storage.md` (the label registry). No host
+> changes: it reaches a swarm with the next strut pin in mcp.
 
 ## Problem
 
@@ -51,7 +55,11 @@ measured:
    is add-only on both sides, so the live node never changed. 47 live types
    declare a narrower `index` than the library (56 Schema nodes: swarm38
    holds duplicates for nine types): the code types, Person/Topic/Episode/…,
-   and `Turn` (`tool` → `content, tool`).
+   and `Turn` (`tool` → `content, tool`). Execution records are embedded
+   too: 410,738 of `Turn`'s 542,524 nodes carry a vector of a tool name
+   (`"shell"`, `"edit"`), and strut's own writer embeds every
+   `StrutToolCall` it projects (37,128 of 37,128) from `tool_name` +
+   `input_preview`.
 3. **Search skips the one index that needs no label.** Both
    `schema-seed.ts` and `ontology-seed.ts` create `text_embeddings_vector_index`
    on `Data_Bank` (swarm38 has it, from jarvis); `search.ts` never reads it.
@@ -70,45 +78,69 @@ Everything semantic search needs is created and kept current by strut,
 from the `:Schema` meta-graph, on any Neo4j 5: a jarvis-hosted graph today,
 a graph with no jarvis tomorrow. Whoever writes a node — strut, stakgraph's
 ingest, an import — it becomes searchable by meaning within minutes,
-without that writer knowing about embeddings.
+without that writer knowing about embeddings. One source of truth (the live
+Schema's `index`), one rule (MiniLM over the text of those fields, the rule
+jarvis, strut's writer and the pass share), one repair job (the pass).
 
-## Proposed rulings
+## Rulings
 
-1. **The mark is the Schema's `index`.** It is already the declaration
+1. **The text is the Schema's `index`.** It is already the declaration
    both jarvis and strut read for "the search text of a node of this type"
    (`get_search_fields_for_node`; strut's `searchFieldsFor` /
    `buildSearchText` in `src/graph/node-writer.ts`). A type whose Schema
-   declares `index` is embedded, from those fields; a type without one is
-   not — no kitchen-sink fallback in the pass. There is no other opt-in
-   flag in either codebase, and most types declare `index`: on swarm38,
-   193 of 255. The 62 that do not (61 `Cloud`-domain Advisor*/Kn* types and
-   `Content`) and types with no Schema node at all (`Context`, `Chunk`) are
-   skipped. Opting a type out = removing its `index`.
-2. **strut widens a live `index` to its library's, never narrows it.** At
-   backend open, on every graph (jarvis-hosted included): a live Schema
-   whose `index` is non-empty and a strict subset of the bundled library's
-   for that type gets the library's list. A type the library does not know,
-   a live `index` holding a field the library lacks (5 on swarm38: Commit,
-   Contributor, ProposedFix, AgentSession, Prompt), and an absent `index`
-   (ruling 1's opt-out; `Content` stays unmarked) are left alone. The
-   library is jarvis's own, so this is the value jarvis would set.
-3. **One vector index, filters in the query.** The semantic retriever reads
+   declares `index` is embedded from those fields. The pass never falls
+   back to jarvis's catch-all text (every property, joined) for a type
+   without one: on swarm38, 193 of 255 types declare `index`, and the 62
+   that do not (61 `Cloud`-domain Advisor*/Kn* types and `Content`) and the
+   types with no Schema node (`Context`, `Chunk`) are skipped.
+2. **Execution records get no vector — decided (Evan, 2026-10-11):
+   `Turn`, `StrutToolCall`, `StrutTurn`.** Too fine-grained to search by
+   meaning. `AgentSession` and `StrutAgentSession` (one per agent run) stay
+   embedded. The keyword text (`Data_Bank`) stays. strut's writer stops
+   embedding `StrutToolCall` and `StrutTurn`, and the pass removes the
+   vectors these types already have (410,738 on `Turn`, 37,128 on
+   `StrutToolCall`). Where the mark lives:
+   - **In strut's code while jarvis is on a graph:** a strut-only field on
+     the two `StrutSchema`s, never written to the Schema node (as
+     `exact_key` is), and for `Turn` — a jarvis-library type stakgraph
+     writes — a strut-side entry keyed by type name beside the bundled
+     library.
+   - **Not on the Schema node yet.** jarvis reads every Schema property
+     outside its `SCHEMA_CORE_PROPERTIES` as an attribute declaration, and
+     strut mirrors that list, so an `embed: false` there would read as an
+     attribute named `embed` of type `false`. Once jarvis is gone the mark
+     moves onto the Schema node (one key added to strut's core list);
+     adding the key to jarvis's list would allow it sooner.
+   - **Not `About.hidden_types`.** That hides a type from untyped search
+     and withholds its `Domain_*` label; strut's resolver follows it, and
+     strut's soft delete is scoped by `Domain_strut`.
+   - **Not removing `index`.** To jarvis and to strut's writer, a type with
+     no `index` gets the catch-all text: they would embed more, not less,
+     and the keyword text would change with it.
+3. **strut brings stale `index` lists up to the library by writing them
+   directly.** At backend open, on every graph (jarvis-hosted included): a
+   live Schema whose `index` is non-empty and a strict subset of the bundled
+   library's for that type gets the library's list. A type the library does
+   not know, a live `index` holding a field the library lacks (5 on swarm38:
+   Commit, Contributor, ProposedFix, AgentSession, Prompt), and an absent
+   `index` (the catch-all, a different meaning) are left alone. The library
+   is jarvis's own, so these are the values jarvis would set — but never
+   through jarvis's Schema API (§2).
+4. **The pass is the one repair job, and it writes what strut's writer
+   would have.** For a node of a marked type that has no vector, or whose
+   vector is missing a field that now has a value: the search text
+   (`Data_Bank`), the vector, `_search_fields_used`, and the domain label —
+   the resolver's, which follows jarvis's rule (none for a hidden type or
+   domain), as `prepareMany` already puts on every node strut writes. The
+   label is for jarvis's search: hive's `kgSearch` and mcp's `graph_agent`
+   tools and `jarvis/*` steps read the domain vector indexes. strut's
+   search does not read it, and once jarvis is gone nothing does. The pass
+   runs inside the strut process, at backend open and on a timer. Hidden
+   domains are embedded too: hiding stays a search-time filter.
+5. **One vector index, filters in the query.** The semantic retriever reads
    `text_embeddings_vector_index`; `type`, hidden domains and `domains` are
    `WHERE` filters, with over-fetch to make up for Neo4j 5 filtering after
-   the nearest-k cut. Search stops reading `Domain_*` labels. strut keeps
-   writing `Domain_strut` on its own nodes (its soft delete is scoped by
-   it); it labels nothing it did not write.
-4. **The pass runs inside the strut process**, at backend open (as the
-   boot backfill does today) and then on a timer, within a time budget per
-   tick. Hidden domains are embedded too: hiding stays a search-time filter,
-   so un-hiding needs no backfill.
-5. **The first convergence is accepted as a one-off background cost.**
-   Widening (ruling 2) makes most of swarm38 stale once — at most ~687k
-   nodes (the node counts of the 47 widened types), 542k of them `Turn`,
-   whose turns would be embedded from their `content` instead of the tool
-   name. Round-robin across types (§1) means the code types finish in
-   minutes while `Turn` takes the rest. The alternative is to widen only
-   `CodeArtifact` types in the first rollout.
+   the nearest-k cut. strut's search stops reading `Domain_*` labels.
 
 ## 1. The pass — `src/graph/embeddings.ts`
 
@@ -141,11 +173,15 @@ already turns a string `index` into a one-item list):
   under today's `index: "name"` and all 13,581 under the library's
   `[name, summary, description]`.
 
-- **Writes** the three properties jarvis writes, nothing new: `Data_Bank`
-  (the text, from `buildSearchText` — the writer's composition and
-  jarvis's), `text_embeddings`, `_search_fields_used`. Overwriting
-  stakgraph's name-only `Data_Bank` also feeds `data_bank_full_index`
-  (fulltext on that property) the richer text.
+- **Writes** what strut's writer writes, nothing new: `Data_Bank` (the
+  text, from `buildSearchText` — the writer's composition and jarvis's),
+  `text_embeddings`, `_search_fields_used`, and the resolver's domain label
+  when the node lacks it. Overwriting stakgraph's name-only `Data_Bank` also
+  feeds `data_bank_full_index` (fulltext on that property) the richer text.
+- **No-embed types** (ruling 2) are never embedded, and a vector found on
+  one is removed (`REMOVE n.text_embeddings`; `Data_Bank` stays). A standing
+  rule, not a one-off, so a `Turn` some other writer embeds loses its vector
+  on the next tick.
 - **No loop.** A value the query counts as absent (blank, or a list) is
   never required to be in `_search_fields_used`, so a written node is not
   stale again.
@@ -155,11 +191,11 @@ already turns a string `index` into a one-item list):
 - **Schedule.** Once at backend open, then every minute. Each tick takes
   one batch (100) from each type that has work, round-robin, until 15 s
   are spent. A type found clean is checked again after 15 minutes, not
-  every tick: a clean check of `Turn` scans 542k nodes. One pass at a time
-  per backend (`openGraphBackend` is cached per process). Constants, not
-  settings, until a swarm says otherwise. One log line per tick: embedded
-  per type, types still dirty. `STRUT_GRAPH_EMBEDDINGS=off` turns it off
-  with the embedder.
+  every tick: a clean check of a big type is a scan of all its nodes. One
+  pass at a time per backend (`openGraphBackend` is cached per process).
+  Constants, not settings, until a swarm says otherwise. One log line per
+  tick: embedded and removed per type, types still dirty.
+  `STRUT_GRAPH_EMBEDDINGS=off` turns it off with the embedder.
 - **Not caught:** an edit to a field that was already embedded (same
   fields, new words). strut's own writer re-embeds on every write; another
   writer's edit keeps the old vector. If that matters, add a slow cursor
@@ -168,11 +204,11 @@ already turns a string `index` into a one-item list):
 
 **Throughput.** strut's `MiniLMEmbedder`, measured on an M4 Max: ~1,900
 texts/s at ~25 tokens, ~110/s at the 256-token cap. A swarm's CPU is
-slower; measure there before trusting the convergence estimate. Rough
-swarm38 numbers at a third of those rates and the 25% duty cycle above:
-the code types (~40k nodes, missing or widened) take minutes; widened
-`Turn` (542k long texts) is about four CPU-hours, a day of background
-work.
+slower; measure there before trusting these estimates. With the execution
+records out, the first catch-up on swarm38 is at most ~144k nodes (the 47
+widened types without `Turn`), the code types (~40k) first: at a third of
+the M4 rates and the 25% duty cycle above, the code is done in minutes and
+the rest in an hour or a few. The ~448k vector removals are writes only.
 
 ## 2. The Schema reconcile — `src/graph/ontology-seed.ts`
 
@@ -182,16 +218,33 @@ it: for each live `:Schema` whose type the bundled library has, normalize
 `index` (string → list), and set the library's list when the live one is
 non-empty and a strict subset. It only ever touches `index`, needs no
 ledger (the subset test is idempotent), and returns what it widened for
-the boot log. The pass
-then sees every node of a widened type whose new fields hold a value as
-stale — no vector migration of its own.
+the boot log. The pass then sees every node of a widened type whose new
+fields hold a value as stale — no vector migration of its own.
 
-On a jarvis-hosted graph, jarvis also reads `index`: for the text of its
-own writes (the same composition, so the same vectors) and as the
-attribute allowlist of its fulltext indexes. A jarvis restart may therefore
-rebuild an attribute index such as `domain_codeartifact_attribute_index_v2`.
-These are the lists jarvis's own library already declares; to verify on a
-throwaway jarvis graph before the first swarm.
+**Why not jarvis's Schema API.** Updating `index` through jarvis (`PUT
+/schema/:ref_id` → `update_schema`) does re-embed: when the index changed,
+`migrate_existing_data_bank_index` rebuilds `Data_Bank` and the vector of
+every node of the type, stakgraph's never-embedded ones included. It is
+still not the route:
+
+- it runs inside the request, encodes one node at a time and writes
+  nothing until the whole type is done — minutes for Function's 15.5k
+  nodes on a swarm CPU;
+- every Schema update also runs `sync_indexes_for_schema`, which drops and
+  recreates jarvis's shared keyword index over all of `Data_Bank` (~985k
+  nodes on swarm38) — once per type, about fifteen times for the code types;
+- it fixes the nodes that exist at that moment; stakgraph's next ingest
+  writes unembedded nodes again;
+- it adds no `Domain_*` label, so jarvis's own search still misses the code
+  added since May.
+
+Written directly, the new `index` triggers nothing in jarvis: it has no
+repair job (its embedding worker only drains the queue its own API writes
+fill; its startup backfill is a migration-tracked one-shot that ran on
+Apr 11). jarvis uses the new lists for nodes later written through its API,
+composing the same text the pass does. The next Schema update anyone makes
+through jarvis's API rebuilds its keyword index from the Schemas as they
+then are — the lists jarvis's own library declares.
 
 ## 3. Search — `src/graph/search.ts`
 
@@ -218,7 +271,8 @@ throwaway jarvis graph before the first swarm.
 | `index` lists as current as the library | the reconcile (§2) | new |
 | `text_embeddings_vector_index`, `data_bank_attribute_index_v2` | `schema-seed.ts`, `ontology-seed.ts` | exists |
 | a vector on every marked node, whoever wrote it | the pass (§1) | new |
-| `Domain_*` labels | nobody (search no longer reads them) | — |
+| the no-embed mark | strut's code; the Schema node once jarvis is gone | new |
+| `Domain_*` labels | strut's writer (exists) and the pass (new); nothing reads them once jarvis is gone | — |
 
 ## Tests
 
@@ -227,13 +281,18 @@ Live, `npm run test:graph` (throwaway Neo4j):
 - A node written raw over bolt as stakgraph writes one (`Function:Data_Bank`,
   `name` + `description`, `Data_Bank` = the name, no label, no vector) is
   embedded by one pass: `Data_Bank` becomes `name\ndescription`,
-  `_search_fields_used` `[name, description]`. A description added later
-  re-embeds it. An unmarked type and a type with no Schema node are left
-  alone. A blank or list-valued index field does not loop: a second pass
-  writes nothing.
+  `_search_fields_used` `[name, description]`, and it gains
+  `Domain_codeartifact`. A description added later re-embeds it. An
+  unmarked type and a type with no Schema node are left alone. A blank or
+  list-valued index field does not loop: a second pass writes nothing.
+- No-embed: a `StrutToolCall` strut's writer projects has `Data_Bank` and
+  no vector; a `Turn` holding a vector loses it on the next pass and is
+  never embedded.
+- Labels: the pass adds the label the resolver computes, and none for a
+  hidden type or domain.
 - The reconcile widens a live `index: "name"` to the library's list, leaves
-  a live `index` with an extra field and a type the library lacks alone, and
-  writes nothing on a second run.
+  a live `index` with an extra field, an absent `index` and a type the
+  library lacks alone, and writes nothing on a second run.
 - Search finds an unlabeled `Function` by `q` with `type: Function` among
   nearer decoys of another type (fake embedder with chosen vectors), so the
   over-fetch is exercised; hidden-domain types stay out; `domains` filters.
@@ -248,8 +307,10 @@ the over-fetch widening stops at `cap` survivors or the ceiling.
 1. Before enabling the timer, run the stale query as a `count` per type and
    check it against "Problem" above.
 2. After deploy: the question above, `type: Function,Endpoint`, returns
-   `resolveWorkspaceAccess` / `validateWorkspaceAccess` in the top five.
-   Then rerun the 2026-10-11 explore question.
+   `resolveWorkspaceAccess` / `validateWorkspaceAccess` in the top five,
+   through strut's `graph/graph-search` and through jarvis's search (the
+   code since May now carries its label). `Turn` and `StrutToolCall` hold
+   no vectors. Then rerun the 2026-10-11 explore question.
 3. Only then revisit the explore prompt: stakgraph branch
    `feature/explore-graph-first-search` (`c31b98fe`, unpushed — "begin with
    one graph search") made one search and went back to grep. Rerun it on a
@@ -257,12 +318,13 @@ the over-fetch widening stops at `cap` survivors or the ceiling.
 
 ## Not doing
 
+- **Healing through jarvis's Schema API.** A one-shot with the costs in §2;
+  the pass is needed anyway for whatever is written next.
 - **stakgraph's BGE `embeddings` as a third retriever.** A second model in
   strut, and a vector of the code body; a question matches a written
   description better. Adds nothing once §1 runs.
 - **Per-type vector indexes.** The escape hatch in §3, if measured recall
   says so.
-- **Maintaining `Domain_*` labels** on nodes strut did not write.
 - **The keyword half.** A question already falls back to a fuzzy any-word
   match when the every-word query finds nothing; whether that fallback
   should weigh less than the semantic half is a tuning question after this
@@ -274,10 +336,6 @@ the over-fetch widening stops at `cap` survivors or the ceiling.
 
 ## Open questions
 
-- **`Turn`.** Widened, its 542k turns are embedded from what the agent
-  said (searchable by meaning; about four CPU-hours, once). Unmarked
-  (`index` removed), the pass skips it and its old `tool` vectors stay.
-  Default: widen, since that is what the library says.
 - **Two strut processes on one graph** would both run the pass. The writes
   are idempotent, so this is wasted CPU, not corruption; the scheduler has
   the same single-process stance.
