@@ -25,6 +25,7 @@ export default defineStep({
     "Search the knowledge graph for nodes of any type it holds — what this deployment ingested (on a swarm: the code parsed from its repositories — File, Function, Endpoint, … with written descriptions — plus documents, concepts, tasks, …) and strut's own workflows, steps, runs and chats. " +
     "Narrow with `type` to find one kind (e.g. 'Function,File,Endpoint' for code). " +
     "Leave test or mock code out by path with `exclude`. " +
+    "Keep only results tied to a kind of node by an edge with `linked`. " +
     "Provide at least one of `q`, `input_q`, `output_q` — they can be combined, each acting as its own " +
     "retriever fused into one ranked result set. " +
     "Each result includes an `edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
@@ -66,6 +67,14 @@ export default defineStep({
           "For a question about how the code works, leaving test code out is usually right — `__tests__,test,tests,spec,*.test.*,*.spec.*` — " +
           "and add a repository's own mock or fixture directories once you see them in results. Results with no `file` are never left out.",
       ),
+    linked: z
+      .string()
+      .optional()
+      .describe(
+        "Keep only results with an edge of a type to a node of a type: `EDGE>Type` for an edge from the result (`MODIFIES>File` — a Concept that summarizes code files), " +
+          "`EDGE<Type` for one into it (`TOUCHES<PullRequest`). Comma-separated: a result passes with any of them. " +
+          "Each result's `edges` map shows the edge types a node has.",
+      ),
     limit: z.number().optional().default(10).describe("Maximum number of results to return"),
     domains: z
       .string()
@@ -90,6 +99,7 @@ export default defineStep({
         types: splitList(cfg.type),
         domains: splitList(cfg.domains),
         exclude: splitList(cfg.exclude),
+        linked: splitList(cfg.linked),
         namespace: cfg.namespace,
         limit: cfg.limit ?? 10,
         // Per-node {EDGE_TYPE: count} map inline, so connectivity + hop
