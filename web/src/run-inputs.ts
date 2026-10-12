@@ -15,6 +15,13 @@
 // `input?.X`, `input.X ? … : …` — and required when any reference is bare.
 // Only text inside `{{ … }}` counts: prose that happens to say "input.url"
 // (an agent prompt explaining the workflow to itself) is not a reference.
+//
+// An input that graph/graph-get resolves BY NAME (`name: "{{ input.x }}"` with
+// a literal `node_type`) is a node name: `nodeLookups` types it with that
+// node type and ConfigField offers a typeahead over graph-search. The step's
+// schema says which field is a name and which sibling holds the type
+// (`FieldDesc.lookup`); the YAML declares nothing. Both the inferred form and
+// a declared `input:` block get it (`applyLookups`).
 
 import type { FieldDesc, InputFieldDef } from "./api";
 import type { StepData } from "./flow-to-canvas";
@@ -28,6 +35,8 @@ export interface InputBinding {
 
 /** A config slot that is exactly one `{{ input.X }}` template and nothing else. */
 const SINGLE_INPUT_RE = /^\s*\{\{\s*input\.([a-zA-Z_$][\w$]*)\s*\}\}\s*$/;
+/** A config slot that is exactly one `{{ params.X }}` template and nothing else. */
+const SINGLE_PARAM_RE = /^\s*\{\{\s*params\.([a-zA-Z_$][\w$]*)\s*\}\}\s*$/;
 /** Every `{{ … }}` segment of a template string. */
 const SEGMENT_RE = /\{\{([\s\S]*?)\}\}/g;
 /** An `input.X`, `input?.X` or `input["X"]` reference inside an expression. */
@@ -93,6 +102,57 @@ export function bindingsFromInputBlock(block: Record<string, InputFieldDef>): In
   }));
 }
 
+/** The literal a config slot holds: plain text, or a `{{ params.X }}` the
+ *  workflow's params answer with a string. Anything else — an input, an
+ *  expression, a param that is not a string — is undefined. */
+export function literalOf(raw: unknown, params?: Record<string, unknown> | null): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  if (!raw.includes("{{")) return raw.trim() || undefined;
+  const m = raw.match(SINGLE_PARAM_RE);
+  if (!m) return undefined;
+  const v = params?.[m[1]!];
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+/**
+ * Input key → the node type its value names. An input that is exactly the
+ * `{{ input.X }}` of a field a step's schema marks `lookup` (graph/graph-get's
+ * `name`: "the node's name; the sibling `node_type` holds its type") names a
+ * node — when that sibling resolves to a literal, written out or through a
+ * `{{ params.X }}` the workflow's params answer. The first resolution wins.
+ * Nothing in the YAML declares it: any workflow that looks a node up by name
+ * gets the typeahead.
+ */
+export function nodeLookups(
+  steps: StepData[],
+  schemaFor: (type: string) => FieldDesc[] | undefined,
+  params?: Record<string, unknown> | null,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const step of allSteps(steps)) {
+    const fields = schemaFor(step.type) ?? [];
+    const config: Record<string, unknown> = step.config ?? {};
+    for (const field of fields) {
+      if (!field.lookup) continue;
+      const raw = config[field.name];
+      const m = typeof raw === "string" ? raw.match(SINGLE_INPUT_RE) : null;
+      if (!m) continue;
+      const type = literalOf(config[field.lookup.typeField], params);
+      if (type && !out.has(m[1]!)) out.set(m[1]!, type);
+    }
+  }
+  return out;
+}
+
+/** The bindings with `nodeType` on every free-text field a lookup names — the
+ *  declared `input:` block's bindings and the inferred ones alike. */
+export function applyLookups(bindings: InputBinding[], lookups: Map<string, string>): InputBinding[] {
+  return bindings.map((b) => {
+    const type = lookups.get(b.inputKey);
+    return type && b.field.kind === "string" ? { ...b, field: { ...b.field, nodeType: type } } : b;
+  });
+}
+
 /** Distinct step types in the flow — the schemas the popover wants to fetch. */
 export function stepTypesIn(steps: StepData[]): string[] {
   const types = new Set<string>();
@@ -109,6 +169,7 @@ export function stepTypesIn(steps: StepData[]): string[] {
 export function deriveInputBindings(
   steps: StepData[],
   schemaFor: (type: string) => FieldDesc[] | undefined,
+  params?: Record<string, unknown> | null,
 ): InputBinding[] {
   const order: string[] = []; // first-seen order
   const typed = new Map<string, FieldDesc>(); // key → borrowed field (first exact slot wins)
@@ -153,8 +214,8 @@ export function deriveInputBindings(
     const base: FieldDesc = typed.get(key) ?? { name: key, kind: "string", required: false };
     return { inputKey: key, field: { ...base, required: required.has(key) } };
   };
-  return [
-    ...order.filter((k) => required.has(k)).map(toBinding),
-    ...order.filter((k) => !required.has(k)).map(toBinding),
-  ];
+  return applyLookups(
+    [...order.filter((k) => required.has(k)).map(toBinding), ...order.filter((k) => !required.has(k)).map(toBinding)],
+    nodeLookups(steps, schemaFor, params),
+  );
 }

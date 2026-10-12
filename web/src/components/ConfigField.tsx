@@ -35,6 +35,37 @@ function useSuggestions(kind: api.FieldDesc["suggest"]): Suggestion[] | null {
   }, [kind]);
   return items;
 }
+// A node-name typeahead (`FieldDesc.nodeType`, set by run-inputs.ts for an
+// input a graph read resolves by name): the names of that type matching what
+// was typed so far, via graph-search, debounced. Free text stays — a name the
+// search does not know is submitted as typed — so a graphless deployment just
+// gets no suggestions.
+function useNodeSuggestions(nodeType: string | undefined, text: string): Suggestion[] | null {
+  const [items, setItems] = useState<Suggestion[] | null>(null);
+  useEffect(() => {
+    if (!nodeType) {
+      setItems(null);
+      return;
+    }
+    const q = text.trim();
+    if (!q) {
+      setItems([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api.searchNodes(nodeType, q).then((hits) => {
+        if (cancelled) return;
+        setItems(hits.map((h) => ({ value: h.name, label: h.description ? `${h.name} — ${h.description.slice(0, 80)}` : h.name })));
+      });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [nodeType, text]);
+  return items;
+}
 // ── Config Field Renderer ──────────────────────────────────────────────────
 
 // A select with `FieldDesc.other` (the builder's questions) ends in
@@ -50,8 +81,9 @@ export function ConfigField(props: {
 }) {
   const { field, value, onChange } = props;
   const label = `${field.label ?? humanize(field.name)}${field.required ? "" : " (optional)"}`;
-  // Hooks run unconditionally; only string fields carry a `suggest`.
+  // Hooks run unconditionally; only string fields carry a `suggest` or a `nodeType`.
   const suggestions = useSuggestions(field.kind === "string" ? field.suggest : undefined);
+  const nodeSuggestions = useNodeSuggestions(field.kind === "string" ? field.nodeType : undefined, typeof value === "string" ? value : "");
   // "Other…" chosen but nothing typed yet — indistinguishable from "no pick" by value alone.
   const [otherOpen, setOtherOpen] = useState(false);
 
@@ -198,8 +230,11 @@ export function ConfigField(props: {
     );
   }
 
-  // Default: string (with a datalist when the field names a suggestion catalog)
-  const listId = suggestions ? `suggest-${field.name}` : undefined;
+  // Default: string (with a datalist when the field names a suggestion
+  // catalog, or the names of the node type it looks up)
+  const options = nodeSuggestions ?? suggestions;
+  const listId = options ? `suggest-${field.name}` : undefined;
+  const placeholder = field.default != null ? `default: ${field.default}` : field.nodeType ? `${field.nodeType} name` : undefined;
   return (
     <div class="flyout-field">
       <label title={field.description}>{label}</label>
@@ -207,12 +242,13 @@ export function ConfigField(props: {
         type="text"
         list={listId}
         value={value != null ? String(value) : ""}
-        placeholder={field.default != null ? `default: ${field.default}` : undefined}
+        placeholder={placeholder}
+        autocomplete={field.nodeType ? "off" : undefined}
         onInput={(e) => onChange((e.target as HTMLInputElement).value)}
       />
-      {suggestions && suggestions.length > 0 && (
+      {options && options.length > 0 && (
         <datalist id={listId}>
-          {suggestions.map((s) => (
+          {options.map((s) => (
             <option key={s.value} value={s.value}>{s.label}</option>
           ))}
         </datalist>

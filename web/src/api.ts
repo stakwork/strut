@@ -552,6 +552,12 @@ export interface FieldDesc {
   description?: string;
   /** Free-text field with a suggestion catalog ("llm-models" → listLlmModels). */
   suggest?: "llm-models";
+  /** From a step's schema: the value is a graph node's NAME and the sibling
+   *  field `typeField` holds its type (graph/graph-get's `name`). */
+  lookup?: { typeField: string };
+  /** Resolved for a run input (run-inputs.ts): the value names a node of
+   *  this type — ConfigField offers a typeahead over graph-search. */
+  nodeType?: string;
 }
 
 export interface StepSchemaResponse {
@@ -739,6 +745,30 @@ export interface LlmModelsResponse {
 }
 
 export const listLlmModels = () => fetchJSON<LlmModelsResponse>("/llm/models");
+
+/** One hit of GET /graph/names (the fields the typeahead shows). */
+export interface NodeHit {
+  ref_id: string;
+  name: string;
+  node_type: string;
+  description?: string;
+}
+
+/** Nodes of `type` whose name contains `q`, names starting with it first —
+ *  the Run popover's typeahead for an input that graph/graph-get resolves by
+ *  name (`FieldDesc.nodeType`). A read route of the server's own, never a
+ *  step the workflow names. `[]` when the deployment has no graph (501) or
+ *  the call fails. */
+export async function searchNodes(type: string, q: string, limit = 8): Promise<NodeHit[]> {
+  try {
+    const r = await fetchJSON<{ nodes?: NodeHit[] }>(
+      `/graph/names?type=${encodeURIComponent(type)}&q=${encodeURIComponent(q)}&limit=${limit}`,
+    );
+    return Array.isArray(r.nodes) ? r.nodes.filter((h) => h && typeof h.name === "string" && h.name.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
 
 // ── Chat (AI workflow builder) ─────────────────────────────────────────────
 //

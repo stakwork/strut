@@ -23,6 +23,12 @@ export interface FieldDesc {
    *  ("llm-models" → GET /llm/models). Set on the Zod schema via
    *  `.meta({ suggest: "llm-models" })`; the value stays free text. */
   suggest?: "llm-models";
+  /** UI hint for a free-text field: the value is a graph node's NAME, and
+   *  the sibling field `typeField` holds the node's type. Set via
+   *  `.meta({ lookup: { typeField: "node_type" } })` (graph/graph-get). The
+   *  Run popover resolves the sibling to a literal and offers a typeahead
+   *  over that type (web/src/run-inputs.ts); the value stays free text. */
+  lookup?: { typeField: string };
 }
 
 export function zodToFields(schema: z.ZodTypeAny): FieldDesc[] {
@@ -94,8 +100,10 @@ function describeField(name: string, s: z.ZodTypeAny): FieldDesc {
   if (description) base.description = description;
   if (kind === "enum") return { ...base, kind: "enum", enumValues: (inner as any).options };
   if (kind === "string") {
-    const suggest = (s as any).meta?.()?.suggest ?? (inner as any).meta?.()?.suggest;
-    return { ...base, kind: "string", ...(suggest ? { suggest } : {}) };
+    const meta = { ...((inner as any).meta?.() ?? {}), ...((s as any).meta?.() ?? {}) };
+    const suggest = meta.suggest;
+    const lookup = meta.lookup && typeof meta.lookup.typeField === "string" ? { typeField: meta.lookup.typeField } : undefined;
+    return { ...base, kind: "string", ...(suggest ? { suggest } : {}), ...(lookup ? { lookup } : {}) };
   }
   if (kind === "number") return { ...base, kind: "number" };
   if (kind === "boolean") return { ...base, kind: "boolean" };

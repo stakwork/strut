@@ -22,6 +22,20 @@ const STEP_TYPES = [
   "graph/walk", "graph/move-node",
 ];
 
+describe("graph/graph-get marks its `name` field as a node lookup typed by `node_type`", () => {
+  it("zodToFields carries the lookup for the Run popover's typeahead, and nothing else grows it", async () => {
+    const { zodToFields } = await import("../../../ai/schemaHelpers.js");
+    const { default: graphGet } = await import("./graph-get.js");
+    const fields = zodToFields(graphGet.input);
+    const name = fields.find((f) => f.name === "name")!;
+    assert.equal(name.kind, "string");
+    assert.equal(name.required, false);
+    assert.deepEqual(name.lookup, { typeField: "node_type" });
+    assert.match(name.description ?? "", /the node's name/);
+    for (const f of fields) if (f.name !== "name") assert.equal(f.lookup, undefined, f.name);
+  });
+});
+
 describe("graph/* lib steps are discovered by the registry", () => {
   it("all fifteen graph steps are present, sourced from lib", async () => {
     const { registry, sources } = await buildRegistry();

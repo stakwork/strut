@@ -34,7 +34,7 @@ import { PromoteFlyout } from "./components/PromoteFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
-import { bindingsFromInputBlock, deriveInputBindings, stepTypesIn, type InputBinding } from "./run-inputs";
+import { applyLookups, bindingsFromInputBlock, deriveInputBindings, nodeLookups, stepTypesIn, type InputBinding } from "./run-inputs";
 
 // A nested run-execution the user has drilled into. `pathPrefix` is the
 // original event-path prefix this child lives under (e.g. `wf/subflowId`),
@@ -654,9 +654,10 @@ export function App() {
   // step's schema is consulted — not just the first's (see run-inputs.ts). A
   // type whose schema fails to load still contributes its refs, as untyped
   // fields.
+  // Either way the steps' schemas are consulted: an input a graph read
+  // resolves by name gets a typeahead over that node type (nodeLookups).
   const loadInputBindings = useCallback(async (): Promise<InputBinding[]> => {
-    if (localInput) return bindingsFromInputBlock(localInput);
-    if (!localSteps) return [];
+    if (!localSteps) return localInput ? bindingsFromInputBlock(localInput) : [];
     const schemas = new Map<string, api.FieldDesc[]>();
     await Promise.all(
       stepTypesIn(localSteps).map(async (type) => {
@@ -667,8 +668,10 @@ export function App() {
         }
       }),
     );
-    return deriveInputBindings(localSteps, (type) => schemas.get(type));
-  }, [localSteps, localInput]);
+    const schemaFor = (type: string) => schemas.get(type);
+    if (localInput) return applyLookups(bindingsFromInputBlock(localInput), nodeLookups(localSteps, schemaFor, localParams));
+    return deriveInputBindings(localSteps, schemaFor, localParams);
+  }, [localSteps, localInput, localParams]);
 
   const handleRun = useCallback(async () => {
     if (!selectedWf || !localSteps || localSteps.length === 0) return;
