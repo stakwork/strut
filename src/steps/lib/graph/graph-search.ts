@@ -63,7 +63,7 @@ export default defineStep({
       .describe(
         "Path parts to leave out, comma-separated: a directory name (`__tests__`, `test`, `mock`) or several (`src/app/api/mock`) matches whole segments of a result's `file`; " +
           "a pattern with `*` (`*.test.ts`, `*_test.go`) matches the file name. " +
-          "For a question about how the code works, leaving test code out is usually right — `__tests__,test,tests,spec,*.test.ts,*.spec.ts` — " +
+          "For a question about how the code works, leaving test code out is usually right — `__tests__,test,tests,spec,*.test.*,*.spec.*` — " +
           "and add a repository's own mock or fixture directories once you see them in results. Results with no `file` are never left out.",
       ),
     limit: z.number().optional().default(10).describe("Maximum number of results to return"),

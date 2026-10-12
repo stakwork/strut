@@ -117,6 +117,11 @@ describe("search helpers (pure)", () => {
       ["src/a.test.ts", "a.test.ts", "src/A.Test.TS", "pkg/server_test.go"],
     );
     assert.deepEqual(leftOut(["?.ts"], ["src/a.ts", "a.ts", "src/ab.ts"]), ["src/a.ts", "a.ts"]);
+    // The step's suggested list: `*.test.*` / `*.spec.*` take every extension (.tsx, .js), not just .ts.
+    assert.deepEqual(
+      leftOut(["*.test.*", "*.spec.*"], ["src/a.test.tsx", "src/a.test.js", "src/a.spec.ts", "src/latest.tsx", "src/test-utils.ts", "src/spec.ts"]),
+      ["src/a.test.tsx", "src/a.test.js", "src/a.spec.ts"],
+    );
     // Next.js names directories `[slug]` and `(auth)`: brackets and parentheses are characters, not regex.
     assert.deepEqual(
       leftOut(["[slug]", "(auth)", "a+b", "v1.2"], ["src/app/[slug]/page.tsx", "src/app/s/page.tsx", "src/app/(auth)/login.ts", "src/app/auth/login.ts", "x/a+b/y.ts", "x/aab/y.ts", "x/v1.2/y.ts", "x/v1x2/y.ts"]),
