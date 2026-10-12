@@ -21,12 +21,12 @@ describe("elicitation form helpers", () => {
   it("fieldsOf maps the subset onto ConfigField kinds, with titles as labels", () => {
     const f = Object.fromEntries(fieldsOf(schema).map((x) => [x.name, x]));
     assert.deepEqual(f.repo, { name: "repo", kind: "string", required: true, label: "Repository", description: "owner/name" });
-    assert.deepEqual(f.env, { name: "env", kind: "enum", required: false, default: "staging", enumValues: ["staging", "production"] });
-    assert.deepEqual(f.region, { name: "region", kind: "enum", required: false, enumValues: ["us", "eu"], enumLabels: { us: "United States", eu: "Europe" } });
+    assert.deepEqual(f.env, { name: "env", kind: "enum", required: false, default: "staging", enumValues: ["staging", "production"], other: true });
+    assert.deepEqual(f.region, { name: "region", kind: "enum", required: false, enumValues: ["us", "eu"], enumLabels: { us: "United States", eu: "Europe" }, other: true });
     assert.deepEqual(f.count, { name: "count", kind: "number", required: false });
     assert.deepEqual(f.dryRun, { name: "dryRun", kind: "boolean", required: false, default: true });
-    assert.deepEqual(f.channels, { name: "channels", kind: "multi", required: true, enumValues: ["a", "b"] });
-    assert.deepEqual(f.tags, { name: "tags", kind: "multi", required: false, enumValues: ["x", "y"], enumLabels: { x: "X" } });
+    assert.deepEqual(f.channels, { name: "channels", kind: "multi", required: true, enumValues: ["a", "b"], other: true });
+    assert.deepEqual(f.tags, { name: "tags", kind: "multi", required: false, enumValues: ["x", "y"], enumLabels: { x: "X" }, other: true });
     assert.deepEqual(fieldsOf(schema).map((x) => x.name), Object.keys(schema.properties), "schema order");
   });
 
@@ -34,10 +34,11 @@ describe("elicitation form helpers", () => {
     assert.deepEqual(initialContent(schema), { env: "staging", dryRun: true });
   });
 
-  it("missingRequired names the empty required fields", () => {
+  it("missingRequired names the empty required fields — Other… picked but not typed is still empty", () => {
     assert.deepEqual(missingRequired(schema, initialContent(schema)), ["repo", "channels"]);
     assert.deepEqual(missingRequired(schema, { repo: "a/b", channels: [] }), ["channels"]);
     assert.deepEqual(missingRequired(schema, { repo: "a/b", channels: ["a"] }), []);
+    assert.deepEqual(missingRequired(schema, { repo: "", channels: ["my own"] }), ["repo"]);
   });
 
   it("contentToSubmit keeps the schema's fields and drops empties", () => {

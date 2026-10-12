@@ -4,8 +4,10 @@
 // `meta.elicitation` (the server's ElicitationRecord). Form mode carries
 // ACP's flat schema subset — string / number / integer / boolean, a single
 // select (enum | oneOf), a multi select (array of enum | anyOf) — which maps
-// onto the fields the step editor's ConfigField already draws. Pure; the
-// server re-validates every answer, so this only keeps the form honest.
+// onto the fields the step editor's ConfigField already draws. Every select
+// also takes the user's own words (`other`: the "Other…" choice), since the
+// options are what the model offered, not what the user may answer. Pure;
+// the server re-validates every answer, so this only keeps the form honest.
 
 import type { ElicitationSchema, ElicitationProperty, FieldDesc } from "./api";
 
@@ -32,6 +34,7 @@ export function fieldsOf(schema: ElicitationSchema): FieldDesc[] {
         kind: p.type === "array" ? "multi" : "enum",
         enumValues: opts.map((o) => o.const),
         ...(Object.keys(labels).length ? { enumLabels: labels } : {}),
+        other: true,
       };
     }
     if (p.type === "string") return { ...base, kind: "string" };

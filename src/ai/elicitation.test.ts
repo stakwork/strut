@@ -113,12 +113,16 @@ describe("validateContent", () => {
   it("skips optional empty fields", () => {
     assert.deepEqual(validateContent(schema, { repo: "a/b", env: "staging", ratio: null, contact: "" }), { repo: "a/b", env: "staging" });
   });
+  it("takes the user's own words on a select — the form's Other… — single, titled and multi", () => {
+    const out = validateContent(schema, { repo: "a/b", env: "dev", region: "asia", channels: ["a", "somewhere else"] });
+    assert.equal(out.env, "dev");
+    assert.equal(out.region, "asia");
+    assert.deepEqual(out.channels, ["a", "somewhere else"]);
+  });
   const bad: [string, object, RegExp][] = [
     ["an unknown field", { repo: "a/b", env: "staging", extra: 1 }, /unknown field "extra"/],
     ["a wrong type", { repo: 5, env: "staging" }, /content\.repo: must be a string/],
     ["a pattern miss", { repo: "nope", env: "staging" }, /content\.repo: must match/],
-    ["a value outside the enum", { repo: "a/b", env: "dev" }, /content\.env: must be one of staging \| production/],
-    ["a value outside the oneOf", { repo: "a/b", env: "staging", region: "asia" }, /content\.region: must be one of us \| eu/],
     ["a bad email", { repo: "a/b", env: "staging", contact: "nope" }, /must be an email/],
     ["a bad uri", { repo: "a/b", env: "staging", docs: "not a url" }, /must be a URL/],
     ["a bad date", { repo: "a/b", env: "staging", since: "22/09/2026" }, /must be a date/],
@@ -126,7 +130,7 @@ describe("validateContent", () => {
     ["a non-integer", { repo: "a/b", env: "staging", count: 2.5 }, /must be an integer/],
     ["a number out of range", { repo: "a/b", env: "staging", count: 11 }, /must be ≤ 10/],
     ["a non-boolean", { repo: "a/b", env: "staging", dryRun: "yes" }, /must be true or false/],
-    ["an array item outside its options", { repo: "a/b", env: "staging", channels: ["a", "z"] }, /every item must be one of a \| b \| c/],
+    ["a non-string array item", { repo: "a/b", env: "staging", channels: ["a", 2] }, /every item must be a string/],
     ["too many array items", { repo: "a/b", env: "staging", channels: ["a", "b", "c"] }, /pick at most 2/],
     ["too few array items", { repo: "a/b", env: "staging", channels: [] }, /pick at least 1/],
     ["duplicate array items", { repo: "a/b", env: "staging", channels: ["a", "a"] }, /duplicate/],

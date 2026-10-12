@@ -18,6 +18,16 @@
 > never checked against the chat's actor (the store is deployment-global);
 > answers go through the notifier's queue, so a form never sees a 409; the
 > callback's `text` carries the question when a turn ends on an ask.
+>
+> **Revised 2026-10-12 (user feedback):** a select's options are what the
+> model offered, not what the user may answer. The form ends every single
+> and multi select with "Other…" — a text box whose text is the value — and
+> `validateContent` takes any string on a select (an array: any strings).
+> The prompt tells the model a value outside its options is the user's own
+> answer, and that `decline` means the user chose not to answer: never pick
+> an option for them, say what is needed in one line and stop. Before this
+> a user whose answer was missing from the list could only decline, and the
+> model read the decline as leave to choose.
 
 ## Problem
 

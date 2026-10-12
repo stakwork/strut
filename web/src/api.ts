@@ -540,6 +540,10 @@ export interface FieldDesc {
   enumValues?: string[];
   /** Display text per enum value (a question's `oneOf` titles). */
   enumLabels?: Record<string, string>;
+  /** The select also takes the user's own text — an "Other…" choice that
+   *  opens a text box. The builder's questions only: a step's Zod enum is
+   *  a constraint, a question's options are what the model offered. */
+  other?: boolean;
   /** Overrides the humanized `name` as the field's label. */
   label?: string;
   /** The field's `.describe()` text — shown as a hint. */
