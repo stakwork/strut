@@ -24,6 +24,7 @@ export default defineStep({
   description:
     "Search the knowledge graph for nodes of any type it holds — what this deployment ingested (on a swarm: the code parsed from its repositories — File, Function, Endpoint, … with written descriptions — plus documents, concepts, tasks, …) and strut's own workflows, steps, runs and chats. " +
     "Narrow with `type` to find one kind (e.g. 'Function,File,Endpoint' for code). " +
+    "Leave test or mock code out by path with `exclude`. " +
     "Provide at least one of `q`, `input_q`, `output_q` — they can be combined, each acting as its own " +
     "retriever fused into one ranked result set. " +
     "Each result includes an `edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
@@ -56,6 +57,15 @@ export default defineStep({
       .string()
       .optional()
       .describe("Comma-separated node type filter, e.g. 'StrutWorkflow' or 'StrutRun,StrutChat'. Call graph_get_ontology to see all valid values."),
+    exclude: z
+      .string()
+      .optional()
+      .describe(
+        "Path parts to leave out, comma-separated: a directory name (`__tests__`, `test`, `mock`) or several (`src/app/api/mock`) matches whole segments of a result's `file`; " +
+          "a pattern with `*` (`*.test.ts`, `*_test.go`) matches the file name. " +
+          "For a question about how the code works, leaving test code out is usually right — `__tests__,test,tests,spec,*.test.ts,*.spec.ts` — " +
+          "and add a repository's own mock or fixture directories once you see them in results. Results with no `file` are never left out.",
+      ),
     limit: z.number().optional().default(10).describe("Maximum number of results to return"),
     domains: z
       .string()
@@ -79,6 +89,7 @@ export default defineStep({
         output_q: cfg.output_q,
         types: splitList(cfg.type),
         domains: splitList(cfg.domains),
+        exclude: splitList(cfg.exclude),
         namespace: cfg.namespace,
         limit: cfg.limit ?? 10,
         // Per-node {EDGE_TYPE: count} map inline, so connectivity + hop

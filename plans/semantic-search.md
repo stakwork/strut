@@ -461,6 +461,27 @@ Schemas as they then are — the lists jarvis's own library declares.
   fallback (its fragments ORed again). The header went from #17 to #6, a
   quoted error message from #13 to #3; exact names were #1 throughout.
   `graph/graph-search`'s `q` says so to the caller.
+- **Leaving paths out (`exclude`).** Test and mock code crowds a code
+  search: of the 25 hits a swarm38 agent got asking how hive integrates
+  with GitHub, 4 were in `src/__tests__/…` (mocks, factories, test
+  files), 6 in hive's mock GitHub API server (`src/app/api/mock/github/…`,
+  `src/lib/mock/…` — app code for running without GitHub, in no test
+  directory), 14 real code and 1 a doc; 37% of swarm38's `Function` nodes
+  sit in test or mock paths. A built-in "is test" rule cannot know a
+  repository's own mock and fixture directories, so the caller says what
+  to leave out: `exclude`, comma-separated on `graph/graph-search`. An
+  entry with no wildcard matches whole `/` segments of the node's `file`
+  (`test` leaves out `src/test/a.ts`, not `latest.ts`), one with `*` or
+  `?` the file name (`*.test.ts`); case-insensitive. Empty by default, so
+  a search for `UnitTest` nodes is never silently emptied; the field's
+  description suggests leaving test code out for a question about how the
+  code works. The entries are one regex (`excludeRegex`) in the WHERE
+  that already filters `type`:
+  `(n.file IS NULL OR NOT n.file =~ $exclude_re)`, run on the rows each
+  index call returned, never a scan; a node with no `file` stays. It cuts
+  after the index's top k like `type` does, so a search with it
+  over-fetches both halves: the vector query as a typed one does, the
+  keyword query's `limit` the same way.
 - `input_q` / `output_q` are unchanged (per-label indexes from
   `vector_index`).
 

@@ -14,6 +14,7 @@ import {
   applyUsageTiebreak,
   buildFulltextQuery,
   escapeLucene,
+  excludeRegex,
   fetchLimit,
   fuseHits,
   fusionWeights,
@@ -85,6 +86,42 @@ describe("search helpers (pure)", () => {
     const order = (w?: Record<string, number>) => fuseHits([hit("kw", 9)], [hit("sem", 0.9)], {}, w).map((e) => e.node.properties["ref_id"]);
     assert.deepEqual(order(), ["kw", "sem"]);
     assert.deepEqual(order(PROSE_RRF_WEIGHTS), ["sem", "kw"]);
+  });
+  /** The paths `exclude` leaves out. Cypher's `=~` is a full match and
+   *  `(?i)` its flag: a JS RegExp anchored, with `i`. */
+  const leftOut = (entries: string[], files: string[]) => {
+    const re = new RegExp(`^(?:${excludeRegex(entries)!.replace(/^\(\?i\)/, "")})$`, "i");
+    return files.filter((f) => re.test(f));
+  };
+  it("exclude: a path part matches whole `/` segments of `file`, in any case; no entries → null", () => {
+    assert.deepEqual(
+      leftOut(["test"], ["test/a.ts", "src/test/a.ts", "a/test", "src/Test/a.ts", "latest.ts", "contest/x.ts", "testimonials/a.ts", "src/tests/a.ts", "src/a.test.ts"]),
+      ["test/a.ts", "src/test/a.ts", "a/test", "src/Test/a.ts"],
+    );
+    assert.deepEqual(
+      leftOut(["__tests__", "mock"], ["src/__tests__/unit/a.test.ts", "src/__tests__x/a.ts", "src/lib/mock/github.ts", "src/lib/mocks/a.ts", "src/lib/mockServer.ts"]),
+      ["src/__tests__/unit/a.test.ts", "src/lib/mock/github.ts"],
+    );
+    assert.deepEqual(
+      leftOut(["src/app/api/mock"], ["stakwork/hive/src/app/api/mock/github/route.ts", "src/app/api/mock", "src/app/api/mockups/a.ts", "src/app/api/github/mock.ts", "xsrc/app/api/mock/a.ts"]),
+      ["stakwork/hive/src/app/api/mock/github/route.ts", "src/app/api/mock"],
+    );
+    assert.equal(excludeRegex([" /__tests__/ "]), excludeRegex(["__tests__"]), "trimmed, slashes at either end dropped");
+    assert.equal(excludeRegex([]), null);
+    assert.equal(excludeRegex(["", "  ", "/"]), null, "blank entries are ignored");
+  });
+  it("exclude: a pattern with * or ? matches the file name; everything else is literal", () => {
+    assert.equal(excludeRegex(["test", "*.test.ts"]), "(?i)(?:.*/)?(?:test(?:/.*)?|[^/]*\\.test\\.ts)");
+    assert.deepEqual(
+      leftOut(["*.test.ts", "*_test.go"], ["src/a.test.ts", "a.test.ts", "src/A.Test.TS", "pkg/server_test.go", "src/a.test.tsx", "src/atest.ts", "src/test.ts", "src/x.test.ts/a.go", "pkg/server_test.go.bak"]),
+      ["src/a.test.ts", "a.test.ts", "src/A.Test.TS", "pkg/server_test.go"],
+    );
+    assert.deepEqual(leftOut(["?.ts"], ["src/a.ts", "a.ts", "src/ab.ts"]), ["src/a.ts", "a.ts"]);
+    // Next.js names directories `[slug]` and `(auth)`: brackets and parentheses are characters, not regex.
+    assert.deepEqual(
+      leftOut(["[slug]", "(auth)", "a+b", "v1.2"], ["src/app/[slug]/page.tsx", "src/app/s/page.tsx", "src/app/(auth)/login.ts", "src/app/auth/login.ts", "x/a+b/y.ts", "x/aab/y.ts", "x/v1.2/y.ts", "x/v1x2/y.ts"]),
+      ["src/app/[slug]/page.tsx", "src/app/(auth)/login.ts", "x/a+b/y.ts", "x/v1.2/y.ts"],
+    );
   });
   it("fetch limit mirrors jarvis", () => {
     assert.equal(fetchLimit(10, 0), 120);
@@ -570,5 +607,103 @@ describe("query shape: a prose question vs an exact string (live Neo4j)", { skip
     await reader.search({ q: "how are api keys rotated", types: ["Function"] });
     assert.equal(lucene.length, 2, "a question that finds nothing still falls back");
     assert.ok(lucene[1]!.endsWith("~"));
+  });
+});
+
+describe("exclude: leaving results out by path (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
+  let bolt: Bolt;
+  let reader: GraphReader;
+  /** Every index call the reader ran: the index and its k (a keyword call's `limit`). */
+  const calls: Array<{ index: string; k: number }> = [];
+  const keywordKs = () => calls.filter((c) => c.index.endsWith("_attribute_index_v2")).map((c) => c.k);
+  const names = (r: Awaited<ReturnType<GraphReader["search"]>>) => r.nodes.map((n) => String(n.properties["name"]));
+  const Q = "github webhook signature";
+  before(async () => {
+    bolt = new Bolt(cfg!);
+    await bolt.verify();
+    await wipeGraph(bolt);
+    await seedJarvisOntology(bolt);
+    await seedStrutDomain(bolt);
+    const resolver = new SchemaResolver(bolt);
+    await new NodeWriter(bolt, { embedder: bow, resolver }).writeMany([
+      { type: "Function", data: { name: "verifySignature", file: "src/lib/github/verify.ts", description: "Checks a GitHub webhook signature" } },
+      { type: "Function", data: { name: "mockVerifySignature", file: "src/app/api/mock/github/verify.ts", description: "Checks a GitHub webhook signature for the mock server" } },
+      { type: "Function", data: { name: "verifySignatureTest", file: "src/__tests__/unit/verify.test.ts", description: "Checks a GitHub webhook signature in a test" } },
+      { type: "Function", data: { name: "verifySignatureSpec", file: "src/lib/github/verify.spec.ts", description: "Checks a GitHub webhook signature in a spec" } },
+      { type: "Function", data: { name: "verifySignatureCapital", file: "src/Test/github/verify.ts", description: "Checks a GitHub webhook signature under a capitalized test directory" } },
+      { type: "Function", data: { name: "latestSignature", file: "src/testimonials/latest.ts", description: "Checks the latest GitHub webhook signature" } },
+      { type: "Concept", data: { name: "GitHub webhooks", description: "How a GitHub webhook signature is checked" } },
+    ]);
+    // 130 keyword matches in a test directory, each a better match than the
+    // one real function (the query's words in a short description; the real
+    // one's in a long one) — more than the index's first `cap` (120). No
+    // vectors: only the keyword half finds any of them. `ref_id` and
+    // `node_key` are keyword fields too, so neither holds a query word.
+    await bolt.run(
+      `UNWIND range(1, 130) AS i
+       CREATE (n:Function:Node:Data_Bank:Domain_codeartifact)
+       SET n.name = 'secretFixture' + i, n.file = 'src/__tests__/fixtures/secret-' + i + '.test.ts', n.node_key = 'function-decoy-' + i,
+           n.ref_id = 'decoy-' + i, n.namespace = 'default', n.description = 'Rotate the signing secret', n.date_added_to_graph = 1`,
+    );
+    await bolt.run(
+      `CREATE (n:Function:Node:Data_Bank:Domain_codeartifact)
+       SET n.name = 'rotateSigningSecret', n.file = 'src/lib/secrets/rotate.ts', n.node_key = 'function-rotatesigningsecret',
+           n.ref_id = 'real-1', n.namespace = 'default', n.description = $description, n.date_added_to_graph = 1`,
+      { description: "Rotates the signing secret of a workspace's webhooks when an admin asks. " + "It writes the new value and keeps the old one for an hour. ".repeat(10) },
+    );
+    await bolt.run(`CALL db.awaitIndexes(60)`);
+    const spy = new Proxy(bolt, {
+      get(t, k, r) {
+        if (k !== "run") return Reflect.get(t, k, r);
+        return (cypher: string, params?: Record<string, unknown>) => {
+          const limit = params?.["k"] ?? (params?.["fulltext_options"] as { limit?: unknown } | undefined)?.limit;
+          if (typeof params?.["index"] === "string" && limit !== undefined) calls.push({ index: params["index"], k: Number(String(limit)) });
+          return t.run(cypher, params);
+        };
+      },
+    });
+    reader = new GraphReader(spy, { embedder: bow, resolver });
+  });
+  after(async () => {
+    await bolt?.close();
+  });
+
+  it("a typed search leaves out what an entry matches and keeps the rest", async () => {
+    const all = await reader.search({ q: Q, types: ["Function"], limit: 20 });
+    assert.equal(all.nodes.length, 6, names(all).join(", "));
+    // `test` is a whole segment, in any case: `src/Test/` goes, `src/testimonials/` stays.
+    const r = await reader.search({ q: Q, types: ["Function"], limit: 20, exclude: ["__tests__", "test", "src/app/api/mock", "*.spec.ts"] });
+    assert.deepEqual(names(r).sort(), ["latestSignature", "verifySignature"]);
+  });
+
+  it("a node with no `file` is never left out; an untyped search over-fetches both halves when excluding", async () => {
+    calls.length = 0;
+    const all = await reader.search({ q: Q, limit: 20 });
+    assert.equal(all.nodes.length, 7, names(all).join(", "));
+    assert.deepEqual(calls, [{ index: "data_bank_attribute_index_v2", k: 120 }, { index: "text_embeddings_vector_index", k: 120 }], "no exclude: as before");
+    calls.length = 0;
+    // `src` leaves out every function here; the concept has no `file`.
+    const r = await reader.search({ q: Q, limit: 20, exclude: ["src"] });
+    assert.deepEqual(names(r), ["GitHub webhooks"]);
+    assert.deepEqual(calls, [
+      { index: "data_bank_attribute_index_v2", k: 1200 },
+      { index: "data_bank_attribute_index_v2", k: 2000 },
+      { index: "text_embeddings_vector_index", k: 1200 },
+      { index: "text_embeddings_vector_index", k: 2000 },
+    ]);
+  });
+
+  it("the keyword half over-fetches too: 130 test-directory matches above the one real function", async () => {
+    const q = "rotate signing secret";
+    calls.length = 0;
+    const crowded = await reader.search({ q, types: ["Function"] });
+    assert.ok(!names(crowded).includes("rotateSigningSecret"), names(crowded).join(", "));
+    assert.ok(crowded.nodes.some((n) => String(n.properties["file"]).includes("/__tests__/")));
+    assert.deepEqual(keywordKs(), [120], "the index's first 120 are all fixtures");
+    calls.length = 0;
+    const r = await reader.search({ q, types: ["Function"], exclude: ["__tests__"] });
+    assert.equal(names(r)[0], "rotateSigningSecret");
+    assert.ok(r.nodes.every((n) => !String(n.properties["file"]).includes("/__tests__/")), names(r).join(", "));
+    assert.deepEqual(keywordKs(), [1200, 2000]);
   });
 });
