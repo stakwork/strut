@@ -28,6 +28,7 @@ export default defineStep({
     "retriever fused into one ranked result set. " +
     "Each result includes an `edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
     "which relationship types you can traverse next with graph_graph_neighbors. " +
+    "A code result also carries where it lives — `file`, and its lines `start` and `end`, counted from 0 as the parser counts them (add 1 for the line number an editor shows) — so you can open it. " +
     "Call graph_get_ontology first to discover valid values for the `type` parameter.",
   input: z.object({
     q: z
@@ -93,6 +94,12 @@ export default defineStep({
           description: descriptionOf(n.node_type, p),
           // {EDGE_TYPE: count} map of this node's relationships.
           edges: (n.edges ?? {}) as Record<string, number>,
+          // Where a code node lives, as the graph holds it (graph-get returns
+          // the same; stakgraph's lines count from 0): a hit named `GET` is
+          // something a caller can open.
+          ...(p.file !== undefined ? { file: p.file } : {}),
+          ...(p.start !== undefined ? { start: p.start } : {}),
+          ...(p.end !== undefined ? { end: p.end } : {}),
           ...(p.workflow_id !== undefined ? { workflow_id: p.workflow_id } : {}),
           ...(p.skill_id !== undefined ? { skill_id: p.skill_id } : {}),
         };
