@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { bindingsFromInputBlock, deriveInputBindings, refsInExpr, stepTypesIn } from "./run-inputs";
+import { applyLookups, bindingsFromInputBlock, deriveInputBindings, literalOf, nodeLookups, refsInExpr, stepTypesIn } from "./run-inputs";
 import type { FieldDesc } from "./api";
 import type { StepData } from "./flow-to-canvas";
 
@@ -9,6 +9,8 @@ const schemas: Record<string, FieldDesc[]> = {
   "media/detect-type": [str("url")],
   "html/extract": [str("url"), { name: "maxChars", kind: "number", required: false, default: 40000 }],
   http: [str("url"), { name: "method", kind: "enum", required: false, enumValues: ["GET", "POST"] }],
+  // graph-get's `name` names a node; its sibling `node_type` holds the type (FieldDesc.lookup).
+  "graph/graph-get": [str("node_type", false), { ...str("name", false), lookup: { typeField: "node_type" } }],
 };
 const schemaFor = (t: string) => schemas[t];
 
@@ -186,5 +188,70 @@ describe("bindingsFromInputBlock", () => {
         ["dryRun", "boolean", false, undefined, undefined],
       ],
     );
+  });
+});
+
+describe("node lookups", () => {
+  // graph-janitor: the mandate and the start, each read by name as a Concept.
+  const janitor: StepData[] = [
+    { id: "parent", type: "graph/graph-get", config: { node_type: "{{ params.node_type }}", name: "{{ params.parent }}", children: "PARENT_OF" } },
+    { id: "mandate", type: "graph/graph-get", config: { node_type: "{{ params.node_type }}", name: "{{ input.concept }}" } },
+    { id: "start", type: "graph/graph-get", config: { node_type: "Concept", name: "{{ input.start }}" } },
+    { id: "note", type: "pack", config: { note: "sweeping {{ input.start }} for {{ input.concept }} as {{ input.actor }}" } },
+  ];
+  const params = { node_type: "Concept", parent: "Janitor" };
+
+  it("literalOf: plain text, or a params reference the workflow answers; never an input or an expression", () => {
+    assert.equal(literalOf("Concept", null), "Concept");
+    assert.equal(literalOf("  ", null), undefined);
+    assert.equal(literalOf("{{ params.node_type }}", params), "Concept");
+    assert.equal(literalOf("{{ params.node_type }}", {}), undefined);
+    assert.equal(literalOf("{{ params.limit }}", { limit: 10 }), undefined);
+    assert.equal(literalOf("{{ input.t }}", params), undefined);
+    assert.equal(literalOf("{{ params.node_type || 'Concept' }}", params), undefined);
+    assert.equal(literalOf(42, params), undefined);
+  });
+
+  it("an input that graph-get resolves by name is typed by the literal sibling node_type, written out or through params", () => {
+    const l = nodeLookups(janitor, schemaFor, params);
+    assert.deepEqual([...l], [["concept", "Concept"], ["start", "Concept"]]);
+    // Without params the first one cannot resolve; the literal one still can.
+    assert.deepEqual([...nodeLookups(janitor, schemaFor, null)], [["start", "Concept"]]);
+  });
+
+  it("no lookup when the type is itself an input or an expression, when the slot is not exactly one input, or when the schema is unknown", () => {
+    const steps: StepData[] = [
+      { id: "a", type: "graph/graph-get", config: { node_type: "{{ input.t }}", name: "{{ input.x }}" } },
+      { id: "b", type: "graph/graph-get", config: { node_type: "Concept", name: "{{ input.y }} (draft)" } },
+      { id: "c", type: "graph/graph-get", config: { node_type: "Concept", name: "{{ input.z || 'Law' }}" } },
+      { id: "d", type: "custom/get", config: { node_type: "Concept", name: "{{ input.w }}" } },
+    ];
+    assert.deepEqual([...nodeLookups(steps, schemaFor, params)], []);
+  });
+
+  it("the inferred form carries nodeType, whichever step typed the key first; the declared block gets it through applyLookups", () => {
+    const b = deriveInputBindings(janitor, schemaFor, params);
+    assert.deepEqual(b.map((x) => [x.inputKey, x.field.kind, x.field.nodeType]), [
+      ["concept", "string", "Concept"],
+      ["start", "string", "Concept"],
+      ["actor", "string", undefined],
+    ]);
+    const block = applyLookups(
+      bindingsFromInputBlock({ concept: { type: "string" }, start: { type: "string", description: "where" }, apply: { type: "boolean", default: false } }),
+      nodeLookups(janitor, schemaFor, params),
+    );
+    assert.deepEqual(block.map((x) => [x.inputKey, x.field.nodeType, x.field.description]), [
+      ["concept", "Concept", undefined],
+      ["start", "Concept", "where"],
+      ["apply", undefined, undefined],
+    ]);
+    // A key some other step typed first still gets its node type.
+    const later: StepData[] = [
+      { id: "a", type: "http", config: { url: "{{ input.x }}" } },
+      { id: "b", type: "graph/graph-get", config: { node_type: "Concept", name: "{{ input.x }}" } },
+    ];
+    assert.equal(deriveInputBindings(later, schemaFor)[0]!.field.nodeType, "Concept");
+    // Only a free-text field is a name: a number stays a number.
+    assert.equal(applyLookups([{ inputKey: "n", field: { name: "n", kind: "number", required: true } }], new Map([["n", "Concept"]]))[0]!.field.nodeType, undefined);
   });
 });

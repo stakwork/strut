@@ -2000,6 +2000,22 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, properties: node.properties });
   });
 
+  // The names of one type's nodes a typed fragment matches — the Run
+  // popover's typeahead for an input a step resolves by name (an input that
+  // lands in graph/graph-get's `name`; web/src/run-inputs.ts). A read over
+  // the backend's own reader, never a step the workflow names: the UI decides
+  // what it calls. `?type=Concept&q=med&limit=8` → { nodes: [{ ref_id,
+  // node_type, name, description? }] }, names starting with the fragment
+  // first. Read-only. 501 without a graph, 400 without a type.
+  app.get("/graph/names", async (c) => {
+    const graph = opts.graph ?? workspace.graph;
+    if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+    const type = (c.req.query("type") ?? "").trim();
+    if (!type) return c.json({ error: "type is required" }, 400);
+    const limit = Number(c.req.query("limit") ?? 8);
+    return c.json({ nodes: await graph.reader.namesLike(type, c.req.query("q") ?? "", Number.isFinite(limit) ? limit : 8) });
+  });
+
   // The embedding pass (plans/semantic-search.md §1) as the graph backend
   // reports it: the sweep's position, per-type counts, the types it skips
   // and why, the newcomer mark, the last error. `{ enabled: false }` with

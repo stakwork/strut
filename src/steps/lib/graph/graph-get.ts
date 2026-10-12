@@ -27,10 +27,14 @@ export default defineStep({
     name: z
       .string()
       .optional()
-      .describe(
-        "With `node_type`: the node's name, matched the way its key is composed — exactly for strut's own types (StrutWorkflow, …); " +
+      .meta({
+        description:
+          "With `node_type`: the node's name, matched the way its key is composed — exactly for strut's own types (StrutWorkflow, …); " +
           "for a jarvis type (Concept, …) case, spaces and punctuation are ignored.",
-      ),
+        // The Run popover: an input that lands here is a node name, typed by
+        // the sibling `node_type` — a typeahead over graph-search (zodToFields).
+        lookup: { typeField: "node_type" },
+      }),
     namespace: z
       .string()
       .optional()

@@ -523,6 +523,14 @@ export interface GraphReaderOptions {
   resolver?: SchemaResolver;
 }
 
+/** One `namesLike` hit: what a typeahead shows. */
+export interface NameHit {
+  ref_id: string;
+  node_type: string;
+  name: string;
+  description?: string;
+}
+
 export class GraphReader {
   constructor(
     private readonly bolt: Bolt,
@@ -609,6 +617,35 @@ export class GraphReader {
       { node_key, type, ns: namespace ?? this.bolt.namespace, default_ns: DEFAULT_NAMESPACE, blocked_statuses: BLOCKED_NODE_STATUSES },
     );
     return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
+  }
+
+  /** The nodes of `type` whose NAME contains a typed fragment, case-insensitive
+   *  — names starting with it first, then the rest, alphabetical, at most
+   *  `limit` (1–50). The Run popover's typeahead for an input a step resolves
+   *  by name (`GET /graph/names`; web/src/run-inputs.ts). Not a search: a
+   *  fragment is not a word, so the fulltext index (whole words, then fuzzy)
+   *  answers "Med" with "Medical" and never "Medicine". An exact lookup is
+   *  `getNodeByKey`. Same visibility as every read; the backend's namespace
+   *  unless one is given. */
+  async namesLike(type: string, q: string, limit = 8, namespace?: string): Promise<NameHit[]> {
+    const frag = q.trim().toLowerCase();
+    if (!frag || !type.trim()) return [];
+    const cap = Math.min(50, Math.max(1, Math.floor(Number(limit) || 8)));
+    const rows = await this.bolt.run(
+      `MATCH (n:Data_Bank)
+       WHERE $type IN labels(n) AND n.name IS NOT NULL AND toLower(toString(n.name)) CONTAINS $frag
+         AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}
+       RETURN n.ref_id AS ref_id, toString(n.name) AS name, n.description AS description
+       ORDER BY CASE WHEN toLower(toString(n.name)) STARTS WITH $frag THEN 0 ELSE 1 END, toLower(toString(n.name))
+       LIMIT ${cap}`,
+      { type: type.trim(), frag, ns: namespace ?? this.bolt.namespace, default_ns: DEFAULT_NAMESPACE, blocked_statuses: BLOCKED_NODE_STATUSES },
+    );
+    return rows.map((r) => ({
+      ref_id: String(r["ref_id"]),
+      node_type: type.trim(),
+      name: String(r["name"]),
+      ...(typeof r["description"] === "string" && r["description"] ? { description: r["description"] as string } : {}),
+    }));
   }
 
   /** GET …/connection-counts: `(edge_type, target_type, direction) → count`,
