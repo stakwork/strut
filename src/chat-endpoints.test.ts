@@ -998,9 +998,9 @@ describe("chat endpoints", () => {
     res = await answer(form, "e-form", { action: "accept", content: { env: "staging" } });
     assert.equal(res.status, 400);
     assert.match(await error(res), /content\.repo: is required/);
-    res = await answer(form, "e-form", { action: "accept", content: { repo: "a/b", env: "dev" } });
+    res = await answer(form, "e-form", { action: "accept", content: { repo: 5, env: "staging" } });
     assert.equal(res.status, 400);
-    assert.match(await error(res), /content\.env: must be one of staging \| production/);
+    assert.match(await error(res), /content\.repo: must be a string/);
     assert.equal((await answer(form, "e-other", { action: "cancel" })).status, 404);
     assert.equal((await answer("nope", "e-form", { action: "cancel" })).status, 404);
     // A secret is never accepted through the form door…
