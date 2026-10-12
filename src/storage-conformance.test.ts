@@ -121,6 +121,27 @@ for (const impl of runImpls) {
       assert.equal(summarizeFromEvents(WF, "nope", await store.getRunEvents(WF, "nope")), null);
     });
 
+    it("writeRunOutput → getRunOutput: null until written, kept beside the log, gone with deleteRuns, bad paths refused", async () => {
+      // A real run has events before any tool writes its output; `deleteRuns`
+      // (MemoryRunStore) enumerates runs from those, like every other method.
+      await store.append(WF, "1000", ev("1000", "run.start"));
+      assert.equal(await store.getRunOutput(WF, "1000", "001-bash.json"), null);
+      await store.writeRunOutput(WF, "1000", "001-bash.json", '{"big":"x"}');
+      assert.equal(await store.getRunOutput(WF, "1000", "001-bash.json"), '{"big":"x"}');
+      // Nested tool-call paths (a sub-agent) are distinct relative paths.
+      await store.writeRunOutput(WF, "1000", "002-agent/001-bash.json", '{"nested":true}');
+      assert.equal(await store.getRunOutput(WF, "1000", "002-agent/001-bash.json"), '{"nested":true}');
+      assert.equal(await store.getRunOutput(WF, "1000", "001-bash.json"), '{"big":"x"}', "unaffected by the nested write");
+      // Not shared across runs or workflows.
+      assert.equal(await store.getRunOutput(WF, "1001", "001-bash.json"), null);
+      assert.equal(await store.getRunOutput("other", "1000", "001-bash.json"), null);
+      // Traversal and absolute-looking segments are refused, not silently resolved.
+      await assert.rejects(() => store.writeRunOutput(WF, "1000", "../escape.json", "x"));
+      await assert.rejects(() => store.getRunOutput(WF, "1000", "../../etc/passwd"));
+      await store.deleteRuns(WF);
+      assert.equal(await store.getRunOutput(WF, "1000", "001-bash.json"), null);
+    });
+
     it("tailEvents: history, then live follow, closing at the terminal event", async () => {
       await store.append(WF, "1", ev("1", "run.start"));
       const seen: string[] = [];

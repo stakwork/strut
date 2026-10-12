@@ -97,6 +97,15 @@ export interface StepContext<TServices = unknown> {
    *  services hook. Subflow frames and an agent's tool-call steps share the
    *  run's list. Optional (absent outside the runner, like `registry`);
    *  a hard kill skips it like any in-process `finally`. */
+  /** Save a value's FULL, untruncated JSON serialization beside the run's
+   *  log (`RunStore.writeRunOutput`) — highlight-to-trace capture.
+   *  `relPath` becomes part of a file path (segments only; the caller
+   *  sanitizes it, e.g. from an event path) and is what the tool event's
+   *  `outputRef` names. `wrapToolsWithEmit`'s own use; open to any step
+   *  that wants a byte-identical record beside a truncated preview.
+   *  Optional — absent outside the runner, like `registry`; a step that
+   *  can't reach it just has no `outputRef` to report. */
+  saveOutput?: (relPath: string, content: string) => Promise<void>;
   onRunEnd?: (fn: (info: RunEndInfo) => unknown) => void;
 }
 
@@ -291,6 +300,21 @@ export interface RunEvent {
    *  the output's `withMessages` marker; never part of the output itself,
    *  so templates, parent agents and run.json stay slim. */
   messages?: unknown[];
+  /** On a tool call's `step.start`/`step.end`/`step.error` (an agent's
+   *  built-in or `agentTools`-granted tool, `wrapToolsWithEmit` in
+   *  steps/core/agent.ts): the AI SDK's own id for that call, read from
+   *  the tool's `execute(input, opts)` — the key that joins this event to
+   *  the SAME call's turn in the agent's recorded transcript
+   *  (`step.end.messages`). Absent outside a tool call. */
+  toolCallId?: string;
+  /** On a tool call's `step.end`: where its FULL, untruncated output was
+   *  saved (`RunStore.writeRunOutput`) — a relative path served by
+   *  `GET /workflows/:wf/runs/:id/outputs/*`. `output` on the same event
+   *  stays the existing 1,500-char preview; this is the byte-identical
+   *  original, for highlight-to-trace capture. Absent on an old run
+   *  (predates capture) or when nothing needed saving (output already fit
+   *  the preview whole). */
+  outputRef?: string;
 }
 
 // ── Provenance convention: which graph nodes did a step touch? ─────────────

@@ -840,6 +840,36 @@ describe("createStrut", () => {
     assert.equal(missing.status, 404);
   });
 
+  it("GET …/runs/:runId/outputs/* serves a tool call's full output, 404s a missing one, and rejects traversal", async () => {
+    const memStore = new MemoryRunStore();
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      store: memStore,
+      serveUi: false,
+      enableChat: false,
+    });
+    await memStore.append("outputs-wf", "run-1", {
+      ts: new Date().toISOString(),
+      runId: "run-1",
+      path: "outputs-wf/001-bash",
+      type: "step.end",
+      toolCallId: "call_1",
+      output: "preview",
+      outputRef: "001-bash.json",
+    });
+    await memStore.writeRunOutput("outputs-wf", "run-1", "001-bash.json", JSON.stringify({ full: "x".repeat(2000) }));
+
+    const ok = await strut.app.request("/workflows/outputs-wf/runs/run-1/outputs/001-bash.json");
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { full: "x".repeat(2000) });
+
+    const missing = await strut.app.request("/workflows/outputs-wf/runs/run-1/outputs/002-bash.json");
+    assert.equal(missing.status, 404);
+
+    const traversal = await strut.app.request("/workflows/outputs-wf/runs/run-1/outputs/../../etc/passwd");
+    assert.ok(traversal.status === 400 || traversal.status === 404, `traversal must not succeed, got ${traversal.status}`);
+  });
+
   it("custom steps can `import \"strut\"` from a workspace outside the package tree", async () => {
     // tempDir is under the OS tmpdir — no `strut` package is reachable by
     // walking up from it. The resolve hook (strut-resolver.ts) maps the bare

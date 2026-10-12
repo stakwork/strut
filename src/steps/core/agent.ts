@@ -675,6 +675,37 @@ function summarizeForEvent(v: unknown): string {
   return s.length > 1500 ? s.slice(0, 1500) + "\n[… truncated for event log …]" : s;
 }
 
+/** An event path (`wf/003-bash`, nested `wf/012-agent/003-bash`) as a safe
+ *  relative file path for `RunStore.writeRunOutput` — plain segments, no
+ *  `#` (foreach iteration marker) or other characters a filesystem balks
+ *  at, but still readable and still joinable to the event path by eye. */
+function sanitizeOutputPath(path: string): string {
+  return path
+    .split("/")
+    .map((seg) => seg.replace(/[^A-Za-z0-9_.-]/g, "_"))
+    .join("/");
+}
+
+/** The FULL JSON a tool call's output is saved as (highlight-to-trace
+ *  capture) — never binary. `withMedia`'s marker is non-enumerable, so a
+ *  plain `JSON.stringify` already leaves the bytes out; this just names
+ *  what was left out (mediaType, filename, byte count) instead of silently
+ *  dropping it. */
+function fullOutputJson(out: unknown): string {
+  const media = mediaOf(out);
+  if (media && typeof out === "object" && out !== null && !Array.isArray(out)) {
+    return JSON.stringify({
+      ...(out as Record<string, unknown>),
+      _media: media.map((m) => ({
+        mediaType: m.mediaType,
+        filename: m.filename,
+        bytes: typeof m.data === "string" ? m.data.length : m.data.byteLength,
+      })),
+    });
+  }
+  return JSON.stringify(out ?? null);
+}
+
 /**
  * Turn a list of registry step-types into AI-SDK tools the agent can call — the
  * "tools ARE steps" model. Each step's `input` Zod schema becomes the tool's
@@ -912,7 +943,14 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
       const n = ++counter.n;
       const path = `${basePath}/${String(n).padStart(3, "0")}-${name}`;
       const startedAt = Date.now();
-      await emit({ type: "step.start", path, stepType: `tool:${name}`, input });
+      // The AI SDK's own id for this call (`opts.toolCallId`) — the key that
+      // joins this event to the same call's turn in the recorded transcript
+      // (`step.end.messages`), read by highlight-to-trace capture.
+      const toolCallId =
+        typeof opts === "object" && opts !== null && typeof (opts as { toolCallId?: unknown }).toolCallId === "string"
+          ? (opts as { toolCallId: string }).toolCallId
+          : undefined;
+      await emit({ type: "step.start", path, stepType: `tool:${name}`, input, ...(toolCallId ? { toolCallId } : {}) });
       try {
         // Thread this call's event path to the tool (registry tools adopt it
         // as their child ctx path, so nested emits land under this span).
@@ -923,18 +961,43 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
         const out = await (orig as (i: unknown, o: unknown) => Promise<unknown>)(input, optsWithPath);
         const nodes = accessedNodesOf(out);
         const messages = messagesOf(out); // a sub-agent's session
+        const preview = summarizeForEvent(out);
+        // The full output, saved only when the preview actually cut
+        // something — a tool call whose output fit whole needs no second
+        // copy. `saveOutput` is a runner capability (absent in unit tests
+        // that invoke a step bare); a failed save is a warning, never a
+        // failed tool call — the preview still reaches the model either way.
+        let outputRef: string | undefined;
+        const full = fullOutputJson(out);
+        if (ctx.saveOutput && full.length > 1500) {
+          const relPath = `${sanitizeOutputPath(path)}.json`;
+          try {
+            await ctx.saveOutput(relPath, full);
+            outputRef = relPath;
+          } catch (e) {
+            console.warn(`[agent] failed to save full output for "${path}":`, e);
+          }
+        }
         await emit({
           type: "step.end",
           path,
           stepType: `tool:${name}`,
-          output: summarizeForEvent(out),
+          output: preview,
           durationMs: Date.now() - startedAt,
+          ...(toolCallId ? { toolCallId } : {}),
+          ...(outputRef ? { outputRef } : {}),
           ...(nodes ? { nodes } : {}),
           ...(messages ? { messages } : {}),
         });
         return out;
       } catch (e) {
-        await emit({ type: "step.error", path, stepType: `tool:${name}`, error: { message: (e as Error).message } });
+        await emit({
+          type: "step.error",
+          path,
+          stepType: `tool:${name}`,
+          error: { message: (e as Error).message },
+          ...(toolCallId ? { toolCallId } : {}),
+        });
         throw e;
       }
     };

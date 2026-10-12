@@ -285,10 +285,17 @@ describe("agentTools (buildRegistryTools — tools are steps)", () => {
 });
 
 describe("wrapToolsWithEmit (per-call nested run events)", () => {
-  function makeCtx(events: any[]): StepContext {
+  function makeCtx(events: any[], saved?: Map<string, string>): StepContext {
     return {
       runId: "r1", path: "wf/agent", scope: {}, input: undefined,
       emit: async (e: any) => { events.push(e); }, services: undefined,
+      ...(saved
+        ? {
+            saveOutput: async (relPath: string, content: string) => {
+              saved.set(relPath, content);
+            },
+          }
+        : {}),
     } as unknown as StepContext;
   }
 
@@ -363,6 +370,64 @@ describe("wrapToolsWithEmit (per-call nested run events)", () => {
     await tools.plain.execute({});
     const plainEnd = events.find((e) => e.type === "step.end" && e.path.endsWith("-plain"));
     assert.ok(!("nodes" in plainEnd), "unmarked results emit no nodes field");
+  });
+
+  it("records toolCallId on step.start/step.end/step.error and saves a large output in full under outputRef", async () => {
+    const events: any[] = [];
+    const saved = new Map<string, string>();
+    const big = { text: "x".repeat(3000) };
+    const tools: Record<string, any> = {
+      bash: { execute: async () => big },
+      boom: { execute: async () => { throw new Error("nope"); } },
+    };
+    wrapToolsWithEmit(tools, makeCtx(events, saved));
+
+    await tools.bash.execute({}, { toolCallId: "call_1" });
+    const start = events.find((e) => e.type === "step.start" && e.path.endsWith("-bash"));
+    const end = events.find((e) => e.type === "step.end" && e.path.endsWith("-bash"));
+    assert.equal(start.toolCallId, "call_1");
+    assert.equal(end.toolCallId, "call_1");
+    assert.ok(end.output.length <= 1550, "step.end.output is still the 1,500-char preview");
+    assert.ok(typeof end.outputRef === "string" && end.outputRef.endsWith(".json"));
+    const full = saved.get(end.outputRef);
+    assert.equal(full, JSON.stringify(big));
+    assert.ok(full!.length > 1500, "the saved file holds the UNtruncated output");
+
+    await assert.rejects(() => tools.boom.execute({}, { toolCallId: "call_2" }));
+    const errEvent = events.find((e) => e.type === "step.error");
+    assert.equal(errEvent.toolCallId, "call_2");
+  });
+
+  it("does not write an outputRef for a small output that never needed truncation", async () => {
+    const events: any[] = [];
+    const saved = new Map<string, string>();
+    const tools: Record<string, any> = { small: { execute: async () => ({ ok: true }) } };
+    wrapToolsWithEmit(tools, makeCtx(events, saved));
+    await tools.small.execute({});
+    const end = events.find((e) => e.type === "step.end");
+    assert.ok(!("outputRef" in end));
+    assert.equal(saved.size, 0);
+  });
+
+  it("nested agent tool-call paths (sub-agent) save distinct output files, not colliding", async () => {
+    const events: any[] = [];
+    const saved = new Map<string, string>();
+    const big1 = { v: "a".repeat(2000) };
+    const big2 = { v: "b".repeat(2000) };
+    // Two independent spans sharing the same base path (as two sub-agent
+    // tool calls nested under the same parent would) must not collide on
+    // file name — each call gets its own counter-numbered segment.
+    const toolsA: Record<string, any> = { run: { execute: async () => big1 } };
+    const toolsB: Record<string, any> = { run: { execute: async () => big2 } };
+    wrapToolsWithEmit(toolsA, makeCtx(events, saved));
+    wrapToolsWithEmit(toolsB, { ...makeCtx(events, saved), path: "wf/agent/002-sub" } as StepContext);
+
+    await toolsA.run.execute({});
+    await toolsB.run.execute({});
+    const refs = events.filter((e) => e.type === "step.end").map((e) => e.outputRef);
+    assert.equal(new Set(refs).size, refs.length, "no filename collision");
+    assert.equal(saved.get(refs[0]), JSON.stringify(big1));
+    assert.equal(saved.get(refs[1]), JSON.stringify(big2));
   });
 
   it("lifts a sub-agent's session onto step.end as `messages`, leaving the model-facing result slim", async () => {

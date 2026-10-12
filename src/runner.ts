@@ -175,6 +175,13 @@ interface Exec {
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
   disposers: Array<(info: RunEndInfo) => unknown>;
+  /** `ctx.saveOutput` (highlight-to-trace capture) — bound once to the
+   *  TOP-LEVEL workflow name + this run's id (the key every event is
+   *  stored under, `emit`'s own `wfName`/`runId`; a subflow frame reuses
+   *  the same `exec`, so this never needs to change per nested flow).
+   *  Absent when the store doesn't support it (none today; kept optional
+   *  so a future custom `RunStore` isn't forced to implement it). */
+  saveOutput?: (relPath: string, content: string) => Promise<void>;
 }
 
 export async function runWorkflow<TServices = unknown>(
@@ -217,6 +224,11 @@ export async function runWorkflow<TServices = unknown>(
     tallyStep(stepCounts, full);
     await onEvent?.(full);
   };
+  // Highlight-to-trace capture: one JSON file per tool call's full output,
+  // keyed the same way as every event this run writes (the top-level
+  // `wfName`/`runId` — a subflow's tool calls still belong to THIS run).
+  const saveOutput = (relPath: string, content: string): Promise<void> =>
+    store.writeRunOutput(wfName, runId, relPath, content);
 
   // Validate input
   let parsedInput: unknown;
@@ -307,6 +319,7 @@ export async function runWorkflow<TServices = unknown>(
     principal: opts?.principal,
     job: opts?.job,
     disposers: [],
+    saveOutput,
   };
 
   try {
@@ -785,6 +798,7 @@ async function dispatchStep(
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),
+        ...(exec.saveOutput ? { saveOutput: exec.saveOutput } : {}),
       };
 
       if (exec.controller) {
