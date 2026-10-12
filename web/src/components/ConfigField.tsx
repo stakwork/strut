@@ -37,6 +37,12 @@ function useSuggestions(kind: api.FieldDesc["suggest"]): Suggestion[] | null {
 }
 // ── Config Field Renderer ──────────────────────────────────────────────────
 
+// A select with `FieldDesc.other` (the builder's questions) ends in
+// "Other…", which opens a text box: the typed text IS the value, so a value
+// not among the options means the user answered in their own words. The
+// sentinel is the select's own; it never reaches the value.
+const OTHER = "\u0000other";
+
 export function ConfigField(props: {
   field: api.FieldDesc;
   value: unknown;
@@ -46,29 +52,51 @@ export function ConfigField(props: {
   const label = `${field.label ?? humanize(field.name)}${field.required ? "" : " (optional)"}`;
   // Hooks run unconditionally; only string fields carry a `suggest`.
   const suggestions = useSuggestions(field.kind === "string" ? field.suggest : undefined);
+  // "Other…" chosen but nothing typed yet — indistinguishable from "no pick" by value alone.
+  const [otherOpen, setOtherOpen] = useState(false);
 
   if (field.kind === "enum" && field.enumValues) {
+    const current = value != null ? String(value) : (field.default != null ? String(field.default) : "");
+    const own = !!field.other && (otherOpen || (current !== "" && !field.enumValues.includes(current)));
     return (
       <div class="flyout-field">
         <label title={field.description}>{label}</label>
         <select
-          value={value != null ? String(value) : (field.default != null ? String(field.default) : "")}
-          onChange={(e) => onChange((e.target as HTMLSelectElement).value)}
+          value={own ? OTHER : current}
+          onChange={(e) => {
+            const v = (e.target as HTMLSelectElement).value;
+            setOtherOpen(v === OTHER);
+            onChange(v === OTHER ? "" : v);
+          }}
         >
           {!field.required && <option value="">--</option>}
           {field.enumValues.map((v) => (
             <option key={v} value={v}>{field.enumLabels?.[v] ?? v}</option>
           ))}
+          {field.other && <option value={OTHER}>Other…</option>}
         </select>
+        {own && (
+          <input
+            type="text"
+            value={field.enumValues.includes(current) ? "" : current}
+            placeholder="Your own answer"
+            autoFocus
+            onInput={(e) => onChange((e.target as HTMLInputElement).value)}
+          />
+        )}
       </div>
     );
   }
 
-  // A checkbox list: the value is the picked subset, in `enumValues` order.
+  // A checkbox list: the value is the picked subset, in `enumValues` order —
+  // plus, with `other`, the user's own words as one last item.
   if (field.kind === "multi" && field.enumValues) {
-    const picked = new Set<string>(
-      Array.isArray(value) ? (value as string[]) : Array.isArray(field.default) ? (field.default as string[]) : [],
-    );
+    const items = Array.isArray(value) ? (value as string[]) : Array.isArray(field.default) ? (field.default as string[]) : [];
+    const picked = new Set<string>(items);
+    const ownText = items.find((v) => !field.enumValues!.includes(v)) ?? "";
+    const own = !!field.other && (otherOpen || ownText !== "");
+    const emit = (next: Set<string>, text: string) =>
+      onChange([...field.enumValues!.filter((x) => next.has(x)), ...(text ? [text] : [])]);
     return (
       <div class="flyout-field">
         <label title={field.description}>{label}</label>
@@ -82,12 +110,35 @@ export function ConfigField(props: {
                   const next = new Set(picked);
                   if ((e.target as HTMLInputElement).checked) next.add(v);
                   else next.delete(v);
-                  onChange(field.enumValues!.filter((x) => next.has(x)));
+                  emit(next, ownText);
                 }}
               />
               {field.enumLabels?.[v] ?? v}
             </label>
           ))}
+          {field.other && (
+            <label class="flyout-checkbox-label">
+              <input
+                type="checkbox"
+                checked={own}
+                onChange={(e) => {
+                  const on = (e.target as HTMLInputElement).checked;
+                  setOtherOpen(on);
+                  if (!on) emit(picked, "");
+                }}
+              />
+              Other…
+            </label>
+          )}
+          {own && (
+            <input
+              type="text"
+              value={ownText}
+              placeholder="Your own answer"
+              autoFocus
+              onInput={(e) => emit(picked, (e.target as HTMLInputElement).value)}
+            />
+          )}
         </div>
       </div>
     );

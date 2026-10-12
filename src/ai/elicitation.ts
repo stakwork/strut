@@ -12,6 +12,12 @@ import { randomBytes } from "node:crypto";
  * accept | decline | cancel`, `content`, `elicitationId`. A secret is never
  * form mode: `request_secret` is URL mode, and the value is typed into a
  * strut page that writes the store — the model only ever sees the NAME.
+ *
+ * One departure from the RFD: a select's options are what the model OFFERED,
+ * never a constraint. The form always adds "Other…" (a text box), and the
+ * validator takes any string there, so a user whose answer the model did not
+ * foresee types it instead of declining — a decline used to come back as
+ * the model picking an option for them.
  */
 
 export const ELICITATION_PREFIX = "[elicitation-response]";
@@ -325,11 +331,8 @@ function checkValue(where: string, s: PrimitiveSchema, v: unknown): unknown {
   switch (s.type) {
     case "string": {
       if (typeof v !== "string") fail(where, "must be a string");
-      const opts = optionsOf(s);
-      if (opts) {
-        if (!opts.some((o) => o.const === v)) fail(where, `must be one of ${opts.map((o) => o.const).join(" | ")}`);
-        return v;
-      }
+      // A select takes the user's own words too (the form's "Other…").
+      if (optionsOf(s)) return v;
       if (s.minLength !== undefined && v.length < s.minLength) fail(where, `must be at least ${s.minLength} characters`);
       if (s.maxLength !== undefined && v.length > s.maxLength) fail(where, `must be at most ${s.maxLength} characters`);
       if (s.pattern !== undefined && !new RegExp(s.pattern, "u").test(v)) fail(where, `must match ${s.pattern}`);
@@ -349,8 +352,8 @@ function checkValue(where: string, s: PrimitiveSchema, v: unknown): unknown {
       return v;
     case "array": {
       if (!Array.isArray(v)) fail(where, "must be an array");
-      const allowed = (optionsOf(s) ?? []).map((o) => o.const);
-      for (const item of v) if (typeof item !== "string" || !allowed.includes(item)) fail(where, `every item must be one of ${allowed.join(" | ")}`);
+      // The options plus, at most, the user's own words — never checked against the list.
+      for (const item of v) if (typeof item !== "string") fail(where, "every item must be a string");
       if (new Set(v).size !== v.length) fail(where, "has duplicate items");
       if (s.minItems !== undefined && v.length < s.minItems) fail(where, `pick at least ${s.minItems}`);
       if (s.maxItems !== undefined && v.length > s.maxItems) fail(where, `pick at most ${s.maxItems}`);

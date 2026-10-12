@@ -1336,7 +1336,15 @@ and the child env is scrubbed by construction).
   secret — the server builds a RELATIVE link to its own page
   (`?chat=<id>&elicit=<eid>`), and the model, transcript, events, callback
   and logs only ever carry the NAME (`ask_user` refuses a field whose name
-  or title looks like a credential). **Transport:** the tool records the
+  or title looks like a credential). A select's options are what the model
+  OFFERED, never a constraint: the form always ends a single or multi
+  select with "Other…" (a text box; `FieldDesc.other`, set only by the
+  question mapper, so a step's Zod enum stays strict), `validateContent`
+  takes any string there, and the prompt tells the model the value is the
+  user's own answer. The prompt also says a `decline` is not a pick: say
+  what is needed in one line and stop — before this a user whose answer
+  was not among the options hit Decline and watched the model choose for
+  them (2026-10-12). **Transport:** the tool records the
   question on `ChatMeta.elicitation` (ONE per chat; a new ask replaces it,
   the replaced id comes back; persisted, so it survives a restart) and
   returns `{ elicitationId, status: "asked" }`; the agent's `stopWhen` ends
@@ -1360,7 +1368,8 @@ and the child env is scrubbed by construction).
   asked it `text` IS the question — a host that only reads text still sees
   it and a prose reply through `POST /chat` answers it. **UI:** the flyout
   renders `meta.elicitation` as `ElicitationForm` (fields via
-  `web/src/elicitation.ts` → `ConfigField`, which gained a `multi` kind);
+  `web/src/elicitation.ts` → `ConfigField`, which gained a `multi` kind
+  and the `other` text box);
   the response renders as a notice card (`notice.ts`); `elicit` joins the
   embed deep-link params, set while open and dropped once closed. Tests: the
   pure module, the notifier's human path, the endpoints, a sentinel-secret
