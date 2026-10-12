@@ -161,7 +161,7 @@ strut/
         │   ├── ArtifactViewer.tsx    # the eye beside an artifact link (ValueFields): a modal showing the file RENDERED — markdown via Markdown.tsx, media inline, pdf/html in a frame (html sandboxed), text in a pre — portaled onto <body>
         │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate / Versions (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
         │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
-        │   ├── VersionsPanel.tsx     # the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing)
+        │   ├── VersionsPanel.tsx     # the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing) + a YAML toggle per version: the file as published (GET /workflows/:name/:version, fetched on first open), read-only in SourceCode
         │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage; renders the open question's form; the context meter in its header)
         │   ├── ElicitationForm.tsx   # the builder's question at the end of the transcript: a form (Submit / Decline / ✕) or, for a secret, a password field posting to the /secret endpoint — the page a host's link opens (?chat=&elicit=)
@@ -172,7 +172,7 @@ strut/
         │   ├── Markdown.tsx          # tiny markdown renderer for chat output
         │   ├── RunInputPopover.tsx   # input-payload editor when triggering a run
         │   ├── SecretsDialog.tsx     # manage deployment secrets (write-only values; names+meta listed)
-        │   ├── SourceCode.tsx        # a step's TypeScript source, syntax-highlighted (Lezer's TS parser → `tok-*` spans colored in components.css) — the Source toggle in the step editor + Step Info flyouts
+        │   ├── SourceCode.tsx        # read-only, syntax-highlighted source: a step's TypeScript (Lezer's TS parser) or a workflow version's YAML (`language: "yaml"`, the lang-yaml parser already bundled for YamlEditor) → `tok-*` spans colored in components.css — the Source toggle in the step editor + Step Info flyouts, the YAML toggle in the Versions tab
         │   ├── StepEditFlyout.tsx    # edit step (id / type / config / depends / options)
         │   ├── StepRunFlyout.tsx     # view a step's run I/O (leaf: input/output; container: aggregate summary)
         │   ├── WalkView.tsx          # a graph_walk call in the chat: paced hop playback (live) / final state + replay (history), node detail, open run

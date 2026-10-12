@@ -408,8 +408,10 @@ export const publishWorkflowYaml = (
     body: JSON.stringify({ version, yaml: yamlStr, description, source: "ui" }),
   });
 
+/** One version's YAML as published (`GET /workflows/:name/:version`). */
 export const getWorkflowYaml = async (name: string, version: string) => {
   const res = await apiFetch(`/workflows/${name}/${version}`);
+  if (!res.ok) throw new Error(`Failed to load ${version}: ${res.status}`);
   return res.text();
 };
 
