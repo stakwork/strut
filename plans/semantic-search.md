@@ -482,6 +482,24 @@ Schemas as they then are — the lists jarvis's own library declares.
   after the index's top k like `type` does, so a search with it
   over-fetches both halves: the vector query as a typed one does, the
   keyword query's `limit` the same way.
+- **Keeping results tied by an edge (`linked`).** A `Concept` is a
+  higher-level summary an agent reading code should find, but swarm38's
+  390 live ones come from five writers: 203 gitree feature summaries
+  ("Automated Pod Health Monitoring"), ~100 workspace learnings and trees
+  (Job, Workflow Builder, "Coding Verification"), 71 research playbooks,
+  12 agent rules and ops facts, 4 strays — all one type, all embedded.
+  Only the summaries reach code: each has `MODIFIES` edges to the `File`
+  nodes it covers, and nothing else has one. `repo` is not the mark (218
+  carry it, 15 of them rules and learnings), nor an edge to `Repository`
+  (2). So the caller names the edge: `linked`, comma-separated on
+  `graph/graph-search` — `EDGE>Type` an edge from the result
+  (`MODIFIES>File`), `EDGE<Type` one into it (`TOUCHES<PullRequest`), a
+  result passing with any one. Each entry is an `EXISTS` (`linkedClause`)
+  in the same WHERE as `type` and `exclude`, on a live edge to a live
+  node; the type resolves like `type`'s, and both names are written into
+  the query backquoted (Cypher takes neither as a parameter) after
+  `parseLinks` refused anything that is not an identifier. A post-filter
+  like `exclude`, so it over-fetches the same way.
 - `input_q` / `output_q` are unchanged (per-label indexes from
   `vector_index`).
 

@@ -63,8 +63,8 @@ const LUCENE_SPECIAL = new Set('+-!(){}[]^"~*?:\\/'.split(""));
  *  5): the database cannot filter a vector query, so `type` is applied
  *  after the nearest-k cut. Start at `cap × start`, multiply by `growth`
  *  until `cap` survive or `k` reaches `maxK`. Constants to tune on a swarm.
- *  `exclude` is applied after the cut too, so a search with it widens both
- *  halves — the keyword one's `limit` as `k`. */
+ *  `exclude` and `linked` are applied after the cut too, so a search with
+ *  either widens both halves — the keyword one's `limit` as `k`. */
 export const TYPED_OVERFETCH = { start: 10, growth: 4, maxK: 2000 } as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -107,6 +107,10 @@ export interface SearchParams {
    *  path part (`__tests__`, `src/lib/mock`) or a file-name glob
    *  (`*.test.ts`). A node with no `file` is never left out. */
   exclude?: string[];
+  /** Keep only nodes with an edge of a type to a node of a type
+   *  (`parseLinks`): `MODIFIES>File` leaving the node, `TOUCHES<PullRequest`
+   *  arriving at it. A node passes with any one. */
+  linked?: string[];
 }
 
 export interface SearchResult {
@@ -228,6 +232,40 @@ export function excludeRegex(entries: string[]): string | null {
     alts.push(/[*?]/.test(e) ? re : `${re}(?:/.*)?`);
   }
   return alts.length ? `(?i)(?:.*/)?(?:${alts.join("|")})` : null;
+}
+
+/** One `linked` entry: an edge type, its direction (`>` leaves the result,
+ *  `<` arrives at it), and the type of the node at its other end. */
+export interface Link {
+  edge: string;
+  direction: ">" | "<";
+  type: string;
+}
+
+/** `linked`'s entries, each `EDGE>Type` or `EDGE<Type`; blank ones are
+ *  ignored, anything else throws. */
+export function parseLinks(entries: string[]): Link[] {
+  const links: Link[] = [];
+  for (const raw of entries) {
+    if (!raw.trim()) continue;
+    const m = /^\s*([A-Za-z_]\w*)\s*([<>])\s*([A-Za-z_]\w*)\s*$/.exec(raw);
+    if (!m) throw new GraphReadError("INVALID_INPUT", `linked: "${raw.trim()}" is not EDGE>Type or EDGE<Type (e.g. MODIFIES>File)`);
+    links.push({ edge: m[1]!, direction: m[2] as Link["direction"], type: m[3]! });
+  }
+  return links;
+}
+
+/** `links` as ONE condition on the result `n`, null for none: a live edge
+ *  of one of their types, in its direction, to a live node of its type.
+ *  Cypher takes neither a relationship type nor a label as a parameter, so
+ *  both are written into the query, backquoted. */
+export function linkedClause(links: Link[]): string | null {
+  const name = (s: string) => `\`${s.replace(/`/g, "``")}\``;
+  const alts = links.map(({ edge, direction, type }) => {
+    const rel = direction === ">" ? `-[e:${name(edge)}]->` : `<-[e:${name(edge)}]-`;
+    return `EXISTS { MATCH (n)${rel}(x:${name(type)}) WHERE ${EDGE_LIVE("e")} AND ${NODE_LIVE("x")} }`;
+  });
+  return alts.length ? `(${alts.join(" OR ")})` : null;
 }
 
 export function escapeLucene(value: string): string {
@@ -704,6 +742,8 @@ export class GraphReader {
     const domains = (p.domains ?? []).map((d) => d.toLowerCase()).filter(Boolean);
 
     const types = p.types?.length ? await this.canonicalTypes(p.types) : undefined;
+    const links = parseLinks(p.linked ?? []);
+    for (const l of links) l.type = (await this.canonicalTypes([l.type]))[0] ?? l.type;
     // Each retriever runs as its own auto-commit statement (like jarvis's
     // per-query sessions): a failing layer must not poison the others, which
     // it would inside one managed transaction.
@@ -736,6 +776,10 @@ export class GraphReader {
         clauses.push(`(n.file IS NULL OR NOT n.file =~ $exclude_re)`);
         base["exclude_re"] = excludeRe;
       }
+      // `linked`: an EXISTS per entry, on the same rows.
+      const linked = linkedClause(links);
+      if (linked) clauses.push(linked);
+      const postFilter = Boolean(excludeRe || linked);
       const filter = clauses.join(" AND ");
       const cap = fetchLimit(limit, skip);
 
@@ -779,10 +823,10 @@ export class GraphReader {
 
       if (q && ftIndexes.length) {
         fulltext = await layer("fulltext", async () => {
-          // `exclude` is a WHERE after the index's limit, so it widens the
-          // limit the way a typed vector query widens k.
+          // `exclude` and `linked` are a WHERE after the index's limit, so
+          // they widen the limit the way a typed vector query widens k.
           const query = (lucene: string) =>
-            excludeRe ? overfetch(cap, (k) => runFulltext(ftIndexes, lucene, k)) : runFulltext(ftIndexes, lucene, cap);
+            postFilter ? overfetch(cap, (k) => runFulltext(ftIndexes, lucene, k)) : runFulltext(ftIndexes, lucene, cap);
           let hits = await query(buildFulltextQuery(q));
           // Fuzzy fallback on zero hits (no gs operators → always eligible),
           // except for an exact query: its fragments ORed back together are
@@ -808,11 +852,11 @@ export class GraphReader {
       if (q && this.opts.embedder && vecIndexes.length) {
         semantic = await layer("semantic", async () => {
           const [embedding] = await this.opts.embedder!.embed([q]);
-          // `type` and `exclude` are a WHERE after the nearest-k cut (the
-          // database cannot filter a vector query), so a filtered search
-          // asks for more and widens until `cap` survive — the query
-          // embedded once.
-          if (!types?.length && !excludeRe) return runVector(vecIndexes, cap, embedding!);
+          // `type`, `exclude` and `linked` are a WHERE after the nearest-k
+          // cut (the database cannot filter a vector query), so a filtered
+          // search asks for more and widens until `cap` survive — the
+          // query embedded once.
+          if (!types?.length && !postFilter) return runVector(vecIndexes, cap, embedding!);
           return overfetch(cap, (k) => runVector(vecIndexes, k, embedding!));
         }, []);
         if (semantic.length >= cap) semTruncated = true;

@@ -20,7 +20,9 @@ import {
   fusionWeights,
   inheritedAttributes,
   isExactQuery,
+  linkedClause,
   overfetch,
+  parseLinks,
   pyRound,
   rankHits,
   routeIndexes,
@@ -122,6 +124,27 @@ describe("search helpers (pure)", () => {
       leftOut(["[slug]", "(auth)", "a+b", "v1.2"], ["src/app/[slug]/page.tsx", "src/app/s/page.tsx", "src/app/(auth)/login.ts", "src/app/auth/login.ts", "x/a+b/y.ts", "x/aab/y.ts", "x/v1.2/y.ts", "x/v1x2/y.ts"]),
       ["src/app/[slug]/page.tsx", "src/app/(auth)/login.ts", "x/a+b/y.ts", "x/v1.2/y.ts"],
     );
+  });
+  it("linked: EDGE>Type leaves the result, EDGE<Type arrives at it; blanks ignored, anything else refused", () => {
+    assert.deepEqual(parseLinks(["MODIFIES>File", " TOUCHES < PullRequest ", "", "  "]), [
+      { edge: "MODIFIES", direction: ">", type: "File" },
+      { edge: "TOUCHES", direction: "<", type: "PullRequest" },
+    ]);
+    assert.deepEqual(parseLinks([]), []);
+    for (const bad of ["MODIFIES", ">File", "MODIFIES>", "MODIFIES>File>Function", "MODIFIES-File", "MOD IFIES>File", "MODIFIES>`File`", "MODIFIES>File) DETACH DELETE (n"]) {
+      assert.throws(() => parseLinks([bad]), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_INPUT", bad);
+    }
+  });
+  it("linked: one EXISTS per entry, ORed, live edges to live nodes, names backquoted; none → null", () => {
+    assert.equal(linkedClause([]), null);
+    const live = "WHERE ((e.is_muted IS NULL OR e.is_muted <> true) AND (e.is_deleted IS NULL OR e.is_deleted <> true)) AND (x.deleted_at IS NULL AND (x.is_deleted IS NULL OR x.is_deleted <> true))";
+    assert.equal(linkedClause(parseLinks(["MODIFIES>File"])), `(EXISTS { MATCH (n)-[e:\`MODIFIES\`]->(x:\`File\`) ${live} })`);
+    assert.equal(
+      linkedClause(parseLinks(["MODIFIES>File", "TOUCHES<PullRequest"])),
+      `(EXISTS { MATCH (n)-[e:\`MODIFIES\`]->(x:\`File\`) ${live} } OR EXISTS { MATCH (n)<-[e:\`TOUCHES\`]-(x:\`PullRequest\`) ${live} })`,
+    );
+    // A canonical type name from the graph is written as a name whatever it holds.
+    assert.match(linkedClause([{ edge: "A", direction: ">", type: "We`ird" }])!, /\(x:`We``ird`\)/);
   });
   it("fetch limit mirrors jarvis", () => {
     assert.equal(fetchLimit(10, 0), 120);
@@ -705,5 +728,87 @@ describe("exclude: leaving results out by path (live Neo4j)", { skip: cfg ? fals
     assert.equal(names(r)[0], "rotateSigningSecret");
     assert.ok(r.nodes.every((n) => !String(n.properties["file"]).includes("/__tests__/")), names(r).join(", "));
     assert.deepEqual(keywordKs(), [1200, 2000]);
+  });
+});
+
+describe("linked: keeping results tied by an edge (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
+  let bolt: Bolt;
+  let reader: GraphReader;
+  /** Every index call the reader ran: the index and its k (a keyword call's `limit`). */
+  const calls: Array<{ index: string; k: number }> = [];
+  const names = (r: Awaited<ReturnType<GraphReader["search"]>>) => r.nodes.map((n) => String(n.properties["name"])).sort();
+  const Q = "github webhook signature";
+  before(async () => {
+    bolt = new Bolt(cfg!);
+    await bolt.verify();
+    await wipeGraph(bolt);
+    await seedJarvisOntology(bolt);
+    await seedStrutDomain(bolt);
+    const resolver = new SchemaResolver(bolt);
+    // The Concepts a swarm holds: a summary of code (gitree's, tied to the
+    // files it covers), an agent's learning, a playbook in a tree — all
+    // about the same words.
+    const [summary, learning, playbook, root, stale, verify, old] = await new NodeWriter(bolt, { embedder: bow, resolver }).writeMany([
+      { type: "Concept", data: { name: "GitHub webhooks", description: "How a GitHub webhook signature is checked" } },
+      { type: "Concept", data: { name: "Webhook reply etiquette", description: "How to answer a question about a GitHub webhook signature" } },
+      { type: "Concept", data: { name: "Webhook research playbook", description: "Researching a GitHub webhook signature question" } },
+      { type: "Concept", data: { name: "Research", description: "Playbooks" } },
+      { type: "Concept", data: { name: "Old webhook summary", description: "How a GitHub webhook signature was checked" } },
+      { type: "File", data: { name: "verify.ts", file: "src/lib/github/verify.ts" } },
+      { type: "File", data: { name: "old.ts", file: "src/lib/github/old.ts" } },
+    ]).then((rs) => rs.map((r) => r.ref_id));
+    const pr = "pr-12";
+    await bolt.run(`CREATE (p:PullRequest:Data_Bank {ref_id: $pr, name: 'Verify webhook signatures', namespace: 'default'})`, { pr });
+    const edge = (a: string | undefined, type: string, b: string | undefined, props: Record<string, unknown> = {}) =>
+      bolt.run(`MATCH (a:Data_Bank {ref_id: $a}), (b:Data_Bank {ref_id: $b}) CREATE (a)-[r:${type}]->(b) SET r = $props`, { a, b, props });
+    await edge(summary, "MODIFIES", verify, { importance: 0.5 });
+    // A legacy muted edge, and an edge to a deleted file, count for nothing.
+    await edge(learning, "MODIFIES", verify, { is_muted: true });
+    await edge(stale, "MODIFIES", old);
+    await edge(pr, "TOUCHES", summary);
+    await edge(root, "PARENT_OF", playbook);
+    await bolt.run(`MATCH (f:File {ref_id: $old}) SET f.deleted_at = 1`, { old });
+    await bolt.run(`CALL db.awaitIndexes(60)`);
+    const spy = new Proxy(bolt, {
+      get(t, k, r) {
+        if (k !== "run") return Reflect.get(t, k, r);
+        return (cypher: string, params?: Record<string, unknown>) => {
+          const limit = params?.["k"] ?? (params?.["fulltext_options"] as { limit?: unknown } | undefined)?.limit;
+          if (typeof params?.["index"] === "string" && limit !== undefined) calls.push({ index: params["index"], k: Number(String(limit)) });
+          return t.run(cypher, params);
+        };
+      },
+    });
+    reader = new GraphReader(spy, { embedder: bow, resolver });
+  });
+  after(async () => {
+    await bolt?.close();
+  });
+
+  it("a typed search keeps only the results with a live edge of that type, in that direction, to a live node of that type", async () => {
+    const all = await reader.search({ q: Q, types: ["Concept"], limit: 20 });
+    assert.deepEqual(names(all), ["GitHub webhooks", "Old webhook summary", "Research", "Webhook reply etiquette", "Webhook research playbook"], "every Concept, without `linked`");
+    const linked = async (...entries: string[]) => names(await reader.search({ q: Q, types: ["Concept"], limit: 20, linked: entries }));
+    assert.deepEqual(await linked("MODIFIES>File"), ["GitHub webhooks"], "the muted edge and the deleted file count for nothing");
+    assert.deepEqual(await linked("MODIFIES<File"), [], "the edge leaves the Concept");
+    assert.deepEqual(await linked("TOUCHES<PullRequest"), ["GitHub webhooks"]);
+    assert.deepEqual(await linked("MODIFIES>Function"), [], "the node at the other end must be of the type");
+    assert.deepEqual(await linked("MODIFIES>File", "PARENT_OF<Concept"), ["GitHub webhooks", "Webhook research playbook"], "any one passes");
+    assert.deepEqual(await linked("MODIFIES>file"), ["GitHub webhooks"], "the type resolves like `type`'s");
+  });
+
+  it("an untyped search over-fetches both halves when linked; a malformed entry is refused before any index call", async () => {
+    calls.length = 0;
+    const r = await reader.search({ q: Q, limit: 20, linked: ["MODIFIES>File"] });
+    assert.deepEqual(names(r), ["GitHub webhooks"]);
+    assert.deepEqual(calls, [
+      { index: "data_bank_attribute_index_v2", k: 1200 },
+      { index: "data_bank_attribute_index_v2", k: 2000 },
+      { index: "text_embeddings_vector_index", k: 1200 },
+      { index: "text_embeddings_vector_index", k: 2000 },
+    ]);
+    calls.length = 0;
+    await assert.rejects(reader.search({ q: Q, linked: ["MODIFIES"] }), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_INPUT");
+    assert.deepEqual(calls, []);
   });
 });
