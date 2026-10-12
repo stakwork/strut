@@ -3349,4 +3349,7 @@ body.is-resizing-flyout * {
 
 /* ─── versions (Workflow flyout tab) ─────────────────────────── */
 .version-name { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: 13px; font-weight: 600; color: var(--text); }
+/* The YAML toggle row: the toggle takes the width, the copy button (shown once the text is loaded) sits at the end. */
+.version-yaml-head { display: flex; align-items: center; gap: var(--sp-2); }
+.version-yaml-head .flyout-toggle { width: auto; flex: 1; }
 .auto-card.is-active-version { border-color: var(--accent); }

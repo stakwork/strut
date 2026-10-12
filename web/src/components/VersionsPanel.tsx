@@ -4,14 +4,18 @@ import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
 import { ConfirmButton } from "./ConfirmButton";
 import { displayActor } from "../actor";
+import { SourceCode } from "./SourceCode";
+import { CopyButton } from "./CopyButton";
 
 // ── Versions panel (a Workflow flyout tab) ─────────────────────────────────
 //
 // The workflow's published lineage, newest first, with how often each version
 // ran. "View" opens a version on the canvas (read-only, like the topbar
-// picker); "Make active" rolls back (or forward) — Run, schedules and claims
-// then use that version. Activating publishes nothing: the next Publish still
-// gets a fresh number.
+// picker); "YAML" unfolds the file as published — the whole document, the
+// `claims:` / `sealed:` / `promotes:` blocks the canvas never shows included;
+// "Make active" rolls back (or forward) — Run, schedules and claims then use
+// that version. Activating publishes nothing: the next Publish still gets a
+// fresh number.
 
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** When a version was published: relative within a day, then the date. */
@@ -26,6 +30,37 @@ const published = (iso: string) => {
     minute: "2-digit",
   });
 };
+
+/** One version's YAML, fetched the first time it is opened. A version is
+ *  immutable, so the text is kept for the panel's life. */
+function VersionYaml(props: { workflow: string; version: string }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = () => {
+    setOpen(!open);
+    if (!open && text === null) {
+      setError(null);
+      api.getWorkflowYaml(props.workflow, props.version).then(setText, (err) => setError(errorMessage(err)));
+    }
+  };
+  return (
+    <div>
+      <div class="version-yaml-head">
+        <button class="flyout-toggle" onClick={toggle} type="button">
+          <span class={`flyout-toggle-caret${open ? " open" : ""}`}>▶</span>
+          YAML
+        </button>
+        {open && text !== null && <CopyButton value={text} label={`Copy ${props.version} YAML`} />}
+      </div>
+      {open && (
+        error ? <div class="auto-error">{error}</div>
+        : text === null ? <div class="flyout-source-empty">Loading…</div>
+        : <SourceCode code={text} language="yaml" />
+      )}
+    </div>
+  );
+}
 
 export function VersionsPanel(props: {
   workflow: string;
@@ -111,6 +146,7 @@ export function VersionsPanel(props: {
                   onConfirm={() => void activate(v.version)} />
               )}
             </div>
+            <VersionYaml workflow={props.workflow} version={v.version} />
           </div>
         );
       })}
