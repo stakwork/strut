@@ -62,7 +62,9 @@ const LUCENE_SPECIAL = new Set('+-!(){}[]^"~*?:\\/'.split(""));
 /** A typed search's semantic over-fetch (plans/semantic-search.md ruling
  *  5): the database cannot filter a vector query, so `type` is applied
  *  after the nearest-k cut. Start at `cap × start`, multiply by `growth`
- *  until `cap` survive or `k` reaches `maxK`. Constants to tune on a swarm. */
+ *  until `cap` survive or `k` reaches `maxK`. Constants to tune on a swarm.
+ *  `exclude` is applied after the cut too, so a search with it widens both
+ *  halves — the keyword one's `limit` as `k`. */
 export const TYPED_OVERFETCH = { start: 10, growth: 4, maxK: 2000 } as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -101,6 +103,10 @@ export interface SearchParams {
   limit?: number;
   skip?: number;
   include_edge_counts?: boolean;
+  /** Leave out nodes whose `file` matches one of these (`excludeRegex`): a
+   *  path part (`__tests__`, `src/lib/mock`) or a file-name glob
+   *  (`*.test.ts`). A node with no `file` is never left out. */
+  exclude?: string[];
 }
 
 export interface SearchResult {
@@ -205,6 +211,23 @@ export async function overfetch<T>(cap: number, run: (k: number) => Promise<T[]>
     if (hits.length >= cap || k >= o.maxK) return hits;
     k = Math.min(k * o.growth, o.maxK);
   }
+}
+
+/** `exclude` as ONE regex for Cypher's `=~` (a full match), null for none.
+ *  An entry with no wildcard is a path part: it matches whole `/`-delimited
+ *  segments of `file` (`test` leaves out `src/test/a.ts`, never
+ *  `latest.ts`); one with `*` or `?` is a glob over the file name
+ *  (`*.test.ts`). Case-insensitive; everything but the wildcards is
+ *  literal. */
+export function excludeRegex(entries: string[]): string | null {
+  const alts: string[] = [];
+  for (const raw of entries) {
+    const e = raw.trim().replace(/^\/+|\/+$/g, "");
+    if (!e) continue;
+    const re = e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, "[^/]*").replace(/\\\?/g, "[^/]");
+    alts.push(/[*?]/.test(e) ? re : `${re}(?:/.*)?`);
+  }
+  return alts.length ? `(?i)(?:.*/)?(?:${alts.join("|")})` : null;
 }
 
 export function escapeLucene(value: string): string {
@@ -706,6 +729,13 @@ export class GraphReader {
           base["hidden_type_labels"] = labels;
         }
       }
+      // `exclude`: one regex over `file`, on the rows an index call
+      // returned (never a scan); a node with no `file` stays.
+      const excludeRe = excludeRegex(p.exclude ?? []);
+      if (excludeRe) {
+        clauses.push(`(n.file IS NULL OR NOT n.file =~ $exclude_re)`);
+        base["exclude_re"] = excludeRe;
+      }
       const filter = clauses.join(" AND ");
       const cap = fetchLimit(limit, skip);
 
@@ -735,12 +765,12 @@ export class GraphReader {
         }
       };
 
-      const runFulltext = async (indexes: string[], lucene: string): Promise<Hit[]> => {
+      const runFulltext = async (indexes: string[], lucene: string, k: number): Promise<Hit[]> => {
         const all: Hit[] = [];
         for (const index of indexes) {
           const rows = await this.rows(tx,
             `CALL db.index.fulltext.queryNodes($index, $q_lucene, $fulltext_options) YIELD node AS n, score WHERE ${filter} RETURN n, score`,
-            { ...base, index, q_lucene: lucene, fulltext_options: { limit: int(cap) } },
+            { ...base, index, q_lucene: lucene, fulltext_options: { limit: int(k) } },
           );
           all.push(...rows.map(asHit));
         }
@@ -749,11 +779,15 @@ export class GraphReader {
 
       if (q && ftIndexes.length) {
         fulltext = await layer("fulltext", async () => {
-          let hits = await runFulltext(ftIndexes, buildFulltextQuery(q));
+          // `exclude` is a WHERE after the index's limit, so it widens the
+          // limit the way a typed vector query widens k.
+          const query = (lucene: string) =>
+            excludeRe ? overfetch(cap, (k) => runFulltext(ftIndexes, lucene, k)) : runFulltext(ftIndexes, lucene, cap);
+          let hits = await query(buildFulltextQuery(q));
           // Fuzzy fallback on zero hits (no gs operators → always eligible),
           // except for an exact query: its fragments ORed back together are
           // the noise the phrase left out.
-          if (hits.length === 0 && !isExactQuery(q)) hits = await runFulltext(ftIndexes, `${q}~`);
+          if (hits.length === 0 && !isExactQuery(q)) hits = await query(`${q}~`);
           return hits;
         }, []);
         if (fulltext.length >= cap) ftTruncated = true;
@@ -774,10 +808,11 @@ export class GraphReader {
       if (q && this.opts.embedder && vecIndexes.length) {
         semantic = await layer("semantic", async () => {
           const [embedding] = await this.opts.embedder!.embed([q]);
-          // `type` is a WHERE after the nearest-k cut (the database cannot
-          // filter a vector query), so a typed search asks for more and
-          // widens until `cap` survive — the query embedded once.
-          if (!types?.length) return runVector(vecIndexes, cap, embedding!);
+          // `type` and `exclude` are a WHERE after the nearest-k cut (the
+          // database cannot filter a vector query), so a filtered search
+          // asks for more and widens until `cap` survive — the query
+          // embedded once.
+          if (!types?.length && !excludeRe) return runVector(vecIndexes, cap, embedding!);
           return overfetch(cap, (k) => runVector(vecIndexes, k, embedding!));
         }, []);
         if (semantic.length >= cap) semTruncated = true;
