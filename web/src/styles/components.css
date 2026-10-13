@@ -3453,7 +3453,33 @@ body.is-resizing-flyout * {
   flex: none;
 }
 .job-chip:hover { background: rgba(110, 168, 255, 0.2); }
-.list-item-stack .job-chip { margin: 2px 0 0; align-self: flex-start; max-width: 100%; }
+
+/* A run row: status, then the time (hover: the id, click copies it), the
+   automation clock at the end; the job it ran under across the bottom. */
+.run-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.run-row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.run-row-main .list-item-clock { margin: 0 0 0 auto; }
+.run-time {
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: copy;
+}
+.run-time:hover { color: var(--accent); }
+.run-time-dur {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: 5px;
+}
+.run-row .job-chip { margin: 0; max-width: none; }
 
 /* The timeline takes the canvas area: a scrolling document, not a graph. */
 .job-view {

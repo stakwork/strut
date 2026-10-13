@@ -33,6 +33,7 @@ import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { JobTimeline, fmtTime } from "./components/JobTimeline";
+import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
@@ -408,9 +409,15 @@ export function App() {
   // may be a new job, a finished one changes a turn's row — on the same
   // signal the Runs list follows. A deployment whose jobs are an injected
   // capability without an index answers 501: the list stays empty.
+  // Every job title the UI has seen — the run rows' chips name a job by
+  // it. While the listing is narrowed (a query, only mine), the titles come
+  // from the workflow's whole listing, the jobs those rows can reference.
+  const jobTitles = useRef(new Map<string, string>());
   const refreshJobs = useCallback(async () => {
     try {
       const r = await api.listJobs({ q: jobQuery, workflow: selectedWf, mine: jobsMine, limit: 50 });
+      const titled = jobQuery.trim() || jobsMine ? (await api.listJobs({ workflow: selectedWf, limit: 50 })).jobs : r.jobs;
+      for (const j of titled) if (j.title) jobTitles.current.set(j.job, j.title);
       setJobs(r.jobs);
       setJobsActor(r.actor ?? null);
     } catch { /* no index */ }
@@ -419,7 +426,9 @@ export function App() {
   const refreshJob = useCallback(async () => {
     if (!selectedJob) { setJob(null); return; }
     try {
-      setJob(await api.getJob(selectedJob, { nodes: true }));
+      const v = await api.getJob(selectedJob, { nodes: true });
+      if (v.title) jobTitles.current.set(v.job, v.title);
+      setJob(v);
     } catch { setJob(null); }
   }, [selectedJob]);
   useEffect(() => { setThreadView(null); void refreshJob(); }, [selectedJob]);
@@ -428,7 +437,7 @@ export function App() {
     void refreshJobs();
   }, [activeRuns]);
   /** The job a run belongs to, as the sidebar names it. */
-  const jobTitle = useCallback((id: string) => jobs.find((j) => j.job === id)?.title ?? id.slice(0, 8), [jobs]);
+  const jobTitle = useCallback((id: string) => jobTitles.current.get(id) ?? id.slice(0, 8), [jobs]);
   // The selected workflow's live runs changed (one started, finished, paused)
   // → refresh its Runs list, so it never disagrees with the dot.
   const prevActive = useRef(activeRuns);
@@ -1095,41 +1104,36 @@ export function App() {
                   <>
                     {job.runs.length === 0 && <div class="empty-sidebar">No runs under this job</div>}
                     {job.runs.map((r) => (
-                      <div key={r.runId} class={`list-item ${selectedRun === r.runId ? "is-active" : ""}`}
+                      <div key={r.runId} class={`list-item run-row ${selectedRun === r.runId ? "is-active" : ""}`}
                         onClick={() => openJobRun(r.workflow, r.runId)}>
-                        <div class="list-item-stack">
-                          <span class="list-item-name">{r.runId}</span>
-                          <span class="list-item-sub">
-                            {r.workflow}{r.parentRunId ? " · child run" : ""}{r.sealed ? " · sealed" : ""}
-                            {r.durationMs != null && ` (${r.durationMs}ms)`}
-                          </span>
+                        <div class="run-row-main">
+                          <span class={`badge badge-${statusTone(r.status)}`}>{r.status}</span>
+                          <RunTime runId={r.runId} at={r.at} durationMs={r.durationMs} />
                         </div>
-                        <span class={`badge badge-${statusTone(r.status)}`}>{r.status}</span>
+                        <span class="list-item-sub">
+                          {r.workflow}{r.parentRunId ? " · child run" : ""}{r.sealed ? " · sealed" : ""}
+                        </span>
                       </div>
                     ))}
                   </>
                 ) : (
                   <>
                     {filteredRuns.length === 0 && <div class="empty-sidebar">{selectedWf ? "No runs for this workflow" : "No runs yet"}</div>}
+                    {/* Status, then the time (the id is its tooltip; a click
+                        copies it), the job it ran under across the bottom — a
+                        click on the chip opens the job's timeline. */}
                     {filteredRuns.map((run) => (
-                      <div key={run.runId} class={`list-item ${selectedRun === run.runId ? "is-active" : ""}`}
+                      <div key={run.runId} class={`list-item run-row ${selectedRun === run.runId ? "is-active" : ""}`}
                         onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
-                        <div class="list-item-stack">
-                          <span class="list-item-name">
-                            {run.runId}
-                            {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
-                          </span>
-                          <span class="list-item-sub">
-                            {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "..."}
-                            {run.durationMs != null && ` (${run.durationMs}ms)`}
-                          </span>
-                          {/* The job it ran under: a click opens the job's timeline. */}
-                          {run.job && (
-                            <span class="job-chip" title={`Job ${run.job}`}
-                              onClick={(e) => { e.stopPropagation(); selectJob(run.job!); }}>{jobTitle(run.job)}</span>
-                          )}
+                        <div class="run-row-main">
+                          <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
+                          <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
+                          {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
                         </div>
-                        <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
+                        {run.job && (
+                          <span class="job-chip" title={`Job ${run.job}`}
+                            onClick={(e) => { e.stopPropagation(); selectJob(run.job!); }}>{jobTitle(run.job)}</span>
+                        )}
                       </div>
                     ))}
                   </>
