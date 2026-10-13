@@ -47,6 +47,10 @@ export interface JobRecord {
   title?: string;
   /** The actor of the first run recorded under the job. Recorded, never checked. */
   createdBy?: string;
+  /** Every actor that launched a run under the job, first seen first —
+   *  `createdBy` is the head. Recorded, never checked: `GET /jobs?mine=1`
+   *  filters a listing by it, nothing gates on it. */
+  actors?: string[];
   /** When the record was first written. */
   createdAt?: string;
   usedAt: string;
@@ -148,8 +152,8 @@ export interface JobsCapability extends Partial<JobIndex> {
   holds(job: string): Promise<JobHold[]>;
   /** One line for a run launched under the job — the runner's call at
    *  `run.start` (plans/job-index.md §1). The launch's `title` names the
-   *  job (kept until a later launch carries another); its `actor` is the
-   *  job's `createdBy` when it is the first. */
+   *  job (kept until a later launch carries another); its `actor` joins the
+   *  job's `actors` (and is `createdBy` when it is the first). */
   recordRun(job: string, run: Omit<JobRun, "at"> & { title?: string; actor?: string }): Promise<void>;
 }
 
@@ -172,7 +176,11 @@ export function jobsCapability(dataDir: string, index?: JobIndex): JobsCapabilit
     async recordRun(job, { title, actor, ...run }) {
       await updateJobRecord(rootOf(job), job, (rec) => {
         if (title) rec.title = title;
-        if (actor && !rec.createdBy) rec.createdBy = actor;
+        if (actor) {
+          if (!rec.createdBy) rec.createdBy = actor;
+          const actors = rec.actors ?? [rec.createdBy];
+          rec.actors = actors.includes(actor) ? actors : [...actors, actor];
+        }
         rec.runs = [...(rec.runs ?? []), { ...run, at: new Date().toISOString() }];
       });
     },

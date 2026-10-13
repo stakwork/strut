@@ -147,6 +147,7 @@ interface JobRecord {
   name: string;
   title?: string;        // the launch's; a later launch with one renames
   createdBy?: string;    // the first launch's actor (resolveActor), recorded, never checked
+  actors?: string[];     // every launch's actor, first seen first (createdBy is the head) — GET /jobs?mine=1 filters by it
   createdAt?: string;    // the first launch
   usedAt: string;
   repos: Record<string, { cache: string; ref: string }>;
@@ -362,7 +363,9 @@ cards are unchanged. Nothing else.
   moves from hive into strut.
 - **History of one file** (`jobs.md` §10): the fold gives the current
   version of each id; versions are the file history's job.
-- **A per-actor read rule** — ruling 6.
+- **A per-actor read rule** — ruling 6. (`GET /jobs?mine=1` — the
+  sidebar's user icon — is a view filter over the record's `actors`, not
+  a rule: everyone with the key still reads every job.)
 - **A jobs sidebar in the web UI** — `GET /jobs` is its data; the run
   flyout showing `job` in the summary is one line, done with §1 or after.
 - **`job` in the builder's `list_runs` result** — the slim entries could

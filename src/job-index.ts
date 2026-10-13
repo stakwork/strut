@@ -49,6 +49,8 @@ export interface JobListing {
   job: string;
   title?: string;
   createdBy?: string;
+  /** Everyone who launched a run under the job, first seen first. */
+  actors?: string[];
   createdAt?: string;
   usedAt: string;
   /** The run holding the directory now. */
@@ -130,8 +132,11 @@ export interface JobFile {
 export interface JobIndex {
   /** Every job, newest-used first. `q` is the one matcher behind every
    *  search box (src/search.ts): every word must hit the title (the id
-   *  without one) or a current artifact's title or summary. */
-  list(opts?: { q?: string; limit?: number }): Promise<JobListing[]>;
+   *  without one) or a current artifact's title or summary. `workflow`
+   *  keeps the jobs with a recorded run of that workflow (the sidebar's
+   *  filter when one is selected); `actor` the jobs that actor launched a
+   *  run of (`GET /jobs?mine=1`). */
+  list(opts?: { q?: string; workflow?: string; actor?: string; limit?: number }): Promise<JobListing[]>;
   /** One job; `null` when there is neither a record nor a directory. */
   get(job: string, opts?: GetJobOptions): Promise<JobView | null>;
   /** One file of a job's directory; `null` when it is not there. */
@@ -153,6 +158,9 @@ export function headTail(s: string, max: number): { text: string; truncated?: tr
   return { text: `${s.slice(0, half)}\n[... ${s.length - 2 * half} chars truncated ...]\n${s.slice(s.length - half)}`, truncated: true };
 }
 
+/** A record from before `actors` was kept has only its first actor. */
+const actorsOf = (rec: JobRecord): string[] => rec.actors ?? (rec.createdBy ? [rec.createdBy] : []);
+
 export function createJobIndex(deps: JobIndexDeps): JobIndex {
   const rootOf = (job: string) => jobRoot(deps.dataDir, job);
 
@@ -162,6 +170,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       job: rec.name,
       ...(rec.title ? { title: rec.title } : {}),
       ...(rec.createdBy ? { createdBy: rec.createdBy } : {}),
+      ...(actorsOf(rec).length ? { actors: actorsOf(rec) } : {}),
       ...(rec.createdAt ? { createdAt: rec.createdAt } : {}),
       usedAt: rec.usedAt,
       ...(busy ? { busy } : {}),
@@ -249,7 +258,9 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
 
   return {
     async list(opts = {}) {
-      const recs = await records();
+      let recs = await records();
+      if (opts.workflow) recs = recs.filter((rec) => rec.runs?.some((r) => r.workflow === opts.workflow));
+      if (opts.actor) recs = recs.filter((rec) => actorsOf(rec).includes(opts.actor!));
       let rows = recs.map(listing);
       if (opts.q?.trim()) {
         const searchable = await Promise.all(
