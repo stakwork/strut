@@ -279,6 +279,7 @@ One object per line of the run's append-only log. Common fields:
 | `durationMs` | on `step.end` / `step.error` |
 | `transcript` | on an agent step's `step.end`: the URL of its session (the `messages` never ride in this response) |
 | `nodes`      | on `step.end`: the graph nodes the step read or wrote, `[{ ref_id, node_type?, name? }]`, never truncated — on a graph step the workflow ran (`graph/graph-get`) and on one an agent called (`tool:graph_graph_get`) alike. Only nodes the caller NAMED (fetched, expanded, created, edited, moved): a search's hits and the neighbors or children a call listed are not in it. `name` is the node's label when it was touched. Absent when the step touched none |
+| `toolCallId` | on a tool call's `step.start` / `step.end` / `step.error` (`stepType: tool:<name>`): the AI SDK's id for that call — the key to the same call's `tool-result` part in the agent's transcript (§5), which holds the full result where `output` here is a 1,500-char preview |
 
 | Type              | Meaning |
 | ----------------- | ------- |

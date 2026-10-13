@@ -1,20 +1,8 @@
 import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import type { RunEvent, RunSummary, StepCounts } from "./core.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Guard shared by every `RunStore` impl for `writeRunOutput`/`getRunOutput`
- *  (plans/trace: highlight-to-trace capture) — same discipline as
- *  `FileRunStore.runsDir`'s key guard: a relative path made of plain
- *  segments, no `..`, no escaping. Thrown synchronously so a bad path never
- *  reaches disk. */
-function assertValidOutputPath(relPath: string): void {
-  const segments = relPath.split("/");
-  if (!relPath || segments.some((seg) => !seg || seg === "." || seg === ".." || seg.includes("\\"))) {
-    throw new Error(`Invalid run output path "${relPath}"`);
-  }
-}
 
 /** A run is terminal once its log records a `run.end`, `run.error`, or
  *  `run.cancelled` — though a later `run.resumed` REOPENS it (§5.2: a
@@ -229,18 +217,6 @@ export interface RunStore {
    *  when something was repaired. Optional — backends whose appends are
    *  atomic (in-memory, a database row) have nothing to heal. */
   repairLog?(workflow: string, runId: string): Promise<boolean>;
-  /** Save a tool call's FULL, untruncated output (plans: highlight-to-trace
-   *  capture) — `wrapToolsWithEmit` writes one per tool call, keyed by the
-   *  same event-path segment it puts on `step.end.outputRef`, so a reader
-   *  joins the preview in the log to the byte-identical original here.
-   *  `relPath` is a plain relative path (segments only, no `..`); the
-   *  caller sanitizes it from the event path, but every impl re-guards it.
-   *  `content` is already serialized (JSON text). New runs only — nothing
-   *  backfills an old run that never wrote one. */
-  writeRunOutput(workflow: string, runId: string, relPath: string, content: string): Promise<void>;
-  /** Read a saved tool output back, or null when there is none at that path
-   *  (an old run, predating capture; or the path doesn't exist). */
-  getRunOutput(workflow: string, runId: string, relPath: string): Promise<string | null>;
 }
 
 /**
@@ -459,27 +435,6 @@ export class FileRunStore implements RunStore {
     return join(this.runsDir(workflow), runId);
   }
 
-  /** `<runDir>/outputs/<relPath>` — one file per tool call's full output. */
-  private outputPath(workflow: string, runId: string, relPath: string): string {
-    assertValidOutputPath(relPath);
-    return join(this.runDir(workflow, runId), "outputs", ...relPath.split("/"));
-  }
-
-  async writeRunOutput(workflow: string, runId: string, relPath: string, content: string): Promise<void> {
-    const file = this.outputPath(workflow, runId, relPath);
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, content, "utf-8");
-  }
-
-  async getRunOutput(workflow: string, runId: string, relPath: string): Promise<string | null> {
-    const file = this.outputPath(workflow, runId, relPath); // throws synchronously on a bad path
-    try {
-      return await readFile(file, "utf-8");
-    } catch {
-      return null; // missing — an old run, predating capture
-    }
-  }
-
   async setRunCallback(workflow: string, runId: string, url: string): Promise<void> {
     const dir = this.runDir(workflow, runId);
     await mkdir(dir, { recursive: true });
@@ -650,20 +605,9 @@ export class MemoryRunStore implements RunStore {
   events: Map<string, RunEvent[]> = new Map();
   summaries: Map<string, RunSummary> = new Map();
   callbacks: Map<string, string> = new Map();
-  outputs: Map<string, string> = new Map();
 
   private key(workflow: string, runId: string): string {
     return `${workflow}/${runId}`;
-  }
-
-  async writeRunOutput(workflow: string, runId: string, relPath: string, content: string): Promise<void> {
-    assertValidOutputPath(relPath);
-    this.outputs.set(`${this.key(workflow, runId)}:${relPath}`, content);
-  }
-
-  async getRunOutput(workflow: string, runId: string, relPath: string): Promise<string | null> {
-    assertValidOutputPath(relPath);
-    return this.outputs.get(`${this.key(workflow, runId)}:${relPath}`) ?? null;
   }
 
   async listRuns(workflow: string): Promise<string[]> {
@@ -687,8 +631,6 @@ export class MemoryRunStore implements RunStore {
       this.events.delete(this.key(workflow, id));
       this.summaries.delete(this.key(workflow, id));
       this.callbacks.delete(this.key(workflow, id));
-      const prefix = `${this.key(workflow, id)}:`;
-      for (const k of [...this.outputs.keys()]) if (k.startsWith(prefix)) this.outputs.delete(k);
     }
   }
 

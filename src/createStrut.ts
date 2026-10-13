@@ -1038,24 +1038,6 @@ export async function createStrut<TServices = unknown>(
     return c.json(events.map((e) => withTranscriptLink(name, e)));
   });
 
-  // A tool call's FULL, untruncated output (highlight-to-trace capture):
-  // what `step.end.outputRef` names, saved by `wrapToolsWithEmit` beside the
-  // run's log. The same gate as `/events` (no extra auth here); a bad path
-  // (`..`, an absolute path) is rejected by `RunStore.getRunOutput`'s own
-  // guard, and a missing one — an old run, predating capture, or a call
-  // whose preview never needed cutting — is a plain 404.
-  app.get("/workflows/:name/runs/:runId/outputs/:path{.+}", async (c) => {
-    const { name, runId, path } = c.req.param();
-    let content: string | null;
-    try {
-      content = await store.getRunOutput(name, runId, path);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
-    }
-    if (content == null) return c.json({ error: `No output at "${path}" in run "${runId}"` }, 404);
-    return c.body(content, 200, { "content-type": "application/json" });
-  });
-
   // One agent session from a run, by step path (`wf/review`, a sub-agent's
   // `wf/review/003-agent`): the `messages` of that path's last `step.end`,
   // as a bare JSON array. What the run callback's `transcripts` point at, so
