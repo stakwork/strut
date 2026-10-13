@@ -97,7 +97,7 @@ the API key is obtained.
    the bash tool, and `exec` depends on whatever the host has on PATH (no
    python/ffmpeg ships in the bundle). Not blocking for a macOS-first release.
 7. ~~**Native addons** (`onnxruntime-node`, `sharp` via transformers).~~
-   Done: `package:desktop` uninstalls the whole embeddings stack by default
+   Done: `package:desktop` leaves the whole embeddings stack out by default
    (§2.3); sherpa ships its own `libonnxruntime` inside its platform package.
 
 ### 2.3 Packaging: phase A (ship this first)
@@ -111,27 +111,50 @@ strut/
   package.json
   build/                   # tsc output; steps as loose files (registry scans them)
   web/dist/                # Vite output
-  node_modules/            # --omit=dev; sherpa-onnx-node's loader pointed at native/
-  native/                  # sherpa-onnx.node + the dylibs it links: all the host signs
+  node_modules/            # --omit=dev; sherpa's and Ladybug's loaders pointed at native/
+  native/                  # sherpa-onnx.node, lbugjs.node + the dylibs they link: all the host signs
 ```
 
-plus a Node binary the host provides (not staged; 20 or newer). No esbuild
+plus a Node binary the host provides (not staged; 22.18 or newer: strut needs
+22, and `.ts` custom steps load through Node's type stripping, default from
+22.18; `desktop.js` refuses older). No esbuild
 bundle: the step loader scans `build/steps/**`, and the sherpa addon has to
 be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
 
 - **Built by `npm run package:desktop -- --smoke --tar`** (`scripts/package-desktop.mjs`):
   tsc + vite, stage `package.json` + `build/` + `web/dist/` + the two entry
-  points, `npm install --omit=dev` in the stage, keep one
+  points, copy the production closure out of the root `node_modules` to the
+  same relative paths (first checked to be yarn.lock's install: its
+  `.yarn-integrity` entries must equal the lockfile's; then every staged
+  version is checked against the installed tree's at the same path, so
+  nothing floats to npm's newest) with a throwing stub for each
+  optional package left out (so resolution never walks up past the bundle),
+  keep one
   `sherpa-onnx-<platform>` and only this platform's `onnxruntime-node`
   binaries, move that package's addon + the dylibs it links into `native/`
   (the one directory the host code-signs; the unlinked C++ API dylib is
   dropped, and a binary anywhere else fails the build) and point
-  `sherpa-onnx-node`'s loader at it, then (`--smoke`)
+  `sherpa-onnx-node`'s loader at it. Darwin targets also get LadybugDB
+  (`@ladybugdb/core`, pinned like sherpa): `lbugjs.node` moves to `native/`
+  beside `libssl.3` + `libcrypto.3` copied from the build machine's Homebrew
+  `openssl@3` (its rpaths name only Homebrew/MacPorts), install names
+  `@rpath/…`, rpath `@loader_path`, ad-hoc re-signed, license in
+  `licenses/OpenSSL.txt` (outside `native/`, which holds only binaries); the build fails if a load command still names
+  `/opt/homebrew`, `/usr/local` or `/opt/local`. No darwin target or no
+  matching `openssl@3` (a darwin-x64 cross-stage on Apple silicon): Ladybug
+  is left out with a warning. `--no-stt` leaves sherpa out; `/audio` then
+  answers 501 "stt not available". Then (`--smoke`)
   spawn `desktop.js` from a temp dir with only `STRUT_WORKSPACE` and
   `STRUT_CACHE_DIR` set, parse the ready line for port + key, and check
   `/health`, `/steps` (a workspace step that `import "strut"`),
-  `/audio/models` (`available: true`) and the UI. `--tar` writes
-  `strut-<platform>.tar.gz`; `--platform` cross-stages.
+  `/audio/models` (`available: true`, or the 501 under `--no-stt`), the UI,
+  that closing stdin under `STRUT_EXIT_ON_STDIN_EOF=1` exits it, and that
+  Ladybug opens and queries a database from the copy with `DYLD_*` cleared,
+  every image the import loads (libssl/libcrypto included) from `native/`,
+  and that each stub answers an import with its "not in this build" error. `--tar` writes
+  `strut-<platform>.tar.gz`; `--platform` cross-stages, fetching only the
+  target's addon package, at the wrapper's version from the installed tree
+  (sherpa 1.13.7 today), never npm's newest.
 - **Released by `.github/workflows/strut-desktop.yml`** on a `v*` tag:
   darwin-arm64 (smoke-tested on the runner) and darwin-x64 (cross-staged)
   tarballs as release assets.
@@ -144,7 +167,10 @@ be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
   34 MB, `aieo` 15 MB (its nested `ai`/`@ai-sdk`/`zod` copies — align
   versions to dedupe), `react-dom` 7 MB. Three Mach-O binaries to sign, all in
   `native/` (the sherpa addon and the two dylibs it links; all ad-hoc signed
-  as shipped). The
+  as shipped). With Ladybug (2026-10-13, darwin-arm64): 115 MB, `native/`
+  61 MB (`lbugjs.node` 21 MB, OpenSSL 6 MB), six Mach-O files; `--no-stt`
+  81 MB, `native/` 27 MB. `lbugjs.node` 0.21.2 is built for macOS 26
+  (`minos`), Homebrew's OpenSSL for the build machine's macOS. The
   earlier ~150 MB estimate assumed an esbuild bundle, which the step loader
   rules out for now (§2.4).
 
@@ -171,6 +197,7 @@ defaults; each is an env override, so a host can set none of them:
 | `STRUT_API_KEY` | random per launch, printed on the ready line | host-generated key |
 | `STRUT_SECRET_KEY` | unset (secrets file only obfuscated; boot warning) | stable per install, from the OS keychain |
 | `ANTHROPIC_API_KEY` etc. | unset | from the host's settings UI |
+| `STRUT_EXIT_ON_STDIN_EOF` | unset | `1`, with a stdin pipe the host holds open: strut exits when it closes |
 
 Protocol:
 
@@ -185,7 +212,10 @@ Protocol:
   and sends it as a bearer on every request and as `?key=` on the dictation
   socket. Settings → Connection also accepts a pasted key (`localStorage`).
 - Host kills the child on quit. strut already handles `SIGTERM` via the run
-  store's durable resume, so a hard kill is recoverable.
+  store's durable resume, so a hard kill is recoverable. A host that can
+  die without quitting (crash, force quit) also sets
+  `STRUT_EXIT_ON_STDIN_EOF=1` and keeps a stdin pipe open: the kernel
+  closes it with the host and the launcher exits.
 - Health: `GET /health` (unauthenticated) so the host can detect a crashed
   child and restart it.
 

@@ -131,6 +131,15 @@ describe("stt service", () => {
     await assert.rejects(() => stt.openStream({ partialModel: null }), /stt not available/);
   });
 
+  it("openStream without the addon fails before downloading a model", async () => {
+    let fetched = 0;
+    const fetchImpl = (async () => (fetched++, new Response(null, { status: 500 }))) as typeof fetch;
+    const stt = createStt({ dataDir, modelDir: join(root, "empty-models"), env, engine: async () => null, fetchImpl, log: () => {} });
+    await assert.rejects(() => stt.openStream({}), /stt not available/);
+    await assert.rejects(() => stt.ensureModel("zipformer-en-kroko"), /stt not available/);
+    assert.equal(fetched, 0);
+  });
+
   it("single recognizer: partials on change, final + reset on endpoint, flush on end", async () => {
     const engine = fakeEngine({
       "zipformer-en-kroko": [

@@ -23,6 +23,16 @@ import { spawn } from "node:child_process";
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 
+// strut needs Node 22, and workspace custom steps are .ts files loaded by
+// Node's own type stripping (on by default from 22.18; earlier 22.x only
+// with --experimental-strip-types).
+if (Number(process.versions.node.split(".")[0]) < 22 || !process.features.typescript) {
+  console.error(
+    `strut: Node ${process.version} can't run strut: 22.18 or newer required (type stripping ${process.features.typescript === false ? "off" : "unavailable"})`,
+  );
+  process.exit(1);
+}
+
 if (args.includes("--help") || args.includes("-h")) {
   console.log(`usage: strut [--open]
 
@@ -33,7 +43,11 @@ Runs strut locally with desktop defaults. Prints a JSON ready line on stdout
 
 Env overrides (all optional): STRUT_WORKSPACE, STRUT_CACHE_DIR, STRUT_API_KEY,
 STRUT_HOST, STRUT_PORT, STRUT_WORKSPACE_BACKEND, STRUT_SECRET_KEY,
-STRUT_STT_MODEL, STRUT_STT_PARTIAL_MODEL, ANTHROPIC_API_KEY.`);
+STRUT_STT_MODEL, STRUT_STT_PARTIAL_MODEL, ANTHROPIC_API_KEY.
+
+STRUT_EXIT_ON_STDIN_EOF=1 exits when stdin closes: a host that spawns strut
+with a stdin pipe it never writes to gets it shut down when the host dies,
+crash or force quit included (the kernel closes the pipe).`);
   process.exit(0);
 }
 
@@ -64,6 +78,18 @@ dflt("STRUT_CACHE_DIR", cacheRoot); // models land at <cacheRoot>/strut/models
 dflt("STRUT_WEB_DIST", join(here, "web", "dist"));
 dflt("STRUT_API_KEY", randomBytes(24).toString("hex"));
 env["STRUT_READY_KEY"] = "1"; // put the key on the ready line for the host
+
+// A host that holds our stdin pipe open sets this so we exit with it: the
+// kernel closes the pipe when the host dies, even on a crash or force quit.
+if (env["STRUT_EXIT_ON_STDIN_EOF"] === "1") {
+  const bye = () => {
+    console.error("strut: stdin closed (STRUT_EXIT_ON_STDIN_EOF=1), exiting");
+    process.exit(0);
+  };
+  process.stdin.on("end", bye);
+  process.stdin.on("error", bye);
+  process.stdin.resume();
+}
 
 await mkdir(env["STRUT_WORKSPACE"], { recursive: true });
 

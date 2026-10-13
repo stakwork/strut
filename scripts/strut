@@ -1,16 +1,11 @@
 #!/bin/sh
-# Runs the staged strut with desktop defaults (see desktop.js). Needs Node 20
-# or newer on PATH — the tarball does not include Node.
+# Runs the staged strut with desktop defaults (see desktop.js). Needs Node
+# 22.18 or newer on PATH (desktop.js checks) — the tarball does not include Node.
 set -e
 dir=$(cd "$(dirname "$0")" && pwd)
 if ! command -v node >/dev/null 2>&1; then
-  echo "strut: node not found on PATH (Node 20 or newer required): https://nodejs.org" >&2
+  echo "strut: node not found on PATH (Node 22.18 or newer required): https://nodejs.org" >&2
   exit 127
-fi
-major=$(node -p 'process.versions.node.split(".")[0]')
-if [ "$major" -lt 20 ]; then
-  echo "strut: Node $(node -v) is too old; 20 or newer required" >&2
-  exit 1
 fi
 # A browser download is quarantined, and Archive Utility marks every extracted
 # file. Loading the (ad-hoc signed, unnotarized) speech addon then blocks the
