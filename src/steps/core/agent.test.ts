@@ -365,6 +365,25 @@ describe("wrapToolsWithEmit (per-call nested run events)", () => {
     assert.ok(!("nodes" in plainEnd), "unmarked results emit no nodes field");
   });
 
+  it("carries the SDK's toolCallId on step.start / step.end / step.error, and nothing when the call has none", async () => {
+    const events: any[] = [];
+    const tools: Record<string, any> = {
+      bash: { execute: async () => "ok" },
+      boom: { execute: async () => { throw new Error("nope"); } },
+    };
+    wrapToolsWithEmit(tools, makeCtx(events));
+
+    await tools.bash.execute({}, { toolCallId: "call_1" });
+    await assert.rejects(() => tools.boom.execute({}, { toolCallId: "call_2" }));
+    await tools.bash.execute({});
+
+    const byType = (type: string) => events.filter((e) => e.type === type);
+    assert.deepEqual(byType("step.start").map((e) => e.toolCallId), ["call_1", "call_2", undefined]);
+    assert.deepEqual(byType("step.end").map((e) => e.toolCallId), ["call_1", undefined]);
+    assert.deepEqual(byType("step.error").map((e) => e.toolCallId), ["call_2"]);
+    assert.ok(!("toolCallId" in byType("step.end")[1]), "no field at all without an id");
+  });
+
   it("lifts a sub-agent's session onto step.end as `messages`, leaving the model-facing result slim", async () => {
     const events: any[] = [];
     const session = [

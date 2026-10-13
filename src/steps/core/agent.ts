@@ -912,7 +912,12 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
       const n = ++counter.n;
       const path = `${basePath}/${String(n).padStart(3, "0")}-${name}`;
       const startedAt = Date.now();
-      await emit({ type: "step.start", path, stepType: `tool:${name}`, input });
+      // The AI SDK's own id for this call (`opts.toolCallId`) — what joins
+      // these events to the same call's `tool-result` part in the recorded
+      // transcript (`step.end.messages`), which holds the full result.
+      const toolCallId = (opts as { toolCallId?: unknown } | undefined)?.toolCallId;
+      const idField = typeof toolCallId === "string" ? { toolCallId } : {};
+      await emit({ type: "step.start", path, stepType: `tool:${name}`, input, ...idField });
       try {
         // Thread this call's event path to the tool (registry tools adopt it
         // as their child ctx path, so nested emits land under this span).
@@ -929,12 +934,13 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
           stepType: `tool:${name}`,
           output: summarizeForEvent(out),
           durationMs: Date.now() - startedAt,
+          ...idField,
           ...(nodes ? { nodes } : {}),
           ...(messages ? { messages } : {}),
         });
         return out;
       } catch (e) {
-        await emit({ type: "step.error", path, stepType: `tool:${name}`, error: { message: (e as Error).message } });
+        await emit({ type: "step.error", path, stepType: `tool:${name}`, error: { message: (e as Error).message }, ...idField });
         throw e;
       }
     };

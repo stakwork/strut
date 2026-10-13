@@ -291,6 +291,14 @@ export interface RunEvent {
    *  the output's `withMessages` marker; never part of the output itself,
    *  so templates, parent agents and run.json stay slim. */
   messages?: unknown[];
+  /** On a tool call's `step.start` / `step.end` / `step.error` (an agent's
+   *  built-in or `agentTools`-granted tool, `wrapToolsWithEmit` in
+   *  steps/core/agent.ts): the AI SDK's own id for that call, read from the
+   *  tool's `execute(input, opts)` — the key that joins the event to the
+   *  same call's `tool-result` part in the agent's transcript
+   *  (`step.end.messages`), where the full result lives. Absent outside a
+   *  tool call. */
+  toolCallId?: string;
 }
 
 // ── Provenance convention: which graph nodes did a step touch? ─────────────
