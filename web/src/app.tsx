@@ -20,7 +20,8 @@ import { OwnerEditor } from "./components/OwnerEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { ClockIcon, GearIcon } from "./icons";
+import { ClockIcon, GearIcon, UserIcon } from "./icons";
+import { displayActor } from "./actor";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
 import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
 import { StepEditFlyout } from "./components/StepEditFlyout";
@@ -93,6 +94,10 @@ export function App() {
   const [jobs, setJobs] = useState<api.JobListing[]>([]);
   const [job, setJob] = useState<api.JobView | null>(null);
   const [jobQuery, setJobQuery] = useState("");
+  // Only my jobs: the user icon in the title row, remembered. The server
+  // says who "me" is (`actor` on the listing); without one the icon hides.
+  const [jobsMine, setJobsMine] = useState<boolean>(() => loadPref("jobsMine", false));
+  const [jobsActor, setJobsActor] = useState<string | null>(null);
   // The history panel: one slot, Runs or Jobs, remembered across sessions.
   const [historyMode, setHistoryMode] = useState<"runs" | "jobs">(() => loadPref("historyMode", "runs"));
   // A thread's transcript, open in the flyout.
@@ -405,9 +410,11 @@ export function App() {
   // capability without an index answers 501: the list stays empty.
   const refreshJobs = useCallback(async () => {
     try {
-      setJobs(await api.listJobs({ q: jobQuery, workflow: selectedWf, limit: 50 }));
+      const r = await api.listJobs({ q: jobQuery, workflow: selectedWf, mine: jobsMine, limit: 50 });
+      setJobs(r.jobs);
+      setJobsActor(r.actor ?? null);
     } catch { /* no index */ }
-  }, [jobQuery, selectedWf]);
+  }, [jobQuery, selectedWf, jobsMine]);
   useEffect(() => { void refreshJobs(); }, [refreshJobs]);
   const refreshJob = useCallback(async () => {
     if (!selectedJob) { setJob(null); return; }
@@ -1071,6 +1078,13 @@ export function App() {
             {historyMode === "runs" && selectedJob && job
               ? <span class="section-scope" title={job.job}>{job.title ?? job.job}</span>
               : selectedWf && <span class="section-scope" title={selectedWf}>{selectedWf}</span>}
+            {historyMode === "jobs" && jobsActor && (
+              <button type="button" class={`mine-toggle${jobsMine ? " is-on" : ""}`} aria-pressed={jobsMine}
+                title={jobsMine ? `Only your jobs (${displayActor(jobsActor)}) — click for everyone's` : "Only your jobs"}
+                onClick={() => { const v = !jobsMine; setJobsMine(v); savePref("jobsMine", v); }}>
+                <UserIcon />
+              </button>
+            )}
           </div>
           <div class={`mode-track${historyMode === "jobs" ? " is-jobs" : ""}`}>
             <div class="mode-pane" inert={historyMode !== "runs"}>
@@ -1140,7 +1154,7 @@ export function App() {
               )}
               <div class="sidebar-scroll">
                 {jobs.length === 0 && (
-                  <div class="empty-sidebar">{jobQuery ? "No matching jobs" : selectedWf ? "No jobs for this workflow" : "No jobs yet"}</div>
+                  <div class="empty-sidebar">{jobQuery ? "No matching jobs" : jobsMine ? "No jobs of yours" : selectedWf ? "No jobs for this workflow" : "No jobs yet"}</div>
                 )}
                 {jobs.map((j) => (
                   <div key={j.job} class={`list-item ${selectedJob === j.job ? "is-active" : ""}`} onClick={() => selectJob(j.job)}>

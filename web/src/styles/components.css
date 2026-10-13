@@ -281,6 +281,26 @@ body.is-resizing-rows * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.section-title-modes .section-scope {
+  margin-left: auto;
+}
+/* Only my jobs: a user icon at the row's end, dim off, lit on. */
+.mine-toggle {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+  opacity: 0.55;
+}
+.mine-toggle:hover {
+  opacity: 1;
+}
+.mine-toggle.is-on {
+  color: var(--accent);
+  opacity: 1;
+}
 .mode-track {
   flex: 1;
   min-height: 0;

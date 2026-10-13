@@ -686,6 +686,7 @@ describe("jobs — the index (plans/job-index.md)", () => {
       serveUi: false,
       enableChat: false,
       scheduler: false,
+      resolveActor: (c) => c.req.header("x-test-actor") || undefined,
     });
     // One turn of a job: writes a file into its directory, declares what it
     // delivered, and replies.
@@ -704,10 +705,10 @@ describe("jobs — the index (plans/job-index.md)", () => {
         { id: "result", type: "pack", config: { list: "{{ list.jobs }}", get: "{{ get }}" } },
       ],
     });
-    const api = async (path: string, init?: { body?: unknown }) => {
+    const api = async (path: string, init?: { body?: unknown; actor?: string }) => {
       const res = await strut.app.request(path, {
         method: init?.body ? "POST" : "GET",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...(init?.actor ? { "x-test-actor": init.actor } : {}) },
         ...(init?.body ? { body: JSON.stringify(init.body) } : {}),
       });
       return { status: res.status, json: (await res.json().catch(() => null)) as any };
@@ -717,8 +718,8 @@ describe("jobs — the index (plans/job-index.md)", () => {
       assert.ok(await strut.store.getRunSummary(workflow, runId), `run ${runId} never settled`);
     };
     /** A turn of `job`, settled. */
-    const turn = async (job: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<string> => {
-      const res = await api("/workflows/turn/run", { body: { job, input, ...extra } });
+    const turn = async (job: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}, actor?: string): Promise<string> => {
+      const res = await api("/workflows/turn/run", { body: { job, input, ...extra }, ...(actor ? { actor } : {}) });
       assert.equal(res.status, 202, JSON.stringify(res.json));
       await settled("turn", res.json.runId);
       // Distinct `usedAt` stamps, for the ordering checks.
@@ -780,6 +781,31 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.deepEqual(await ids("workflow=turn"), ["j-old", "j-new"], "every job ran `turn`; j-old is newest-used now");
     assert.deepEqual(await ids("workflow=nope"), []);
     assert.deepEqual(await ids("workflow=inspect&q=beta"), [], "both filters apply");
+  });
+
+  it("the record remembers everyone who launched a run of the job; GET /jobs?mine=1 keeps the request actor's jobs and names the actor; no actor, nothing", async () => {
+    const { api, turn } = await boot();
+    await turn("j-a", { name: "plan.md", text: "v1", reply: "drafted" }, { title: "Alice's" }, "alice");
+    await turn("j-b", { name: "plan.md", text: "v1", reply: "drafted" }, { title: "Bob's" }, "bob");
+    await turn("j-a", { name: "plan.md", text: "v2", reply: "revised" }, {}, "bob");
+    await turn("j-a", { name: "plan.md", text: "v3", reply: "again" }, {}, "bob");
+    const rec = (await readJobRecord(jobRoot(tempDir, "j-a")))!;
+    assert.equal(rec.createdBy, "alice", "the first launch's actor");
+    assert.deepEqual(rec.actors, ["alice", "bob"], "first seen first, each once");
+
+    const all = await api("/jobs");
+    assert.deepEqual(all.json.jobs.map((j: any) => [j.job, j.actors]), [["j-a", ["alice", "bob"]], ["j-b", ["bob"]]]);
+    assert.equal("actor" in all.json, false, "no actor on the request");
+
+    const ids = async (q: string, actor?: string) => {
+      const r = await api(`/jobs${q}`, actor ? { actor } : undefined);
+      return { ids: r.json.jobs.map((j: any) => j.job), actor: r.json.actor };
+    };
+    assert.deepEqual(await ids("?mine=1", "alice"), { ids: ["j-a"], actor: "alice" });
+    assert.deepEqual(await ids("?mine=1", "bob"), { ids: ["j-a", "j-b"], actor: "bob" }, "newest-used first, as ever");
+    assert.deepEqual(await ids("", "alice"), { ids: ["j-a", "j-b"], actor: "alice" }, "without mine, everyone's, the actor still named");
+    assert.deepEqual(await ids("?mine=1"), { ids: [], actor: undefined }, "mine with no actor is nobody's");
+    assert.deepEqual(await ids("?mine=1&workflow=turn", "alice"), { ids: ["j-a"], actor: "alice" }, "composes with the workflow filter");
   });
 
   it("GET /jobs/:id: runs with status, threads by the turn line's job and by name, deliverables folded newest-first by id behind one live file", async () => {

@@ -738,6 +738,8 @@ export interface JobListing {
   job: string;
   title?: string;
   createdBy?: string;
+  /** Everyone who launched a run under the job, first seen first. */
+  actors?: string[];
   createdAt?: string;
   usedAt: string;
   busy?: string;
@@ -787,14 +789,17 @@ export function jobTotals(threads: JobThread[]): JobTotals {
 }
 
 /** Every job, newest-used first; `q` is the sidebar's matcher
- *  (`src/search.ts`), `workflow` keeps the jobs that ran that workflow. */
-export const listJobs = (opts: { q?: string; workflow?: string | null; limit?: number } = {}) => {
+ *  (`src/search.ts`), `workflow` keeps the jobs that ran that workflow,
+ *  `mine` the jobs the request's actor launched a run of. `actor` is who
+ *  the server took the request to be from — absent, `mine` lists nothing. */
+export const listJobs = (opts: { q?: string; workflow?: string | null; mine?: boolean; limit?: number } = {}) => {
   const p = new URLSearchParams();
   if (opts.q?.trim()) p.set("q", opts.q.trim());
   if (opts.workflow) p.set("workflow", opts.workflow);
+  if (opts.mine) p.set("mine", "1");
   if (opts.limit) p.set("limit", String(opts.limit));
   const qs = p.toString();
-  return fetchJSON<{ jobs: JobListing[] }>(`/jobs${qs ? `?${qs}` : ""}`).then((r) => r.jobs);
+  return fetchJSON<{ jobs: JobListing[]; actor?: string }>(`/jobs${qs ? `?${qs}` : ""}`);
 };
 
 /** One job with its threads; `nodes` adds each turn's touched graph nodes. */

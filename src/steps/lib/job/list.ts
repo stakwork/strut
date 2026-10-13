@@ -9,7 +9,7 @@ import { requireJobIndex } from "./_shared.js";
 export default defineStep({
   type: "job/list",
   description:
-    `Earlier JOBS on this strut, newest-used first: { jobs: [{ job, title?, createdBy?, createdAt?, usedAt, busy?, runs, holds }] }. ` +
+    `Earlier JOBS on this strut, newest-used first: { jobs: [{ job, title?, createdBy?, actors?, createdAt?, usedAt, busy?, runs, holds }] }. ` +
     `\`q\` searches by words: every word must appear in a job's title (its id, when it has none) or in the title or summary of something it delivered — ` +
     `so "landing page" finds the job whose plan is titled that. \`busy\` names the run working in it now. ` +
     `Then job/get for what a job produced, its files, and the thread an agent step can continue.`,
