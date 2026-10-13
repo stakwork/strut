@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Query, type Row, canonical, iso, memoryDb, normalize } from "./_db.js";
+import { type Query, type Row, canonical, iso, memoryDb } from "./_db.js";
+import { byName } from "./_match.js";
 import { lookup } from "./_ontology.js";
 
 async function entity(query: Query, where: string, params: Record<string, unknown>) {
@@ -124,7 +125,8 @@ export default defineStep({
     const type = cfg.type ? (await lookup(query, "entity_type", cfg.type))?.name ?? cfg.type : undefined;
     if (type === "Self") return (await entity(query, "e.type = 'Self'", {})) ?? { error: "not_found: nothing is known about the user yet" };
     if (type && cfg.name) {
-      const node = await entity(query, "e.type = $type AND (lower(e.name) = $key OR list_contains(e.aliases, $key))", { type, key: normalize(cfg.name) });
+      const { match } = await byName(query, type, cfg.name);
+      const node = match && (await entity(query, "e.ref_id = $id", { id: match.ref_id }));
       return node ?? { error: `not_found: no ${type} named ${cfg.name}` };
     }
     return { error: "invalid_input: pass a ref_id, type 'Self', or a type and name" };

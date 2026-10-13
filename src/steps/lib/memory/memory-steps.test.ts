@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { StepContext } from "../../../core.js";
 import { buildRegistry } from "../../registry.js";
 import { memoryDb } from "./_db.js";
+import { byName } from "./_match.js";
 import { resolve } from "./_ontology.js";
 
 // Against a real LadybugDB in a temp folder. @ladybugdb/core is an optional
@@ -170,6 +171,55 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
     assert.equal(out.merged_from, ids.katherine);
     assert.equal(out.with_facts, 3);
     assert.match((await run("memory/get", { ref_id: ids.kate })).error, /^not_found/);
+  });
+
+  it("recall matches nicknames, typos and predicate words; remember flags near names as similar", async () => {
+    const out = await run("memory/remember", {
+      episode: "Jonathan Price works at Acme Corp. Dr Patel is my dentist.",
+      facts: [
+        { subject: { type: "Person", name: "Jonathan Price" }, predicate: "works_at", object: { type: "Organization", name: "Acme Corp" }, text: "Jonathan Price works at Acme Corp." },
+        { subject: { type: "Person", name: "Dr Patel" }, predicate: "dentist_of", object: me, text: "Dr Patel is the user's dentist." },
+      ],
+    });
+    const jon = out.entities.find((e: any) => e.name === "Jonathan Price").ref_id;
+    assert.equal((await run("memory/recall", { q: "Jon", type: "Person" }))[0].ref_id, jon, "a nickname");
+    const job = await run("memory/recall", { q: "where does Jonathon work" });
+    assert.equal(job[0].ref_id, out.facts[0].ref_id, "a typo, and work → works_at");
+    assert.equal((await run("memory/recall", { q: "who is my dentist" }))[0].ref_id, out.facts[1].ref_id);
+    assert.deepEqual(await run("memory/recall", { q: "Jo" }), [], "a short word is never fuzzy");
+    assert.deepEqual(await run("memory/recall", { q: "the" }), [], "stop words alone find nothing (not Katherine)");
+
+    const again = await run("memory/remember", { episode: "x", mentions: [{ type: "Person", name: "Dr. Patel" }, { type: "Organization", name: "Acme" }] });
+    const patel = again.entities.find((e: any) => e.name === "Dr Patel");
+    assert.equal(patel.status, "matched", "punctuation does not make a new person");
+    const acme = again.entities.find((e: any) => e.name === "Acme");
+    assert.equal(acme.status, "created");
+    assert.deepEqual(acme.similar.map((s: any) => s.name), ["Acme Corp"]);
+    await run("memory/remember", { episode: "x", mentions: [{ type: "Person", name: "J Price" }, { type: "Person", name: "Jon Pryce" }] });
+    const jp = await run("memory/remember", { episode: "x", mentions: [{ type: "Person", name: "Jon Price" }] });
+    assert.deepEqual(jp.entities[0].similar.map((s: any) => s.name), ["Jonathan Price", "Jon Pryce", "J Price"], "closest first, not oldest");
+    assert.equal((await run("memory/get", { type: "Person", name: "dr. patel" })).ref_id, patel.ref_id);
+
+    // A name that only shares letters and digits is a different entity: C# is not C++.
+    const langs = await run("memory/remember", { episode: "x", mentions: [{ type: "Topic", name: "C#" }, { type: "Topic", name: "C++" }] });
+    assert.deepEqual(langs.entities.map((e: any) => e.status), ["created", "created"]);
+    assert.deepEqual(await run("memory/recall", { q: "李明" }), [], "nothing stored yet");
+    const li = await run("memory/remember", { episode: "x", facts: [{ subject: { type: "Person", name: "李明" }, predicate: "lives_in", object: { type: "Place", name: "北京" }, text: "李明住在北京。" }] });
+    assert.equal((await run("memory/recall", { q: "北京", type: "Fact" }))[0].ref_id, li.facts[0].ref_id, "unspaced text matches as a substring");
+  });
+
+  it("byName prefers the exact name, then the oldest entity with the same key", async () => {
+    const query = await memoryDb(ctx);
+    const make = (id: string, name: string, at: number) => query(
+      `CREATE (:Entity {ref_id: $id, type: 'Person', name: $name, summary: '', attributes: '{}', aliases: [lower($name)], created_by: 'test', created_at: $at, updated_at: $at})`,
+      { id, name, at },
+    );
+    // Graphs written before nameKey can hold two entities with one key.
+    await make("zz-newer", "Ann-Lee", 2);
+    await make("zz-older", "Ann Lee.", 1);
+    await make("zz-exact", "ann lee", 3);
+    assert.equal((await byName(query, "Person", "Ann Lee")).match?.ref_id, "zz-exact", "the exact normalised name first");
+    assert.equal((await byName(query, "Person", "ANN-LEE.")).match?.ref_id, "zz-older", "then the oldest with the same key");
   });
 
   it("without STRUT_MEMORY_DB the graph lives under dataDir/memory", async () => {
