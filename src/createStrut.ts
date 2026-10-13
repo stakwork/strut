@@ -1878,7 +1878,7 @@ export async function createStrut<TServices = unknown>(
   app.get("/jobs", async (c) => {
     if (!jobsCap?.list) return c.json({ error: NO_JOB_INDEX }, 501);
     const limit = Number(c.req.query("limit"));
-    return c.json({ jobs: await jobsCap.list({ q: c.req.query("q"), ...(limit > 0 ? { limit } : {}) }) });
+    return c.json({ jobs: await jobsCap.list({ q: c.req.query("q"), workflow: c.req.query("workflow"), ...(limit > 0 ? { limit } : {}) }) });
   });
 
   // `?threads=0` leaves the thread fold out (the run list and the

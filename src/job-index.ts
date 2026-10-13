@@ -130,8 +130,10 @@ export interface JobFile {
 export interface JobIndex {
   /** Every job, newest-used first. `q` is the one matcher behind every
    *  search box (src/search.ts): every word must hit the title (the id
-   *  without one) or a current artifact's title or summary. */
-  list(opts?: { q?: string; limit?: number }): Promise<JobListing[]>;
+   *  without one) or a current artifact's title or summary. `workflow`
+   *  keeps the jobs with a recorded run of that workflow (the sidebar's
+   *  filter when one is selected). */
+  list(opts?: { q?: string; workflow?: string; limit?: number }): Promise<JobListing[]>;
   /** One job; `null` when there is neither a record nor a directory. */
   get(job: string, opts?: GetJobOptions): Promise<JobView | null>;
   /** One file of a job's directory; `null` when it is not there. */
@@ -249,7 +251,8 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
 
   return {
     async list(opts = {}) {
-      const recs = await records();
+      let recs = await records();
+      if (opts.workflow) recs = recs.filter((rec) => rec.runs?.some((r) => r.workflow === opts.workflow));
       let rows = recs.map(listing);
       if (opts.q?.trim()) {
         const searchable = await Promise.all(

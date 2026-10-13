@@ -786,11 +786,13 @@ export function jobTotals(threads: JobThread[]): JobTotals {
   return totals;
 }
 
-/** Every job, newest-used first; `q` is the sidebar's matcher (`src/search.ts`). */
-export const listJobs = (q?: string, limit?: number) => {
+/** Every job, newest-used first; `q` is the sidebar's matcher
+ *  (`src/search.ts`), `workflow` keeps the jobs that ran that workflow. */
+export const listJobs = (opts: { q?: string; workflow?: string | null; limit?: number } = {}) => {
   const p = new URLSearchParams();
-  if (q?.trim()) p.set("q", q.trim());
-  if (limit) p.set("limit", String(limit));
+  if (opts.q?.trim()) p.set("q", opts.q.trim());
+  if (opts.workflow) p.set("workflow", opts.workflow);
+  if (opts.limit) p.set("limit", String(opts.limit));
   const qs = p.toString();
   return fetchJSON<{ jobs: JobListing[] }>(`/jobs${qs ? `?${qs}` : ""}`).then((r) => r.jobs);
 };

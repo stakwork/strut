@@ -15,6 +15,7 @@ export default defineStep({
     `Then job/get for what a job produced, its files, and the thread an agent step can continue.`,
   input: z.object({
     q: z.string().optional().describe("Words to search for; all must match. Omit to list every job."),
+    workflow: z.string().optional().describe("Only jobs with a run of this workflow."),
     limit: z.number().int().positive().optional().describe("At most this many, newest-used first."),
   }),
   output: z.object({ jobs: z.array(z.any()) }),

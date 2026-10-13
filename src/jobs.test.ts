@@ -752,8 +752,8 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.equal((await api("/jobs")).json.jobs.length, 1, "nothing launched");
   });
 
-  it("GET /jobs lists newest-used first with counts; ?q= matches the title and a deliverable's words, every word required", async () => {
-    const { api, turn } = await boot();
+  it("GET /jobs lists newest-used first with counts; ?q= matches the title and a deliverable's words, every word required; ?workflow= keeps the jobs that ran it", async () => {
+    const { api, turn, settled } = await boot();
     await turn("j-old", { name: "shot.png", text: "png", reply: "looked", artifacts: [{ id: "shot", title: "Screenshot", summary: "the checkout button", path: "shot.png" }] }, { title: "Checkout audit" });
     await turn("j-new", { name: "plan.md", text: "v1", reply: "planned", artifacts: [plan("v1", "a landing page for the beta")] }, { title: "Beta launch" });
     const all = await api("/jobs");
@@ -769,6 +769,17 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.deepEqual(await ids("q=checkout%20beta"), [], "every word must hit one job");
     assert.deepEqual(await ids("q=j-old"), ["j-old"], "the id");
     assert.deepEqual(await ids("limit=1"), ["j-new"]);
+
+    // ?workflow= keeps the jobs with a recorded run of that workflow — the
+    // sidebar's filter when one is selected. A run of another workflow
+    // under j-old makes it the newest-used, and the only match for that one.
+    const inspect = await api("/workflows/inspect/run", { body: { job: "j-old", input: { q: "", job: "j-old" } } });
+    assert.equal(inspect.status, 202, JSON.stringify(inspect.json));
+    await settled("inspect", inspect.json.runId);
+    assert.deepEqual(await ids("workflow=inspect"), ["j-old"]);
+    assert.deepEqual(await ids("workflow=turn"), ["j-old", "j-new"], "every job ran `turn`; j-old is newest-used now");
+    assert.deepEqual(await ids("workflow=nope"), []);
+    assert.deepEqual(await ids("workflow=inspect&q=beta"), [], "both filters apply");
   });
 
   it("GET /jobs/:id: runs with status, threads by the turn line's job and by name, deliverables folded newest-first by id behind one live file", async () => {
