@@ -25,7 +25,7 @@ server without a rebuild (proposed).
 | Tests       | Node native test runner (`node:test`) via tsx                              |
 | LLM step    | Vercel AI SDK (`ai`) over an aieo-resolved model — lazy-loaded. `ai`, `zod`, `@ai-sdk/anthropic` are **peerDependencies** (see "One copy per process" below); provider SDKs are aieo's |
 | AI builder  | Vercel AI SDK `ToolLoopAgent` over any aieo provider (model picker in the flyout, per-chat `ChatMeta.model`); detached + persisted, reattach via `/chat/:id/stream` SSE |
-| Embedded graph | `@ladybugdb/core` (LadybugDB, the Kuzu fork), an **optionalDependency** with a native addon: for the `memory/*` lib steps (`<dataDir>/memory/graph.lbug`, or `STRUT_MEMORY_DB`), workspace custom steps that keep a local graph, and the planned `LadybugBackend` (plans/local-desktop-and-stt.md §3.1). `memory/_db.ts` `await import()`s it on first use; registry build never loads it, and without it a memory step fails with an install hint. Left out of the desktop package (`package-desktop.mjs`) until that build uses it |
+| Embedded graph | `@ladybugdb/core` (LadybugDB, the Kuzu fork), an **optionalDependency** with a native addon: for the `memory/*` lib steps (`<dataDir>/memory/graph.lbug`, or `STRUT_MEMORY_DB`), workspace custom steps that keep a local graph, and the planned `LadybugBackend` (plans/local-desktop-and-stt.md §3.1). `memory/_db.ts` `await import()`s it on first use; registry build never loads it, and without it a memory step fails with an install hint. In the darwin desktop package (addon + bundled OpenSSL in `native/`, plans §2.3) only built-in `build/` steps reach it: a workspace custom step outside the bundle resolves `strut`/`vein` through strut-resolve-hook.ts and nothing else |
 
 ## Layout
 
@@ -286,6 +286,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_PORT`         | `3000`         | HTTP server port. `0` lets the OS pick; `listen()` resolves to the bound port and prints `{"event":"ready","port":N,"host":…}` on stdout for a host process to parse. |
 | `STRUT_HOST`         | (all interfaces) | Bind address. A desktop host passes `127.0.0.1` to keep a local strut off the LAN. |
 | `STRUT_WEB_DIST`     | `<module>/../web/dist` | Where the built UI is served from, for packagers that relocate it. |
+| `STRUT_EXIT_ON_STDIN_EOF` | (unset) | `1` = `desktop.js` exits when its stdin closes. A host spawns strut with a stdin pipe it never writes to; the kernel closes it when the host dies, crash or force quit included, so strut never outlives its app. Launcher only (`scripts/desktop.js`), not `build/server.js`. |
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
 | `STRUT_PEER_KEY`     | (unset)        | The key ANOTHER strut holds for this one (plans/federation.md §3): presented like `STRUT_API_KEY`, but a request carrying it is `peer`-scoped — every read, a launch, and cancel / pause / resume of a run a peer launched; anything else is 403. Unset, it opens nothing. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |

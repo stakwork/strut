@@ -222,6 +222,7 @@ export function createStt(opts: SttServiceOptions): SttService {
 
   async function ensureModel(id: string, onProgress?: (p: DownloadProgress) => void): Promise<string> {
     const model = requireModel(id);
+    await requireEngine(); // no model downloads for a build without the addon
     const dir = sttModelPath(modelDir, id);
     if (await installed(id)) return dir;
     let p = downloads.get(id);
@@ -343,6 +344,8 @@ export function createStt(opts: SttServiceOptions): SttService {
   }
 
   async function openStream(o: SttStreamOptions = {}): Promise<SttStream> {
+    // Before load(): without the addon a dictation start must not download a model first.
+    await requireEngine();
     const modelId = o.model ?? defaultModelId();
     const partialId = o.partialModel === undefined ? defaultPartialId() : o.partialModel;
     const ep = { ...DEFAULT_ENDPOINT, ...stripUndefined(o.endpoint ?? {}) };
@@ -431,7 +434,7 @@ export function createStt(opts: SttServiceOptions): SttService {
 
 export class SttUnavailableError extends Error {
   constructor() {
-    super("stt not available: sherpa-onnx-node is not installed for this platform");
+    super("stt not available: sherpa-onnx-node is not installed (unsupported platform, or a build without dictation)");
     this.name = "SttUnavailableError";
   }
 }

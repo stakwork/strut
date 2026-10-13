@@ -20,6 +20,7 @@ export function audioRoutes(app: Hono, stt: SttService): void {
   app.post("/audio/models/:id/download", async (c) => {
     const id = c.req.param("id");
     if (!findModel(id)) return c.json({ error: `unknown model ${JSON.stringify(id)}` }, 404);
+    if (!(await stt.available())) return c.json({ error: new SttUnavailableError().message }, 501);
     return streamSSE(c, async (s) => {
       let last = 0;
       try {
