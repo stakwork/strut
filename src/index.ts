@@ -27,6 +27,8 @@ export {
   type AccessedNode,
   withAccessedNodes,
   accessedNodesOf,
+  withMessages,
+  messagesOf,
   type MediaPart,
   withMedia,
   mediaOf,
