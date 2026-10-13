@@ -80,6 +80,7 @@ import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
+import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -1023,12 +1024,6 @@ export async function createStrut<TServices = unknown>(
     return c.json(partial);
   });
 
-  /** Where one agent session of a run is served (the route below). Relative
-   *  to this server; each path segment encoded (`#` in foreach paths). */
-  const transcriptUrl = (workflow: string, runId: string, stepPath: string): string =>
-    `/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(runId)}/transcripts/` +
-    stepPath.split("/").map(encodeURIComponent).join("/");
-
   /** An event as the run read endpoints serve it: an agent session (can be
    *  megabytes) becomes a `transcript` link to fetch, never inline. */
   const withTranscriptLink = (workflow: string, e: RunEvent) => {
@@ -1886,11 +1881,19 @@ export async function createStrut<TServices = unknown>(
     return c.json({ jobs: await jobsCap.list({ q: c.req.query("q"), ...(limit > 0 ? { limit } : {}) }) });
   });
 
+  // `?threads=0` leaves the thread fold out (the run list and the
+  // deliverables alone, as before); `?nodes=1` adds each turn's touched
+  // graph nodes; `?limit=N` bounds the runs the fold reads (newest first).
   app.get("/jobs/:id", async (c) => {
     if (!jobsCap?.get) return c.json({ error: NO_JOB_INDEX }, 501);
     const at = jobRoute(c);
     if (at instanceof Response) return at;
-    const view = await jobsCap.get(at.id);
+    const limit = Number(c.req.query("limit"));
+    const view = await jobsCap.get(at.id, {
+      threads: c.req.query("threads") !== "0",
+      nodes: c.req.query("nodes") === "1",
+      ...(limit > 0 ? { limit } : {}),
+    });
     return view ? c.json(view) : c.json({ error: `No job "${at.id}"` }, 404);
   });
 

@@ -25,12 +25,16 @@ import type { SessionInfo, SessionStore } from "./session-store.js";
 import { idProblem } from "./session-store.js";
 import { artifactEntriesOf, artifactKind, resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { jobFilePath, jobHolder, jobRoot, listJobFiles, readJobRecord, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
+import { foldJobThreads, type JobThread, type ThreadRun } from "./job-threads.js";
 import { searchWorkflows } from "./search.js";
 
 export interface JobIndexDeps {
   dataDir: string;
-  store: Pick<RunStore, "getRunSummary">;
-  sessions?: Pick<SessionStore, "list">;
+  /** Summaries for the run list and the artifact fold; logs for the threads. */
+  store: Pick<RunStore, "getRunSummary" | "getRunEvents">;
+  /** `list` finds the job's threads; `load` reads their turn lines (the
+   *  context after each turn) for the thread fold. */
+  sessions?: Pick<SessionStore, "list" | "load">;
   /** Which run holds a thread now (`SessionsCapability.holder`), for `busy`. */
   sessionHolder?: (id: string) => unknown;
   /** A workflow the meta surface may not read the runs of (`Flow.sealed`,
@@ -87,7 +91,27 @@ export interface JobView extends Omit<JobListing, "runs" | "holds"> {
   /** The latest reply: `output.text` of the newest successful top-level
    *  run, when its output carries one. */
   text?: string;
+  /** The job's agent threads (plans/jobs-sidebar.md §1, `src/job-threads.ts`):
+   *  every agent execution in its runs' logs grouped by session, each turn
+   *  with its run, usage, cost, tool calls and the artifacts that run
+   *  declared, and under it what it spawned. Chronological. Absent when
+   *  not asked for (`threads: false`). */
+  threads?: JobThread[];
+  /** Runs past `limit` (newest first) that the thread fold left out. */
+  omittedRuns?: number;
 }
+
+export interface GetJobOptions {
+  /** Fold the threads (default true). */
+  threads?: boolean;
+  /** Include each turn's touched graph nodes (default: a count only). */
+  nodes?: boolean;
+  /** How many runs, newest first, the thread fold reads (default 100). */
+  limit?: number;
+}
+
+/** The thread fold reads this many runs unless told otherwise. */
+export const THREADS_RUN_LIMIT = 100;
 
 /** One file of a job's directory, for the agent's door (`job/read`). */
 export interface JobFile {
@@ -109,7 +133,7 @@ export interface JobIndex {
    *  without one) or a current artifact's title or summary. */
   list(opts?: { q?: string; limit?: number }): Promise<JobListing[]>;
   /** One job; `null` when there is neither a record nor a directory. */
-  get(job: string): Promise<JobView | null>;
+  get(job: string, opts?: GetJobOptions): Promise<JobView | null>;
   /** One file of a job's directory; `null` when it is not there. */
   read(job: string, path: string, opts?: { maxChars?: number }): Promise<JobFile | null>;
 }
@@ -149,6 +173,38 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
   /** The job's runs that may be read past their status. */
   const readable = async (workflow: string) => !(await deps.sealed?.(workflow));
 
+  /** Does a `/jobs/<id>/files/…` link point at a file in `root`? (Any other
+   *  url is taken as given.) */
+  const existsIn = (root: string) => async (url: string): Promise<boolean> => {
+    const m = /^\/jobs\/[^/]+\/files\/(.+)$/.exec(url);
+    if (!m) return true;
+    try {
+      await access(jobFilePath(root, decodeURIComponent(m[1]!)));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** §1 of plans/jobs-sidebar.md: the newest `limit` readable runs, their
+   *  logs and resolved deliverables, folded with the sessions' turn lines. */
+  const threadsOf = async (rec: JobRecord, sessions: SessionInfo[], opts: GetJobOptions): Promise<{ threads: JobThread[]; omittedRuns?: number }> => {
+    const lines = [...(rec.runs ?? [])].reverse();
+    const limit = opts.limit && opts.limit > 0 ? opts.limit : THREADS_RUN_LIMIT;
+    const exists = existsIn(rootOf(rec.name));
+    const runs: ThreadRun[] = [];
+    for (const line of lines.slice(0, limit)) {
+      if (!(await readable(line.workflow))) continue;
+      const summary = await deps.store.getRunSummary(line.workflow, line.runId);
+      const events = await deps.store.getRunEvents(line.workflow, line.runId);
+      const artifacts = summary?.status === "success" ? await resolveArtifactRefs(summary.output, { runId: line.runId, job: rec.name, exists }) : undefined;
+      runs.push({ ...line, summary, events, ...(artifacts?.length ? { artifacts } : {}) });
+    }
+    const turnLines = (await Promise.all(sessions.map((s) => deps.sessions?.load?.(s.id).catch(() => null)))).flatMap((t) => t?.turns ?? []);
+    const omitted = lines.length - Math.min(lines.length, limit);
+    return { threads: foldJobThreads(runs, turnLines, { nodes: !!opts.nodes }), ...(omitted > 0 ? { omittedRuns: omitted } : {}) };
+  };
+
   /** §3: the current deliverables, and the latest reply. */
   const fold = async (rec: JobRecord): Promise<{ artifacts: JobArtifact[]; text?: string }> => {
     const seen = new Set<string>();
@@ -166,17 +222,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
         kept.push({ raw, runId: run.runId });
       }
     }
-    const root = rootOf(rec.name);
-    const exists = async (url: string): Promise<boolean> => {
-      const m = /^\/jobs\/[^/]+\/files\/(.+)$/.exec(url);
-      if (!m) return true;
-      try {
-        await access(jobFilePath(root, decodeURIComponent(m[1]!)));
-        return true;
-      } catch {
-        return false;
-      }
-    };
+    const exists = existsIn(rootOf(rec.name));
     const artifacts: JobArtifact[] = [];
     for (const { raw, runId } of kept) {
       const [ref] = (await resolveArtifactRefs({ artifacts: [raw] }, { runId, job: rec.name, exists })) ?? [];
@@ -218,7 +264,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       return opts.limit ? rows.slice(0, opts.limit) : rows;
     },
 
-    async get(job) {
+    async get(job, opts = {}) {
       if (idProblem(job)) return null;
       const root = rootOf(job);
       let rec = await readJobRecord(root);
@@ -255,6 +301,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
         runs,
         sessions,
         ...(await fold(rec)),
+        ...(opts.threads === false ? {} : await threadsOf(rec, sessions, opts)),
       };
     },
 

@@ -794,6 +794,18 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.deepEqual(v.files, ["plan.md"]);
     assert.deepEqual([v.holds, v.repos], [[], []]);
     assert.equal(await readFile(join(tempDir, "jobs", "j-b", "plan.md"), "utf8"), "v2", "one live file behind the link");
+    // The threads (plans/jobs-sidebar.md §1): no agent anywhere, so each run
+    // is one turn at its root, chronological, carrying what it delivered.
+    assert.deepEqual(
+      v.threads.map((t: any) => [t.id, t.session, t.label, t.turns.map((x: any) => [x.runId, x.stepType, x.status, x.toolCalls, (x.artifacts ?? []).map((a: any) => a.id)])]),
+      [[`${r1}/turn`, false, "turn", [[r1, "run", "success", 0, ["plan", "pod"]]]], [`${r2}/turn`, false, "turn", [[r2, "run", "success", 0, ["plan"]]]]],
+    );
+    assert.equal(v.threads[0].totals.turns, 1);
+    assert.equal("omittedRuns" in v, false);
+    const slim = (await api("/jobs/j-b?threads=0")).json;
+    assert.equal("threads" in slim, false, "?threads=0 leaves the fold out");
+    const capped = (await api("/jobs/j-b?limit=1")).json;
+    assert.deepEqual([capped.threads.length, capped.omittedRuns], [1, 1]);
     assert.equal((await api("/jobs/nope")).status, 404);
     assert.equal((await api("/jobs/bad%20id")).status, 400);
   });
@@ -809,7 +821,7 @@ describe("jobs — the index (plans/job-index.md)", () => {
     await settled("harness", graded.json.runId);
     const sealed = (await api("/jobs/j-s")).json;
     assert.deepEqual(sealed.runs, [{ workflow: "harness", runId: graded.json.runId, at: sealed.runs[0].at, status: "success", sealed: true }]);
-    assert.deepEqual([sealed.artifacts, sealed.text], [[], undefined]);
+    assert.deepEqual([sealed.artifacts, sealed.text, sealed.threads], [[], undefined, []], "a sealed run is in no thread either");
 
     await strut.workspace.publishWorkflow("slow", "v1", {
       steps: [{ id: "dir", type: "job/dir", config: {} }, { id: "z", type: "wait", config: { durationMs: 300 } }],

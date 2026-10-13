@@ -291,6 +291,29 @@ export {
   listJobFiles,
   jobFilePath,
 } from "./jobs.js";
+// The job INDEX (plans/job-index.md) — what `GET /jobs[/:id]` and the
+// `job/*` steps read — and the thread fold it serves (plans/jobs-sidebar.md).
+export {
+  type JobIndex,
+  type JobIndexDeps,
+  type JobListing,
+  type JobView,
+  type JobRunView,
+  type JobArtifact,
+  type JobFile,
+  type GetJobOptions,
+  createJobIndex,
+} from "./job-index.js";
+export {
+  type JobThread,
+  type JobTurn,
+  type JobTotals,
+  type ThreadRun,
+  type TurnStatus,
+  foldJobThreads,
+  jobTotals,
+  transcriptUrl,
+} from "./job-threads.js";
 export {
   type ArtifactEntry,
   type ArtifactRef,

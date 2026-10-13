@@ -1,6 +1,21 @@
 # Jobs sidebar — the operator's view of a job
 
-> **Status: PROPOSED.** Written 2026-10-12 after reading one job on swarm38
+> **Status (2026-10-12): BUILT, in strut — the fold (`src/job-threads.ts`),
+> `threads` on `GET /jobs/:id` (`?threads=0`, `?nodes=1`, `?limit=`;
+> `job/get` takes `threads: true`), the Jobs sidebar section, the timeline,
+> the thread view (the chat's renderer lifted into `Transcript.tsx` +
+> `transcript.ts`), the job chip, `?job=` deep links. Departures from the
+> text below, all small: a turn carries `offset` (where it starts in the
+> thread, what the transcript's turn marks are placed by); the web's types
+> are written out in `api.ts` rather than imported from the engine (those
+> modules pull node types); `job/get` leaves threads out unless asked
+> (`threads: true`), no depth cap; the Jobs section sits between Runs and
+> Tools; a selected job's Runs section lists the job's runs (every workflow)
+> so turns are a click apart. Verified against the swarm38 job replayed into
+> a scratch workspace (its events, transcripts, session and `plan.html`):
+> one thread, seven turns, $2.79, the four Concept pages under Nodes. Not
+> done: §7 item 7 (the stakgraph `pod/agent*` steps marking their output),
+> a separate PR there. Written 2026-10-12 after reading one job on swarm38
 > (job `749199e2…`, "Plan: external agent read/update pool config": seven
 > runs of the seeded `job` workflow, one agent thread, a goose coding agent
 > on a hive pod, two merged PRs) through the routes strut already has, and
