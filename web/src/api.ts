@@ -612,6 +612,8 @@ export interface RunSummary {
   error?: { message: string };
   /** Set when an automation fired this run (plans/automations.md). */
   automation?: { id: string };
+  /** The job the run was launched under (plans/jobs.md), when one was given. */
+  job?: string;
 }
 
 export interface RunEvent {
@@ -653,6 +655,164 @@ export interface ActiveRun {
 }
 
 export const listActiveRuns = () => fetchJSON<ActiveRun[]>("/runs/active");
+
+// ── Jobs (plans/jobs-sidebar.md) ───────────────────────────────────────────
+// The shapes mirror the server's (`JobView` in src/job-index.ts, `JobThread`
+// / `JobTurn` in src/job-threads.ts); written out here because those modules
+// pull node types the web build has no business resolving.
+
+export interface TokenUsage {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+/** One resolved deliverable (`src/artifact-refs.ts`). */
+export interface ArtifactRef {
+  id: string;
+  kind: string;
+  title: string;
+  label?: string;
+  summary?: string;
+  url?: string;
+  content?: unknown;
+  error?: string;
+}
+
+/** A current deliverable of a job: the ref and the run that last reported it. */
+export interface JobArtifact extends ArtifactRef {
+  runId: string;
+  path?: string;
+}
+
+export type TurnStatus = "success" | "error" | "cancelled" | "running";
+
+/** One agent execution of a job — or a peer run, or a run with no agent. */
+export interface JobTurn {
+  runId: string;
+  workflow: string;
+  path: string;
+  stepType: string;
+  label: string;
+  at: string;
+  durationMs?: number;
+  status: TurnStatus;
+  turn?: number;
+  offset?: number;
+  session?: string;
+  usage?: TokenUsage;
+  cost?: number;
+  context?: { used: number; limit: number };
+  toolCalls: number;
+  transcript?: string;
+  artifacts?: ArtifactRef[];
+  nodeCount: number;
+  nodes?: AccessedNode[];
+  spawned: JobThread[];
+  peer?: { id: string; workflow: string; runId: string; status: string };
+}
+
+export interface JobTotals {
+  turns: number;
+  usage: TokenUsage;
+  cost: number;
+  toolCalls: number;
+  context?: { used: number; limit: number };
+}
+
+/** A thread: one session's turns, or one cold execution. */
+export interface JobThread {
+  id: string;
+  session: boolean;
+  label: string;
+  startedAt: string;
+  updatedAt: string;
+  turns: JobTurn[];
+  totals: JobTotals;
+}
+
+/** One row of `GET /jobs`. */
+export interface JobListing {
+  job: string;
+  title?: string;
+  createdBy?: string;
+  createdAt?: string;
+  usedAt: string;
+  busy?: string;
+  runs: number;
+  holds: number;
+}
+
+export interface JobRunView {
+  workflow: string;
+  runId: string;
+  at: string;
+  parentRunId?: string;
+  status: "running" | "success" | "error" | "cancelled";
+  durationMs?: number;
+  error?: string;
+  sealed?: true;
+}
+
+/** `GET /jobs/:id`. */
+export interface JobView extends Omit<JobListing, "runs" | "holds"> {
+  holds: Array<{ id: string; kind: string; since: string }>;
+  repos: string[];
+  files: string[];
+  runs: JobRunView[];
+  sessions: Array<{ id: string; turns: number; updatedAt: string; busy?: true }>;
+  artifacts: JobArtifact[];
+  text?: string;
+  threads?: JobThread[];
+  omittedRuns?: number;
+}
+
+/** Every turn under `threads`, spawned ones included, each counted once. */
+export function jobTotals(threads: JobThread[]): JobTotals {
+  const usage: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, totalTokens: 0 };
+  const totals: JobTotals = { turns: 0, usage, cost: 0, toolCalls: 0 };
+  const walk = (ts: JobThread[]) => {
+    for (const th of ts) for (const t of th.turns) {
+      totals.turns++;
+      totals.toolCalls += t.toolCalls;
+      if (typeof t.cost === "number") totals.cost += t.cost;
+      if (t.usage) for (const k of Object.keys(usage) as (keyof TokenUsage)[]) usage[k] += Number(t.usage[k]) || 0;
+      walk(t.spawned);
+    }
+  };
+  walk(threads);
+  return totals;
+}
+
+/** Every job, newest-used first; `q` is the sidebar's matcher (`src/search.ts`). */
+export const listJobs = (q?: string, limit?: number) => {
+  const p = new URLSearchParams();
+  if (q?.trim()) p.set("q", q.trim());
+  if (limit) p.set("limit", String(limit));
+  const qs = p.toString();
+  return fetchJSON<{ jobs: JobListing[] }>(`/jobs${qs ? `?${qs}` : ""}`).then((r) => r.jobs);
+};
+
+/** One job with its threads; `nodes` adds each turn's touched graph nodes. */
+export const getJob = (id: string, opts: { nodes?: boolean; limit?: number } = {}) => {
+  const p = new URLSearchParams();
+  if (opts.nodes) p.set("nodes", "1");
+  if (opts.limit) p.set("limit", String(opts.limit));
+  const qs = p.toString();
+  return fetchJSON<JobView>(`/jobs/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
+};
+
+/** A stored model message, as a transcript endpoint serves it. */
+export interface StoredMessage {
+  role: string;
+  content: unknown;
+}
+
+/** An agent session read back from a run: the `transcript` link a turn
+ *  carries (`/workflows/…/transcripts/<path>`, `?full=1` for the thread). */
+export const getTranscript = (link: string, signal?: AbortSignal) => fetchJSON<StoredMessage[]>(link, { signal });
 
 export const getRun = (workflow: string, runId: string) =>
   fetchJSON<RunSummary>(`/workflows/${workflow}/runs/${runId}`);

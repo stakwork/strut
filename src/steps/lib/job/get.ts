@@ -22,11 +22,15 @@ export default defineStep({
     `its threads (sessions: [{ id, turns, updatedAt, busy? }] — a thread's id is what an agent step's \`session\` takes to CONTINUE it; busy = mid-turn now), ` +
     `its holds, repos and files, \`dir\` (its directory on this host; files and artifact paths are relative to it), ` +
     `\`artifacts\`: the job's CURRENT deliverables, the latest version of each — { id, kind, title, summary?, url, path?, runId } (\`path\` is what job/read takes) — and \`text\`, the job's latest reply. ` +
-    `A run of a sealed workflow shows its status and nothing more.`,
-  input: z.object({ job: z.string().describe("The job id, from job/list.") }),
+    `A run of a sealed workflow shows its status and nothing more. ` +
+    `With \`threads: true\`, also \`threads\`: the job's agent threads — every agent execution grouped by session, each turn with its run, tool-call count, tokens and cost, and what it spawned (sub-agents, child runs, peer runs) — the job's execution as a tree.`,
+  input: z.object({
+    job: z.string().describe("The job id, from job/list."),
+    threads: z.boolean().default(false).describe("Also fold the job's agent threads (turns with tokens and cost, what each spawned). Off by default: the runs and deliverables are usually enough."),
+  }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    const view = await requireJobIndex(ctx.services).get(cfg.job);
+    const view = await requireJobIndex(ctx.services).get(cfg.job, { threads: cfg.threads });
     if (!view) throw new Error(`No job "${cfg.job}"`);
     const dataDir = (ctx.services as Partial<StrutCapabilities> | undefined)?.dataDir ?? join(tmpdir(), "strut");
     return { ...view, dir: jobRoot(dataDir, cfg.job) };

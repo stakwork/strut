@@ -31,6 +31,8 @@ import { SidebarResizer } from "./components/SidebarResizer";
 import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
+import { JobTimeline, fmtTime } from "./components/JobTimeline";
+import { ThreadFlyout } from "./components/ThreadFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
@@ -83,6 +85,19 @@ export function App() {
   const [runs, setRuns] = useState<api.RunSummary[]>([]);
   const [selectedWf, setSelectedWf] = useState<string | null>(initialUrl.get("wf"));
   const [selectedRun, setSelectedRun] = useState<string | null>(initialUrl.get("run"));
+  // Jobs (plans/jobs-sidebar.md): the selected job's timeline takes the
+  // canvas area; a run opened from it keeps the job selected, so the
+  // breadcrumb leads back. ?job=<id> deep-links into one.
+  const [selectedJob, setSelectedJob] = useState<string | null>(initialUrl.get("job"));
+  const [jobs, setJobs] = useState<api.JobListing[]>([]);
+  const [job, setJob] = useState<api.JobView | null>(null);
+  const [jobQuery, setJobQuery] = useState("");
+  const [jobsOpen, setJobsOpen] = useState<boolean>(() => loadPref("jobsOpen", true));
+  // A thread's transcript, open in the flyout.
+  const [threadView, setThreadView] = useState<{ thread: api.JobThread; turn?: api.JobTurn } | null>(null);
+  // A step path to open the flyout on once the run opened from the timeline
+  // has its steps and events (`openJobRun`).
+  const [pendingFlyout, setPendingFlyout] = useState<string | null>(null);
   const [events, setEvents] = useState<api.RunEvent[]>([]);
   const [running, setRunning] = useState(false);
   // Bumped after a durable resume so the run-view effect re-tails the log
@@ -195,12 +210,13 @@ export function App() {
     put("wf", selectedWf);
     put("run", selectedRun);
     put("v", viewVersion);
+    put("job", selectedJob);
     const qs = p.toString();
     const next = `${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`;
     if (next !== `${location.pathname}${location.search}${location.hash}`) {
       replaceUrl(next);
     }
-  }, [selectedWf, selectedRun, viewVersion]);
+  }, [selectedWf, selectedRun, viewVersion, selectedJob]);
 
   // ── Sidebar grouping ─────────────────────────────────────────────────────
   // Workflows grouped by category; groups (and workflows within them) are
@@ -371,6 +387,32 @@ export function App() {
     for (const r of activeRuns) counts.set(r.workflow, (counts.get(r.workflow) ?? 0) + 1);
     return counts;
   }, [activeRuns]);
+
+  // ── Jobs ────────────────────────────────────────────────────────────────
+  // The listing (the sidebar's Jobs section) and the selected job's view
+  // (the timeline). Both re-read when a run anywhere changes state — a new
+  // run may be a new job, a finished one changes a turn's row — on the same
+  // signal the Runs list follows. A deployment whose jobs are an injected
+  // capability without an index answers 501: the section stays empty.
+  const refreshJobs = useCallback(async (q?: string) => {
+    try {
+      setJobs(await api.listJobs(q ?? jobQuery, 50));
+    } catch { /* no index */ }
+  }, [jobQuery]);
+  useEffect(() => { void refreshJobs(jobQuery); }, [jobQuery]);
+  const refreshJob = useCallback(async () => {
+    if (!selectedJob) { setJob(null); return; }
+    try {
+      setJob(await api.getJob(selectedJob, { nodes: true }));
+    } catch { setJob(null); }
+  }, [selectedJob]);
+  useEffect(() => { setThreadView(null); void refreshJob(); }, [selectedJob]);
+  useEffect(() => {
+    if (selectedJob) void refreshJob();
+    void refreshJobs();
+  }, [activeRuns]);
+  /** The job a run belongs to, as the sidebar names it. */
+  const jobTitle = useCallback((id: string) => jobs.find((j) => j.job === id)?.title ?? id.slice(0, 8), [jobs]);
   // The selected workflow's live runs changed (one started, finished, paused)
   // → refresh its Runs list, so it never disagrees with the dot.
   const prevActive = useRef(activeRuns);
@@ -590,6 +632,38 @@ export function App() {
     if (selectedWf !== wf) setSelectedWf(wf);
     setSelectedRun(runId);
   }, [selectedWf]);
+
+  // Select a job: its timeline takes the canvas (no workflow, no run).
+  const selectJob = useCallback((id: string | null) => {
+    liveStreamRef.current = false;
+    setRunning(false);
+    setFlyoutStepId(null);
+    setFlyoutStepIndex(null);
+    setPanel(null);
+    setInfoStep(null);
+    setThreadView(null);
+    setSelectedJob(id);
+    setSelectedWf(null);
+    setSelectedRun(null);
+    setEvents([]);
+  }, []);
+
+  // A run opened from the timeline (or the job's run list): the run canvas
+  // you have today, the job kept for the breadcrumb, the flyout on the
+  // turn's step once the run's steps and events are in.
+  const openJobRun = useCallback((workflow: string, runId: string, path?: string) => {
+    setThreadView(null);
+    openRun(workflow, runId);
+    setPendingFlyout(path ?? null);
+  }, [openRun]);
+  useEffect(() => {
+    if (!pendingFlyout || !localSteps || loadedWf !== selectedWf || events.length === 0) return;
+    // `wf/work/004-agent` opens on `work`: the step the canvas has.
+    const id = pendingFlyout.split("/")[1];
+    const idx = id ? localSteps.findIndex((s) => s.id === id) : -1;
+    if (idx >= 0) { setFlyoutStepId(id!); setFlyoutStepIndex(idx); }
+    setPendingFlyout(null);
+  }, [pendingFlyout, localSteps, loadedWf, selectedWf, events.length]);
 
   // ── Run control (RUN_CONTROL_SPEC): cancel / pause / resume ──────────────
   const selectedRunSummary = selectedRun ? runs.find((r) => r.runId === selectedRun) : undefined;
@@ -886,6 +960,14 @@ export function App() {
     { label: "Custom", steps: matchedSteps.filter((s) => s.source === "custom") },
   ].filter((g) => g.steps.length > 0), [matchedSteps]);
 
+  const toggleJobsSection = useCallback(() => {
+    setJobsOpen((prev) => {
+      const next = !prev;
+      savePref("jobsOpen", next);
+      return next;
+    });
+  }, []);
+
   const toggleStepsSection = useCallback(() => {
     setStepsOpen((prev) => {
       const next = !prev;
@@ -923,7 +1005,7 @@ export function App() {
               onKeyDown={(e) => {
                 if (e.key === "Escape") setWfQuery("");
                 if (e.key === "Enter" && matchedWorkflows.length === 1) {
-                  setSelectedWf(matchedWorkflows[0]!.name); setSelectedRun(null); setEvents([]); closeFlyout();
+                  setSelectedJob(null); setSelectedWf(matchedWorkflows[0]!.name); setSelectedRun(null); setEvents([]); closeFlyout();
                 }
               }}
             />
@@ -951,7 +1033,7 @@ export function App() {
                   )}
                   {!collapsed && g.wfs.map((wf) => (
                     <div key={wf.name} class={`list-item ${selectedWf === wf.name ? "is-active" : ""}`}
-                      onClick={() => { setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
+                      onClick={() => { setSelectedJob(null); setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
                       <span class="list-item-name">{wf.name}</span>
                       {runningByWf.has(wf.name) && (
                         <span class="live-dot" title={`${runningByWf.get(wf.name)} run${runningByWf.get(wf.name) === 1 ? "" : "s"} in progress`} />
@@ -973,27 +1055,99 @@ export function App() {
         <div class="sidebar-section" data-section="runs">
           <div class="section-title">
             Runs
-            {selectedWf && <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;">{selectedWf}</span>}
+            {selectedJob && job
+              ? <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;">{job.title ?? job.job}</span>
+              : selectedWf && <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;">{selectedWf}</span>}
           </div>
           <div class="sidebar-scroll">
-            {filteredRuns.length === 0 && <div class="empty-sidebar">{selectedWf ? "No runs for this workflow" : "No runs yet"}</div>}
-            {filteredRuns.map((run) => (
-              <div key={run.runId} class={`list-item ${selectedRun === run.runId ? "is-active" : ""}`}
-                onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
-                <div class="list-item-stack">
-                  <span class="list-item-name">
-                    {run.runId}
-                    {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
-                  </span>
-                  <span class="list-item-sub">
-                    {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "..."}
-                    {run.durationMs != null && ` (${run.durationMs}ms)`}
-                  </span>
-                </div>
-                <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
-              </div>
-            ))}
+            {/* A selected job lists ITS runs, every workflow, newest first —
+                so the turns of a thread are a click apart. */}
+            {selectedJob && job ? (
+              <>
+                {job.runs.length === 0 && <div class="empty-sidebar">No runs under this job</div>}
+                {job.runs.map((r) => (
+                  <div key={r.runId} class={`list-item ${selectedRun === r.runId ? "is-active" : ""}`}
+                    onClick={() => openJobRun(r.workflow, r.runId)}>
+                    <div class="list-item-stack">
+                      <span class="list-item-name">{r.runId}</span>
+                      <span class="list-item-sub">
+                        {r.workflow}{r.parentRunId ? " · child run" : ""}{r.sealed ? " · sealed" : ""}
+                        {r.durationMs != null && ` (${r.durationMs}ms)`}
+                      </span>
+                    </div>
+                    <span class={`badge badge-${statusTone(r.status)}`}>{r.status}</span>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <>
+                {filteredRuns.length === 0 && <div class="empty-sidebar">{selectedWf ? "No runs for this workflow" : "No runs yet"}</div>}
+                {filteredRuns.map((run) => (
+                  <div key={run.runId} class={`list-item ${selectedRun === run.runId ? "is-active" : ""}`}
+                    onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
+                    <div class="list-item-stack">
+                      <span class="list-item-name">
+                        {run.runId}
+                        {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                      </span>
+                      <span class="list-item-sub">
+                        {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "..."}
+                        {run.durationMs != null && ` (${run.durationMs}ms)`}
+                      </span>
+                      {/* The job it ran under: a click opens the job's timeline. */}
+                      {run.job && (
+                        <span class="job-chip" title={`Job ${run.job}`}
+                          onClick={(e) => { e.stopPropagation(); selectJob(run.job!); }}>{jobTitle(run.job)}</span>
+                      )}
+                    </div>
+                    <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
+        </div>
+
+        {jobsOpen && <SidebarResizer />}
+
+        {/* Jobs (plans/jobs-sidebar.md) — every job, newest-used first; a
+            click opens its timeline in the canvas area. */}
+        <div class={`sidebar-section${jobsOpen ? "" : " is-collapsed"}`} data-section="jobs">
+          <div class="section-title section-title-toggle" onClick={toggleJobsSection}>
+            <span class={`cat-caret${jobsOpen ? " is-open" : ""}`}>▸</span>
+            <span>Jobs</span>
+            <span class="cat-count">{jobs.length}</span>
+          </div>
+          {jobsOpen && (jobs.length > 0 || jobQuery) && (
+            <input
+              class="sidebar-search"
+              type="search"
+              value={jobQuery}
+              placeholder="Find jobs…"
+              aria-label="Find jobs"
+              onInput={(e) => setJobQuery((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setJobQuery("");
+                if (e.key === "Enter" && jobs.length === 1) selectJob(jobs[0]!.job);
+              }}
+            />
+          )}
+          {jobsOpen && (
+            <div class="sidebar-scroll">
+              {jobs.length === 0 && <div class="empty-sidebar">{jobQuery ? "No matching jobs" : "No jobs yet"}</div>}
+              {jobs.map((j) => (
+                <div key={j.job} class={`list-item ${selectedJob === j.job ? "is-active" : ""}`} onClick={() => selectJob(j.job)}>
+                  <div class="list-item-stack">
+                    <span class="list-item-name" title={j.job}>{j.title ?? j.job}</span>
+                    <span class="list-item-sub">
+                      {fmtTime(j.usedAt)} · {j.runs} run{j.runs === 1 ? "" : "s"}{j.holds ? ` · ${j.holds} hold${j.holds === 1 ? "" : "s"}` : ""}
+                    </span>
+                  </div>
+                  {j.busy && <span class="live-dot" title="A run is working in this job now" />}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {stepsOpen && <SidebarResizer />}
@@ -1057,7 +1211,7 @@ export function App() {
       {/* Topbar */}
       <div class="shell-topbar">
         <span class="topbar-title">
-          {selectedWf ?? "Select a workflow"}
+          {selectedWf ?? (selectedJob ? (job?.title ?? selectedJob) : "Select a workflow")}
           {selectedWf && (
             <CategoryEditor
               key={selectedWf}
@@ -1171,9 +1325,17 @@ export function App() {
 
       {/* Canvas */}
       <div class="shell-canvas">
-        {runDrill.length > 0 && (
+        {(runDrill.length > 0 || (selectedJob && selectedWf)) && (
           <div class="drill-bar">
-            <button class="drill-crumb" onClick={() => setRunDrill([])}>{selectedWf}</button>
+            {/* A run opened from a job: the job leads the breadcrumb, back
+                to its timeline. */}
+            {selectedJob && selectedWf && (
+              <>
+                <button class="drill-crumb" onClick={() => selectJob(selectedJob)} title="Back to the job">{job?.title ?? selectedJob}</button>
+                <span class="drill-sep">›</span>
+              </>
+            )}
+            <button class={`drill-crumb${runDrill.length === 0 ? " is-active" : ""}`} onClick={() => setRunDrill([])}>{selectedWf}</button>
             {runDrill.map((f, i) => (
               <span key={f.pathPrefix}>
                 <span class="drill-sep">›</span>
@@ -1196,7 +1358,12 @@ export function App() {
             )}
           </div>
         )}
-        {canvas
+        {/* A selected job with no run open: its timeline, not a graph. */}
+        {selectedJob && !selectedWf ? (
+          job
+            ? <JobTimeline job={job} onOpenRun={openJobRun} onOpenThread={(thread, turn) => setThreadView({ thread, turn })} />
+            : <div class="empty">Loading job…</div>
+        ) : canvas
           ? <SystemCanvas
               // Remount when the viewed workflow OR pinned version changes so
               // the canvas re-fits/re-centers on its content (the library's
@@ -1259,6 +1426,17 @@ export function App() {
             await refreshRuns(name);
             setSelectedRun(runId);
           }}
+        />
+      )}
+
+      {/* A job thread's transcript, read-only (plans/jobs-sidebar.md §4). */}
+      {threadView && (
+        <ThreadFlyout
+          key={`${threadView.thread.id}:${threadView.turn?.runId ?? ""}`}
+          thread={threadView.thread}
+          turn={threadView.turn}
+          onClose={() => setThreadView(null)}
+          onOpenRun={(wf, id) => openJobRun(wf, id)}
         />
       )}
 
