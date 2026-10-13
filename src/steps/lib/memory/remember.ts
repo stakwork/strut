@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { EntityRef, type EntityRefT, type Query, canonical, exclusive, memoryDb, newRefId, normalize } from "./_db.js";
+import { byName } from "./_match.js";
 import { fitNote, resolve, termName, type Resolved as Term } from "./_ontology.js";
 
 const FactInput = z.object({
@@ -18,8 +19,10 @@ const FactInput = z.object({
 type Resolved = { ref_id: string; type: string; name: string; status: "matched" | "created"; similar?: { ref_id: string; name: string }[] };
 
 // Matching, cheapest first: an explicit ref_id, the single Self node, then the
-// exact normalised name or alias within the type. Fuzzy and model matching
-// come later; until then a new entity reports close names as `similar`.
+// name or an alias within the type, compared by nameKey (case, accents,
+// punctuation, "&"). Nothing fuzzy matches by itself: a new entity reports
+// names that may be the same one (Kate Moss / Katherine Moss, Acme / Acme
+// Corp; _match.ts similarName) as `similar`, for the caller or a janitor to merge.
 async function resolveEntity(query: Query, ref: EntityRefT, type: string, createdBy: string, now: number): Promise<Resolved> {
   if (ref.ref_id) {
     const id = await canonical(query, ref.ref_id);
@@ -27,30 +30,22 @@ async function resolveEntity(query: Query, ref: EntityRefT, type: string, create
     if (hit) return { ...(hit as Resolved), status: "matched" };
   }
   const key = normalize(ref.name);
-  const [hit] = type === "Self"
-    ? await query("MATCH (e:Entity) WHERE e.type = 'Self' AND e.deleted_at IS NULL RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1")
-    : await query(
-        `MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL AND (lower(e.name) = $key OR list_contains(e.aliases, $key))
-         RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1`,
-        { type, key },
-      );
-  if (hit) return { ...(hit as Resolved), status: "matched" };
-
-  const firstWord = key.split(" ")[0] ?? key;
-  const similar = firstWord.length >= 3
-    ? await query(
-        `MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL AND lower(e.name) CONTAINS $w
-         RETURN e.ref_id AS ref_id, e.name AS name LIMIT 3`,
-        { type, w: firstWord },
-      )
-    : [];
+  let similar: NonNullable<Resolved["similar"]> = [];
+  if (type === "Self") {
+    const [hit] = await query("MATCH (e:Entity) WHERE e.type = 'Self' AND e.deleted_at IS NULL RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1");
+    if (hit) return { ...(hit as Resolved), status: "matched" };
+  } else {
+    const found = await byName(query, type, ref.name);
+    if (found.match) return { ref_id: found.match.ref_id, type: found.match.type, name: found.match.name, status: "matched" };
+    similar = found.similar.slice(0, 3).map((r) => ({ ref_id: r.ref_id as string, name: r.name as string }));
+  }
   const ref_id = newRefId();
   await query(
     `CREATE (:Entity {ref_id: $ref_id, type: $type, name: $name, summary: '', attributes: '{}', aliases: [$key],
              created_by: $by, created_at: $now, updated_at: $now})`,
     { ref_id, type, name: ref.name, key, by: createdBy, now },
   );
-  return { ref_id, type, name: ref.name, status: "created", ...(similar.length ? { similar: similar as Resolved["similar"] } : {}) };
+  return { ref_id, type, name: ref.name, status: "created", ...(similar.length ? { similar } : {}) };
 }
 
 export default defineStep({
@@ -60,7 +55,9 @@ export default defineStep({
     "List the entities it is about in `mentions`, and any facts worth keeping in `facts`. " +
     "Types and predicates are resolved through memory/ontology (aliases such as full_name → name); an unknown one is " +
     "kept as proposed and reported. A one-value predicate (name, lives_in) supersedes the current fact by itself. " +
-    "Entities are matched by type and name, so the same person is never stored twice.",
+    "Entities are matched by type and name (or alias, ignoring case, accents and punctuation), so the same person is never " +
+    "stored twice; a new entity whose name is close to an existing one (Kate Moss / Katherine Moss) lists it as `similar` " +
+    "— merge them with memory/merge when they are the same.",
   input: z.object({
     episode: z.string().describe("What was said or observed, in the user's words. Stored as the source of the facts."),
     source: z.string().optional().describe("Where it came from: a message id, chat id, run id or URL."),

@@ -132,8 +132,11 @@ export function newRefId(): string {
   return Date.now().toString(36).padStart(9, "0") + randomBytes(8).toString("hex");
 }
 
+/** Lowercase, spacing collapsed, Latin accents folded (NFKD + combining diacriticals) and Arabic and Hebrew
+ *  vowel and cantillation marks dropped (مُحَمَّد = محمد; Hebrew punctuation such as maqaf stays). Other combining
+ *  marks stay: Indic vowel signs are letters. */
 export function normalize(name: string): string {
-  return name.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  return name.normalize("NFKD").replace(/[\u0300-\u036f\u064b-\u065f\u0670\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 export function iso(ms: unknown): string | undefined {
