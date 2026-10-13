@@ -172,6 +172,44 @@ export function NoticeView(props: {
     );
   }
 
+  // The server restarted mid-turn (createStrut's reconcileStaleChat): the
+  // steps above are what the builder got done; from this card on it goes on
+  // from them, told which calls lost their results.
+  if (n?.kind === "restart") {
+    return (
+      <div class={`chat-notice-card${open ? " is-open" : ""}`}>
+        <button type="button" class="chat-notice-head" onClick={() => props.onToggle(key("card"))} aria-expanded={open}>
+          <span class={`chat-tool-dot ${DOT[noticeTone(n)]}`} />
+          <span class="chat-notice-main">
+            <span class="chat-notice-title">Server restarted</span>
+            <span class="chat-notice-subject">the turn in progress was cut off</span>
+            <span class="chat-notice-meta">
+              {n.inFlight && n.inFlight.length > 0 && <span class="claim-dim">in flight: {n.inFlight.join(", ")}</span>}
+              <span class="claim-dim">the builder continues from the transcript</span>
+            </span>
+          </span>
+          <span class={`chat-tool-chev${open ? " is-open" : ""}`} aria-hidden="true" />
+        </button>
+        {open && (
+          <div class="chat-notice-body">
+            {n.notes.length > 0 && (
+              <div class="chat-notice-notes">
+                <span class="chat-notice-notes-label">Told to the builder</span>
+                {n.notes.map((line, i) => <div key={i}>{line}</div>)}
+              </div>
+            )}
+            <ToolResultView
+              label="Raw message"
+              result={{ output: props.text, isError: false }}
+              open={isOpen("raw")}
+              onToggle={() => props.onToggle(key("raw"))}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Not a shape we know — show it as written.
   if (!n || !n.runId) {
     return (

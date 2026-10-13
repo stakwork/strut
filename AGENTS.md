@@ -135,7 +135,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1447 unit tests across 78 files (+ 243 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1456 unit tests across 78 files (+ 243 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -301,7 +301,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a job (`job/dir`, `git/checkout` with `workdir`) may sit unused before its REPOSITORIES are removed — its other files are kept, and a job with nothing left goes with its record. Swept by the next `job/dir` or kept checkout — no timer. `0` keeps them forever. |
 | `STRUT_PEERS` | (unset) | Peers to put on file at boot (plans/federation.md §3): a JSON array of `{ id, baseUrl, token, label? }` — the paste door for a strut a host cannot push to (a desktop strut behind NAT). Each replaces the record of the same id; `PUT /peers/:id` is the same door over HTTP. A bad entry fails the boot. |
-| `STRUT_AUTO_RESUME` | `1` (persistent run store) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): on whenever the run store outlives the process — anything but `MemoryRunStore`, whatever the workspace's kind, so the lab's graph workspace + `FileRunStore` counts — the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. `0` disables. |
+| `STRUT_AUTO_RESUME` | `1` (persistent run store) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): on whenever the run store outlives the process — anything but `MemoryRunStore`, whatever the workspace's kind, so the lab's graph workspace + `FileRunStore` counts — the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. The builder's CHATS the same way, gated on the chat store's kind: a chat left `live` by the dead process gets its turn finalized and a `[restart-notification]` wake-up turn (see "Chat is a detached background job"). `0` disables both. |
 | `NEO4J_URI` / `NEO4J_HOST` | (unset) / `localhost:7687` | Graph backend connection — same names and defaults as mcp's own Neo4j client: `NEO4J_URI` wins, else `bolt://<NEO4J_HOST>`; `NEO4J_USER`/`NEO4J_PASSWORD` default `neo4j`/`testtest`; optional `NEO4J_DATABASE`. The `graph/*` lib steps read these via the secrets capability (secret store → env) and need nothing configured for a local Neo4j; `openGraphBackendFromEnv` stays opt-in (null when neither is set). |
 | `STRUT_GRAPH_NAMESPACE` | `default`   | jarvis namespace every Strut node is written into |
 | `STRUT_GRAPH_EMBEDDINGS` | (on)       | `off` disables the local MiniLM embedder and the embedding pass (vectors stay NULL; search is fulltext-only) |
@@ -1118,7 +1118,9 @@ and the child env is scrubbed by construction).
   split** (borrowed from `mcp/src/repo/session.ts`): `messages.jsonl`
   is the **replayable** conversation, exactly as the model saw it
   (re-fed to the agent next turn + rendered as transcript — whole
-  `ModelMessage`s, never deltas); `events.jsonl` is the fine-grained **observability** stream
+  `ModelMessage`s, never deltas — written as each STEP of a turn ends, so a
+  turn cut off by a restart leaves whole steps behind, never a call without
+  its result); `events.jsonl` is the fine-grained **observability** stream
   the SSE tail follows (text deltas, tool calls/results, step/turn
   boundaries — never re-sent to the model); `meta.json` tracks
   `{ status, currentTurn, … }`. A chat is long-lived across turns, so
@@ -1180,6 +1182,24 @@ and the child env is scrubbed by construction).
   per-turn agent loop. The browser (`web/src/api.ts`: `sendChat` +
   `streamChat` + `getChat`) persists the active `chatId` in
   localStorage and reattaches to a still-live turn on reopen.
+  **A restart mid-turn** (`reconcileStaleChat` + `autoResumeStaleChats` in
+  createStrut — the chat twin of run auto-resume, the same
+  `STRUT_AUTO_RESUME` gate on the CHAT store's kind): a chat left `live` by
+  the dead process is reconciled on first sight — the boot scan 3 s after
+  construction, or whichever read finds it first. Its dead turn gets
+  `chat.error` (`chat.end` when that turn had asked the user: the question
+  stays open, nothing else was lost), and with auto-resume on a
+  `[restart-notification]` (`formatRestartNotification`, ai/notifier.ts) is
+  appended that says what the event log knows and the transcript does not —
+  the tool calls with no result yet, the detached runs that will never
+  notify — and the chat is woken through the notifier like a run
+  notification: counted against the auto-turn cap, so a turn that crashes
+  the server every time parks after 10 restarts; appended but not launched
+  past 7 days idle. `POST /chat` appends the notice and lets the typed
+  message's turn follow. The host hears the dead turn's `turn.end` (no
+  `trigger`; `settled: false` while the wake-up turn runs). Off: marked
+  `error` on first read, nothing appended. The UI shows the notice as a
+  "Server restarted" card.
 
 - **Claims, checks, evidence — the truth layer** (`plans/claims.md`; graph
   workspaces only, on by default there — on `STRUT_WORKSPACE_BACKEND=fs`,
@@ -1296,7 +1316,8 @@ and the child env is scrubbed by construction).
   while a turn is live queue and drain into ONE wake-up turn (via
   `launchChatTurn`'s `finally` → `notifier.turnEnded`). Liveness is an
   in-process set (not `meta.status` — stale after a crash; pending
-  notifications die with the process, same crash posture as runs). Runaway
+  notifications die with the process — the `[restart-notification]` that
+  wakes the chat after the restart names the runs that will never report). Runaway
   guard: `ChatMeta.autoTurns` counts consecutive machine-triggered turns
   since the last human message (`POST /chat` resets it); at
   `chatMaxAutoTurns` (env `STRUT_CHAT_MAX_AUTO_TURNS`, default 10) the chat

@@ -5,8 +5,10 @@ import { MemoryChatStore } from "../chat-store.js";
 import type { StoredMessage } from "../chat-store.js";
 import {
   createChatNotifier,
+  formatRestartNotification,
   formatRunNotification,
   NOTIFICATION_PREFIX,
+  RESTART_PREFIX,
 } from "./notifier.js";
 
 // ── formatRunNotification ──────────────────────────────────────────────────
@@ -224,5 +226,28 @@ describe("createChatNotifier · human answers", () => {
     const texts = launched[0]!.messages.slice(-2).map((m) => m.content);
     assert.deepEqual(texts, [`${NOTIFICATION_PREFIX} run done`, "[elicitation-response] e1 cancel"]);
     assert.equal((await chatStore.getMeta(id))?.autoTurns, 0);
+  });
+});
+
+// ── formatRestartNotification ──────────────────────────────────────────────
+
+describe("formatRestartNotification", () => {
+  it("names the turn, the calls that lost their results and the runs that will not report", () => {
+    const msg = formatRestartNotification({
+      turn: 3,
+      inFlight: ["create_workflow", "bash"],
+      detached: [{ workflow: "wf", runId: "r1" }],
+    });
+    const lines = msg.split("\n");
+    assert.equal(lines[0], `${RESTART_PREFIX} The server restarted during turn 3 and cut it off; the transcript above holds every step it completed.`);
+    assert.match(lines[1]!, /^In flight when it stopped, result not recorded: create_workflow, bash\. Check/);
+    assert.match(lines[2]!, /^Detached runs from that turn will not notify this chat: "wf" run r1\. Check them with get_run\.$/);
+    assert.equal(lines[3], "Go on with the task from where the transcript leaves off.");
+  });
+
+  it("says nothing about calls or runs when there were none", () => {
+    const msg = formatRestartNotification({ turn: 0, inFlight: [], detached: [] });
+    assert.equal(msg.split("\n").length, 2);
+    assert.ok(!msg.includes("In flight") && !msg.includes("Detached"));
   });
 });

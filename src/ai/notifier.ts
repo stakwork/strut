@@ -14,7 +14,12 @@ import { truncateToolMessages } from "../chat-store.js";
  * Liveness is an in-process set (mirroring `createStrut`'s `activeRuns`), NOT
  * `meta.status` — a crashed process leaves `status: "live"` stale, and
  * pending notifications die with the process anyway (same crash posture as
- * detached runs; no durable delivery).
+ * detached runs; no durable delivery). What the model hears instead, once
+ * the process is back, is a `[restart-notification]`
+ * (`formatRestartNotification`): `createStrut`'s `reconcileStaleChat` finds
+ * the chat left live, names the runs that will never report and the tool
+ * calls whose results were lost, and wakes the chat through `deliver` like
+ * any notification.
  *
  * Runaway guard: `ChatMeta.autoTurns` counts consecutive notification-
  * triggered turns since the last human message (`POST /chat` resets it).
@@ -77,6 +82,42 @@ export function formatRunNotification(
     }
   }
   lines.push(`Full details: get_run("${info.workflow}", "${info.runId}").`);
+  return lines.join("\n");
+}
+
+// ── Restart notification ───────────────────────────────────────────────────
+
+export const RESTART_PREFIX = "[restart-notification]";
+
+export interface RestartNotificationInfo {
+  /** The turn that was cut off. */
+  turn: number;
+  /** Tool calls that had no result when the process died, by name — they
+   *  ran (or not) without a record, so the model checks before repeating. */
+  inFlight: string[];
+  /** Runs the turn's `run_workflow` detached: their notifications died with
+   *  the process, so nothing will wake the chat for them. */
+  detached: { workflow: string; runId: string }[];
+}
+
+/** The message that wakes a chat cut off by a restart. The completed steps
+ *  are already in the transcript (persisted as each ended), so this says
+ *  only what the event log knows and the transcript does not. */
+export function formatRestartNotification(info: RestartNotificationInfo): string {
+  const lines = [
+    `${RESTART_PREFIX} The server restarted during turn ${info.turn} and cut it off; the transcript above holds every step it completed.`,
+  ];
+  if (info.inFlight.length) {
+    lines.push(
+      `In flight when it stopped, result not recorded: ${info.inFlight.join(", ")}. Check whether each took effect (list_workflows, list_runs, get_step) before repeating it.`,
+    );
+  }
+  if (info.detached.length) {
+    lines.push(
+      `Detached runs from that turn will not notify this chat: ${info.detached.map((d) => `"${d.workflow}" run ${d.runId}`).join(", ")}. Check them with get_run.`,
+    );
+  }
+  lines.push("Go on with the task from where the transcript leaves off.");
   return lines.join("\n");
 }
 
