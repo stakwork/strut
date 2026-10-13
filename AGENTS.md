@@ -68,6 +68,7 @@ strut/
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (holds released, repositories removed, files kept), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
 │   ├── job-index.ts       # the job INDEX (plans/job-index.md), the read side of jobs.ts: createJobIndex({ dataDir, store, sessions, sealed }) → list (every job newest-used first, `q` through src/search.ts over the title + current deliverables) / get (runs with status from the run store, threads from the session store — a turn line's `job`, or a thread named after the job — holds, files, and the ARTIFACT FOLD: the successful top-level runs' `artifacts[]` newest first, the first of each id winning, resolved like …/runs/:runId/artifacts; a sealed workflow's run shows its status and nothing more) / read (one file: text head+tail-capped, an image as bytes for withMedia). createStrut builds it into `ctx.services.jobs` beside the record's writes; `GET /jobs[/:id]` and the job/* steps are thin over it; the projector builds `StrutJob` from `get`
+│   ├── job-threads.ts     # the job's THREADS (plans/jobs-sidebar.md §1): foldJobThreads — every agent execution in a job's runs' logs (a `step.end` carrying `messages`, or an attempt of the core `agent` step) grouped by session into threads, each turn with its run, usage, cost, the thread's context after it (from the session's turn line), tool-call count, transcript link (`?full=1` for a session turn), the run's declared artifacts (on its last top-level turn), and under it what it SPAWNED: a sub-agent by path, a child run by `parentRunId` (hung on the tool call whose output names its run id), a `strut/run-workflow` peer run; a run with no agent is one turn of `stepType: "run"`. Pure; `GET /jobs/:id` serves it as `threads` (`?threads=0` / `?nodes=1` / `?limit=`), the web's Jobs sidebar renders it
 │   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
 │   ├── auth.ts            # the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches, controls a run a peer launched, and the gate 403s the rest) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
@@ -133,7 +134,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1415 unit tests across 75 files (+ 243 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1436 unit tests across 78 files (+ 243 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -146,6 +147,7 @@ strut/
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
+        ├── transcript.ts  # a transcript (stored model messages) folded into display entries — user / text / tool groups with results attached by toolCallId / notice / `mark` (a thread's turn boundary, placed by message index) — lifted out of ChatFlyout so the job timeline's thread view renders through the same fold (pure; tested)
         ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render; findArtifacts: every such path INSIDE a value (object fields, arrays, `[{ link }]`) — a block holding several gets one eye with a pop-down to pick from (pure; tested)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
@@ -164,6 +166,9 @@ strut/
         │   ├── VersionsPanel.tsx     # the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing) + a YAML toggle per version: the file as published (GET /workflows/:name/:version, fetched on first open), read-only in SourceCode
         │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage; renders the open question's form; the context meter in its header)
+        │   ├── Transcript.tsx        # the entries renderer (bubbles, tool chips, notices, marks) the chat flyout and the thread view share
+        │   ├── JobTimeline.tsx       # the selected job in the canvas area (plans/jobs-sidebar.md §3): header + totals, deliverables (cards → ArtifactViewer / a link / inline content), the thread TREE (a thread row with totals; its turns with time, run link, tools, duration, cost, context, artifact chips marked current/superseded; spawned threads nested), every node the job's agents touched (AccessedNodes over the fold). A turn's run id opens that run on the canvas with the flyout on its step; `transcript` opens ThreadFlyout
+        │   ├── ThreadFlyout.tsx      # one thread read back, read-only (§4): the turn's `?full=1` transcript rendered by Transcript with a mark at each turn's `offset`, the system prompt collapsed on top, no input box
         │   ├── ElicitationForm.tsx   # the builder's question at the end of the transcript: a form (Submit / Decline / ✕) or, for a secret, a password field posting to the /secret endpoint — the page a host's link opens (?chat=&elicit=)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc (+ the node-name typeahead for a field with `nodeType`, via graph-search)
         │   ├── CreateDialog.tsx      # new-workflow dialog
@@ -1523,6 +1528,23 @@ and the child env is scrubbed by construction).
   yet: `job` on chats, a jobs sidebar, continuing ANOTHER job's thread from
   inside a turn (its files are in the other directory; `session_busy:`).
 
+- **Jobs sidebar — the operator's view of a job** (`plans/jobs-sidebar.md`;
+  `src/job-threads.ts`, `web/src/components/JobTimeline.tsx`). The first-class
+  item in a job is a THREAD, not a run: `GET /jobs/:id` folds every agent
+  execution in the job's runs' logs — a `step.end` carrying `messages`, or an
+  attempt of the core `agent` step — into threads by session id (a cold agent
+  is a thread of one), each turn pointing at its run and step path with its
+  usage, cost, context, tool calls, transcript link and the artifacts the run
+  declared, and under it what it spawned (a sub-agent by path, a child run by
+  `parentRunId`, a `strut/run-workflow` peer run). Nothing in it names a
+  workflow or a step id, so the seed can rename `work` and the view holds. An
+  agent strut did not run (the pod's goose) is a tool call until its step
+  marks its output with `withMessages`; then it is a row like any sub-agent.
+  The UI: a Jobs section in the sidebar (`GET /jobs?q=`), the timeline in the
+  canvas area when a job is selected (a run opened from it keeps the job for
+  the breadcrumb, `?job=` deep-links), a read-only thread view in the flyout
+  (the chat's renderer, lifted into `Transcript.tsx` / `transcript.ts`), and a
+  job chip on a run's row. No send box: a host launches turns.
 - **Peers — calling a workflow on another strut** (`plans/federation.md`
   §2.2, §3; `src/peers.ts`, `src/steps/lib/strut/run-workflow.ts`). A strut
   knows nothing about other struts, not even its own name. A **peer** is a
