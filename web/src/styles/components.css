@@ -762,6 +762,42 @@ body.is-resizing-rows * {
   color: var(--text-dim);
 }
 .artifact-status.tone-error { color: var(--danger); }
+/* A directory in the viewer: one level, folders first, each row a button
+   that opens it in place — or a link to the served file when nothing
+   renders it. */
+.artifact-dir {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.artifact-dir li { display: flex; }
+.artifact-dir-row {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifact-dir-row:hover { background: var(--surface-2); }
+.artifact-dir-row.is-dir { color: var(--accent); }
+/* An image a markdown file names — one of its own scope's files — fits
+   the viewer. */
+.md-view img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
 
 /* ─── secrets dialog ──────────────────────────────────────────── */
 
