@@ -140,6 +140,10 @@ describe("createStrut", () => {
     assert.equal(wav.headers.get("content-type"), "audio/wav");
     const bin = await strut.app.request("/artifacts/run-1/blob.bin");
     assert.equal(bin.headers.get("content-type"), "application/octet-stream");
+    // A directory is not a file: 404, as the job file route answers — never
+    // the filesystem's own error. The listing is what names what is in it.
+    assert.equal((await strut.app.request("/artifacts/run-1/audio/")).status, 404);
+    assert.equal((await strut.app.request("/artifacts/run-1/audio")).status, 404);
     const list = (await (await strut.app.request("/artifacts/run-1")).json()) as unknown;
     assert.deepEqual(list, { runId: "run-1", files: ["audio/track.wav", "blob.bin", "clip.mp4"] });
   });

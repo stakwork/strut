@@ -135,7 +135,7 @@ strut/
 │   │   ├── query.ts       # readQuery(): read-only raw Cypher for the chat builder's graph_query — keyword pre-check + READ tx, streamed row cap, tx timeout, strings/vectors compacted; a chat tool, deliberately not a step
 │   │   ├── test-util.ts   # live-test helpers (wipe, canonical graph snapshot) — only ever point at a throwaway Neo4j
 │   │   └── fixtures/      # Python-produced MiniLM golden vectors + jarvis sanitize_node_key parity cases
-│   └── *.test.ts          # 1436 unit tests across 78 files (+ 243 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
+│   └── *.test.ts          # 1447 unit tests across 78 files (+ 243 live graph tests under src/graph/ and steps/lib/graph/, opt-in)
 └── web/
     ├── package.json       # preact, system-canvas, vite
     ├── vite.config.ts     # preact preset, dev proxy to :3000 (/workflows, /steps, /chat, /llm, /health)
@@ -149,7 +149,7 @@ strut/
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
         ├── transcript.ts  # a transcript (stored model messages) folded into display entries — user / text / tool groups with results attached by toolCallId / notice / `mark` (a thread's turn boundary, placed by message index) — lifted out of ChatFlyout so the job timeline's thread view renders through the same fold (pure; tested)
-        ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render; findArtifacts: every such path INSIDE a value (object fields, arrays, `[{ link }]`) — a block holding several gets one eye with a pop-down to pick from (pure; tested)
+        ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render; viewerKind adds `directory` for a path the scope's LISTING has files under (`isDirectory`, `directoryEntries`: one level, folders then files); resolveArtifactLink: where a link in a served file leads — a relative href against the file's directory, `..` folded, never out of the scope (an external URL, another run's files → null, left a plain link); findArtifacts: every such path INSIDE a value (object fields, arrays, `[{ link }]`) — a block holding several gets one eye with a pop-down to pick from (pure; tested)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
@@ -158,10 +158,11 @@ strut/
         ├── accessed-nodes.ts # foldAccessedNodes: a run's events → the graph nodes one step read or wrote (an agent's, through its tool calls), with the calls that touched each; type counts + filter (pure; tested)
         ├── elicitation.ts # the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[] for ConfigField + form helpers (pure; tested)
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat to the host named by ?embed_origin
+        ├── use-artifact-url.ts # useFileScope: a served path's SCOPE listing (`GET /artifacts/:runId` / `/jobs/:id/files` → its files + file token), one fetch per scope for the page's life (`api.fileScope`); useArtifactUrl: the tokened URL over it
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
         │   ├── AccessedNodes.tsx     # the run flyout's Nodes section: type chips (Concept by default, sticky), one row per node, a click opens its content in place (GET /graph/nodes/:ref_id)
-        │   ├── ArtifactViewer.tsx    # the eye beside an artifact link (ValueFields): a modal showing the file RENDERED — markdown via Markdown.tsx, media inline, pdf/html in a frame (html sandboxed), text in a pre — portaled onto <body>
+        │   ├── ArtifactViewer.tsx    # the eye beside an artifact link (ValueFields): a modal showing the file RENDERED — markdown via Markdown.tsx, media inline, pdf/html in a frame (html sandboxed), text in a pre, a DIRECTORY as one level of folders and files — portaled onto <body>. It MOVES within the scope: a markdown link to a sibling (resolveArtifactLink) and a directory row open in place, a back arrow over the trail; a link out of the scope stays a link
         │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate / Versions (only the tabs that apply) — with "Delete workflow" in the footer. The topbar's single **Workflow** button (claims dot riding along)
         │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
         │   ├── VersionsPanel.tsx     # the Versions tab: every version newest-first with its run counts (GET /workflows/:name/versions, attributed by the run's recorded workflowHash) + View / Make active (rollback via PUT /workflows/:name/active — publishes nothing) + a YAML toggle per version: the file as published (GET /workflows/:name/:version, fetched on first open), read-only in SourceCode
@@ -175,7 +176,7 @@ strut/
         │   ├── CreateDialog.tsx      # new-workflow dialog
         │   ├── EventsPanel.tsx       # bottom run-events panel
         │   ├── EventsResizer.tsx     # drag handle for events panel height
-        │   ├── Markdown.tsx          # tiny markdown renderer for chat output
+        │   ├── Markdown.tsx          # tiny markdown renderer for chat output; `resolveLink` (the viewer's) turns a link whose target the caller can show into an in-place open, and is the only way an image renders — nothing but the scope's own files is loaded
         │   ├── RunInputPopover.tsx   # input-payload editor when triggering a run
         │   ├── SecretsDialog.tsx     # manage deployment secrets (write-only values; names+meta listed)
         │   ├── SourceCode.tsx        # read-only, syntax-highlighted source: a step's TypeScript (Lezer's TS parser) or a workflow version's YAML (`language: "yaml"`, the lang-yaml parser already bundled for YamlEditor) → `tok-*` spans colored in components.css — the Source toggle in the step editor + Step Info flyouts, the YAML toggle in the Versions tab

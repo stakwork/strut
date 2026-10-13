@@ -2,10 +2,10 @@ import { useCallback, useRef, useState } from "preact/hooks";
 import { formatJson, humanize } from "../helpers";
 import { CopyButton } from "./CopyButton";
 import { ArtifactViewer } from "./ArtifactViewer";
-import { artifactKind, artifactLabel, findArtifacts, isArtifactPath } from "../artifact-view";
+import { artifactLabel, findArtifacts, isArtifactPath, viewerKind } from "../artifact-view";
 import { EyeIcon } from "../icons";
 import { useDismiss } from "../use-dismiss";
-import { useArtifactUrl } from "../use-artifact-url";
+import { useArtifactUrl, useFileScope } from "../use-artifact-url";
 
 // ── Copyable value rendering ────────────────────────────────────────────────
 //
@@ -20,6 +20,8 @@ import { useArtifactUrl } from "../use-artifact-url";
 // modal (`ArtifactViewer`); copy still yields the path. A block with paths
 // INSIDE it (`{ report_md: … }`, an array of paths, `[{ link }]`) gets an eye
 // in its head: one file opens at once, several open a pop-down to pick from.
+// A path naming a DIRECTORY of the run — the listing says which — gets the
+// eye too, and opens as one level of folders and files.
 
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -29,7 +31,9 @@ export function CopyBlock(props: { value: unknown; label?: string; blockClass?: 
   const text = formatJson(props.value);
   const artifact = isArtifactPath(props.value) ? props.value : null;
   const href = useArtifactUrl(artifact) ?? undefined; // plain text until the token is in
-  const viewable = findArtifacts(props.value).filter((p) => artifactKind(p) != null);
+  const paths = findArtifacts(props.value);
+  const scope = useFileScope(paths[0] ?? null); // a path with no extension is viewable when the listing has files under it
+  const viewable = paths.filter((p) => viewerKind(p, scope?.files ?? null) != null);
   const [viewing, setViewing] = useState<string | null>(null);
   return (
     <div class="flyout-field">

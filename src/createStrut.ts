@@ -1841,7 +1841,9 @@ export async function createStrut<TServices = unknown>(
         artifactHeaders(relPath, carriesFileToken(c)),
       );
     } catch (err: any) {
-      if (err?.code === "ENOENT") {
+      // A directory is not a file: the listing above is what names what is
+      // in it, and the job route answers the same way.
+      if (err?.code === "ENOENT" || err?.code === "EISDIR") {
         return c.json({ error: `artifact not found: ${relPath}` }, 404);
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);

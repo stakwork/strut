@@ -3,12 +3,52 @@ import { h, Fragment, JSX } from "preact";
 // ── Tiny markdown renderer ─────────────────────────────────────────────────
 // Supports: headers (#..######), unordered lists (- / *), ordered lists (1.),
 // fenced code blocks (```), blockquotes (>), inline code (`x`), bold (**x**),
-// italic (*x* / _x_), links [text](url), horizontal rules (---), paragraphs.
-// Deliberately small — no external deps.
+// italic (*x* / _x_), links [text](url), images ![alt](src), horizontal
+// rules (---), paragraphs. Deliberately small — no external deps.
+//
+// A link opens in a new tab. A caller that knows where a link LEADS — the
+// artifact viewer, for a file whose links name its siblings — passes
+// `resolveLink`: what it returns for an href is the link's real URL and,
+// when the caller can show the target itself, an `open` that a plain click
+// runs instead of leaving the page (a modified click still gets the URL).
+// An image renders only through it: a markdown file an agent wrote may name
+// any URL, and the UI loads nothing but the scope's own files; otherwise the
+// image is the link it names.
+
+/** Where a link leads, by the caller: its URL, and how to open it in place. */
+export interface MarkdownLink { url: string; open?: () => void }
+type Resolve = ((href: string) => MarkdownLink | null) | undefined;
 
 type Node = JSX.Element | string;
 
-function renderInline(text: string): Node[] {
+function plainClick(e: MouseEvent): boolean {
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
+function renderLink(label: string, href: string, resolve: Resolve): JSX.Element {
+  const to = resolve?.(href) ?? null;
+  const open = to?.open;
+  if (open) {
+    return (
+      <a href={to.url} onClick={(e) => { if (plainClick(e)) { e.preventDefault(); open(); } }}>
+        {renderInline(label, resolve)}
+      </a>
+    );
+  }
+  return <a href={to?.url ?? href} target="_blank" rel="noopener noreferrer">{renderInline(label, resolve)}</a>;
+}
+
+/** `[label](target)` starting at `i` (at the `[`): the pieces and where it
+ *  ends, or null when the brackets do not close. */
+function parseLink(text: string, i: number): { label: string; target: string; end: number } | null {
+  const closeBracket = text.indexOf("]", i + 1);
+  if (closeBracket === -1 || text[closeBracket + 1] !== "(") return null;
+  const closeParen = text.indexOf(")", closeBracket + 2);
+  if (closeParen === -1) return null;
+  return { label: text.slice(i + 1, closeBracket), target: text.slice(closeBracket + 2, closeParen), end: closeParen + 1 };
+}
+
+function renderInline(text: string, resolve: Resolve): Node[] {
   const nodes: Node[] = [];
   let i = 0;
   let buf = "";
@@ -16,7 +56,6 @@ function renderInline(text: string): Node[] {
 
   while (i < text.length) {
     const ch = text[i];
-    const rest = text.slice(i);
 
     // Inline code: `...`
     if (ch === "`") {
@@ -34,7 +73,7 @@ function renderInline(text: string): Node[] {
       const end = text.indexOf("**", i + 2);
       if (end !== -1) {
         flush();
-        nodes.push(<strong>{renderInline(text.slice(i + 2, end))}</strong>);
+        nodes.push(<strong>{renderInline(text.slice(i + 2, end), resolve)}</strong>);
         i = end + 2;
         continue;
       }
@@ -45,37 +84,45 @@ function renderInline(text: string): Node[] {
       const end = text.indexOf(ch, i + 1);
       if (end !== -1 && end > i + 1) {
         flush();
-        nodes.push(<em>{renderInline(text.slice(i + 1, end))}</em>);
+        nodes.push(<em>{renderInline(text.slice(i + 1, end), resolve)}</em>);
         i = end + 1;
+        continue;
+      }
+    }
+
+    // Image: ![alt](src) — shown only for a target the caller resolves,
+    // else the link it names.
+    if (ch === "!" && text[i + 1] === "[") {
+      const link = parseLink(text, i + 1);
+      if (link) {
+        flush();
+        const to = resolve?.(link.target) ?? null;
+        nodes.push(to ? <img class="md-img" src={to.url} alt={link.label} /> : renderLink(link.label, link.target, resolve));
+        i = link.end;
         continue;
       }
     }
 
     // Link: [text](url)
     if (ch === "[") {
-      const closeBracket = text.indexOf("]", i + 1);
-      if (closeBracket !== -1 && text[closeBracket + 1] === "(") {
-        const closeParen = text.indexOf(")", closeBracket + 2);
-        if (closeParen !== -1) {
-          const label = text.slice(i + 1, closeBracket);
-          const url = text.slice(closeBracket + 2, closeParen);
-          flush();
-          nodes.push(<a href={url} target="_blank" rel="noopener noreferrer">{renderInline(label)}</a>);
-          i = closeParen + 1;
-          continue;
-        }
+      const link = parseLink(text, i);
+      if (link) {
+        flush();
+        nodes.push(renderLink(link.label, link.target, resolve));
+        i = link.end;
+        continue;
       }
     }
 
     buf += ch;
     i++;
-    void rest;
   }
   flush();
   return nodes;
 }
 
-export function Markdown(props: { source: string; class?: string }) {
+export function Markdown(props: { source: string; class?: string; resolveLink?: (href: string) => MarkdownLink | null }) {
+  const resolve = props.resolveLink;
   const src = props.source.replace(/\r\n/g, "\n");
   const lines = src.split("\n");
   const out: JSX.Element[] = [];
@@ -84,7 +131,7 @@ export function Markdown(props: { source: string; class?: string }) {
   let para: string[] = [];
   const flushPara = () => {
     if (para.length) {
-      out.push(<p key={out.length}>{renderInline(para.join(" "))}</p>);
+      out.push(<p key={out.length}>{renderInline(para.join(" "), resolve)}</p>);
       para = [];
     }
   };
@@ -118,7 +165,7 @@ export function Markdown(props: { source: string; class?: string }) {
       const level = hMatch[1].length;
       const text = hMatch[2];
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
-      out.push(h(Tag, { key: out.length, class: `md-h md-h${level}` }, renderInline(text)));
+      out.push(h(Tag, { key: out.length, class: `md-h md-h${level}` }, renderInline(text, resolve)));
       i++;
       continue;
     }
@@ -141,7 +188,7 @@ export function Markdown(props: { source: string; class?: string }) {
       }
       out.push(
         <ul key={out.length} class="md-ul">
-          {items.map((it, idx) => <li key={idx}>{renderInline(it)}</li>)}
+          {items.map((it, idx) => <li key={idx}>{renderInline(it, resolve)}</li>)}
         </ul>
       );
       continue;
@@ -157,7 +204,7 @@ export function Markdown(props: { source: string; class?: string }) {
       }
       out.push(
         <ol key={out.length} class="md-ol">
-          {items.map((it, idx) => <li key={idx}>{renderInline(it)}</li>)}
+          {items.map((it, idx) => <li key={idx}>{renderInline(it, resolve)}</li>)}
         </ol>
       );
       continue;
@@ -171,7 +218,7 @@ export function Markdown(props: { source: string; class?: string }) {
         quoted.push(lines[i].replace(/^>\s?/, ""));
         i++;
       }
-      out.push(<blockquote key={out.length} class="md-quote">{renderInline(quoted.join(" "))}</blockquote>);
+      out.push(<blockquote key={out.length} class="md-quote">{renderInline(quoted.join(" "), resolve)}</blockquote>);
       continue;
     }
 

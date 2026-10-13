@@ -1,21 +1,30 @@
 import { useEffect, useState } from "preact/hooks";
-import { artifactUrl, fileToken } from "./api";
+import { artifactUrl, fileScope, fileScopeOf, type FileScope } from "./api";
 
-/** The browser URL for a served-file path once its read token is known
- *  (`api.fileToken`: one listing fetch per run or job, cached) — null until
- *  then, and for a null path. A fetch that fails falls back to the bare
- *  URL: on an open server it works, on a gated one the 401 opens Settings. */
-export function useArtifactUrl(path: string | null): string | null {
-  const [url, setUrl] = useState<string | null>(null);
+/** The listing of the scope a served-file path belongs to — its files and
+ *  their read token (`api.fileScope`: one fetch per run or job, cached) —
+ *  null until it is in, and for a null path. A listing that cannot be read
+ *  comes back EMPTY with no token, so a caller falls back to the bare URL:
+ *  on an open server it works, on a gated one the 401 opens Settings. Keyed
+ *  by the scope, so moving between one scope's files never resets it. */
+export function useFileScope(path: string | null): FileScope | null {
+  const scope = path ? fileScopeOf(path) : null;
+  const [state, setState] = useState<{ scope: string; value: FileScope } | null>(null);
   useEffect(() => {
-    setUrl(null);
-    if (!path) return;
+    if (!scope) return;
     let cancelled = false;
-    fileToken(path).then(
-      (t) => { if (!cancelled) setUrl(artifactUrl(path, t)); },
-      () => { if (!cancelled) setUrl(artifactUrl(path)); },
+    fileScope(scope).then(
+      (value) => { if (!cancelled) setState({ scope, value }); },
+      () => { if (!cancelled) setState({ scope, value: { files: [], token: "" } }); },
     );
     return () => { cancelled = true; };
-  }, [path]);
-  return url;
+  }, [scope]);
+  return scope && state?.scope === scope ? state.value : null;
+}
+
+/** The browser URL for a served-file path once its read token is known —
+ *  null until then, and for a null path. */
+export function useArtifactUrl(path: string | null): string | null {
+  const scope = useFileScope(path);
+  return path && scope ? artifactUrl(path, scope.token) : null;
 }

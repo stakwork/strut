@@ -1,4 +1,5 @@
 import type { AccessedNode } from "./accessed-nodes";
+import { fileScopeOf } from "./artifact-view";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -18,8 +19,9 @@ function deriveBase(): string {
 
 const BASE = deriveBase();
 
-// Which strings are served-file paths: with the viewer's other pure helpers.
-export { isArtifactPath } from "./artifact-view";
+// Which strings are served-file paths, and which listing each reads from:
+// with the viewer's other pure helpers.
+export { isArtifactPath, fileScopeOf } from "./artifact-view";
 
 /** Browser URL for an artifact path. Mount-path aware (works under `/lab`).
  *  An `<a href>` / `<img src>` cannot set a header, so the read token for
@@ -34,34 +36,44 @@ export function artifactUrl(path: string, token = ""): string {
   return `${BASE}${path}${q}`;
 }
 
-/** The scope a served-file path reads from — `/artifacts/<runId>` or
- *  `/jobs/<id>/files` — whose listing mints the token for every file under
- *  it; null for anything else. */
-export function fileScopeOf(path: string): string | null {
-  const m = path.match(/^\/artifacts\/[^/]+/) ?? path.match(/^\/jobs\/[^/]+\/files/);
-  return m ? m[0] : null;
-}
+/** A scope's listing: the files under it, as the listing route spells them
+ *  (paths within the scope), and the read token for them. */
+export interface FileScope { files: string[]; token: string }
 
-// One token per scope, fetched once (the listing route) and kept for the
-// page's life; dropped when the key changes, since the token is derived
-// from it. With no key here there is nothing to fetch: the server is open,
-// or will say 401 to the next API call and open Settings.
-const fileTokens = new Map<string, Promise<string>>();
+// One listing per scope, fetched once (`GET /artifacts/:runId`, `GET
+// /jobs/:id/files`) and kept for the page's life; dropped when the key
+// changes, since the token is derived from it. The viewer reads the files
+// (a directory, where a link leads), every link reads the token.
+const fileScopes = new Map<string, Promise<FileScope>>();
 
-/** The read token for the files `path` belongs to; "" when none is needed
- *  or the path is not a served file. */
-export function fileToken(path: string): Promise<string> {
+/** The listing of the scope a served-file path (or the scope itself)
+ *  belongs to. Rejects for a path that is not a served file, and when the
+ *  listing cannot be read — on an open server the bare URL still works, on
+ *  a gated one the 401 opens Settings. */
+export function fileScope(path: string): Promise<FileScope> {
   const scope = fileScopeOf(path);
-  if (!scope || !getApiKey()) return Promise.resolve("");
-  let p = fileTokens.get(scope);
+  if (!scope) return Promise.reject(new Error(`not a served file: ${path}`));
+  let p = fileScopes.get(scope);
   if (!p) {
-    p = apiFetch(scope)
-      .then((res): Promise<{ token?: unknown }> => (res.ok ? res.json() : Promise.resolve({})))
-      .then((body) => (typeof body.token === "string" ? body.token : ""));
-    p.catch(() => fileTokens.delete(scope));
-    fileTokens.set(scope, p);
+    p = apiFetch(scope).then(async (res) => {
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const body = (await res.json()) as { files?: unknown; token?: unknown };
+      return {
+        files: Array.isArray(body.files) ? body.files.filter((f): f is string => typeof f === "string") : [],
+        token: typeof body.token === "string" ? body.token : "",
+      };
+    });
+    p.catch(() => fileScopes.delete(scope));
+    fileScopes.set(scope, p);
   }
   return p;
+}
+
+/** The read token for the files `path` belongs to; "" when the server
+ *  minted none, the listing could not be read, or the path is not a served
+ *  file. */
+export function fileToken(path: string): Promise<string> {
+  return fileScope(path).then((s) => s.token, () => "");
 }
 
 /** The text of an artifact, for the inline viewer (markdown / text files). */
@@ -104,7 +116,7 @@ export function getApiKey(): string {
 /** Save a user-entered key (Settings). Empty clears it. */
 export function setApiKey(key: string): void {
   refused = false;
-  fileTokens.clear();
+  fileScopes.clear();
   try {
     if (key) localStorage.setItem(KEY_STORAGE, key);
     else {
