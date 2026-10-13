@@ -1330,4 +1330,174 @@ describe("chat endpoints", () => {
     }
   });
 
+  // ── restart: per-step persistence + the boot-time chat auto-resume ───────
+
+  /** A stand-in provider whose first reply is one tool call and whose second
+   *  request never answers — a turn with one completed step and one in flight. */
+  async function toolThenHangProvider(name: string, input: object): Promise<{ port: number; calls: () => number; close: () => void }> {
+    let calls = 0;
+    const server = http.createServer(async (req, res) => {
+      await new Promise<void>((r) => {
+        req.on("end", () => r());
+        req.resume();
+      });
+      calls++;
+      if (calls > 1) return; // hangs; closed with the server
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const ev = (type: string, data: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+      ev("message_start", {
+        message: { id: "m1", type: "message", role: "assistant", model: "claude-sonnet-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } },
+      });
+      ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_1", name, input: {} } });
+      ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } });
+      ev("content_block_stop", { index: 0 });
+      ev("message_delta", { delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 5 } });
+      ev("message_stop", {});
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return {
+      port: (server.address() as { port: number }).port,
+      calls: () => calls,
+      close: () => {
+        server.closeAllConnections();
+        server.close();
+      },
+    };
+  }
+
+  /** What a crash leaves of a turn: `live` meta, the step it completed in
+   *  messages.jsonl, and an event log where a second step was in flight — one
+   *  call answered with a detached run, one with no result yet. */
+  async function crashedChat(id: string, patch: Partial<ChatMeta> = {}): Promise<void> {
+    await chatStore.createChat({ id });
+    await chatStore.setMeta(id, { status: "live", currentTurn: 0, ...patch });
+    await chatStore.appendMessages(id, [
+      { role: "user", content: "build it" },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "t1", toolName: "list_workflows", input: {} }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "t1", toolName: "list_workflows", output: { type: "json", value: [] } }] },
+    ]);
+    const ev = (type: ChatEvent["type"], extra: Partial<ChatEvent>) =>
+      chatStore.appendEvent(id, { ts: new Date().toISOString(), chatId: id, turn: 0, type, ...extra });
+    await ev("tool-input", { toolCallId: "t1", toolName: "list_workflows", input: {} });
+    await ev("tool-output", { toolCallId: "t1", toolName: "list_workflows", output: [] });
+    await ev("step.finish", {});
+    await ev("tool-input", { toolCallId: "t2", toolName: "run_workflow", input: { name: "wf" } });
+    await ev("tool-output", { toolCallId: "t2", toolName: "run_workflow", output: { status: "running", detached: true, runId: "r1", workflow: "wf" } });
+    await ev("tool-input", { toolCallId: "t3", toolName: "create_workflow", input: { name: "x" } });
+  }
+
+  it("a turn's completed steps are on disk before the next model call; a stop writes only the step in flight", async () => {
+    const fake = await toolThenHangProvider("bash", { command: "echo hi" });
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    try {
+      const strut = await makeStrut();
+      const { chatId } = (await (await strut.app.request("/chat", JSON_({ message: "look" }))).json()) as { chatId: string };
+      // The second request is out, so step one — the call and its result — was written first.
+      await until(() => fake.calls() === 2);
+      const roles = async () => (await chatStore.loadMessages(chatId)).map((m) => m.role);
+      assert.deepEqual(await roles(), ["user", "assistant", "tool"]);
+      assert.equal((await chatStore.getMeta(chatId))!.status, "live");
+      // A stop: nothing of step two streamed, so nothing more is written — and step one is not written twice.
+      assert.equal((await strut.app.request(`/chat/${chatId}/cancel`, { method: "POST" })).status, 200);
+      await settled(chatId);
+      assert.deepEqual(await roles(), ["user", "assistant", "tool"]);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("a chat cut off by a restart is woken: the dead turn finalized, the model reads its steps then a [restart-notification], the host hears both turns", async () => {
+    const fake = await toolCallProvider("bash", { command: "echo hi" });
+    const host = await callbackHost();
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    try {
+      const strut = await makeStrut({ autoResume: false }); // the scan, by hand
+      await crashedChat("c1", { callback: { url: host.url } });
+
+      const report = await strut.autoResumeStaleChats();
+      assert.deepEqual(report.map((r) => [r.chatId, r.turn, r.action, r.next]), [["c1", 0, "resumed", 1]]);
+      // The dead turn is terminal in the log, so a tail of it ends…
+      const dead = (chatStore.events.get("c1") ?? []).find((e) => e.turn === 0 && e.type === "chat.error");
+      assert.match(dead!.error!.message, /restarted/);
+      // …and the wake-up turn read the persisted step, then the notice.
+      await settled("c1");
+      assert.equal((await chatStore.getMeta("c1"))!.currentTurn, 1);
+      const notice = (await chatStore.loadMessages("c1"))[3]!.content as string;
+      assert.ok(notice.startsWith("[restart-notification] The server restarted during turn 0"), notice);
+      assert.match(notice, /result not recorded: create_workflow\./);
+      assert.match(notice, /will not notify this chat: "wf" run r1\./);
+      const sent = fake.bodies[0].messages;
+      // Anthropic's wire: the tool result and the notice share one user message.
+      assert.deepEqual(sent.map((m: { role: string }) => m.role), ["user", "assistant", "user"]);
+      const last = JSON.stringify(sent[2]);
+      assert.ok(last.includes('"tool_result"') && last.includes("[restart-notification]"), last);
+      // The host: the dead turn's end (more coming), then the wake-up turn's (settled).
+      await until(() => host.posts.length >= 2);
+      assert.deepEqual(
+        host.posts.map((p) => [p.body.event, p.body.turn, p.body.status, p.body.settled, p.body.trigger]),
+        [["turn.end", 0, "error", false, undefined], ["turn.end", 1, "done", true, "notification"]],
+      );
+      assert.match(host.posts[0].body.error.message, /restarted/);
+    } finally {
+      fake.close();
+      host.close();
+    }
+  });
+
+  it("a cut-off turn that had asked the user is marked done with the question still open — no turn starts", async () => {
+    const strut = await makeStrut({ autoResume: false });
+    await crashedChat("c1", { elicitation: FORM });
+    const [r] = await strut.autoResumeStaleChats();
+    assert.equal(r!.action, "finalized");
+    assert.match(r!.reason, /asked the user/);
+    const meta = (await chatStore.getMeta("c1"))!;
+    assert.deepEqual([meta.status, meta.currentTurn, meta.elicitation?.elicitationId], ["done", 0, "e-form"]);
+    assert.ok((chatStore.events.get("c1") ?? []).some((e) => e.turn === 0 && e.type === "chat.end"));
+    assert.equal((await chatStore.loadMessages("c1")).length, 3, "no notice appended");
+  });
+
+  it("auto-resume off: a stale chat is marked error on first read, nothing appended; parked at the auto-turn cap: the notice is appended, no turn", async () => {
+    const strut = await makeStrut({ autoResume: false });
+    await crashedChat("c1");
+    assert.equal(((await (await strut.app.request("/chat/c1/meta")).json()) as ChatMeta).status, "error");
+    assert.equal((await chatStore.loadMessages("c1")).length, 3);
+
+    await crashedChat("c2", { autoTurns: 10 });
+    const report = await strut.autoResumeStaleChats();
+    assert.deepEqual(report.map((r) => [r.chatId, r.action]), [["c2", "finalized"]]);
+    assert.match(report[0]!.reason, /parked/);
+    const meta = (await chatStore.getMeta("c2"))!;
+    assert.deepEqual([meta.status, meta.currentTurn], ["error", 0]);
+    assert.match((await chatStore.loadMessages("c2"))[3]!.content as string, /^\[restart-notification\]/);
+  });
+
+  it("auto-resume on: a read wakes a cut-off chat, and a typed message takes the notice ahead of itself in one turn", async () => {
+    const fake = await toolCallProvider("bash", { command: "echo hi" });
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${fake.port}`;
+    try {
+      const strut = await makeStrut({ autoResume: { delayMs: 600_000 } }); // on; the boot scan far off
+      await crashedChat("c1");
+      const meta = (await (await strut.app.request("/chat/c1/meta")).json()) as ChatMeta;
+      assert.deepEqual([meta.status, meta.currentTurn], ["live", 1]);
+      await settled("c1");
+      assert.equal(fake.calls(), 2);
+
+      await crashedChat("c2");
+      const res = await strut.app.request("/chat", JSON_({ chatId: "c2", message: "and then?" }));
+      assert.equal(res.status, 202);
+      assert.equal(((await res.json()) as { turn: number }).turn, 1);
+      await settled("c2");
+      const tail = (await chatStore.loadMessages("c2")).slice(3).map((m) => m.content);
+      assert.match(tail[0] as string, /^\[restart-notification\]/);
+      assert.equal(tail[1], "and then?");
+      // The provider answers every call after its first with text: one call, one turn.
+      assert.equal(fake.calls(), 3, "one turn for the typed message");
+    } finally {
+      fake.close();
+    }
+  });
 });

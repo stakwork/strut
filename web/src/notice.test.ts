@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 // The server's own formatters: the card parses what they write, so a format
 // change that would blind the card fails here.
-import { formatRunNotification } from "../../src/ai/notifier.js";
+import { formatRestartNotification, formatRunNotification } from "../../src/ai/notifier.js";
 import { formatElicitationResponse } from "../../src/ai/elicitation.js";
 import { STILL_VERIFYING } from "../../src/ai/verify-waker.js";
 import { formatLedgerLines, formatVerifyNotification, type Ledger } from "../../src/ledger.js";
@@ -161,5 +161,25 @@ describe("elicitation responses", () => {
     assert.equal(c.by, undefined);
     assert.equal(noticeTone(c), "neutral");
     assert.deepEqual(c.notes, []);
+  });
+});
+
+describe("restart notifications", () => {
+  it("reads a [restart-notification]: the turn, the calls that lost their results, the rest as notes", () => {
+    const text = formatRestartNotification({ turn: 2, inFlight: ["create_workflow", "bash"], detached: [{ workflow: "wf", runId: "r1" }] });
+    assert.ok(isNotice(text));
+    const n = parseNotice(text)!;
+    assert.equal(n.kind, "restart");
+    assert.equal(n.turn, 2);
+    assert.deepEqual(n.inFlight, ["create_workflow", "bash"]);
+    assert.equal(n.notes.length, 2);
+    assert.match(n.notes[0]!, /^Detached runs from that turn will not notify this chat: "wf" run r1\./);
+    assert.equal(noticeTone(n), "warning");
+  });
+
+  it("a restart with nothing in flight has no calls and only the guidance as a note", () => {
+    const n = parseNotice(formatRestartNotification({ turn: 0, inFlight: [], detached: [] }))!;
+    assert.equal(n.inFlight, undefined);
+    assert.deepEqual(n.notes, ["Go on with the task from where the transcript leaves off."]);
   });
 });

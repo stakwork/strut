@@ -74,7 +74,7 @@ import { audioRoutes } from "./audio/routes.js";
 import { attachAudioWebSocket } from "./audio/ws.js";
 // Static import is safe: notifier depends only on chat-store, never the AI
 // SDK (which stays lazy-loaded inside launchChatTurn).
-import { createChatNotifier, formatRunNotification } from "./ai/notifier.js";
+import { createChatNotifier, formatRestartNotification, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
@@ -301,6 +301,18 @@ export interface AutoResumeOptions {
   delayMs?: number;
 }
 
+/** One line of the boot-time chat auto-resume report (`autoResumeStaleChats`). */
+export interface ChatResumeOutcome {
+  chatId: string;
+  /** The turn that was cut off. */
+  turn: number;
+  /** `resumed`: a wake-up turn launched (`next`). `finalized`: the dead turn
+   *  got its terminal event and no turn launched — `reason` says why. */
+  action: "resumed" | "finalized";
+  next?: number;
+  reason: string;
+}
+
 /** One line of the boot-time auto-resume report. */
 export interface AutoResumeOutcome {
   workflow: string;
@@ -344,6 +356,12 @@ export interface Strut<TServices = unknown> {
    *  and has fewer than `maxResumes` prior resumes. Runs automatically
    *  after boot when `autoResume` is enabled; callable directly. */
   autoResumeStaleRuns: (opts?: AutoResumeOptions) => Promise<AutoResumeOutcome[]>;
+  /** The builder's twin: every chat left `live` by a dead process gets its
+   *  cut-off turn finalized and, with a `[restart-notification]` of what was
+   *  lost appended, a wake-up turn — `reconcileStaleChat` in the chat block.
+   *  Runs after boot beside `autoResumeStaleRuns`; callable directly, and a
+   *  direct call wakes whatever the `autoResume` setting. `[]` without chat. */
+  autoResumeStaleChats: (opts?: AutoResumeOptions) => Promise<ChatResumeOutcome[]>;
 
   /** Record the contracts declared as `claims:` blocks in the workspace's
    *  workflow YAML (plans/claims.md §2, door one) — what a boot seeder's
@@ -670,8 +688,21 @@ export async function createStrut<TServices = unknown>(
   };
   const serveUi = opts.serveUi ?? true;
   const enableChat = opts.enableChat ?? true;
+  // Boot-time auto-resume (RUN_CONTROL_SPEC §5.3), the setting: on by default
+  // whenever the store in question outlives the process — the run store for
+  // runs, the chat store for the builder's chats — off with
+  // `STRUT_AUTO_RESUME=0` or `autoResume: false`. The scans are scheduled at
+  // the end of construction; the chat flag also decides whether a read that
+  // finds a chat cut off by a restart wakes it or only marks it.
+  const autoResumeOpts: AutoResumeOptions = typeof opts.autoResume === "object" ? opts.autoResume : {};
+  const autoResumeOn = (persistent: boolean) =>
+    opts.autoResume === undefined ? persistent && process.env["STRUT_AUTO_RESUME"] !== "0" : opts.autoResume !== false;
+  /** Set inside the chat block; a no-op without chat. */
+  let autoResumeStaleChats: (o?: AutoResumeOptions) => Promise<ChatResumeOutcome[]> = async () => [];
   const chatStore: ChatStore =
     opts.chatStore ?? (fileBacked ? new FileChatStore(dataDir) : new MemoryChatStore());
+  const autoResumeRuns = autoResumeOn(!(store instanceof MemoryRunStore));
+  const autoResumeChats = enableChat && autoResumeOn(!(chatStore instanceof MemoryChatStore));
   const chatMaxSteps =
     opts.chatMaxSteps ?? Number(process.env["STRUT_CHAT_MAX_STEPS"] ?? 100);
   const chatModel =
@@ -2957,11 +2988,22 @@ export async function createStrut<TServices = unknown>(
 
           console.log(`[chat ${chatId}] turn ${turn} start (${modelMessages.length} msgs, model ${llm.name})`);
 
-          // For a stop mid-turn (POST /chat/:id/cancel): the completed steps'
-          // messages, collected as they finish, plus the in-flight step as far
-          // as it streamed — so the transcript holds what the user saw, and a
-          // tool call cut off before its result gets a "stopped" result rather
-          // than dangling into the next turn.
+          // Every step's messages — the assistant message and its tool
+          // results — go to messages.jsonl AS THE STEP ENDS, before the next
+          // model call (the SDK awaits onStepEnd), so a turn cut off by a
+          // restart leaves a consistent history behind: whole steps, never a
+          // call without its result (`reconcileStaleChat` builds on that).
+          // The end of the turn has nothing left to write but a stop's
+          // partial step. One chain keeps the appends in order; a write that
+          // fails ends the turn — the model must not go on past a step the
+          // record lost.
+          let persisted: Promise<void> = Promise.resolve();
+          // This stretch's completed steps (what the compaction sent, where
+          // the final text is) and, for a stop mid-turn (POST
+          // /chat/:id/cancel), the in-flight step as far as it streamed — so
+          // the transcript holds what the user saw, and a tool call cut off
+          // before its result gets a "stopped" result rather than dangling
+          // into the next turn.
           const doneMessages: any[] = [];
           let stepText = "";
           let stepCalls: { toolCallId: string; toolName: string; input: unknown; output?: unknown }[] = [];
@@ -3006,6 +3048,7 @@ export async function createStrut<TServices = unknown>(
               abortSignal: ac.signal,
               onStepEnd: (step) => {
                 doneMessages.push(...step.response.messages);
+                persisted = persisted.then(() => chatStore.appendMessages(chatId, step.response.messages as any));
                 stepsUsed++;
                 lastStep = step;
                 const u = step.usage;
@@ -3021,6 +3064,8 @@ export async function createStrut<TServices = unknown>(
                     `[chat ${chatId}] turn ${turn} step ${step.stepNumber} TRUNCATED at maxOutputTokens=${llm.maxOutputTokens} — a cut-off tool call never executed; the turn likely ended incomplete. Raise STRUT_MAX_OUTPUT_TOKENS if this recurs.`,
                   );
                 }
+                // Awaited by the SDK: the step is on disk before the next call.
+                return persisted;
               },
             });
 
@@ -3061,13 +3106,16 @@ export async function createStrut<TServices = unknown>(
               if (!ac.signal.aborted) throw err;
             }
 
-            // Every step's messages (tool calls + results), not just the last:
-            // v7's `response` is final-step only. A stopped turn never awaits
-            // the SDK's promises (they reject when no step completed): what it
-            // has is what streamed.
+            // The completed steps are on disk — each append was awaited
+            // before the next model call; the last may still be in flight
+            // when the stream closes. A stopped turn never awaits the SDK's
+            // promises (they reject when no step completed): what it has is
+            // what streamed, and only the partial step is left to write.
+            await persisted;
             stopped = ac.signal.aborted;
-            responseMessages = stopped ? [...doneMessages, ...partialStep()] : await result.responseMessages;
-            if (responseMessages.length) await chatStore.appendMessages(chatId, responseMessages as any);
+            const partial = stopped ? partialStep() : [];
+            responseMessages = [...doneMessages, ...partial];
+            if (partial.length) await chatStore.appendMessages(chatId, partial as any);
             if (stopped) break;
 
             // Past the mark (plans/compaction.md §5): fold everything the
@@ -3161,25 +3209,146 @@ export async function createStrut<TServices = unknown>(
      * `chat.end`/`chat.error` — `meta.status` stays `"live"` on disk and any
      * tail of that turn waits forever (which is what pins the UI: the client
      * treats a live chat as loading until its stream ends). Liveness is only
-     * knowable in-process (`notifier.isLive`), so reconcile lazily on every
-     * read: no running turn → emit the missing terminal and mark the chat
-     * `"error"`. Returns the (possibly patched) meta.
+     * knowable in-process (`notifier.isLive`), so a stale chat is reconciled
+     * on first sight — the boot scan (`autoResumeStaleChats`, beside the run
+     * scan) or whichever read finds it first:
+     *
+     *   1. the dead turn gets its terminal event and the chat its status:
+     *      `error`, or `done` when that turn had asked the user a question —
+     *      its work was finished and only the `chat.end` was lost;
+     *   2. with auto-resume on, a `[restart-notification]` is appended. The
+     *      completed steps are already in messages.jsonl (written as each
+     *      ended), so it says what the event log knows and the transcript
+     *      does not: the tool calls with no result yet, the detached runs
+     *      whose notifications died with the process;
+     *   3. `launch` → a wake-up turn through the notifier, like a run
+     *      notification — counted against the auto-turn cap, so a turn that
+     *      crashes the server every time parks after `chatMaxAutoTurns`
+     *      restarts — unless the chat sat idle past `maxAgeMs`. `POST /chat`
+     *      passes `launch: false`: its own turn follows at once and reads
+     *      the notice ahead of the typed message;
+     *   4. the host hears the dead turn's `turn.end`, after the wake-up
+     *      launched (`settled: false` then; that turn's end follows).
+     *
+     * Returns the (possibly patched) meta; a chat another caller is
+     * reconciling is returned as found.
      */
-    async function reconcileStaleChat(meta: ChatMeta): Promise<ChatMeta> {
-      if (meta.status !== "live" || meta.currentTurn < 0 || notifier.isLive(meta.id)) {
-        return meta;
+    const reconciling = new Set<string>();
+    const staleChat = (meta: ChatMeta) =>
+      meta.status === "live" && meta.currentTurn >= 0 && !notifier.isLive(meta.id) && !reconciling.has(meta.id);
+
+    async function reconcileStaleChat(meta: ChatMeta, o: { launch: boolean } = { launch: true }): Promise<ChatMeta> {
+      if (!staleChat(meta)) return meta;
+      reconciling.add(meta.id);
+      try {
+        return (await resumeStaleChat(meta, { wake: autoResumeChats, launch: o.launch, maxAgeMs: autoResumeOpts.maxAgeMs })).meta;
+      } finally {
+        reconciling.delete(meta.id);
       }
-      console.warn(
-        `[chat ${meta.id}] turn ${meta.currentTurn} marked live but no turn is running — interrupted by a restart; marking error.`,
-      );
-      await chatStore.appendEvent(meta.id, {
+    }
+
+    autoResumeStaleChats = async (o: AutoResumeOptions = {}) => {
+      const out: ChatResumeOutcome[] = [];
+      let chats: ChatMeta[];
+      try {
+        chats = await chatStore.listChats();
+      } catch (err) {
+        console.error(`[auto-resume] could not list chats:`, err);
+        return out;
+      }
+      for (const meta of chats) {
+        if (!staleChat(meta)) continue;
+        reconciling.add(meta.id);
+        try {
+          out.push((await resumeStaleChat(meta, { wake: true, launch: true, maxAgeMs: o.maxAgeMs })).outcome);
+        } catch (err) {
+          console.error(`[auto-resume] chat ${meta.id}:`, err);
+        } finally {
+          reconciling.delete(meta.id);
+        }
+      }
+      return out;
+    };
+
+    /** What the event log knows of a cut-off turn that its persisted steps
+     *  do not: the tool calls with no result yet, and the runs its
+     *  run_workflow detached (nothing will wake the chat for them). Read
+     *  once the turn's terminal event is written, where the tail closes. */
+    async function cutOffTurn(
+      chatId: string,
+      turn: number,
+    ): Promise<{ inFlight: string[]; detached: { workflow: string; runId: string }[] }> {
+      const open = new Map<string, string>();
+      const detached: { workflow: string; runId: string }[] = [];
+      for await (const e of chatStore.tailEvents(chatId, turn)) {
+        if (!e.toolCallId) continue;
+        if (e.type === "tool-input") open.set(e.toolCallId, e.toolName ?? "a tool");
+        else if (e.type === "tool-output") {
+          open.delete(e.toolCallId);
+          const out = e.output as { detached?: boolean; workflow?: string; runId?: string } | null;
+          if (e.toolName === "run_workflow" && out?.detached && out.workflow && out.runId) {
+            detached.push({ workflow: out.workflow, runId: out.runId });
+          }
+        }
+      }
+      return { inFlight: [...open.values()], detached };
+    }
+
+    async function resumeStaleChat(
+      meta: ChatMeta,
+      o: { wake: boolean; launch: boolean; maxAgeMs?: number },
+    ): Promise<{ meta: ChatMeta; outcome: ChatResumeOutcome }> {
+      const chatId = meta.id;
+      const turn = meta.currentTurn;
+      // The turn had asked and stopped on it (`stepAsked`): finished, only
+      // its chat.end lost. The question stays open for its answer.
+      const asked = meta.elicitation?.turn === turn ? meta.elicitation : undefined;
+      const status = asked ? ("done" as const) : ("error" as const);
+      const error = asked ? undefined : { message: "Turn interrupted: the server restarted mid-turn." };
+      await chatStore.appendEvent(chatId, {
         ts: new Date().toISOString(),
-        chatId: meta.id,
-        turn: meta.currentTurn,
-        type: "chat.error",
-        error: { message: "Turn interrupted: the server restarted mid-turn." },
+        chatId,
+        turn,
+        ...(error ? { type: "chat.error" as const, error } : { type: "chat.end" as const }),
       });
-      return (await chatStore.setMeta(meta.id, { status: "error" })) ?? meta;
+      let next = (await chatStore.setMeta(chatId, { status })) ?? meta;
+
+      const finalized = (reason: string): ChatResumeOutcome => ({ chatId, turn, action: "finalized", reason });
+      let outcome: ChatResumeOutcome;
+      if (asked) outcome = finalized("marked done: it had asked the user and was waiting for the answer");
+      else if (!o.wake) outcome = finalized("marked error: auto-resume is off");
+      else {
+        const text = formatRestartNotification({ turn, ...(await cutOffTurn(chatId, turn)) });
+        const idleMs = Date.now() - Date.parse(meta.updatedAt);
+        const maxAgeMs = o.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000;
+        if (!o.launch) {
+          await chatStore.appendMessages(chatId, [{ role: "user", content: text }]);
+          outcome = finalized("the restart notice appended; the typed message's turn follows");
+        } else if (idleMs > maxAgeMs) {
+          await chatStore.appendMessages(chatId, [{ role: "user", content: text }]);
+          outcome = finalized(`the restart notice appended, no turn: idle ${Math.round(idleMs / 3_600_000)} h (cap ${Math.round(maxAgeMs / 3_600_000)} h)`);
+        } else {
+          const r = await notifier.deliver(chatId, text);
+          outcome =
+            r.turn !== undefined
+              ? { chatId, turn, action: "resumed", next: r.turn, reason: `woken as turn ${r.turn}` }
+              : finalized("the restart notice appended, no turn: parked at the auto-turn cap");
+          next = (await chatStore.getMeta(chatId)) ?? next;
+        }
+      }
+      console.warn(`[chat ${chatId}] turn ${turn} was live when the process died — ${outcome.reason}.`);
+      // The host hears the dead turn end — after a wake-up launched, so
+      // `settled` says more is coming. What triggered it was not recorded.
+      callbacks
+        .turnEnded({
+          chatId,
+          turn,
+          status,
+          ...(error ? { error } : {}),
+          ...(asked ? { text: renderElicitationText(asked), elicitation: callbackElicitation(asked) } : {}),
+        })
+        .catch((err) => console.error(`[chat ${chatId}] turn callback failed:`, err));
+      return { meta: next, outcome };
     }
 
     /** A chat's meta as a read endpoint returns it: the callback URL is a
@@ -3208,12 +3377,15 @@ export async function createStrut<TServices = unknown>(
         return c.json({ error: `Chat "${chatId}" not found` }, 404);
       }
       if (meta) {
+        // A chat cut off by a restart: its dead turn is finalized and the
+        // restart notice appended, but no wake-up turn — this message's turn
+        // follows at once and reads the notice ahead of it.
+        meta = await reconcileStaleChat(meta, { launch: false });
         // One turn per chat at a time — two agents appending to the same
         // transcript would interleave. (Different chats run concurrently.)
         if (notifier.isLive(meta.id)) {
           return c.json({ error: `Chat "${meta.id}" has a turn in progress` }, 409);
         }
-        meta = await reconcileStaleChat(meta);
       }
       // An explicit model pick is validated (provider known, key configured)
       // BEFORE anything is persisted — a bad pick is a 400 here, not a dead
@@ -3299,7 +3471,7 @@ export async function createStrut<TServices = unknown>(
     // List chat sessions (newest first).
     app.get("/chats", async (c) => {
       const list = await chatStore.listChats();
-      return c.json((await Promise.all(list.map(reconcileStaleChat))).map(publicMeta));
+      return c.json((await Promise.all(list.map((m) => reconcileStaleChat(m)))).map(publicMeta));
     });
 
     // Reattach to a chat turn's event stream (live or completed) — SSE tail.
@@ -3643,18 +3815,15 @@ export async function createStrut<TServices = unknown>(
   // workflows in the graph and its runs in a `FileRunStore`, and gating on
   // the workspace's kind left every graph-backed swarm without auto-resume
   // (2026-10-01, swarm38: a container update cut a run off, hive declared it
-  // lost 10 s later, and a human resumed it by hand). Deferred and unref'd
-  // so a host that constructs strut and exits (tests, CLIs) is never held
-  // open.
-  const autoResumeEnabled =
-    opts.autoResume === undefined
-      ? !(store instanceof MemoryRunStore) && process.env["STRUT_AUTO_RESUME"] !== "0"
-      : opts.autoResume !== false;
-  if (autoResumeEnabled) {
-    const o = typeof opts.autoResume === "object" ? opts.autoResume : {};
+  // lost 10 s later, and a human resumed it by hand). The builder's chats
+  // the same way, gated on the chat store (`reconcileStaleChat`). Deferred
+  // and unref'd so a host that constructs strut and exits (tests, CLIs) is
+  // never held open.
+  if (autoResumeRuns || autoResumeChats) {
     const timer = setTimeout(() => {
-      void autoResumeStaleRuns(o).catch((err) => console.error(`[auto-resume] scan failed:`, err));
-    }, o.delayMs ?? 3000);
+      if (autoResumeRuns) void autoResumeStaleRuns(autoResumeOpts).catch((err) => console.error(`[auto-resume] scan failed:`, err));
+      if (autoResumeChats) void autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err));
+    }, autoResumeOpts.delayMs ?? 3000);
     timer.unref?.();
   }
 
@@ -3669,6 +3838,7 @@ export async function createStrut<TServices = unknown>(
     getRegistry: () => registry,
     rebuildRegistry,
     autoResumeStaleRuns,
+    autoResumeStaleChats,
     reconcileClaims,
     run,
     stt,

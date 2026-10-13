@@ -10,6 +10,8 @@
 // family: the user's answer to the builder's question, as the model read it.
 // `[compaction]` (src/compaction.ts) is the fourth: the model's own summary
 // of everything before it, where its memory restarts (plans/compaction.md).
+// `[restart-notification]` (src/ai/notifier.ts) is the fifth: the server
+// restarted mid-turn; the builder was woken to go on from the transcript.
 
 export type ClaimStatus = "supported" | "refuted" | "unknown" | "stale";
 
@@ -37,9 +39,13 @@ export interface LedgerClaim {
 export type Ledger = Record<string, LedgerClaim[]>;
 
 export interface ParsedNotice {
-  kind: "run" | "verify" | "elicitation" | "compaction";
+  kind: "run" | "verify" | "elicitation" | "compaction" | "restart";
   /** First line, prefix removed. */
   headline: string;
+  /** `[restart-notification]` only: the turn that was cut off, and the tool
+   *  calls whose results were lost with the process. */
+  turn?: number;
+  inFlight?: string[];
   /** `[compaction]` only: what was folded into the summary, and the summary. */
   compactedMessages?: number;
   compactedTokens?: number;
@@ -77,6 +83,7 @@ const PREFIXES = {
   "[verify-notification]": "verify",
   "[elicitation-response]": "elicitation",
   "[compaction]": "compaction",
+  "[restart-notification]": "restart",
 } as const;
 
 export function isNotice(text: string): boolean {
@@ -135,6 +142,19 @@ export function parseNotice(text: string): ParsedNotice | null {
       notice.compactedTokens = Number(m[2]);
     }
     notice.summary = rest.join("\n").trim();
+    return notice;
+  }
+
+  if (notice.kind === "restart") {
+    // "The server restarted during turn 3 and cut it off; …", then the calls
+    // that had no result and the detached runs that will not report.
+    const m = /^The server restarted during turn (\d+)/.exec(notice.headline);
+    if (m) notice.turn = Number(m[1]);
+    for (const line of rest) {
+      const calls = /^In flight when it stopped, result not recorded: (.+?)\. /.exec(line);
+      if (calls) notice.inFlight = calls[1]!.split(", ");
+      else if (line.trim()) notice.notes.push(line);
+    }
     return notice;
   }
 
@@ -211,6 +231,7 @@ export function countLedger(ledger: Ledger): LedgerCounts {
 /** One word for the card's dot: the worst thing a person should know. */
 export function noticeTone(n: ParsedNotice): "ok" | "error" | "warning" | "pending" | "neutral" {
   if (n.kind === "compaction") return "neutral";
+  if (n.kind === "restart") return "warning";
   if (n.kind === "elicitation") return n.action === "accept" ? "ok" : n.action === "decline" ? "warning" : "neutral";
   if (n.runStatus === "error") return "error";
   const c = n.ledger ? countLedger(n.ledger) : null;

@@ -59,7 +59,13 @@ startTurn })`, owned by `createStrut`'s chat block:
 - Liveness is an in-process set (mirroring `activeRuns`), NOT
   `meta.status` — a crashed process leaves `status: "live"` stale, and
   pending notifications die with the process anyway (same crash posture as
-  runs; no durable delivery in v1).
+  runs; no durable delivery in v1). Since 2026-10-13 the restart is told
+  rather than hidden: `createStrut`'s `reconcileStaleChat` finalizes the
+  dead turn and wakes the chat with a `[restart-notification]`
+  (`formatRestartNotification`) naming the detached runs that will never
+  report and the tool calls cut off without a result, so the model checks
+  them with `get_run` and goes on — every completed step of the turn is in
+  `messages.jsonl`, written as it ended.
 
 A notification turn: append a **user-role** message
 `[run-notification] workflow "X" run <id> finished: success in 41m …` (slim:
@@ -97,7 +103,8 @@ mean new turns can appear while the flyout is open (or closed). Add:
 ## Non-goals (v1)
 
 - Durable notification delivery across restarts (crash loses in-flight runs
-  anyway).
+  anyway) — instead, the chat is woken after the restart with a notice
+  naming the runs that will not report (`reconcileStaleChat`, 2026-10-13).
 - Detached mode for `run_step` (single steps are the fast inner loop).
 - Cancel-run tooling for the agent.
 - A separate `run_workflow_detached` tool — auto-upgrade keeps one tool.

@@ -27,7 +27,10 @@ export { callbackOrigin, parseCallback } from "../callback.js";
  *
  * All of it is in-process, the notifier's crash posture: a restart drops the
  * pending state and the callback with it (the host's fallback is `GET
- * /chat/:id`). Delivery is best-effort with a few retries and never blocks or
+ * /chat/:id`). The turn that was running posts once the process is back
+ * (`createStrut`'s `reconcileStaleChat`): `turn.end { status: "error" }`
+ * with no `trigger` (not recorded), `settled: false` when the chat was woken
+ * to go on — that turn's end follows. Delivery is best-effort with a few retries and never blocks or
  * fails the turn (`postCallback`, src/callback.ts — shared with run
  * callbacks). The URL is the credential (the host signs it), so only its
  * origin is ever logged or returned by a read endpoint.
@@ -74,7 +77,8 @@ export interface TurnCallbacks {
     chatId: string;
     turn: number;
     status: "done" | "error";
-    trigger: "human" | "notification";
+    /** Absent for a turn cut off by a restart: what started it was not recorded. */
+    trigger?: "human" | "notification";
     text?: string;
     error?: { message: string };
     stopped?: true;

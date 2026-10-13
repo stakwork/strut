@@ -161,4 +161,7 @@ twenty turns. `plans/jobs.md` is the design.
   posts when the run settles, as if nothing had happened. If you have not
   heard back after a run should have finished, read the summary endpoint above.
 - `POST /chat` accepts the same `callback` field for the AI builder; that one
-  posts once per turn with `event: "turn.end"`.
+  posts once per turn with `event: "turn.end"`. A turn a restart cut off
+  posts `turn.end { status: "error" }` once strut is back, with `settled:
+  false` when the builder was woken to go on from where it stopped — that
+  turn's own `turn.end` follows.
