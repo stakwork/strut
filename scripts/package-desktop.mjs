@@ -124,6 +124,10 @@ async function stageFiles() {
   // `npm install` fetch it at this version and dedupe sherpa-onnx-node's own
   // `^` range onto it, instead of floating that range to npm's newest.
   pkg.optionalDependencies = { ...pkg.optionalDependencies, "sherpa-onnx-node": sherpaVersion, [`sherpa-onnx-${platform}`]: sherpaVersion };
+  // Ladybug is for workspace custom steps and a planned graph backend, which
+  // the desktop build doesn't use yet; its native addon would also have to
+  // move into native/ beside sherpa's to pass the host's signing.
+  delete pkg.optionalDependencies["@ladybugdb/core"];
   await writeFile(join(stage, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
   await cp(join(ROOT, "build"), join(stage, "build"), { recursive: true });
   await cp(join(ROOT, "web", "dist"), join(stage, "web", "dist"), { recursive: true });
