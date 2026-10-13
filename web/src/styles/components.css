@@ -3454,8 +3454,8 @@ body.is-resizing-flyout * {
 }
 .job-chip:hover { background: rgba(110, 168, 255, 0.2); }
 
-/* A run row: status, then the time (hover: the id, click copies it), the
-   automation clock at the end; the job it ran under across the bottom. */
+/* A run row: the time (hover: the id, click copies it), the automation
+   clock, the status at the end; the job it ran under across the bottom. */
 .run-row {
   flex-direction: column;
   align-items: stretch;
@@ -3467,7 +3467,8 @@ body.is-resizing-flyout * {
   gap: var(--sp-2);
   min-width: 0;
 }
-.run-row-main .list-item-clock { margin: 0 0 0 auto; }
+.run-row-main .list-item-clock { margin: 0; }
+.run-row-main .badge { margin-left: auto; }
 .run-time {
   font-size: 12px;
   white-space: nowrap;

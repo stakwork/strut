@@ -1107,8 +1107,8 @@ export function App() {
                       <div key={r.runId} class={`list-item run-row ${selectedRun === r.runId ? "is-active" : ""}`}
                         onClick={() => openJobRun(r.workflow, r.runId)}>
                         <div class="run-row-main">
-                          <span class={`badge badge-${statusTone(r.status)}`}>{r.status}</span>
                           <RunTime runId={r.runId} at={r.at} durationMs={r.durationMs} />
+                          <span class={`badge badge-${statusTone(r.status)}`}>{r.status}</span>
                         </div>
                         <span class="list-item-sub">
                           {r.workflow}{r.parentRunId ? " · child run" : ""}{r.sealed ? " · sealed" : ""}
@@ -1119,16 +1119,17 @@ export function App() {
                 ) : (
                   <>
                     {filteredRuns.length === 0 && <div class="empty-sidebar">{selectedWf ? "No runs for this workflow" : "No runs yet"}</div>}
-                    {/* Status, then the time (the id is its tooltip; a click
-                        copies it), the job it ran under across the bottom — a
-                        click on the chip opens the job's timeline. */}
+                    {/* The time (the id is its tooltip; a click copies it),
+                        the status at the row's end, the job it ran under
+                        across the bottom — a click on the chip opens the
+                        job's timeline. */}
                     {filteredRuns.map((run) => (
                       <div key={run.runId} class={`list-item run-row ${selectedRun === run.runId ? "is-active" : ""}`}
                         onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
                         <div class="run-row-main">
-                          <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                           <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
                           {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                          <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
                         </div>
                         {run.job && (
                           <span class="job-chip" title={`Job ${run.job}`}
