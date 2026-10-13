@@ -1,6 +1,12 @@
 name: tests
 
-# Runs the unit suite (`npm test`) on every pull request. Install mirrors the
+# Runs the unit suite (`npm test`) on every pull request, and on every push to
+# main so that main saves the yarn cache: GitHub scopes a cache to the ref that
+# saved it, and a PR can read its own ref's caches and its base branch's, never
+# a sibling PR's. Without a main run every PR's first job re-downloads the
+# whole tree from the registry (~1.8 GB unpacked, every platform's optional
+# binaries — yarn v1 fetches them all), and a slow registry edge turns a 15 s
+# install into minutes (2026-10-13: 3.5 and 7.4 min). Install mirrors the
 # Dockerfile: yarn.lock is the lockfile, and --ignore-scripts skips the root
 # `prepare` (tsc + web install + web build) — tsx runs the .ts tests directly,
 # and the two web tests only import root sources. The graph and STT suites need
@@ -8,6 +14,8 @@ name: tests
 
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
