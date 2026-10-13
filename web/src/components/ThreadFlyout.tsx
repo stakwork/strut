@@ -69,7 +69,6 @@ export function ThreadFlyout(props: {
       <FlyoutResizer />
       <div class="flyout-header">
         <div>
-          <div class="flyout-eyebrow">{thread.session ? "Thread" : "Agent"}</div>
           <div class="flyout-title">
             {thread.label}
             {thread.session && <span style="color:var(--text-dim);font-weight:400;"> · {thread.id.slice(0, 8)}</span>}
