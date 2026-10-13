@@ -25,6 +25,7 @@ server without a rebuild (proposed).
 | Tests       | Node native test runner (`node:test`) via tsx                              |
 | LLM step    | Vercel AI SDK (`ai`) over an aieo-resolved model — lazy-loaded. `ai`, `zod`, `@ai-sdk/anthropic` are **peerDependencies** (see "One copy per process" below); provider SDKs are aieo's |
 | AI builder  | Vercel AI SDK `ToolLoopAgent` over any aieo provider (model picker in the flyout, per-chat `ChatMeta.model`); detached + persisted, reattach via `/chat/:id/stream` SSE |
+| Embedded graph | `@ladybugdb/core` (LadybugDB, the Kuzu fork), an **optionalDependency** with a native addon: for workspace custom steps that keep a local graph, and the planned `LadybugBackend` (plans/local-desktop-and-stt.md §3.1). Nothing in `src/` imports it yet; a step that does `await import()`s it inside `run()`. Left out of the desktop package (`package-desktop.mjs`) until that build uses it |
 
 ## Layout
 

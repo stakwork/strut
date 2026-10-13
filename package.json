@@ -65,6 +65,7 @@
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
+    "@ladybugdb/core": "^0.21.2",
     "sherpa-onnx-node": "^1.13.7"
   },
   "engines": {
