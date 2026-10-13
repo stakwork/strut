@@ -1,5 +1,10 @@
 # Jobs — a host hands strut work; strut hands back artifacts
 
+> **2026-10-13:** the `job` workflow itself moved INTO strut — shipped as
+> `src/workflows/job.yaml`, seeded at boot by `createStrut`, the lab passing
+> only its delta (`pod/*`, the `Job` Concept paragraph) through
+> `createStrut({ job })`. §5 has the shape.
+>
 > **Status (2026-09-30): V1's strut half built** (§11 item 1, on this
 > branch: the stamp, `jobs/` + `job/dir`, `/jobs/:id/files`, `artifacts[]`
 > in the callback; `src/jobs.test.ts`). The mcp seed and hive's side are
@@ -347,10 +352,24 @@ dispatch-through to a peer stays a later, separate thing (`federation.md`
 
 ## 5. The `job` workflow
 
-Seeded YAML in the mcp lab (`mcp/src/lab/job/`), category `job`, publisher
-`job-seed`, `reactivateKnown: false` like every seed — a version published
-on the swarm survives the next boot. The shape is the one above. Its
-`params` are the policy:
+Shipped by strut: `src/workflows/job.yaml`, seeded at boot by `createStrut`
+through `src/job-seed.ts` (content hash, `reactivateKnown: false`, `source:
+"seed"`, category `job`, unstamped) — a version published on the swarm
+survives the next boot until the committed template changes. It was the
+mcp lab's seed until 2026-10-13; it moved because every job primitive was
+already strut's and a standalone strut (docker, desktop) had a Jobs sidebar
+with nothing to run in it. Strut owns HOW a turn works; the deployment owns
+what it adds, through one option, the twin of `chatSystem`:
+`createStrut({ job: { tools, system } })` appends grants to `params.tools`
+and a section to `params.system` after strut's, and the merged text is what
+is hashed — so the lab passes `pod/*` and the "open the `Job` Concept
+first" paragraph, a desktop strut passes nothing, and a host changing its
+delta publishes a new version exactly as a seed edit does. Exactly ONE
+seeder per name: two seeders over `job` would each leave the other's
+version active until one file changed, then fight. `params.tools` is a
+flat grant list, never a filter — a type this registry lacks is skipped
+with a warning at run time, so the same YAML runs where a grant's steps
+are absent. The shape is the one above. Its `params` are the policy:
 
 - `system` — the prototype's good parts: read the Concept tree for the
   goal's kind before choosing anything (the `Workflow Builder` concept and
@@ -505,7 +524,8 @@ revises the same file.
    `artifacts[]` resolved in `postRunCallback` + `GET
    …/runs/:runId/artifacts` (`src/artifact-refs.ts`, §3). `specs/CALLBACKS.md`
    §4, `specs/API.md`, AGENTS.md. Tests: `src/jobs.test.ts`, `git.test.ts`.
-2. **mcp.** The `job` seed with NO grants beyond the agent's built-ins:
+2. **mcp.** (Moved into strut on 2026-10-13 — §5; the lab now passes its
+   delta to `createStrut({ job })`.) The `job` seed with NO grants beyond the agent's built-ins:
    `job/dir → agent (cwd, session: "{{ $job }}", schema { text, artifacts,
    ask? }) → pack`; `params.system` says deliverables are files in `cwd`,
    named stably, listed in the output. "Built-ins" means ALL of them —
