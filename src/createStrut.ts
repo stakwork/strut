@@ -58,6 +58,7 @@ import { createAutomations, type Automations } from "./scheduler.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
+import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
 import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerStore, peersCapability, type Peer } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
@@ -245,6 +246,15 @@ export interface StrutOptions<TServices = unknown> {
    *  tool or `claims` arg is offered, the prompt has no claims section, no
    *  run is verified and the panel hides itself. */
   claims?: boolean;
+
+  /** The `job` workflow strut ships (plans/jobs.md §5; `src/job-seed.ts`),
+   *  seeded into the workspace at boot by content hash: a changed template
+   *  publishes and activates the next version, an unchanged one leaves a
+   *  workspace-side edit active. `{ tools, system }` is the HOST's delta —
+   *  grants appended to `params.tools` (the lab's `pod/*`), a section
+   *  appended to the agent's system prompt after strut's — the twin of
+   *  `chatSystem`; the merged text is what is hashed. `false` seeds nothing. */
+  job?: false | JobSeedOptions;
 
   /** The strut graph backend, when the deployment has one (server.ts passes
    *  the one behind its graph-backed workspace). Enables the chat builder's
@@ -701,6 +711,20 @@ export async function createStrut<TServices = unknown>(
 
   if (!registryWasInjected) {
     await rebuildRegistry();
+  }
+
+  // The one workflow strut ships: `job` (plans/jobs.md §5; src/job-seed.ts).
+  // Content-hash seeded, so a boot is a no-op unless the template or the
+  // host's delta changed; before the claims reconcile below, which records
+  // a seeded workflow's `claims:` block. A workspace that will not take it
+  // is a warning, never a failed boot.
+  if (opts.job !== false) {
+    try {
+      const { version, changed } = await seedJobWorkflow(workspace, opts.job);
+      if (changed) console.log(`[job] seeded workflow: job @ ${version}`);
+    } catch (err) {
+      console.warn(`[job] could not seed the job workflow:`, err instanceof Error ? err.message : err);
+    }
   }
 
   // The claims layer (plans/claims.md) — decided HERE and nowhere else. It
