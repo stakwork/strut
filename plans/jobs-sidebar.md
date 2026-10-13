@@ -112,6 +112,14 @@ one thing, with a drill from any row to the run that did it.
    Runs / Tools already stack; Jobs is a fourth collapsible section with
    the same search box (`GET /jobs?q=` is the sidebar matcher,
    `src/search.ts`). Collapsed on a deployment with no jobs.
+   *Revised 2026-10-12:* four stacked sections were one too many. Runs and
+   Jobs are the same kind of thing — history, newest first, scoped to the
+   selected workflow (a job is a grouping of runs) — so they share ONE
+   slot: **Runs | Jobs** in the title row, the lists sliding between them,
+   the mode remembered in localStorage. `GET /jobs?workflow=` is the
+   filter. Selecting a job no longer clears the workflow (the list clicked
+   in would reshuffle): the timeline shows when a job is selected and no
+   run is open, and the topbar is the job's then.
 
 ## Design in one paragraph
 
@@ -216,6 +224,9 @@ to keep its result small — or takes `threads: false`. Either is fine; the
 step's result cap decides.
 
 ## 2. The sidebar — Jobs section
+
+*As built on 2026-10-12 (decision 8, revised): not a fourth section but the
+Jobs mode of the history panel Runs shares — the rest of this section holds.*
 
 A fourth `sidebar-section` (`data-section="jobs"`), collapsible like
 Tools, placed between Runs and Tools:

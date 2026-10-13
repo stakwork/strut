@@ -258,9 +258,10 @@ export function fmtDuration(ms: number): string {
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
 }
 
-export function fmtTime(iso: string): string {
+export function fmtTime(iso: string, seconds = false): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const today = new Date().toDateString() === d.toDateString();
-  return today ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const time: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}) };
+  return today ? d.toLocaleTimeString([], time) : d.toLocaleString([], { month: "short", day: "numeric", ...time });
 }

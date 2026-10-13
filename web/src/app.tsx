@@ -20,7 +20,8 @@ import { OwnerEditor } from "./components/OwnerEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { ClockIcon, GearIcon } from "./icons";
+import { ClockIcon, GearIcon, UserIcon } from "./icons";
+import { displayActor } from "./actor";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
 import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
 import { StepEditFlyout } from "./components/StepEditFlyout";
@@ -32,6 +33,7 @@ import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
 import { JobTimeline, fmtTime } from "./components/JobTimeline";
+import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
@@ -87,12 +89,18 @@ export function App() {
   const [selectedRun, setSelectedRun] = useState<string | null>(initialUrl.get("run"));
   // Jobs (plans/jobs-sidebar.md): the selected job's timeline takes the
   // canvas area; a run opened from it keeps the job selected, so the
-  // breadcrumb leads back. ?job=<id> deep-links into one.
+  // breadcrumb leads back. ?job=<id> deep-links into one. The selected
+  // workflow stays underneath as the history panel's filter.
   const [selectedJob, setSelectedJob] = useState<string | null>(initialUrl.get("job"));
   const [jobs, setJobs] = useState<api.JobListing[]>([]);
   const [job, setJob] = useState<api.JobView | null>(null);
   const [jobQuery, setJobQuery] = useState("");
-  const [jobsOpen, setJobsOpen] = useState<boolean>(() => loadPref("jobsOpen", true));
+  // Only my jobs: the user icon in the title row, remembered. The server
+  // says who "me" is (`actor` on the listing); without one the icon hides.
+  const [jobsMine, setJobsMine] = useState<boolean>(() => loadPref("jobsMine", false));
+  const [jobsActor, setJobsActor] = useState<string | null>(null);
+  // The history panel: one slot, Runs or Jobs, remembered across sessions.
+  const [historyMode, setHistoryMode] = useState<"runs" | "jobs">(() => loadPref("historyMode", "runs"));
   // A thread's transcript, open in the flyout.
   const [threadView, setThreadView] = useState<{ thread: api.JobThread; turn?: api.JobTurn } | null>(null);
   // A step path to open the flyout on once the run opened from the timeline
@@ -270,6 +278,12 @@ export function App() {
 
   const isRunView = selectedRun != null && events.length > 0;
 
+  // A selected job with no run open: its timeline takes the canvas and the
+  // topbar is the job's. `wf` is the workflow the canvas shows — none then,
+  // while `selectedWf` stays the history panel's filter.
+  const timelineOpen = selectedJob != null && selectedRun == null;
+  const wf = timelineOpen ? null : selectedWf;
+
   // ── View context: what the canvas + flyout operate on ───────────────────
   // Root view = the selected workflow. When drilled into a run's nested
   // execution, the deepest frame's child workflow + its re-keyed events.
@@ -389,21 +403,32 @@ export function App() {
   }, [activeRuns]);
 
   // ── Jobs ────────────────────────────────────────────────────────────────
-  // The listing (the sidebar's Jobs section) and the selected job's view
-  // (the timeline). Both re-read when a run anywhere changes state — a new
-  // run may be a new job, a finished one changes a turn's row — on the same
+  // The listing (the history panel's Jobs mode, scoped to the selected
+  // workflow like the Runs list) and the selected job's view (the
+  // timeline). Both re-read when a run anywhere changes state — a new run
+  // may be a new job, a finished one changes a turn's row — on the same
   // signal the Runs list follows. A deployment whose jobs are an injected
-  // capability without an index answers 501: the section stays empty.
-  const refreshJobs = useCallback(async (q?: string) => {
+  // capability without an index answers 501: the list stays empty.
+  // Every job title the UI has seen — the run rows' chips name a job by
+  // it. While the listing is narrowed (a query, only mine), the titles come
+  // from the workflow's whole listing, the jobs those rows can reference.
+  const jobTitles = useRef(new Map<string, string>());
+  const refreshJobs = useCallback(async () => {
     try {
-      setJobs(await api.listJobs(q ?? jobQuery, 50));
+      const r = await api.listJobs({ q: jobQuery, workflow: selectedWf, mine: jobsMine, limit: 50 });
+      const titled = jobQuery.trim() || jobsMine ? (await api.listJobs({ workflow: selectedWf, limit: 50 })).jobs : r.jobs;
+      for (const j of titled) if (j.title) jobTitles.current.set(j.job, j.title);
+      setJobs(r.jobs);
+      setJobsActor(r.actor ?? null);
     } catch { /* no index */ }
-  }, [jobQuery]);
-  useEffect(() => { void refreshJobs(jobQuery); }, [jobQuery]);
+  }, [jobQuery, selectedWf, jobsMine]);
+  useEffect(() => { void refreshJobs(); }, [refreshJobs]);
   const refreshJob = useCallback(async () => {
     if (!selectedJob) { setJob(null); return; }
     try {
-      setJob(await api.getJob(selectedJob, { nodes: true }));
+      const v = await api.getJob(selectedJob, { nodes: true });
+      if (v.title) jobTitles.current.set(v.job, v.title);
+      setJob(v);
     } catch { setJob(null); }
   }, [selectedJob]);
   useEffect(() => { setThreadView(null); void refreshJob(); }, [selectedJob]);
@@ -412,7 +437,7 @@ export function App() {
     void refreshJobs();
   }, [activeRuns]);
   /** The job a run belongs to, as the sidebar names it. */
-  const jobTitle = useCallback((id: string) => jobs.find((j) => j.job === id)?.title ?? id.slice(0, 8), [jobs]);
+  const jobTitle = useCallback((id: string) => jobTitles.current.get(id) ?? id.slice(0, 8), [jobs]);
   // The selected workflow's live runs changed (one started, finished, paused)
   // → refresh its Runs list, so it never disagrees with the dot.
   const prevActive = useRef(activeRuns);
@@ -633,7 +658,9 @@ export function App() {
     setSelectedRun(runId);
   }, [selectedWf]);
 
-  // Select a job: its timeline takes the canvas (no workflow, no run).
+  // Select a job: its timeline takes the canvas (no run open). The selected
+  // workflow is left alone — it is the history panel's filter, and the
+  // list you clicked in would reshuffle under the click if it cleared.
   const selectJob = useCallback((id: string | null) => {
     liveStreamRef.current = false;
     setRunning(false);
@@ -643,7 +670,6 @@ export function App() {
     setInfoStep(null);
     setThreadView(null);
     setSelectedJob(id);
-    setSelectedWf(null);
     setSelectedRun(null);
     setEvents([]);
   }, []);
@@ -960,14 +986,6 @@ export function App() {
     { label: "Custom", steps: matchedSteps.filter((s) => s.source === "custom") },
   ].filter((g) => g.steps.length > 0), [matchedSteps]);
 
-  const toggleJobsSection = useCallback(() => {
-    setJobsOpen((prev) => {
-      const next = !prev;
-      savePref("jobsOpen", next);
-      return next;
-    });
-  }, []);
-
   const toggleStepsSection = useCallback(() => {
     setStepsOpen((prev) => {
       const next = !prev;
@@ -1052,102 +1070,111 @@ export function App() {
 
         <SidebarResizer />
 
-        <div class="sidebar-section" data-section="runs">
-          <div class="section-title">
-            Runs
-            {selectedJob && job
-              ? <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;">{job.title ?? job.job}</span>
-              : selectedWf && <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;">{selectedWf}</span>}
-          </div>
-          <div class="sidebar-scroll">
-            {/* A selected job lists ITS runs, every workflow, newest first —
-                so the turns of a thread are a click apart. */}
-            {selectedJob && job ? (
-              <>
-                {job.runs.length === 0 && <div class="empty-sidebar">No runs under this job</div>}
-                {job.runs.map((r) => (
-                  <div key={r.runId} class={`list-item ${selectedRun === r.runId ? "is-active" : ""}`}
-                    onClick={() => openJobRun(r.workflow, r.runId)}>
-                    <div class="list-item-stack">
-                      <span class="list-item-name">{r.runId}</span>
-                      <span class="list-item-sub">
-                        {r.workflow}{r.parentRunId ? " · child run" : ""}{r.sealed ? " · sealed" : ""}
-                        {r.durationMs != null && ` (${r.durationMs}ms)`}
-                      </span>
-                    </div>
-                    <span class={`badge badge-${statusTone(r.status)}`}>{r.status}</span>
-                  </div>
-                ))}
-              </>
-            ) : (
-              <>
-                {filteredRuns.length === 0 && <div class="empty-sidebar">{selectedWf ? "No runs for this workflow" : "No runs yet"}</div>}
-                {filteredRuns.map((run) => (
-                  <div key={run.runId} class={`list-item ${selectedRun === run.runId ? "is-active" : ""}`}
-                    onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
-                    <div class="list-item-stack">
-                      <span class="list-item-name">
-                        {run.runId}
-                        {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
-                      </span>
-                      <span class="list-item-sub">
-                        {run.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "..."}
-                        {run.durationMs != null && ` (${run.durationMs}ms)`}
-                      </span>
-                      {/* The job it ran under: a click opens the job's timeline. */}
-                      {run.job && (
-                        <span class="job-chip" title={`Job ${run.job}`}
-                          onClick={(e) => { e.stopPropagation(); selectJob(run.job!); }}>{jobTitle(run.job)}</span>
-                      )}
-                    </div>
-                    <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
-                  </div>
-                ))}
-              </>
+        {/* History — one slot, Runs or Jobs (plans/jobs-sidebar.md §2):
+            the two lists slide, the mode is remembered, both are scoped to
+            the selected workflow. */}
+        <div class="sidebar-section has-modes" data-section="runs">
+          <div class="section-title section-title-modes">
+            <span class="mode-switch" role="tablist" aria-label="History">
+              {(["runs", "jobs"] as const).map((m) => (
+                <button key={m} type="button" role="tab" aria-selected={historyMode === m}
+                  class={`mode-btn${historyMode === m ? " is-active" : ""}`}
+                  onClick={() => { setHistoryMode(m); savePref("historyMode", m); }}>
+                  {m === "runs" ? "Runs" : "Jobs"}
+                </button>
+              ))}
+            </span>
+            {historyMode === "runs" && selectedJob && job
+              ? <span class="section-scope" title={job.job}>{job.title ?? job.job}</span>
+              : selectedWf && <span class="section-scope" title={selectedWf}>{selectedWf}</span>}
+            {historyMode === "jobs" && jobsActor && (
+              <button type="button" class={`mine-toggle${jobsMine ? " is-on" : ""}`} aria-pressed={jobsMine}
+                title={jobsMine ? `Only your jobs (${displayActor(jobsActor)}) — click for everyone's` : "Only your jobs"}
+                onClick={() => { const v = !jobsMine; setJobsMine(v); savePref("jobsMine", v); }}>
+                <UserIcon />
+              </button>
             )}
           </div>
-        </div>
-
-        {jobsOpen && <SidebarResizer />}
-
-        {/* Jobs (plans/jobs-sidebar.md) — every job, newest-used first; a
-            click opens its timeline in the canvas area. */}
-        <div class={`sidebar-section${jobsOpen ? "" : " is-collapsed"}`} data-section="jobs">
-          <div class="section-title section-title-toggle" onClick={toggleJobsSection}>
-            <span class={`cat-caret${jobsOpen ? " is-open" : ""}`}>▸</span>
-            <span>Jobs</span>
-            <span class="cat-count">{jobs.length}</span>
-          </div>
-          {jobsOpen && (jobs.length > 0 || jobQuery) && (
-            <input
-              class="sidebar-search"
-              type="search"
-              value={jobQuery}
-              placeholder="Find jobs…"
-              aria-label="Find jobs"
-              onInput={(e) => setJobQuery((e.target as HTMLInputElement).value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setJobQuery("");
-                if (e.key === "Enter" && jobs.length === 1) selectJob(jobs[0]!.job);
-              }}
-            />
-          )}
-          {jobsOpen && (
-            <div class="sidebar-scroll">
-              {jobs.length === 0 && <div class="empty-sidebar">{jobQuery ? "No matching jobs" : "No jobs yet"}</div>}
-              {jobs.map((j) => (
-                <div key={j.job} class={`list-item ${selectedJob === j.job ? "is-active" : ""}`} onClick={() => selectJob(j.job)}>
-                  <div class="list-item-stack">
-                    <span class="list-item-name" title={j.job}>{j.title ?? j.job}</span>
-                    <span class="list-item-sub">
-                      {fmtTime(j.usedAt)} · {j.runs} run{j.runs === 1 ? "" : "s"}{j.holds ? ` · ${j.holds} hold${j.holds === 1 ? "" : "s"}` : ""}
-                    </span>
-                  </div>
-                  {j.busy && <span class="live-dot" title="A run is working in this job now" />}
-                </div>
-              ))}
+          <div class={`mode-track${historyMode === "jobs" ? " is-jobs" : ""}`}>
+            <div class="mode-pane" inert={historyMode !== "runs"}>
+              <div class="sidebar-scroll">
+                {/* A selected job lists ITS runs, every workflow, newest first —
+                    so the turns of a thread are a click apart. */}
+                {selectedJob && job ? (
+                  <>
+                    {job.runs.length === 0 && <div class="empty-sidebar">No runs under this job</div>}
+                    {job.runs.map((r) => (
+                      <div key={r.runId} class={`list-item run-row ${selectedRun === r.runId ? "is-active" : ""}`}
+                        onClick={() => openJobRun(r.workflow, r.runId)}>
+                        <div class="run-row-main">
+                          <RunTime runId={r.runId} at={r.at} durationMs={r.durationMs} />
+                          <span class={`badge badge-${statusTone(r.status)}`}>{r.status}</span>
+                        </div>
+                        <span class="list-item-sub">
+                          {r.workflow}{r.parentRunId ? " · child run" : ""}{r.sealed ? " · sealed" : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    {filteredRuns.length === 0 && <div class="empty-sidebar">{selectedWf ? "No runs for this workflow" : "No runs yet"}</div>}
+                    {/* The time (the id is its tooltip; a click copies it),
+                        the status at the row's end, the job it ran under
+                        across the bottom — a click on the chip opens the
+                        job's timeline. */}
+                    {filteredRuns.map((run) => (
+                      <div key={run.runId} class={`list-item run-row ${selectedRun === run.runId ? "is-active" : ""}`}
+                        onClick={() => { setSelectedRun(run.runId); setViewVersion(null); closeFlyout(); }}>
+                        <div class="run-row-main">
+                          <RunTime runId={run.runId} at={run.startedAt} durationMs={run.durationMs} />
+                          {run.automation && <span class="list-item-clock" title="Started by an automation"><ClockIcon size={10} /></span>}
+                          <span class={`badge badge-${statusTone(run.status)}`}>{run.status}</span>
+                        </div>
+                        {run.job && (
+                          <span class="job-chip" title={`Job ${run.job}`}
+                            onClick={(e) => { e.stopPropagation(); selectJob(run.job!); }}>{jobTitle(run.job)}</span>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
             </div>
-          )}
+            <div class="mode-pane" inert={historyMode !== "jobs"}>
+              {/* Every job, newest-used first — a click opens its timeline. */}
+              {(jobs.length > 0 || jobQuery) && (
+                <input
+                  class="sidebar-search"
+                  type="search"
+                  value={jobQuery}
+                  placeholder="Find jobs…"
+                  aria-label="Find jobs"
+                  onInput={(e) => setJobQuery((e.target as HTMLInputElement).value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setJobQuery("");
+                    if (e.key === "Enter" && jobs.length === 1) selectJob(jobs[0]!.job);
+                  }}
+                />
+              )}
+              <div class="sidebar-scroll">
+                {jobs.length === 0 && (
+                  <div class="empty-sidebar">{jobQuery ? "No matching jobs" : jobsMine ? "No jobs of yours" : selectedWf ? "No jobs for this workflow" : "No jobs yet"}</div>
+                )}
+                {jobs.map((j) => (
+                  <div key={j.job} class={`list-item ${selectedJob === j.job ? "is-active" : ""}`} onClick={() => selectJob(j.job)}>
+                    <div class="list-item-stack">
+                      <span class="list-item-name" title={j.job}>{j.title ?? j.job}</span>
+                      <span class="list-item-sub">
+                        {fmtTime(j.usedAt)} · {j.runs} run{j.runs === 1 ? "" : "s"}{j.holds ? ` · ${j.holds} hold${j.holds === 1 ? "" : "s"}` : ""}
+                      </span>
+                    </div>
+                    {j.busy && <span class="live-dot" title="A run is working in this job now" />}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
 
         {stepsOpen && <SidebarResizer />}
@@ -1211,29 +1238,29 @@ export function App() {
       {/* Topbar */}
       <div class="shell-topbar">
         <span class="topbar-title">
-          {selectedWf ?? (selectedJob ? (job?.title ?? selectedJob) : "Select a workflow")}
-          {selectedWf && (
+          {wf ?? (selectedJob ? (job?.title ?? selectedJob) : "Select a workflow")}
+          {wf && (
             <CategoryEditor
-              key={selectedWf}
-              workflow={selectedWf}
+              key={wf}
+              workflow={wf}
               category={selectedEntry?.category}
               categories={categories}
               onSaved={refreshWorkflows}
             />
           )}
-          {selectedWf && mothership && (
+          {wf && mothership && (
             <OwnerEditor
-              key={`owner:${selectedWf}`}
-              workflow={selectedWf}
+              key={`owner:${wf}`}
+              workflow={wf}
               owner={selectedEntry?.owner}
               unowned={workflows.filter((w) => !w.owner).length}
               onSaved={refreshWorkflows}
             />
           )}
-          {selectedWf && mothership && (
+          {wf && mothership && (
             <RunCapEditor
-              key={`cap:${selectedWf}`}
-              workflow={selectedWf}
+              key={`cap:${wf}`}
+              workflow={wf}
               maxRunCostUsd={selectedEntry?.maxRunCostUsd}
               onSaved={refreshWorkflows}
             />
@@ -1241,7 +1268,7 @@ export function App() {
           {/* Version picker — browse the workflow's published lineage. Only
               outside run view (a run overlays the active structure), and only
               when there is history to browse. */}
-          {selectedWf && !selectedRun && selectedEntry && selectedEntry.versions.length > 1 && (
+          {wf && !selectedRun && selectedEntry && selectedEntry.versions.length > 1 && (
             <select
               class="version-select"
               value={viewVersion ?? activeVersion}
@@ -1262,12 +1289,12 @@ export function App() {
           {isDirty && <span class="dirty-dot" style="margin-left:8px;" />}
         </span>
         <div class="topbar-actions">
-          {selectedWf && !viewingOld && (
+          {wf && !viewingOld && (
             <div class="run-anchor">
               <button class="btn btn-primary" onClick={handleRun}>Run</button>
-              {runBindings && selectedWf && (
+              {runBindings && wf && (
                 <RunInputPopover
-                  workflow={selectedWf}
+                  workflow={wf}
                   bindings={runBindings}
                   params={localParams}
                   onSubmit={submitRun}
@@ -1299,7 +1326,7 @@ export function App() {
               )}
             </span>
           )}
-          {isDirty && !viewingOld && <button class="btn btn-publish" disabled={panel === "workflow" && activeTab === "params" && !paramsValid} onClick={handlePublish}>Publish</button>}
+          {wf && isDirty && !viewingOld && <button class="btn btn-publish" disabled={panel === "workflow" && activeTab === "params" && !paramsValid} onClick={handlePublish}>Publish</button>}
           {isRunView && promotions.length > 0 && (
             <button
               class={`btn${panel === "promote" ? " is-active" : ""}`}
@@ -1308,7 +1335,7 @@ export function App() {
           )}
           {/* The workflow's own flyout: params, claims, schedules — and delete.
               The claims dot rides along: the one "act now" signal up here. */}
-          {workflowTabs.length > 0 && (
+          {wf && workflowTabs.length > 0 && (
             <button
               class={`btn${panel === "workflow" ? " is-active" : ""}`}
               title="Params, claims, schedules and versions"
@@ -1325,11 +1352,11 @@ export function App() {
 
       {/* Canvas */}
       <div class="shell-canvas">
-        {(runDrill.length > 0 || (selectedJob && selectedWf)) && (
+        {(runDrill.length > 0 || (selectedJob && selectedRun)) && (
           <div class="drill-bar">
             {/* A run opened from a job: the job leads the breadcrumb, back
                 to its timeline. */}
-            {selectedJob && selectedWf && (
+            {selectedJob && selectedRun && (
               <>
                 <button class="drill-crumb" onClick={() => selectJob(selectedJob)} title="Back to the job">{job?.title ?? selectedJob}</button>
                 <span class="drill-sep">›</span>
@@ -1359,7 +1386,7 @@ export function App() {
           </div>
         )}
         {/* A selected job with no run open: its timeline, not a graph. */}
-        {selectedJob && !selectedWf ? (
+        {timelineOpen ? (
           job
             ? <JobTimeline job={job} onOpenRun={openJobRun} onOpenThread={(thread, turn) => setThreadView({ thread, turn })} />
             : <div class="empty">Loading job…</div>

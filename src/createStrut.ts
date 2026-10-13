@@ -1893,10 +1893,19 @@ export async function createStrut<TServices = unknown>(
   // 501 when a consumer's own `jobs` capability keeps no index.
   const jobsCap = (services as Record<string, unknown>)["jobs"] as JobsCapability | undefined;
   const NO_JOB_INDEX = "jobs are managed by an injected capability with no index";
+  // `?mine=1` keeps the jobs the request's actor launched a run of. The
+  // response names that actor when the request carries one, so a UI knows
+  // whether the filter means anything here; `mine` with no actor lists
+  // nothing — none of them are yours.
   app.get("/jobs", async (c) => {
     if (!jobsCap?.list) return c.json({ error: NO_JOB_INDEX }, 501);
     const limit = Number(c.req.query("limit"));
-    return c.json({ jobs: await jobsCap.list({ q: c.req.query("q"), ...(limit > 0 ? { limit } : {}) }) });
+    const actor = await resolveActor(c);
+    const mine = c.req.query("mine") === "1";
+    const jobs = mine && !actor
+      ? []
+      : await jobsCap.list({ q: c.req.query("q"), workflow: c.req.query("workflow"), ...(mine ? { actor } : {}), ...(limit > 0 ? { limit } : {}) });
+    return c.json({ jobs, ...(actor ? { actor } : {}) });
   });
 
   // `?threads=0` leaves the thread fold out (the run list and the
