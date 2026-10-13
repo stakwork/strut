@@ -35,7 +35,17 @@ describe("widenedIndex (pure)", () => {
   });
   it("the ledger id carries the fixture version", () => {
     assert.equal(reconcileMigrationId("m125"), "strut_index_reconcile_m125");
-    assert.match(JARVIS_ONTOLOGY.version, /^m\d+$/);
+    // The jarvis migration the dump was taken at, plus a suffix for a library
+    // change applied by hand since (a re-dump needs a jarvis DB at that state).
+    assert.match(JARVIS_ONTOLOGY.version, /^m\d+(-[a-z0-9-]+)?$/);
+  });
+  it("the code types that index their body carry the generated description ahead of it, and a live [name, body] widens to it", () => {
+    for (const type of ["Class", "Datamodel", "Page", "Trait", "Var"]) {
+      const schema = JARVIS_ONTOLOGY.schemas.find((s) => s["type"] === type)!;
+      assert.deepEqual(schema["index"], ["name", "description", "body"], type);
+      assert.equal(schema["description"], "?string", type);
+      assert.deepEqual(widenedIndex(["name", "body"], schema["index"]), ["name", "description", "body"], type);
+    }
   });
 });
 
