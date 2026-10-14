@@ -20,16 +20,21 @@
  *
  * Status is COMPUTED ON READ, per (claim, subject) — `claimStatus` is one
  * pure function and no verdict is ever stored on a node. Every read here
- * skips deleted nodes and legacy muted edges (`deletion.ts`): a retired slot
- * is neither evidence nor an open slot.
+ * skips deleted nodes and legacy muted edges (`dialect.live` / `edgeLive`):
+ * a retired slot is neither evidence nor an open slot.
  *
- * Type-only imports (plus the import-free `deletion.ts`): this module never
- * loads neo4j-driver, so `createStrut` can import it on a filesystem workspace.
+ * The reads are written with the backend's dialect helpers (`engine.ts`),
+ * so one reader serves Neo4j and a Ladybug file; what would need an
+ * `OPTIONAL MATCH` or a two-type pattern is several statements joined
+ * here (plans/ladybug-backend.md §2, §4). Type-only imports plus the pure
+ * `typeValue`: this module never loads neo4j-driver, so `createStrut` can
+ * import it on a filesystem workspace.
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { CassetteMode } from "../cassette.js";
 import type { GraphBackend } from "./backend.js";
-import { EDGE_LIVE, NODE_LIVE } from "./deletion.js";
+import type { Dialect } from "./engine.js";
+import { typeValue } from "./strut-schemas.js";
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -390,10 +395,6 @@ const EVIDENCE_FIELDS = [
   "ref_id", "id", "name", "description", "content", "evidence_mode", "evidence_status", "observed_at", "date_added_to_graph",
 ] as const;
 
-/** `n {.a, .b}` — never `properties(n)`: nodes carry `Data_Bank` and a
- *  384-float embedding. */
-const project = (v: string, fields: readonly string[]) => `${v} {${fields.map((f) => `.${f}`).join(", ")}}`;
-
 function compact<T>(row: Record<string, unknown>): T {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) if (v !== null && v !== undefined) out[k] = v;
@@ -424,18 +425,23 @@ export interface SubjectLedgerRow {
  * only on a graph-backed workspace — see `claimsReaderFor`.
  */
 export class ClaimsReader {
-  constructor(private readonly graph: Pick<GraphBackend, "query" | "namespace">) {}
+  constructor(private readonly graph: Pick<GraphBackend, "query" | "namespace" | "dialect">) {}
 
   private get ns(): string {
     return this.graph.namespace;
+  }
+
+  private get d(): Dialect {
+    return this.graph.dialect;
   }
 
   /** Content hash of the subject's active version; null when the subject
    *  does not exist or has none. */
   async activeVersion(subject: SubjectRef): Promise<string | null> {
     const n = SUBJECT_NODE[subject.kind];
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NODE_LIVE("s")}
+      `MATCH ${d.node("s", n.label, { namespace: "$ns", [n.key]: "$name" })} WHERE ${d.live("s")}
        RETURN s.active_version AS v LIMIT 1`,
       { ns: this.ns, name: subjectName(subject) },
     );
@@ -447,8 +453,9 @@ export class ClaimsReader {
    *  such step / workflow (built-in steps have no node). */
   async subjectRefId(subject: SubjectRef): Promise<string | null> {
     const n = SUBJECT_NODE[subject.kind];
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NODE_LIVE("s")} RETURN s.ref_id AS r LIMIT 1`,
+      `MATCH ${d.node("s", n.label, { namespace: "$ns", [n.key]: "$name" })} WHERE ${d.live("s")} RETURN s.ref_id AS r LIMIT 1`,
       { ns: this.ns, name: subjectName(subject) },
     );
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
@@ -457,8 +464,9 @@ export class ClaimsReader {
   /** `ref_id` of the version node a `VersionRef` names, or null. */
   async versionRefId(version: VersionRef): Promise<string | null> {
     const n = SUBJECT_NODE[version.kind];
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (v:\`${n.version}\` {namespace: $ns, \`${n.key}\`: $name, content_hash: $hash}) WHERE ${NODE_LIVE("v")} RETURN v.ref_id AS r LIMIT 1`,
+      `MATCH ${d.node("v", n.version, { namespace: "$ns", [n.key]: "$name", content_hash: "$hash" })} WHERE ${d.live("v")} RETURN v.ref_id AS r LIMIT 1`,
       { ns: this.ns, name: version.name, hash: version.content_hash },
     );
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
@@ -466,8 +474,9 @@ export class ClaimsReader {
 
   /** One claim by id (active or not), or null. */
   async getClaim(id: string): Promise<ClaimRow | null> {
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NODE_LIVE("c")} RETURN ${project("c", CLAIM_FIELDS)} AS claim LIMIT 1`,
+      `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })} WHERE ${d.live("c")} RETURN ${d.project("c", CLAIM_FIELDS)} AS claim LIMIT 1`,
       { ns: this.ns, id },
     );
     return rows.length ? compact<ClaimRow>(rows[0]!["claim"] as Record<string, unknown>) : null;
@@ -475,66 +484,79 @@ export class ClaimsReader {
 
   /** One check by id (active or not), or null. */
   async getCheck(id: string): Promise<CheckRow | null> {
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NODE_LIVE("k")} RETURN ${project("k", CHECK_FIELDS)} AS chk LIMIT 1`,
+      `MATCH ${d.node("k", CHECK_TYPE, { namespace: "$ns", id: "$id" })} WHERE ${d.live("k")} RETURN ${d.project("k", CHECK_FIELDS)} AS chk LIMIT 1`,
       { ns: this.ns, id },
     );
     return rows.length ? compact<CheckRow>(rows[0]!["chk"] as Record<string, unknown>) : null;
   }
 
   /** The subjects a claim is attached to (live `ABOUT` edges), with the
-   *  edge's ref_id — what `detach` mutes. */
+   *  edge's ref_id — what `detach` mutes. Steps first, then workflows, each
+   *  by name. */
   async subjectsOf(claimId: string): Promise<Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }>> {
-    const rows = await this.graph.query(
-      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})-[a:\`${CLAIM_EDGES.ABOUT}\`]->(s)
-       WHERE ${EDGE_LIVE("a")} AND ${NODE_LIVE("s")} AND (s:StrutStep OR s:StrutWorkflow)
-       RETURN s:StrutStep AS is_step, s.step_type AS step_type, s.name AS name, s.ref_id AS ref_id, a.ref_id AS edge_ref_id
-       ORDER BY is_step, name, step_type`,
-      { ns: this.ns, id: claimId },
-    );
-    return rows.map((r) => ({
-      subject: r["is_step"] === true ? { kind: "step" as const, type: String(r["step_type"]) } : { kind: "workflow" as const, name: String(r["name"]) },
-      ref_id: String(r["ref_id"]),
-      edge_ref_id: String(r["edge_ref_id"]),
-    }));
+    const d = this.d;
+    const out: Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }> = [];
+    for (const kind of ["step", "workflow"] as const) {
+      const n = SUBJECT_NODE[kind];
+      const rows = await this.graph.query(
+        `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}-[a:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("s", n.label)}
+         WHERE ${d.edgeLive("a")} AND ${d.live("s")}
+         RETURN s.\`${n.key}\` AS name, s.ref_id AS ref_id, a.ref_id AS edge_ref_id`,
+        { ns: this.ns, id: claimId },
+      );
+      out.push(
+        ...rows
+          .map((r) => ({
+            subject: kind === "step" ? ({ kind: "step", type: String(r["name"]) } as SubjectRef) : ({ kind: "workflow", name: String(r["name"]) } as SubjectRef),
+            ref_id: String(r["ref_id"]),
+            edge_ref_id: String(r["edge_ref_id"]),
+          }))
+          .sort((a, b) => subjectName(a.subject).localeCompare(subjectName(b.subject))),
+      );
+    }
+    return out;
   }
 
   /** The ACTIVE claims a check `TESTS` — exactly one, by the writer's
    *  invariant; more only transiently. */
   async claimsTestedBy(checkId: string): Promise<ClaimRow[]> {
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id})-[t:\`${CLAIM_EDGES.TESTS}\`]->(c:\`${CLAIM_TYPE}\`)
-       WHERE ${EDGE_LIVE("t")} AND ${NODE_LIVE("c")} AND c.belief_valid_to IS NULL
-       RETURN ${project("c", CLAIM_FIELDS)} AS claim ORDER BY c.belief_valid_from, c.id`,
+      `MATCH ${d.node("k", CHECK_TYPE, { namespace: "$ns", id: "$id" })}-[t:\`${CLAIM_EDGES.TESTS}\`]->${d.node("c", CLAIM_TYPE)}
+       WHERE ${d.edgeLive("t")} AND ${d.live("c")} AND c.belief_valid_to IS NULL
+       RETURN ${d.project("c", CLAIM_FIELDS)} AS claim`,
       { ns: this.ns, id: checkId },
     );
-    return rows.map((r) => compact<ClaimRow>(r["claim"] as Record<string, unknown>));
+    return rows.map((r) => compact<ClaimRow>(r["claim"] as Record<string, unknown>)).sort(byBelief);
   }
 
   /** Claims `ABOUT` a subject — active ones unless `includeRetired`. */
   async claimsFor(subject: SubjectRef, opts: { includeRetired?: boolean } = {}): Promise<ClaimRow[]> {
     const n = SUBJECT_NODE[subject.kind];
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns})-[a:\`${CLAIM_EDGES.ABOUT}\`]->(s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name})
-       WHERE ${EDGE_LIVE("a")} AND ${NODE_LIVE("c")} AND ${NODE_LIVE("s")}
-         AND ($retired OR c.belief_valid_to IS NULL)
-       RETURN ${project("c", CLAIM_FIELDS)} AS claim
-       ORDER BY c.belief_valid_from, c.id`,
-      { ns: this.ns, name: subjectName(subject), retired: opts.includeRetired === true },
+      `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns" })}-[a:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("s", n.label, { namespace: "$ns", [n.key]: "$name" })}
+       WHERE ${d.edgeLive("a")} AND ${d.live("c")} AND ${d.live("s")}${opts.includeRetired ? "" : " AND c.belief_valid_to IS NULL"}
+       RETURN ${d.project("c", CLAIM_FIELDS)} AS claim`,
+      { ns: this.ns, name: subjectName(subject) },
     );
-    return rows.map((r) => compact<ClaimRow>(r["claim"] as Record<string, unknown>));
+    return rows.map((r) => compact<ClaimRow>(r["claim"] as Record<string, unknown>)).sort(byBelief);
   }
 
   /** Checks that `TEST` a claim — active ones unless `includeRetired`. */
   async checksFor(claimId: string, opts: { includeRetired?: boolean } = {}): Promise<CheckRow[]> {
+    const d = this.d;
     const rows = await this.graph.query(
-      `MATCH (k:\`${CHECK_TYPE}\`)-[t:\`${CLAIM_EDGES.TESTS}\`]->(c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})
-       WHERE ${EDGE_LIVE("t")} AND ${NODE_LIVE("k")} AND ($retired OR k.retired_at IS NULL)
-       RETURN ${project("k", CHECK_FIELDS)} AS chk
-       ORDER BY k.created_at, k.id`,
-      { ns: this.ns, id: claimId, retired: opts.includeRetired === true },
+      `MATCH ${d.node("k", CHECK_TYPE)}-[t:\`${CLAIM_EDGES.TESTS}\`]->${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}
+       WHERE ${d.edgeLive("t")} AND ${d.live("k")}${opts.includeRetired ? "" : " AND k.retired_at IS NULL"}
+       RETURN ${d.project("k", CHECK_FIELDS)} AS chk`,
+      { ns: this.ns, id: claimId },
     );
-    return rows.map((r) => compact<CheckRow>(r["chk"] as Record<string, unknown>));
+    return rows
+      .map((r) => compact<CheckRow>(r["chk"] as Record<string, unknown>))
+      .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
   }
 
   /**
@@ -544,9 +566,10 @@ export class ClaimsReader {
    * versions. Newest first.
    */
   async evidenceFor(claimId: string, subject?: SubjectRef): Promise<EvidenceRow[]> {
+    const d = this.d;
     const rows = await this.evidenceRows(
-      `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e:\`${EVIDENCE_TYPE}\`)
-       WHERE ${EDGE_LIVE("eb")} AND ${NODE_LIVE("e")}`,
+      `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->${d.node("e", EVIDENCE_TYPE)}
+       WHERE ${d.edgeLive("eb")} AND ${d.live("e")}`,
       { ns: this.ns, id: claimId },
     );
     const out = rows.map(({ claim_text: _, ...e }): EvidenceRow => e).sort(newestFirst);
@@ -564,17 +587,22 @@ export class ClaimsReader {
    * first; within a run, by path.
    */
   async evidenceForRuns(runKey: string, opts: { runId?: string; before?: string; limit?: number } = {}): Promise<RunEvidenceRow[]> {
+    const d = this.d;
+    const limit = Math.max(1, Math.trunc(opts.limit ?? 50));
+    // Each filter only when asked: a null parameter in a comparison is typed
+    // as a boolean by Ladybug and the comparison then fails on the string.
+    const narrow = [opts.runId ? "AND r.run_id = $runId" : "", opts.before ? "AND r.run_id < $before" : ""].join(" ");
     const rows = await this.evidenceRows(
-      `MATCH (r:StrutRun {namespace: $ns, workflow_name: $key})
-       WHERE ($runId IS NULL OR r.run_id = $runId) AND ($before IS NULL OR r.run_id < $before)
+      `MATCH ${d.node("r", "StrutRun", { namespace: "$ns", workflow_name: "$key" })}
+       WHERE true ${narrow}
          AND EXISTS {
-           MATCH (:\`${CLAIM_TYPE}\`)-[eb0:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e0:\`${EVIDENCE_TYPE}\`)-[hs0:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
-           WHERE ${EDGE_LIVE("eb0")} AND ${EDGE_LIVE("hs0")} AND ${NODE_LIVE("e0")}
+           MATCH ${d.node("c0", CLAIM_TYPE)}-[eb0:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->${d.node("e0", EVIDENCE_TYPE)}-[hs0:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
+           WHERE ${d.edgeLive("eb0")} AND ${d.edgeLive("hs0")} AND ${d.live("e0")}
          }
-       WITH r ORDER BY r.run_id DESC LIMIT toInteger($limit)
-       MATCH (c:\`${CLAIM_TYPE}\`)-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->(e:\`${EVIDENCE_TYPE}\`)-[hr:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
-       WHERE ${EDGE_LIVE("eb")} AND ${EDGE_LIVE("hr")} AND ${NODE_LIVE("e")}`,
-      { ns: this.ns, key: runKey, runId: opts.runId ?? null, before: opts.before ?? null, limit: opts.limit ?? 50 },
+       WITH r ORDER BY r.run_id DESC LIMIT ${limit}
+       MATCH ${d.node("c", CLAIM_TYPE)}-[eb:\`${CLAIM_EDGES.EVIDENCED_BY}\`]->${d.node("e", EVIDENCE_TYPE)}-[hr:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(r)
+       WHERE ${d.edgeLive("eb")} AND ${d.edgeLive("hr")} AND ${d.live("e")}`,
+      { ns: this.ns, key: runKey, ...(opts.runId ? { runId: opts.runId } : {}), ...(opts.before ? { before: opts.before } : {}) },
     );
     const runMs = (e: RunEvidenceRow) => Number(e.source?.run_id) || 0;
     const path = (e: RunEvidenceRow) => e.source?.context?.path ?? "";
@@ -584,20 +612,16 @@ export class ClaimsReader {
   }
 
   /** The rows behind both evidence reads: `match` binds `c` (the claim),
-   *  `eb` (its live `EVIDENCED_BY`) and `e`; this adds the check, the
-   *  version, and the source. One row per (claim, evidence) — a check that
-   *  tests two claims writes one node both reach. */
+   *  `eb` (its live `EVIDENCED_BY`) and `e`; three more statements add the
+   *  check, the version, and the source over the evidence found (one
+   *  statement each, joined here — no `OPTIONAL MATCH`, which a Ladybug
+   *  file answers wrongly after a miss). One row per (claim, evidence) — a
+   *  check that tests two claims writes one node both reach. */
   private async evidenceRows(match: string, params: Record<string, unknown>): Promise<RunEvidenceRow[]> {
+    const d = this.d;
     const rows = await this.graph.query(
       `${match}
-       OPTIONAL MATCH (e)-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->(k:\`${CHECK_TYPE}\`) WHERE ${EDGE_LIVE("pb")}
-       OPTIONAL MATCH (e)-[ab:\`${CLAIM_EDGES.ABOUT}\`]->(v) WHERE ${EDGE_LIVE("ab")} AND (v:StrutStepVersion OR v:StrutWorkflowVersion)
-       OPTIONAL MATCH (e)-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src) WHERE ${EDGE_LIVE("hs")}
-       RETURN ${project("e", EVIDENCE_FIELDS)} AS ev, c.id AS claim_id, c.claim_text AS claim_text,
-              eb.strength AS strength, eb.ref_id AS edge_ref_id, k.id AS check_id,
-              v:StrutStepVersion AS v_is_step, v.name AS v_name, v.step_type AS v_step_type, v.content_hash AS v_hash,
-              src.ref_id AS src_ref, labels(src) AS src_labels, src.run_id AS src_run_id, src.workflow_name AS src_run_key,
-              hs.context AS hs_context, hs.start_time AS hs_start, hs.end_time AS hs_end, hs.post_url AS hs_url`,
+       RETURN ${d.project("e", EVIDENCE_FIELDS)} AS ev, c.id AS claim_id, c.claim_text AS claim_text, eb.strength AS strength, eb.ref_id AS edge_ref_id`,
       params,
     );
     const byId = new Map<string, RunEvidenceRow>();
@@ -608,16 +632,48 @@ export class ClaimsReader {
       const row: RunEvidenceRow = byId.get(key) ?? { ...e, claim_id: claimId, claim_text: String(r["claim_text"] ?? "") };
       if (row.strength === undefined && typeof r["strength"] === "number") row.strength = r["strength"] as number;
       if (row.edge_ref_id === undefined && typeof r["edge_ref_id"] === "string") row.edge_ref_id = r["edge_ref_id"] as string;
-      if (row.check_id === undefined && typeof r["check_id"] === "string") row.check_id = r["check_id"] as string;
-      if (!row.about && typeof r["v_hash"] === "string") {
-        const isStep = r["v_is_step"] === true;
-        row.about = { kind: isStep ? "step" : "workflow", name: String(isStep ? r["v_step_type"] : r["v_name"]), content_hash: r["v_hash"] as string };
+      byId.set(key, row);
+    }
+    const out = [...byId.values()];
+    const ids = [...new Set(out.map((e) => e.ref_id))];
+    if (ids.length === 0) return out;
+    const each = (ref: string, fn: (row: RunEvidenceRow) => void) => {
+      for (const row of out) if (row.ref_id === ref) fn(row);
+    };
+
+    const checks = await this.graph.query(
+      `MATCH ${d.node("e", EVIDENCE_TYPE)}-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->${d.node("k", CHECK_TYPE)}
+       WHERE e.ref_id IN $ids AND ${d.edgeLive("pb")} RETURN e.ref_id AS e, k.id AS check_id`,
+      { ids },
+    );
+    for (const r of checks) each(String(r["e"]), (row) => (row.check_id ??= typeof r["check_id"] === "string" ? r["check_id"] : undefined));
+
+    for (const kind of ["step", "workflow"] as const) {
+      const n = SUBJECT_NODE[kind];
+      const about = await this.graph.query(
+        `MATCH ${d.node("e", EVIDENCE_TYPE)}-[ab:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("v", n.version)}
+         WHERE e.ref_id IN $ids AND ${d.edgeLive("ab")} RETURN e.ref_id AS e, v.\`${n.key}\` AS name, v.content_hash AS hash`,
+        { ids },
+      );
+      for (const r of about) {
+        if (typeof r["hash"] !== "string") continue;
+        each(String(r["e"]), (row) => (row.about ??= { kind, name: String(r["name"]), content_hash: r["hash"] as string }));
       }
-      if (!row.source && typeof r["src_ref"] === "string") {
-        const labels = (r["src_labels"] as string[] | null) ?? [];
-        row.source = compact({
+    }
+
+    const sources = await this.graph.query(
+      `MATCH ${d.node("e", EVIDENCE_TYPE)}-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src)
+       WHERE e.ref_id IN $ids AND ${d.edgeLive("hs")}
+       RETURN e.ref_id AS e, src.ref_id AS src_ref, ${d.typeOf("src")} AS src_type, src.run_id AS src_run_id, src.workflow_name AS src_run_key,
+              hs.context AS hs_context, hs.start_time AS hs_start, hs.end_time AS hs_end, hs.post_url AS hs_url`,
+      { ids },
+    );
+    for (const r of sources) {
+      if (typeof r["src_ref"] !== "string") continue;
+      each(String(r["e"]), (row) => {
+        row.source ??= compact({
           ref_id: r["src_ref"],
-          node_type: labels.find((l) => !/^(Node|Data_Bank|Domain_.*)$/.test(l)),
+          node_type: typeValue(r["src_type"]),
           run_id: r["src_run_id"],
           run_key: r["src_run_key"],
           context: parseContext(r["hs_context"]),
@@ -625,10 +681,9 @@ export class ClaimsReader {
           end_time: r["hs_end"],
           post_url: r["hs_url"],
         });
-      }
-      byId.set(key, row);
+      });
     }
-    return [...byId.values()];
+    return out;
   }
 
   /** Every active claim on a subject with its active checks and computed
@@ -643,6 +698,9 @@ export class ClaimsReader {
     );
   }
 }
+
+/** Claims in belief order, then by id. */
+const byBelief = (a: ClaimRow, b: ClaimRow) => (a.belief_valid_from ?? 0) - (b.belief_valid_from ?? 0) || a.id.localeCompare(b.id);
 
 /**
  * The gate (plans/claims.md, Design): claims hang off the subjects' graph

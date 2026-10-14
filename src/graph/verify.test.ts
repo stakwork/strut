@@ -22,18 +22,20 @@ import { buildAuthoringCapability, type AuthoringCapability } from "../authoring
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
 import type { VerifyResult, Verifier } from "../verify.js";
 import { projectionsSettled } from "./projector.js";
-import { openGraphBackend, type Neo4jBackend } from "./backend.js";
-import { Neo4jWorkspaceStore } from "./workspace-store.js";
-import { testGraphConfig, wipeGraph } from "./test-util.js";
+import type { GraphBackend } from "./backend.js";
+import { GraphWorkspaceStore } from "./workspace-store.js";
+import { nodeCount, testBackends } from "./test-util.js";
 
-const cfg = testGraphConfig();
 const SRC = (type: string, tag: string) => `// ${tag}\nimport { z, defineStep } from "strut";\nexport default defineStep({ type: "${type}", input: z.any(), output: z.any(), run: async () => ({}) });\n`;
 const WF = (name: string, steps: string) => `name: ${name}\nsteps:\n${steps}`;
 
-describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let backend: Neo4jBackend;
+for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: tb.skip }, () => {
+  const neo = tb.kind === "neo4j";
+  let backend: GraphBackend;
   let dir: string;
-  let ws: Neo4jWorkspaceStore;
+  let ws: GraphWorkspaceStore;
+  /** A typed node pattern in the backend's dialect. */
+  const n = (alias: string, type: string, props?: Record<string, string>) => backend.dialect.node(alias, type, props);
   let store: MemoryRunStore;
   let strut: Strut;
   let claims: ClaimsAuthoring;
@@ -62,35 +64,34 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.ok("ok" in r);
     return (r as Extract<typeof r, { ok: true }>).claims.map((c) => [c.text, c.status, c.assertedOnly, c.unverified, c.openSlot] as const);
   };
-  const rows = (cypher: string, params: Record<string, unknown> = {}) => backend.bolt.run(cypher, params);
-  const count = async (cypher: string) => Number((await rows(cypher))[0]!["c"]);
+  const rows = (cypher: string, params: Record<string, unknown> = {}) => backend.query(cypher, params);
   const outcomes = (r: VerifyResult) => r.checks.map((k) => [k.path, k.lastVerify] as const);
 
   before(async () => {
-    backend = await openGraphBackend(cfg!, { embeddings: false, skipBoot: true });
+    backend = await tb.open();
     dir = await mkdtemp(join(tmpdir(), "strut-verify-"));
-    await wipeGraph(backend.bolt);
+    await tb.wipe(backend);
     const { seedJarvisOntology } = await import("./ontology-seed.js");
     const { seedStrutDomain } = await import("./schema-seed.js");
-    await seedJarvisOntology(backend.bolt);
-    await seedStrutDomain(backend.bolt);
+    await seedJarvisOntology(backend);
+    await seedStrutDomain(backend);
     backend.schemas.invalidate();
     for (const k of ["STRUT_VERIFY_BUDGET_USD", "STRUT_VERIFY_BUDGET_USD_PER_DAY"]) savedEnv[k] = process.env[k];
   });
   after(async () => {
     for (const [k, v] of Object.entries(savedEnv)) v === undefined ? delete process.env[k] : (process.env[k] = v);
-    await backend.close();
+    await tb.close(backend);
     await rm(dir, { recursive: true, force: true });
   });
   // Runs are projected when they end, detached: let them land before the
   // next test wipes the graph under them.
   afterEach(() => projectionsSettled(backend));
   beforeEach(async () => {
-    await rows(`MATCH (n) WHERE NOT n:Schema AND NOT n:Migration DETACH DELETE n`);
+    await tb.clear(backend);
     delete process.env["STRUT_VERIFY_BUDGET_USD"];
     delete process.env["STRUT_VERIFY_BUDGET_USD_PER_DAY"];
     judged = 0;
-    ws = new Neo4jWorkspaceStore(backend, { materializeDir: join(dir, "steps") });
+    ws = new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps") });
     store = new MemoryRunStore();
     registry = {
       ...coreRegistry(),
@@ -130,7 +131,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.deepEqual(await statusOf({ kind: "workflow", name: "clipper" }), [["the clip starts where asked", "supported", false, 0, false]]);
 
     const written = await rows(
-      `MATCH (c:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence)-[:PRODUCED_BY]->(k:Check {id: $k}), (e)-[:ABOUT]->(v:StrutStepVersion), (e)-[hs:HAS_SOURCE]->(r:StrutRun)-[:EXECUTED]->(wv:StrutWorkflowVersion)
+      `MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[:PRODUCED_BY]->${n("k", "Check", { id: "$k" })}, (e)-[:ABOUT]->${n("v", "StrutStepVersion")}, (e)-[hs:HAS_SOURCE]->${n("r", "StrutRun")}-[:EXECUTED]->${n("wv", "StrutWorkflowVersion")}
        RETURN eb.strength AS strength, e.evidence_mode AS mode, e.evidence_status AS status, e.name AS name, e.content AS content, v.content_hash AS about, r.run_id AS run, wv.name AS wf, hs.context AS context`,
       { c: onStep.id, k: onStep.checks[0] },
     );
@@ -141,11 +142,11 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     );
 
     // A second pass over the same run writes nothing — by construction.
-    const evidenceBefore = await count(`MATCH (e:Evidence) RETURN count(e) AS c`);
+    const evidenceBefore = await nodeCount(backend, "Evidence");
     const second = await verify("clipper", good.runId);
     assert.deepEqual([second.evidence, outcomes(second)], [0, [["clipper/times", { ran: true }], ["clipper", { ran: true }]]]);
-    assert.equal(await count(`MATCH (e:Evidence) RETURN count(e) AS c`), evidenceBefore);
-    assert.equal(await count(`MATCH (r:StrutRun) RETURN count(r) AS c`), 1);
+    assert.equal(await nodeCount(backend, "Evidence"), evidenceBefore);
+    assert.equal(await nodeCount(backend, "StrutRun"), 1);
 
     // Adding a check, then re-verifying, runs ONLY that check.
     const extra = await claims.addCheck(onStep.id, compare("{{ input.output.end }}", "-lt", "1000", { name: "sane" }), human);
@@ -158,7 +159,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     await verify("clipper", bad.runId);
     const [stepStatus] = await statusOf(STEP);
     assert.deepEqual([stepStatus![1], stepStatus![3]], ["refuted", 0]);
-    const refutation = await rows(`MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence)-[:HAS_SOURCE]->(:StrutRun {run_id: $r}) WHERE eb.strength < 0 RETURN e.content AS content`, { c: onStep.id, r: bad.runId });
+    const refutation = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[:HAS_SOURCE]->${n("r", "StrutRun", { run_id: "$r" })} WHERE eb.strength < 0 RETURN e.content AS content`, { c: onStep.id, r: bad.runId });
     assert.equal(refutation.length, 1);
 
     // Publish a fix: nothing runs at publish, the evidence is simply about an older version.
@@ -185,7 +186,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const run = await strut.run("batch", { items: [{ start: 1, len: 5 }, { start: 9, len: -3 }, { start: 2, len: 5 }] });
     const r = await verify("batch", run.runId);
     assert.deepEqual(r.checks.map((k) => k.lastVerify), [{ ran: true }, { ran: true }, { ran: true }]);
-    const paths = await rows(`MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence)-[hs:HAS_SOURCE]->() RETURN hs.context AS ctx, eb.strength AS s ORDER BY ctx`, { c: c.id });
+    const paths = (await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[hs:HAS_SOURCE]->() RETURN hs.context AS ctx, eb.strength AS s`, { c: c.id })).sort((a, b) => String(a["ctx"]).localeCompare(String(b["ctx"])));
     assert.deepEqual(paths.map((p) => [JSON.parse(p["ctx"] as string).path, p["s"]]), [["batch/each#0", 1], ["batch/each#1", -1], ["batch/each#2", 1]]);
     assert.equal((await statusOf(STEP))[0]![1], "refuted", "the last iteration passing does not paper over the second failing");
 
@@ -209,7 +210,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const r = await verify("outer", run.runId);
     assert.deepEqual(r.checks.map((k) => [k.subject, k.path, k.lastVerify]), [[{ kind: "workflow", name: "clipper" }, "outer/inner", { ran: true }]]);
     const got = await rows(
-      `MATCH (:Claim {id: $c})-[:EVIDENCED_BY]->(e:Evidence)-[:ABOUT]->(v:StrutWorkflowVersion), (e)-[hs:HAS_SOURCE]->(r:StrutRun) RETURN v.name AS wf, v.content_hash AS h, r.workflow_name AS run_of, hs.context AS ctx`,
+      `MATCH ${n("c", "Claim", { id: "$c" })}-[:EVIDENCED_BY]->${n("e", "Evidence")}-[:ABOUT]->${n("v", "StrutWorkflowVersion")}, (e)-[hs:HAS_SOURCE]->${n("r", "StrutRun")} RETURN v.name AS wf, v.content_hash AS h, r.workflow_name AS run_of, hs.context AS ctx`,
       { c: c.id },
     );
     assert.deepEqual(
@@ -236,13 +237,13 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     for (const e of old) await store.append("clipper", "1700000000000", e);
     const blind = await verify("clipper", "1700000000000");
     assert.deepEqual(blind.checks.map((k) => k.lastVerify), [{ skipped: "unknown-version" }, { skipped: "unknown-version" }, { skipped: "unknown-version" }]);
-    assert.equal(await count(`MATCH (e:Evidence) RETURN count(e) AS c`), 0);
-    assert.equal(await count(`MATCH (r:StrutRun) RETURN count(r) AS c`), 0, "a run that produced no evidence never reaches the graph");
+    assert.equal(await nodeCount(backend, "Evidence"), 0);
+    assert.equal(await nodeCount(backend, "StrutRun"), 0, "a run that produced no evidence never reaches the graph");
 
     const run = await strut.run("clipper", { start: 5, len: 19 });
     const r = await verify("clipper", run.runId);
     assert.deepEqual(r.checks.map((k) => ("skipped" in k.lastVerify ? k.lastVerify.skipped : "ran")), ["ran", "cannot-launch", "cannot-launch"]);
-    assert.equal(await count(`MATCH (:Claim {id: "${c.id}"})-[:EVIDENCED_BY]->(e) RETURN count(e) AS c`), 1);
+    assert.equal(Number((await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[:EVIDENCED_BY]->${n("e", "Evidence")} RETURN count(e) AS c`, { c: c.id }))[0]!["c"]), 1);
     assert.deepEqual((await statusOf(STEP))[0]!.slice(1, 4), ["supported", false, 2], "supported by the one check that ran; two still unverified");
     assert.equal((await verify("clipper", "nope").catch(() => null)), null, "an unknown run is a 404");
   });
@@ -263,13 +264,13 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const run = await strut.run("clipper", { start: 5, len: 19 });
     await verify("clipper", run.runId);
     await new Promise((r) => setTimeout(r, 300)); // let any (wrongly) scheduled pass over the check run settle
-    const ev = await rows(`MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence)-[hs:HAS_SOURCE]->(r:StrutRun) RETURN e.content AS content, e.evidence_mode AS mode, eb.strength AS s, hs.context AS ctx, r.run_id AS run`, { c: c.id });
+    const ev = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[hs:HAS_SOURCE]->${n("r", "StrutRun")} RETURN e.content AS content, e.evidence_mode AS mode, eb.strength AS s, hs.context AS ctx, r.run_id AS run`, { c: c.id });
     assert.deepEqual(
       ev.map((e) => ({ ...e, ctx: JSON.parse(e["ctx"] as string) })),
       [{ content: "end 24 > start 5", mode: "observed", s: 1, ctx: { path: "clipper/times", checkVersion: `bounds-check@${await ws.getWorkflowHash("bounds-check")}` }, run: run.runId }],
     );
     // The pass terminated, and nothing is sourced to a verify-origin run.
-    assert.equal(await count(`MATCH (r:StrutRun) RETURN count(r) AS c`), 1);
+    assert.equal(await nodeCount(backend, "StrutRun"), 1);
     assert.equal((await statusOf({ kind: "workflow", name: "bounds-check" }))[0]![1], "unknown", "the check's own claim gets evidence only when bounds-check is run directly");
     const direct = await strut.run("bounds-check", { start: 1, end: 2 });
     await verify("bounds-check", direct.runId);
@@ -305,7 +306,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.ok(Math.abs(auto.costUsd - 0.8) < 1e-9);
     assert.equal(judged, 2);
 
-    const paid = await rows(`MATCH (:Claim {id: $c})-[:EVIDENCED_BY]->(e:Evidence)-[hs:HAS_SOURCE]->() RETURN e.evidence_mode AS mode, hs.context AS ctx ORDER BY e.content`, { c: c.id });
+    const paid = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[:EVIDENCED_BY]->${n("e", "Evidence")}-[hs:HAS_SOURCE]->() RETURN e.evidence_mode AS mode, hs.context AS ctx, e.content AS content`, { c: c.id }).then((r) => r.sort((a, b) => String(a["content"]).localeCompare(String(b["content"]))));
     assert.deepEqual(paid.map((p) => p["mode"]), ["asserted", "asserted"], "a judgment is not an observation");
     const ctx = JSON.parse(paid[0]!["ctx"] as string) as { model?: string; checkRun?: string; checkVersion?: string };
     assert.deepEqual([ctx.model, ctx.checkVersion, typeof ctx.checkRun], ["sonnet", "llm", "string"]);
@@ -360,7 +361,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.ok(slotId);
     assert.equal(r.slots, 1);
     const slot = await rows(
-      `MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence {id: $e})-[:PRODUCED_BY]->(k:Check), (e)-[:ABOUT]->(:StrutStepVersion), (e)-[:HAS_SOURCE]->(:StrutRun {run_id: $r})
+      `MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence", { id: "$e" })}-[:PRODUCED_BY]->${n("k", "Check")}, (e)-[:ABOUT]->${n("sv", "StrutStepVersion")}, (e)-[:HAS_SOURCE]->${n("r", "StrutRun", { run_id: "$r" })}
        RETURN e.evidence_status AS status, e.name AS name, e.content AS content, e.evidence_mode AS mode, e.observed_at AS at, e.description AS ask, eb.strength AS strength, k.id AS check`,
       { c: c.id, e: slotId, r: run.runId },
     );
@@ -374,9 +375,9 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     assert.ok(tools["verify_run"] && tools["add_evidence"]);
     const filled = await tools["add_evidence"]!.execute({ claim: c.id, name: "clipper", runId: run.runId, supports: true, content: "ffmpeg astats at the cut: no sample discontinuity above -60dB" });
     assert.deepEqual([filled["ok"], filled["filled"], filled["evidence"]], [true, true, slotId]);
-    const after = await rows(`MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence {id: $e})-[hs:HAS_SOURCE]->() RETURN e.evidence_status AS status, e.evidence_mode AS mode, eb.strength AS s, hs.context AS ctx`, { c: c.id, e: slotId });
+    const after = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence", { id: "$e" })}-[hs:HAS_SOURCE]->() RETURN e.evidence_status AS status, e.evidence_mode AS mode, eb.strength AS s, hs.context AS ctx`, { c: c.id, e: slotId });
     assert.deepEqual(after.map((a) => ({ ...a, ctx: JSON.parse(a["ctx"] as string) })), [{ status: "collected", mode: "asserted", s: 1, ctx: { path: "clipper/times", by: "ai" } }]);
-    assert.equal(await count(`MATCH (e:Evidence) RETURN count(e) AS c`), 1, "the SAME node");
+    assert.equal(await nodeCount(backend, "Evidence"), 1, "the SAME node");
     assert.deepEqual((await statusOf(STEP))[0]!.slice(1), ["supported", true, 0, false]);
 
     // Same version again: on_change, already answered → no new question.
@@ -389,13 +390,12 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const r4 = await strut.run("clipper", { start: 8, len: 19 });
     const s4 = ((await verify("clipper", r4.runId)).checks[0]!.lastVerify as { planned: string }).planned;
     assert.notEqual(s3, s4);
-    const open = await rows(`MATCH (:Claim {id: $c})-[:EVIDENCED_BY]->(e:Evidence {evidence_status: "planned"}) RETURN e.id AS id`, { c: c.id });
+    const open = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[:EVIDENCED_BY]->${n("e", "Evidence", { evidence_status: "'planned'" })} RETURN e.id AS id`, { c: c.id });
     assert.deepEqual(open, [{ id: s4 }]);
-    const retired = await rows(
-      `MATCH (e:Evidence {id: $id}) OPTIONAL MATCH (e)-[r]-() RETURN e.is_deleted AS deleted, e.deleted_at IS NOT NULL AS stamped, count(r) AS edges`,
-      { id: s3 },
-    );
-    assert.deepEqual(retired, [{ deleted: true, stamped: true, edges: 0 }], "the stale slot is soft-deleted and its edges are gone");
+    const retired = await rows(`MATCH ${n("e", "Evidence", { id: "$id" })} RETURN e.deleted_at IS NOT NULL AS stamped${neo ? ", e.is_deleted AS deleted" : ""}`, { id: s3 });
+    assert.deepEqual(retired, [neo ? { stamped: true, deleted: true } : { stamped: true }], "the stale slot is soft-deleted");
+    const left = await rows(`MATCH ${n("e", "Evidence", { id: "$id" })}-[r]-() RETURN count(r) AS c`, { id: s3 });
+    assert.equal(Number(left[0]!["c"]), 0, "and its edges are gone");
     assert.deepEqual((await statusOf(STEP))[0]!.slice(1), ["stale", true, 1, true], "at most one open slot per external check");
     const refused = await tools["add_evidence"]!.execute({ claim: c.id, name: "clipper", runId: r4.runId, supports: true, content: "x", slot: slotId });
     assert.match(String(refused["error"]), /not an open slot/);
@@ -420,7 +420,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
       [undefined, "asserted", "ai"],
     ] as const;
     for (const [caller] of cases) assert.ok(((await authoring.addEvidence(input, caller as never)) as { ok?: true }).ok, JSON.stringify(caller));
-    const got = await rows(`MATCH (:Claim {id: $c})-[:EVIDENCED_BY]->(e:Evidence)-[hs:HAS_SOURCE]->() WHERE NOT (e)-[:PRODUCED_BY]->() RETURN e.evidence_mode AS mode, hs.context AS ctx ORDER BY e.id`, { c: c.id });
+    const got = (await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[:EVIDENCED_BY]->${n("e", "Evidence")}-[hs:HAS_SOURCE]->() WHERE NOT EXISTS { MATCH (e)-[:PRODUCED_BY]->() } RETURN e.evidence_mode AS mode, hs.context AS ctx, e.id AS id`, { c: c.id })).sort((a, b) => String(a["id"]).localeCompare(String(b["id"])));
     assert.deepEqual(got.map((g) => [g["mode"], JSON.parse(g["ctx"] as string).by]), cases.map(([, mode, by]) => [mode, by]));
 
     // Evidence must be about a version that actually ran.
@@ -637,7 +637,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const authoring = buildAuthoringCapability({ workspace: ws, store, getRegistry: async () => registry, services: strut.services, claims, verifier });
     const clean = (await authoring.editStep("clip/compute-times", SRC("clip/compute-times", "clean"))) as { publishChecks?: Array<{ check: string; lastVerify: unknown }> };
     assert.deepEqual(clean.publishChecks, [{ claim: lint.id, check: lint.checks[0], lastVerify: { ran: true } }]);
-    const about = await rows(`MATCH (:Claim {id: $c})-[eb:EVIDENCED_BY]->(e:Evidence)-[:ABOUT]->(v:StrutStepVersion)<-[:HAS_SOURCE]-(e) RETURN eb.strength AS s, v.content_hash AS h`, { c: lint.id });
+    const about = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[:ABOUT]->${n("v", "StrutStepVersion")}<-[:HAS_SOURCE]-(e) RETURN eb.strength AS s, v.content_hash AS h`, { c: lint.id });
     assert.deepEqual(about, [{ s: 1, h: (await ws.getActiveStepHashes())["clip/compute-times"] }], "no run: the source of the evidence IS the version node");
     await authoring.editStep("clip/compute-times", `${SRC("clip/compute-times", "dirty")}// const k = process.env.KEY;\n`);
     assert.equal((await statusOf(STEP)).find((s) => s[0].startsWith("never"))![1], "refuted");
@@ -646,7 +646,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     const r = (await authoring.runStep("clip/compute-times", { config: { start: 3, len: 4 } })) as { runId: string; kept?: string };
     assert.equal(r.kept, "step:clip/compute-times");
     for (let i = 0; i < 100 && (await statusOf(STEP)).find((s) => s[0].startsWith("end is"))![1] !== "supported"; i++) await new Promise((x) => setTimeout(x, 50));
-    const executed = await rows(`MATCH (run:StrutRun {run_id: $r})-[:EXECUTED]->(v:StrutStepVersion) RETURN run.workflow_name AS wf, v.content_hash AS h`, { r: r.runId });
+    const executed = await rows(`MATCH ${n("run", "StrutRun", { run_id: "$r" })}-[:EXECUTED]->${n("v", "StrutStepVersion")} RETURN run.workflow_name AS wf, v.content_hash AS h`, { r: r.runId });
     assert.deepEqual(executed, [{ wf: "step:clip/compute-times", h: (await ws.getActiveStepHashes())["clip/compute-times"] }]);
     assert.ok(!(await ws.listWorkflows()).some((w) => w.name.startsWith("step:")));
   });
@@ -660,7 +660,7 @@ describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI
     try {
       assert.deepEqual(await statusOf({ kind: "workflow", name: "seeded-block" }), [["the message is logged", "unknown", false, 1, false]], "recorded at construction");
       assert.deepEqual(await booted.reconcileClaims(["seeded-block"]), [{ name: "seeded-block", added: 0, existing: 1 }]);
-      const speakers = async (name: string) => (await rows(`MATCH (c:Claim)-[:ABOUT]->(w:StrutWorkflow {name: $name}) WHERE c.belief_valid_to IS NULL RETURN collect(c.speaker_name) AS s`, { name }))[0]!["s"];
+      const speakers = async (name: string) => (await rows(`MATCH ${n("c", "Claim")}-[:ABOUT]->${n("w", "StrutWorkflow", { name: "$name" })} WHERE c.belief_valid_to IS NULL RETURN collect(c.speaker_name) AS s`, { name }))[0]!["s"];
       assert.deepEqual(await speakers("seeded-block"), ["seeder"]);
 
       const post = (path: string, body: unknown) => booted.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

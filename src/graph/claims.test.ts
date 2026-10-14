@@ -6,13 +6,12 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { Bolt } from "./bolt.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { seedJarvisOntology } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { GraphValidationError, NodeWriter } from "./node-writer.js";
 import { EdgeWriter } from "./edge-writer.js";
-import { testGraphConfig, wipeGraph } from "./test-util.js";
+import { nodeCount, rawEdge, rawNode, rawWrite, setNodeProps, testBackends } from "./test-util.js";
 import {
   ClaimsReader,
   claimStatus,
@@ -25,9 +24,7 @@ import {
   type SubjectRef,
 } from "./claims.js";
 import type { GraphBackend } from "./backend.js";
-import { Neo4jEngine } from "./neo4j-engine.js";
 
-const cfg = testGraphConfig();
 
 // ── claimStatus (pure) ──────────────────────────────────────────────────────
 
@@ -204,213 +201,230 @@ describe("claim ids (pure)", () => {
 
 // ── Live graph ──────────────────────────────────────────────────────────────
 
-describe("claims graph: node contract + reads (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let bolt: Bolt;
-  let nodes: NodeWriter;
-  let edges: EdgeWriter;
-  let reader: ClaimsReader;
-  const now = Math.trunc(Date.now() / 1000);
-  const ref: Record<string, string> = {};
+for (const tb of testBackends()) {
+  describe(`claims graph: node contract + reads on ${tb.name}`, { skip: tb.skip }, () => {
+    const neo = tb.kind === "neo4j";
+    let backend: GraphBackend;
+    let nodes: NodeWriter;
+    let edges: EdgeWriter;
+    let reader: ClaimsReader;
+    const now = Math.trunc(Date.now() / 1000);
+    const ref: Record<string, string> = {};
+    const d = () => backend.dialect;
 
-  before(async () => {
-    bolt = new Bolt(cfg!);
-    await bolt.verify();
-    await wipeGraph(bolt);
-    await seedJarvisOntology(bolt);
-    await seedStrutDomain(bolt);
-    const resolver = new SchemaResolver(bolt);
-    nodes = new NodeWriter(bolt, { resolver });
-    edges = new EdgeWriter(bolt, { resolver });
-    reader = new ClaimsReader(new Neo4jEngine(bolt));
+    before(async () => {
+      backend = await tb.open();
+      await tb.wipe(backend);
+      await seedJarvisOntology(backend);
+      await seedStrutDomain(backend);
+      nodes = backend.nodes;
+      edges = backend.edges;
+      reader = new ClaimsReader(backend);
 
-    // A step with two versions (v2 active), a workflow, and a run of the step.
-    const made = await nodes.writeMany([
-      { type: "StrutStep", data: { step_type: "clip/compute-times", active_version: V2 } },
-      { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V1, created_at: now - 100 } },
-      { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V2, created_at: now - 50 } },
-      { type: "StrutWorkflow", data: { name: "youtube-clip", active_version: "wf-hash" } },
-      { type: "StrutRun", data: { run_id: "run-1", workflow_name: "step:clip/compute-times", run_status: "success", started_at: now - 10 } },
-    ]);
-    [ref["step"], ref["v1"], ref["v2"], ref["wf"], ref["run"]] = made.map((m) => m.ref_id);
+      // A step with two versions (v2 active), a workflow, and a run of the step.
+      const made = await nodes.writeMany([
+        { type: "StrutStep", data: { step_type: "clip/compute-times", active_version: V2 } },
+        { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V1, created_at: now - 100 } },
+        { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V2, created_at: now - 50 } },
+        { type: "StrutWorkflow", data: { name: "youtube-clip", active_version: "wf-hash" } },
+        { type: "StrutRun", data: { run_id: "run-1", workflow_name: "step:clip/compute-times", run_status: "success", started_at: now - 10 } },
+      ]);
+      [ref["step"], ref["v1"], ref["v2"], ref["wf"], ref["run"]] = made.map((m) => m.ref_id);
+    });
+    after(async () => {
+      await tb.close(backend);
+    });
+
+    it("writes Claim / Check / Evidence through the ordinary writers (migration 124 + 125 shapes)", async () => {
+      // No speaker_name; two claims with the same text and different ids.
+      const text = "computes start/end inside the video's duration";
+      const [c1, c2] = await nodes.writeMany(
+        [
+          { type: "Claim", data: { id: "c1", name: text, claim_text: text, belief_valid_from: now - 40 } },
+          { type: "Claim", data: { id: "c2", name: text, claim_text: text, speaker_name: "ai", belief_valid_from: now - 30 } },
+        ],
+        "create",
+      );
+      assert.deepEqual([c1!.outcome, c2!.outcome, c1!.node_key, c2!.node_key], ["created", "created", "claim-c1", "claim-c2"]);
+      ref["c1"] = c1!.ref_id;
+      ref["c2"] = c2!.ref_id;
+      assert.equal((await rawNode(backend, ref["c1"]))!.type, "Claim");
+      if (neo) {
+        const labels = await backend.query(`MATCH (c:Claim {id: "c1"}) RETURN labels(c) AS l`);
+        assert.deepEqual([...(labels[0]!["l"] as string[])].sort(), ["Claim", "Data_Bank", "Domain_epistemic", "Node"]);
+      }
+      await assert.rejects(
+        nodes.write({ type: "Claim", data: { name: text, claim_text: text } }),
+        (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED",
+        "id is the identity",
+      );
+
+      // Check.created_at is REQUIRED (a create without it is a 400 in jarvis too).
+      await assert.rejects(
+        nodes.write({ type: "Check", data: { id: "k0", name: "no stamp", step_type: "exec" } }),
+        (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED" && e.attribute === "created_at",
+      );
+      const [k1, kOld, kExt] = await nodes.writeMany([
+        { type: "Check", data: { id: "k1", name: "bounds", step_type: "exec", step_config: '{"command":"true"}', run_when: "run", policy: "always", publisher: "ai", created_at: now - 40 } },
+        { type: "Check", data: { id: "kold", name: "bounds (old)", step_type: "exec", created_at: now - 45, retired_at: now - 41 } },
+        { type: "Check", data: { id: "kext", name: "listen", description: "does the cut sound natural — code cannot hear", policy: "on_change", created_at: now - 39 } },
+      ]);
+      ref["k1"] = k1!.ref_id;
+      ref["kold"] = kOld!.ref_id;
+      ref["kext"] = kExt!.ref_id;
+
+      const written = await edges.writeMany([
+        // One claim ABOUT two subjects (many-to-many); both claims about the step.
+        { edge: "ABOUT", source_ref_id: ref["c1"]!, target_ref_id: ref["step"]! },
+        { edge: "ABOUT", source_ref_id: ref["c1"]!, target_ref_id: ref["wf"]! },
+        { edge: "ABOUT", source_ref_id: ref["c2"]!, target_ref_id: ref["step"]! },
+        { edge: "TESTS", source_ref_id: ref["k1"]!, target_ref_id: ref["c1"]! },
+        { edge: "TESTS", source_ref_id: ref["kold"]!, target_ref_id: ref["c1"]! },
+        { edge: "TESTS", source_ref_id: ref["kext"]!, target_ref_id: ref["c1"]! },
+        { edge: "SUPERSEDES", source_ref_id: ref["k1"]!, target_ref_id: ref["kold"]! },
+      ]);
+      assert.ok(written.every((w) => w.created));
+      // ABOUT is schema-validated (it is NOT a generic token): only Claim and Evidence may point with it.
+      await assert.rejects(
+        edges.write({ edge: "ABOUT", source_ref_id: ref["k1"]!, target_ref_id: ref["step"]! }),
+        (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE",
+      );
+    });
+
+    it("claimsFor / checksFor read active nodes; retired ones only on request", async () => {
+      assert.deepEqual((await reader.claimsFor(STEP)).map((c) => c.id), ["c1", "c2"]);
+      assert.deepEqual((await reader.claimsFor({ kind: "workflow", name: "youtube-clip" })).map((c) => c.id), ["c1"]);
+      assert.deepEqual(await reader.claimsFor({ kind: "step", type: "nope" }), []);
+      const c1 = (await reader.claimsFor(STEP))[0]!;
+      assert.equal(c1.speaker_name, undefined);
+      assert.equal(c1.belief_valid_from, now - 40);
+      assert.equal(c1.ref_id, ref["c1"]);
+
+      assert.deepEqual((await reader.checksFor("c1")).map((k) => k.id), ["k1", "kext"]);
+      assert.deepEqual((await reader.checksFor("c1", { includeRetired: true })).map((k) => k.id), ["kold", "k1", "kext"]);
+      const [k1, kext] = await reader.checksFor("c1");
+      assert.deepEqual([k1!.step_type, k1!.policy, k1!.publisher, isExternalCheck(k1!)], ["exec", "always", "ai", false]);
+      assert.ok(isExternalCheck(kext!) && kext!.description);
+
+      assert.equal(await reader.activeVersion(STEP), V2);
+      assert.equal(await reader.activeVersion({ kind: "step", type: "nope" }), null);
+      assert.deepEqual(
+        (await reader.subjectsOf("c1")).map((s) => [s.subject.kind, s.ref_id]),
+        [["step", ref["step"]], ["workflow", ref["wf"]]],
+      );
+      assert.deepEqual((await reader.claimsTestedBy("k1")).map((c) => c.id), ["c1"]);
+
+      // Retiring a claim (belief_valid_to) drops it from the default read; history stays.
+      await nodes.update(ref["c2"]!, { set: { belief_valid_to: now } });
+      assert.deepEqual((await reader.claimsFor(STEP)).map((c) => c.id), ["c1"]);
+      assert.deepEqual((await reader.claimsFor(STEP, { includeRetired: true })).map((c) => c.id), ["c1", "c2"]);
+    });
+
+    it("evidence → status: unknown → supported → stale on a new version → refuted; deleted evidence is invisible", async () => {
+      const before = await reader.statusFor(STEP);
+      assert.deepEqual(before.map((r) => [r.claim.id, r.status.status, r.status.unverified]), [["c1", "unknown", 2]]);
+
+      // What the verify pass will write: Evidence + EVIDENCED_BY{strength} + PRODUCED_BY + ABOUT + HAS_SOURCE.
+      const id = evidenceId("k1", "run-1", "step");
+      const e1 = await nodes.write({ type: "Evidence", data: { id, name: "computes start/end…", content: "start=12 end=31 duration=95", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5 } }, "create");
+      assert.equal(e1.node_key, `evidence-${id}`);
+      const context = JSON.stringify({ path: "step", cassette: "replay", checkVersion: "exec" });
+      await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: e1.ref_id, properties: { strength: 1 } },
+        { edge: "PRODUCED_BY", source_ref_id: e1.ref_id, target_ref_id: ref["k1"]! },
+        { edge: "ABOUT", source_ref_id: e1.ref_id, target_ref_id: ref["v2"]! },
+        { edge: "HAS_SOURCE", source_ref_id: e1.ref_id, target_ref_id: ref["run"]!, properties: { context } },
+      ]);
+      // A second pass over the same (check, run, path) is a no-op by construction.
+      const again = await nodes.write({ type: "Evidence", data: { id, name: "x", content: "DIFFERENT", evidence_status: "collected" } }, "create");
+      assert.deepEqual([again.outcome, again.ref_id], ["existing", e1.ref_id]);
+
+      const [row] = await reader.evidenceFor("c1", STEP);
+      assert.equal(typeof row!.edge_ref_id, "string", "the EVIDENCED_BY edge — what muting a slot mutes");
+      assert.deepEqual(
+        { ...row, date_added_to_graph: undefined, edge_ref_id: undefined },
+        {
+          edge_ref_id: undefined,
+          ref_id: e1.ref_id, id, name: "computes start/end…", content: "start=12 end=31 duration=95",
+          evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5, date_added_to_graph: undefined,
+          claim_id: "c1", strength: 1, check_id: "k1",
+          about: { kind: "step", name: "clip/compute-times", content_hash: V2 },
+          source: { ref_id: ref["run"], node_type: "StrutRun", run_id: "run-1", run_key: "step:clip/compute-times", context: { path: "step", cassette: "replay", checkVersion: "exec" } },
+        },
+      );
+      assert.deepEqual(await reader.evidenceFor("c1", { kind: "workflow", name: "youtube-clip" }), [], "same claim, other subject: its own status");
+
+      let s = (await reader.statusFor(STEP))[0]!.status;
+      assert.deepEqual([s.status, s.assertedOnly, s.unverified, s.openSlot], ["supported", false, 1, false]);
+      assert.equal(s.latest?.source?.context?.checkVersion, "exec");
+      assert.equal((await reader.statusFor({ kind: "workflow", name: "youtube-clip" }))[0]!.status.status, "unknown");
+
+      // The run view: every verdict on the step's runs, keyed by the run.
+      const byRun = await reader.evidenceForRuns("step:clip/compute-times");
+      assert.deepEqual(byRun.map((e) => [e.claim_id, e.claim_text.slice(0, 8), e.source?.run_id, e.strength]), [["c1", "computes", "run-1", 1]]);
+      assert.deepEqual(await reader.evidenceForRuns("step:clip/compute-times", { runId: "nope" }), []);
+
+      // Publish v3 → the evidence is about an older version.
+      await nodes.update(ref["step"]!, { set: { active_version: "hash-v3" } });
+      s = (await reader.statusFor(STEP))[0]!.status;
+      assert.deepEqual([s.status, s.unverified], ["stale", 2]);
+      await nodes.update(ref["step"]!, { set: { active_version: V2 } });
+
+      // The retired check's refutation on the active version never counts.
+      const eOld = await nodes.write({ type: "Evidence", data: { id: evidenceId("kold", "run-1", "step"), name: "old instrument", content: "nope", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 1 } });
+      await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: eOld.ref_id, properties: { strength: -1 } },
+        { edge: "PRODUCED_BY", source_ref_id: eOld.ref_id, target_ref_id: ref["kold"]! },
+        { edge: "ABOUT", source_ref_id: eOld.ref_id, target_ref_id: ref["v2"]! },
+      ]);
+      assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
+
+      // An asserted refutation with no check (add_evidence) on the active version wins.
+      const eSay = await nodes.write({ type: "Evidence", data: { id: newEpistemicId(), name: "assistant looked", content: "end > duration on a 20s video", evidence_mode: "asserted", evidence_status: "collected", observed_at: now } });
+      const said = await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: eSay.ref_id, properties: { strength: -1 } },
+        { edge: "ABOUT", source_ref_id: eSay.ref_id, target_ref_id: ref["v2"]! },
+      ]);
+      s = (await reader.statusFor(STEP))[0]!.status;
+      assert.deepEqual([s.status, s.assertedOnly, s.latest?.check_id], ["refuted", true, undefined]);
+
+      if (neo) {
+        // A legacy muted EVIDENCED_BY edge → invisible to every read (the file has no edge flags).
+        await rawWrite(backend, `MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true`, { r: said[0]!.ref_id });
+        assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
+        assert.ok(!(await reader.evidenceFor("c1")).some((e) => e.ref_id === eSay.ref_id));
+        await rawWrite(backend, `MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = null`, { r: said[0]!.ref_id });
+        assert.equal((await reader.statusFor(STEP))[0]!.status.status, "refuted");
+      }
+      // Evidence whose node carries `deleted_at` is invisible too.
+      await setNodeProps(backend, eSay.ref_id, { deleted_at: 1 });
+      assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
+      assert.ok(!(await reader.evidenceFor("c1")).some((e) => e.ref_id === eSay.ref_id));
+    });
+
+    it("an external check's planned slot: EVIDENCED_BY with no strength, openSlot, filled in place", async () => {
+      const id = evidenceId("kext", "run-1", "step");
+      const slot = await nodes.write({ type: "Evidence", data: { id, name: "computes start/end…", description: "does the cut sound natural — run run-1, step", evidence_status: "planned" } }, "create");
+      const [eb] = await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: slot.ref_id },
+        { edge: "PRODUCED_BY", source_ref_id: slot.ref_id, target_ref_id: ref["kext"]! },
+        { edge: "ABOUT", source_ref_id: slot.ref_id, target_ref_id: ref["v2"]! },
+        { edge: "HAS_SOURCE", source_ref_id: slot.ref_id, target_ref_id: ref["run"]!, properties: { context: JSON.stringify({ path: "step" }) } },
+      ]);
+      assert.equal((await rawEdge(backend, eb!.ref_id))!.props["strength"], undefined, "an unanswered question has no strength");
+
+      let s = (await reader.statusFor(STEP))[0]!.status;
+      assert.deepEqual([s.status, s.openSlot, s.unverified], ["supported", true, 1]);
+      assert.deepEqual(s.slots, [{ evidence_id: id, check_id: "kext" }]);
+
+      // Fill: the SAME node patched to collected, the edge patched to ±1.
+      await nodes.update(slot.ref_id, { set: { content: "sounds clean", evidence_status: "collected", evidence_mode: "asserted", observed_at: now + 1 } });
+      await edges.update({ ref_id: eb!.ref_id }, { set: { strength: 1 } });
+      s = (await reader.statusFor(STEP))[0]!.status;
+      assert.deepEqual([s.status, s.openSlot, s.unverified, s.assertedOnly], ["supported", false, 0, false]);
+      const same = await backend.query(`MATCH ${d().node("e", "Evidence", { id: "$id" })} RETURN count(e) AS c`, { id });
+      assert.equal(Number(same[0]!["c"]), 1, "the SAME node");
+      assert.equal(await nodeCount(backend, "Evidence"), 3, "e1, the retired check's, the slot — the deleted one is not live");
+    });
   });
-  after(async () => {
-    await bolt?.close();
-  });
-
-  it("writes Claim / Check / Evidence through the ordinary writers (migration 124 + 125 shapes)", async () => {
-    // No speaker_name; two claims with the same text and different ids.
-    const text = "computes start/end inside the video's duration";
-    const [c1, c2] = await nodes.writeMany(
-      [
-        { type: "Claim", data: { id: "c1", name: text, claim_text: text, belief_valid_from: now - 40 } },
-        { type: "Claim", data: { id: "c2", name: text, claim_text: text, speaker_name: "ai", belief_valid_from: now - 30 } },
-      ],
-      "create",
-    );
-    assert.deepEqual([c1!.outcome, c2!.outcome, c1!.node_key, c2!.node_key], ["created", "created", "claim-c1", "claim-c2"]);
-    ref["c1"] = c1!.ref_id;
-    ref["c2"] = c2!.ref_id;
-    const labels = await bolt.run(`MATCH (c:Claim {id: "c1"}) RETURN labels(c) AS l`);
-    assert.deepEqual([...(labels[0]!["l"] as string[])].sort(), ["Claim", "Data_Bank", "Domain_epistemic", "Node"]);
-    await assert.rejects(
-      nodes.write({ type: "Claim", data: { name: text, claim_text: text } }),
-      (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED",
-      "id is the identity",
-    );
-
-    // Check.created_at is REQUIRED (a create without it is a 400 in jarvis too).
-    await assert.rejects(
-      nodes.write({ type: "Check", data: { id: "k0", name: "no stamp", step_type: "exec" } }),
-      (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED" && e.attribute === "created_at",
-    );
-    const [k1, kOld, kExt] = await nodes.writeMany([
-      { type: "Check", data: { id: "k1", name: "bounds", step_type: "exec", step_config: '{"command":"true"}', run_when: "run", policy: "always", publisher: "ai", created_at: now - 40 } },
-      { type: "Check", data: { id: "kold", name: "bounds (old)", step_type: "exec", created_at: now - 45, retired_at: now - 41 } },
-      { type: "Check", data: { id: "kext", name: "listen", description: "does the cut sound natural — code cannot hear", policy: "on_change", created_at: now - 39 } },
-    ]);
-    ref["k1"] = k1!.ref_id;
-    ref["kold"] = kOld!.ref_id;
-    ref["kext"] = kExt!.ref_id;
-
-    const written = await edges.writeMany([
-      // One claim ABOUT two subjects (many-to-many); both claims about the step.
-      { edge: "ABOUT", source_ref_id: ref["c1"]!, target_ref_id: ref["step"]! },
-      { edge: "ABOUT", source_ref_id: ref["c1"]!, target_ref_id: ref["wf"]! },
-      { edge: "ABOUT", source_ref_id: ref["c2"]!, target_ref_id: ref["step"]! },
-      { edge: "TESTS", source_ref_id: ref["k1"]!, target_ref_id: ref["c1"]! },
-      { edge: "TESTS", source_ref_id: ref["kold"]!, target_ref_id: ref["c1"]! },
-      { edge: "TESTS", source_ref_id: ref["kext"]!, target_ref_id: ref["c1"]! },
-      { edge: "SUPERSEDES", source_ref_id: ref["k1"]!, target_ref_id: ref["kold"]! },
-    ]);
-    assert.ok(written.every((w) => w.created));
-    // ABOUT is schema-validated (it is NOT a generic token): only Claim and Evidence may point with it.
-    await assert.rejects(
-      edges.write({ edge: "ABOUT", source_ref_id: ref["k1"]!, target_ref_id: ref["step"]! }),
-      (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE",
-    );
-  });
-
-  it("claimsFor / checksFor read active nodes; retired ones only on request", async () => {
-    assert.deepEqual((await reader.claimsFor(STEP)).map((c) => c.id), ["c1", "c2"]);
-    assert.deepEqual((await reader.claimsFor({ kind: "workflow", name: "youtube-clip" })).map((c) => c.id), ["c1"]);
-    assert.deepEqual(await reader.claimsFor({ kind: "step", type: "nope" }), []);
-    const c1 = (await reader.claimsFor(STEP))[0]!;
-    assert.equal(c1.speaker_name, undefined);
-    assert.equal(c1.belief_valid_from, now - 40);
-    assert.equal(c1.ref_id, ref["c1"]);
-
-    assert.deepEqual((await reader.checksFor("c1")).map((k) => k.id), ["k1", "kext"]);
-    assert.deepEqual((await reader.checksFor("c1", { includeRetired: true })).map((k) => k.id), ["kold", "k1", "kext"]);
-    const [k1, kext] = await reader.checksFor("c1");
-    assert.deepEqual([k1!.step_type, k1!.policy, k1!.publisher, isExternalCheck(k1!)], ["exec", "always", "ai", false]);
-    assert.ok(isExternalCheck(kext!) && kext!.description);
-
-    assert.equal(await reader.activeVersion(STEP), V2);
-    assert.equal(await reader.activeVersion({ kind: "step", type: "nope" }), null);
-
-    // Retiring a claim (belief_valid_to) drops it from the default read; history stays.
-    await nodes.update(ref["c2"]!, { set: { belief_valid_to: now } });
-    assert.deepEqual((await reader.claimsFor(STEP)).map((c) => c.id), ["c1"]);
-    assert.deepEqual((await reader.claimsFor(STEP, { includeRetired: true })).map((c) => c.id), ["c1", "c2"]);
-  });
-
-  it("evidence → status: unknown → supported → stale on a new version → refuted; muted edges are invisible", async () => {
-    const before = await reader.statusFor(STEP);
-    assert.deepEqual(before.map((r) => [r.claim.id, r.status.status, r.status.unverified]), [["c1", "unknown", 2]]);
-
-    // What the verify pass will write: Evidence + EVIDENCED_BY{strength} + PRODUCED_BY + ABOUT + HAS_SOURCE.
-    const id = evidenceId("k1", "run-1", "step");
-    const e1 = await nodes.write({ type: "Evidence", data: { id, name: "computes start/end…", content: "start=12 end=31 duration=95", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5 } }, "create");
-    assert.equal(e1.node_key, `evidence-${id}`);
-    const context = JSON.stringify({ path: "step", cassette: "replay", checkVersion: "exec" });
-    await edges.writeMany([
-      { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: e1.ref_id, properties: { strength: 1 } },
-      { edge: "PRODUCED_BY", source_ref_id: e1.ref_id, target_ref_id: ref["k1"]! },
-      { edge: "ABOUT", source_ref_id: e1.ref_id, target_ref_id: ref["v2"]! },
-      { edge: "HAS_SOURCE", source_ref_id: e1.ref_id, target_ref_id: ref["run"]!, properties: { context } },
-    ]);
-    // A second pass over the same (check, run, path) is a no-op by construction.
-    const again = await nodes.write({ type: "Evidence", data: { id, name: "x", content: "DIFFERENT", evidence_status: "collected" } }, "create");
-    assert.deepEqual([again.outcome, again.ref_id], ["existing", e1.ref_id]);
-
-    const [row] = await reader.evidenceFor("c1", STEP);
-    assert.equal(typeof row!.edge_ref_id, "string", "the EVIDENCED_BY edge — what muting a slot mutes");
-    assert.deepEqual(
-      { ...row, date_added_to_graph: undefined, edge_ref_id: undefined },
-      {
-        edge_ref_id: undefined,
-        ref_id: e1.ref_id, id, name: "computes start/end…", content: "start=12 end=31 duration=95",
-        evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5, date_added_to_graph: undefined,
-        claim_id: "c1", strength: 1, check_id: "k1",
-        about: { kind: "step", name: "clip/compute-times", content_hash: V2 },
-        source: { ref_id: ref["run"], node_type: "StrutRun", run_id: "run-1", run_key: "step:clip/compute-times", context: { path: "step", cassette: "replay", checkVersion: "exec" } },
-      },
-    );
-    assert.deepEqual(await reader.evidenceFor("c1", { kind: "workflow", name: "youtube-clip" }), [], "same claim, other subject: its own status");
-
-    let s = (await reader.statusFor(STEP))[0]!.status;
-    assert.deepEqual([s.status, s.assertedOnly, s.unverified, s.openSlot], ["supported", false, 1, false]);
-    assert.equal(s.latest?.source?.context?.checkVersion, "exec");
-    assert.equal((await reader.statusFor({ kind: "workflow", name: "youtube-clip" }))[0]!.status.status, "unknown");
-
-    // Publish v3 → the evidence is about an older version.
-    await nodes.update(ref["step"]!, { set: { active_version: "hash-v3" } });
-    s = (await reader.statusFor(STEP))[0]!.status;
-    assert.deepEqual([s.status, s.unverified], ["stale", 2]);
-    await nodes.update(ref["step"]!, { set: { active_version: V2 } });
-
-    // The retired check's refutation on the active version never counts.
-    const eOld = await nodes.write({ type: "Evidence", data: { id: evidenceId("kold", "run-1", "step"), name: "old instrument", content: "nope", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 1 } });
-    await edges.writeMany([
-      { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: eOld.ref_id, properties: { strength: -1 } },
-      { edge: "PRODUCED_BY", source_ref_id: eOld.ref_id, target_ref_id: ref["kold"]! },
-      { edge: "ABOUT", source_ref_id: eOld.ref_id, target_ref_id: ref["v2"]! },
-    ]);
-    assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
-
-    // An asserted refutation with no check (add_evidence) on the active version wins.
-    const eSay = await nodes.write({ type: "Evidence", data: { id: newEpistemicId(), name: "assistant looked", content: "end > duration on a 20s video", evidence_mode: "asserted", evidence_status: "collected", observed_at: now } });
-    const said = await edges.writeMany([
-      { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: eSay.ref_id, properties: { strength: -1 } },
-      { edge: "ABOUT", source_ref_id: eSay.ref_id, target_ref_id: ref["v2"]! },
-    ]);
-    s = (await reader.statusFor(STEP))[0]!.status;
-    assert.deepEqual([s.status, s.assertedOnly, s.latest?.check_id], ["refuted", true, undefined]);
-
-    // A legacy muted EVIDENCED_BY edge → invisible to every read.
-    await bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true`, { r: said[0]!.ref_id });
-    assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
-    assert.ok(!(await reader.evidenceFor("c1")).some((e) => e.ref_id === eSay.ref_id));
-
-    // So is evidence whose node carries only `deleted_at` (no is_deleted).
-    await bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = null`, { r: said[0]!.ref_id });
-    assert.equal((await reader.statusFor(STEP))[0]!.status.status, "refuted");
-    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.deleted_at = 1`, { r: eSay.ref_id });
-    assert.equal((await reader.statusFor(STEP))[0]!.status.status, "supported");
-    assert.ok(!(await reader.evidenceFor("c1")).some((e) => e.ref_id === eSay.ref_id));
-  });
-
-  it("an external check's planned slot: EVIDENCED_BY with no strength, openSlot, filled in place", async () => {
-    const id = evidenceId("kext", "run-1", "step");
-    const slot = await nodes.write({ type: "Evidence", data: { id, name: "computes start/end…", description: "does the cut sound natural — run run-1, step", evidence_status: "planned" } }, "create");
-    const [eb] = await edges.writeMany([
-      { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: slot.ref_id },
-      { edge: "PRODUCED_BY", source_ref_id: slot.ref_id, target_ref_id: ref["kext"]! },
-      { edge: "ABOUT", source_ref_id: slot.ref_id, target_ref_id: ref["v2"]! },
-      { edge: "HAS_SOURCE", source_ref_id: slot.ref_id, target_ref_id: ref["run"]!, properties: { context: JSON.stringify({ path: "step" }) } },
-    ]);
-    const edge = await bolt.run(`MATCH ()-[r {ref_id: $r}]->() RETURN r.strength AS s`, { r: eb!.ref_id });
-    assert.equal(edge[0]!["s"], null, "an unanswered question has no strength");
-
-    let s = (await reader.statusFor(STEP))[0]!.status;
-    assert.deepEqual([s.status, s.openSlot, s.unverified], ["supported", true, 1]);
-    assert.deepEqual(s.slots, [{ evidence_id: id, check_id: "kext" }]);
-
-    // Fill: the SAME node patched to collected, the edge patched to ±1.
-    await nodes.update(slot.ref_id, { set: { content: "sounds clean", evidence_status: "collected", evidence_mode: "asserted", observed_at: now + 1 } });
-    await edges.update({ ref_id: eb!.ref_id }, { set: { strength: 1 } });
-    s = (await reader.statusFor(STEP))[0]!.status;
-    assert.deepEqual([s.status, s.openSlot, s.unverified, s.assertedOnly], ["supported", false, 0, false]);
-    assert.equal((await bolt.run(`MATCH (e:Evidence {id: $id}) RETURN count(e) AS c`, { id }))[0]!["c"], 1);
-  });
-});
+}

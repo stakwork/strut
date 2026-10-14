@@ -9,8 +9,11 @@
  *   - a delete only removes edges whose ends are both `:Data_Bank` in the
  *     same namespace (`EDGE_IN_SCOPE`).
  *
- * Every strut filter and delete reads these, never its own copy. No
- * runtime imports: `claims.ts` must not load neo4j-driver.
+ * These are the NEO4J fragments (the Neo4j engine and the Neo4j reader use
+ * them). A statement that runs on both engines says `dialect.live(n)` /
+ * `dialect.edgeLive(r)` instead (`engine.ts`): on a Ladybug file a node is
+ * deleted when `deleted_at` is set and an edge is live or gone. No runtime
+ * imports: `claims.ts` must not load neo4j-driver.
  */
 
 /** A node that is not deleted: R2, either marker (`is_deleted` until the
