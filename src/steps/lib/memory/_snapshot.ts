@@ -11,11 +11,11 @@
 // snapshot moves between machines. Chosen over copying graph.lbug, which would
 // tie a snapshot to one Ladybug storage format.
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, rmdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { gunzip } from "node:zlib";
-import { MIGRATION_COUNT, type Query, ownerOnly } from "./_db.js";
+import { gunzip, gzip } from "node:zlib";
+import { type Handle, MIGRATION_COUNT, type Query, ownerOnly } from "./_db.js";
 import { SEED } from "./_ontology-seed.js";
 
 export const FORMAT = 1;
@@ -88,6 +88,42 @@ export async function countRows(query: Query): Promise<Record<string, number>> {
     counts[t.name] = Number(row?.n ?? 0);
   }
   return counts;
+}
+
+/** The whole graph as a snapshot (.tar.gz bytes), with what EXPORT DATABASE wrote to `work`
+ *  (removed after). Runs in the writes' queue (memoryExclusive). */
+export async function writeSnapshot(handle: Handle, work: string) {
+  try {
+    // EXPORT DATABASE makes `work` itself, and refuses one that is there.
+    await handle.write("CHECKPOINT");
+    // One thread: with more, a rel table's Parquet comes out in a different
+    // order from one export to the next, and the content hash with it.
+    const [{ threads }] = await handle.write("CALL current_setting('threads') RETURN *");
+    await handle.write("CALL threads=1");
+    try {
+      await handle.write(`EXPORT DATABASE ${literal(work)}`);
+    } finally {
+      await handle.write(`CALL threads=${Number(threads)}`);
+    }
+    const graph = new Map(readdirSync(work).map((name) => [name, readFileSync(join(work, name))]));
+    const counts = await countRows(handle.write);
+    const created = new Date();
+    const manifest: Manifest = {
+      format: FORMAT,
+      created_at: created.toISOString(),
+      strut: strutVersion(),
+      ladybug: handle.ladybug,
+      migrations: MIGRATION_COUNT,
+      ontology: ontologyVersion(),
+      counts,
+      content_hash: contentHash(graph),
+    };
+    const files = [...graph.keys()].sort().map((name): [string, Buffer] => [`graph/${name}`, graph.get(name)!]);
+    const gz = await promisify(gzip)(tar([["manifest.json", Buffer.from(JSON.stringify(manifest, null, 2))], ...files]));
+    return { gz, graph, counts, manifest, name: `memory-${created.toISOString().replace(/[:.]/g, "-")}.tar.gz` };
+  } finally {
+    removeWork(work); // and the snapshots folder, when nothing else is in it
+  }
 }
 
 /** Drops every table, rels first: what IMPORT DATABASE needs, and what an empty graph starts from. */

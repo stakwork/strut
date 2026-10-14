@@ -1,4 +1,4 @@
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { StepContext } from "../../../core.js";
 import { buildRegistry } from "../../registry.js";
+import { memoryDb } from "./_db.js";
 import { contentHash, untar, tar } from "./_snapshot.js";
 
 // memory/export → memory/import against real LadybugDB files in a temp folder
@@ -94,6 +95,9 @@ describe("memory/export and memory/import", { skip: !hasLadybug && "@ladybugdb/c
     const out = await run("memory/import", { data }, B);
     assert.ok(!out.error, out.error);
     assert.deepEqual(out.counts, snap.counts);
+    assert.equal(out.replaced, false);
+    assert.equal(out.backup, undefined);
+    assert.ok(!existsSync(join(dir, "b", "backups")), "an empty graph needs no backup");
     assert.deepEqual(await recallAll(B), await recallAll(A));
     assert.ok(!existsSync(join(dir, "b", "snapshots")), "the unpacked files are gone");
     // And it is a working memory: a later write lands and supersedes.
@@ -120,6 +124,94 @@ describe("memory/export and memory/import", { skip: !hasLadybug && "@ladybugdb/c
   it("import refuses a graph that is not empty", async () => {
     const out = await run("memory/import", { path: snap.path }, A);
     assert.match(out.error, /^not_empty: memory already holds 3 entities, 4 facts and 4 episodes/);
+  });
+
+  // G holds a memory of its own, which replace swaps for A's.
+  const G = graph("g");
+  const backups = join(dir, "g", "backups");
+  const listBackups = () => readdirSync(backups).sort();
+  let gBefore: Awaited<ReturnType<typeof recallAll>>;
+
+  it("replace backs up a graph that is not empty, then loads the snapshot in its place", async () => {
+    await run("memory/remember", { episode: "I'm Zed.", facts: [{ subject: { type: "Self", name: "Me" }, predicate: "name", text: "The user's name is Zed." }] }, G);
+    gBefore = await recallAll(G);
+    const out = await run("memory/import", { path: snap.path, replace: true }, G);
+    assert.ok(!out.error, out.error);
+    assert.equal(out.replaced, true);
+    assert.match(out.backup, /^memory-\d{4}-.*\.tar\.gz$/);
+    assert.deepEqual(out.counts, snap.counts);
+    assert.deepEqual(await recallAll(G), await recallAll(A));
+    assert.equal((await run("memory/recall", { q: "Zed" }, G)).length, 0, "the old facts are gone");
+    assert.deepEqual(listBackups(), [out.backup]);
+    assert.equal(statSync(backups).mode & 0o777, 0o700);
+    assert.equal(statSync(join(backups, out.backup)).mode & 0o777, 0o600);
+    assert.ok(!existsSync(join(dir, "g", "snapshots")), "the unpacked files are gone");
+    // The backup is a snapshot of the graph as it was.
+    const H = graph("h");
+    assert.ok(!(await run("memory/import", { path: join(backups, out.backup) }, H)).error);
+    assert.deepEqual(await recallAll(H), gBefore);
+  });
+
+  it("replace with a bad snapshot leaves the graph as it is and makes no backup", async () => {
+    const was = listBackups();
+    const changed = repack((f) => f.set("graph/schema.cypher", Buffer.concat([f.get("graph/schema.cypher")!, Buffer.from(" ")])), false);
+    assert.match((await run("memory/import", { data: changed, replace: true }, G)).error, /^bad_snapshot: the content hash/);
+    assert.deepEqual(listBackups(), was);
+    assert.deepEqual(await recallAll(G), await recallAll(A));
+  });
+
+  it("replace that fails part-way loads the backup back", async () => {
+    const H = graph("h"); // holds G's old memory, from its backup
+    const broken = repack((f) => {
+      const name = [...f.keys()].find((n) => /Fact.*\.parquet$/.test(n))!;
+      f.set(name, f.get(name)!.subarray(0, 40));
+    });
+    const out = await run("memory/import", { data: broken, replace: true }, H);
+    assert.match(out.error, /^import_failed: .*; the memory is as it was$/);
+    assert.deepEqual(await recallAll(H), gBefore);
+    assert.equal(readdirSync(join(dir, "h", "backups")).length, 1, "the backup it made stays");
+  });
+
+  it("replace keeps the newest three backups", async () => {
+    const names: string[] = [];
+    for (let i = 0; i < 3; i++) names.push((await run("memory/import", { path: snap.path, replace: true }, G)).backup);
+    assert.deepEqual(listBackups(), names.sort());
+  });
+
+  it("failed replaces keep the newest three backups too", async () => {
+    const H = graph("h");
+    const broken = repack((f) => {
+      const name = [...f.keys()].find((n) => /Fact.*\.parquet$/.test(n))!;
+      f.set(name, f.get(name)!.subarray(0, 40));
+    });
+    for (let i = 0; i < 4; i++) assert.match((await run("memory/import", { data: broken, replace: true }, H)).error, /the memory is as it was$/);
+    assert.equal(readdirSync(join(dir, "h", "backups")).length, 3);
+    assert.deepEqual(await recallAll(H), gBefore);
+  });
+
+  it("two replaces in one millisecond make two backups", async () => {
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const one = await run("memory/import", { path: snap.path, replace: true }, G);
+      const two = await run("memory/import", { path: snap.path, replace: true }, G);
+      assert.ok(!one.error && !two.error, one.error ?? two.error);
+      assert.notEqual(one.backup, two.backup);
+      assert.ok(listBackups().includes(one.backup) && listBackups().includes(two.backup));
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("replace refuses a graph whose backup could not be loaded back, and leaves it as it is", async () => {
+    const K = graph("c"); // holds A's memory; each graph is one more database open, and Ladybug maps a lot for each
+    await run("memory/remember", { episode: "I'm Kim.", facts: [{ subject: { type: "Self", name: "Me" }, predicate: "name", text: "The user's name is Kim." }] }, K);
+    // A table import would refuse: a MAP column is not in the table-definition allowlist.
+    await (await memoryDb(K))("CREATE NODE TABLE Odd(id STRING PRIMARY KEY, m MAP(STRING, INT64))");
+    const before = await recallAll(K);
+    const out = await run("memory/import", { path: snap.path, replace: true }, K);
+    assert.match(out.error, /^backup_failed: bad_snapshot: schema.cypher .*the memory is as it was$/);
+    assert.deepEqual(await recallAll(K), before);
+    assert.ok(!existsSync(join(dir, "c", "backups")), "no backup that could not be loaded back");
   });
 
   const repack = (edit: (files: Map<string, Buffer>, manifest: any) => void, rehash = true) => {
