@@ -21,9 +21,10 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
+  randomUUID,
   scryptSync,
 } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 /** Metadata about a stored secret. Deliberately never includes the value —
@@ -101,6 +102,10 @@ interface SecretsFile {
   secrets: Record<string, EncryptedValue>;
 }
 
+function fresh(): SecretsFile {
+  return { version: 1, salt: randomBytes(16).toString("base64"), secrets: {} };
+}
+
 function deriveKey(salt: Buffer): Buffer {
   return scryptSync(passphrase(), salt, 32);
 }
@@ -145,16 +150,49 @@ export class FileSecretStore implements SecretStore {
   }
 
   private load(): Promise<SecretsFile> {
-    this.loaded ??= readFile(this.file, "utf-8")
-      .then((raw) => JSON.parse(raw) as SecretsFile)
-      .catch((): SecretsFile => ({ version: 1, salt: randomBytes(16).toString("base64"), secrets: {} }));
+    // A failed read isn't kept, so the next call tries again.
+    this.loaded ??= this.read().catch((err) => {
+      this.loaded = null;
+      throw err;
+    });
     return this.loaded;
   }
 
+  /** A missing file starts a fresh store. One that can't be parsed is moved
+   *  aside first, so the next save can't destroy the only copy. Any other
+   *  read error is thrown: the file may be fine. */
+  private async read(): Promise<SecretsFile> {
+    let raw: string;
+    try {
+      raw = await readFile(this.file, "utf-8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      return fresh();
+    }
+    try {
+      const data = JSON.parse(raw) as SecretsFile;
+      if (typeof data?.salt === "string" && typeof data.secrets === "object" && data.secrets) return data;
+    } catch {}
+    const aside = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    await rename(this.file, aside);
+    await chmod(aside, 0o600);
+    console.warn(`[strut] ${this.file} could not be parsed; moved it to ${aside} and started a fresh secret store`);
+    return fresh();
+  }
+
+  /** Writes owner-only (0600) to a temp file beside the target, synced, then
+   *  renames it over, so a crash mid-write never leaves a truncated file. */
   private save(data: SecretsFile): Promise<void> {
     const write = async () => {
       await mkdir(dirname(this.file), { recursive: true });
-      await writeFile(this.file, JSON.stringify(data, null, 2), "utf-8");
+      const tmp = `${this.file}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tmp, JSON.stringify(data, null, 2), { mode: 0o600, flag: "wx", flush: true });
+        await rename(tmp, this.file);
+      } catch (err) {
+        await rm(tmp, { force: true });
+        throw err;
+      }
     };
     this.saving = this.saving.then(write, write);
     return this.saving;
