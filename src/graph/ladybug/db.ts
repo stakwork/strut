@@ -10,7 +10,12 @@
  * install hint on failure, a read connection and a write connection with a
  * queue — `withWrite(fn)` runs `fn` under BEGIN TRANSACTION … COMMIT /
  * ROLLBACK, one writer at a time — and `readOnly()` for the model's own
- * Cypher. On open: the `vector` and `fts` extensions (REQUIRED, ruling 4:
+ * Cypher: a connection of its own whose every statement runs inside
+ * `BEGIN TRANSACTION READ ONLY`, which the engine refuses writes in. (Not a
+ * second `Database` opened read-only, as first planned: one reserves 8 TB
+ * of address space and `close()` never returns it — the eighth open in a
+ * process fails with "Mmap for size 8796093022208 failed".) On open: the
+ * `vector` and `fts` extensions (REQUIRED, ruling 4:
  * an open without them fails with the hint), the DDL (§3.1; every column
  * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the registry
  * lands on the next open), the two indexes, then the append-only
@@ -29,7 +34,16 @@ export type Query = (cypher: string, params?: Params) => Promise<Row[]>;
 
 export interface ReadOnlyHandle {
   query: Query;
+  /** One statement with its column names and a row cap: the rows are read
+   *  one at a time and the rest left unfetched once `maxRows` are in —
+   *  what the model's `graph_query` needs (query.ts). */
+  run(cypher: string, params?: Params, opts?: { maxRows?: number }): Promise<{ columns: string[]; rows: Row[]; truncated: boolean }>;
   close(): Promise<void>;
+}
+
+export interface ReadOnlyOptions {
+  /** `Connection.setQueryTimeout`: a statement running longer is cancelled. */
+  queryTimeoutMs?: number;
 }
 
 export interface LadybugHandle {
@@ -45,8 +59,11 @@ export interface LadybugHandle {
    *  and what cannot run inside one (an index build, CHECKPOINT). Must not
    *  nest, as `withWrite`. */
   exclusive<T>(fn: (write: Query) => Promise<T>): Promise<T>;
-  /** A second `Database` on the same file, read-only (the model's Cypher). */
-  readOnly(): Promise<ReadOnlyHandle>;
+  /** The model's Cypher (query.ts): a connection of its own on the same
+   *  database, every statement inside a READ ONLY transaction — the engine
+   *  refuses writes and catalog changes in it, and each statement sees
+   *  what was committed before it began. Cheap: open one per call. */
+  readOnly(opts?: ReadOnlyOptions): Promise<ReadOnlyHandle>;
   close(): Promise<void>;
 }
 
@@ -164,18 +181,28 @@ function clean(v: unknown): unknown {
   return v;
 }
 
-function queryOn(conn: import("@ladybugdb/core").Connection): Query {
+type Conn = import("@ladybugdb/core").Connection;
+type QueryResult = import("@ladybugdb/core").QueryResult;
+
+function plainRow(r: Record<string, unknown>): Row {
+  const out: Row = {};
+  for (const [k, v] of Object.entries(r)) out[k] = plain(v);
+  return out;
+}
+
+/** The last result of a statement (a multi-statement string yields one per
+ *  statement). */
+async function execute(conn: Conn, cypher: string, params: Params): Promise<QueryResult> {
+  const result = Object.keys(params).length
+    ? await conn.execute(await conn.prepare(cypher), clean(params) as Record<string, never>)
+    : await conn.query(cypher);
+  return Array.isArray(result) ? result[result.length - 1]! : result;
+}
+
+function queryOn(conn: Conn): Query {
   return async (cypher, params = {}) => {
-    const result = Object.keys(params).length
-      ? await conn.execute(await conn.prepare(cypher), clean(params) as Record<string, never>)
-      : await conn.query(cypher);
-    const last = Array.isArray(result) ? result[result.length - 1]! : result;
-    const rows = (await last.getAll()) as Row[];
-    return rows.map((r) => {
-      const out: Row = {};
-      for (const [k, v] of Object.entries(r)) out[k] = plain(v);
-      return out;
-    });
+    const rows = (await (await execute(conn, cypher, params)).getAll()) as Row[];
+    return rows.map(plainRow);
   };
 }
 
@@ -269,17 +296,48 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
             throw err;
           }
         }),
-      readOnly: async () => {
-        const ro = new lbug.Database(path, 0, true, true);
-        const conn = new lbug.Connection(ro);
-        const query = queryOn(conn);
-        for (const name of REQUIRED_EXTENSIONS) await load(query, name).catch(() => undefined);
+      readOnly: async (ro_opts = {}) => {
+        // Its own connection, so the transaction never wraps the handle's
+        // other reads; the extensions are the Database's, already loaded.
+        const conn = new lbug.Connection(db);
+        if (ro_opts.queryTimeoutMs) conn.setQueryTimeout(ro_opts.queryTimeoutMs);
+        const raw = queryOn(conn);
+        const readOnlyTx = async <T>(fn: () => Promise<T>): Promise<T> => {
+          await raw("BEGIN TRANSACTION READ ONLY");
+          try {
+            const out = await fn();
+            await raw("COMMIT");
+            return out;
+          } catch (err) {
+            // A refused statement may already have ended the transaction.
+            await raw("ROLLBACK").catch(() => undefined);
+            throw err;
+          }
+        };
         return {
-          query,
-          close: async () => {
-            await conn.close().catch(() => undefined);
-            await ro.close().catch(() => undefined);
-          },
+          query: (cypher, params) => readOnlyTx(() => raw(cypher, params)),
+          run: (cypher, params = {}, { maxRows = Infinity } = {}) =>
+            readOnlyTx(async () => {
+              const result = await execute(conn, cypher, params);
+              try {
+                const columns = await result.getColumnNames();
+                const rows: Row[] = [];
+                let truncated = false;
+                while (result.hasNext()) {
+                  if (rows.length >= maxRows) {
+                    truncated = true;
+                    break;
+                  }
+                  const r = await result.getNext();
+                  if (!r) break;
+                  rows.push(plainRow(r));
+                }
+                return { columns, rows, truncated };
+              } finally {
+                result.close();
+              }
+            }),
+          close: () => conn.close().catch(() => undefined),
         };
       },
       close: async () => {

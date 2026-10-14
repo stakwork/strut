@@ -104,9 +104,26 @@ describe("ladybug handle", { skip }, () => {
     const ro = await h.readOnly();
     try {
       assert.equal((await ro.query("MATCH (n:Node) RETURN count(n) AS c"))[0]!["c"], 3);
-      await assert.rejects(ro.query("CREATE (n:Node {ref_id: 'ro', node_type: 'T'})"));
+      await assert.rejects(ro.query("CREATE (n:Node {ref_id: 'ro', node_type: 'T'})"), /read-only transaction/);
+      await assert.rejects(ro.query("CALL CREATE_FTS_INDEX('Node', 'x_fts', ['name'])"));
+      // The refused statements ended nothing: the next one runs, and sees a
+      // commit made meanwhile — each statement is its own transaction.
+      await h.exclusive((w) => w("CREATE (n:Node {ref_id: 'ro-after', node_type: 'T'})"));
+      const { columns, rows, truncated } = await ro.run("MATCH (n:Node) RETURN n.ref_id AS id ORDER BY id", {}, { maxRows: 2 });
+      assert.deepEqual([columns, rows.length, truncated], [["id"], 2, true]);
+      assert.equal((await ro.query("MATCH (n:Node) RETURN count(n) AS c"))[0]!["c"], 4);
+      // The extensions are the database's: an index read works here too.
+      assert.ok(Array.isArray(await ro.query("CALL QUERY_FTS_INDEX('Node', 'node_fts', 'nothing') RETURN node.ref_id")));
     } finally {
       await ro.close();
+    }
+    // A connection, not a second Database (which reserves 8 TB of address
+    // space per open and never gives it back — seven opens, then "Mmap for
+    // size 8796093022208 failed"): twenty are nothing.
+    for (let i = 0; i < 20; i++) {
+      const again = await h.readOnly();
+      assert.equal((await again.query("MATCH (n:Node) RETURN count(n) AS c"))[0]!["c"], 4);
+      await again.close();
     }
   });
 

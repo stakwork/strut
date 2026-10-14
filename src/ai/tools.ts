@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { tool, type ToolSet } from "ai";
 import { runWorkflow } from "../runner.js";
-import { AiDeps, GRAPH_WALK_TOOL_ENABLED } from "./prompts.js";
+import { AiDeps, GRAPH_WALK_TOOL_ENABLED, graphConventions } from "./prompts.js";
 import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
 import { runStep, runStepId, cassettePath } from "../run-step.js";
@@ -1185,9 +1185,9 @@ export function buildTools(deps: AiDeps): ToolSet {
       ? {
           graph_query: tool({
             description:
-              "Run a READ-ONLY Cypher query against the strut graph (Neo4j) and get rows back. Use it to VERIFY what a workflow's graph/* steps actually wrote — count nodes/edges by type, read back exact properties, check edge fan-out — or to inspect graph-backed workspace state. " +
-              "Writes (CREATE/MERGE/SET/DELETE/…, apoc.*) are rejected; write through the graph/* steps. " +
-              `Conventions: every node has its type as a label plus :Node:Data_Bank and the properties {ref_id, node_key, namespace}; the deployment's default namespace is "${deps.graph.cfg.namespace}" — filter on it (n.namespace = $ns) so you don't read across partitions. Edge types are UPPER_SNAKE. ` +
+              `Run a READ-ONLY Cypher query against the strut graph (${deps.graph.kind === "ladybug" ? "a LadybugDB file" : "Neo4j"}) and get rows back. Use it to VERIFY what a workflow's graph/* steps actually wrote — count nodes/edges by type, read back exact properties, check edge fan-out — or to inspect graph-backed workspace state. ` +
+              "Writes (CREATE/MERGE/SET/DELETE/…, apoc.*, and COPY/LOAD/INSTALL) are rejected; write through the graph/* steps. " +
+              `Conventions: ${graphConventions(deps.graph)} ` +
               "Output is capped: rows (default 100), long strings truncated, embedding vectors collapsed. Prefer aggregates (count, collect(DISTINCT …)) and LIMIT over dumping nodes. " +
               "Returns { columns, rows, rowCount, truncated, elapsedMs } or { error }.",
             inputSchema: z.object({

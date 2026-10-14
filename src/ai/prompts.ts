@@ -273,7 +273,7 @@ Tools:
 - request_secret(name, reason) (when offered): ask the user to add secret NAME (letters, digits, underscore) through a strut page that writes the secret store directly — you never see the value and it never enters this chat. Call list_secrets first; request a name only when it is missing (or must be replaced). YOUR TURN ENDS AT THIS CALL, like ask_user. The next message says "secret NAME stored" (then use it via ctx.services.secrets.get("NAME")) or that it was declined.
 - create_step / edit_step: author or revise a custom step (see above).
 - bash(command, timeoutMs?): BUILD-TIME shell in the workspace dir (when offered) — probe an API's real response shape with curl before authoring a step, clone a repo into scratch/ to study a format, check a CLI exists, inspect a run's file outputs under artifacts/<runId>/. Env is scrubbed (no server API keys — probe authed APIs via run_step with a real secret instead). NEVER a substitute for ctx.services.http/secrets/shell inside a step: a step that uses the global fetch, process.env, or child_process directly is wrong — it breaks cassette record/replay and secret scrubbing. To run a CLI or a script from a WORKFLOW, use the exec step (cmd + args; or cmd: uv, args: [run] + an inline Python script with a PEP 723 dependency header — uv installs the packages on the fly).
-- graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the strut graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. Nodes carry their type as a label plus :Node:Data_Bank and {ref_id, node_key, namespace} — filter on namespace. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
+- graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against the strut graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting graph-backed workspace state. Writes are rejected; go through the graph/* steps to write. How nodes and edges are laid out depends on the backend — the "Graph backend" line below says which. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. Not something workflows can call.
 - graph_get({ ref_id } | { node_type, name }, children?) (when offered): read ONE node of the knowledge graph — its properties, plus the nodes it points to along one edge type when you pass children (e.g. "PARENT_OF"). For reading a page you know by name or ref_id (a Concept's docs and what is under it); use graph_query to count or to search. It is the graph/graph-get step, so call it directly rather than through run_step.
 ${GRAPH_WALK_TOOL_ENABLED ? `- graph_walk(goal, query) (when offered): walk the graph for evidence about a workflow or step — for "does X work?", "why does X fail?", "what do X's claims say?", call it BEFORE answering, with goal = the user's question and query = the workflow/step name. It returns the kept nodes (versions, runs, claims, checks, supporting/refuting evidence); answer from them and cite node names. The user watches the walk as a live graph.
 ` : ""}- web_search / web_fetch (when offered): search the web / read a page by URL — for API documentation while authoring (endpoint shapes, auth schemes, rate limits; fetch the docs page a search turned up), not something workflows can call (a workflow agent gets the same web_search + web_fetch built into the agent step).
@@ -359,9 +359,33 @@ export async function buildSystem(deps: AiDeps): Promise<string> {
   const host = deps.hostSystem?.trim();
   return `${BASE_SYSTEM}
 ${deps.claims ? `\n${CLAIMS_SECTION}\n` : ""}${host ? `\n${host}\n` : ""}
-${renderModels(deps.models)}Available steps:
+${renderModels(deps.models)}${renderGraph(deps.graph)}Available steps:
 ${tree}
 `;
+}
+
+/** How nodes and edges are laid out for the model's Cypher, per backend —
+ *  one sentence each, shared by the `graph_query` tool description
+ *  (tools.ts) and the system prompt. */
+export function graphConventions(graph: GraphBackend): string {
+  if (graph.kind === "ladybug") {
+    return (
+      `every node is a row of the one Node table with its type in node_type — MATCH (n:Node {node_type: 'Concept'}) — and each edge type is a rel table of that name (label(r) is its type); ` +
+      `a node is live when n.deleted_at IS NULL; RETURN n is the whole row (every column), so project the columns you need. One namespace, "default".`
+    );
+  }
+  return (
+    `every node has its type as a label plus :Node:Data_Bank and the properties {ref_id, node_key, namespace}; the deployment's default namespace is "${graph.cfg.namespace}" — filter on it (n.namespace = $ns) so you don't read across partitions. Edge types are UPPER_SNAKE.`
+  );
+}
+
+/** One line on the graph behind graph_query, per backend: Neo4j (the
+ *  swarm's jarvis graph) or a LadybugDB file (plans/ladybug-backend.md),
+ *  whose node layout the model's Cypher must follow. */
+function renderGraph(graph: AiDeps["graph"]): string {
+  if (!graph) return "";
+  const which = graph.kind === "ladybug" ? `a LadybugDB file (${graph.cfg.path})` : `Neo4j (namespace "${graph.cfg.namespace}")`;
+  return `Graph backend: ${which}. In graph_query, ${graphConventions(graph)}\n\n`;
 }
 
 // Back-compat: the base prompt without any pre-seeded listings.
