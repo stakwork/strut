@@ -1,0 +1,68 @@
+name: publish strut image
+
+# Builds the repo-root Dockerfile (the standalone strut server: engine, web UI
+# and the tools workflows exec) for amd64 and arm64, and pushes it to
+# ghcr.io/stakwork/strut when anything that goes into the image changes on
+# main. arm64 is for home servers (Apple Silicon, Raspberry Pi 4/5). Tags are
+# the moving `latest` and the short commit sha, which is what a deploy pins;
+# package.json's version is not bumped per change, so it is not a tag.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "web/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "yarn.lock"
+      - "tsconfig.json"
+      - ".github/workflows/publish-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Short sha
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # provenance/sbom off: a plain two-platform index with no attestation
+      # manifests, like the browser image and stakgraph's images. The arm64
+      # half builds under QEMU, hence the longer timeout; the gha cache keeps
+      # the apt/pip/yarn layers between pushes.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/stakwork/strut:${{ steps.sha.outputs.short }}
+            ghcr.io/stakwork/strut:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false

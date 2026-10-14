@@ -48,18 +48,24 @@ RUN ffmpeg -version | head -1 && yt-dlp --version && tesseract --version 2>&1 | 
 
 # Engine deps. yarn.lock is the lockfile (package-lock.json is gitignored).
 # --ignore-scripts skips the root `prepare`, so the build is explicit below and
-# this layer caches until the manifests change. It also skips the two dependency
-# install scripts in this tree, both safe to lose: onnxruntime-node's only
+# this layer caches until the manifests change. It also skips the dependency
+# install scripts in this tree. Two are safe to lose: onnxruntime-node's only
 # fetches CUDA libs (the linux x64/arm64 CPU binaries the graph backend's MiniLM
 # embedder loads ship in the tarball), and sharp's only checks for its prebuilt
 # @img/* binary. Dev deps stay: tsc builds, and tsx is needed at
 # runtime to import the workspace's .ts custom steps.
+# @ladybugdb/core's install script is not safe to lose: it copies the prebuilt
+# lbugjs.node from its per-platform package (core-linux-<arch>) into place, and
+# without it the memory/* steps fail to load. It is run on its own here.
 COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile --ignore-scripts && yarn cache clean
+RUN yarn install --frozen-lockfile --ignore-scripts && yarn cache clean \
+    && node node_modules/@ladybugdb/core/install.js
 
-# Web UI deps (npm; web/package-lock.json).
-COPY web/package.json web/package-lock.json ./web/
-RUN npm ci --prefix web
+# Web UI deps. web/package-lock.json is gitignored (the root .gitignore drops
+# every package-lock.json), so a clean checkout - CI's - has none for `npm ci`;
+# resolve from web/package.json like strut-desktop.yml does.
+COPY web/package.json ./web/
+RUN npm install --prefix web
 
 # Engine build.
 COPY tsconfig.json ./
