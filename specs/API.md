@@ -198,7 +198,9 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …], token? }` — what the run's steps wrote, and the run's **file token** (present when there is a secret to sign it: `STRUT_API_KEY`, else `STRUT_SECRET_KEY`): a `GET` of this listing or of any file under it with `?t=<token>` needs no key — the link form, worth this run's files and nothing else (an HMAC of the run id under the secret: no store, rotates with it). A `?t=` strut cannot vouch for is a 401 even on an open strut, so a host's gate may hand token-bearing reads through; 501 when the deployment has no artifact store |
 | GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension (unknown → `application/octet-stream`), with `X-Content-Type-Options: nosniff` and `Access-Control-Allow-Origin: *`; 404 for a path that is not a file (a directory: the listing is what names what is in it). A step wrote it, so everything but `video/*` and `audio/*` also carries `Content-Security-Policy: sandbox`: opened in a browser it has no origin, and only `text/html` read by its file token runs script (`sandbox allow-scripts`) — a page an agent built runs, and the one thing in its URL is that token; read with the key, or through a host's gate, it runs none. A host that frames or proxies artifacts must keep these headers |
 | GET    | `/jobs?q=&workflow=&limit=`                            | `{ jobs: [{ job, title?, createdBy?, actors?, createdAt?, usedAt, busy?, runs, holds }], actor? }` — every job, newest-used first (`plans/job-index.md` §2): `runs` and `holds` are counts, `busy` the run working in its directory now, `actors` everyone who launched a run under it (first seen first; `createdBy` is the head). `q` is the workflows' matcher (§2): every word must hit the title (the id, without one) or the title or summary of a current deliverable. `workflow` keeps the jobs with a recorded run of that workflow (a job from before its runs were recorded on it never matches). `mine=1` keeps the jobs whose `actors` include the request's actor — `actor` in the response is who the server took the request to be from (`resolveActor`); absent, `mine` lists nothing |
-| GET    | `/jobs/:id`                                            | the job read back: `{ job, title?, createdBy?, createdAt?, usedAt, busy?, holds: [{ id, kind, since, note?, url? }], urls, repos, files, runs: [{ workflow, runId, at, parentRunId?, status, durationMs?, error?, sealed? }], sessions: [{ id, turns, …, busy? }], artifacts: [{ id, kind, title, summary?, url?, content?, runId, path? }], text? }` — `runs` newest first, `status` from the run's summary (`running` without one); a run with a `parentRunId` is one a turn launched, not a turn; a sealed workflow's run shows `sealed: true` and nothing past its status. `holds` are what the job keeps alive beyond a run (`plans/jobs.md` §6), each with a `url` when what it holds has an address; `urls` is the first hold of each kind that has one (`{ pod: "https://…" }`). `sessions` are the threads made under the job (a turn line's `job`, §9) or named after it. `artifacts` are the job's CURRENT deliverables — its successful top-level runs' `artifacts[]`, newest first, the first of each `id` winning, resolved as `…/runs/:runId/artifacts` resolves them, each with the run that last reported it and, for a file, its `path` in the directory (what `job/read` takes); `text` is the newest such run's `output.text`. `threads` (`plans/jobs-sidebar.md`, `src/job-threads.ts`) is the job's execution as a tree: every agent execution in its runs' logs — a `step.end` carrying `messages`, or an attempt of the core `agent` step — grouped by session into `[{ id, session, label, startedAt, updatedAt, turns, totals: { turns, usage, cost, toolCalls, context? } }]`, each turn `{ runId, workflow, path, stepType, label, at, durationMs?, status, turn?, session?, usage?, cost?, context?, toolCalls, transcript?, artifacts?, nodeCount, nodes?, spawned, peer? }` — `transcript` the §5 link (`?full=1` for a session turn), `artifacts` the run's declared deliverables on its last top-level turn, `spawned` the threads the turn caused (a sub-agent under its path, a child run it launched, a `strut/run-workflow` peer run with `peer: { id, workflow, runId, status }`), a run with no agent one turn of `stepType: "run"`. Chronological at every level. `?threads=0` leaves it out, `?nodes=1` adds each turn's touched graph nodes, `?limit=N` bounds the runs the fold reads (newest first; `omittedRuns` counts the rest). 404 for an unknown job |
+| GET    | `/jobs/:id`                                            | the job read back: `{ job, title?, createdBy?, createdAt?, usedAt, busy?, holds: [{ id, kind, since, note?, url? }], urls, repos, files, runs: [{ workflow, runId, at, parentRunId?, status, durationMs?, error?, sealed? }], sessions: [{ id, turns, …, busy? }], artifacts: [{ id, kind, title, summary?, url?, content?, runId, path? }], text?, claims? }` — `claims` is the job's ledger (§5.5), present only where the claims layer is on; `runs` newest first, `status` from the run's summary (`running` without one); a run with a `parentRunId` is one a turn launched, not a turn; a sealed workflow's run shows `sealed: true` and nothing past its status. `holds` are what the job keeps alive beyond a run (`plans/jobs.md` §6), each with a `url` when what it holds has an address; `urls` is the first hold of each kind that has one (`{ pod: "https://…" }`). `sessions` are the threads made under the job (a turn line's `job`, §9) or named after it. `artifacts` are the job's CURRENT deliverables — its successful top-level runs' `artifacts[]`, newest first, the first of each `id` winning, resolved as `…/runs/:runId/artifacts` resolves them, each with the run that last reported it and, for a file, its `path` in the directory (what `job/read` takes); `text` is the newest such run's `output.text`. `threads` (`plans/jobs-sidebar.md`, `src/job-threads.ts`) is the job's execution as a tree: every agent execution in its runs' logs — a `step.end` carrying `messages`, or an attempt of the core `agent` step — grouped by session into `[{ id, session, label, startedAt, updatedAt, turns, totals: { turns, usage, cost, toolCalls, context? } }]`, each turn `{ runId, workflow, path, stepType, label, at, durationMs?, status, turn?, session?, usage?, cost?, context?, toolCalls, transcript?, artifacts?, nodeCount, nodes?, spawned, peer? }` — `transcript` the §5 link (`?full=1` for a session turn), `artifacts` the run's declared deliverables on its last top-level turn, `spawned` the threads the turn caused (a sub-agent under its path, a child run it launched, a `strut/run-workflow` peer run with `peer: { id, workflow, runId, status }`), a run with no agent one turn of `stepType: "run"`. Chronological at every level. `?threads=0` leaves it out, `?nodes=1` adds each turn's touched graph nodes, `?limit=N` bounds the runs the fold reads (newest first; `omittedRuns` counts the rest). 404 for an unknown job |
+| GET    | `/jobs/:id/claims`                                     | `{ enabled, job, claims: LedgerClaim[] }` — the job's ledger alone (§5.5): what the work must deliver and whether it does, as of its newest turn. `{ enabled: false, claims: [] }` without the claims layer; 404 for a job not on file |
+| POST   | `/jobs/:id/verify`                                     | `{ claims?: [<claim id>] }` (gated) → `{ job, key, runId, subjects, checks: [{ subject, path, claimId, checkId, lastVerify }], evidence, slots, costUsd, claims: LedgerClaim[] }` — verify the job NOW against its newest turn (`runId`): every check on every claim about the job fires, `manual` ones included, and evidence on an already verified turn is appended, not skipped; the ledger comes back with each check's `lastVerify`. `claims` narrows to ids; no body is every claim. 404 for a job not on file, 409 without the claims layer |
 | GET    | `/jobs/:id/files`                                      | `{ job, files: ["plan.md", …], token? }` — every file in a job's directory (`job/dir`, `plans/jobs.md`), recursive, skipping the repositories checked out into it, and the job's file token, as `/artifacts/:runId` mints the run's; 404 for a job with no directory, 400 for a malformed id (percent-encode a `/`) |
 | GET    | `/jobs/:id/files/<path>`                               | the file, served exactly like `/artifacts/:runId/<path>` — same content types, same headers, the job's token as `?t=` |
 | DELETE | `/jobs/:id`                                            | `{ ok: true, job, released: [<hold id>, …] }` — close a job (`plans/jobs.md` §6): every hold a tool registered on it (a pod) is released through its release step, then the repositories, the directory and the record are removed; runs, chats and sessions are records of their own and stay. 409 while a run holds the job; 500 and nothing removed when a hold will not release (the error names it — call again); 404 for a job with neither a directory nor a record |
@@ -338,6 +340,61 @@ first and by step path within a run:
   reworded later still shows the text its check tested.
 - On a workspace without claims (the filesystem backend, `STRUT_CLAIMS=0`)
   the response is `{ "enabled": false, "evidence": [] }`.
+
+### 5.5 A job's claims (`LedgerClaim`, `src/ledger.ts`; `plans/job-claims.md`)
+
+A claim may be about a **job** — `{ kind: "job", name: <job id> }` on every
+claim route and tool — and then states what the WORK must deliver ("the
+settings page renders"), not how a template behaves. Its version is the
+turn: evidence is about the job's newest top-level run, a later turn makes
+it `stale`, and a check on a job is `manual` by default (`sample` is
+refused) — it fires when the work agent calls `meta/verify-job` before it
+reports, or when a person calls `POST /jobs/:id/verify`. `GET /jobs/:id`
+carries the ledger as `claims`; `GET /jobs/:id/claims` serves it alone:
+
+```json
+{
+  "enabled": true,
+  "job": "j-1",
+  "claims": [
+    {
+      "id": "…",
+      "text": "the settings page renders",
+      "status": "supported",
+      "assertedOnly": false,
+      "unverified": 0,
+      "latest": {
+        "content": "https://pod.example/settings: renders",
+        "observed_at": 1792018615,
+        "mode": "observed",
+        "check": "…",
+        "checkVersion": "probe/shot",
+        "about": "1792018615451",
+        "locator": { "url": "/jobs/j-1/files/shots/j-1.png", "file": "shots/j-1.png" }
+      },
+      "checks": [
+        { "id": "…", "name": "shot", "lastVerify": { "ran": true } },
+        { "id": "…", "name": "eyes", "external": true, "lastVerify": { "planned": "<evidence id>" } }
+      ]
+    }
+  ]
+}
+```
+
+- `latest.about` is the TURN the verdict is about (a run id); `locator` is
+  what the check pointed at — a screenshot the job's files serve (`GET
+  /jobs/:id/files/<path>`), an endpoint's url.
+- `lastVerify` is per check, from the latest pass: `{ ran }`,
+  `{ skipped: policy | budget | cannot-launch | superseded | denied, reason? }`
+  — `superseded` is a verify of a turn that is no longer the newest; nothing
+  about a job is backfilled — or `{ planned: <evidence id> }`, an external
+  check waiting on a person.
+- A person answers an external check, or vouches, with `POST
+  /claims/:id/evidence { job, runId, supports, content, slot? }` (gated):
+  `runId` must be one of the job's turns, else 400; an open slot on that
+  turn is filled, otherwise a new asserted evidence is written. A
+  refutation on the newest turn wins over every instrument until the turn
+  moves.
 
 ## 6. Control a run
 

@@ -90,9 +90,13 @@ params:
   # on a PEER (plans/federation.md §2.2; its files stay there); the job/*
   # reads (plans/job-index.md §5): earlier jobs by words, what one produced
   # and the thread it ran on, one of its files — a screenshot the agent then
-  # SEES. A host appends its own (`createStrut({ job: { tools } })`): the
-  # lab adds `pod/*`. Held back until running works: meta/publish-workflow,
-  # meta/create-step, the claim tools.
+  # SEES. The job's CLAIMS (plans/job-claims.md): state what the work must
+  # deliver, hang an instrument on each — http/verify for an endpoint, exec
+  # in the job's directory, the lab's browser/verify for a page — and verify
+  # the job before saying done. A host appends its own
+  # (`createStrut({ job: { tools } })`): the lab adds `pod/*` and
+  # `browser/verify`. Held back until running works: meta/publish-workflow
+  # (a bespoke check workflow), meta/create-step.
   tools:
     - graph/graph-search
     - graph/graph-get
@@ -102,6 +106,12 @@ params:
     - meta/get-workflow
     - meta/run-workflow
     - meta/get-run
+    - meta/list-claims
+    - meta/add-claim
+    - meta/add-check
+    - meta/edit-check
+    - meta/verify-job
+    - http/verify
     - strut/run-workflow
     - job/list
     - job/get
@@ -145,3 +155,20 @@ params:
     path in `text`, which they cannot open. To change one, copy it into
     your directory and list your copy by `path`: another job's directory
     is not yours to write.
+
+    The work is done when it is VERIFIED, not when your last tool call
+    returned. Once you understand what is asked, state it as claims about
+    the job — meta/add-claim with subject { kind: job, name: <your job id>
+    }, one plain sentence each about what the work must deliver ("the
+    settings page renders", "GET /api/settings answers 200") — and give
+    each a check that can tell: http/verify for an endpoint (`url: "{{
+    input.urls.pod }}/api/settings"` reaches what the job holds), exec with
+    `cwd: "{{ input.dir }}"` for a script over your files, a page check
+    where one is granted; what only a person can judge gets an external
+    check ({ description }). meta/list-claims shows the job's contract and
+    what the person claimed from their side. When you believe the work is
+    ready, call meta/verify-job: it runs every check against the job as it
+    is now and returns the ledger. A claim refuted or unknown means not
+    done — fix the work (or a wrong check, meta/edit-check), verify again,
+    and only then answer; say in `text` what was verified. A later turn
+    makes the ledger `stale` until someone verifies again.

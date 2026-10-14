@@ -14,16 +14,21 @@ import { EdgeWriter } from "./edge-writer.js";
 import { nodeCount, rawEdge, rawNode, rawWrite, setNodeProps, testBackends } from "./test-util.js";
 import {
   ClaimsReader,
+  SUBJECT_KINDS,
+  activeTurnOf,
   claimStatus,
   claimsReaderFor,
   evidenceId,
   isEpistemicId,
   isExternalCheck,
   newEpistemicId,
+  subjectName,
+  subjectOf,
   type EvidenceRow,
   type SubjectRef,
 } from "./claims.js";
 import type { GraphBackend } from "./backend.js";
+import type { JobView } from "../job-index.js";
 
 
 // ── claimStatus (pure) ──────────────────────────────────────────────────────
@@ -170,6 +175,34 @@ describe("claimStatus (pure)", () => {
     const b = ev({ observed_at: 6, run: "r2" }); // 6s = 6000ms, newer than a
     assert.equal(status([a, b]).status, "supported");
     assert.equal(status([b, a]).status, "supported");
+  });
+});
+
+describe("claimStatus over a JOB subject (pure, plans/job-claims.md §2)", () => {
+  const JOB: SubjectRef = { kind: "job", id: "j-1" };
+  /** Evidence about one TURN of the job (its version is the run id). */
+  const turn = (run: string, over: Partial<EvidenceRow> & { at?: number } = {}) => ev({ about: { kind: "job", name: "j-1", content_hash: run }, run, ...over });
+  const on = (evidence: EvidenceRow[], active: string | null) => claimStatus({ claim: { id: "c1" }, checks: [{ id: "k1" }], subject: JOB, evidence, activeVersion: active });
+
+  it("the version is the turn: supported on the active turn, stale once a newer line is recorded, refuted wins, the newest measurement on one turn decides", () => {
+    assert.equal(on([turn("1700")], "1700").status, "supported");
+    const moved = on([turn("1700")], "1701");
+    assert.deepEqual([moved.status, moved.unverified], ["stale", 1]);
+    assert.equal(on([turn("1700", { at: 10 }), turn("1700", { at: 20, strength: -1 })], "1700").status, "refuted");
+    // An explicit re-verify APPENDS (`job:<id>#1`): a pod that was restarting is up now.
+    assert.equal(on([turn("1700", { at: 10, strength: -1 }), turn("1700", { at: 20 })], "1700").status, "supported");
+    assert.equal(on([], "1700").status, "unknown");
+    assert.equal(on([turn("1700")], null).status, "stale", "no index → no active turn: never supported");
+    assert.equal(on([ev({ about: { kind: "step", name: "j-1", content_hash: "1700" } })], "1700").status, "unknown", "a step of the same name is another subject");
+  });
+
+  it("activeTurnOf is the newest TOP-LEVEL run as the index lists them; subjectOf / subjectName round-trip the third kind", () => {
+    assert.equal(activeTurnOf([{ runId: "1702", parentRunId: "1701" }, { runId: "1701" }, { runId: "1700" }]), "1701");
+    assert.equal(activeTurnOf([{ runId: "1702", parentRunId: "1701" }]), null);
+    assert.equal(activeTurnOf([]), null);
+    assert.deepEqual(SUBJECT_KINDS, ["step", "workflow", "job"]);
+    for (const kind of SUBJECT_KINDS) assert.equal(subjectName(subjectOf(kind, "x/y")), "x/y");
+    assert.deepEqual(subjectOf("job", "j-1"), { kind: "job", id: "j-1" });
   });
 });
 
@@ -425,6 +458,72 @@ for (const tb of testBackends()) {
       const same = await backend.query(`MATCH ${d().node("e", "Evidence", { id: "$id" })} RETURN count(e) AS c`, { id });
       assert.equal(Number(same[0]!["c"]), 1, "the SAME node");
       assert.equal(await nodeCount(backend, "Evidence"), 3, "e1, the retired check's, the slot — the deleted one is not live");
+    });
+
+    it("a JOB subject (plans/job-claims.md §1–§2): the claim hangs off StrutJob, the evidence is ABOUT the turn's StrutRun, the active version is the index's newest turn", async () => {
+      const [job, turn1, noJob] = await nodes.writeMany([
+        { type: "StrutJob", data: { job_id: "j-1", title: "Settings page", created_at: now - 100 } },
+        { type: "StrutRun", data: { run_id: "1700", job: "j-1", workflow_name: "job", run_status: "success", started_at: now - 20 } },
+        { type: "StrutRun", data: { run_id: "1690", workflow_name: "job", run_status: "success", started_at: now - 30 } },
+      ]);
+      const [cj] = await nodes.writeMany([{ type: "Claim", data: { id: "cj", name: "the settings page renders", claim_text: "the settings page renders", speaker_name: "ai", belief_valid_from: now - 9 } }], "create");
+      const [kj] = await nodes.writeMany([{ type: "Check", data: { id: "kj", name: "page", step_type: "http/verify", step_config: "{}", policy: "manual", created_at: now - 9 } }]);
+      await edges.writeMany([
+        { edge: "ABOUT", source_ref_id: cj!.ref_id, target_ref_id: job!.ref_id },
+        { edge: "TESTS", source_ref_id: kj!.ref_id, target_ref_id: cj!.ref_id },
+      ]);
+      const JOB: SubjectRef = { kind: "job", id: "j-1" };
+      let runs: JobView["runs"] = [{ workflow: "job", runId: "1700", at: "", status: "success" }];
+      const jobs = { get: async (id: string) => (id === "j-1" ? ({ runs } as JobView) : null) };
+      const withIndex = new ClaimsReader(backend, { jobs });
+
+      assert.deepEqual((await reader.subjectsOf("cj")).map((s) => [s.subject, s.ref_id]), [[JOB, job!.ref_id]]);
+      assert.deepEqual((await reader.claimsFor(JOB)).map((c) => c.id), ["cj"]);
+      assert.equal(await reader.subjectRefId(JOB), job!.ref_id);
+      assert.equal(await reader.subjectRefId({ kind: "job", id: "nope" }), null);
+      assert.equal(await reader.activeVersion(JOB), null, "no index: no active turn");
+      assert.equal(await withIndex.activeVersion(JOB), "1700");
+      assert.equal(await withIndex.versionRefId({ kind: "job", name: "j-1", content_hash: "1700" }), turn1!.ref_id);
+      assert.equal(await withIndex.versionRefId({ kind: "job", name: "j-1", content_hash: "1690" }), null, "a run that carries no job is no turn of it");
+
+      // What the pass writes for a job: ABOUT the turn, sourced to the same
+      // run, the turn in the context, the screenshot's url on the source.
+      const eid = evidenceId("kj", "1700", "job:j-1#0");
+      const e = await nodes.write(
+        { type: "Evidence", data: { id: eid, name: "the settings page renders", content: "GET …/settings → 200", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5 } },
+        "create",
+      );
+      await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: cj!.ref_id, target_ref_id: e.ref_id, properties: { strength: 1 } },
+        { edge: "PRODUCED_BY", source_ref_id: e.ref_id, target_ref_id: kj!.ref_id },
+        { edge: "ABOUT", source_ref_id: e.ref_id, target_ref_id: turn1!.ref_id },
+        { edge: "HAS_SOURCE", source_ref_id: e.ref_id, target_ref_id: turn1!.ref_id, properties: { context: JSON.stringify({ turn: "1700", checkVersion: "http/verify", file: "shots/001.png" }), post_url: "/jobs/j-1/files/shots/001.png" } },
+      ]);
+      // Evidence ABOUT a run with no job reads back about nothing.
+      const strayId = newEpistemicId();
+      const stray = await nodes.write({ type: "Evidence", data: { id: strayId, name: "stray", content: "x", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 4 } });
+      await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: cj!.ref_id, target_ref_id: stray.ref_id, properties: { strength: -1 } },
+        { edge: "ABOUT", source_ref_id: stray.ref_id, target_ref_id: noJob!.ref_id },
+      ]);
+
+      const all = await withIndex.evidenceFor("cj");
+      assert.deepEqual(all.find((x) => x.id === strayId)!.about, undefined);
+      const [row] = await withIndex.evidenceFor("cj", JOB);
+      assert.deepEqual(
+        [row!.id, row!.about, row!.source?.run_id, row!.source?.context, row!.source?.post_url],
+        [eid, { kind: "job", name: "j-1", content_hash: "1700" }, "1700", { turn: "1700", checkVersion: "http/verify", file: "shots/001.png" }, "/jobs/j-1/files/shots/001.png"],
+      );
+      assert.deepEqual(await withIndex.evidenceFor("cj", { kind: "workflow", name: "j-1" }), [], "a workflow of the same name is another subject");
+      let [s] = await withIndex.statusFor(JOB);
+      assert.deepEqual([s!.status.status, s!.status.unverified, s!.status.latest?.id], ["supported", 0, eid]);
+      // A second turn recorded (at run.start, so a turn in flight counts) → stale.
+      runs = [{ workflow: "job", runId: "1701", at: "", status: "running" }, ...runs];
+      [s] = await withIndex.statusFor(JOB);
+      assert.deepEqual([s!.status.status, s!.status.unverified], ["stale", 1]);
+      // A child run is not a turn.
+      runs = [{ workflow: "pod-pr", runId: "1702", at: "", status: "running", parentRunId: "1701" }, ...runs];
+      assert.equal(await withIndex.activeVersion(JOB), "1701");
     });
   });
 }

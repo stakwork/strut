@@ -39,6 +39,7 @@ import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
 import { encodeId, idProblem } from "./session-store.js";
 import type { JobIndex } from "./job-index.js";
+import type { LedgerClaim } from "./ledger.js";
 
 export interface JobRecord {
   name: string;
@@ -160,6 +161,11 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  job (kept until a later launch carries another); its `actor` joins the
    *  job's `actors` (and is `createdBy` when it is the first). */
   recordRun(job: string, run: Omit<JobRun, "at"> & { title?: string; actor?: string }): Promise<void>;
+  /** The job's claims as the ledger reads them (plans/job-claims.md §6) —
+   *  set by the server where the claims layer is on, so `GET /jobs/:id`
+   *  and `job/get` carry the same `claims`; absent on a filesystem
+   *  workspace. Null for a job not on file. */
+  claims?(job: string): Promise<LedgerClaim[] | null>;
 }
 
 /** The record's own writer, index or not. `index` (a server's stores) adds

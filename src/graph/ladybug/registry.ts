@@ -119,8 +119,12 @@ export const LADYBUG_EDGES: readonly LadybugEdgeDef[] = [
   ...STRUT_EDGES.filter((e) => BY_TYPE.has(e.source.toLowerCase()) && BY_TYPE.has(e.target.toLowerCase())).map(({ edge, source, target }) => ({ edge, source, target })),
   { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutWorkflow" },
   { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutStep" },
+  // A job's claim hangs off the job; its evidence is about the TURN — the
+  // run (plans/job-claims.md §1–§2).
+  { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutJob" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutWorkflowVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
+  { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutRun" },
   { edge: "TESTS", source: CHECK_TYPE, target: CLAIM_TYPE },
   { edge: "EVIDENCED_BY", source: CLAIM_TYPE, target: EVIDENCE_TYPE },
   { edge: "PRODUCED_BY", source: EVIDENCE_TYPE, target: CHECK_TYPE },

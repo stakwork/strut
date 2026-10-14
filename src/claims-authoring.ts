@@ -11,13 +11,28 @@
  *     `run_when: run`; `policy: always` for a code check, `on_change` for
  *     one PRESUMED PAID (an `agent` / `llm` step anywhere in the check
  *     closure, or a closure that cannot be resolved) and for an external
- *     check, where it paces the question (a person's time is the cost);
+ *     check, where it paces the question (a person's time is the cost). On
+ *     a JOB subject (plans/job-claims.md §5) `manual` is the default
+ *     whatever the step — the work is verified when it is said to be ready
+ *     — and `sample` is refused: a job has turns, not a stream of runs;
+ *   - a job must be ON FILE (a record with a run) before a claim is written
+ *     about it, and its `StrutJob` node is upserted from the record then
+ *     (`ensureJobNode`): the projector writes it at run END, and the work
+ *     agent authors during its first turn (plans/job-claims.md §1). A job
+ *     is an instance nobody published, so the ownership rule below does not
+ *     apply to it: whoever reaches the surface may state what it must
+ *     deliver;
  *   - FIXED POINT 1 — a `scoped` actor (the meta surface) edits, retires and
  *     detaches only claims it stamped (`Claim.speaker_name`) and checks it
  *     stamped (`Check.publisher`), may ADD a check only to a claim it
  *     stamped, and may attach claims only to subjects it published. An
  *     always-passing check hung on a seeded contract line would otherwise
- *     read as `supported` whenever the real check was skipped;
+ *     read as `supported` whenever the real check was skipped. ONE
+ *     exception, ruled (plans/job-claims.md §1): on a JOB subject it may
+ *     add a check to a person's claim — the person's acceptance criterion
+ *     is what the agent's instrument should test, there is no seeded line
+ *     to silence, and the person's own external check stays beside it as a
+ *     separate stream; edit / retire / detach stay scoped;
  *   - FIXED POINT 2 — a check stamped `ai` may not reach a grader: nothing
  *     SEALED (`src/sealed.ts`: the sealed namespaces `eval/*`, `meta/*` plus
  *     `STRUT_SEALED`, a step def's `sealed: true`, a workflow's `sealed:
@@ -35,8 +50,22 @@ import { sealedInClosure, sealedStepPatterns } from "./sealed.js";
 import { validateWorkflowYaml } from "./validate.js";
 import type { StepRegistry } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
-import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type EvidenceRow, type RunEvidenceRow, type RunWhen, type SubjectRef } from "./graph/claims.js";
+import {
+  ClaimsReader,
+  isExternalCheck,
+  subjectName,
+  subjectOf,
+  type CheckPolicy,
+  type CheckRow,
+  type ClaimStatus,
+  type ClaimsReaderDeps,
+  type EvidenceRow,
+  type RunEvidenceRow,
+  type RunWhen,
+  type SubjectRef,
+} from "./graph/claims.js";
 import { ClaimsError, ClaimsWriter, boundedName, type CheckData } from "./graph/claims-writer.js";
+import { ensureJobNode } from "./graph/projector.js";
 import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
 import { latestRefs, type EvidenceLocator } from "./ledger.js";
 
@@ -44,8 +73,8 @@ import { latestRefs, type EvidenceLocator } from "./ledger.js";
 
 /** A subject as a tool names it. */
 export interface SubjectInput {
-  kind: "step" | "workflow";
-  /** Workflow name, or custom step type. */
+  kind: SubjectRef["kind"];
+  /** Workflow name, custom step type, or job id. */
   name: string;
 }
 
@@ -79,7 +108,7 @@ export interface ClaimActor {
 
 export type ClaimsResult<T> = ({ ok: true } & T) | { error: string };
 
-export interface ClaimsAuthoringDeps {
+export interface ClaimsAuthoringDeps extends ClaimsReaderDeps {
   graph: GraphBackend;
   workspace: WorkspaceStore;
   /** FRESH registry — a check may name a step published this turn. */
@@ -97,8 +126,10 @@ const POLICIES: readonly CheckPolicy[] = ["always", "on_change", "sample", "manu
 const PAID_STEP_TYPES = ["agent", "llm"];
 
 export function toSubjectRef(s: SubjectInput): SubjectRef {
-  return s.kind === "workflow" ? { kind: "workflow", name: s.name } : { kind: "step", type: s.name };
+  return subjectOf(s.kind, s.name);
 }
+
+const onJob = (subjects: readonly SubjectRef[]) => subjects.some((s) => s.kind === "job");
 
 /**
  * One contract from a workflow's `claims:` block and a publish call's
@@ -176,9 +207,9 @@ export interface ClaimListing {
  *  `latest`'s shape, plus the claim it answers and what it was about. */
 export interface RunEvidence {
   claim: { id: string; text: string };
-  /** The subject and exact version the check observed: the workflow, or a
-   *  step it executed. */
-  subject?: { kind: "step" | "workflow"; name: string; version: string };
+  /** The subject and exact version the check observed: the workflow, a
+   *  step it executed, or the job it was a turn of (version = the run). */
+  subject?: { kind: SubjectRef["kind"]; name: string; version: string };
   /** `open` = an external check's question, still waiting on someone. */
   verdict: "supports" | "refutes" | "open";
   content?: string;
@@ -195,9 +226,28 @@ export interface RunEvidence {
 export type ClaimsAuthoring = ReturnType<typeof buildClaimsAuthoring>;
 
 export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
-  const reader = new ClaimsReader(deps.graph);
+  const reader = new ClaimsReader(deps.graph, { jobs: deps.jobs });
   const writer = new ClaimsWriter(deps.graph, reader);
   const sealedPatterns = () => sealedStepPatterns(deps.env ?? process.env);
+
+  /** Is the job on file? (A record with a run: `recordRun` writes it at
+   *  `run.start`.) Without an index no job is. */
+  const jobOnFile = async (id: string) => !!(await deps.jobs?.get?.(id, { threads: false }));
+
+  /** A job subject's node must exist before the writer attaches anything to
+   *  it: upsert it from the record (plans/job-claims.md §1). A job not on
+   *  file is refused like a workflow that does not exist. */
+  async function ensureSubjectNodes(subjects: readonly SubjectRef[]): Promise<void> {
+    for (const s of subjects) {
+      if (s.kind !== "job") continue;
+      if (!(await ensureJobNode(deps.graph, deps.jobs, s.id))) {
+        throw new ClaimsError("NOT_FOUND", `job "${s.id}" is not on file — a job exists once a run was launched under it (POST …/run { job })`);
+      }
+    }
+  }
+
+  /** The subjects a claim is about — what decides a check's defaults. */
+  const subjectsOfClaim = async (claimId: string): Promise<SubjectRef[]> => (await reader.subjectsOf(claimId)).map((s) => s.subject);
 
   /** What validating a check needs from the deployment, resolved ONCE per
    *  call (a registry rebuild re-materializes every custom step, so it is
@@ -212,12 +262,18 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     return { registry, workflows: workflows.map((w) => ({ name: w.name, versions: w.versions })) };
   }
 
-  /** Validate one spec and apply the write-time defaults. Throws ClaimsError. */
-  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string, ctx: NormalizeCtx): Promise<CheckData> {
+  /** Validate one spec and apply the write-time defaults. `job` = the
+   *  check is on a job subject (plans/job-claims.md §5): `manual` by
+   *  default whatever the step, `sample` refused. Throws ClaimsError. */
+  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string, ctx: NormalizeCtx, job = false): Promise<CheckData> {
     if (!spec || typeof spec !== "object") throw new ClaimsError("INVALID", `${where}: a check is an object — { type, config } for a step check, { description } for an external one`);
     const when = spec.when ?? "run";
     if (!RUN_WHENS.includes(when)) throw new ClaimsError("INVALID", `${where}: when must be one of ${RUN_WHENS.join(" | ")}`);
     if (spec.policy !== undefined && !POLICIES.includes(spec.policy)) throw new ClaimsError("INVALID", `${where}: policy must be one of ${POLICIES.join(" | ")}`);
+    if (job && spec.policy === "sample") {
+      throw new ClaimsError("INVALID", `${where}: policy "sample" has no meaning on a job — a job has turns, not a stream of runs. Use manual (the default: fires on meta/verify-job or a person's Verify), on_change (once per turn) or always`);
+    }
+    if (job && when === "publish") throw new ClaimsError("INVALID", `${where}: a job is never published — a check on a job runs when the job is verified (when: run)`);
     if (spec.freshnessDays !== undefined && !(Number.isInteger(spec.freshnessDays) && spec.freshnessDays > 0)) {
       throw new ClaimsError("INVALID", `${where}: freshnessDays must be a positive integer`);
     }
@@ -240,7 +296,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       }
       if (spec.config !== undefined) throw new ClaimsError("INVALID", `${where}: \`config\` without a \`type\` — name the step that runs it`);
       if (when === "publish") throw new ClaimsError("INVALID", `${where}: an external check cannot run at publish (there is no run to look at)`);
-      return { ...common, name: spec.name?.trim() || boundedName(description).slice(0, 60), description, policy: spec.policy ?? "on_change" };
+      return { ...common, name: spec.name?.trim() || boundedName(description).slice(0, 60), description, policy: spec.policy ?? (job ? "manual" : "on_change") };
     }
 
     const { registry } = ctx;
@@ -284,11 +340,11 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       ...(spec.description?.trim() ? { description: spec.description.trim() } : {}),
       step_type: spec.type,
       step_config,
-      policy: spec.policy ?? (presumedPaid ? "on_change" : "always"),
+      policy: spec.policy ?? (job ? "manual" : presumedPaid ? "on_change" : "always"),
     };
   }
 
-  async function normalizeClaims(claims: readonly ClaimSpecInput[], actor: ClaimActor, ctx?: NormalizeCtx): Promise<Array<{ text: string; checks: CheckData[] }>> {
+  async function normalizeClaims(claims: readonly ClaimSpecInput[], actor: ClaimActor, ctx?: NormalizeCtx, job = false): Promise<Array<{ text: string; checks: CheckData[] }>> {
     const out: Array<{ text: string; checks: CheckData[] }> = [];
     const seen = new Set<string>();
     const resolved = ctx ?? (claims.length > 0 ? await normalizeCtx() : undefined);
@@ -301,7 +357,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         throw new ClaimsError("INVALID", `claims[${i}] ("${boundedName(text).slice(0, 60)}"): every claim needs at least one check — if code cannot check it, give it an external check ({ description })`);
       }
       const checks: CheckData[] = [];
-      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`, resolved!));
+      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`, resolved!, job));
       out.push({ text, checks });
     }
     return out;
@@ -349,8 +405,11 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     };
   }
 
-  /** Did `actor` publish this subject? (The meta surface's ownership rule.) */
+  /** Did `actor` publish this subject? (The meta surface's ownership rule.)
+   *  A job is nobody's template: the agent working it states what it must
+   *  deliver, so a job subject is always its author's to claim about. */
   async function ownsSubject(subject: SubjectRef, actor: ClaimActor): Promise<boolean> {
+    if (subject.kind === "job") return true;
     if (subject.kind === "step") return (await deps.workspace.listSteps({ publisher: actor.publisher })).some((s) => s.type === subject.type);
     return (await deps.workspace.getWorkflowMetadata(subject.name))?.publisher === actor.publisher;
   }
@@ -359,7 +418,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     if (!actor.scoped) return;
     for (const s of subjects) {
       if (!(await ownsSubject(s, actor))) {
-        throw new ClaimsError("REFUSED", `${s.kind} "${s.kind === "step" ? s.type : s.name}" was not published by "${actor.publisher}" — the meta surface only ${verb} subjects it authored`);
+        throw new ClaimsError("REFUSED", `${s.kind} "${subjectName(s)}" was not published by "${actor.publisher}" — the meta surface only ${verb} subjects it authored`);
       }
     }
   }
@@ -466,7 +525,8 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       try {
         const subjects = (input.subjects ?? []).map(toSubjectRef);
         await requireOwnedSubjects(subjects, actor, "adds claims to");
-        const [claim] = await normalizeClaims([{ text: input.text, checks: input.checks }], actor);
+        const [claim] = await normalizeClaims([{ text: input.text, checks: input.checks }], actor, undefined, onJob(subjects));
+        await ensureSubjectNodes(subjects);
         return { ok: true, ...(await writer.addClaim({ subjects, text: claim!.text, speaker: actor.publisher, checks: claim!.checks })) };
       } catch (e) {
         return fail(e);
@@ -495,6 +555,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       try {
         const ref = toSubjectRef(subject);
         await requireOwnedSubjects([ref], actor, "attaches claims to");
+        await ensureSubjectNodes([ref]);
         return { ok: true, ...(await writer.attachClaim(id, ref)) };
       } catch (e) {
         return fail(e);
@@ -512,8 +573,11 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async addCheck(claimId: string, spec: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
-        await requireOwnClaim(claimId, actor, "adds checks to");
-        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", await normalizeCtx()))) };
+        const job = onJob(await subjectsOfClaim(claimId));
+        // Fixed point 1's one exception (plans/job-claims.md §1, ruled): on a
+        // job the agent may hang its instrument on the person's claim.
+        if (!job) await requireOwnClaim(claimId, actor, "adds checks to");
+        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", await normalizeCtx(), job))) };
       } catch (e) {
         return fail(e);
       }
@@ -537,7 +601,10 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
           sampleRate: current.sampleRate,
           ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
         };
-        const next = await normalizeCheck(merged, actor, "check", await normalizeCtx());
+        const tested = await reader.claimsTestedBy(id);
+        let job = false;
+        for (const c of tested) if (onJob(await subjectsOfClaim(c.id))) job = true;
+        const next = await normalizeCheck(merged, actor, "check", await normalizeCtx(), job);
         const same = (["name", "description", "step_type", "step_config", "run_when", "policy", "freshness_days", "sample_rate"] as const).every(
           (f) => (next[f] ?? undefined) === (old[f] ?? undefined),
         );
@@ -561,7 +628,10 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async listClaims(subject: SubjectInput): Promise<ClaimsResult<{ subject: SubjectInput; claims: ClaimListing[] }>> {
       try {
         const ref = toSubjectRef(subject);
-        if (!(await reader.subjectRefId(ref))) throw new ClaimsError("NOT_FOUND", `${subject.kind} "${subject.name}" is not in the workspace`);
+        // A job on file with nothing claimed yet has no node, and an empty contract.
+        if (ref.kind === "job") {
+          if (!(await jobOnFile(ref.id))) throw new ClaimsError("NOT_FOUND", `job "${ref.id}" is not on file`);
+        } else if (!(await reader.subjectRefId(ref))) throw new ClaimsError("NOT_FOUND", `${subject.kind} "${subject.name}" is not in the workspace`);
         const rows = await reader.statusFor(ref);
         return {
           ok: true,

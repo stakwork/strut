@@ -5,12 +5,17 @@
  * instrument that can test it, `Evidence` is what one test observed — and
  * the edges between them:
  *
- *   Claim    —ABOUT→        StrutStep | StrutWorkflow       (stable identity)
+ *   Claim    —ABOUT→        StrutStep | StrutWorkflow | StrutJob   (stable identity)
  *   Check    —TESTS→        Claim
  *   Claim    —EVIDENCED_BY {strength ±1}→ Evidence
  *   Evidence —PRODUCED_BY→  Check                            (absent: no check produced it)
- *   Evidence —ABOUT→        StrutStepVersion | StrutWorkflowVersion
+ *   Evidence —ABOUT→        StrutStepVersion | StrutWorkflowVersion | StrutRun (a job's TURN)
  *   Evidence —HAS_SOURCE {context, …}→ StrutRun
+ *
+ * Three subject kinds, one rule (plans/job-claims.md §1–§2): a step and a
+ * workflow are TEMPLATES whose versions are content hashes; a job is an
+ * INSTANCE whose version is the turn — its newest top-level run, read from
+ * the job index — and whose evidence is ABOUT that run's node.
  *
  * None of the three is a Strut type: their schemas live in the database
  * (jarvis migrations 119/120/124/125, or the bundled ontology fixture) and
@@ -32,6 +37,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { CassetteMode } from "../cassette.js";
+import type { JobIndex } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { Dialect } from "./engine.js";
 import { typeValue } from "./strut-schemas.js";
@@ -103,29 +109,60 @@ export function evidenceId(checkId: string, runId: string, path: string): string
 
 // ── Subjects ────────────────────────────────────────────────────────────────
 
-/** What a claim is about: the STABLE identity, never a version. */
-export type SubjectRef = { kind: "workflow"; name: string } | { kind: "step"; type: string };
+/** What a claim is about: the STABLE identity, never a version. A job
+ *  (plans/job-claims.md) is named by its id; its version is the turn. */
+export type SubjectRef = { kind: "workflow"; name: string } | { kind: "step"; type: string } | { kind: "job"; id: string };
+
+export const SUBJECT_KINDS: readonly SubjectRef["kind"][] = ["step", "workflow", "job"];
 
 /** The exact version an observation was made on (`Evidence —ABOUT→`). */
 export interface VersionRef {
   kind: SubjectRef["kind"];
-  /** Workflow name or step type. */
+  /** Workflow name, step type, or job id. */
   name: string;
+  /** A workflow's or step's content hash; a job's turn — the run id. */
   content_hash: string;
 }
 
 export function subjectName(subject: SubjectRef): string {
-  return subject.kind === "workflow" ? subject.name : subject.type;
+  return subject.kind === "workflow" ? subject.name : subject.kind === "step" ? subject.type : subject.id;
+}
+
+/** A subject from its kind and name — the inverse of `subjectName`. */
+export function subjectOf(kind: SubjectRef["kind"], name: string): SubjectRef {
+  return kind === "step" ? { kind, type: name } : kind === "workflow" ? { kind, name } : { kind, id: name };
 }
 
 function isVersionOf(version: VersionRef | undefined, subject: SubjectRef): boolean {
   return !!version && version.kind === subject.kind && version.name === subjectName(subject);
 }
 
+/** The node a subject hangs off (`label`, matched by `key`), and the node
+ *  one of its versions is (`version`, matched by `versionKey` = the
+ *  subject's name and `versionHash` = the version). */
 const SUBJECT_NODE = {
-  workflow: { label: "StrutWorkflow", version: "StrutWorkflowVersion", key: "name" },
-  step: { label: "StrutStep", version: "StrutStepVersion", key: "step_type" },
+  workflow: { label: "StrutWorkflow", key: "name", version: "StrutWorkflowVersion", versionKey: "name", versionHash: "content_hash" },
+  step: { label: "StrutStep", key: "step_type", version: "StrutStepVersion", versionKey: "step_type", versionHash: "content_hash" },
+  // A job's version is the TURN (plans/job-claims.md §2): the run node, which
+  // the projector stamps with the job it was launched under.
+  job: { label: "StrutJob", key: "job_id", version: "StrutRun", versionKey: "job", versionHash: "run_id" },
 } as const;
+
+/** A job's active version: its newest TOP-LEVEL run (no `parentRunId`) on
+ *  the record, `runs` newest first as the index serves them — written at
+ *  `run.start`, so a turn in flight is already the newest. Null before the
+ *  first. Pure. */
+export function activeTurnOf(runs: ReadonlyArray<{ runId: string; parentRunId?: string }>): string | null {
+  return runs.find((r) => !r.parentRunId)?.runId ?? null;
+}
+
+/** What the reader needs of the job index (plans/job-claims.md §2): a job
+ *  read back, for its active turn. `createStrut` hands its `services.jobs`;
+ *  a bare reader has none, and every job subject then has no active
+ *  version — its claims read `stale` or `unknown`, never `supported`. */
+export interface ClaimsReaderDeps {
+  jobs?: { get?: JobIndex["get"] };
+}
 
 // ── The check contract ──────────────────────────────────────────────────────
 
@@ -170,8 +207,12 @@ export interface CheckResult {
 /** `HAS_SOURCE.context` is ONE `?string` in jarvis's schema; strut writes
  *  this object into it as JSON. */
 export interface SourceContext {
-  /** The observed step's event path. */
+  /** The observed step's event path. Unused for a job subject. */
   path?: string;
+  /** A job subject's evidence (plans/job-claims.md §2): the turn observed —
+   *  the run id the `ABOUT` edge points at, for readers that do not follow
+   *  the edge. */
+  turn?: string;
   cassette?: CassetteMode;
   /** The code that actually ran under the check (a custom step's version;
    *  for `subflow`, the child's name and resolved version). */
@@ -331,7 +372,9 @@ export function newestFirst(a: EvidenceRow, b: EvidenceRow): number {
  * A stream's latest MEASUREMENT is its newest counted evidence together
  * with everything else that stream observed in the same source run: a
  * `foreach` body yields one Evidence per iteration, and the last iteration
- * passing must not paper over an earlier one failing.
+ * passing must not paper over an earlier one failing. On a JOB subject the
+ * newest alone is the measurement: its version is the run, and a re-verify
+ * of the same turn appends a new one.
  *
  *   any latest is ABOUT the active version and refutes    → refuted
  *   else any latest is ABOUT the active version, supports → supported
@@ -362,8 +405,13 @@ export function claimStatus(input: ClaimStatusInput): ClaimStatus {
   const latest: EvidenceRow[] = [];
   for (const stream of streams.values()) {
     stream.sort(newestFirst);
+    // One MEASUREMENT is the newest evidence with everything the stream
+    // observed in the same source run (a foreach body yields one per
+    // iteration). A job's stream has one evidence per pass, and an explicit
+    // re-verify of the same turn is a NEW measurement of that run
+    // (plans/job-claims.md §2) — the newest alone decides.
     const run = stream[0]!.source?.run_id;
-    latest.push(...(run ? stream.filter((e) => e.source?.run_id === run) : [stream[0]!]));
+    latest.push(...(run && subject.kind !== "job" ? stream.filter((e) => e.source?.run_id === run) : [stream[0]!]));
   }
 
   const onActive = (e: EvidenceRow) => activeVersion !== null && e.about?.content_hash === activeVersion;
@@ -425,7 +473,10 @@ export interface SubjectLedgerRow {
  * only on a graph-backed workspace — see `claimsReaderFor`.
  */
 export class ClaimsReader {
-  constructor(private readonly graph: Pick<GraphBackend, "query" | "namespace" | "dialect">) {}
+  constructor(
+    private readonly graph: Pick<GraphBackend, "query" | "namespace" | "dialect">,
+    private readonly deps: ClaimsReaderDeps = {},
+  ) {}
 
   private get ns(): string {
     return this.graph.namespace;
@@ -436,8 +487,13 @@ export class ClaimsReader {
   }
 
   /** Content hash of the subject's active version; null when the subject
-   *  does not exist or has none. */
+   *  does not exist or has none. For a job: its active TURN, from the job
+   *  index (`activeTurnOf`) — null without an index, or with no record. */
   async activeVersion(subject: SubjectRef): Promise<string | null> {
+    if (subject.kind === "job") {
+      const view = await this.deps.jobs?.get?.(subject.id, { threads: false });
+      return view ? activeTurnOf(view.runs) : null;
+    }
     const n = SUBJECT_NODE[subject.kind];
     const d = this.d;
     const rows = await this.graph.query(
@@ -450,7 +506,8 @@ export class ClaimsReader {
   }
 
   /** `ref_id` of a subject's STABLE node, or null when the workspace has no
-   *  such step / workflow (built-in steps have no node). */
+   *  such step / workflow (built-in steps have no node), or the job has not
+   *  been projected yet (`ensureJobNode`, graph/projector.ts). */
   async subjectRefId(subject: SubjectRef): Promise<string | null> {
     const n = SUBJECT_NODE[subject.kind];
     const d = this.d;
@@ -461,12 +518,13 @@ export class ClaimsReader {
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
   }
 
-  /** `ref_id` of the version node a `VersionRef` names, or null. */
+  /** `ref_id` of the version node a `VersionRef` names, or null. For a
+   *  job: the turn's `StrutRun`, stamped with the job. */
   async versionRefId(version: VersionRef): Promise<string | null> {
     const n = SUBJECT_NODE[version.kind];
     const d = this.d;
     const rows = await this.graph.query(
-      `MATCH ${d.node("v", n.version, { namespace: "$ns", [n.key]: "$name", content_hash: "$hash" })} WHERE ${d.live("v")} RETURN v.ref_id AS r LIMIT 1`,
+      `MATCH ${d.node("v", n.version, { namespace: "$ns", [n.versionKey]: "$name", [n.versionHash]: "$hash" })} WHERE ${d.live("v")} RETURN v.ref_id AS r LIMIT 1`,
       { ns: this.ns, name: version.name, hash: version.content_hash },
     );
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
@@ -493,12 +551,12 @@ export class ClaimsReader {
   }
 
   /** The subjects a claim is attached to (live `ABOUT` edges), with the
-   *  edge's ref_id — what `detach` mutes. Steps first, then workflows, each
-   *  by name. */
+   *  edge's ref_id — what `detach` mutes. Steps first, then workflows, then
+   *  jobs, each by name. */
   async subjectsOf(claimId: string): Promise<Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }>> {
     const d = this.d;
     const out: Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }> = [];
-    for (const kind of ["step", "workflow"] as const) {
+    for (const kind of SUBJECT_KINDS) {
       const n = SUBJECT_NODE[kind];
       const rows = await this.graph.query(
         `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}-[a:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("s", n.label)}
@@ -508,11 +566,7 @@ export class ClaimsReader {
       );
       out.push(
         ...rows
-          .map((r) => ({
-            subject: kind === "step" ? ({ kind: "step", type: String(r["name"]) } as SubjectRef) : ({ kind: "workflow", name: String(r["name"]) } as SubjectRef),
-            ref_id: String(r["ref_id"]),
-            edge_ref_id: String(r["edge_ref_id"]),
-          }))
+          .map((r) => ({ subject: subjectOf(kind, String(r["name"])), ref_id: String(r["ref_id"]), edge_ref_id: String(r["edge_ref_id"]) }))
           .sort((a, b) => subjectName(a.subject).localeCompare(subjectName(b.subject))),
       );
     }
@@ -648,16 +702,19 @@ export class ClaimsReader {
     );
     for (const r of checks) each(String(r["e"]), (row) => (row.check_id ??= typeof r["check_id"] === "string" ? r["check_id"] : undefined));
 
-    for (const kind of ["step", "workflow"] as const) {
+    // A job's evidence is ABOUT a `StrutRun` (its turn): the version read
+    // back is the run id, the name the job the run carries — a run with no
+    // job is nobody's version.
+    for (const kind of SUBJECT_KINDS) {
       const n = SUBJECT_NODE[kind];
       const about = await this.graph.query(
         `MATCH ${d.node("e", EVIDENCE_TYPE)}-[ab:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("v", n.version)}
-         WHERE e.ref_id IN $ids AND ${d.edgeLive("ab")} RETURN e.ref_id AS e, v.\`${n.key}\` AS name, v.content_hash AS hash`,
+         WHERE e.ref_id IN $ids AND ${d.edgeLive("ab")} RETURN e.ref_id AS e, v.\`${n.versionKey}\` AS name, v.\`${n.versionHash}\` AS hash`,
         { ids },
       );
       for (const r of about) {
-        if (typeof r["hash"] !== "string") continue;
-        each(String(r["e"]), (row) => (row.about ??= { kind, name: String(r["name"]), content_hash: r["hash"] as string }));
+        if (typeof r["hash"] !== "string" || typeof r["name"] !== "string") continue;
+        each(String(r["e"]), (row) => (row.about ??= { kind, name: r["name"] as string, content_hash: r["hash"] as string }));
       }
     }
 
@@ -704,10 +761,11 @@ const byBelief = (a: ClaimRow, b: ClaimRow) => (a.belief_valid_from ?? 0) - (b.b
 
 /**
  * The gate (plans/claims.md, Design): claims hang off the subjects' graph
- * nodes (`StrutStep` / `StrutWorkflow`), so the layer exists only when the
- * WORKSPACE keeps them in a graph. On a filesystem or in-memory workspace
- * this is null — no claim tool is offered and the verify pass is a no-op.
+ * nodes (`StrutStep` / `StrutWorkflow` / `StrutJob`), so the layer exists
+ * only when the WORKSPACE keeps them in a graph. On a filesystem or
+ * in-memory workspace this is null — no claim tool is offered and the
+ * verify pass is a no-op.
  */
-export function claimsReaderFor(workspace: { graph?: GraphBackend }): ClaimsReader | null {
-  return workspace.graph ? new ClaimsReader(workspace.graph) : null;
+export function claimsReaderFor(workspace: { graph?: GraphBackend }, deps: ClaimsReaderDeps = {}): ClaimsReader | null {
+  return workspace.graph ? new ClaimsReader(workspace.graph, deps) : null;
 }

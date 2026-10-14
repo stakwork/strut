@@ -14,6 +14,11 @@
  * `{ enabled: false }` — the panel hides itself — and mutations answer 409.
  * Mounted before `/workflows/:name/:version`: it serves
  * `/workflows/:name/evidence`.
+ *
+ * A JOB's two doors live here too (plans/job-claims.md §5–§6): `GET
+ * /jobs/:id/claims`, the job's ledger alone — what a host's job-turn handler
+ * reads beside the artifact list — and `POST /jobs/:id/verify`, a person's
+ * explicit pass against the job's newest turn.
  */
 import type { Context, Hono } from "hono";
 import { z } from "zod";
@@ -116,25 +121,60 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   app.delete("/checks/:id", requireApiKey, async (c) => (claims ? reply(c, await claims.retireCheck(id(c), PERSON)) : off(c)));
 
   // A person's own observation on a run — and how an open slot is ANSWERED
-  // from the panel (pass `slot`). Always `asserted`, `by: person`.
+  // from the panel (pass `slot`). Always `asserted`, `by: person`. With
+  // `job`, about that job's turn `runId` (plans/job-claims.md §7).
   app.post("/claims/:id/evidence", requireApiKey, async (c) => {
     if (!deps.verifier) return off(c);
     const body = await bodyOf(
       c,
-      z.object({ name: z.string(), runId: z.string(), supports: z.boolean(), content: z.string(), slot: z.string().optional(), subject: subjectSchema.optional() }),
+      z.object({
+        name: z.string().optional(),
+        runId: z.string(),
+        job: z.string().optional(),
+        supports: z.boolean(),
+        content: z.string(),
+        slot: z.string().optional(),
+        subject: subjectSchema.optional(),
+      }),
     );
     if ("error" in body) return c.json(body, 400);
-    const { subject, slot, ...rest } = body.data;
+    const { subject, slot, name, job, ...rest } = body.data;
     return reply(
       c,
       await deps.verifier.addEvidence({
         claim: id(c),
         ...rest,
+        ...(name ? { name } : {}),
+        ...(job ? { job } : {}),
         ...(slot ? { slot } : {}),
         ...(subject ? { subject: toSubjectRef(subject) } : {}),
         by: "person",
         mode: "asserted",
       }),
     );
+  });
+
+  // A job's ledger alone (plans/job-claims.md §6): every claim about the job
+  // with its computed status, the latest evidence (`about` = the turn,
+  // `locator` = the screenshot's url), its checks and open slots.
+  app.get("/jobs/:id/claims", async (c) => {
+    const job = decodeURIComponent(id(c));
+    if (!deps.verifier) return c.json({ enabled: false, job, claims: [] });
+    const ledger = await deps.verifier.jobLedger(job);
+    return ledger ? c.json({ enabled: true, job, claims: ledger }) : c.json({ error: `No job "${job}"` }, 404);
+  });
+
+  // Door two (§5): a PERSON verifies the job now, against its newest turn —
+  // `manual` checks fire, evidence on an already verified turn appends. The
+  // pass and the ledger come back together.
+  app.post("/jobs/:id/verify", requireApiKey, async (c) => {
+    if (!deps.verifier) return off(c);
+    const job = decodeURIComponent(id(c));
+    // No body is "every claim".
+    const body = z.object({ claims: z.array(z.string()).optional() }).safeParse((await c.req.json().catch(() => null)) ?? {});
+    if (!body.success) return c.json({ error: `invalid body: ${body.error.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ")}` }, 400);
+    const result = await deps.verifier.verifyJob(job, body.data.claims ? { claims: body.data.claims } : {});
+    if (result.skipped === "unknown-job") return c.json({ error: `No job "${job}"` }, 404);
+    return c.json(result);
   });
 }

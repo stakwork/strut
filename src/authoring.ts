@@ -506,15 +506,22 @@ export interface AuthoringCapability {
    *  a harness calls it before digesting, because the detached pass races it
    *  (single-flighted: whichever starts second awaits the first). */
   verifyRun(name: string, runId: string): Promise<unknown>;
+  /** Verify a JOB now (plans/job-claims.md §5, door one): an explicit pass
+   *  over the job's claims with `runId` — the calling turn's own run, mid-
+   *  turn — as the version, else the job's newest turn. Returns the pass
+   *  and the job's ledger. `claims` narrows to ids. */
+  verifyJob(job: string, opts?: { claims?: string[]; runId?: string }): Promise<unknown>;
   /**
    * Record an observation about a claim on a run. `caller` decides how much
    * it is worth (fixed point 3): ONLY a step of a workflow this surface did
    * not publish — a seeded harness writing its graders' verdicts — records
    * `observed`. An `ai`-published workflow, or ANY agent tool call (even
-   * inside a seeded harness), records `asserted`, whatever it says.
+   * inside a seeded harness), records `asserted`, whatever it says. With
+   * `job`, the run is one of that job's turns and the evidence is about the
+   * job (`name` may then be omitted).
    */
   addEvidence(
-    input: { claim: string; name: string; runId: string; supports: boolean; content: string; subject?: SubjectInput; slot?: string },
+    input: { claim: string; name?: string; runId: string; job?: string; supports: boolean; content: string; subject?: SubjectInput; slot?: string },
     caller?: { workflow?: string; runId?: string; agentTool?: boolean },
   ): Promise<unknown>;
 }
@@ -872,13 +879,19 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       return deps.verifier.verifyRun(name, runId, { explicit: true });
     },
 
+    async verifyJob(job, opts = {}) {
+      if (!claims || !deps.verifier) return claimsOff;
+      return deps.verifier.verifyJob(job, opts);
+    },
+
     async addEvidence(input, caller) {
       if (!claims || !deps.verifier) return claimsOff;
       const root = caller?.workflow ? await findWorkflow(caller.workflow) : undefined;
       const harness = !caller?.agentTool && !!root && root.publisher !== AI_PUBLISHER;
       return deps.verifier.addEvidence({
         claim: input.claim,
-        name: input.name,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.job ? { job: input.job } : {}),
         runId: input.runId,
         supports: input.supports,
         content: input.content,

@@ -25,8 +25,19 @@
  *     republished after the check was written;
  *   - overspend: a check presumed paid is skipped once a cap is hit, and any
  *     check that REPORTS cost is persisted under `check:<id>` and counted.
+ *
+ * A JOB is the third subject (plans/job-claims.md): a top-level run launched
+ * under a job observes the job at the version that IS that run — the turn.
+ * Its checks read the job's LIVE state from the index (`buildJobSubject`),
+ * not the log, so only the newest turn is ever verified (`superseded`
+ * otherwise); an explicit verify of the same turn (`verifyJob`: the agent
+ * mid-turn through `meta/verify-job`, a person through `POST
+ * /jobs/:id/verify`) APPENDS evidence at `job:<id>#<n>` instead of being a
+ * no-op, and accepts a run still in flight.
  */
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { closureIncludes, flowClosure } from "./closure.js";
 import type { RunEvent, StepRegistry } from "./core.js";
 import { sealedInClosure, sealedStepPatterns } from "./sealed.js";
@@ -36,6 +47,7 @@ import {
   ClaimsReader,
   DEFAULT_FRESHNESS_DAYS,
   EVIDENCE_TYPE,
+  activeTurnOf,
   evidenceId,
   isExternalCheck,
   newEpistemicId,
@@ -44,6 +56,7 @@ import {
   type CheckResult,
   type CheckRow,
   type ClaimRow,
+  type ClaimsReaderDeps,
   type EvidenceMode,
   type EvidenceRow,
   type PublishCheckSubject,
@@ -54,7 +67,9 @@ import {
 } from "./graph/claims.js";
 import { boundedName } from "./graph/claims-writer.js";
 import type { EdgeInput } from "./graph/edge-writer.js";
-import { buildLedger, type Ledger } from "./ledger.js";
+import { buildJobSubject, type JobCheckSubject } from "./job-subject.js";
+import { jobRoot } from "./jobs.js";
+import { buildLedger, type Ledger, type LedgerClaim } from "./ledger.js";
 import { runRef } from "./graph/projector.js";
 import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
 import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } from "./run-step.js";
@@ -75,11 +90,19 @@ export interface ObservedSubject {
    *  the Evidence's `observed_at`, so backfilling an old run never makes old
    *  evidence look new. */
   at: string;
+  /** What a check reads. For a JOB subject this is a stand-in — the turn's
+   *  `runId` and `output`, no `input` — and the pass builds the real input
+   *  from the job index at verify time (`buildJobSubject`): a job's product
+   *  is its live state, never its log (plans/job-claims.md §3). */
   check: Omit<RunCheckSubject, "artifactsDir">;
 }
 
 const CONTAINER_STEPS = new Set(["subflow", "loop", "foreach"]);
 const isToolEvent = (e: RunEvent) => typeof e.stepType === "string" && e.stepType.startsWith("tool:");
+
+/** A job subject's event path — `job:<id>`; its evidence is written at
+ *  `job:<id>#<n>` (plans/job-claims.md §2). */
+export const jobSubjectPath = (job: string) => `job:${job}`;
 
 /**
  * Rebuild the subjects from a run's event log alone (run events carry full
@@ -92,7 +115,11 @@ const isToolEvent = (e: RunEvent) => typeof e.stepType === "string" && e.stepTyp
  *   - a step / run that errored: `{ input, error }`, no output — so "fails
  *     loudly on a private video" is checkable;
  *   - `step.replayed` (resume): nothing executed, no subject;
- *   - an agent's tool calls (`tool:*`): not subjects — their logged output is truncated.
+ *   - an agent's tool calls (`tool:*`): not subjects — their logged output is truncated;
+ *   - the JOB a top-level run was a turn of (`run.start.job`, no
+ *     `parentRunId`): one subject at the version that is this run, once the
+ *     run ENDED — a cancelled or failed turn moves the version (its evidence
+ *     goes stale) and nothing is verified for it (plans/job-claims.md §8).
  */
 export function subjectsOfRun(key: string, events: readonly RunEvent[]): ObservedSubject[] {
   const out: ObservedSubject[] = [];
@@ -167,6 +194,14 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
           ...(end.type === "run.error" ? { error: end.error ?? { message: "unknown error" } } : { output: end.output }),
         },
       });
+    }
+  }
+  // The job this run was a turn of.
+  if (launch.job && !launch.parentRunId) {
+    const end = [...events].reverse().find((e) => e.type === "run.end");
+    if (end) {
+      const path = jobSubjectPath(launch.job);
+      out.push({ subject: { kind: "job", id: launch.job }, version: runId, path, at: end.ts, check: { runId, input: undefined, path, output: end.output } });
     }
   }
   return out;
@@ -261,7 +296,8 @@ export interface PolicyInput {
   checkVersion: string;
   runId: string;
   path: string;
-  /** `verify_run` / `meta/verify-run`: fires `manual` checks too. */
+  /** `verify_run` / `meta/verify-run` (a job's: `meta/verify-job`, `POST
+   *  /jobs/:id/verify`): fires `manual` checks too. */
   explicit: boolean;
   now: number;
 }
@@ -284,7 +320,10 @@ export function policyFires(p: PolicyInput): boolean {
 
 // ── Results ─────────────────────────────────────────────────────────────────
 
-export type SkipReason = "policy" | "budget" | "cannot-launch" | "unknown-version" | "denied";
+/** `superseded`: a job subject at a turn that is not the job's newest — a
+ *  job check reads the live app, which would be filed under the wrong turn
+ *  (plans/job-claims.md §2). Nothing about a job is backfilled. */
+export type SkipReason = "policy" | "budget" | "cannot-launch" | "unknown-version" | "denied" | "superseded";
 export type LastVerify = { pending: true } | { ran: true } | { skipped: SkipReason; reason?: string } | { planned: string };
 
 export interface VerifiedCheck {
@@ -299,7 +338,7 @@ export interface VerifyResult {
   key: string;
   runId: string;
   /** The whole pass was a no-op, and why. */
-  skipped?: "verify-origin" | "unknown-run" | "unfinished";
+  skipped?: "verify-origin" | "unknown-run" | "unfinished" | "unknown-job";
   /** Subjects the run observed that carry claims. */
   subjects: SubjectRef[];
   checks: VerifiedCheck[];
@@ -310,11 +349,23 @@ export interface VerifyResult {
   costUsd: number;
 }
 
+/** What `verifyJob` returns (plans/job-claims.md §5): the pass over the job
+ *  subject alone — `runId` is the TURN verified — and the job's ledger,
+ *  each check's `lastVerify` from this pass. */
+export interface JobVerifyResult extends VerifyResult {
+  job: string;
+  claims: LedgerClaim[];
+}
+
 export interface AddEvidenceInput {
   claim: string;
-  /** Run-store key: a workflow name, or `step:<type>`. */
-  name: string;
+  /** Run-store key: a workflow name, or `step:<type>`. Optional with `job`:
+   *  the run is found on the job's record. */
+  name?: string;
   runId: string;
+  /** A JOB subject's evidence (plans/job-claims.md §7): about this turn of
+   *  the job. The run named must carry the job, else refused. */
+  job?: string;
   supports: boolean;
   content: string;
   /** Needed only when the run executed several of the claim's subjects. */
@@ -329,13 +380,14 @@ export interface AddEvidenceInput {
   mode?: EvidenceMode;
 }
 
-export interface VerifierDeps {
+export interface VerifierDeps extends ClaimsReaderDeps {
   graph: GraphBackend;
   store: RunStore;
   workspace: WorkspaceStore;
   /** FRESH registry per pass: a step published this generation is visible to its checks. */
   getRegistry(): Promise<StepRegistry>;
-  /** The services bag checks run with (a getter: createStrut builds it late). */
+  /** The services bag checks run with (a getter: createStrut builds it late).
+   *  Its `dataDir` places a job's directory for a job check's input. */
   services: () => unknown;
   env?: Record<string, string | undefined>;
   /** A DETACHED pass settled — always called, no-op passes included, so a
@@ -359,9 +411,12 @@ export type Verifier = ReturnType<typeof createVerifier>;
 
 export function createVerifier(deps: VerifierDeps) {
   const { graph, store, workspace } = deps;
-  const reader = new ClaimsReader(graph);
+  const reader = new ClaimsReader(graph, { jobs: deps.jobs });
   const env = () => deps.env ?? process.env;
   const inflight = new Map<string, { explicit: boolean; promise: Promise<VerifyResult> }>();
+  /** Explicit job passes in flight, by job: a second one joins the first. */
+  const inflightJobs = new Map<string, Promise<JobVerifyResult>>();
+  const dataDir = () => (deps.services() as { dataDir?: string } | undefined)?.dataDir ?? join(tmpdir(), "strut");
 
   /** What the check would execute as right now: `exec`, `clip/judge@<hash>`,
    *  `fuzzy-match@<hash>` — recorded on the Evidence, and what `on_change`
@@ -382,12 +437,21 @@ export function createVerifier(deps: VerifierDeps) {
       key,
       runId,
       explicit,
+      /** Set by `verifyJob` only: the job's `manual` checks fire, and its
+       *  evidence appends (plans/job-claims.md §5, door three — a run's
+       *  explicit verify says "this run", never "the job"). */
+      explicitJob: false,
       result: { key, runId, subjects: [], checks: [], evidence: 0, slots: 0, costUsd: 0 } as VerifyResult,
       claims: new Map<string, ClaimRow[]>(),
       checks: new Map<string, CheckRow[]>(),
       evidence: new Map<string, EvidenceRow[]>(),
       spentToday: new Map<string, number>(),
       runRef: undefined as string | null | undefined,
+      /** `null` once looked up and absent. */
+      artifactsDir: undefined as string | null | undefined,
+      /** A job check's input, built once per pass; `null` = not on file. */
+      jobInput: new Map<string, JobCheckSubject | null>(),
+      activeTurn: new Map<string, string | null>(),
       activeStepHashes: undefined as Record<string, string> | undefined,
       registry: undefined as StepRegistry | undefined,
       // The source run's principal: its checks are billed to the same person
@@ -396,6 +460,38 @@ export function createVerifier(deps: VerifierDeps) {
     };
   }
   type Pass = ReturnType<typeof newPass>;
+
+  /** Where the run's artifacts are — a step check's `cwd` of choice. */
+  async function artifactsDirOf(pass: Pass): Promise<{ artifactsDir?: string }> {
+    if (pass.artifactsDir === undefined) {
+      const artifacts = (deps.services() as { artifacts?: { dir(runId: string): Promise<string> } } | undefined)?.artifacts;
+      pass.artifactsDir = artifacts ? ((await artifacts.dir(pass.runId).catch(() => undefined)) ?? null) : null;
+    }
+    return pass.artifactsDir ? { artifactsDir: pass.artifactsDir } : {};
+  }
+
+  /** A job check's input (plans/job-claims.md §3): the job's STATE from the
+   *  index — directory, repositories, current deliverables, holds and their
+   *  urls, the turn's output — about the turn the pass verifies. Null when
+   *  the job is not on file (or there is no index). */
+  async function jobInputOf(pass: Pass, job: string, output: unknown): Promise<JobCheckSubject | null> {
+    if (!pass.jobInput.has(job)) {
+      const view = await deps.jobs?.get?.(job, { threads: false });
+      pass.jobInput.set(job, view ? buildJobSubject(view, { runId: pass.runId, dir: jobRoot(dataDir(), job), ...(output !== undefined ? { output } : {}) }) : null);
+    }
+    return pass.jobInput.get(job)!;
+  }
+
+  /** The job's active turn — once per pass. */
+  async function activeTurn(pass: Pass, job: string): Promise<string | null> {
+    if (!pass.activeTurn.has(job)) pass.activeTurn.set(job, await reader.activeVersion({ kind: "job", id: job }));
+    return pass.activeTurn.get(job)!;
+  }
+
+  /** `HAS_SOURCE.context` for a subject: a step's path (and cassette); a
+   *  job's TURN — its path is unused (plans/job-claims.md §2). */
+  const contextOf = (o: ObservedSubject): SourceContext =>
+    o.subject.kind === "job" ? { turn: o.version! } : { path: o.path, ...(o.check.cassette ? { cassette: o.check.cassette } : {}) };
 
   const claimsOf = async (pass: Pass, s: SubjectRef) => {
     const k = subjectKey(s);
@@ -481,12 +577,13 @@ export function createVerifier(deps: VerifierDeps) {
   }
 
   /** Run one step check over a subject. Decides deny / budget, runs it in
-   *  memory, keeps the run only if it reported cost. */
+   *  memory, keeps the run only if it reported cost — or, on a job, left a
+   *  file behind (plans/job-claims.md §4). */
   async function runCheck(
     pass: Pass,
     check: CheckRow,
     subject: SubjectRef,
-    input: RunCheckSubject | PublishCheckSubject,
+    input: RunCheckSubject | PublishCheckSubject | JobCheckSubject,
   ): Promise<{ skipped: SkipReason; reason?: string } | { mapped: MappedCheck; mode: EvidenceMode; checkVersion: string; model?: string; checkRun?: string }> {
     let config: Record<string, unknown>;
     try {
@@ -521,22 +618,34 @@ export function createVerifier(deps: VerifierDeps) {
       workspace,
       origin: "verify",
       verify: { checkId: check.id, subject: subjectKey(subject), sourceRunId: pass.runId },
+      // A job check runs UNDER the job (plans/job-claims.md §4): what it
+      // writes — a screenshot — lands in the job's directory, served and
+      // swept with it. `origin: verify` keeps it off the job's run list; it
+      // takes no hold.
+      ...(subject.kind === "job" ? { job: subject.id } : {}),
       ...(pass.activeStepHashes[type] ? { stepHashes: { [type]: pass.activeStepHashes[type]! } } : {}),
       ...(pass.principal ? { principal: pass.principal } : {}),
     });
+    const mapped = mapCheckResult(type, run);
     const cost = reportedCost(run.events);
+    // A job check that left a file behind (its evidence points into the
+    // job's files) is kept too, so `context.checkRun` names a record a person
+    // can open when the screenshot looks wrong. Still never a turn.
+    const leftFiles = subject.kind === "job" && mapped.kind === "evidence" && typeof mapped.locator?.path === "string";
     let checkRun: string | undefined;
+    if (cost > 0 || leftFiles) {
+      await persistRunUnder(store, checkRunKey(check.id), run);
+      checkRun = run.runId;
+    }
     if (cost > 0) {
       // On record exactly like any agent step — and counted against the caps,
       // which is how a presumed-free check that turns out to cost money is caught.
-      await persistRunUnder(store, checkRunKey(check.id), run);
-      checkRun = run.runId;
       pass.result.costUsd += cost;
       pass.spentToday.set(subjectKey(subject), (pass.spentToday.get(subjectKey(subject)) ?? 0) + cost);
     }
     const model = typeof config["model"] === "string" && !config["model"].includes("{{") ? (config["model"] as string) : undefined;
     return {
-      mapped: mapCheckResult(type, run),
+      mapped,
       // A judgment is not an observation: anything with a model in its closure is asserted.
       mode: paidInClosure ? "asserted" : "observed",
       checkVersion,
@@ -551,6 +660,7 @@ export function createVerifier(deps: VerifierDeps) {
     if (!runRef) return { skipped: "cannot-launch", reason: "the run could not be projected" };
     const version: VersionRef = { kind: o.subject.kind, name: subjectName(o.subject), content_hash: o.version! };
     const preview = o.check.error ? `error: ${o.check.error.message}` : bound(typeof o.check.output === "string" ? o.check.output : (JSON.stringify(o.check.output) ?? ""), 300);
+    const where = o.subject.kind === "job" ? `job "${o.subject.id}", turn ${pass.runId} (a run of ${pass.key})` : `run ${pass.runId} of ${pass.key}, ${o.path}`;
     const written = await writeEvidence({
       id,
       claim,
@@ -559,9 +669,9 @@ export function createVerifier(deps: VerifierDeps) {
       sourceRef: runRef,
       node: {
         evidence_status: "planned",
-        description: bound(`${check.description ?? check.name}\n\nLook at: run ${pass.runId} of ${pass.key}, ${o.path}. It produced: ${preview}`),
+        description: bound(`${check.description ?? check.name}\n\nLook at: ${where}. It produced: ${preview}`),
       },
-      context: { path: o.path, ...(o.check.cassette ? { cassette: o.check.cassette } : {}) },
+      context: contextOf(o),
     });
     if (written !== "written") return { skipped: "unknown-version" };
     // A slot about an older run is a question whose answer would be born
@@ -573,11 +683,19 @@ export function createVerifier(deps: VerifierDeps) {
     return { planned: id };
   }
 
-  async function verifyOne(pass: Pass, o: ObservedSubject, claim: ClaimRow, check: CheckRow, artifactsDir: string | undefined): Promise<LastVerify> {
+  async function verifyOne(pass: Pass, o: ObservedSubject, claim: ClaimRow, check: CheckRow, input: RunCheckSubject | JobCheckSubject): Promise<LastVerify> {
     if (!o.version) return { skipped: "unknown-version" };
-    const id = evidenceId(check.id, pass.runId, o.path);
+    const job = o.subject.kind === "job";
+    const explicit = job ? pass.explicitJob : pass.explicit;
     const all = await evidenceOf(pass, claim.id, o.subject);
     const mine = all.filter((e) => e.check_id === check.id);
+    // A job's evidence path is `job:<id>#<n>` (plans/job-claims.md §2): the
+    // automatic pass writes #0 and is idempotent as every pass is; an
+    // explicit verify of the same turn APPENDS — n counts this check's
+    // evidence on the turn — so a pod that answered a 500 mid-restart and is
+    // up now can be measured again, and `newestFirst` picks the new one.
+    const path = job ? `${o.path}#${explicit ? mine.filter((e) => e.about?.content_hash === o.version).length : 0}` : o.path;
+    const id = evidenceId(check.id, pass.runId, path);
     const existing = mine.find((e) => e.id === id);
     if (existing) return existing.evidence_status === "planned" ? { planned: id } : { ran: true };
 
@@ -595,8 +713,8 @@ export function createVerifier(deps: VerifierDeps) {
       version: o.version,
       checkVersion: isExternalCheck(check) ? "external" : await resolveCheckVersion(check, config, pass.activeStepHashes),
       runId: pass.runId,
-      path: o.path,
-      explicit: pass.explicit,
+      path,
+      explicit,
       now: Date.now(),
     });
     if (!fires) return { skipped: "policy" };
@@ -606,7 +724,7 @@ export function createVerifier(deps: VerifierDeps) {
       return slot;
     }
 
-    const ran = await runCheck(pass, check, o.subject, { ...o.check, ...(artifactsDir ? { artifactsDir } : {}) });
+    const ran = await runCheck(pass, check, o.subject, input);
     if ("skipped" in ran) return ran;
     if (ran.mapped.kind === "cannot-run") return { skipped: "cannot-launch", reason: ran.mapped.reason };
     const runRef = await runRefOf(pass);
@@ -620,8 +738,7 @@ export function createVerifier(deps: VerifierDeps) {
       node: { content: ran.mapped.content, evidence_mode: ran.mode, evidence_status: "collected", observed_at: o.at },
       strength: ran.mapped.supports ? 1 : -1,
       context: {
-        path: o.path,
-        ...(o.check.cassette ? { cassette: o.check.cassette } : {}),
+        ...contextOf(o),
         checkVersion: ran.checkVersion,
         ...(ran.model ? { model: ran.model } : {}),
         ...(ran.checkRun ? { checkRun: ran.checkRun } : {}),
@@ -634,6 +751,44 @@ export function createVerifier(deps: VerifierDeps) {
     return { ran: true };
   }
 
+  /** Every active claim on one observed subject, every runnable check — the
+   *  loop `runPass` and `verifyJob` share. `only` narrows to claim ids. */
+  async function verifySubject(pass: Pass, o: ObservedSubject, only?: readonly string[]): Promise<void> {
+    const claims = (await claimsOf(pass, o.subject)).filter((c) => !only || only.includes(c.id));
+    if (claims.length === 0) return;
+    if (!pass.result.subjects.some((s) => sameSubject(s, o.subject))) pass.result.subjects.push(o.subject);
+
+    let input: RunCheckSubject | JobCheckSubject | null = null;
+    let skip: LastVerify | undefined;
+    if (o.subject.kind === "job") {
+      // Only the newest turn is ever verified (plans/job-claims.md §2): a job
+      // check reads the LIVE app, and would file what it sees under an older turn.
+      const active = await activeTurn(pass, o.subject.id);
+      if (active !== o.version) {
+        skip = { skipped: "superseded", reason: active ? `turn ${active} is the job's newest — ${o.version} is not verified` : "the job is not on file" };
+      } else {
+        input = await jobInputOf(pass, o.subject.id, o.check.output);
+        if (!input) skip = { skipped: "cannot-launch", reason: "the job could not be read from the index" };
+      }
+    } else {
+      input = { ...o.check, ...(await artifactsDirOf(pass)) };
+    }
+
+    for (const claim of claims) {
+      for (const check of await checksOf(pass, claim.id)) {
+        if ((check.run_when ?? "run") !== "run") continue;
+        let lastVerify: LastVerify;
+        try {
+          lastVerify = skip ?? (await verifyOne(pass, o, claim, check, input!));
+        } catch (err) {
+          // One broken check must not cost the others their evidence.
+          lastVerify = { skipped: "cannot-launch", reason: bound(err instanceof Error ? err.message : String(err), 300) };
+        }
+        pass.result.checks.push({ subject: o.subject, path: o.path, claimId: claim.id, checkId: check.id, lastVerify });
+      }
+    }
+  }
+
   async function runPass(key: string, runId: string, explicit: boolean): Promise<VerifyResult> {
     const pass = newPass(key, runId, explicit);
     const events = await store.getRunEvents(key, runId);
@@ -643,27 +798,7 @@ export function createVerifier(deps: VerifierDeps) {
     pass.principal = launch.principal;
     if (!events.some((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled")) return { ...pass.result, skipped: "unfinished" };
 
-    let artifactsDir: string | undefined;
-    const artifacts = (deps.services() as { artifacts?: { dir(runId: string): Promise<string> } } | undefined)?.artifacts;
-    for (const o of subjectsOfRun(key, events)) {
-      const claims = await claimsOf(pass, o.subject);
-      if (claims.length === 0) continue;
-      if (!pass.result.subjects.some((s) => sameSubject(s, o.subject))) pass.result.subjects.push(o.subject);
-      if (artifacts && artifactsDir === undefined) artifactsDir = await artifacts.dir(runId).catch(() => undefined);
-      for (const claim of claims) {
-        for (const check of await checksOf(pass, claim.id)) {
-          if ((check.run_when ?? "run") !== "run") continue;
-          let lastVerify: LastVerify;
-          try {
-            lastVerify = await verifyOne(pass, o, claim, check, artifactsDir);
-          } catch (err) {
-            // One broken check must not cost the others their evidence.
-            lastVerify = { skipped: "cannot-launch", reason: bound(err instanceof Error ? err.message : String(err), 300) };
-          }
-          pass.result.checks.push({ subject: o.subject, path: o.path, claimId: claim.id, checkId: check.id, lastVerify });
-        }
-      }
-    }
+    for (const o of subjectsOfRun(key, events)) await verifySubject(pass, o);
     return pass.result;
   }
 
@@ -687,6 +822,60 @@ export function createVerifier(deps: VerifierDeps) {
     });
     inflight.set(runId, { explicit, promise });
     return promise;
+  }
+
+  /**
+   * Verify a JOB now (plans/job-claims.md §5): an explicit pass over the job
+   * subject alone, with `runId` as the version when given — the agent's own
+   * run, from `meta/verify-job` mid-turn; a run still in flight is accepted,
+   * its record line exists — else the job's newest turn (`POST
+   * /jobs/:id/verify`, a person). A child run's id resolves to the turn it
+   * descends from. `manual` checks fire, and evidence on an already
+   * verified turn APPENDS. Returns the pass and the job's ledger. Serialized
+   * behind a run pass over the same turn (the automatic one writes `#0`
+   * first); a second explicit job pass joins the first.
+   */
+  async function verifyJob(job: string, opts: { claims?: readonly string[]; runId?: string } = {}): Promise<JobVerifyResult> {
+    const subject: SubjectRef = { kind: "job", id: job };
+    const noop = (runId: string, key: string, skipped: VerifyResult["skipped"], claims: LedgerClaim[] = []): JobVerifyResult => ({
+      key, runId, job, skipped, subjects: [], checks: [], evidence: 0, slots: 0, costUsd: 0, claims,
+    });
+    const view = await deps.jobs?.get?.(job, { threads: false });
+    if (!view) return noop(opts.runId ?? "", "", "unknown-job");
+    let turn = opts.runId;
+    for (let line = turn ? view.runs.find((r) => r.runId === turn) : undefined; line?.parentRunId; line = view.runs.find((r) => r.runId === line!.parentRunId)) turn = line.parentRunId;
+    turn ??= activeTurnOf(view.runs) ?? undefined;
+    const line = turn ? view.runs.find((r) => r.runId === turn) : undefined;
+    if (!turn || !line) return noop(turn ?? "", "", "unknown-run", (await jobLedger(job, { known: true })) ?? []);
+
+    const key = line.workflow;
+    const prior = inflight.get(turn);
+    if (prior) await prior.promise.catch(() => undefined);
+    const running = inflightJobs.get(job);
+    if (running) return running;
+    const promise = (async (): Promise<JobVerifyResult> => {
+      const pass = newPass(key, turn, true);
+      pass.explicitJob = true;
+      const events = await store.getRunEvents(key, turn);
+      pass.principal = events.find((e) => e.type === "run.start")?.principal;
+      const output = (await store.getRunSummary(key, turn))?.output ?? [...events].reverse().find((e) => e.type === "run.end")?.output;
+      const path = jobSubjectPath(job);
+      const o: ObservedSubject = { subject, version: turn, path, at: new Date().toISOString(), check: { runId: turn, input: undefined, path, ...(output !== undefined ? { output } : {}) } };
+      await verifySubject(pass, o, opts.claims);
+      return { ...pass.result, job, claims: (await jobLedger(job, { result: pass.result, known: true })) ?? [] };
+    })().finally(() => {
+      if (inflightJobs.get(job) === promise) inflightJobs.delete(job);
+    });
+    inflightJobs.set(job, promise);
+    return promise;
+  }
+
+  /** A job's ledger alone (plans/job-claims.md §6) — what `GET
+   *  /jobs/:id/claims`, `claims` on `GET /jobs/:id` and `job/get` carry.
+   *  Null when the job is not on file (`known` skips that read). */
+  async function jobLedger(job: string, opts: { result?: VerifyResult; known?: boolean } = {}): Promise<LedgerClaim[] | null> {
+    if (!opts.known && !(await deps.jobs?.get?.(job, { threads: false }))) return null;
+    return (await buildLedger(reader, [{ kind: "job", id: job }], opts.result ? { result: opts.result } : {}))[job] ?? [];
   }
 
   /** The trigger: a DETACHED pass — `run_workflow` / `run_step` return
@@ -770,13 +959,26 @@ export function createVerifier(deps: VerifierDeps) {
     const claim = await reader.getClaim(input.claim);
     if (!claim) return { error: `claim "${input.claim}" not found` };
     if (claim.belief_valid_to !== undefined) return { error: `claim "${input.claim}" is retired or superseded — list_claims shows the active ones` };
-    const events = await store.getRunEvents(input.name, input.runId);
-    if (events.length === 0) return { error: `run ${input.runId} of "${input.name}" not found` };
-    if (events.find((e) => e.type === "run.start")?.origin === "verify") return { error: "that is a check run — cite the run it verified" };
+    // A job subject (plans/job-claims.md §7): the run is one of the job's
+    // turns, found on its record; `job` also narrows the subject.
+    let name = input.name;
+    let subject = input.subject;
+    if (input.job) {
+      const line = (await deps.jobs?.get?.(input.job, { threads: false }))?.runs.find((r) => r.runId === input.runId);
+      if (!line) return { error: `run ${input.runId} does not carry job "${input.job}" — cite one of the job's turns` };
+      name ??= line.workflow;
+      subject ??= { kind: "job", id: input.job };
+    }
+    if (!name) return { error: "name (the run's workflow, or `step:<type>`) or job is required" };
+    const events = await store.getRunEvents(name, input.runId);
+    if (events.length === 0) return { error: `run ${input.runId} of "${name}" not found` };
+    const launch = events.find((e) => e.type === "run.start");
+    if (launch?.origin === "verify") return { error: "that is a check run — cite the run it verified" };
+    if (input.job && launch?.job !== input.job) return { error: `run ${input.runId} does not carry job "${input.job}"` };
 
     const about = (await reader.subjectsOf(claim.id)).map((s) => s.subject);
-    const observed = subjectsOfRun(input.name, events).filter(
-      (o) => o.version && about.some((s) => sameSubject(s, o.subject)) && (!input.subject || sameSubject(input.subject, o.subject)),
+    const observed = subjectsOfRun(name, events).filter(
+      (o) => o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)),
     );
     const distinct = [...new Map(observed.map((o) => [subjectKey(o.subject), o])).values()];
     if (distinct.length === 0) {
@@ -805,7 +1007,7 @@ export function createVerifier(deps: VerifierDeps) {
       return { ok: true, evidence: slot.id, filled: true, subject: o.subject };
     }
 
-    const sourceRef = await runRef(graph, store, input.name, input.runId);
+    const sourceRef = await runRef(graph, store, name, input.runId);
     if (!sourceRef) return { error: `run ${input.runId} could not be projected into the graph` };
     const id = newEpistemicId();
     const written = await writeEvidence({
@@ -815,7 +1017,7 @@ export function createVerifier(deps: VerifierDeps) {
       sourceRef,
       node: { content: bound(content), evidence_mode: mode, evidence_status: "collected", observed_at: now },
       strength,
-      context: { path: o.path, by: input.by, ...(o.check.cassette ? { cassette: o.check.cassette } : {}) },
+      context: { ...contextOf(o), by: input.by },
     });
     if (written !== "written") return { error: `the version that run executed (${o.version}) is not in the graph` };
     return { ok: true, evidence: id, filled: false, subject: o.subject };
@@ -848,7 +1050,7 @@ export function createVerifier(deps: VerifierDeps) {
   /** The contract of what a launch can execute, every runnable check `pending`. */
   const pendingLedger = (subjects: readonly SubjectRef[]): Promise<Ledger> => buildLedger(reader, subjects, { pending: true });
 
-  return { reader, verifyRun, verifyPublish, addEvidence, schedule, ledger, pendingLedger, costOf };
+  return { reader, verifyRun, verifyJob, jobLedger, verifyPublish, addEvidence, schedule, ledger, pendingLedger, costOf };
 }
 
 /** `step:<type>` for a step subject's kept runs; the workflow name otherwise. */

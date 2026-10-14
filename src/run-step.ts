@@ -61,6 +61,11 @@ export interface RunStepOptions {
   origin?: "verify";
   /** Recorded on the check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
+  /** The job the run is launched under (`RunOptions.job`): a JOB check
+   *  (plans/job-claims.md §4) runs with the job's id so what it writes lands
+   *  in the job's directory — recorded on `run.start`, never on the job's
+   *  run list (a verify-origin run is not a turn), no hold taken. */
+  job?: string;
   /** Who launched the run and who pays (see `RunOptions`). */
   actor?: string;
   principal?: string;
@@ -122,6 +127,7 @@ export async function runSingleStep(
     ...(opts.verify ? { verify: opts.verify } : {}),
     ...(opts.actor ? { actor: opts.actor } : {}),
     ...(opts.principal ? { principal: opts.principal } : {}),
+    ...(opts.job ? { job: opts.job } : {}),
     onEvent: (e) => {
       events.push(e);
     },

@@ -47,7 +47,7 @@ strut/
 │   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md); isAncestorRun reads the tree through a step's `ctx.control` (what lets a child run share its parent's job directory)
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation
 │   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
-│   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change), the additive `claims` publish arg, publisher scoping (fixed point 1), the sealed check over the check closure (fixed point 2; sealed.ts)
+│   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change; on a JOB subject `manual`, `sample` refused), the additive `claims` publish arg, publisher scoping (fixed point 1; a job is nobody's template, so any author may claim about it, and on a job an `ai` author may add a check to a PERSON's claim — plans/job-claims.md §1, ruled), the sealed check over the check closure (fixed point 2; sealed.ts), `ensureJobNode` before a claim about a job is written
 │   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps
 │   ├── sealed.ts          # what the meta surface may never touch (EVOLVE_SPEC §6): DEFAULT_SEALED_STEPS (`eval/*`, `meta/*`) + STRUT_SEALED, a step def's `sealed: true` (the graders — their namespace also holds the producer's door), a workflow's top-level `sealed: true` (content: Flow.sealed, rides in the version hash). isSealedStep / sealedInClosure — read by authoring.ts (run / run-history / verify / run-step refused by name, a publish refused by closure), claims-authoring.ts and verify.ts (an ai-stamped check's closure, fixed point 2)
 │   ├── verify.ts          # the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
@@ -69,7 +69,7 @@ strut/
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (holds released, repositories removed, files kept), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use
 │   ├── job-index.ts       # the job INDEX (plans/job-index.md), the read side of jobs.ts: createJobIndex({ dataDir, store, sessions, sealed }) → list (every job newest-used first, `q` through src/search.ts over the title + current deliverables, `workflow` keeps the jobs with a recorded run of it — the sidebar's filter; `actor` the jobs that actor launched a run of — the record's `actors`, `GET /jobs?mine=1`, the sidebar's user icon) / get (runs with status from the run store, threads from the session store — a turn line's `job`, or a thread named after the job — holds, files, and the ARTIFACT FOLD: the successful top-level runs' `artifacts[]` newest first, the first of each id winning, resolved like …/runs/:runId/artifacts; a sealed workflow's run shows its status and nothing more) / read (one file: text head+tail-capped, an image as bytes for withMedia). createStrut builds it into `ctx.services.jobs` beside the record's writes; `GET /jobs[/:id]` and the job/* steps are thin over it; the projector builds `StrutJob` from `get`
-│   ├── job-subject.ts     # what a JOB check reads (plans/job-claims.md §3) — PURE: buildJobSubject(view, { runId, dir, output? }) → `JobCheckSubject`, the job's STATE from the index's view (dir, repos, the artifact fold, holds, `urls`, the turn's output, the latest reply) as the check step's run input, so a check's config says `url: "{{ input.urls.pod }}/settings"` or `cwd: "{{ input.dir }}"`. NOTHING CALLS IT YET: the verify pass will, once the job subject kind (`SubjectRef { kind: "job" }`, `StrutJob` + `StrutRun` in graph/claims.ts) lands with the graph layer's rewrite
+│   ├── job-subject.ts     # what a JOB check reads (plans/job-claims.md §3) — PURE: buildJobSubject(view, { runId, dir, output? }) → `JobCheckSubject`, the job's STATE from the index's view (dir, repos, the artifact fold, holds, `urls`, the turn's output, the latest reply) as the check step's run input, so a check's config says `url: "{{ input.urls.pod }}/settings"` or `cwd: "{{ input.dir }}"`. The verify pass builds it once per pass (`jobInputOf`) for every check on a job subject — in place of the step subject's log-derived input
 │   ├── job-threads.ts     # the job's THREADS (plans/jobs-sidebar.md §1): foldJobThreads — every agent execution in a job's runs' logs (a `step.end` carrying `messages`, or an attempt of the core `agent` step) grouped by session into threads, each turn with its run, usage, cost, the thread's context after it (from the session's turn line), tool-call count, transcript link (`?full=1` for a session turn), the run's declared artifacts (on its last top-level turn), and under it what it SPAWNED: a sub-agent by path, a child run by `parentRunId` (hung on the tool call whose output names its run id), a `strut/run-workflow` peer run; a run with no agent is one turn of `stepType: "run"`. Pure; `GET /jobs/:id` serves it as `threads` (`?threads=0` / `?nodes=1` / `?limit=`), the web's Jobs sidebar renders it
 │   ├── job-seed.ts        # the ONE workflow strut ships, `job` (plans/jobs.md §5): seedJobWorkflow — createStrut publishes src/workflows/job.yaml at boot by content hash (`publishWorkflowByContent`, `reactivateKnown: false`, `source: "seed"`: a changed template publishes + activates the next version, an unchanged one leaves a workspace edit active), with the HOST's delta applied first — `createStrut({ job: { tools, system } })`, the twin of `chatSystem`: grants appended to `params.tools` (the lab's `pod/*`), a section appended to `params.system` after strut's (the lab's "open the `Job` Concept first"); the merged text is the hash. Exactly one seeder per name. `job: false` seeds nothing
 │   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
@@ -1268,6 +1268,37 @@ and the child env is scrubbed by construction).
   Versions are recorded, never inferred: `run.start.stepHashes` /
   `workflowHash`, and a subflow step's `step.start.subflow` — no record, no
   evidence.
+  **A JOB is the third subject kind** (`plans/job-claims.md`; `{ kind:
+  "job", name: <id> }` on every door): a claim about the WORK — "the
+  settings page renders" — not the template. Its node is `StrutJob`
+  (upserted from the record by `ensureJobNode` when the first claim is
+  written, since the projector only writes it at run end) and its version
+  is the TURN: evidence is `ABOUT` the turn's `StrutRun` (the projector
+  stamps `job` on it), the active version is the job's newest top-level run
+  on the record (`activeTurnOf`; `ClaimsReader` takes a `jobs` dep for it),
+  so a later turn makes the ledger `stale` and `claimStatus()` reads as it
+  does — except that a job's stream has one measurement per pass, never a
+  foreach's several. Fixed point 1 has one exception here, ruled: on a job
+  an `ai` author may hang its instrument on a PERSON's claim (the person's
+  external check stays beside it; edit / retire / detach stay scoped).
+  Checks on a job default to `manual` whatever the step
+  (`sample` refused): the work is verified when it is said to be ready —
+  `meta/verify-job` (door one, the agent mid-turn, with THIS run as the
+  version, accepted in flight) or `POST /jobs/:id/verify` (door two, a
+  person, the newest turn) — through `verifier.verifyJob`, which skips a
+  turn that is no longer the newest as `superseded` (a job check reads the
+  LIVE app; nothing about a job is backfilled) and APPENDS on a re-verify
+  of the same turn (evidence path `job:<id>#<n>`; the automatic pass writes
+  `#0` and stays idempotent). A job check's input is the job's state from
+  the index (`buildJobSubject`: `{{ input.urls.pod }}`, `{{ input.dir }}`),
+  its run carries the job (`RunStepOptions.job`: a screenshot lands in the
+  job's files; `origin: verify` keeps it off the job's run list, no hold)
+  and is kept under `check:<id>` when its evidence points into those files.
+  The ledger rides on `GET /jobs/:id` (`claims`), `GET /jobs/:id/claims`
+  and `job/get` through `JobsCapability.claims`; a person's Supports /
+  Refutes is `POST /claims/:id/evidence { job, runId }`. The `job` seed
+  grants the claim tools and `http/verify`, and its prompt says: author the
+  claims when the ask is understood, verify before saying done.
 
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
   EVOLVE_SPEC §6). The `meta/*` steps publish only over names they stamped

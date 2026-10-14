@@ -102,9 +102,13 @@ export class ClaimsWriter {
     for (const s of subjects) {
       const ref = await this.reader.subjectRefId(s);
       if (!ref) {
+        // A job's node is upserted from its record by the authoring layer
+        // (`ensureJobNode`) before this is reached: none here means no record.
         throw new ClaimsError(
           "NOT_FOUND",
-          `${describeSubject(s)} is not in the workspace — only published workflows and custom steps can carry claims (built-in steps cannot)`,
+          s.kind === "job"
+            ? `${describeSubject(s)} is not on file — a job exists once a run was launched under it (POST …/run { job })`
+            : `${describeSubject(s)} is not in the workspace — only published workflows and custom steps can carry claims (built-in steps cannot)`,
         );
       }
       if (!refs.includes(ref)) refs.push(ref);

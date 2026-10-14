@@ -20,9 +20,10 @@ import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema } from "../claims-schemas.js";
 import type { GraphBackend } from "./backend.js";
+import type { JobView } from "../job-index.js";
 import { evidenceId } from "./claims.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
-import { anyNode, rawWrite, testBackends } from "./test-util.js";
+import { anyNode, nodeCount, rawWrite, testBackends } from "./test-util.js";
 
 
 // ── Pure ────────────────────────────────────────────────────────────────────
@@ -396,6 +397,66 @@ for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { sk
     assert.equal(((await authoring.listClaims(SEEDED)) as { claims: unknown[] }).claims.length, 1);
     // The human-supervised chat surface is not scoped.
     idOf(await claims.addCheck(seeded, EXEC, chat));
+  });
+
+  it("a JOB subject (plans/job-claims.md §1, §5): on file → its node is upserted and claimed; not on file → refused; manual by default, sample refused; the meta surface claims about its job", async () => {
+    const view = (runs: JobView["runs"]): JobView => ({ job: "j-1", title: "Settings page", usedAt: "2026-10-14T10:00:00.000Z", holds: [], urls: {}, repos: [], files: [], runs, sessions: [], artifacts: [] });
+    const jobs = { get: async (id: string) => (id === "j-1" ? view([{ workflow: "job", runId: "1700", at: "2026-10-14T10:00:00.000Z", status: "running" }]) : null) };
+    const withJobs = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry, env: {}, jobs });
+    const JOB = { kind: "job" as const, name: "j-1" };
+    const LLM = { type: "llm", config: { prompt: "does it render? {{ input.text }}" } };
+
+    assert.match(errOf(await withJobs.addClaim({ subjects: [{ kind: "job", name: "nope" }], text: "t", checks: [EXEC] }, human)), /job "nope" is not on file/);
+    assert.match(errOf(await withJobs.listClaims({ kind: "job", name: "nope" })), /not on file/);
+    assert.match(errOf(await claims.addClaim({ subjects: [JOB], text: "t", checks: [EXEC] }, human)), /not on file/, "no index: no job is on file");
+    assert.deepEqual(await withJobs.listClaims(JOB), { ok: true, subject: JOB, claims: [] }, "on file, nothing claimed yet: an empty contract, no node");
+    assert.equal(await nodeCount(backend, "StrutJob"), 0);
+
+    // Defaults on a job: manual whatever the step — an exec, a judge, an external check.
+    const id = idOf(await withJobs.addClaim({ subjects: [JOB], text: "the settings page renders", checks: [EXEC, LLM, { description: "open it and look" }] }, human));
+    assert.equal(await nodeCount(backend, "StrutJob"), 1, "the node was upserted from the record");
+    const about = await backend.query(`MATCH ${d().node("c", "Claim", { id: "$id" })}-[:ABOUT]->${d().node("j", "StrutJob")} RETURN j.job_id AS job, j.title AS title`, { id });
+    assert.deepEqual(about, [{ job: "j-1", title: "Settings page" }]);
+    const [row] = (await withJobs.listClaims(JOB) as { claims: Array<{ status: string; checks: Array<{ policy?: string; external: boolean }> }> }).claims;
+    assert.deepEqual([row!.status, row!.checks.map((k) => [k.policy, k.external])], ["unknown", [["manual", false], ["manual", false], ["manual", true]]]);
+    assert.match(errOf(await withJobs.addCheck(id, { ...EXEC, policy: "sample", sampleRate: 0.5 }, human)), /no meaning on a job/);
+    assert.match(errOf(await withJobs.addClaim({ subjects: [JOB], text: "x", checks: [{ ...EXEC, when: "publish" }] }, human)), /never published/);
+    // An explicit policy is kept: on_change means once per turn.
+    const k = idOf(await withJobs.addCheck(id, { ...EXEC, policy: "on_change" }, human));
+    const kk = (await withJobs.listClaims(JOB) as { claims: Array<{ checks: Array<{ id: string; policy?: string }> }> }).claims[0]!.checks.find((x) => x.id === k)!;
+    assert.equal(kk.policy, "on_change");
+    assert.equal(((await withJobs.editCheck(k, { name: "renamed" }, human)) as { ok?: true }).ok, true, "an edit on a job's check re-validates under the job's rules");
+    // A claim about a job AND a workflow takes the job's defaults.
+    const mixed = idOf(await withJobs.addClaim({ subjects: [JOB, SEEDED], text: "mixed", checks: [EXEC] }, human));
+    const m = (await withJobs.listClaims(SEEDED) as { claims: Array<{ id: string; checks: Array<{ policy?: string }> }> }).claims.find((c) => c.id === mixed)!;
+    assert.equal(m.checks[0]!.policy, "manual");
+    // Re-adding the same subject upserts, never duplicates the node.
+    assert.equal(await nodeCount(backend, "StrutJob"), 1);
+
+    // The meta surface (scoped, `ai`): a job is nobody's template, so it may
+    // state what its own job must deliver — and reads the person's claims.
+    const meta = buildAuthoringCapability({ workspace: ws, store: new MemoryRunStore(), getRegistry, claims: withJobs });
+    idOf(await meta.addClaim({ subjects: [JOB], text: "GET /api/settings answers 200", checks: [EXEC] }));
+    assert.equal(((await meta.listClaims(JOB)) as { claims: unknown[] }).claims.length, 3);
+    // Fixed point 1's one exception (plans/job-claims.md §1, ruled A): on a
+    // job the agent may hang its instrument on the PERSON's claim — stamped
+    // `ai`, `manual` like every job check — and the person's own external
+    // check stays beside it as a separate stream…
+    const mine = idOf(await meta.addCheck(id, { type: "exec", name: "probe", config: { cmd: "true" } }));
+    const personsClaim = (await withJobs.listClaims(JOB) as { claims: Array<{ id: string; checks: Array<{ id: string; name: string; policy?: string; publisher?: string; external: boolean }> }> }).claims.find((c) => c.id === id)!;
+    const added = personsClaim.checks.find((x) => x.id === mine)!;
+    assert.deepEqual([added.publisher, added.policy, added.external], [AI_PUBLISHER, "manual", false]);
+    assert.ok(personsClaim.checks.some((x) => x.external && x.publisher === "evan"), "the person's external check is still there");
+    // …while edit / retire / detach stay scoped: the person's claim and checks are not the agent's to change.
+    const personsCheck = personsClaim.checks.find((x) => x.external)!.id;
+    assert.match(errOf(await meta.editClaim(id, "anything renders")), /only edits claims it wrote/);
+    assert.match(errOf(await meta.retireClaim(id)), /only retires claims it wrote/);
+    assert.match(errOf(await meta.editCheck(personsCheck, { description: "glance at it" })), /only edits checks it wrote/);
+    assert.match(errOf(await meta.retireCheck(personsCheck)), /only retires checks it wrote/);
+    assert.match(errOf(await meta.detachClaim(id, SEEDED)), /only detaches claims it wrote/);
+    // On a template the rule is untouched (the fixed point 1 case above).
+    const onTemplate = idOf(await withJobs.addClaim({ subjects: [SEEDED], text: "answers in prose", checks: [EXEC] }, human));
+    assert.match(errOf(await meta.addCheck(onTemplate, EXEC)), /only adds checks to claims it wrote/);
   });
 
   it("fixed point 2 — an ai-stamped check may never reach a grader: by name, through a subflow, via a grant, or unresolvably", async () => {

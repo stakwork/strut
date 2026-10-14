@@ -6,7 +6,7 @@ import { lsSteps, searchSteps, readStepSource } from "./stepHelpers.js";
 import { stepSchemas } from "./schemaHelpers.js";
 import { runStep, runStepId, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
-import { mergeClaimSpecs, type ClaimActor } from "../claims-authoring.js";
+import { mergeClaimSpecs, toSubjectRef, type ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
 import { claimsBlockOf, type PublishOptions } from "../workspace.js";
 import { automationDraftSchema, automationInputSchema, triggerSchema } from "../automations.js";
@@ -688,7 +688,7 @@ export function buildTools(deps: AiDeps): ToolSet {
                       runId,
                       supports,
                       content,
-                      ...(subject ? { subject: subject.kind === "step" ? { kind: "step" as const, type: subject.name } : { kind: "workflow" as const, name: subject.name } } : {}),
+                      ...(subject ? { subject: toSubjectRef(subject) } : {}),
                       ...(slot ? { slot } : {}),
                       by: AI_PUBLISHER,
                       mode: "asserted",

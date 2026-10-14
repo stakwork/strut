@@ -789,10 +789,14 @@ export async function createStrut<TServices = unknown>(
   // never on `workspace.graph`.
   const claimsEnabled = opts.claims ?? process.env["STRUT_CLAIMS"] !== "0";
   const claimsGraph = claimsEnabled ? workspace.graph : undefined;
+  // The job index (plans/job-claims.md §1–§2): a job subject's node is
+  // upserted from its record, its active version is its newest turn.
+  const claimsJobs = (services as Record<string, unknown>)["jobs"] as JobsCapability | undefined;
   const claimsAuthoring = claimsGraph
     ? buildClaimsAuthoring({
         graph: claimsGraph,
         workspace,
+        jobs: claimsJobs,
         getRegistry: async () => {
           await rebuildRegistry();
           return registry;
@@ -834,6 +838,7 @@ export async function createStrut<TServices = unknown>(
         graph: claimsGraph,
         store,
         workspace,
+        jobs: claimsJobs,
         services: () => services,
         getRegistry: async () => {
           await rebuildRegistry();
@@ -842,6 +847,9 @@ export async function createStrut<TServices = unknown>(
         onSettled: (r) => verifySettled?.(r),
       })
     : null;
+  // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
+  // `GET /jobs/:id` and `job/get` carry the same `claims`.
+  if (verifier && claimsJobs) claimsJobs.claims = (job) => verifier.jobLedger(job);
   //
   // The same hook PROJECTS the run into the graph (graph/projector.ts: its
   // `StrutRun`, agent sessions, tool calls and the nodes they touched) —
@@ -1983,7 +1991,10 @@ export async function createStrut<TServices = unknown>(
       nodes: c.req.query("nodes") === "1",
       ...(limit > 0 ? { limit } : {}),
     });
-    return view ? c.json(view) : c.json({ error: `No job "${at.id}"` }, 404);
+    if (!view) return c.json({ error: `No job "${at.id}"` }, 404);
+    // The job's claims (plans/job-claims.md §6) — where the layer is on.
+    const claims = jobsCap.claims ? await jobsCap.claims(at.id) : null;
+    return c.json(claims ? { ...view, claims } : view);
   });
 
   app.get("/jobs/:id/files", async (c) => {

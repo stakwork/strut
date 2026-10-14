@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { RunEvent } from "./core.js";
 import type { EvidenceRow } from "./graph/claims.js";
-import { mapCheckResult, policyFires, reportedCost, sampleFires, subjectsOfRun } from "./verify.js";
+import { jobSubjectPath, mapCheckResult, policyFires, reportedCost, sampleFires, subjectsOfRun } from "./verify.js";
 
 let tick = 0;
 const ev = (type: RunEvent["type"], path: string, extra: Partial<RunEvent> = {}): RunEvent => ({
@@ -140,6 +140,33 @@ describe("subjectsOfRun", () => {
     ];
     assert.deepEqual(subjectsOfRun("step:clip/a", single).map((o) => o.subject), [{ kind: "step", type: "clip/a" }]);
     assert.deepEqual(subjectsOfRun("wf", []), []);
+  });
+
+  it("a top-level run launched under a JOB observes the job at the version that IS this run, once it ended (plans/job-claims.md §2); a child run or a failed turn yields none", () => {
+    const ended = [
+      ev("run.start", "job", { job: "j-1", workflowHash: "h", input: { prompt: "add a settings page" } }),
+      ev("step.start", "job/dir", { stepType: "job/dir", input: {} }),
+      ev("step.end", "job/dir", { stepType: "job/dir", output: { path: "/data/jobs/j-1" } }),
+      ev("run.end", "job", { output: { text: "done", artifacts: [] } }),
+    ];
+    const subjects = subjectsOfRun("job", ended);
+    assert.deepEqual(subjects.map((o) => o.subject.kind), ["step", "workflow", "job"]);
+    assert.deepEqual(subjects[2], {
+      subject: { kind: "job", id: "j-1" },
+      version: "r1",
+      path: "job:j-1",
+      at: ended[3]!.ts,
+      // A stand-in: the pass builds the real input from the job index.
+      check: { runId: "r1", input: undefined, path: "job:j-1", output: { text: "done", artifacts: [] } },
+    });
+    assert.equal(jobSubjectPath("j-1"), "job:j-1");
+    const child = ended.map((e) => (e.type === "run.start" ? { ...e, parentRunId: "r0" } : e));
+    assert.ok(!subjectsOfRun("job", child).some((o) => o.subject.kind === "job"), "a child run (meta/run-workflow inside a turn) is not a turn");
+    const failed = [ended[0]!, ev("run.error", "job", { error: { message: "boom" } })];
+    assert.ok(!subjectsOfRun("job", failed).some((o) => o.subject.kind === "job"), "a failed turn moves the version; nothing is verified for it");
+    const cancelled = [ended[0]!, ev("run.cancelled", "job")];
+    assert.ok(!subjectsOfRun("job", cancelled).some((o) => o.subject.kind === "job"));
+    assert.ok(!subjectsOfRun("wf", [ev("run.start", "wf", { input: {} }), ev("run.end", "wf", { output: 1 })]).some((o) => o.subject.kind === "job"), "no job, no job subject");
   });
 });
 
