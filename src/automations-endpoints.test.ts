@@ -30,7 +30,7 @@ describe("automations endpoints", () => {
     dir = join(tmpdir(), `strut-autos-ep-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     store = new MemoryRunStore();
-    strut = await createStrut({ workspace: new WorkspaceManager(dir), store, serveUi: false, scheduler: false });
+    strut = await createStrut({ workspace: new WorkspaceManager(dir), store, serveUi: false, scheduler: false, systemWorkflows: false });
     await strut.workspace.publishWorkflow(WF, "v1", { steps });
   });
   afterEach(async () => {

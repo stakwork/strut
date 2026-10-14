@@ -8,6 +8,7 @@ import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
+import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
 import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
@@ -702,16 +703,24 @@ export function buildRegistryTools(
   for (const stepType of expandAgentTools(names, registry)) {
     const def = registry[stepType];
     if (!def) {
+      // A system workflow's tools are its guard rails (tidy-memory without
+      // memory/duplicates merges blind): an older strut refuses to run it.
+      if (writerOf(ctx) === SYSTEM_WRITER) throw new Error(`agent: agentTools: unknown step type "${stepType}"`);
       console.warn(`[agent] agentTools: unknown step type "${stepType}" — skipping`);
       continue;
     }
+    // Who wrote it is the workflow's to say, never the model's: a step that
+    // records `created_by` (memory/remember, memory/merge) loses the field
+    // from its tool schema and is stamped with the run's workflow instead —
+    // "janitor" for a system workflow (src/system-workflows.ts).
+    const stamp = def.input instanceof z.ZodObject && "created_by" in def.input.shape ? writerOf(ctx) : undefined;
     out[toolNameFor(stepType)] = toolFactory({
       description: def.description ?? `Run the "${stepType}" step.`,
-      inputSchema: def.input,
+      inputSchema: stamp ? (def.input as z.ZodObject).omit({ created_by: true }) : def.input,
       execute: async (input: unknown, options?: { strutToolPath?: string }) => {
         let parsed: unknown;
         try {
-          parsed = def.input.parse(input ?? {});
+          parsed = def.input.parse(stamp ? { ...(input as object), created_by: stamp } : (input ?? {}));
         } catch (e) {
           return `Error: invalid input for "${stepType}": ${(e as Error).message}`;
         }
@@ -732,6 +741,15 @@ export function buildRegistryTools(
     });
   }
   return out;
+}
+
+/** The `created_by` an agent tool's write is stamped with: the run's
+ *  top-level workflow, or "janitor" for one strut ships. "agent" outside a
+ *  workflow. */
+function writerOf(ctx: StepContext | undefined): string {
+  const workflow = (ctx?.path ?? "").split("/")[0];
+  if (!workflow) return "agent";
+  return isSystemWorkflow(workflow) ? SYSTEM_WRITER : workflow;
 }
 
 /**
@@ -1076,8 +1094,18 @@ export default defineStep({
       // thread whose name it can guess.
       if (ctx?.agentTool) throw new Error("agent: a sub-agent (an agent called as a tool) cannot take a `session`");
     }
-    const modelName = cfg.model ?? process.env["STRUT_LLM_MODEL"];
-    const providerHint = cfg.provider ?? process.env["STRUT_LLM_PROVIDER"];
+    // No model named: the deployment's default (STRUT_DEFAULT_MODEL, secret
+    // store then env — what a desktop host sets to the connected model). It
+    // names its own provider, so a lone `provider` is ignored with it.
+    const defaultModel = cfg.model ? undefined : (await (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets?.get("STRUT_DEFAULT_MODEL")) || undefined;
+    // A system workflow runs only on the connected model: when the host
+    // disconnects it (deletes STRUT_DEFAULT_MODEL), never a silent fallback.
+    if (!cfg.model && !defaultModel && writerOf(ctx) === SYSTEM_WRITER) {
+      throw new Error("agent: no model connected (STRUT_DEFAULT_MODEL is not set)");
+    }
+    const modelName = cfg.model ?? defaultModel ?? process.env["STRUT_LLM_MODEL"];
+    // STRUT_LLM_PROVIDER goes with STRUT_LLM_MODEL; a default model names its own provider.
+    const providerHint = defaultModel ? undefined : (cfg.provider ?? process.env["STRUT_LLM_PROVIDER"]);
     const { provider } = canonicalModelName(modelName, providerHint);
 
     // Anthropic-only extras: the provider-defined text

@@ -100,9 +100,11 @@ describe("agentTools (buildRegistryTools — tools are steps)", () => {
     assert.equal((tools["demo_echo"] as any).inputSchema, echoStep.input);
   });
 
-  it("skips unknown step types (no throw)", () => {
+  it("skips unknown step types (no throw), except in a system workflow", () => {
     const tools = buildRegistryTools(["nope/missing", "demo/echo"], registry, undefined, fakeTool);
     assert.deepEqual(Object.keys(tools), ["demo_echo"]);
+    const ctx = { runId: "r", path: "tidy-memory/tidy", scope: {}, input: undefined, emit: async () => {}, services: undefined, registry } as unknown as StepContext;
+    assert.throws(() => buildRegistryTools(["nope/missing", "demo/echo"], registry, ctx, fakeTool), /unknown step type "nope\/missing"/);
   });
 
   it("returns {} with no names or no registry", () => {
@@ -118,6 +120,27 @@ describe("agentTools (buildRegistryTools — tools are steps)", () => {
     const tools = buildRegistryTools(["demo/echo"], registry, ctx, fakeTool);
     const out = await (tools["demo_echo"] as any).execute({ msg: "hi" });
     assert.equal(out, "got:hi");
+  });
+
+  it("stamps created_by from the run's workflow — janitor in a system workflow — and the model cannot set it", async () => {
+    const write = defineStep({
+      type: "demo/write",
+      input: z.object({ text: z.string(), created_by: z.string().optional().default("agent") }),
+      output: z.any(),
+      async run(cfg) {
+        return cfg.created_by;
+      },
+    });
+    const reg = { "demo/write": write } as StepRegistry;
+    const at = (path: string) => ({ runId: "r", path, scope: {}, input: undefined, emit: async () => {}, services: undefined, registry: reg }) as unknown as StepContext;
+    const tool = (path: string) => buildRegistryTools(["demo/write"], reg, at(path), fakeTool)["demo_write"] as any;
+
+    assert.ok(!("created_by" in tool("x/a").inputSchema.shape), "not in the tool's schema");
+    assert.equal(await tool("tidy-memory/tidy").execute({ text: "t", created_by: "user" }), "janitor");
+    assert.equal(await tool("my-flow/step").execute({ text: "t", created_by: "user" }), "my-flow");
+    assert.equal(await tool("my-flow/loop#2/step").execute({ text: "t" }), "my-flow");
+    // A step without created_by keeps its schema as is.
+    assert.equal((buildRegistryTools(["demo/echo"], registry, at("x/a"), fakeTool)["demo_echo"] as any).inputSchema, echoStep.input);
   });
 
   it("returns an Error string (not throw) on invalid tool input", async () => {
@@ -1012,7 +1035,7 @@ describe("mid-stream socket death is resumed, not lost", () => {
 
   let cwd = "";
   let saved: Record<string, string | undefined> = {};
-  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_LLM_PROVIDER", "AI_SDK_LOG_WARNINGS"];
+  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_LLM_PROVIDER", "STRUT_LLM_MODEL", "AI_SDK_LOG_WARNINGS"];
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "strut-stream-"));
     saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
@@ -1067,6 +1090,51 @@ describe("mid-stream socket death is resumed, not lost", () => {
       assert.equal(s.heads[0]?.["x-api-key"], "from-store");
       // The alias resolved to the concrete id on the request.
       assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-5-5"'), s.bodies[0]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("with no model, uses STRUT_DEFAULT_MODEL from the secrets boundary", async () => {
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(toolUse("toolu_1", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    const secrets = { get: async (name: string) => (name === "STRUT_DEFAULT_MODEL" ? "anthropic/claude-opus-4-8" : undefined) };
+    try {
+      const out = await agent.run(
+        (agent.input as any).parse({ cwd, system: "sys", prompt: "go", finalAnswer: "Report.", toolFilter: ["none"] }),
+        { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: { secrets }, registry: {} } as any,
+      ) as any;
+      assert.equal(out.result, "done");
+      assert.ok((s.bodies[0] ?? "").includes('"model":"claude-opus-4-8"'), s.bodies[0]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a system workflow with no STRUT_DEFAULT_MODEL fails fast; any other agent step still falls back to STRUT_LLM_MODEL", async () => {
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(toolUse("toolu_1", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    process.env["STRUT_LLM_MODEL"] = "anthropic/claude-sonnet-4-5";
+    const secrets = { get: async () => undefined };
+    const at = (path: string) => agent.run(
+      (agent.input as any).parse({ cwd, system: "sys", prompt: "go", finalAnswer: "Report.", toolFilter: ["none"] }),
+      { runId: "r", path, scope: {}, input: undefined, emit: async () => {}, services: { secrets }, registry: {} } as any,
+    ) as Promise<any>;
+    try {
+      await assert.rejects(at("tidy-memory/tidy"), /no model connected \(STRUT_DEFAULT_MODEL is not set\)/);
+      assert.equal(s.bodies.length, 0, "nothing reached the wire");
+      assert.equal((await at("my-flow/step")).result, "done");
+      assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-4-5"'), s.bodies[0]);
     } finally {
       s.close();
     }

@@ -50,6 +50,8 @@ export interface AutomationsDeps {
 /** An automation as both doors show it: the record plus what is derived. */
 export interface AutomationView extends Automation {
   workflow: string;
+  /** The workflow's category — "system" marks a built-in (src/system-workflows.ts). */
+  category?: string;
   /** The trigger as one plain sentence. */
   summary: string;
   /** ISO instant of the next fire; null when paused or never again. */
@@ -245,7 +247,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
 
   // ── Views ────────────────────────────────────────────────────────────────
 
-  function view(workflow: string, automation: Automation, facts: RunFacts | undefined): AutomationView {
+  function view(workflow: string, automation: Automation, facts: RunFacts | undefined, category?: string): AutomationView {
     const k = key(workflow, automation.id);
     // Before the first load there is no entry yet: compute rather than show "never".
     const next = entries.get(k)?.nextRunAt ?? (automation.enabled && !loaded ? nextFire(automation.trigger, clock()) : null);
@@ -253,6 +255,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     return {
       ...automation,
       workflow,
+      ...(category ? { category } : {}),
       summary: describeTrigger(automation.trigger),
       nextRunAt: next ? next.toISOString() : null,
       lastRun: facts?.lastRun ?? null,
@@ -261,9 +264,9 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     };
   }
 
-  async function viewsOf(workflow: string, automations: Automation[]): Promise<AutomationView[]> {
+  async function viewsOf(workflow: string, automations: Automation[], category?: string): Promise<AutomationView[]> {
     const facts = await runFacts(workflow, automations.map((a) => a.id));
-    return automations.map((a) => view(workflow, a, facts.get(a.id)));
+    return automations.map((a) => view(workflow, a, facts.get(a.id), category));
   }
 
   // ── Mutations ────────────────────────────────────────────────────────────
@@ -277,11 +280,6 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     return run;
   };
 
-  async function stored(workflow: string): Promise<Automation[] | null> {
-    const meta = await workspace.getWorkflowMetadata(workflow);
-    return meta ? (meta.automations ?? []) : null;
-  }
-
   /** An automation is the one launch with nobody present: its runs are billed
    *  to the workflow's OWNER (plans/mothership-cost-control.md §2). Where the
    *  deployment requires someone to bill, an enabled automation on an ownerless
@@ -293,11 +291,11 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     return `workflow "${workflow}" has no owner — its scheduled runs would have nobody to bill. Claim the workflow (or transfer it) first.`;
   }
 
-  async function save(workflow: string, list: Automation[], changed: Automation): Promise<Saved> {
+  async function save(workflow: string, list: Automation[], changed: Automation, category: string | undefined): Promise<Saved> {
     await workspace.setWorkflowAutomations(workflow, list);
     fireErrors.delete(key(workflow, changed.id));
     setEntries(workflow, list);
-    const [automation] = await viewsOf(workflow, [changed]);
+    const [automation] = await viewsOf(workflow, [changed], category);
     return { ok: true, automation: automation!, next: nextFires(changed.trigger, clock()).map((d) => d.toISOString()) };
   }
 
@@ -315,12 +313,12 @@ export function createAutomations(deps: AutomationsDeps): Automations {
 
     async list(workflow) {
       if (workflow !== undefined) {
-        const list = await stored(workflow);
-        return list ? viewsOf(workflow, list) : [];
+        const meta = await workspace.getWorkflowMetadata(workflow);
+        return meta ? viewsOf(workflow, meta.automations ?? [], meta.category) : [];
       }
       const out: AutomationView[] = [];
       for (const w of await workspace.listWorkflows()) {
-        if (w.automations?.length) out.push(...(await viewsOf(w.name, w.automations)));
+        if (w.automations?.length) out.push(...(await viewsOf(w.name, w.automations, w.category)));
       }
       return out;
     },
@@ -331,8 +329,9 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         if (!parsed.success) return { error: issues(parsed.error) };
         const problems = checkInputTemplates(parsed.data.input ?? {});
         if (problems.length) return { error: problems.join("; ") };
-        const list = await stored(workflow);
-        if (!list) return { error: `Workflow "${workflow}" not found` };
+        const meta = await workspace.getWorkflowMetadata(workflow);
+        if (!meta) return { error: `Workflow "${workflow}" not found` };
+        const list = meta.automations ?? [];
         const unowned = await ownerGate(workflow, parsed.data.enabled ?? true);
         if (unowned) return { error: unowned };
         const automation: Automation = {
@@ -342,7 +341,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
           trigger: triggerFrom(parsed.data.trigger),
           input: parsed.data.input ?? {},
         };
-        return save(workflow, [...list, automation], automation);
+        return save(workflow, [...list, automation], automation, meta.category);
       }),
 
     update: (workflow, id, patch) =>
@@ -351,8 +350,9 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         if (!parsed.success) return { error: issues(parsed.error) };
         const problems = checkInputTemplates(parsed.data.input ?? {});
         if (problems.length) return { error: problems.join("; ") };
-        const list = await stored(workflow);
-        if (!list) return { error: `Workflow "${workflow}" not found` };
+        const meta = await workspace.getWorkflowMetadata(workflow);
+        if (!meta) return { error: `Workflow "${workflow}" not found` };
+        const list = meta.automations ?? [];
         const current = list.find((a) => a.id === id);
         if (!current) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
         const p = parsed.data;
@@ -365,13 +365,14 @@ export function createAutomations(deps: AutomationsDeps): Automations {
           trigger: p.trigger ? triggerFrom(p.trigger, current.trigger) : current.trigger,
           input: p.input ?? current.input,
         };
-        return save(workflow, list.map((a) => (a.id === id ? automation : a)), automation);
+        return save(workflow, list.map((a) => (a.id === id ? automation : a)), automation, meta.category);
       }),
 
     remove: (workflow, id) =>
       serial(async () => {
-        const list = await stored(workflow);
-        if (!list) return { error: `Workflow "${workflow}" not found` };
+        const meta = await workspace.getWorkflowMetadata(workflow);
+        if (!meta) return { error: `Workflow "${workflow}" not found` };
+        const list = meta.automations ?? [];
         if (!list.some((a) => a.id === id)) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
         const rest = list.filter((a) => a.id !== id);
         await workspace.setWorkflowAutomations(workflow, rest);
@@ -388,7 +389,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     },
 
     async fire(workflow, id) {
-      const automation = (await stored(workflow))?.find((a) => a.id === id);
+      const automation = (await workspace.getWorkflowMetadata(workflow))?.automations?.find((a) => a.id === id);
       if (!automation) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
       return fireOne(workflow, automation, clock());
     },
