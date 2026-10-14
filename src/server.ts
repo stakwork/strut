@@ -1,9 +1,12 @@
 // Default strut server — a thin wrapper over createStrut() that keeps
-// workflows/steps in Neo4j by default (see src/graph/wiring.ts; NEO4J_*
-// vars, localhost:7687 when unset) while runs/chats/blobs stay under
-// STRUT_WORKSPACE. Set STRUT_WORKSPACE_BACKEND=fs to boot with the
-// filesystem-backed defaults instead (FileRunStore, workspace loaded from
-// STRUT_WORKSPACE, registry built by scanning steps/) — no Neo4j needed.
+// workflows/steps in a graph by default (see src/graph/wiring.ts): Neo4j
+// (NEO4J_* vars, localhost:7687 when unset), or with
+// STRUT_WORKSPACE_BACKEND=ladybug one LadybugDB file under STRUT_WORKSPACE
+// (plans/ladybug-backend.md — the desktop's backend, no daemon). Runs, chats
+// and blobs stay under STRUT_WORKSPACE either way. Set
+// STRUT_WORKSPACE_BACKEND=fs to boot with the filesystem-backed defaults
+// instead (FileRunStore, workspace loaded from STRUT_WORKSPACE, registry
+// built by scanning steps/) — no graph at all.
 //
 // This file is the canonical "library usage" example: anything you
 // see here, your own consumer code can do too. Pass your own
@@ -14,11 +17,11 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createStrut, type Strut } from "./createStrut.js";
+import { createStrut, type Strut, type StrutOptions } from "./createStrut.js";
 import { FileRunStore } from "./store.js";
 import { FileChatStore } from "./chat-store.js";
 import { FileSecretStore } from "./secret-store.js";
-import { graphWorkspaceRequested } from "./graph/wiring.js";
+import { workspaceBackendFromEnv } from "./graph/wiring.js";
 
 let strutInstance: Strut | null = null;
 
@@ -34,24 +37,26 @@ async function getDefault(): Promise<Strut> {
       process.env["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const llmAuth = mothership ? { llmAuth: mothership.llmAuth } : {};
-    if (graphWorkspaceRequested()) {
+    const llmAuth: Pick<StrutOptions, "llmAuth"> = mothership ? { llmAuth: mothership.llmAuth } : {};
+    // dataDir keeps its file default (STRUT_WORKSPACE / ./workspace) on a
+    // graph workspace: runs, chats, secrets, artifacts, cassettes, and the
+    // materialized custom steps stay local. Explicit file stores, since a
+    // non-file workspace would otherwise default to memory.
+    const fileStores = () => ({
+      dataDir,
+      store: new FileRunStore(dataDir),
+      chatStore: new FileChatStore(dataDir),
+      secretStore: new FileSecretStore(dataDir),
+    });
+    const kind = workspaceBackendFromEnv();
+    if (kind === "ladybug") {
+      const { ladybugWorkspaceFromEnv } = await import("./graph/wiring.js");
+      const { backend, workspace } = await ladybugWorkspaceFromEnv(process.env, { dataDir });
+      strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...llmAuth });
+    } else if (kind === "neo4j") {
       const { graphWorkspaceFromEnv } = await import("./graph/wiring.js");
-      // dataDir keeps its file default (STRUT_WORKSPACE / ./workspace): runs,
-      // chats, secrets, artifacts, cassettes, and the materialized custom
-      // steps stay local. Explicit file stores, since a non-file workspace
-      // would otherwise default to memory.
       const { backend, workspace } = await graphWorkspaceFromEnv(process.env, { dataDir });
-      strutInstance = await createStrut({
-        workspace,
-        // Same backend for the chat builder's read-only graph_query tool.
-        graph: backend,
-        dataDir,
-        store: new FileRunStore(dataDir),
-        chatStore: new FileChatStore(dataDir),
-        secretStore: new FileSecretStore(dataDir),
-        ...llmAuth,
-      });
+      strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...llmAuth });
     } else {
       strutInstance = await createStrut(llmAuth);
     }

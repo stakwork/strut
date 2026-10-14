@@ -1413,7 +1413,8 @@ describe("the API key gate", () => {
 
     assert.deepEqual(await (await strut.app.request("/health")).json(), { ok: true });
     const health = (await (await strut.app.request("/health", auth)).json()) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(health).sort(), ["dataDir", "ok", "stepCount"]);
+    assert.deepEqual(Object.keys(health).sort(), ["dataDir", "ok", "stepCount", "workspace"]);
+    assert.deepEqual(health["workspace"], { backend: "fs" });
   });
 
   it("no path under the UI's prefix reaches a route: /assets/../secrets, as the wire carries it", async () => {

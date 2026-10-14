@@ -2,6 +2,8 @@ import type { SttService } from "./audio/stt.js";
 import type { SessionsCapability } from "./session-store.js";
 import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
+// Type-only: the graph backend stays a lazy, opt-in dependency.
+import type { GraphBackend } from "./graph/backend.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -375,6 +377,12 @@ export interface StrutCapabilities {
    *  bare in-code bag may not carry one (`strut/run-workflow` then fails
    *  naming it). */
   peers?: PeersCapability;
+  /** The graph backend the SERVER wired (`createStrut({ graph })`, else the
+   *  one behind a graph-backed workspace): what the `graph/*` steps read and
+   *  write through, instead of opening one from env (`graphCtx` prefers it
+   *  and falls back to `NEO4J_*` when it is absent). A Neo4j or a LadybugDB
+   *  file (plans/ladybug-backend.md). */
+  graph?: GraphBackend;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local

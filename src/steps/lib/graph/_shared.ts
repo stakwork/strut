@@ -5,13 +5,21 @@ import type { GraphBackend } from "../../../graph/backend.js";
 export type { GraphBackend };
 
 /**
- * The `graph/*` steps are thin plumbing over strut's own Neo4j graph backend
+ * The `graph/*` steps are thin plumbing over strut's own graph backend
  * (`src/graph/*`, plans/jarvis-graph-compat.md) — the strut-native twins of
  * the lab's `jarvis/*` steps: same step names, input schemas, and output
  * shapes, so a workflow swaps backends by step type
  * (`jarvis/graph-search` ↔ `graph/graph-search`). No jarvis in the loop;
  * everything written follows jarvis's conventions so a jarvis mounted on
  * the same database later treats the `Strut` domain as native.
+ *
+ * The backend the SERVER wired comes first: `ctx.services.graph`
+ * (`createStrut` puts the one behind its graph-backed workspace there — a
+ * Neo4j, or the desktop's LadybugDB file, plans/ladybug-backend.md). On a
+ * Ladybug file the Concept reads work as they do on Neo4j; a step that
+ * registers a type or writes one outside the closed registry fails there
+ * with the closed-registry error. Without a wired backend the steps open
+ * a Neo4j from env, as before:
  *
  * Config (all via `ctx.services.secrets`, secret store → env fallback; the
  * same names + defaults as the mcp host's own Neo4j client, so a local
@@ -34,6 +42,8 @@ export type { GraphBackend };
  * top level.
  */
 export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
+  const wired = ctx?.services?.graph;
+  if (wired) return wired;
   const secrets = ctx?.services?.secrets;
   // Same resolution as the mcp host's own Neo4j client: `NEO4J_URI`, else
   // `bolt://<NEO4J_HOST>` (default localhost:7687), user/password defaulting

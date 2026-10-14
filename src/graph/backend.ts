@@ -186,19 +186,25 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
   }
 }
 
+/** `STRUT_GRAPH_EMBEDDINGS`: on unless `off` / `0` / `false`. */
+export function embeddingsOn(env: Record<string, string | undefined> = process.env): boolean {
+  const emb = (env["STRUT_GRAPH_EMBEDDINGS"] ?? "").toLowerCase();
+  return !(emb === "off" || emb === "0" || emb === "false");
+}
+
 /** `openGraphBackend` from `NEO4J_URI`/`NEO4J_USER`/`NEO4J_PASSWORD`/
- *  `STRUT_GRAPH_NAMESPACE`; null when `NEO4J_URI` is unset. */
+ *  `STRUT_GRAPH_NAMESPACE`; null when `NEO4J_URI` is unset. Neo4j only: the
+ *  Ladybug file is wired by `wiring.ts` (`ladybugConfigFromEnv`). */
 export function openGraphBackendFromEnv(
   env: Record<string, string | undefined> = process.env,
   opts: GraphBackendOptions = {},
 ): Promise<GraphBackend> | null {
   const cfg = graphConfigFromEnv(env);
   if (!cfg) return null;
-  const emb = env["STRUT_GRAPH_EMBEDDINGS"];
   const ont = env["STRUT_GRAPH_SEED_ONTOLOGY"];
   return openGraphBackend(cfg, {
     ...opts,
-    embeddings: opts.embeddings ?? (emb === "off" || emb === "0" || emb === "false" ? false : true),
+    embeddings: opts.embeddings ?? embeddingsOn(env),
     seedOntology: opts.seedOntology ?? (ont === "1" || ont === "true" || ont === "on"),
   });
 }
