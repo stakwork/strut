@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import yaml from "js-yaml";
+import { z } from "zod";
 import { automationDraftSchema, normalizeTrigger, type Automation } from "./automations.js";
 import { contentHash } from "./version.js";
 import type { WorkspaceStore } from "./workspace.js";
@@ -23,7 +24,10 @@ import type { WorkspaceStore } from "./workspace.js";
  * - no automation on the workflow: recreate it, off;
  * - a workflow of the same name that was never shipped (no `s-` version,
  *   not category system) is the user's own and is left alone.
- * An existing automation (its enabled flag, its trigger) is never touched.
+ * An existing automation (its enabled flag, its trigger, its input) is never
+ * touched, except its name: one still carrying a name listed in
+ * automation.json's `formerNames` (a name strut shipped before) takes the
+ * shipped name. A name the user chose is left alone.
  */
 export const SYSTEM_CATEGORY = "system";
 
@@ -42,6 +46,9 @@ export function shippedVersionLabel(yamlText: string): string {
   return `s-${contentHash(yamlText).slice(0, 8)}`;
 }
 
+/** automation.json: an automation draft plus the names strut shipped it under before. */
+const shippedAutomationSchema = automationDraftSchema.extend({ formerNames: z.array(z.string()).default([]) });
+
 export type InstallAction = "created" | "updated" | "published" | "unchanged" | "skipped";
 type Installed = { version: string; action: InstallAction; automation?: string };
 
@@ -54,7 +61,7 @@ export async function installSystemWorkflow(
 ): Promise<Installed> {
   const label = shippedVersionLabel(yamlText);
   const description = (yaml.load(yamlText) as { description?: string } | null)?.description;
-  const draft = automationDraftSchema.parse(automationJson);
+  const { formerNames, ...draft } = shippedAutomationSchema.parse(automationJson);
   const publish = () => workspace.publishWorkflow(name, label, yamlText, description, SYSTEM_CATEGORY, undefined, { source: "seed" });
 
   const meta = await workspace.getWorkflowMetadata(name);
@@ -81,7 +88,12 @@ export async function installSystemWorkflow(
     }
   }
 
-  if (meta?.automations?.length) return { version: label, action };
+  if (meta?.automations?.length) {
+    if (meta.automations.some((a) => formerNames.includes(a.name))) {
+      await workspace.setWorkflowAutomations(name, meta.automations.map((a) => (formerNames.includes(a.name) ? { ...a, name: draft.name } : a)));
+    }
+    return { version: label, action };
+  }
   const automation: Automation = {
     id: `a-${randomUUID().slice(0, 8)}`,
     name: draft.name,
