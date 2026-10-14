@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { defineStep, type StepRegistry } from "./core.js";
 import { coreRegistry } from "./steps/registry.js";
-import { runSingleStep, runStep, cassettePath } from "./run-step.js";
+import { runSingleStep, runStep, cassettePath, slimEvent } from "./run-step.js";
 import { FileRunStore, MemoryRunStore, stepRunKey } from "./store.js";
 import { standardServices, type FetchLike } from "./capabilities.js";
 
@@ -56,6 +56,18 @@ function registry(): StepRegistry {
 }
 
 describe("runSingleStep", () => {
+  it("slimEvent keeps a long string field out of an event for a response; the run keeps it whole", async () => {
+    const echo = defineStep({ type: "echo", input: z.object({ data: z.string() }), output: z.any(), run: async (cfg) => ({ data: cfg.data, n: 1 }) });
+    const data = "x".repeat(100_000);
+    const result = await runSingleStep("echo", { echo } as StepRegistry, {}, { config: { data } });
+    assert.equal((result.output as { data: string }).data, data);
+    const start = result.events.find((e) => e.type === "step.start")!;
+    const end = result.events.find((e) => e.type === "step.end")!;
+    assert.equal((start as { input: { data: string } }).input.data, data, "the run's own events stay whole");
+    assert.equal((slimEvent(start) as { input: { data: string } }).input.data, "[100000 chars not logged]");
+    assert.deepEqual((slimEvent(end) as { output: unknown }).output, { data: "[100000 chars not logged]", n: 1 });
+  });
+
   it("runs a step in isolation and returns output + events", async () => {
     const services = standardServices({
       fetchImpl: fakeFetch(() => ({ data: [{ id: "ch_1" }] })),

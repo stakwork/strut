@@ -142,6 +142,24 @@ export async function runSingleStep(
   };
 }
 
+/** The most of one string field a single-step run's events carry. */
+const EVENT_FIELD_MAX = 64 * 1024;
+
+/** A copy of `e` for runStep's caller: input / output, or their top-level
+ *  fields, longer than EVENT_FIELD_MAX replaced by their size, so a step that
+ *  takes or returns a file as base64 (memory/import's `data`, memory/export's
+ *  inline `data`) does not come back in the events too. The result's `output`
+ *  and the events a kept run stores (what verify reads) stay whole. */
+export function slimEvent(e: RunEvent): RunEvent {
+  const long = (f: unknown) => (typeof f === "string" && f.length > EVENT_FIELD_MAX ? `[${f.length} chars not logged]` : f);
+  const cut = (v: unknown): unknown =>
+    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([k, f]) => [k, long(f)])) : long(v);
+  const out = { ...e } as RunEvent & { input?: unknown; output?: unknown };
+  if ("input" in out) out.input = cut(out.input);
+  if ("output" in out) out.output = cut(out.output);
+  return out;
+}
+
 // ── run_step: single-step runs that leave a record ───────────────────────────
 
 export interface RunStepDeps {
@@ -194,6 +212,7 @@ export async function runStep(
     ...(stepHashes ? { stepHashes } : {}),
   });
   if (result.events.length === 0) return result; // never ran (unknown type)
+  const slim = (r: RunStepResult): RunStepResult => ({ ...r, events: r.events.map(slimEvent) });
 
   let wanted = keep === true;
   if (!wanted && deps.claims) {
@@ -204,11 +223,11 @@ export async function runStep(
       console.error(`[run-step] could not read claims for ${type} — run not kept:`, err);
     }
   }
-  if (!wanted) return result;
+  if (!wanted) return slim(result);
   const kept = await persistStepRun(deps.store, type, result);
   // Now that it is in the real store it can be verified — detached, never awaited.
   deps.onKept?.(kept, result.runId);
-  return { ...result, kept };
+  return { ...slim(result), kept };
 }
 
 /** Copy a finished single-step run (events + summary) into `store` under

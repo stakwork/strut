@@ -96,15 +96,14 @@ async function dbPath(ctx?: StepContext<StrutCapabilities>): Promise<string> {
   return resolve(join(services.dataDir, "memory", "graph.lbug"));
 }
 
-type Handle = { read: Query; write: Query; queue: Promise<unknown> };
+export type Handle = { path: string; read: Query; write: Query; queue: Promise<unknown>; ladybug: string };
 
 async function open(path: string): Promise<Handle> {
   // Owner-only: whatever modes Ladybug gives its files, nobody else on
   // this machine can reach them through this folder. A folder that was
   // already there keeps its modes; an open one gets a warning.
   const folder = dirname(path);
-  if (mkdirSync(folder, { recursive: true, mode: 0o700 })) chmodSync(folder, 0o700);
-  else if (statSync(folder).mode & 0o077) {
+  if (!ownerOnly(folder) && statSync(folder).mode & 0o077) {
     console.warn(`memory: ${folder} is readable by other users; chmod 700 it to keep the memory graph private`);
   }
   // Lazy: an optional dependency with a native addon, loaded on first use
@@ -116,12 +115,32 @@ async function open(path: string): Promise<Handle> {
     );
   });
   const db = new lbug.Database(path);
-  const conn = new lbug.Connection(db);
-  for (const ddl of [...SCHEMA, ...MIGRATIONS]) await conn.query(ddl);
-  const handle = { read: queryOn(conn), write: queryOn(new lbug.Connection(db)), queue: Promise.resolve() };
-  await seed(handle.read, SEED);
+  const handle = {
+    path,
+    read: queryOn(new lbug.Connection(db)),
+    write: queryOn(new lbug.Connection(db)),
+    queue: Promise.resolve(),
+    ladybug: lbug.Database.getVersion(),
+  };
+  await ensureSchema(handle.read);
   return handle;
 }
+
+/** Makes `folder` owner-only (0700, whatever the umask) when it creates it; true when it did. */
+export function ownerOnly(folder: string): boolean {
+  if (!mkdirSync(folder, { recursive: true, mode: 0o700 })) return false;
+  chmodSync(folder, 0o700);
+  return true;
+}
+
+/** Creates what is missing, brings older tables up to date, and seeds the ontology. */
+export async function ensureSchema(query: Query): Promise<void> {
+  for (const ddl of [...SCHEMA, ...MIGRATIONS]) await query(ddl);
+  await seed(query, SEED);
+}
+
+/** How many migrations this strut knows: a snapshot's tables are up to date to this many. */
+export const MIGRATION_COUNT = MIGRATIONS.length;
 
 function connection(path: string): Promise<Handle> {
   const g = globalThis as Record<symbol, Map<string, Promise<Handle>> | undefined>;
@@ -157,8 +176,7 @@ export async function memoryDb(ctx?: StepContext<unknown>): Promise<Query> {
  *  all of it lands, or, when it throws, none of it. Must not nest: an inner
  *  call would wait on the queue the outer one holds. */
 export async function memoryWrite<T>(ctx: StepContext<unknown> | undefined, fn: (query: Query) => Promise<T>): Promise<T> {
-  const handle = await handleFor(ctx);
-  const write = async () => {
+  return memoryExclusive(ctx, async (handle) => {
     // A failed statement rolls the transaction back, so every later one,
     // and the commit, fails with it, even when `fn` caught the first.
     let dead: { err: unknown } | undefined;
@@ -181,8 +199,16 @@ export async function memoryWrite<T>(ctx: StepContext<unknown> | undefined, fn: 
       await handle.write("ROLLBACK").catch(() => undefined);
       throw err;
     }
-  };
-  const next = handle.queue.then(write, write);
+  });
+}
+
+/** Runs `fn` in the writes' queue with no transaction around it: for what
+ *  cannot run inside one (CHECKPOINT, EXPORT / IMPORT DATABASE, DROP TABLE).
+ *  Reads go on meanwhile. Must not nest, as memoryWrite. */
+export async function memoryExclusive<T>(ctx: StepContext<unknown> | undefined, fn: (handle: Handle) => Promise<T>): Promise<T> {
+  const handle = await handleFor(ctx);
+  const run = () => fn(handle);
+  const next = handle.queue.then(run, run);
   handle.queue = next.catch(() => undefined);
   return next;
 }
