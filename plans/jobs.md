@@ -1,5 +1,9 @@
 # Jobs — a host hands strut work; strut hands back artifacts
 
+> **2026-10-14:** verification of the WORK a job produces — claims ABOUT
+> the job, checks the work agent fires before it says done, evidence with a
+> screenshot the person reviews in hive — is `job-claims.md` (proposed).
+>
 > **2026-10-13:** the `job` workflow itself moved INTO strut — shipped as
 > `src/workflows/job.yaml`, seeded at boot by `createStrut`, the lab passing
 > only its delta (`pod/*`, the `Job` Concept paragraph) through
