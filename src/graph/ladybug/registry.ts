@@ -179,14 +179,17 @@ export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
   deleted_at: "INT64",
 };
 
-/** Every edge has the same columns: the writer's stamps and the properties
- *  the claim layer writes (`verify.ts`: `strength` on EVIDENCED_BY,
- *  `context` / `start_time` / `end_time` / `post_url` on HAS_SOURCE). */
+/** Every edge has the same columns: the writer's stamps, `importance` (the
+ *  one edge property a neighbors read orders by, jarvis's sort key), and
+ *  the properties the claim layer writes (`verify.ts`: `strength` on
+ *  EVIDENCED_BY, `context` / `start_time` / `end_time` / `post_url` on
+ *  HAS_SOURCE). */
 export const EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
   ref_id: "STRING",
   edge_key: "STRING",
   date_added_to_graph: "INT64",
   weight: "DOUBLE",
+  importance: "DOUBLE",
   strength: "DOUBLE",
   context: "STRING",
   start_time: "INT64",

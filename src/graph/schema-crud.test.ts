@@ -12,7 +12,7 @@ import { seedJarvisOntology } from "./ontology-seed.js";
 import { createNodeSchema, planNodeSchema } from "./schema-crud.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { seedStrutDomain } from "./schema-seed.js";
-import { GraphReader } from "./search.js";
+import { Neo4jReader } from "./search.js";
 import { schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
 
 const cfg = testGraphConfig();
@@ -64,7 +64,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
   let resolver: SchemaResolver;
   let nodes: NodeWriter;
   let edges: EdgeWriter;
-  let reader: GraphReader;
+  let reader: Neo4jReader;
   before(async () => {
     bolt = new Bolt(cfg!);
     await bolt.verify();
@@ -74,7 +74,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     resolver = new SchemaResolver(bolt);
     nodes = new NodeWriter(bolt, { resolver });
     edges = new EdgeWriter(bolt, { resolver });
-    reader = new GraphReader(bolt, { resolver });
+    reader = new Neo4jReader(bolt, { resolver });
   });
   after(async () => {
     await bolt?.close();

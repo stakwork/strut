@@ -24,7 +24,8 @@
  * and the boot reports on top. The Neo4j one is built here over a `Bolt`;
  * the Ladybug one (plans/ladybug-backend.md) over a `LadybugHandle`, whose
  * open IS the schema (the DDL from the closed registry) — no seeds, no
- * migrations, and until slice 3 no reader.
+ * migrations, no embedding pass (the writer embeds inline), and the
+ * `LadybugReader` over its one FTS and one HNSW index.
  */
 import { resolve } from "node:path";
 import { Bolt, graphConfigFromEnv, type Neo4jConfig } from "./bolt.js";
@@ -35,12 +36,13 @@ import type { GraphEngine } from "./engine.js";
 import { reconcileIndexLists, type IndexReconcileReport } from "./index-reconcile.js";
 import { openLadybug, type LadybugHandle } from "./ladybug/db.js";
 import { LadybugEngine } from "./ladybug/engine.js";
+import { LadybugReader } from "./ladybug/reader.js";
 import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { seedStrutDomain, type SeedReport } from "./schema-seed.js";
-import { GraphReader } from "./search.js";
+import { Neo4jReader, type GraphReader } from "./search.js";
 import { migrateVeinToStrut, type VeinMigrationReport } from "./vein-migration.js";
 import { migrateRunStatus, type RunStatusMigrationReport } from "./run-status-migration.js";
 import { migrateExactKeys, type ExactKeyMigrationReport } from "./exact-key-migration.js";
@@ -146,19 +148,6 @@ export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {
   return p;
 }
 
-/** The reader lands in slice 3 (plans/ladybug-backend.md §6); until then any
- *  read through it says so instead of running Neo4j Cypher on a file. */
-function noReaderYet(): GraphReader {
-  return new Proxy({} as GraphReader, {
-    get: (_t, prop) => {
-      if (typeof prop === "symbol" || prop === "then") return undefined;
-      return () => {
-        throw new Error(`GraphReader.${String(prop)} is not available on the ladybug backend yet (plans/ladybug-backend.md §6, slice 3)`);
-      };
-    },
-  });
-}
-
 async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions): Promise<LadybugBackend> {
   if (cfg.namespace !== "default") throw new Error(`a ladybug file holds one namespace, default; got ${cfg.namespace}`);
   const lbug = await openLadybug(cfg.path, { extensionDir: cfg.extensionDir });
@@ -180,7 +169,7 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       schemaSource: engine.schemaSource,
       nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
       edges: new EdgeWriter(engine, { resolver: schemas }),
-      reader: noReaderYet(),
+      reader: new LadybugReader(engine, { embedder }),
       schemas,
       embedder,
       seed: undefined,
@@ -299,7 +288,7 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
       schemaSource: engine.schemaSource,
       nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
       edges: new EdgeWriter(engine, { resolver: schemas }),
-      reader: new GraphReader(bolt, { embedder, resolver: schemas }),
+      reader: new Neo4jReader(bolt, { embedder, resolver: schemas }),
       schemas,
       embedder,
       seed,

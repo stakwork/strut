@@ -25,6 +25,7 @@ import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { Bolt, type Neo4jConfig } from "./bolt.js";
 import type { GraphKind } from "./engine.js";
 import { loadLadybug, openLadybug } from "./ladybug/db.js";
+import type { Embedder } from "./node-writer.js";
 import { typeLabelOf, typeValue } from "./strut-schemas.js";
 
 export function testGraphConfig(): Neo4jConfig | null {
@@ -45,8 +46,9 @@ export interface TestBackend {
   kind: GraphKind;
   /** The `describe` skip reason, or false. */
   skip: string | false;
-  /** A fresh backend for the suite (one per `describe`; `skipBoot`, no embedder). */
-  open(): Promise<GraphBackend>;
+  /** A fresh backend for the suite (one per `describe`; `skipBoot`; no
+   *  embedder unless one is given — the writer and the reader share it). */
+  open(opts?: { embedder?: Embedder }): Promise<GraphBackend>;
   /** Empty the graph between cases (schemas and all on Neo4j — reseed after). */
   wipe(b: GraphBackend): Promise<void>;
   /** Remove every data node and edge, keeping the schemas (Neo4j's `:Schema`
@@ -84,9 +86,9 @@ export function testBackends(): TestBackend[] {
       name: "ladybug",
       kind: "ladybug",
       skip: LADYBUG_SKIP ?? false,
-      async open() {
+      async open(opts = {}) {
         const dir = await mkdtemp(join(tmpdir(), "strut-lbug-test-"));
-        const b = await openGraphBackend({ kind: "ladybug", path: join(dir, "graph.lbug"), namespace: "default" }, { embeddings: false, skipBoot: true });
+        const b = await openGraphBackend({ kind: "ladybug", path: join(dir, "graph.lbug"), namespace: "default" }, { embeddings: opts.embedder ?? false, skipBoot: true });
         dirs.set(b, dir);
         return b;
       },
@@ -114,7 +116,7 @@ export function testBackends(): TestBackend[] {
     name: "neo4j",
     kind: "neo4j",
     skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set",
-    open: () => openGraphBackend(cfg!, { embeddings: false, skipBoot: true }),
+    open: (opts = {}) => openGraphBackend(cfg!, { embeddings: opts.embedder ?? false, skipBoot: true }),
     async wipe(b) {
       if (b.kind !== "neo4j") return;
       await wipeGraph(b.bolt);
@@ -127,6 +129,25 @@ export function testBackends(): TestBackend[] {
     close: (b) => b.close(),
   });
   return out;
+}
+
+/** Lets a suite write `Concept` nodes on either engine: on Ladybug the
+ *  registry already holds the type; on Neo4j (after `seedStrutDomain`) this
+ *  adds the one Schema row the writer validates against — jarvis's shape:
+ *  the `General` domain (a node outside every domain is invisible to the
+ *  connection counts), `file` / `repo` as gitree's summaries carry — and
+ *  drops the resolver's cache. */
+export async function seedConceptSchema(b: GraphBackend): Promise<void> {
+  if (b.kind !== "neo4j") return;
+  await b.bolt.run(
+    `MATCH (t:Schema {type: "Thing"})
+     MERGE (c:Schema {type: "Concept"})
+     ON CREATE SET c.parent = "Thing", c.domain = "General", c.node_key = "concept-name", c.index = ["name", "description", "docs"],
+                   c.title_key = "name", c.description_key = "description", c.ref_id = "schema-concept",
+                   c.name = "string", c.description = "?string", c.docs = "?string", c.file = "?string", c.repo = "?string"
+     MERGE (c)-[:CHILD_OF {ref_id: "schema-concept-child-of"}]->(t)`,
+  );
+  b.schemas.invalidate();
 }
 
 // ── Raw reads on either engine ──────────────────────────────────────────────

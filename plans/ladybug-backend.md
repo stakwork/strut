@@ -1,6 +1,6 @@
 # LadybugDB graph backend — one file, the graph layer strut owns
 
-**Status (2026-10-14): decided (§7), probed, slices 1 and 2 built (§6).** The
+**Status (2026-10-14): decided (§7), probed, slices 1–3 built (§6).** The
 dialect and performance facts in §2 come from scratch probes against
 `@ladybugdb/core` 0.21.2 on darwin-arm64. Supersedes the "idea, not
 decided" sketch in `local-desktop-and-stt.md` §3.1 and the first draft of
@@ -342,17 +342,30 @@ The Neo4j implementation of every engine interface is today's code, moved
   refused. Neo4j: the `:Schema` graph as today. `schema-seed.ts` /
   `ontology-seed.ts` / `schema-crud.ts` write through the source on Neo4j
   and return at once on a closed registry (`mode: "closed"`).
-- **`GraphReader`** becomes an interface in slice 3 (today's method list);
-  `Neo4jReader` is today's class; `LadybugReader` is sized to the ten
-  types: `getNode` / `getNodeByKey` / `namesLike` / `neighbors` /
-  `connectionCounts`, `listSchemas` / `getSchema` over the registry, and
-  `search` = FTS (`QUERY_FTS_INDEX`) + vector (`QUERY_VECTOR_INDEX`) over
-  the one table → the SAME `fuseHits`, `applyTitleBoost`, `serializeNode`.
-  Until then the Ladybug backend's `reader` throws on use.
+- **`GraphReader`** is an interface (`search.ts`: today's method list);
+  `Neo4jReader` is today's class; `LadybugReader` (`ladybug/reader.ts`) is
+  sized to the ten types: `getNode` / `getNodeByKey` / `namesLike` /
+  `neighbors` / `connectionCounts` / `edgeCounts` over the one table (a
+  hop's direction from two directed statements — no `startNode` — merged
+  and ordered by `importance` in TS), `listSchemas` / `getSchema` from the
+  registry (no Thing; the Strut types carry their domain and display
+  keys), and `search` = FTS (`QUERY_FTS_INDEX`, all words required, the
+  any-word pass as the zero-hit fallback — no fuzzy operator; a quoted
+  span is its words) + vector (`QUERY_VECTOR_INDEX`, `1 - distance`)
+  → the SAME `fuseHits`, `applyTitleBoost`, `applyUsageTiebreak`,
+  `serializeNode`. Both indexes are filtered AFTER their top-k (`WITH node,
+  score WHERE …`), so `type`, `exclude` and `linked` all widen both halves
+  with the shared `overfetch` (Neo4j widens the keyword half only for
+  `exclude` / `linked`: its typed route is a domain index). One namespace
+  (`default`; anything else `INVALID_NAMESPACE`, `registerNamespace`
+  refused), one domain (`strut` = the Strut types; else `INVALID_DOMAIN`),
+  no `is_muted` / `status` (hidden = `deleted_at`), no per-field vectors
+  (`input_q` / `output_q` alone find nothing and say so in `warnings`).
+  Every node read projects the columns without `text_embeddings`.
 - **Embeddings**: the writer computes a node's vector inline when the
   backend has an embedder, as on Neo4j. The `EmbeddingPass` (healing
   nodes OTHER writers left unembedded) has no job on a file strut alone
-  writes; slice 3 decides whether a `PassSource` is worth having at all.
+  writes: no pass, no `PassSource` (slice 3 decided).
 - **`query.ts`**: slice 4 runs the model's Cypher on the read-only
   handle; the keyword gate gains `COPY`, `INSTALL`, `LOAD`, `ATTACH`,
   `IMPORT`; the prompt line for `graph_query` gets one sentence per
@@ -419,7 +432,19 @@ skips and says so, never silently.
 3. **The read surface.** `LadybugReader` sized to the ten types (lookups,
    neighbors, the Concept tree, search over FTS + HNSW) → `graph-get` /
    `graph-search` / `graph-neighbors` on Concepts, `graph_get` in the
-   builder, the run flyout's nodes; `search` / `names` tests on both.
+   builder, the run flyout's nodes; `search` / `names` tests on both
+   (DONE; `importance` joined the edge columns — the one edge property a
+   neighbors read orders by). Ladybug facts from it: `QUERY_FTS_INDEX` /
+   `QUERY_VECTOR_INDEX` take parameters for the query, `conjunctive`,
+   `top` and `k`, and a `WITH node, score WHERE …` after the CALL is the
+   post-filter; a quoted span in the FTS query matches nothing (strip the
+   quotes); `EXISTS { MATCH … }` over a rel table the file lacks is a
+   binder error, so a `linked` entry naming one is `false` in the text;
+   `=~` is RE2 full-match and takes `(?i)`; a list parameter works in
+   `IN`; `UNION ALL` works. The jarvis-typed routing / query-shape /
+   exclude / linked suites stay Neo4j-only: their types (Function, File,
+   PullRequest) are not in the file; the Concept cases of the same
+   features run on both.
 4. **Wiring and the desktop.** Env + `wiring.ts` + `server.ts`;
    `services.graph` for the steps; the read-only handle for `query.ts` +
    the prompt sentence; `/health`; `package-desktop.mjs` ships the two
@@ -474,7 +499,8 @@ skips and says so, never silently.
   inline embedding. A BULK import of embedded nodes should drop the
   index, load, and rebuild it rather than pay 12 ms a row.
 - **FTS is BM25 over tokens**: no phrase, fuzzy or per-field boost
-  operators. Phrases are post-filters in slice 3.
+  operators. A quoted span is sent as its words, all required
+  (`conjunctive`); the zero-hit fallback is any-word, never fuzzy.
 - **Node structs carry every column** (~80): project in hot reads;
   `RETURN n` only where today's envelopes need the whole node.
 - **Extensions are versioned with the core** and downloaded from
