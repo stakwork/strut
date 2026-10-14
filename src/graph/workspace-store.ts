@@ -1,12 +1,16 @@
 /**
- * `Neo4jWorkspaceStore` — the graph-backed `WorkspaceStore`
- * (plans/generic-storage.md §7). Workflows, versions, steps, and step
- * versions are nodes in strut's own Neo4j domain (`StrutWorkflow`,
- * `StrutWorkflowVersion`, `StrutStep`, `StrutStepVersion` — the label registry
- * in `strut-schemas.ts`), linked by `VERSION_OF`, `ACTIVE_VERSION`,
- * `USES_STEP`, and `DEPENDS_ON` edges. Every write goes through the
- * jarvis-dialect node/edge writers, so a jarvis mounted on the same database
- * sees native data.
+ * `GraphWorkspaceStore` — the graph-backed `WorkspaceStore`
+ * (plans/generic-storage.md §7) over any `GraphBackend`: Neo4j (the swarm's
+ * jarvis graph) or a LadybugDB file (plans/ladybug-backend.md). Workflows,
+ * versions, steps, and step versions are nodes of strut's own types
+ * (`StrutWorkflow`, `StrutWorkflowVersion`, `StrutStep`, `StrutStepVersion` —
+ * the registry in `strut-schemas.ts`), linked by `VERSION_OF`,
+ * `ACTIVE_VERSION`, `USES_STEP`, and `DEPENDS_ON` edges. Every write goes
+ * through the shared node/edge writers; every read is one of a dozen
+ * pattern-level statements written with the backend's dialect helpers
+ * (`engine.ts`), so one class serves both engines. The two list reads are
+ * two statements each (the parents, then every live version with the
+ * `VERSION_OF` target it belongs to), joined and ordered in TS.
  *
  * Semantics mirror `FileWorkspaceStore` (the conformance suite in
  * `src/test-util/workspace-conformance.ts` is the contract), with one
@@ -56,10 +60,8 @@ import {
 import { readStepSourceFromDisk, type StepSource } from "../steps/registry.js";
 import { contentHash, nextVersionLabel } from "../version.js";
 import type { GraphBackend } from "./backend.js";
-import type { Row } from "./engine.js";
-import { NODE_LIVE } from "./deletion.js";
 
-export interface Neo4jWorkspaceStoreOptions {
+export interface GraphWorkspaceStoreOptions {
   /** Where active custom steps are written for the module loader. Default:
    *  a per-(uri, namespace) dir under the OS temp dir. */
   materializeDir?: string;
@@ -97,6 +99,7 @@ interface VersionRow {
   version_label: string;
   description?: string;
   created_at: number; // epoch seconds
+  date_added_to_graph?: number;
   source: string;
   publisher?: string;
   /** `WorkflowVersionInfo.source` — `source` is the YAML here. */
@@ -119,12 +122,22 @@ interface StepVersionRow {
   version_label: string;
   description?: string;
   created_at: number;
+  date_added_to_graph?: number;
   source: string;
   publisher?: string;
 }
 
+const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd"] as const;
+const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "date_added_to_graph"] as const;
+const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
+const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "created_at", "source", "publisher", "date_added_to_graph"] as const;
+
 const isoFromSeconds = (s: number | undefined): string =>
   new Date((s ?? 0) * 1000).toISOString();
+
+/** Versions in creation order: `created_at` (seconds), then the write stamp. */
+const byCreation = <T extends { created_at: number; date_added_to_graph?: number }>(a: T, b: T) =>
+  a.created_at - b.created_at || (a.date_added_to_graph ?? 0) - (b.date_added_to_graph ?? 0);
 
 /** Drop undefined/null values so the writer sees only real attributes. */
 function compact(o: Record<string, unknown>): Record<string, unknown> {
@@ -166,22 +179,18 @@ function collectStepRefs(node: unknown, out: Array<{ type: string; config: Recor
   return out;
 }
 
-export class Neo4jWorkspaceStore implements WorkspaceStore {
+export class GraphWorkspaceStore implements WorkspaceStore {
   private readonly ns: string;
   private readonly materializeDir: string;
 
   constructor(
     private readonly backend: GraphBackend,
-    opts: Neo4jWorkspaceStoreOptions = {},
+    opts: GraphWorkspaceStoreOptions = {},
   ) {
-    this.ns = backend.cfg.namespace;
+    this.ns = backend.namespace;
+    const where = backend.kind === "neo4j" ? `${backend.cfg.uri}|${backend.cfg.database ?? ""}` : backend.cfg.path;
     this.materializeDir =
-      opts.materializeDir ??
-      join(
-        tmpdir(),
-        "strut-graph-steps",
-        createHash("sha256").update(`${backend.cfg.uri}|${backend.cfg.database ?? ""}|${this.ns}`).digest("hex").slice(0, 16),
-      );
+      opts.materializeDir ?? join(tmpdir(), "strut-graph-steps", createHash("sha256").update(`${where}|${this.ns}`).digest("hex").slice(0, 16));
   }
 
   /** `WorkspaceStore.graph` — what turns the claims layer on. */
@@ -189,38 +198,61 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
     return this.backend;
   }
 
+  private get d() {
+    return this.backend.dialect;
+  }
+
+  /** A projected row with its null fields dropped, as Neo4j's `properties()`
+   *  and the Ladybug handle both report an absent property. */
+  private async rows<T>(cypher: string, params: Record<string, unknown>, column = "p"): Promise<T[]> {
+    return (await this.backend.query(cypher, params)).map((r) => compact(r[column] as Record<string, unknown>) as T);
+  }
+
   // ── Reads: workflows ───────────────────────────────────────────────────
 
   private async workflowRow(name: string): Promise<WorkflowRow | null> {
-    const rows = await this.backend.query(
-      `MATCH (w:StrutWorkflow {namespace: $ns, name: $name}) WHERE ${NODE_LIVE("w")}
-       RETURN properties(w) AS p LIMIT 1`,
+    const d = this.d;
+    const rows = await this.rows<WorkflowRow>(
+      `MATCH ${d.node("w", "StrutWorkflow", { namespace: "$ns", name: "$name" })} WHERE ${d.live("w")}
+       RETURN ${d.project("w", WORKFLOW_FIELDS)} AS p LIMIT 1`,
       { ns: this.ns, name },
     );
-    return rows.length ? (rows[0]!["p"] as WorkflowRow) : null;
+    return rows[0] ?? null;
   }
 
   private async versionRows(name: string): Promise<VersionRow[]> {
-    const rows = await this.backend.query(
-      `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $name}) WHERE ${NODE_LIVE("v")}
-       RETURN properties(v) AS p ORDER BY v.created_at, v.date_added_to_graph`,
+    const d = this.d;
+    const rows = await this.rows<VersionRow>(
+      `MATCH ${d.node("v", "StrutWorkflowVersion", { namespace: "$ns", name: "$name" })} WHERE ${d.live("v")}
+       RETURN ${d.project("v", VERSION_FIELDS)} AS p`,
       { ns: this.ns, name },
     );
-    return rows.map((r: Row) => r["p"] as VersionRow);
+    return rows.sort(byCreation);
   }
 
   async listWorkflows(): Promise<WorkflowListEntry[]> {
-    const rows = await this.backend.query(
-      `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE ${NODE_LIVE("w")}
-       OPTIONAL MATCH (v:StrutWorkflowVersion {namespace: $ns, name: w.name}) WHERE ${NODE_LIVE("v")}
-       WITH w, v ORDER BY v.created_at, v.date_added_to_graph
-       RETURN properties(w) AS w, collect(properties(v)) AS versions ORDER BY w.name`,
+    const d = this.d;
+    const workflows = await this.rows<WorkflowRow>(
+      `MATCH ${d.node("w", "StrutWorkflow", { namespace: "$ns" })} WHERE ${d.live("w")} RETURN ${d.project("w", WORKFLOW_FIELDS)} AS p`,
       { ns: this.ns },
     );
+    // Every live version with the workflow it belongs to, joined here: an
+    // OPTIONAL MATCH + collect is a Ladybug bug (plans/ladybug-backend.md §2).
+    const versionRows = await this.backend.query(
+      `MATCH ${d.node("v", "StrutWorkflowVersion", { namespace: "$ns" })}-[:VERSION_OF]->${d.node("w", "StrutWorkflow", { namespace: "$ns" })}
+       WHERE ${d.live("v")} AND ${d.live("w")}
+       RETURN w.ref_id AS wf, ${d.project("v", VERSION_FIELDS)} AS p`,
+      { ns: this.ns },
+    );
+    const byWorkflow = new Map<string, VersionRow[]>();
+    for (const r of versionRows) {
+      const list = byWorkflow.get(String(r["wf"])) ?? [];
+      list.push(compact(r["p"] as Record<string, unknown>) as unknown as VersionRow);
+      byWorkflow.set(String(r["wf"]), list);
+    }
     const out: WorkflowListEntry[] = [];
-    for (const r of rows) {
-      const w = r["w"] as WorkflowRow;
-      const versions = (r["versions"] as VersionRow[]).filter((v) => v && v.version_label);
+    for (const w of workflows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const versions = (byWorkflow.get(w.ref_id) ?? []).filter((v) => v.version_label).sort(byCreation);
       const active = versions.find((v) => v.content_hash === w.active_version);
       out.push({
         name: w.name,
@@ -412,8 +444,9 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
       if (patch) await nodes.update(wfRef, patch);
     }
     await edges.write({ edge: "VERSION_OF", source_ref_id: version.ref_id, target_ref_id: wfRef });
+    const d = this.d;
     await this.backend.query(
-      `MATCH (w:StrutWorkflow {ref_id: $w})-[r:ACTIVE_VERSION]->(v) WHERE v.ref_id <> $v DELETE r`,
+      `MATCH ${d.node("w", "StrutWorkflow", { ref_id: "$w" })}-[r:ACTIVE_VERSION]->${d.node("v", "StrutWorkflowVersion")} WHERE v.ref_id <> $v DELETE r`,
       { w: wfRef, v: version.ref_id },
     );
     await edges.write({ edge: "ACTIVE_VERSION", source_ref_id: wfRef, target_ref_id: version.ref_id });
@@ -435,16 +468,17 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
       ...new Set(refs.filter((r) => r.type === "subflow" && typeof r.config["workflow"] === "string").map((r) => r.config["workflow"] as string)),
     ];
     const inputs: Array<{ edge: string; source_ref_id: string; target_ref_id: string }> = [];
+    const d = this.d;
     if (stepTypes.length) {
       const rows = await this.backend.query(
-        `MATCH (s:StrutStep {namespace: $ns}) WHERE s.step_type IN $types AND ${NODE_LIVE("s")} RETURN s.ref_id AS ref_id`,
+        `MATCH ${d.node("s", "StrutStep", { namespace: "$ns" })} WHERE s.step_type IN $types AND ${d.live("s")} RETURN s.ref_id AS ref_id`,
         { ns: this.ns, types: stepTypes },
       );
       for (const r of rows) inputs.push({ edge: "USES_STEP", source_ref_id: versionRef, target_ref_id: r["ref_id"] as string });
     }
     if (subflows.length) {
       const rows = await this.backend.query(
-        `MATCH (w:StrutWorkflow {namespace: $ns}) WHERE w.name IN $names AND ${NODE_LIVE("w")} RETURN w.ref_id AS ref_id`,
+        `MATCH ${d.node("w", "StrutWorkflow", { namespace: "$ns" })} WHERE w.name IN $names AND ${d.live("w")} RETURN w.ref_id AS ref_id`,
         { ns: this.ns, names: subflows },
       );
       for (const r of rows) inputs.push({ edge: "DEPENDS_ON", source_ref_id: versionRef, target_ref_id: r["ref_id"] as string });
@@ -562,33 +596,43 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
   // ── Reads: steps ───────────────────────────────────────────────────────
 
   private async stepRow(type: string): Promise<StepRow | null> {
-    const rows = await this.backend.query(
-      `MATCH (s:StrutStep {namespace: $ns, step_type: $type}) WHERE ${NODE_LIVE("s")} RETURN properties(s) AS p LIMIT 1`,
+    const d = this.d;
+    const rows = await this.rows<StepRow>(
+      `MATCH ${d.node("s", "StrutStep", { namespace: "$ns", step_type: "$type" })} WHERE ${d.live("s")} RETURN ${d.project("s", STEP_FIELDS)} AS p LIMIT 1`,
       { ns: this.ns, type },
     );
-    return rows.length ? (rows[0]!["p"] as StepRow) : null;
+    return rows[0] ?? null;
   }
 
   private async stepVersionRows(type: string): Promise<StepVersionRow[]> {
-    const rows = await this.backend.query(
-      `MATCH (v:StrutStepVersion {namespace: $ns, step_type: $type}) WHERE ${NODE_LIVE("v")}
-       RETURN properties(v) AS p ORDER BY v.created_at, v.date_added_to_graph`,
+    const d = this.d;
+    const rows = await this.rows<StepVersionRow>(
+      `MATCH ${d.node("v", "StrutStepVersion", { namespace: "$ns", step_type: "$type" })} WHERE ${d.live("v")}
+       RETURN ${d.project("v", STEP_VERSION_FIELDS)} AS p`,
       { ns: this.ns, type },
     );
-    return rows.map((r: Row) => r["p"] as StepVersionRow);
+    return rows.sort(byCreation);
   }
 
   /** Every visible step with its active version's row (null when the
-   *  pointer dangles). Helpers (`_`-prefixed segments) included. */
+   *  pointer dangles). Helpers (`_`-prefixed segments) included. Two
+   *  statements joined here (see `listWorkflows`). */
   private async stepsWithActive(): Promise<Array<{ step: StepRow; active: StepVersionRow | null }>> {
-    const rows = await this.backend.query(
-      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NODE_LIVE("s")}
-       OPTIONAL MATCH (v:StrutStepVersion {namespace: $ns, step_type: s.step_type, content_hash: s.active_version})
-       WHERE ${NODE_LIVE("v")}
-       RETURN properties(s) AS s, properties(v) AS v ORDER BY s.step_type`,
+    const d = this.d;
+    const steps = await this.rows<StepRow>(
+      `MATCH ${d.node("s", "StrutStep", { namespace: "$ns" })} WHERE ${d.live("s")} RETURN ${d.project("s", STEP_FIELDS)} AS p`,
       { ns: this.ns },
     );
-    return rows.map((r) => ({ step: r["s"] as StepRow, active: (r["v"] as StepVersionRow | null) ?? null }));
+    const actives = await this.backend.query(
+      `MATCH ${d.node("v", "StrutStepVersion", { namespace: "$ns" })}-[:VERSION_OF]->${d.node("s", "StrutStep", { namespace: "$ns" })}
+       WHERE ${d.live("v")} AND ${d.live("s")} AND v.content_hash = s.active_version
+       RETURN s.ref_id AS step, ${d.project("v", STEP_VERSION_FIELDS)} AS p`,
+      { ns: this.ns },
+    );
+    const active = new Map(actives.map((r) => [String(r["step"]), compact(r["p"] as Record<string, unknown>) as unknown as StepVersionRow]));
+    return steps
+      .sort((a, b) => (a.step_type < b.step_type ? -1 : a.step_type > b.step_type ? 1 : 0))
+      .map((step) => ({ step, active: active.get(step.ref_id) ?? null }));
   }
 
   private static isHelper(type: string): boolean {
@@ -598,7 +642,7 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
   async listSteps(filter?: { publisher?: string }): Promise<StepListEntry[]> {
     const out: StepListEntry[] = [];
     for (const { step, active } of await this.stepsWithActive()) {
-      if (Neo4jWorkspaceStore.isHelper(step.step_type)) continue;
+      if (GraphWorkspaceStore.isHelper(step.step_type)) continue;
       if (filter?.publisher && step.publisher !== filter.publisher) continue;
       out.push({
         type: step.step_type,
@@ -613,8 +657,9 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
   async getActiveStepHashes(): Promise<Record<string, string>> {
     // `active_version` IS the active version's content hash (it mirrors the
     // ACTIVE_VERSION edge), so this is one read of the step nodes.
+    const d = this.d;
     const rows = await this.backend.query(
-      `MATCH (s:StrutStep {namespace: $ns}) WHERE ${NODE_LIVE("s")} AND s.active_version IS NOT NULL
+      `MATCH ${d.node("s", "StrutStep", { namespace: "$ns" })} WHERE ${d.live("s")} AND s.active_version IS NOT NULL
        RETURN s.step_type AS type, s.active_version AS hash`,
       { ns: this.ns },
     );
@@ -726,8 +771,9 @@ export class Neo4jWorkspaceStore implements WorkspaceStore {
   }
 
   private async swapActiveStepEdge(stepRef: string, versionRef: string): Promise<void> {
+    const d = this.d;
     await this.backend.query(
-      `MATCH (s:StrutStep {ref_id: $s})-[r:ACTIVE_VERSION]->(v) WHERE v.ref_id <> $v DELETE r`,
+      `MATCH ${d.node("s", "StrutStep", { ref_id: "$s" })}-[r:ACTIVE_VERSION]->${d.node("v", "StrutStepVersion")} WHERE v.ref_id <> $v DELETE r`,
       { s: stepRef, v: versionRef },
     );
     await this.backend.edges.write({ edge: "ACTIVE_VERSION", source_ref_id: stepRef, target_ref_id: versionRef });
@@ -827,3 +873,7 @@ async function walkTs(dir: string): Promise<string[]> {
   }
   return out;
 }
+
+/** The class's first name, kept for hosts that import it (mcp's `createLabStrut`). */
+export { GraphWorkspaceStore as Neo4jWorkspaceStore };
+export type Neo4jWorkspaceStoreOptions = GraphWorkspaceStoreOptions;
