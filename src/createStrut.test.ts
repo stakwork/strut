@@ -413,7 +413,7 @@ describe("createStrut", () => {
     );
     await ws.publishWorkflow("shouter", "v1", { steps: [{ id: "s", type: "clip/shout", config: { text: "{{ input.text }}" } }] });
     const store = new MemoryRunStore();
-    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false });
+    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false, systemWorkflows: false });
     const hash = (await ws.getActiveStepHashes())["clip/shout"]!;
     assert.equal(strut.claims, null, "a filesystem workspace has no claims layer");
 
