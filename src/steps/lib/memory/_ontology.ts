@@ -115,14 +115,19 @@ function vocabularyOf(terms: Term[]): Vocabulary {
   };
 }
 
-// One read of every row (tens of them) per database, kept until an Ontology
-// write. Keyed by the database's query function (_db.ts keeps one per file),
-// and kept on globalThis like that handle, so a re-imported module shares it.
-const cache = ((globalThis as Record<symbol, unknown>)[Symbol.for("strut.memory.vocabulary")] ??=
-  new WeakMap<Query, Promise<Vocabulary>>()) as WeakMap<Query, Promise<Vocabulary>>;
+// One read of every row (tens of them) per query function, kept until an
+// Ontology write through it. The database's read connection keeps its copy
+// until a transaction that wrote Ontology commits (memoryWrite); a
+// transaction loads its own, so it sees its own proposals and no reader sees
+// them before they commit. Kept on globalThis like the handle, so a
+// re-imported module shares it.
+const cache = ((globalThis as Record<symbol, unknown>)[Symbol.for("strut.memory.vocabulary")] ??= {
+  loaded: new WeakMap<Query, Promise<Vocabulary>>(),
+  written: new WeakSet<Query>(),
+}) as { loaded: WeakMap<Query, Promise<Vocabulary>>; written: WeakSet<Query> };
 
 export function vocabulary(query: Query): Promise<Vocabulary> {
-  let v = cache.get(query);
+  let v = cache.loaded.get(query);
   if (!v) {
     v = query(
       `MATCH (o:Ontology)
@@ -134,16 +139,21 @@ export function vocabulary(query: Query): Promise<Vocabulary> {
       ...r, subject_types: r.subject_types ?? [], object_types: r.object_types ?? [], aliases: r.aliases ?? [],
       parent: r.parent ?? "", naming: r.naming ?? "", role: r.role ?? "",
     }) as Term)));
-    cache.set(query, v);
-    v.catch(() => cache.delete(query));
+    cache.loaded.set(query, v);
+    const loaded = v;
+    v.catch(() => { if (cache.loaded.get(query) === loaded) cache.loaded.delete(query); });
   }
   return v;
 }
 
-/** Drops the cached vocabulary; call after any Ontology write. */
+/** Drops the vocabulary cached for `query`; call after any Ontology write made through it. */
 export function invalidate(query: Query): void {
-  cache.delete(query);
+  cache.loaded.delete(query);
+  cache.written.add(query);
 }
+
+/** Whether an Ontology write was made through `query`: memoryWrite asks of its transaction. */
+export const wroteOntology = (query: Query): boolean => cache.written.has(query);
 
 export async function lookup(query: Query, kind: Kind, given: string): Promise<Term | undefined> {
   return (await vocabulary(query)).term(kind, given);
