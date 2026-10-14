@@ -58,8 +58,8 @@ export function graphConfigFromEnv(
 /** Wrap a JS number as a Neo4j Integer (see module doc). */
 export const int = (n: number) => neo4j.int(Math.trunc(n));
 
-export type Params = Record<string, unknown>;
-export type Row = Record<string, unknown>;
+export type { Params, Row } from "./engine.js";
+import type { Params, Row } from "./engine.js";
 
 /** Convert a driver Record to a plain object, unwrapping Node/Relationship
  *  values to their property maps (labels/type exposed alongside). */

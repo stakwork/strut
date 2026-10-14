@@ -13,9 +13,15 @@
  * fresh Neo4j — we create `Thing`, the global constraints, and the global
  * vector index too) and **shared** (jarvis already seeded those; our
  * `IF NOT EXISTS` forms are no-ops).
+ *
+ * The Schema rows go through `SchemaSource` (`engine.ts`), so the same seed
+ * runs on a Ladybug file; the constraints and search indexes are Neo4j DDL
+ * and run only there (`engine.bolt`).
  */
 import { randomUUID } from "node:crypto";
-import { Bolt } from "./bolt.js";
+import type { Bolt } from "./bolt.js";
+import type { EngineLike, SchemaSource } from "./engine.js";
+import { asEngine } from "./neo4j-engine.js";
 import {
   THING_SCHEMA,
   THING_TYPE,
@@ -92,7 +98,10 @@ export function flattenSchema(schema: StrutSchema | typeof THING_SCHEMA): Record
 }
 
 /** Seed the Strut domain. Safe to call on every boot. */
-export async function seedStrutDomain(bolt: Bolt): Promise<SeedReport> {
+export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
+  const engine = asEngine(e);
+  const src = engine.schemaSource;
+  const bolt = engine.bolt;
   const report: SeedReport = {
     mode: "shared",
     createdSchemas: [],
@@ -101,58 +110,44 @@ export async function seedStrutDomain(bolt: Bolt): Promise<SeedReport> {
     skippedEdgeSchemas: [],
     skippedSchemaObjects: [],
   };
+  // Neo4j DDL (constraints, search indexes): nothing to run on Ladybug,
+  // whose tables and indexes the handle creates at open.
   const ddl = async (cypher: string) => {
+    if (!bolt) return;
     const skipped = await schemaStatement(bolt, cypher);
     if (skipped) report.skippedSchemaObjects.push(skipped);
   };
 
-  // 1. Thing root — MERGE leaves a jarvis-seeded Thing untouched.
-  const thingBefore = await bolt.run(`MATCH (s:Schema {type: $t}) RETURN count(s) AS c`, { t: THING_TYPE });
-  const hadThing = Number(thingBefore[0]?.["c"] ?? 0) > 0;
+  // 1. Thing root — a jarvis-seeded Thing is left untouched.
+  const hadThing = (await src.schemaRow(THING_TYPE))?.type === THING_TYPE;
   report.mode = hadThing ? "shared" : "standalone";
-  if (!hadThing) {
-    await bolt.run(
-      `MERGE (s:Schema {type: $type}) ON CREATE SET s = $thing, s.ref_id = $ref_id`,
-      { type: THING_TYPE, thing: flattenSchema(THING_SCHEMA), ref_id: randomUUID() },
-    );
-  }
+  if (!hadThing) await src.createSchema({ ...flattenSchema(THING_SCHEMA), ref_id: randomUUID() });
 
   // 2. Each Strut schema: guard (case-insensitive, no is_deleted filter — a
   //    soft-deleted schema blocks re-create, same as jarvis's seeder), create
   //    on miss, add-only reconcile on hit.
   for (const schema of STRUT_SCHEMAS) {
     const flat = flattenSchema(schema);
-    const hit = await bolt.run(
-      `MATCH (n:Schema) WHERE toLower(n.type) = toLower($t) RETURN keys(n) AS ks LIMIT 1`,
-      { t: schema.type },
-    );
-    if (hit.length === 0) {
-      await bolt.run(`CREATE (s:Schema) SET s = $flat, s.ref_id = $ref_id`, { flat, ref_id: randomUUID() });
+    const hit = await src.schemaRow(schema.type);
+    if (!hit) {
+      await src.createSchema({ ...flat, ref_id: randomUUID() });
       report.createdSchemas.push(schema.type);
     } else {
-      const live = new Set(hit[0]!["ks"] as string[]);
+      const live = new Set(Object.keys(hit.props));
       const missing: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(flat)) {
         if (k === "type" || k === "parent" || k === "ref_id") continue;
         if (!live.has(k)) missing[k] = v;
       }
       if (Object.keys(missing).length > 0) {
-        await bolt.run(`MATCH (n:Schema) WHERE toLower(n.type) = toLower($t) SET n += $missing`, {
-          t: schema.type,
-          missing,
-        });
+        await src.extendSchema(hit.type, missing);
         report.reconciled[schema.type] = Object.keys(missing).sort();
       }
     }
 
     // 3. CHILD_OF to Thing (type resolution, inheritance, and the edge-schema
     //    ancestor walk all depend on it).
-    await bolt.run(
-      `MATCH (child:Schema {type: $child}), (parent:Schema {type: $parent})
-       MERGE (child)-[r:CHILD_OF]->(parent)
-       ON CREATE SET r.ref_id = $ref_id`,
-      { child: schema.type, parent: THING_TYPE, ref_id: randomUUID() },
-    );
+    await src.ensureChildOf(schema.type, THING_TYPE, randomUUID());
 
     // 4. Per-type (node_key, namespace) uniqueness + node_key range index.
     await ddl(
@@ -171,7 +166,7 @@ export async function seedStrutDomain(bolt: Bolt): Promise<SeedReport> {
 
   // 6. Edge schemas — one relationship per registry row between Schema nodes.
   for (const e of STRUT_EDGES) {
-    const r = await seedEdgeSchema(bolt, e);
+    const r = await seedEdgeSchema(src, e);
     if (r === "created") report.createdEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
     else if (r === "skipped") report.skippedEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
   }
@@ -208,10 +203,7 @@ export async function seedStrutDomain(bolt: Bolt): Promise<SeedReport> {
     `CREATE CONSTRAINT migration_id_unique IF NOT EXISTS
      FOR (m:Migration) REQUIRE m.migration_id IS UNIQUE`,
   );
-  await bolt.run(
-    `MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = timestamp()`,
-    { id: STRUT_MIGRATION_ID },
-  );
+  await src.stampMigration(STRUT_MIGRATION_ID);
 
   return report;
 }
@@ -224,17 +216,11 @@ export async function seedStrutDomain(bolt: Bolt): Promise<SeedReport> {
  * be absent in standalone mode → skipped, and `PUBLISHED_BY` stays a
  * property until shared mode.
  */
-async function seedEdgeSchema(bolt: Bolt, e: StrutEdgeDef): Promise<"created" | "existing" | "skipped"> {
-  const rows = await bolt.run(
-    `MATCH (s:Schema {type: $src}), (t:Schema {type: $tgt})
-     MERGE (s)-[r:\`${e.edge}\`]->(t)
-     ON CREATE SET r.ref_id = $ref_id
-     RETURN r.ref_id = $ref_id AS created`,
-    { src: e.source, tgt: e.target, ref_id: randomUUID() },
-  );
-  if (rows.length === 0) {
+async function seedEdgeSchema(src: SchemaSource, e: StrutEdgeDef): Promise<"created" | "existing" | "skipped"> {
+  const r = await src.ensureEdgeSchema(e.source, e.edge, e.target, { ref_id: randomUUID() });
+  if (!r) {
     if (e.note) return "skipped";
     throw new Error(`seedEdgeSchema: endpoint Schema missing for ${e.source}-[${e.edge}]->${e.target}`);
   }
-  return rows[0]!["created"] ? "created" : "existing";
+  return r.created ? "created" : "existing";
 }

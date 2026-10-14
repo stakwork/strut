@@ -16,8 +16,9 @@
  * and the `*` wildcard sentinel.
  */
 import { randomUUID } from "node:crypto";
-import { Bolt } from "./bolt.js";
+import type { EngineLike } from "./engine.js";
 import { JARVIS_ONTOLOGY, type OntologyFixture } from "./fixtures/jarvis-ontology.js";
+import { asEngine } from "./neo4j-engine.js";
 import { schemaStatement } from "./schema-seed.js";
 import { SCHEMA_CORE_PROPERTIES } from "./strut-schemas.js";
 
@@ -60,9 +61,14 @@ export function searchableAttributesOf(schema: Record<string, unknown>): Set<str
   return out;
 }
 
-export async function seedJarvisOntology(bolt: Bolt, fixture: OntologyFixture = JARVIS_ONTOLOGY): Promise<OntologySeedReport> {
+export async function seedJarvisOntology(e: EngineLike, fixture: OntologyFixture = JARVIS_ONTOLOGY): Promise<OntologySeedReport> {
+  const engine = asEngine(e);
+  const src = engine.schemaSource;
+  const bolt = engine.bolt;
   const report: OntologySeedReport = { createdSchemas: [], createdEdgeSchemas: 0, domains: [], skippedSchemaObjects: [] };
+  // Neo4j DDL only (see schema-seed.ts).
   const ddl = async (cypher: string) => {
+    if (!bolt) return;
     const skipped = await schemaStatement(bolt, cypher);
     if (skipped) report.skippedSchemaObjects.push(skipped);
   };
@@ -70,11 +76,10 @@ export async function seedJarvisOntology(bolt: Bolt, fixture: OntologyFixture = 
   // 1. Schema nodes (guarded, case-insensitive like jarvis's seeder).
   for (const schema of fixture.schemas) {
     const type = String(schema["type"]);
-    const hit = await bolt.run(`MATCH (n:Schema) WHERE toLower(n.type) = toLower($t) RETURN n.type AS t LIMIT 1`, { t: type });
-    if (hit.length) continue;
+    if (await src.schemaRow(type)) continue;
     const props = { ...schema };
     if (typeof props["ref_id"] !== "string") props["ref_id"] = randomUUID();
-    await bolt.run(`CREATE (s:Schema) SET s = $props`, { props });
+    await src.createSchema(props);
     report.createdSchemas.push(type);
   }
 
@@ -82,11 +87,7 @@ export async function seedJarvisOntology(bolt: Bolt, fixture: OntologyFixture = 
   for (const schema of fixture.schemas) {
     const parent = schema["parent"];
     if (typeof parent !== "string" || !parent) continue;
-    await bolt.run(
-      `MATCH (child:Schema {type: $c}), (parent:Schema {type: $p})
-       MERGE (child)-[r:CHILD_OF]->(parent) ON CREATE SET r.ref_id = $ref_id`,
-      { c: schema["type"], p: parent, ref_id: randomUUID() },
-    );
+    await src.ensureChildOf(String(schema["type"]), parent, randomUUID());
   }
 
   // 3. Per-type constraint + index for every schema with a node_key.
@@ -102,22 +103,11 @@ export async function seedJarvisOntology(bolt: Bolt, fixture: OntologyFixture = 
   await ddl(`CREATE CONSTRAINT IF NOT EXISTS FOR (n:Data_Bank) REQUIRE n.ref_id IS UNIQUE`);
 
   // 4. Edge schemas (`create_edge_schema`: MERGE + properties, ref_id kept).
-  for (const e of fixture.edge_schemas) {
-    if (!/^[A-Z][A-Z0-9_]*$/.test(e.edge)) continue;
-    const props = { ...e.props };
+  for (const es of fixture.edge_schemas) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(es.edge)) continue;
+    const props = { ...es.props };
     if (typeof props["ref_id"] !== "string") props["ref_id"] = randomUUID();
-    // The fixture keeps jarvis's ref_ids, so "did MERGE create?" cannot be
-    // read off ref_id — use a transient marker instead.
-    const rows = await bolt.run(
-      `MATCH (s:Schema {type: $s}), (t:Schema {type: $t})
-       MERGE (s)-[r:\`${e.edge}\`]->(t)
-       ON CREATE SET r = $props, r.__created = true
-       WITH r, coalesce(r.__created, false) AS created
-       REMOVE r.__created
-       RETURN created`,
-      { s: e.source, t: e.target, props },
-    );
-    if (rows[0]?.["created"]) report.createdEdgeSchemas++;
+    if ((await src.ensureEdgeSchema(es.source, es.edge, es.target, props))?.created) report.createdEdgeSchemas++;
   }
 
   // 5. Search indexes: global + per domain, over the union of searchable

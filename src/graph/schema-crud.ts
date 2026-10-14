@@ -30,8 +30,8 @@
  * are refused here.
  */
 import { randomUUID } from "node:crypto";
-import type { Bolt } from "./bolt.js";
-import { txRows } from "./bolt.js";
+import type { EngineLike } from "./engine.js";
+import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError } from "./node-writer.js";
 import { searchableAttributesOf } from "./ontology-seed.js";
 import type { SchemaResolver } from "./schema-resolver.js";
@@ -164,7 +164,9 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
  * Create the schema (or add-only extend an existing non-Strut one). The
  * resolver's caches are invalidated so the next write sees the new type.
  */
-export async function createNodeSchema(bolt: Bolt, resolver: SchemaResolver, input: NodeSchemaInput): Promise<NodeSchemaResult> {
+export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, input: NodeSchemaInput): Promise<NodeSchemaResult> {
+  const engine = asEngine(e);
+  const src = engine.schemaSource;
   const plan = planNodeSchema(input);
 
   // Adopt the live casing of an existing type / parent (jarvis
@@ -174,35 +176,31 @@ export async function createNodeSchema(bolt: Bolt, resolver: SchemaResolver, inp
   if (!parent) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, `parent schema ${plan.parent} does not exist`, "parent");
   if (isStrutType(parent)) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, "Strut's own types cannot be extended (closed registry)", "parent");
 
-  const result = await bolt.write(async (tx) => {
+  const result = await engine.tx(async (tx) => {
     if (existingType) {
       if (isStrutType(existingType)) throw new GraphValidationError("UNKNOWN_TYPE", existingType, "Strut's own types are a closed in-code registry");
-      const live = await txRows(tx, `MATCH (s:Schema {type: $t}) WHERE s.is_deleted IS NULL OR s.is_deleted = false RETURN s.ref_id AS ref_id, keys(s) AS ks LIMIT 1`, {
-        t: existingType,
-      });
-      if (live.length) {
+      const live = await src.schemaRow(existingType, { live: true }, tx);
+      if (live && live.type === existingType) {
         // Extend: add only attributes the schema lacks.
-        const have = new Set(live[0]!["ks"] as string[]);
+        const have = new Set(Object.keys(live.props));
         const missing: Record<string, string> = {};
         for (const [k, v] of Object.entries(plan.attributes)) if (!have.has(k)) missing[k] = v;
-        if (Object.keys(missing).length) await tx.run(`MATCH (s:Schema {type: $t}) SET s += $missing`, { t: existingType, missing });
-        return { created: false, ref_id: String(live[0]!["ref_id"]), type: existingType, added: Object.keys(missing).sort() };
+        if (Object.keys(missing).length) await src.extendSchema(existingType, missing, tx);
+        return { created: false, ref_id: String(live.ref_id), type: existingType, added: Object.keys(missing).sort() };
       }
       // A soft-deleted schema is replaced (jarvis: delete_schema_permanently, then create).
-      await tx.run(`MATCH (s:Schema {type: $t}) DETACH DELETE s`, { t: existingType });
+      await src.deleteSchema(existingType, tx);
     }
     const ref_id = randomUUID();
-    await tx.run(`CREATE (s:Schema) SET s = $flat, s.ref_id = $ref_id`, { flat: { ...plan.flat, parent }, ref_id });
-    await tx.run(
-      `MATCH (child:Schema {type: $c}), (parent:Schema {type: $p})
-       MERGE (child)-[r:CHILD_OF]->(parent) ON CREATE SET r.ref_id = $r`,
-      { c: plan.type, p: parent, r: randomUUID() },
-    );
+    await src.createSchema({ ...plan.flat, parent, ref_id }, tx);
+    await src.ensureChildOf(plan.type, parent, randomUUID(), tx);
     return { created: true, ref_id, type: plan.type, added: [] as string[] };
   });
 
-  if (result.created) {
-    // DDL cannot run inside the write transaction. Same objects as the seeders.
+  const bolt = engine.bolt;
+  if (result.created && bolt) {
+    // Neo4j DDL cannot run inside the write transaction. Same objects as
+    // the seeders; a Ladybug file has its indexes from the handle's open.
     const t = result.type;
     await schemaStatement(bolt, `CREATE CONSTRAINT ${`unique_${t.toLowerCase()}_node_key`} IF NOT EXISTS FOR (n:\`${t}\`) REQUIRE (n.node_key, n.namespace) IS UNIQUE`);
     await schemaStatement(bolt, `CREATE INDEX IF NOT EXISTS FOR (n:\`${t}\`) ON (n.node_key)`);

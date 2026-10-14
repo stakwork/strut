@@ -21,10 +21,14 @@
  * Strut's own types resolve from the in-code registry (`strut-schemas.ts`)
  * without touching the DB. Everything is cached per resolver with a short
  * TTL, like jarvis's in-process caches.
+ *
+ * The reads and the one write live behind `SchemaSource` (`engine.ts`):
+ * the `:Schema` meta-graph on Neo4j, the `Schema` table on Ladybug. This
+ * file merges, walks, caches and canonicalizes; it issues no Cypher.
  */
 import { randomUUID } from "node:crypto";
-import type { ManagedTransaction } from "neo4j-driver";
-import { Bolt, txRows, type Row } from "./bolt.js";
+import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.js";
+import { asEngine } from "./neo4j-engine.js";
 import {
   SCHEMA_CORE_PROPERTIES,
   STRUT_DOMAIN,
@@ -48,7 +52,6 @@ export const EDGE_TYPES_ALLOWLIST = new Set([
   "TARGETS_CONCEPT", "SCRATCHPAD_EDGE",
 ]);
 
-const MAX_ANCESTOR_WALK_DEPTH = 10;
 const TYPE_GRAMMAR = /^\??(string|boolean|int|float|complex|datetime|list)$/;
 
 /** The schema shape the writers validate against — Strut registry entries
@@ -101,10 +104,15 @@ export class SchemaResolver {
   private readonly edges = new Map<string, Cached<EdgeSchemaMatch | null>>();
   private hidden: Cached<{ domains: Set<string>; types: Set<string> }> | undefined;
 
-  constructor(
-    private readonly bolt: Bolt,
-    private readonly ttlMs = 60_000,
-  ) {}
+  private readonly engine: GraphEngine;
+
+  constructor(engine: EngineLike, private readonly ttlMs = 60_000) {
+    this.engine = asEngine(engine);
+  }
+
+  private get source() {
+    return this.engine.schemaSource;
+  }
 
   /** Drop every cache (call after seeding or schema edits). */
   invalidate(): void {
@@ -129,36 +137,21 @@ export class SchemaResolver {
    * type that has no Schema, so every write fails UNKNOWN_TYPE while the
    * real schema sits right there.
    */
-  async resolveType(raw: string, tx?: ManagedTransaction): Promise<string | null> {
+  async resolveType(raw: string, tx?: GraphTx): Promise<string | null> {
     const key = raw.trim();
     if (!key) return null;
     if (getStrutSchema(key)) return key;
     const c = this.types.get(key.toLowerCase());
     if (this.fresh(c)) return c.value;
-    let out: string | null = null;
-    const s = await this.rows(
-      tx,
-      `MATCH (n:Schema) WHERE toLower(n.type) = toLower($t) AND (n.is_deleted IS NULL OR n.is_deleted = false) AND n.type <> "*"
-       RETURN n.type AS t ORDER BY CASE WHEN n.type = $t THEN 0 ELSE 1 END, n.type LIMIT 1`,
-      { t: key },
-    );
-    if (s.length) out = String(s[0]!["t"]);
-    else {
-      const labels = await this.rows(
-        tx,
-        `CALL db.labels() YIELD label WHERE toLower(label) = toLower($t)
-         RETURN label ORDER BY CASE WHEN label = $t THEN 0 ELSE 1 END, label LIMIT 1`,
-        { t: key },
-      );
-      if (labels.length) out = String(labels[0]!["label"]);
-    }
+    let out: string | null = (await this.source.schemaRow(key, { live: true }, tx))?.type ?? null;
+    if (!out) out = await this.source.labelLike(key, tx);
     if (out && getStrutSchema(out)) out = getStrutSchema(out)!.type;
     this.types.set(key.toLowerCase(), { at: Date.now(), value: out });
     return out;
   }
 
   /** The merged schema for a (raw) type, or null when unknown. */
-  async schema(raw: string, tx?: ManagedTransaction): Promise<NodeSchema | null> {
+  async schema(raw: string, tx?: GraphTx): Promise<NodeSchema | null> {
     const type = await this.resolveType(raw, tx);
     if (!type) return null;
     const c = this.schemas.get(type);
@@ -172,20 +165,13 @@ export class SchemaResolver {
     return out;
   }
 
-  private async fromDb(type: string, hidden: { domains: Set<string>; types: Set<string> }, tx?: ManagedTransaction): Promise<NodeSchema | null> {
-    const rows = await this.rows(
-      tx,
-      `MATCH (n:Schema {type: $t})
-       OPTIONAL MATCH path = (n)-[:CHILD_OF*1..${MAX_ANCESTOR_WALK_DEPTH}]->(ancestor:Schema)
-       RETURN n, [node IN nodes(path) WHERE node <> n | node.type] AS chain, [node IN nodes(path) WHERE node <> n | properties(node)] AS ancestors
-       ORDER BY size(chain) DESC LIMIT 1`,
-      { t: type },
-    );
-    if (rows.length === 0) return null;
-    const own = (rows[0]!["n"] as { properties: Record<string, unknown> }).properties;
-    const chain = ((rows[0]!["chain"] as string[] | null) ?? []).filter(Boolean);
+  private async fromDb(type: string, hidden: { domains: Set<string>; types: Set<string> }, tx?: GraphTx): Promise<NodeSchema | null> {
+    const row = await this.source.schemaRow(type, {}, tx);
+    if (!row || row.type !== type) return null;
+    const own = row.props;
+    const { chain, rows: ancestors } = await this.source.ancestors(type, tx);
     const merged: Record<string, unknown> = { ...own };
-    for (const a of (rows[0]!["ancestors"] as Array<Record<string, unknown>> | null) ?? []) {
+    for (const a of ancestors) {
       for (const [k, v] of Object.entries(a)) {
         if (k in merged || k === "type_description") continue;
         merged[k] = v;
@@ -225,11 +211,9 @@ export class SchemaResolver {
   }
 
   /** `About.hidden_domains` (lowercased) and `hidden_types`. */
-  async hiddenSets(tx?: ManagedTransaction): Promise<{ domains: Set<string>; types: Set<string> }> {
+  async hiddenSets(tx?: GraphTx): Promise<{ domains: Set<string>; types: Set<string> }> {
     if (this.fresh(this.hidden)) return this.hidden.value;
-    const rows = await this.rows(tx, `MATCH (a:About) RETURN a.hidden_domains AS d, a.hidden_types AS t LIMIT 1`);
-    const d = rows[0]?.["d"];
-    const t = rows[0]?.["t"];
+    const { domains: d, types: t } = await this.source.hidden(tx);
     const value = {
       domains: new Set(Array.isArray(d) ? d.map((x) => String(x).toLowerCase()) : []),
       types: new Set(Array.isArray(t) ? t.map(String) : []),
@@ -243,74 +227,26 @@ export class SchemaResolver {
    * the edge-schema lookup (exact → ancestor walks → wildcard). Types are
    * canonical labels. Returns the match, or null.
    */
-  async edgeSchema(edge: string, sourceType: string, targetType: string, tx?: ManagedTransaction): Promise<EdgeSchemaMatch | null> {
+  async edgeSchema(edge: string, sourceType: string, targetType: string, tx?: GraphTx): Promise<EdgeSchemaMatch | null> {
     if (EDGE_TYPES_ALLOWLIST.has(edge)) return { source: sourceType, target: targetType, edge_type: edge, properties: {}, via: "allowlist" };
     const key = `${sourceType}|${edge}|${targetType}`;
     const c = this.edges.get(key);
     if (this.fresh(c)) return c.value;
-    const p = { s: sourceType, t: targetType, e: edge };
-    const pick = (rows: Row[], via: EdgeSchemaMatch["via"]): EdgeSchemaMatch | null =>
-      rows.length
-        ? { source: String(rows[0]!["source"]), target: String(rows[0]!["target"]), edge_type: String(rows[0]!["edge_type"]), properties: rows[0]!["props"] as Record<string, unknown>, via }
-        : null;
-    let match =
-      pick(
-        await this.rows(
-          tx,
-          `MATCH (source:Schema)-[r]->(target:Schema)
-           WHERE toLower(source.type) = toLower($s) AND toLower(target.type) = toLower($t) AND toLower(type(r)) = toLower($e)
-           RETURN source.type AS source, target.type AS target, type(r) AS edge_type, properties(r) AS props LIMIT 1`,
-          p,
-        ),
-        "exact",
-      ) ??
-      pick(
-        await this.rows(
-          tx,
-          `MATCH path = (child:Schema)-[:CHILD_OF*1..${MAX_ANCESTOR_WALK_DEPTH}]->(ancestor:Schema)
-           MATCH (ancestor)-[r]->(target:Schema)
-           WHERE toLower(child.type) = toLower($s) AND toLower(target.type) = toLower($t) AND toLower(type(r)) = toLower($e)
-           RETURN child.type AS source, target.type AS target, type(r) AS edge_type, properties(r) AS props
-           ORDER BY length(path) ASC LIMIT 1`,
-          p,
-        ),
-        "ancestor",
-      ) ??
-      pick(
-        await this.rows(
-          tx,
-          `MATCH path = (child:Schema)-[:CHILD_OF*1..${MAX_ANCESTOR_WALK_DEPTH}]->(ancestor:Schema)
-           MATCH (source:Schema)-[r]->(ancestor)
-           WHERE toLower(child.type) = toLower($t) AND toLower(source.type) = toLower($s) AND toLower(type(r)) = toLower($e)
-           RETURN source.type AS source, child.type AS target, type(r) AS edge_type, properties(r) AS props
-           ORDER BY length(path) ASC LIMIT 1`,
-          p,
-        ),
-        "ancestor",
-      ) ??
-      pick(
-        await this.rows(
-          tx,
-          `MATCH src_path = (src_child:Schema)-[:CHILD_OF*1..${MAX_ANCESTOR_WALK_DEPTH}]->(src_anc:Schema)
-           MATCH tgt_path = (tgt_child:Schema)-[:CHILD_OF*1..${MAX_ANCESTOR_WALK_DEPTH}]->(tgt_anc:Schema)
-           MATCH (src_anc)-[r]->(tgt_anc)
-           WHERE toLower(src_child.type) = toLower($s) AND toLower(tgt_child.type) = toLower($t) AND toLower(type(r)) = toLower($e)
-           RETURN src_child.type AS source, tgt_child.type AS target, type(r) AS edge_type, properties(r) AS props
-           ORDER BY (length(src_path) + length(tgt_path)) ASC LIMIT 1`,
-          p,
-        ),
-        "ancestor",
-      ) ??
-      pick(
-        await this.rows(
-          tx,
-          `MATCH (source:Schema {type: "*"})-[r]->(target:Schema {type: "*"})
-           WHERE toLower(type(r)) = toLower($e)
-           RETURN source.type AS source, target.type AS target, type(r) AS edge_type, properties(r) AS props LIMIT 1`,
-          p,
-        ),
-        "wildcard",
-      );
+    const walks: Array<[EdgeSchemaWalk, EdgeSchemaMatch["via"]]> = [
+      ["exact", "exact"],
+      ["source-ancestor", "ancestor"],
+      ["target-ancestor", "ancestor"],
+      ["both-ancestors", "ancestor"],
+      ["wildcard", "wildcard"],
+    ];
+    let match: EdgeSchemaMatch | null = null;
+    for (const [walk, via] of walks) {
+      const row = await this.source.findEdgeSchema(walk, sourceType, edge, targetType, tx);
+      if (row) {
+        match = { source: row.source, target: row.target, edge_type: row.edge_type, properties: row.props, via };
+        break;
+      }
+    }
     if (match && match.via === "exact") match = { ...match, source: sourceType, target: targetType };
     this.edges.set(key, { at: Date.now(), value: match });
     return match;
@@ -324,31 +260,20 @@ export class SchemaResolver {
   async createEdgeSchema(sourceType: string, edge: string, targetType: string): Promise<{ created: boolean; ref_id: string }> {
     const edgeType = edge.toUpperCase().replace(/ /g, "_");
     if (!/^[A-Z][A-Z0-9_]*$/.test(edgeType)) throw new Error(`invalid edge type ${edge}`);
-    return this.bolt.write(async (tx) => {
+    return this.engine.tx(async (tx) => {
       for (const t of [sourceType, targetType]) {
         if (t === "*") {
-          await tx.run(`MERGE (s:Schema {type: "*"}) ON CREATE SET s.ref_id = $r, s.is_system = true`, { r: randomUUID() });
+          await this.source.ensureWildcardSchema(randomUUID(), tx);
           continue;
         }
-        const exists = await txRows(tx, `MATCH (s:Schema {type: $t}) RETURN s.type AS t LIMIT 1`, { t });
-        if (exists.length === 0) throw new Error(`schema ${t} does not exist`);
+        const exists = await this.source.schemaRow(t, {}, tx);
+        if (!exists || exists.type !== t) throw new Error(`schema ${t} does not exist`);
       }
       const ref_id = randomUUID();
-      const rows = await txRows(
-        tx,
-        `MATCH (source:Schema {type: $s}), (target:Schema {type: $t})
-         MERGE (source)-[r:\`${edgeType}\`]->(target)
-         ON CREATE SET r.ref_id = $ref_id
-         RETURN r.ref_id = $ref_id AS created, r.ref_id AS ref_id`,
-        { s: sourceType, t: targetType, ref_id },
-      );
+      const r = await this.source.ensureEdgeSchema(sourceType, edgeType, targetType, { ref_id }, tx);
       this.edges.clear();
-      return { created: Boolean(rows[0]?.["created"]), ref_id: String(rows[0]?.["ref_id"] ?? ref_id) };
+      return { created: r?.created ?? false, ref_id: r?.ref_id ?? ref_id };
     });
-  }
-
-  private rows(tx: ManagedTransaction | undefined, cypher: string, params: Record<string, unknown> = {}): Promise<Row[]> {
-    return tx ? txRows(tx, cypher, params) : this.bolt.run(cypher, params);
   }
 }
 

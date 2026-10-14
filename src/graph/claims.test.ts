@@ -25,6 +25,7 @@ import {
   type SubjectRef,
 } from "./claims.js";
 import type { GraphBackend } from "./backend.js";
+import { Neo4jEngine } from "./neo4j-engine.js";
 
 const cfg = testGraphConfig();
 
@@ -220,7 +221,7 @@ describe("claims graph: node contract + reads (live Neo4j)", { skip: cfg ? false
     const resolver = new SchemaResolver(bolt);
     nodes = new NodeWriter(bolt, { resolver });
     edges = new EdgeWriter(bolt, { resolver });
-    reader = new ClaimsReader({ bolt });
+    reader = new ClaimsReader(new Neo4jEngine(bolt));
 
     // A step with two versions (v2 active), a workflow, and a run of the step.
     const made = await nodes.writeMany([

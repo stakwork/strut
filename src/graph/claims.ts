@@ -424,17 +424,17 @@ export interface SubjectLedgerRow {
  * only on a graph-backed workspace — see `claimsReaderFor`.
  */
 export class ClaimsReader {
-  constructor(private readonly graph: Pick<GraphBackend, "bolt">) {}
+  constructor(private readonly graph: Pick<GraphBackend, "query" | "namespace">) {}
 
   private get ns(): string {
-    return this.graph.bolt.namespace;
+    return this.graph.namespace;
   }
 
   /** Content hash of the subject's active version; null when the subject
    *  does not exist or has none. */
   async activeVersion(subject: SubjectRef): Promise<string | null> {
     const n = SUBJECT_NODE[subject.kind];
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NODE_LIVE("s")}
        RETURN s.active_version AS v LIMIT 1`,
       { ns: this.ns, name: subjectName(subject) },
@@ -447,7 +447,7 @@ export class ClaimsReader {
    *  such step / workflow (built-in steps have no node). */
   async subjectRefId(subject: SubjectRef): Promise<string | null> {
     const n = SUBJECT_NODE[subject.kind];
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name}) WHERE ${NODE_LIVE("s")} RETURN s.ref_id AS r LIMIT 1`,
       { ns: this.ns, name: subjectName(subject) },
     );
@@ -457,7 +457,7 @@ export class ClaimsReader {
   /** `ref_id` of the version node a `VersionRef` names, or null. */
   async versionRefId(version: VersionRef): Promise<string | null> {
     const n = SUBJECT_NODE[version.kind];
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (v:\`${n.version}\` {namespace: $ns, \`${n.key}\`: $name, content_hash: $hash}) WHERE ${NODE_LIVE("v")} RETURN v.ref_id AS r LIMIT 1`,
       { ns: this.ns, name: version.name, hash: version.content_hash },
     );
@@ -466,7 +466,7 @@ export class ClaimsReader {
 
   /** One claim by id (active or not), or null. */
   async getClaim(id: string): Promise<ClaimRow | null> {
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NODE_LIVE("c")} RETURN ${project("c", CLAIM_FIELDS)} AS claim LIMIT 1`,
       { ns: this.ns, id },
     );
@@ -475,7 +475,7 @@ export class ClaimsReader {
 
   /** One check by id (active or not), or null. */
   async getCheck(id: string): Promise<CheckRow | null> {
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id}) WHERE ${NODE_LIVE("k")} RETURN ${project("k", CHECK_FIELDS)} AS chk LIMIT 1`,
       { ns: this.ns, id },
     );
@@ -485,7 +485,7 @@ export class ClaimsReader {
   /** The subjects a claim is attached to (live `ABOUT` edges), with the
    *  edge's ref_id — what `detach` mutes. */
   async subjectsOf(claimId: string): Promise<Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }>> {
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})-[a:\`${CLAIM_EDGES.ABOUT}\`]->(s)
        WHERE ${EDGE_LIVE("a")} AND ${NODE_LIVE("s")} AND (s:StrutStep OR s:StrutWorkflow)
        RETURN s:StrutStep AS is_step, s.step_type AS step_type, s.name AS name, s.ref_id AS ref_id, a.ref_id AS edge_ref_id
@@ -502,7 +502,7 @@ export class ClaimsReader {
   /** The ACTIVE claims a check `TESTS` — exactly one, by the writer's
    *  invariant; more only transiently. */
   async claimsTestedBy(checkId: string): Promise<ClaimRow[]> {
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (k:\`${CHECK_TYPE}\` {namespace: $ns, id: $id})-[t:\`${CLAIM_EDGES.TESTS}\`]->(c:\`${CLAIM_TYPE}\`)
        WHERE ${EDGE_LIVE("t")} AND ${NODE_LIVE("c")} AND c.belief_valid_to IS NULL
        RETURN ${project("c", CLAIM_FIELDS)} AS claim ORDER BY c.belief_valid_from, c.id`,
@@ -514,7 +514,7 @@ export class ClaimsReader {
   /** Claims `ABOUT` a subject — active ones unless `includeRetired`. */
   async claimsFor(subject: SubjectRef, opts: { includeRetired?: boolean } = {}): Promise<ClaimRow[]> {
     const n = SUBJECT_NODE[subject.kind];
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (c:\`${CLAIM_TYPE}\` {namespace: $ns})-[a:\`${CLAIM_EDGES.ABOUT}\`]->(s:\`${n.label}\` {namespace: $ns, \`${n.key}\`: $name})
        WHERE ${EDGE_LIVE("a")} AND ${NODE_LIVE("c")} AND ${NODE_LIVE("s")}
          AND ($retired OR c.belief_valid_to IS NULL)
@@ -527,7 +527,7 @@ export class ClaimsReader {
 
   /** Checks that `TEST` a claim — active ones unless `includeRetired`. */
   async checksFor(claimId: string, opts: { includeRetired?: boolean } = {}): Promise<CheckRow[]> {
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `MATCH (k:\`${CHECK_TYPE}\`)-[t:\`${CLAIM_EDGES.TESTS}\`]->(c:\`${CLAIM_TYPE}\` {namespace: $ns, id: $id})
        WHERE ${EDGE_LIVE("t")} AND ${NODE_LIVE("k")} AND ($retired OR k.retired_at IS NULL)
        RETURN ${project("k", CHECK_FIELDS)} AS chk
@@ -588,7 +588,7 @@ export class ClaimsReader {
    *  version, and the source. One row per (claim, evidence) — a check that
    *  tests two claims writes one node both reach. */
   private async evidenceRows(match: string, params: Record<string, unknown>): Promise<RunEvidenceRow[]> {
-    const rows = await this.graph.bolt.run(
+    const rows = await this.graph.query(
       `${match}
        OPTIONAL MATCH (e)-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->(k:\`${CHECK_TYPE}\`) WHERE ${EDGE_LIVE("pb")}
        OPTIONAL MATCH (e)-[ab:\`${CLAIM_EDGES.ABOUT}\`]->(v) WHERE ${EDGE_LIVE("ab")} AND (v:StrutStepVersion OR v:StrutWorkflowVersion)

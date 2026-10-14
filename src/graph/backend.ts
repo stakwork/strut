@@ -16,14 +16,20 @@
  *      this process that embeds every marked node whoever wrote it, strips
  *      the no-embed types, and keeps up with newcomers. Nothing waits on it.
  *
- * Consumers (the `graph/*` lab steps, a future `Neo4jWorkspaceStore` and
+ * Consumers (the `graph/*` lab steps, the `GraphWorkspaceStore` and the
  * run projector) call `openGraphBackend(cfg)` and share the instance.
+ *
+ * A backend IS a `GraphEngine` (`engine.ts`): `kind`, `query`, `tx`, the
+ * dialect helpers and the three engine seams, plus the writers, the reader
+ * and the boot reports on top. The Neo4j one is built here over a `Bolt`.
  */
 import { Bolt, graphConfigFromEnv, type GraphConfig } from "./bolt.js";
 import { upgradeClaimSchema, type ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { EmbeddingPass, MiniLMEmbedder, WorkerEmbedder, type EmbeddingPassOptions } from "./embeddings.js";
+import type { GraphEngine } from "./engine.js";
 import { reconcileIndexLists, type IndexReconcileReport } from "./index-reconcile.js";
+import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
@@ -50,9 +56,9 @@ export interface GraphBackendOptions {
   pass?: EmbeddingPassOptions;
 }
 
-export interface GraphBackend {
+/** What every backend has, whatever the engine. */
+export interface GraphBackendBase extends GraphEngine {
   readonly cfg: GraphConfig;
-  readonly bolt: Bolt;
   readonly nodes: NodeWriter;
   readonly edges: EdgeWriter;
   readonly reader: GraphReader;
@@ -61,17 +67,26 @@ export interface GraphBackend {
   readonly embedder: Embedder | undefined;
   /** What the boot-time seed did (undefined when skipped). */
   readonly seed: SeedReport | undefined;
+  /** The pass, running on its timer; undefined with embeddings off or the
+   *  boot skipped. `status()` is `GET /graph/embeddings`. */
+  readonly embeddings: EmbeddingPass | undefined;
+  close(): Promise<void>;
+}
+
+/** The Neo4j backend: the driver, and the one-shot migrations a long-lived
+ *  jarvis graph needs (a fresh Ladybug file has none of them). */
+export interface Neo4jBackend extends GraphBackendBase {
+  readonly kind: "neo4j";
+  readonly bolt: Bolt;
   readonly veinMigration: VeinMigrationReport | undefined;
   readonly runStatusMigration: RunStatusMigrationReport | undefined;
   readonly exactKeyMigration: ExactKeyMigrationReport | undefined;
   readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
   readonly ontologySeed: OntologySeedReport | undefined;
   readonly indexReconcile: IndexReconcileReport | undefined;
-  /** The pass, running on its timer; undefined with embeddings off or the
-   *  boot skipped. `status()` is `GET /graph/embeddings`. */
-  readonly embeddings: EmbeddingPass | undefined;
-  close(): Promise<void>;
 }
+
+export type GraphBackend = Neo4jBackend;
 
 const cache = new Map<string, Promise<GraphBackend>>();
 
@@ -124,6 +139,7 @@ export async function closeGraphBackends(): Promise<void> {
 
 async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphBackend> {
   const bolt = new Bolt(cfg);
+  const engine = new Neo4jEngine(bolt);
   try {
     await bolt.verify();
     const embedder: Embedder | undefined =
@@ -155,7 +171,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
         } else if (claimSchemaUpgrade.status === "skipped_duplicates") {
           console.warn(`[graph] more than one Claim schema node — left alone; claims cannot be written until that is resolved by hand`);
         }
-        ontologySeed = await seedJarvisOntology(bolt);
+        ontologySeed = await seedJarvisOntology(engine);
       }
       // Before the seed, which is add-only: it would keep the old `status`
       // attribute and the fulltext index built over it.
@@ -169,7 +185,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       if (exactKeyMigration.status === "migrated") {
         console.warn(`[graph] re-keyed workspace nodes on their exact names: ${JSON.stringify(exactKeyMigration)}`);
       }
-      seed = await seedStrutDomain(bolt);
+      seed = await seedStrutDomain(engine);
       // Not gated on `seedOntology`: a jarvis-hosted graph is the one that
       // needs it (its Schemas predate jarvis's own widening).
       indexReconcile = await reconcileIndexLists(bolt);
@@ -177,7 +193,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
         console.warn(`[graph] widened stale Schema index lists to the bundled library's: ${JSON.stringify(indexReconcile.widened)}`);
       }
     }
-    const schemas = new SchemaResolver(bolt);
+    const schemas = new SchemaResolver(engine);
     // The pass starts now and runs in the background; the old awaited
     // backfill held the boot for as long as the sweep took. It embeds in a
     // worker thread: onnxruntime runs a model synchronously, and hours of
@@ -186,11 +202,19 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
     // injected embedder is used as it is.
     const passWorker = embedder && !opts.skipBoot && typeof opts.embeddings !== "object" ? new WorkerEmbedder() : undefined;
     const embeddings = embedder && !opts.skipBoot ? new EmbeddingPass(bolt, passWorker ?? embedder, schemas, opts.pass) : undefined;
-    const backend: GraphBackend = {
+    const backend: Neo4jBackend = {
+      kind: "neo4j",
       cfg,
       bolt,
-      nodes: new NodeWriter(bolt, { embedder, resolver: schemas }),
-      edges: new EdgeWriter(bolt, { resolver: schemas }),
+      namespace: engine.namespace,
+      dialect: engine.dialect,
+      query: (cypher, params) => engine.query(cypher, params),
+      tx: (fn) => engine.tx(fn),
+      nodeEngine: engine.nodeEngine,
+      edgeEngine: engine.edgeEngine,
+      schemaSource: engine.schemaSource,
+      nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
+      edges: new EdgeWriter(engine, { resolver: schemas }),
       reader: new GraphReader(bolt, { embedder, resolver: schemas }),
       schemas,
       embedder,

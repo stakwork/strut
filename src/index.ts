@@ -562,8 +562,14 @@ export {
   openGraphBackendFromEnv,
   closeGraphBackends,
   type GraphBackend,
+  type GraphBackendBase,
+  type Neo4jBackend,
   type GraphBackendOptions,
 } from "./graph/backend.js";
+// The engine seams (plans/ladybug-backend.md §4): what the graph layer
+// needs from a database, with one implementation per engine.
+export type { GraphEngine, GraphKind, GraphTx, Dialect, NodeEngine, EdgeEngine, SchemaSource, EngineLike, Params, Row } from "./graph/engine.js";
+export { Neo4jEngine, asEngine, NEO4J_DIALECT } from "./graph/neo4j-engine.js";
 // Read-only raw Cypher (the chat builder's graph_query tool).
 export { readQuery, findWriteKeyword, compactValue, ReadOnlyViolation, type ReadQueryOptions, type ReadQueryResult } from "./graph/query.js";
 // Graph-backed workspace + the run/chat projector (plans/generic-storage.md §7).
