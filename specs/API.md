@@ -421,8 +421,11 @@ run whose `run.start` and summary carry `origin: "schedule"` and
 | DELETE | `/workflows/:name/automations/:id` | remove |
 | POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going |
 
-`GET /health` → `{ ok, dataDir, stepCount }`; without the key, `{ ok: true }`
-and nothing else — the one route a keyless probe may call.
+`GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? } }` —
+`backend` is `fs`, `neo4j` or `ladybug` (where workflows and steps live;
+`STRUT_WORKSPACE_BACKEND`), `path` the LadybugDB file on `ladybug`; without
+the key, `{ ok: true }` and nothing else — the one route a keyless probe may
+call.
 
 ## 9. Agent sessions
 
