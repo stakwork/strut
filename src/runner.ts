@@ -278,9 +278,11 @@ export async function runWorkflow<TServices = unknown>(
     });
     // The job's own record of the run (plans/job-index.md §1) — every
     // launch site passes through here, children included. Bookkeeping: a
-    // record that cannot be written is a warning, never a failed run.
+    // record that cannot be written is a warning, never a failed run. A
+    // check the verify pass runs under the job (plans/job-claims.md §4) is
+    // not a turn: never on the list.
     const jobs = (services as { jobs?: { recordRun?: JobsRecordRun } } | undefined)?.jobs;
-    if (opts?.job && jobs?.recordRun) {
+    if (opts?.job && jobs?.recordRun && opts.origin !== "verify") {
       const parent = opts.controller?.parent?.runId;
       await jobs
         .recordRun(opts.job, {

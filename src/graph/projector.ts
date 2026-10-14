@@ -301,6 +301,23 @@ export function jobNode(view: JobView): NodeInput {
   };
 }
 
+/**
+ * The job's `StrutJob`, upserted from the index's view (plans/job-index.md
+ * §6) — one node per job, as fresh as its record. Returns its ref_id, or
+ * null when there is no index or no record (the job was deleted: the node
+ * the graph holds stays, and nothing is written). Shared by the run-end
+ * projection and the claims layer, which needs the node to exist when a
+ * claim about a job is written — during the job's first turn, before any
+ * run of it ended (plans/job-claims.md §1).
+ */
+export async function ensureJobNode(backend: GraphBackend, jobs: JobReader | undefined, job: string): Promise<string | null> {
+  if (!jobs?.get) return null;
+  const view = await jobs.get(job, { threads: false });
+  if (!view) return null;
+  const [node] = await backend.nodes.writeMany(fit(backend, [jobNode(view)]), "upsert");
+  return node!.ref_id;
+}
+
 /** Project runs from a `RunStore` into the graph. */
 export async function projectRuns(backend: GraphBackend, store: RunStore, opts: ProjectRunsOptions): Promise<ProjectReport> {
   const report = emptyReport();
@@ -412,11 +429,10 @@ export async function projectRun(
   // the index on every run of it — as fresh as the job's last finished run
   // — and `IN_JOB` from this run. No index, or no record (the job was
   // deleted): nothing written, and the node the graph holds stays.
-  if (p.job && jobs?.get) {
-    const view = await jobs.get(p.job);
-    if (view) {
-      const [node] = await backend.nodes.writeMany(fit(backend, [jobNode(view)]), "upsert");
-      edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: node!.ref_id });
+  if (p.job) {
+    const jobRef = await ensureJobNode(backend, jobs, p.job);
+    if (jobRef) {
+      edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: jobRef });
       report.jobs++;
     }
   }

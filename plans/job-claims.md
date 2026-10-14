@@ -1,18 +1,18 @@
 # Job claims — evidence that the work got done
 
-> **Status (2026-10-14): proposed**, from one design conversation with the
-> owner. The rulings in "Decided" are his; the rows marked *proposed* are
-> mine and need one. The pieces that never touch `src/graph/` are built
-> (`http/verify` §4, `url` on a hold and `urls` on the view §3,
-> `buildJobSubject` §3 in `src/job-subject.ts`, `about` + `locator` on the
-> ledger's `latest` §6); the job subject kind, the pass, the doors and the
-> UI wait on the Ladybug backend's rewrite of the graph layer
-> (`ladybug-backend.md`). Companion to `claims.md` (the layer
-> this reuses — read its Design and §4 first), `jobs.md` (the job, its
-> directory, holds and deliverables), `job-index.md` (the read side this
-> extends) and `job-artifact-events.md` (the door a person's feedback comes
-> back through). The lab's `browser/*` steps and `pod/*` steps live in the
-> stakgraph repo (`mcp/src/lab`), as does the `job` seed's delta.
+> **Status (2026-10-14): built in strut**, from one design conversation
+> with the owner. The rulings in "Decided" are his; the rows marked
+> *proposed* are mine, built as proposed and open to a ruling — except §1's
+> fixed point 1, which is still as `claims.md` §4.1 states it (an `ai`
+> author may not hang a check on a person's claim, on a job either) until
+> the owner rules. Items 1–5, 7 and 8 of §10 are built; 6 (the web UI) is a
+> second PR; 9 (the lab) and 10 (hive) follow the pin bump. Companion to
+> `claims.md` (the layer this reuses — read its Design and §4 first),
+> `jobs.md` (the job, its directory, holds and deliverables),
+> `job-index.md` (the read side this extends) and `job-artifact-events.md`
+> (the door a person's feedback comes back through). The lab's `browser/*`
+> steps and `pod/*` steps live in the stakgraph repo (`mcp/src/lab`), as
+> does the `job` seed's delta.
 
 ## Problem
 
@@ -46,7 +46,7 @@ The pieces are all there and none of them meets:
 | Question | Decision |
 | --- | --- |
 | Is this a new layer? | **No — a third subject kind.** The same three nodes, the same edges, the same status rule. `Claim —ABOUT→ StrutJob` already resolves: `ABOUT → Thing` and every Strut schema is Thing-parented. The template claims on `job` the workflow stay what they are |
-| The version of a job | **The turn** (*proposed*). Evidence is `ABOUT` the turn's `StrutRun`; the active version is the job's newest top-level run; a later turn makes earlier evidence `stale`. `claimStatus()` is untouched |
+| The version of a job | **The turn** (*proposed*). Evidence is `ABOUT` the turn's `StrutRun`; the active version is the job's newest top-level run; a later turn makes earlier evidence `stale`. `claimStatus()` is untouched but for one line: a job's stream has one measurement per pass (the newest evidence alone decides), where a step's groups a foreach's iterations by source run — else an appended re-verify (below) could never lift a refutation on the same turn |
 | When a check runs | **`manual` by default.** The work agent verifies when it says the work is ready — before it reports, so the verdict rides with the turn — and a person verifies any time from the card. Between verifies the ledger reads `stale`, which is the truth. Intermediate turns are mid-work and a dropped pod is not to be poked |
 | The instrument | **A step per surface that returns the check contract**: `browser/verify` (lab) drives a declared step list and shoots, `http/verify` (strut) calls an endpoint, and anything behind a shell is the exit-code mapping that already exists (`exec` in the job directory, `pod/run-tests`). A check is one line of config; a bespoke workflow of atomic `browser/*` steps when the list cannot say it |
 | The screenshot | **Is the evidence's locator, not the evidence.** The step decides `supports`; the PNG is a job file the locator points at, what a person audits and what an external check's slot is answered from |
@@ -112,7 +112,7 @@ of `claims.md` §4.1:
 Fixed point 1 says an `ai` author may add a check only to a claim stamped
 `ai`. For a job that bites: the person writes "the settings page renders"
 from hive, and the agent cannot hang its `browser/verify` on it.
-*Proposed:* for a job subject an `ai` author MAY add a check to a person's
+*Proposed (open — built as the rule stands, the carve-out unwritten):* for a job subject an `ai` author MAY add a check to a person's
 claim. The person's own check — an external one, opened as a slot — stays
 beside it as a separate stream, the ledger still reports `openSlot` and
 `assertedOnly` on their own, and the thing fixed point 1 guards against (a
@@ -422,30 +422,30 @@ shows with no hive change (`jobs.md` §8's rule holding):
 
 **strut** (one PR):
 
-1. `claims.ts` / `claims-schemas.ts` / `claims-writer.ts` /
+1. ✅ `claims.ts` / `claims-schemas.ts` / `claims-writer.ts` /
    `claims-authoring.ts`: the `job` subject kind, `StrutRun` as its version
    node, `ensureJobNode` on authoring, the `jobs` dep on the reader, the
    write-time defaults (`manual`, `sample` refused), the §1 ruling on
    fixed point 1 as decided.
-2. `verify.ts`: the job subject in `subjectsOfRun` (from `run.start.job`),
+2. ✅ `verify.ts`: the job subject in `subjectsOfRun` (from `run.start.job`),
    `buildJobSubject` from the index (§3), `superseded`, the `#n` path for
    explicit job verifies, an in-flight run accepted for a job subject,
    `job` handed to the check run and the kept-when-it-left-files rule,
    `addEvidence` taking `{ job, runId }`.
-3. `jobs.ts`: `url?` on `JobHold`; `job-index.ts`: `urls` on the view.
-4. `ledger.ts`: `about` and `locator` on `latest`; `createStrut.ts`:
+3. ✅ `jobs.ts`: `url?` on `JobHold`; `job-index.ts`: `urls` on the view.
+4. ✅ `ledger.ts`: `about` and `locator` on `latest`; `createStrut.ts`:
    `claims` on `GET /jobs/:id`, `GET /jobs/:id/claims`,
    `POST /jobs/:id/verify`; `job/get` carries `claims`;
    `steps/lib/meta/verify-job.ts`.
-5. `steps/lib/http/verify.ts` (§4).
-6. The web UI: the Claims section in `JobTimeline`, the image behind a
+5. ✅ `steps/lib/http/verify.ts` (§4).
+6. ⏳ (a second PR) The web UI: the Claims section in `JobTimeline`, the image behind a
    locator, the Verify button.
-7. `src/workflows/job.yaml`: grant `meta/verify-job`, `meta/add-claim`,
+7. ✅ `src/workflows/job.yaml`: grant `meta/verify-job`, `meta/add-claim`,
    `meta/add-check`, `meta/list-claims`, `meta/edit-check`, `http/verify`;
    the prompt section: author the claims when the ask is understood,
    verify before saying done, act on the ledger. `meta/publish-workflow`
    stays held back unless the bespoke-workflow route (§4) is wanted now.
-8. `specs/API.md`: the three routes; `AGENTS.md`: one paragraph.
+8. ✅ `specs/API.md`: the three routes; `AGENTS.md`: one paragraph.
 
 **stakgraph** (the lab), after the strut pin bumps:
 

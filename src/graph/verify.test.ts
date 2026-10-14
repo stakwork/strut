@@ -7,19 +7,25 @@
  */
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { defineStep, type RunEvent, type StepRegistry } from "../core.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { coreRegistry } from "../steps/registry.js";
+import jobDir from "../steps/lib/job/dir.js";
+import jobGet from "../steps/lib/job/get.js";
+import verifyJobStep from "../steps/lib/meta/verify-job.js";
 import { MemoryRunStore } from "../store.js";
 import { buildTools } from "../ai/tools.js";
 import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
 import { CLAIMS_OFF } from "../claims-schemas.js";
 import { buildAuthoringCapability, type AuthoringCapability } from "../authoring.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
+import { jobRoot, type JobsCapability } from "../jobs.js";
+import type { LedgerClaim } from "../ledger.js";
 import type { VerifyResult, Verifier } from "../verify.js";
 import { projectionsSettled } from "./projector.js";
 import type { GraphBackend } from "./backend.js";
@@ -108,6 +114,23 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       // A stand-in for a paid judge: reports cost the way agent/llm-backed steps do.
       llm: defineStep({ type: "llm", input: z.any(), output: z.any(), run: async () => ({ supports: true, content: `judged #${++judged}`, cost: 0.4 }) }),
       "judge/sneaky-cost": defineStep({ type: "judge/sneaky-cost", input: z.any(), output: z.any(), run: async () => ({ supports: true, content: "called a model through services", cost: 0.3 }) }),
+      // The job primitives (plans/job-claims.md), and a stand-in for the
+      // lab's browser/verify: shoots into the job's directory, points its
+      // evidence at the shot, refutes while a `fail` marker is in the job.
+      "job/dir": jobDir,
+      "job/get": jobGet,
+      "meta/verify-job": verifyJobStep,
+      "probe/shot": defineStep({
+        type: "probe/shot",
+        input: z.object({ url: z.string(), dir: z.string() }),
+        output: z.any(),
+        run: async (c, ctx) => {
+          await mkdir(join(c.dir, "shots"), { recursive: true });
+          await writeFile(join(c.dir, "shots", `${ctx.job}.png`), "png");
+          const ok = !existsSync(join(c.dir, "fail"));
+          return { supports: ok, content: `${c.url}: ${ok ? "renders" : "404"}`, locator: { path: `shots/${ctx.job}.png`, url: `/jobs/${ctx.job}/files/shots/${ctx.job}.png` }, job: ctx.job };
+        },
+      }),
     } as StepRegistry;
     await ws.publishStep("clip/compute-times", SRC("clip/compute-times", "v1"), "v1", "ai");
     await ws.publishWorkflowByContent("clipper", WF("clipper", `  - id: times\n    type: clip/compute-times\n    config: { start: "{{ input.start }}", len: "{{ input.len }}" }\n`));
@@ -682,6 +705,153 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     } finally {
       await booted.close();
     }
+  });
+
+  it("a JOB subject end to end (plans/job-claims.md): the version is the turn, manual by default, verifyJob appends, a new turn goes stale and the old one superseded, the check run carries the job and is never a turn", async () => {
+    await ws.publishWorkflowByContent("jobwf", WF("jobwf", `  - id: dir\n    type: job/dir\n  - id: result\n    type: pack\n    config: { text: "{{ input.text }}", artifacts: [] }\n`));
+    const jobsCap = (strut.services as { jobs: JobsCapability }).jobs;
+    const jobClaims = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry: async () => registry, jobs: jobsCap });
+    const JOB = { kind: "job" as const, name: "j-1" };
+    const ledgerOf = async () => ((await jobClaims.listClaims(JOB)) as { claims: Array<{ id: string; status: string; latest?: { about?: string; locator?: unknown }; checks: Array<{ id: string; policy?: string }> }> }).claims;
+    const kinds = (r: VerifyResult) => r.checks.map((k) => ("skipped" in k.lastVerify ? k.lastVerify.skipped : "ran" in k.lastVerify ? "ran" : "planned"));
+
+    // Turn 1, then the contract — stated by a person, as hive's card would.
+    const t1 = await strut.run("jobwf", { text: "first" }, { job: "j-1" });
+    assert.equal(t1.status, "success");
+    await jobsCap.hold("j-1", { id: "pod-1", kind: "pod", release: { type: "log", input: { message: "bye" } }, url: "https://pod.example" });
+    const c = await jobClaims.addClaim(
+      {
+        subjects: [JOB],
+        text: "the settings page renders",
+        checks: [
+          // The job's STATE is the check's input: the pod's url from the hold, the directory as cwd.
+          { type: "exec", name: "url", config: { cmd: "test", args: ["{{ input.urls.pod }}", "=", "https://pod.example"], cwd: "{{ input.dir }}" } },
+          { type: "probe/shot", name: "shot", config: { url: "{{ input.urls.pod }}/settings", dir: "{{ input.dir }}" } },
+          { description: "open the page and look", name: "eyes" },
+        ],
+      },
+      human,
+    );
+    assert.ok("ok" in c, (c as { error?: string }).error);
+    const claim = c as { id: string; checks: string[] };
+    assert.deepEqual((await ledgerOf()).map((x) => [x.status, x.checks.map((k) => k.policy)]), [["unknown", ["manual", "manual", "manual"]]]);
+
+    // Door three — a RUN's explicit verify says "this run", never "the job":
+    // the job's manual checks do not fire there.
+    const viaRun = await verifier.verifyRun("jobwf", t1.runId, { explicit: true });
+    assert.deepEqual(viaRun.checks.filter((k) => k.subject.kind === "job").map((k) => [k.path, k.lastVerify]), [["job:j-1", { skipped: "policy" }], ["job:j-1", { skipped: "policy" }], ["job:j-1", { skipped: "policy" }]]);
+
+    // Door two — verifyJob against the newest turn: every check fires.
+    const v1 = await verifier.verifyJob("j-1");
+    assert.deepEqual([v1.job, v1.key, v1.runId, v1.evidence, v1.slots, kinds(v1)], ["j-1", "jobwf", t1.runId, 2, 1, ["ran", "ran", "planned"]]);
+    assert.deepEqual(v1.claims.map((x) => [x.status, x.latest?.about, x.checks.map((k) => k.lastVerify && ("ran" in k.lastVerify ? "ran" : "planned"))]), [["supported", t1.runId, ["ran", "ran", "planned"]]]);
+    const written = (
+      await rows(
+        `MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[:ABOUT]->${n("v", "StrutRun")}, (e)-[hs:HAS_SOURCE]->${n("r", "StrutRun")}, (e)-[:PRODUCED_BY]->${n("k", "Check")}
+         RETURN k.name AS check, v.run_id AS about, r.run_id AS src, hs.context AS ctx, hs.post_url AS url, eb.strength AS s, e.evidence_status AS status, e.content AS content`,
+        { c: claim.id },
+      )
+    )
+      .map((w) => ({ ...w, ctx: JSON.parse(w["ctx"] as string) as Record<string, unknown> }))
+      .sort((a, b) => String(a["check"]).localeCompare(String(b["check"])));
+    assert.deepEqual(
+      written.map((w) => [w["check"], w["about"], w["src"], w["status"], w["s"], w["ctx"]["turn"], w["ctx"]["path"], w["ctx"]["file"], w["url"]]),
+      [
+        ["eyes", t1.runId, t1.runId, "planned", null, t1.runId, undefined, undefined, null],
+        ["shot", t1.runId, t1.runId, "collected", 1, t1.runId, undefined, "shots/j-1.png", "/jobs/j-1/files/shots/j-1.png"],
+        ["url", t1.runId, t1.runId, "collected", 1, t1.runId, undefined, undefined, null],
+      ],
+      "evidence ABOUT the turn's run, sourced to it, the turn in the context; the shot's locator on the source",
+    );
+    assert.match(String(written.find((w) => w["check"] === "shot")!["content"]), /pod\.example\/settings: renders/);
+    // The shot is a job file, served with the job; the check run is kept
+    // (it left a file), carries the job on run.start, and is NOT a turn.
+    assert.ok(existsSync(join(jobRoot(dir, "j-1"), "shots", "j-1.png")));
+    assert.ok((await jobsCap.get!("j-1", { threads: false }))!.files.includes("shots/j-1.png"));
+    const shotCheck = claim.checks[1]!;
+    const [checkRun] = await store.listRuns(`check:${shotCheck}`);
+    assert.equal(checkRun, written.find((w) => w["check"] === "shot")!["ctx"]["checkRun"]);
+    const start = (await store.getRunEvents(`check:${shotCheck}`, checkRun!)).find((e) => e.type === "run.start")!;
+    assert.deepEqual([start.origin, start.job, start.verify], ["verify", "j-1", { checkId: shotCheck, subject: "job:j-1", sourceRunId: t1.runId }]);
+    assert.deepEqual(await store.listRuns(`check:${claim.checks[0]}`), [], "the exec left nothing behind and cost nothing: not kept");
+    assert.deepEqual((await jobsCap.get!("j-1", { threads: false }))!.runs.map((r) => r.runId), [t1.runId], "the check run is never on the job's run list");
+
+    // The three reads carry the ledger: GET /jobs/:id, GET /jobs/:id/claims, job/get.
+    const viewBody = (await (await strut.app.request("/jobs/j-1?threads=0")).json()) as { claims?: LedgerClaim[] };
+    assert.deepEqual(viewBody.claims!.map((x) => [x.status, x.latest?.about]), [["supported", t1.runId]]);
+    const ledgerBody = (await (await strut.app.request("/jobs/j-1/claims")).json()) as { enabled: boolean; job: string; claims: LedgerClaim[] };
+    assert.deepEqual([ledgerBody.enabled, ledgerBody.job, ledgerBody.claims[0]!.text, ledgerBody.claims[0]!.checks.length], [true, "j-1", "the settings page renders", 3]);
+    assert.equal((await strut.app.request("/jobs/nope/claims")).status, 404);
+    const got = (await jobGet.run({ job: "j-1", threads: false }, { runId: "t", path: "p", scope: {}, input: {}, emit: async () => {}, services: strut.services } as never)) as { claims?: LedgerClaim[] };
+    assert.equal(got.claims?.[0]?.status, "supported");
+
+    // An explicit verify of the SAME turn appends (`job:j-1#1`): the pod
+    // went down since — the newest measurement decides.
+    await writeFile(join(jobRoot(dir, "j-1"), "fail"), "");
+    const v2 = await verifier.verifyJob("j-1", { claims: [claim.id] });
+    assert.deepEqual([v2.runId, v2.evidence, v2.slots, kinds(v2)], [t1.runId, 2, 1, ["ran", "ran", "planned"]]);
+    assert.deepEqual(v2.claims.map((x) => [x.status, x.latest?.about]), [["refuted", t1.runId]]);
+    assert.equal(await nodeCount(backend, "Evidence"), 5, "3 + 3, the first slot retired for the new one");
+    const second = await verifier.verifyRun("jobwf", t1.runId); // the automatic pass, again: #0 is there, nothing moves
+    assert.deepEqual(viaRun.checks.length, second.checks.length);
+    assert.equal(await nodeCount(backend, "Evidence"), 5);
+    await rm(join(jobRoot(dir, "j-1"), "fail"));
+
+    // Turn 2: the version moves; the ledger reads stale until someone
+    // verifies again; turn 1 can no longer be verified at all.
+    const t2 = await strut.run("jobwf", { text: "second" }, { job: "j-1" });
+    assert.deepEqual((await ledgerOf()).map((x) => [x.status, x.latest?.about]), [["stale", t1.runId]]);
+    const old = await verifier.verifyJob("j-1", { runId: t1.runId });
+    assert.deepEqual([old.runId, kinds(old), old.evidence], [t1.runId, ["superseded", "superseded", "superseded"], 0]);
+    const v3 = await verifier.verifyJob("j-1");
+    assert.deepEqual([v3.runId, v3.claims[0]!.status, v3.claims[0]!.latest?.about], [t2.runId, "supported", t2.runId]);
+    // A person's word about the job (hive's Supports / Refutes): with `job`,
+    // the run must be one of its turns. Supports on the open slot FILLS it…
+    const stranger = await strut.run("clipper", { start: 1, len: 2 });
+    assert.match(String((await verifier.addEvidence({ claim: claim.id, job: "j-1", runId: stranger.runId, supports: true, content: "looked", by: "person" }) as { error: string }).error), /does not carry job "j-1"/);
+    const post = (path: string, body: unknown) => strut.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const filled = (await (await post(`/claims/${claim.id}/evidence`, { job: "j-1", runId: t2.runId, supports: true, content: "fine on my side" })).json()) as { ok?: true; filled?: boolean; subject?: unknown };
+    assert.deepEqual([filled.ok, filled.filled, filled.subject], [true, true, { kind: "job", id: "j-1" }]);
+    assert.deepEqual((await ledgerOf()).map((x) => [x.status, x.checks.every((k) => !("lastVerify" in k))]), [["supported", true]], "every check answered on the active turn");
+    // …and a refutation on the active turn wins over every instrument, until the turn moves.
+    const said = await verifier.addEvidence({ claim: claim.id, job: "j-1", runId: t2.runId, supports: false, content: "the page 404s for me", by: "person" });
+    assert.deepEqual([("ok" in said) && said.ok, "ok" in said && said.filled], [true, false]);
+    assert.deepEqual((await ledgerOf()).map((x) => x.status), ["refuted"]);
+    // Door two over HTTP: the pass and the ledger together — the instruments
+    // pass again, the person's refutation still stands.
+    const fresh = (await (await post("/jobs/j-1/verify", {})).json()) as { job: string; runId: string; claims: LedgerClaim[]; checks: Array<{ lastVerify: unknown }> };
+    assert.deepEqual([fresh.job, fresh.runId, fresh.claims[0]!.status, kinds(fresh as VerifyResult)], ["j-1", t2.runId, "refuted", ["ran", "ran", "planned"]]);
+    assert.equal((await post("/jobs/nope/verify", {})).status, 404);
+    assert.equal((await strut.app.request("/jobs/j-1/verify", { method: "POST" })).status, 200, "no body is every claim");
+  });
+
+  it("door one — meta/verify-job from inside a turn verifies the job at THIS run, in flight; the evidence hangs off the run node the run-end projection settles", async () => {
+    await ws.publishWorkflowByContent("jobwf", WF("jobwf", `  - id: dir\n    type: job/dir\n  - id: result\n    type: pack\n    config: { text: "{{ input.text }}", artifacts: [] }\n`));
+    await ws.publishWorkflowByContent(
+      "jobwf-verify",
+      WF("jobwf-verify", `  - id: dir\n    type: job/dir\n  - id: verify\n    type: meta/verify-job\n  - id: result\n    type: pack\n    config: { text: verified, ledger: "{{ verify.claims }}", turn: "{{ verify.runId }}" }\n`),
+    );
+    const jobsCap = (strut.services as { jobs: JobsCapability }).jobs;
+    const jobClaims = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry: async () => registry, jobs: jobsCap });
+    await strut.run("jobwf", { text: "x" }, { job: "j-2" });
+    const c = await jobClaims.addClaim({ subjects: [{ kind: "job", name: "j-2" }], text: "the job has a directory", checks: [{ type: "exec", config: { cmd: "test", args: ["-d", "{{ input.dir }}"] } }] }, human);
+    assert.ok("ok" in c);
+
+    const self = await strut.run("jobwf-verify", {}, { job: "j-2" });
+    assert.equal(self.status, "success", JSON.stringify(self.error));
+    const out = self.output as { ledger: LedgerClaim[]; turn: string };
+    assert.equal(out.turn, self.runId, "the version is the run that called it");
+    assert.deepEqual(out.ledger.map((x) => [x.status, x.latest?.about, x.checks[0]!.lastVerify]), [["supported", self.runId, { ran: true }]]);
+    await projectionsSettled(backend);
+    const node = await rows(`MATCH ${n("e", "Evidence")}-[:ABOUT]->${n("r", "StrutRun", { run_id: "$r" })} RETURN r.run_status AS status, r.job AS job, count(e) AS evidence`, { r: self.runId });
+    assert.deepEqual(node, [{ status: "success", job: "j-2", evidence: 1 }], "projected in flight for the evidence, settled at run end");
+    // The automatic pass at run end found #0 written: nothing twice.
+    for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(await nodeCount(backend, "Evidence"), 1);
+    // Outside a job, the step says so.
+    const bare = await strut.run("clipper", { start: 1, len: 2 });
+    assert.equal(bare.status, "success");
+    await assert.rejects(() => verifyJobStep.run({}, { runId: "r", path: "p", scope: {}, input: {}, emit: async () => {}, services: strut.services } as never), /not launched under a job/);
   });
 
   it("the switch: `claims: false` or STRUT_CLAIMS=0 turns the whole layer off on a graph workspace; on by default; the option wins", async () => {

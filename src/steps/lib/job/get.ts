@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { jobRoot } from "../../../jobs.js";
+import { jobRoot, type JobsCapability } from "../../../jobs.js";
 import { requireJobIndex } from "./_shared.js";
 
 /**
@@ -22,6 +22,7 @@ export default defineStep({
     `its threads (sessions: [{ id, turns, updatedAt, busy? }] — a thread's id is what an agent step's \`session\` takes to CONTINUE it; busy = mid-turn now), ` +
     `its holds (each with a \`url\` when what it holds has an address) and \`urls\` — the first hold of each kind that has one, { pod: "https://…" } — its repos and files, \`dir\` (its directory on this host; files and artifact paths are relative to it), ` +
     `\`artifacts\`: the job's CURRENT deliverables, the latest version of each — { id, kind, title, summary?, url, path?, runId } (\`path\` is what job/read takes) — and \`text\`, the job's latest reply. ` +
+    `\`claims\` (where this strut keeps claims): what the job must deliver, each claim with its status — supported | refuted | stale (verified on an earlier turn) | unknown (never verified) — its latest evidence (content, \`about\` = the turn, \`locator\` = a screenshot's url) and its checks; refuted or unknown means the work is not done. ` +
     `A run of a sealed workflow shows its status and nothing more. ` +
     `With \`threads: true\`, also \`threads\`: the job's agent threads — every agent execution grouped by session, each turn with its run, tool-call count, tokens and cost, and what it spawned (sub-agents, child runs, peer runs) — the job's execution as a tree.`,
   input: z.object({
@@ -33,6 +34,10 @@ export default defineStep({
     const view = await requireJobIndex(ctx.services).get(cfg.job, { threads: cfg.threads });
     if (!view) throw new Error(`No job "${cfg.job}"`);
     const dataDir = (ctx.services as Partial<StrutCapabilities> | undefined)?.dataDir ?? join(tmpdir(), "strut");
-    return { ...view, dir: jobRoot(dataDir, cfg.job) };
+    // The job's claims (plans/job-claims.md §6): the agent reads its contract
+    // in a tool result at the start of a turn — the forcing function.
+    const ledger = (ctx.services as { jobs?: JobsCapability } | undefined)?.jobs?.claims;
+    const claims = ledger ? await ledger(cfg.job) : null;
+    return { ...view, dir: jobRoot(dataDir, cfg.job), ...(claims ? { claims } : {}) };
   },
 });
