@@ -112,7 +112,8 @@ strut/
   build/                   # tsc output; steps as loose files (registry scans them)
   web/dist/                # Vite output
   node_modules/            # --omit=dev; sherpa's and Ladybug's loaders pointed at native/
-  native/                  # sherpa-onnx.node, lbugjs.node + the dylibs they link: all the host signs
+  native/                  # sherpa-onnx.node, lbugjs.node + the dylibs they link, libvector/libfts.lbug_extension: all the host signs
+  desktop.json             # what was staged (ladybug, ladybugExtensions, embeddings, stt): desktop.js's defaults
 ```
 
 plus a Node binary the host provides (not staged; 22.18 or newer: strut needs
@@ -140,17 +141,32 @@ be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
   `openssl@3` (its rpaths name only Homebrew/MacPorts), install names
   `@rpath/…`, rpath `@loader_path`, ad-hoc re-signed, license in
   `licenses/OpenSSL.txt` (outside `native/`, which holds only binaries); the build fails if a load command still names
-  `/opt/homebrew`, `/usr/local` or `/opt/local`. No darwin target or no
+  `/opt/homebrew`, `/usr/local` or `/opt/local`. Beside the addon go the
+  two extensions the graph backend REQUIRES (`plans/ladybug-backend.md`
+  ruling 4), `libvector` + `libfts.lbug_extension`, versioned with the
+  Ladybug CORE (`0.21.0` for `@ladybugdb/core` 0.21.2): the packager asks
+  Ladybug itself (`SHOW_LOADED_EXTENSIONS()` after an `INSTALL`) for the
+  version and the build machine's platform dir, copies the target's from
+  `~/.lbdb` when it is this platform's, else downloads them from
+  `extension.ladybugdb.com`. `desktop.json` records what was staged, and
+  `desktop.js` boots on the **Ladybug workspace** (`STRUT_WORKSPACE_BACKEND=
+  ladybug`, `STRUT_LADYBUG_EXTENSION_DIR=native/`, `STRUT_GRAPH_EMBEDDINGS=
+  off` without the embeddings stack) when the addon and both extensions are
+  there — a filesystem workspace found under the data dir is imported into
+  the file at that first boot (§3.1). No darwin target or no
   matching `openssl@3` (a darwin-x64 cross-stage on Apple silicon): Ladybug
-  is left out with a warning. `--no-stt` leaves sherpa out; `/audio` then
-  answers 501 "stt not available". Then (`--smoke`)
-  spawn `desktop.js` from a temp dir with only `STRUT_WORKSPACE` and
-  `STRUT_CACHE_DIR` set, parse the ready line for port + key, and check
-  `/health`, `/steps` (a workspace step that `import "strut"`),
+  is left out with a warning and the launcher stays on fs. `--no-stt`
+  leaves sherpa out; `/audio` then answers 501 "stt not available". Then
+  (`--smoke`) spawn `desktop.js` from a temp dir with only `STRUT_WORKSPACE`
+  and `STRUT_CACHE_DIR` set, parse the ready line for port + key, and check
+  `/health` (`workspace.backend` is `ladybug` with Ladybug staged, and a
+  workflow published over the API reads back — the graph store serves),
+  `/steps` (a workspace step that `import "strut"`),
   `/audio/models` (`available: true`, or the 501 under `--no-stt`), the UI,
   that closing stdin under `STRUT_EXIT_ON_STDIN_EOF=1` exits it, and that
-  Ladybug opens and queries a database from the copy with `DYLD_*` cleared,
-  every image the import loads (libssl/libcrypto included) from `native/`,
+  Ladybug opens and queries a database from the copy with `DYLD_*` cleared
+  and both extensions loaded from `native/`, every image that loads
+  (libssl/libcrypto and the extensions included) from `native/`,
   and that each stub answers an import with its "not in this build" error. `--tar` writes
   `strut-<platform>.tar.gz`; `--platform` cross-stages, fetching only the
   target's addon package, at the wrapper's version from the installed tree
@@ -169,7 +185,9 @@ be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
   `native/` (the sherpa addon and the two dylibs it links; all ad-hoc signed
   as shipped). With Ladybug (2026-10-13, darwin-arm64): 115 MB, `native/`
   61 MB (`lbugjs.node` 21 MB, OpenSSL 6 MB), six Mach-O files; `--no-stt`
-  81 MB, `native/` 27 MB. `lbugjs.node` 0.21.2 is built for macOS 26
+  81 MB, `native/` 27 MB. With its two extensions (2026-10-14): 117 MB,
+  eight Mach-O files (`libfts` 1.6 MB, `libvector` 0.8 MB), the smoke
+  booting the server on the Ladybug workspace. `lbugjs.node` 0.21.2 is built for macOS 26
   (`minos`), Homebrew's OpenSSL for the build machine's macOS. The
   earlier ~150 MB estimate assumed an esbuild bundle, which the step loader
   rules out for now (§2.4).
@@ -244,11 +262,16 @@ WebView). Microphone capture stays in the host, not the webview (§4.6).
 
 ### 3.1 LadybugDB as a local graph backend
 
-**Planned in `plans/ladybug-backend.md` (2026-10-14)** — the spike suggested
-below was run, the conform-or-not question is answered there (jarvis-shaped
-rows, Ladybug-native tables: one `Node` table, a rel table per edge type),
-and the slices are laid out. What follows is the original sketch, kept for
-the reasoning.
+**BUILT — `plans/ladybug-backend.md` (2026-10-14).** The spike suggested
+below was run, the conform-or-not question answered there (jarvis-shaped
+rows in Ladybug-native tables: one `Node` table, a rel table per edge type,
+ten types declared in code), and all four slices landed: the desktop
+package boots on `STRUT_WORKSPACE_BACKEND=ladybug` — the workspace store,
+claims, run projection and Concept search on one file under the data dir,
+`<dataDir>/graph/graph.lbug` — and imports a filesystem workspace it finds
+there at the first boot (`src/graph/fs-import.ts`). The embeddings stack
+stays a build option (`--embeddings`); without it the file's search is
+fulltext-only. What follows is the original sketch, kept for the reasoning.
 
 - **What it is.** [LadybugDB](https://github.com/LadybugDB/ladybug) is the
   maintained fork of Kuzu (Kuzu was acquired by Apple and archived late 2025;

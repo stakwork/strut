@@ -1,6 +1,7 @@
 # LadybugDB graph backend — one file, the graph layer strut owns
 
-**Status (2026-10-14): decided (§7), probed, slices 1–3 built (§6).** The
+**Status (2026-10-14): decided (§7), probed, BUILT — all four slices (§6);
+`STRUT_WORKSPACE_BACKEND=ladybug` is the desktop package's default.** The
 dialect and performance facts in §2 come from scratch probes against
 `@ladybugdb/core` 0.21.2 on darwin-arm64. Supersedes the "idea, not
 decided" sketch in `local-desktop-and-stt.md` §3.1 and the first draft of
@@ -274,8 +275,14 @@ use — `@ladybugdb/core`, else the platform package it shims — with the
 install hint on failure; a read `Connection` plus a write `Connection`
 with a queue — `withWrite(fn)` runs `fn` under `BEGIN TRANSACTION` …
 `COMMIT` / `ROLLBACK`, one at a time, and refuses every statement after a
-failure (§2); a `readOnly()` handle (a second `Database` opened
-read-only) for `graph_query`. On open: load `vector` and `fts` by path
+failure (§2); a `readOnly()` handle for `graph_query` — a connection of its
+own whose every statement runs inside `BEGIN TRANSACTION READ ONLY`, which
+the engine refuses writes and catalog changes in (slice 4 found the second
+`Database` opened read-only, first planned here, reserves 8 TB of address
+space per open and `close()` never returns it: the eighth open in a process
+fails with "Mmap for size 8796093022208 failed"; a `COPY … TO` file write
+IS allowed in a read-only transaction, so `query.ts`'s keyword gate is what
+keeps the machine out of reach). On open: load `vector` and `fts` by path
 (`STRUT_LADYBUG_EXTENSION_DIR`; unset → `INSTALL vector` / `INSTALL fts`,
 the dev download) — an open without both FAILS with the hint (ruling 4);
 then the DDL of §3.1, the indexes, the append-only `MIGRATIONS` list. An
@@ -366,26 +373,38 @@ The Neo4j implementation of every engine interface is today's code, moved
   backend has an embedder, as on Neo4j. The `EmbeddingPass` (healing
   nodes OTHER writers left unembedded) has no job on a file strut alone
   writes: no pass, no `PassSource` (slice 3 decided).
-- **`query.ts`**: slice 4 runs the model's Cypher on the read-only
-  handle; the keyword gate gains `COPY`, `INSTALL`, `LOAD`, `ATTACH`,
-  `IMPORT`; the prompt line for `graph_query` gets one sentence per
-  backend. Until then `graph_query` is Neo4j-only.
-- **`graph/*` steps**: `graphCtx` prefers the backend the SERVER wired
-  (slice 4) and the Concept reads work there; a step that registers a
-  type or writes one outside the registry fails on Ladybug with the
-  closed-registry error.
+- **`query.ts`** (slice 4, DONE): the model's Cypher runs on the read-only
+  handle (§3.2) with the row cap streamed and the timeout on the
+  connection; the keyword gate gained `COPY`, `INSTALL`, `LOAD` (any —
+  Ladybug's `LOAD FROM <file>` is a file read), `ATTACH`, `IMPORT` /
+  `EXPORT` and `CREATE_*_INDEX` / `DROP_*_INDEX` (no word boundary before
+  `_`, so `CREATE` alone missed them); the tool description and the
+  prompt's "Graph backend" line say how nodes are laid out on each
+  (`graphConventions`, ai/prompts.ts). `query.test.ts` runs on both.
+- **`graph/*` steps** (slice 4, DONE): `graphCtx` takes
+  `ctx.services.graph` — the backend the SERVER wired (`createStrut` puts
+  `opts.graph ?? workspace.graph` on the bag) — and only without one opens
+  a Neo4j from env; the Concept reads work on the file; a step that
+  registers a type or writes one outside the registry fails on Ladybug
+  with the closed-registry error.
 - **`workspace-store.ts`**: `Neo4jWorkspaceStore` → `GraphWorkspaceStore`
   over any `GraphBackend`, the old name kept as an alias export (mcp's
   `createLabStrut` imports `graphWorkspaceFromEnv` and logs the class
   name). It passes `workspaceConformance` on both engines.
 - **`createStrut.ts`**: unchanged in substance — the claims gate is
-  `workspace.graph`, the projector hook `workspace.graph`. One line for
-  `services.graph` in slice 4.
-- **Wiring** (slice 4): `STRUT_WORKSPACE_BACKEND=ladybug` → `wiring.ts`
-  `ladybugWorkspaceFromEnv` → `{ backend, workspace }` with the file at
-  `STRUT_GRAPH_DB` (default `<dataDir>/graph.lbug`) and the materialize
-  dir `steps/_graph` as today; `GET /health` (keyed) reports `workspace:
-  { backend }`.
+  `workspace.graph`, the projector hook `workspace.graph`. ONE `graph`
+  (`opts.graph ?? workspace.graph`) for the services bag, the chat's
+  `graph_query` / `graph_get` and the `/graph/*` reads (slice 4).
+- **Wiring** (slice 4, DONE): `STRUT_WORKSPACE_BACKEND=ladybug` →
+  `wiring.ts` `workspaceBackendFromEnv` / `ladybugWorkspaceFromEnv` →
+  `{ backend, workspace, imported }` with the file at `STRUT_GRAPH_DB`
+  (default `<dataDir>/graph/graph.lbug` — its OWN folder, which the handle
+  makes owner-only, the memory steps' precedent; §7.2 first said
+  `<dataDir>/graph.lbug`, which would have chmod-warned on `dataDir` itself
+  every boot) and the materialize dir `steps/_graph` as today; then the fs
+  import (§6 item 4). `GET /health` (keyed) reports `workspace: { backend,
+  path? }`; `server.ts` boots the fs workspace instead when the import
+  failed.
 
 ## 5. Tests
 
@@ -445,18 +464,42 @@ skips and says so, never silently.
    exclude / linked suites stay Neo4j-only: their types (Function, File,
    PullRequest) are not in the file; the Concept cases of the same
    features run on both.
-4. **Wiring and the desktop.** Env + `wiring.ts` + `server.ts`;
-   `services.graph` for the steps; the read-only handle for `query.ts` +
-   the prompt sentence; `/health`; `package-desktop.mjs` ships the two
-   extensions in `native/` beside `lbugjs.node`, pinned to the Ladybug
-   version (the extension directory is versioned with the CORE, `0.21.0`
-   for the 0.21.2 package), and `desktop.js` sets
-   `STRUT_LADYBUG_EXTENSION_DIR`; the one-shot **fs → ladybug import** of
-   an existing desktop workspace (every workflow and step version
-   published through the store with its label and metadata, ledger-stamped,
-   the fs directory renamed aside — a boot step, not a script, per the
-   repo's rule); docs: AGENTS.md's stack row and Environment table, the
-   desktop plan's §3.1 pointer.
+4. **Wiring and the desktop** (DONE, 2026-10-14). Env + `wiring.ts` +
+   `server.ts`; `services.graph` for the steps; the read-only handle for
+   `query.ts` + the prompt sentence; `/health`; `package-desktop.mjs` ships
+   the two extensions in `native/` beside `lbugjs.node` and writes a
+   `desktop.json` manifest (`ladybug`, `ladybugExtensions`, `embeddings`,
+   `stt`) that `desktop.js` reads its defaults from — the backend is
+   `ladybug` when the addon and both extensions are staged,
+   `STRUT_LADYBUG_EXTENSION_DIR` is `native/`, and `STRUT_GRAPH_EMBEDDINGS`
+   is `off` unless the embeddings stack came along (the default would load
+   MiniLM and fail the boot); the one-shot **fs → ladybug import**
+   (`src/graph/fs-import.ts`, a boot step inside `ladybugWorkspaceFromEnv`):
+   `FileWorkspaceStore.snapshot()` published through the
+   `GraphWorkspaceStore` — every workflow version under its label with
+   description and provenance, then active / category / publisher / owner /
+   cap / automations; every step version in label order, then the active
+   one — and only once it all went through, the files moved to
+   `<dataDir>/fs-workspace.imported-<timestamp>/` (the run store's
+   `workflows/<name>/runs/` stay where they are) and the `Migration` ledger
+   stamped with that folder's name; content-addressed so a rerun is a
+   no-op, a label holding other content in the graph is
+   `fs_import_conflict:`, a non-active version today's lint refuses is
+   skipped and named, and a failure moves nothing — `server.ts` then boots
+   the fs workspace, loudly, and tries again next boot. Two Ladybug facts
+   came out of it: the EXTENSION version is the core's, not the package's
+   (`Database.getVersion()` says 0.21.2, the extensions live under
+   `0.21.0`), so the packager asks Ladybug — an in-memory database
+   `INSTALL`s + `LOAD`s `vector` and `SHOW_LOADED_EXTENSIONS()` reports the
+   path (`~/.lbdb/extension/<ver>/<plat>/vector/…`), from which the version
+   and platform dir come; a cross-stage downloads the target's from
+   `extension.ladybugdb.com/v<ver>/<plat>/<name>/lib<name>.lbug_extension`
+   (`osx_arm64` / `osx_amd64`), and the files are ad-hoc linker-signed
+   Mach-O dylibs with no rpaths (checkMachO covers them; `.lbug_extension`
+   joined `NATIVE_EXT`). And a read-only `Database` reserves 8 TB of
+   address space per open, never returned (§3.2) — so `readOnly()` is a
+   READ ONLY transaction. Docs: AGENTS.md's stack row, Layout and
+   Environment table, the desktop plan's §2.3 + §3.1.
 
 ## 7. Decisions (Evan, 2026-10-14)
 
@@ -467,8 +510,10 @@ skips and says so, never silently.
    migrates on first boot.
 2. **Two files in v1.** `memory/*` keeps `<dataDir>/memory/graph.lbug` and
    its Graphiti tables (the 2026-10-13 ruling); the graph is
-   `<dataDir>/graph.lbug`. The shared handle (§3.2) makes one file a path
-   change later.
+   `<dataDir>/graph/graph.lbug` (slice 4 gave it its own folder, as
+   memory's: the handle makes the FOLDER owner-only, and `dataDir` itself
+   must stay as it is — `STRUT_GRAPH_DB` names any other path). The shared
+   handle (§3.2) makes one file a path change later.
 3. **Runs and chats stay file stores**, with the projector mirroring runs
    into the graph as on swarms. No `LadybugRunStore` in this plan.
 4. **The extensions are required.** An open without `vector` + `fts` fails
@@ -509,6 +554,17 @@ skips and says so, never silently.
   needs it.
 - **A stale `.wal`** beside a missing file fails every query; the handle
   checks before open, the test helper removes both.
+- **A `Database` reserves 8 TB of address space** (its VM region) on open,
+  read-only or not, and `close()` does not return it: a process can open
+  about seven. One handle per file per process (the registry on
+  `globalThis`) is the rule; the model's Cypher runs in a READ ONLY
+  transaction, never on a second `Database`. `npm test` runs its files in
+  separate processes, but many Ladybug-opening files in parallel beside
+  another Ladybug process (the desktop smoke) once tripped the limit
+  system-wide; alone, the suite is clean.
+- **The extensions are versioned with the core** (`0.21.0`), not the npm
+  package (`0.21.2`): read the version from `SHOW_LOADED_EXTENSIONS()`'s
+  path, never from `Database.getVersion()`.
 - **The Neo4j backend is unchanged**: the four dropped types, `IS_ALIAS`,
   Thing's attributes and the jarvis ontology are all still written and
   read there. Only the Ladybug engine knows the file holds less.

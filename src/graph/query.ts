@@ -10,13 +10,20 @@
  * provide, and since the workspace itself lives in this graph a stray write
  * corrupts the workflow store, not scratch data. Hence read-only, enforced
  * twice: a keyword pre-check for a clear error, and — the real guarantee —
- * a READ-mode transaction, which the server rejects writes in ("Writing in
- * read access mode not allowed").
+ * the engine's own read-only mode: on Neo4j a READ-mode transaction, which
+ * the server rejects writes in ("Writing in read access mode not allowed");
+ * on a LadybugDB file a READ ONLY transaction on a connection of its own
+ * (`LadybugHandle.readOnly`, plans/ladybug-backend.md §3.2), in which every
+ * write and catalog change fails. The pre-check also names what only
+ * Ladybug has — `COPY` (a file write, which a read-only transaction
+ * ALLOWS), `LOAD` (a file read), `INSTALL`, `ATTACH`, `IMPORT` / `EXPORT
+ * DATABASE`, the index procedures — so the model reads one clear message
+ * and the machine stays out of reach.
  *
  * Output is capped so a `MATCH (n) RETURN n` can't hang the turn or flood
  * the context: a row cap (streamed, so the rest is never fetched), a
- * server-side transaction timeout, long strings truncated, and embedding
- * vectors (any long numeric array) collapsed to a placeholder.
+ * query timeout, long strings truncated, and embedding vectors (any long
+ * numeric array) collapsed to a placeholder.
  */
 import type { GraphBackend } from "./backend.js";
 import { rowOf, type Params, type Row } from "./bolt.js";
@@ -60,11 +67,12 @@ export class ReadOnlyViolation extends Error {
   }
 }
 
-// Cypher clauses / procedures that mutate. Word-bounded and checked with
-// string literals, backtick identifiers, and comments stripped, so a
-// property called `data_set` or a search term 'reset' doesn't trip it.
-// `apoc.` is blanket-blocked: many apoc procedures write, and none are
-// needed to inspect a graph.
+// Cypher clauses / procedures that mutate — or, on Ladybug, touch the
+// machine (a file read or write, an extension, another database). Word-
+// bounded and checked with string literals, backtick identifiers, and
+// comments stripped, so a property called `data_set` or a search term
+// 'reset' doesn't trip it. `apoc.` is blanket-blocked: many apoc procedures
+// write, and none are needed to inspect a graph.
 const WRITE_PATTERNS: Array<[RegExp, string]> = [
   [/\bCREATE\b/i, "CREATE"],
   [/\bMERGE\b/i, "MERGE"],
@@ -74,12 +82,20 @@ const WRITE_PATTERNS: Array<[RegExp, string]> = [
   [/\bREMOVE\b/i, "REMOVE"],
   [/\bDROP\b/i, "DROP"],
   [/\bFOREACH\b/i, "FOREACH"],
-  [/\bLOAD\s+CSV\b/i, "LOAD CSV"],
+  // Neo4j's `LOAD CSV`, Ladybug's `LOAD FROM <file>` and `LOAD EXTENSION`.
+  [/\bLOAD\b/i, "LOAD"],
   [/\bALTER\b/i, "ALTER"],
   [/\b(GRANT|DENY|REVOKE)\b/i, "GRANT/DENY/REVOKE"],
   [/\b(START|STOP)\s+DATABASE\b/i, "START/STOP DATABASE"],
   [/\bapoc\./i, "apoc.*"],
   [/\bdb\.(create|drop|index\.fulltext\.(create|drop)|index\.vector\.create)/i, "db.create*/db.drop*"],
+  // Ladybug: bulk load / file export, extensions, other databases, and the
+  // index procedures (`CREATE_FTS_INDEX`: no word boundary before `_`).
+  [/\bCOPY\b/i, "COPY"],
+  [/\bINSTALL\b/i, "INSTALL"],
+  [/\bATTACH\b/i, "ATTACH"],
+  [/\b(IMPORT|EXPORT)\b/i, "IMPORT/EXPORT"],
+  [/\b(CREATE|DROP)_(VECTOR|FTS)_INDEX\b/i, "CREATE_*_INDEX/DROP_*_INDEX"],
 ];
 
 /** Strip string literals, backtick identifiers, and comments so keyword
@@ -138,8 +154,17 @@ export async function readQuery(
   const maxString = opts.maxStringLength ?? DEFAULT_MAX_STRING;
 
   const started = Date.now();
-  // The read-only Ladybug handle comes in slice 4 (plans/ladybug-backend.md §6).
-  if (backend.kind !== "neo4j") throw new Error(`graph_query runs on the Neo4j backend only for now (this is ${backend.kind})`);
+  if (backend.kind === "ladybug") {
+    // A READ ONLY transaction on its own connection: the engine is the
+    // guarantee. Rows stream through `run`, so a huge result stops at the cap.
+    const ro = await backend.lbug.readOnly({ queryTimeoutMs: timeout });
+    try {
+      const { columns, rows, truncated } = await ro.run(cypher, opts.params ?? {}, { maxRows });
+      return { columns, rows: rows.map((r) => compactValue(r, maxString) as Row), rowCount: rows.length, truncated, elapsedMs: Date.now() - started };
+    } finally {
+      await ro.close();
+    }
+  }
   const session = backend.bolt.session("READ");
   try {
     return await session.executeRead(

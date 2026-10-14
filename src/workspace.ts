@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm, rename } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
@@ -268,6 +268,21 @@ export interface StepInfo {
 export interface StepDirMetadata {
   /** Keys are full step names with optional slashes (e.g. "gitree/save-feature"). */
   steps: Record<string, StepInfo>;
+}
+
+/** Everything a file workspace holds, read once for a one-shot import into
+ *  another store (`src/graph/fs-import.ts`): each workflow's metadata with
+ *  every version's YAML, each custom step's metadata with every version's
+ *  source — versions in label order (v1, v2, …). */
+export interface FileWorkspaceSnapshot {
+  workflows: Array<{ name: string; meta: WorkflowMetadata; versions: Array<{ label: string; yaml: string; info: WorkflowVersionInfo }> }>;
+  steps: Array<{ name: string; active: string; publisher?: string; versions: Array<{ label: string; code: string; info: StepVersionInfo }> }>;
+}
+
+/** `v1, v2, …, v10` in numeric order; anything else after, alphabetically. */
+export function versionLabelOrder(a: string, b: string): number {
+  const n = (v: string) => (/^v(\d+)$/.test(v) ? parseInt(v.slice(1), 10) : Number.POSITIVE_INFINITY);
+  return n(a) - n(b) || a.localeCompare(b);
 }
 
 /** Options for the content-hash publishers (`publishWorkflowByContent`,
@@ -1080,6 +1095,74 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
   private customStepsDir(): string {
     return join(this.root, "steps", "custom");
+  }
+
+  // ── Snapshot + move aside (the one-shot import into another store) ─────
+
+  /** Everything on record — see `FileWorkspaceSnapshot` — or null when the
+   *  root holds no workflow and no custom step (nothing to import). A
+   *  workflow version named by its metadata whose file is gone throws: the
+   *  workspace is damaged and an import must not paper over it. A custom
+   *  step file with no metadata (published before versions were recorded)
+   *  is one version, `v1`. */
+  async snapshot(): Promise<FileWorkspaceSnapshot | null> {
+    const out: FileWorkspaceSnapshot = { workflows: [], steps: [] };
+    for (const entry of await safeReaddir(join(this.root, "workflows"))) {
+      if (!entry.isDirectory()) continue;
+      const meta = await this.readWorkflowMetadata(entry.name);
+      if (!meta) continue;
+      const versions = [];
+      for (const label of Object.keys(meta.versions).sort(versionLabelOrder)) {
+        versions.push({ label, yaml: await this.getWorkflowSource(entry.name, label), info: meta.versions[label]! });
+      }
+      out.workflows.push({ name: entry.name, meta, versions });
+    }
+    const customDir = this.customStepsDir();
+    const meta = await this.readStepMetadata(customDir);
+    for (const [name, info] of Object.entries(meta?.steps ?? {})) {
+      const versions = [];
+      for (const label of Object.keys(info.versions).sort(versionLabelOrder)) {
+        versions.push({ label, code: await this.getStepVersionSource(name, label), info: info.versions[label]! });
+      }
+      out.steps.push({ name, active: info.active, ...(info.publisher ? { publisher: info.publisher } : {}), versions });
+    }
+    for (const file of await findStepFilesRecursive(customDir)) {
+      const name = stepNameFromFile(file, customDir);
+      if (meta?.steps[name]) continue;
+      const code = await readFile(file, "utf-8");
+      out.steps.push({ name, active: "v1", versions: [{ label: "v1", code, info: { createdAt: (await stat(file)).mtime.toISOString(), hash: contentHash(code) } }] });
+    }
+    out.steps.sort((a, b) => a.name.localeCompare(b.name));
+    return out.workflows.length || out.steps.length ? out : null;
+  }
+
+  /** Move the workspace's own files out of the root into `to` (created):
+   *  each workflow's `_metadata.json` and version YAMLs to
+   *  `<to>/workflows/<name>/`, and `steps/custom` + `steps/_history` whole
+   *  to `<to>/steps/`. Everything else under the root stays where it is —
+   *  the run store's `workflows/<name>/runs/`, artifacts, secrets, the
+   *  graph store's `steps/_graph`. After this the root reads as an empty
+   *  workspace. */
+  async moveAside(to: string): Promise<void> {
+    for (const entry of await safeReaddir(join(this.root, "workflows"))) {
+      if (!entry.isDirectory()) continue;
+      const from = join(this.root, "workflows", entry.name);
+      const files = (await safeReaddir(from)).filter((f) => f.isFile() && (f.name === "_metadata.json" || f.name.endsWith(".yaml")));
+      if (!files.length) continue;
+      const dest = join(to, "workflows", entry.name);
+      await mkdir(dest, { recursive: true });
+      for (const f of files) await rename(join(from, f.name), join(dest, f.name));
+    }
+    for (const sub of ["custom", "_history"]) {
+      const from = join(this.root, "steps", sub);
+      try {
+        await stat(from);
+      } catch {
+        continue;
+      }
+      await mkdir(join(to, "steps"), { recursive: true });
+      await rename(from, join(to, "steps", sub));
+    }
   }
 
   // ── Private helpers ────────────────────────────────────────────────────

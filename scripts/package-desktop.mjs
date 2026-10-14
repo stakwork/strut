@@ -17,11 +17,19 @@
  * generated API key on the ready line — every default an env override) and
  * `strut` (shell wrapper over it for people who downloaded the tarball).
  * On darwin targets native/ also holds LadybugDB's addon (@ladybugdb/core,
- * pinned like sherpa) and the OpenSSL 3 dylibs it links, copied from the
+ * pinned like sherpa), the OpenSSL 3 dylibs it links, copied from the
  * build machine's Homebrew openssl@3 and rewired to @loader_path (see
- * `relocateLadybug`); elsewhere, or without a matching openssl@3, Ladybug is
- * left out with a warning. `--no-stt` leaves dictation out: no sherpa, no
- * native/ sherpa binaries; /audio answers 501 "stt not available".
+ * `relocateLadybug`), and the two extensions the graph backend REQUIRES to
+ * open — libvector + libfts (`stageLadybugExtensions`: versioned with the
+ * Ladybug CORE, not the npm package — 0.21.0 for @ladybugdb/core 0.21.2 —
+ * from the build machine's ~/.lbdb cache when it has the target's, else
+ * extension.ladybugdb.com); elsewhere, or without a matching openssl@3,
+ * Ladybug is left out with a warning. `desktop.json` beside desktop.js
+ * records what was staged (`ladybug`, `embeddings`, `stt`), and desktop.js
+ * reads its defaults from it: with Ladybug staged the workspace backend is
+ * `ladybug` and STRUT_LADYBUG_EXTENSION_DIR is native/
+ * (plans/ladybug-backend.md §7.1). `--no-stt` leaves dictation out: no
+ * sherpa, no native/ sherpa binaries; /audio answers 501 "stt not available".
  * Node itself is not included; the host provides one: 22.18 or newer (strut
  * needs 22; workspace custom steps are .ts, loaded by Node's own type
  * stripping, on by default from 22.18 — desktop.js refuses anything older).
@@ -38,13 +46,16 @@
  * --smoke boots the staged copy via desktop.js from a temp directory (so
  * nothing can leak in from this checkout) with only STRUT_WORKSPACE and
  * STRUT_CACHE_DIR set, parses the ready line for port + key, and checks
- * /health, /audio/models (`available: true` = the sherpa addon loaded) and
+ * /health (with Ladybug staged: `workspace.backend` is `ladybug` and a
+ * workflow published over the API reads back — the graph store serves),
+ * /audio/models (`available: true` = the sherpa addon loaded) and
  * that a custom step importing "strut" from that workspace registered; that
  * closing stdin under STRUT_EXIT_ON_STDIN_EOF=1 ends the process; and, with
  * Ladybug staged, opens and queries a temp database from the copy with
- * DYLD_* cleared, failing if the images that import loads (libssl/libcrypto
- * included) come from anywhere but native/. Each stub must answer an import
- * with its "not in this build" error.
+ * DYLD_* cleared, loading both extensions from native/, failing if the
+ * images that loads (libssl/libcrypto, the extensions) come from anywhere
+ * but native/. Each stub must answer an import with its "not in this
+ * build" error.
  *
  * Not a single-file build on purpose: the step loader scans directories and
  * the sherpa addon must be a real file beside the binary either way (§2.4).
@@ -77,7 +88,8 @@ if (!SHERPA_PLATFORMS.includes(platform)) {
   console.error(`unknown platform ${platform}; one of ${SHERPA_PLATFORMS.join(", ")}`);
   process.exit(2);
 }
-const NATIVE_EXT = /\.(node|dylib|so|dll)$/;
+// `.lbug_extension` is a Mach-O dylib under another name (Ladybug's vector + fts).
+const NATIVE_EXT = /\.(node|dylib|so|dll|lbug_extension)$/;
 // onnxruntime-node lays its binaries out as bin/napi-v6/<os>/<arch>.
 const [ortOs, ortArch] = platform.replace(/^win-/, "win32-").split("-");
 
@@ -187,7 +199,17 @@ async function stageFiles() {
     await cp(join(ROOT, "scripts", f), join(stage, f));
     await chmod(join(stage, f), 0o755);
   }
-  log(`staged build/ + web/dist/ + desktop.js + strut → ${stage}`);
+  await writeManifest();
+  log(`staged build/ + web/dist/ + desktop.js + strut + desktop.json → ${stage}`);
+}
+
+// What this stage holds, for desktop.js's defaults (it never sniffs
+// node_modules): the workspace backend flips to ladybug only when the addon
+// AND both extensions are in native/; the graph's embedder is on only when
+// the embeddings stack came along. Rewritten as the relocations add to it.
+const manifest = { platform, stt, ladybug, ladybugVersion: ladybug ? ladybugVersion : null, ladybugExtensions: null, embeddings };
+async function writeManifest() {
+  await writeFile(join(stage, "desktop.json"), JSON.stringify(manifest, null, 2) + "\n");
 }
 
 // The production tree is copied out of the repo root's node_modules — what
@@ -552,6 +574,66 @@ async function relocateLadybug() {
   );
 }
 
+// The two extensions the graph backend requires (plans/ladybug-backend.md
+// ruling 4), beside the addon in native/ so one directory holds every binary
+// the host signs. They are versioned with the Ladybug CORE, not the npm
+// package (0.21.0 for @ladybugdb/core 0.21.2), and laid out per platform —
+// so the version and the build machine's platform name are read from
+// Ladybug itself: an in-memory database INSTALLs + LOADs `vector` and
+// SHOW_LOADED_EXTENSIONS() reports the path it put it at
+// (~/.lbdb/extension/<ver>/<plat>/vector/libvector.lbug_extension). The
+// target's files come from that cache when it is the target's platform, else
+// from extension.ladybugdb.com at the same version. Each must be a Mach-O of
+// the target's arch; checkMachO then verifies them with the rest of native/.
+const LADYBUG_PLATFORM_DIR = { "darwin-arm64": "osx_arm64", "darwin-x64": "osx_amd64" };
+const LADYBUG_EXTENSIONS = ["vector", "fts"];
+async function stageLadybugExtensions() {
+  const probe = `
+const lbug = (await import("@ladybugdb/core")).default;
+const db = new lbug.Database(":memory:");
+const conn = new lbug.Connection(db);
+await conn.query("INSTALL vector");
+await conn.query("LOAD EXTENSION vector");
+const rows = await (await conn.query("CALL SHOW_LOADED_EXTENSIONS() RETURN *")).getAll();
+await conn.close(); await db.close();
+console.log(JSON.stringify(rows));
+`;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { cwd: ROOT, encoding: "utf-8" });
+  if (r.status !== 0) throw new Error(`Ladybug could not INSTALL + LOAD its vector extension on this machine (network to extension.ladybugdb.com needed once):\n${r.stdout}${r.stderr}`);
+  const rows = JSON.parse(r.stdout.trim().split("\n").pop());
+  const loaded = rows.find((row) => String(row["extension name"]).toUpperCase() === "VECTOR")?.["extension path"];
+  const m = /^(.*\/extension\/([^/]+)\/([^/]+))\/vector\/libvector\.lbug_extension$/.exec(String(loaded ?? ""));
+  if (!m) throw new Error(`cannot read the extension version and platform from Ladybug's loaded path: ${loaded}`);
+  const [, cacheRoot, version, hostDir] = m;
+  const targetDir = LADYBUG_PLATFORM_DIR[platform];
+  if (!targetDir) throw new Error(`no Ladybug extension platform known for ${platform}`);
+  const arch = ortArch === "x64" ? "x86_64" : ortArch;
+  const from = [];
+  for (const name of LADYBUG_EXTENSIONS) {
+    const file = `lib${name}.lbug_extension`;
+    const dest = join(native, file);
+    const cached = join(cacheRoot, name, file);
+    if (targetDir === hostDir && (await stat(cached).catch(() => null))) {
+      await copyFile(cached, dest);
+      from.push(`${file} ← ${cached}`);
+    } else {
+      const url = `https://extension.ladybugdb.com/v${version}/${targetDir}/${name}/${file}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`downloading ${url}: ${res.status} ${res.statusText}`);
+      await writeFile(dest, Buffer.from(await res.arrayBuffer()));
+      from.push(`${file} ← ${url}`);
+    }
+    await chmod(dest, 0o755);
+    const archs = spawnSync("lipo", ["-archs", dest], { encoding: "utf-8" });
+    if (archs.status !== 0 || !archs.stdout.trim().split(/\s+/).includes(arch)) {
+      throw new Error(`${dest} is not a ${arch} Mach-O (lipo: ${archs.stdout.trim() || archs.stderr.trim()})`);
+    }
+  }
+  manifest.ladybugExtensions = version;
+  await writeManifest();
+  log(`staged Ladybug's ${LADYBUG_EXTENSIONS.join(" + ")} extensions (${version}, ${targetDir}) → native/:\n    ${from.join("\n    ")}`);
+}
+
 // Every Mach-O in native/: no load command may name a build-machine path,
 // every @rpath dependency must be in native/, and every signature present must verify.
 function checkMachO(files) {
@@ -711,6 +793,20 @@ export default defineStep({
     const health = await (await fetch(`${base}/health`, { headers })).json();
     if (!health.ok) failures.push("health not ok");
     if (health.dataDir !== workspace) failures.push(`dataDir ${health.dataDir} != ${workspace}`);
+    // With Ladybug staged the launcher boots on the file (plans/ladybug-backend.md §7.1); the graph store must serve.
+    const wantBackend = ladybug ? "ladybug" : "fs";
+    if (health.workspace?.backend !== wantBackend) failures.push(`health.workspace.backend ${JSON.stringify(health.workspace)}, expected ${wantBackend}`);
+    if (ladybug) {
+      if (health.workspace?.path !== join(workspace, "graph", "graph.lbug")) failures.push(`health.workspace.path ${health.workspace?.path}, expected ${join(workspace, "graph", "graph.lbug")}`);
+      const pub = await fetch(`${base}/workflows`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ name: "smoke-wf", steps: [{ id: "a", type: "log", config: { message: "hi" } }] }),
+      });
+      if (pub.status !== 201) failures.push(`publishing a workflow into the Ladybug workspace: ${pub.status} ${await pub.text()}`);
+      const wfs = await (await fetch(`${base}/workflows`, { headers })).json();
+      if (!wfs.some?.((w) => w.name === "smoke-wf" && w.activeVersion === "v1")) failures.push(`the published workflow did not read back from the Ladybug workspace: ${JSON.stringify(wfs).slice(0, 300)}`);
+    }
 
     const steps = await (await fetch(`${base}/steps`, { headers })).text();
     if (!steps.includes("smoke-step")) failures.push('custom step importing "strut" from an out-of-tree workspace did not register');
@@ -756,34 +852,38 @@ export default defineStep({
   log(
     `smoke: OK — desktop.js boots with no STRUT_* env beyond the two dirs, ready line carries port + key, ` +
       `${stt ? "sherpa addon loads" : "/audio answers 501 without sherpa"}, out-of-tree custom step resolves, UI serves, exits on stdin EOF, stubs answer (${stubs.join(", ")})` +
-      `${ladybug ? ", Ladybug opens + queries a database with OpenSSL from native/" : ""}`,
+      `${ladybug ? ", the server boots on the Ladybug workspace, Ladybug opens + queries a database with OpenSSL and both extensions from native/" : ""}`,
   );
 }
 
 // From the temp copy, the way build/ code reaches it (a bare import from the
-// app root): open a database, write, read back. DYLD_* is cleared so nothing
-// but the addon's own load commands can find a library. The images loaded by
-// the import itself — the set difference of process.report's shared objects
-// before and after, so whatever the node binary already linked (Homebrew's
-// node links Homebrew's OpenSSL) doesn't count — must all be in native/, and
-// must include lbugjs.node, libssl.3 and libcrypto.3.
+// app root): open a database, LOAD the two extensions from native/ by path
+// (what STRUT_LADYBUG_EXTENSION_DIR makes the server do), write, read back.
+// DYLD_* is cleared so nothing but the addon's own load commands can find a
+// library. The images loaded by all that — the set difference of
+// process.report's shared objects before and after, so whatever the node
+// binary already linked (Homebrew's node links Homebrew's OpenSSL) doesn't
+// count — must all be in native/, and must include lbugjs.node, libssl.3,
+// libcrypto.3 and both extensions.
 async function smokeLadybug(app, tmp) {
   const script = `
 const before = new Set(process.report.getReport().sharedObjects);
 const lbug = (await import("@ladybugdb/core")).default;
-const loaded = process.report.getReport().sharedObjects.filter((p) => !before.has(p));
 const db = new lbug.Database(process.argv[1]);
 const conn = new lbug.Connection(db);
+for (const ext of ${JSON.stringify(LADYBUG_EXTENSIONS)}) await conn.query("LOAD EXTENSION '" + process.argv[2] + "/lib" + ext + ".lbug_extension'");
 await conn.query("CREATE NODE TABLE Smoke(name STRING, PRIMARY KEY(name))");
 await conn.query("CREATE (:Smoke {name: 'ladybug'})");
+await conn.query("CALL CREATE_FTS_INDEX('Smoke', 'smoke_fts', ['name'])");
 const rows = await (await conn.query("MATCH (s:Smoke) RETURN s.name AS name")).getAll();
+const loaded = process.report.getReport().sharedObjects.filter((p) => !before.has(p));
 await conn.close();
 await db.close();
 console.log(JSON.stringify({ rows, loaded }));
 `;
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DYLD_") && !k.startsWith("STRUT_")));
-  log("smoke: Ladybug — open, write and query a temp database from the copy (DYLD_* cleared)");
-  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script, join(tmp, "smoke.lbug")], { cwd: app, env, encoding: "utf-8" });
+  log("smoke: Ladybug — open, load both extensions from native/, write and query a temp database from the copy (DYLD_* cleared)");
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script, join(tmp, "smoke.lbug"), join(app, "native")], { cwd: app, env, encoding: "utf-8" });
   if (r.status !== 0) return [`Ladybug load/query failed (${r.status}):\n${r.stdout}${r.stderr}`];
   let res;
   try {
@@ -795,10 +895,10 @@ console.log(JSON.stringify({ rows, loaded }));
   if (res.rows?.[0]?.name !== "ladybug") failures.push(`Ladybug query returned ${JSON.stringify(res.rows)}`);
   const dirs = [join(app, "native") + "/", (await realpath(join(app, "native"))) + "/"];
   for (const p of res.loaded) if (!dirs.some((d) => p.startsWith(d))) failures.push(`importing Ladybug loaded ${p}, outside the copy's native/`);
-  for (const want of ["lbugjs.node", ...OPENSSL_LIBS]) {
-    if (!res.loaded.some((p) => p.endsWith(`/${want}`))) failures.push(`${want} not among the images importing Ladybug loaded: ${res.loaded.join(", ") || "none"}`);
+  for (const want of ["lbugjs.node", ...OPENSSL_LIBS, ...LADYBUG_EXTENSIONS.map((e) => `lib${e}.lbug_extension`)]) {
+    if (!res.loaded.some((p) => p.endsWith(`/${want}`))) failures.push(`${want} not among the images Ladybug loaded: ${res.loaded.join(", ") || "none"}`);
   }
-  if (!failures.length) log(`smoke: Ladybug OK — query answered; the import loaded:\n    ${res.loaded.join("\n    ")}`);
+  if (!failures.length) log(`smoke: Ladybug OK — query answered with both extensions loaded; the images loaded:\n    ${res.loaded.join("\n    ")}`);
   return failures;
 }
 
@@ -826,7 +926,10 @@ await stageFiles();
 await installDeps();
 await mkdir(native, { recursive: true });
 if (stt) await relocateNative();
-if (ladybug) await relocateLadybug();
+if (ladybug) {
+  await relocateLadybug();
+  await stageLadybugExtensions();
+}
 await report();
 if (smoke) await smokeTest();
 if (tar) await tarball();

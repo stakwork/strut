@@ -260,9 +260,12 @@ export interface StrutOptions<TServices = unknown> {
    *  installed at boot with their automations off. `false` installs none. */
   systemWorkflows?: false;
 
-  /** The strut graph backend, when the deployment has one (server.ts passes
-   *  the one behind its graph-backed workspace). Enables the chat builder's
-   *  read-only `graph_query` tool. Omit and the tool isn't offered. */
+  /** The strut graph backend, when the deployment has one. Default: the one
+   *  behind a graph-backed workspace (`workspace.graph`), so the default
+   *  server need not pass it; a host wiring a graph beside a filesystem
+   *  workspace does. It is `ctx.services.graph` for the `graph/*` steps,
+   *  the chat builder's read-only `graph_query` (+ `graph_get`), and the
+   *  `/graph/*` reads; without one none of those is offered. */
   graph?: GraphBackend;
 
   /** Directory containing the built web UI (the `dist` folder). Defaults
@@ -512,6 +515,10 @@ export async function createStrut<TServices = unknown>(
   opts: StrutOptions<TServices> = {},
 ): Promise<Strut<TServices>> {
   const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
+  // The ONE graph backend everything here reads: the host's, else the
+  // workspace's own (Neo4j or a LadybugDB file). The claims gate below is
+  // deliberately `workspace.graph`: claims hang off the workspace's nodes.
+  const graph: GraphBackend | undefined = opts.graph ?? workspace.graph;
   // Backend mode, used ONLY to pick unspecified defaults: the run/chat/secret
   // stores follow the workspace's kind (file-backed → file stores under
   // dataDir; anything else → in-memory). No capability is gated on it —
@@ -660,6 +667,9 @@ export async function createStrut<TServices = unknown>(
       createJobIndex({ dataDir, store, sessions: sessionStore, sessionHolder: sessions.holder, sealed: isSealedWorkflow }),
     ),
     peers: peersCap,
+    // The graph backend the server wired, for the graph/* steps (graphCtx
+    // prefers it over opening one from env).
+    ...(graph ? { graph } : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
@@ -2074,7 +2084,6 @@ export async function createStrut<TServices = unknown>(
   // node an agent read is clicked (the run log records which node, its type
   // and its name; never its content). Read-only. 501 without a graph.
   app.get("/graph/nodes/:ref_id", async (c) => {
-    const graph = opts.graph ?? workspace.graph;
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
     const ref_id = c.req.param("ref_id");
     const node = await graph.reader.getNode(ref_id);
@@ -2090,7 +2099,6 @@ export async function createStrut<TServices = unknown>(
   // node_type, name, description? }] }, names starting with the fragment
   // first. Read-only. 501 without a graph, 400 without a type.
   app.get("/graph/names", async (c) => {
-    const graph = opts.graph ?? workspace.graph;
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
     const type = (c.req.query("type") ?? "").trim();
     if (!type) return c.json({ error: "type is required" }, 400);
@@ -2103,7 +2111,6 @@ export async function createStrut<TServices = unknown>(
   // and why, the newcomer mark, the last error. `{ enabled: false }` with
   // embeddings off. Read-only — a debugging read. 501 without a graph.
   app.get("/graph/embeddings", async (c) => {
-    const graph = opts.graph ?? workspace.graph;
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
     return c.json(graph.embeddings ? graph.embeddings.status() : { enabled: false });
   });
@@ -2876,8 +2883,8 @@ export async function createStrut<TServices = unknown>(
               available: [...new Set(catalog.models.filter((m) => m.available).map((m) => m.provider))],
               keyNames: catalog.keyNames,
             },
-            // Read-only graph_query, when the host wired a graph backend.
-            graph: opts.graph,
+            // Read-only graph_query (+ graph_get), when there is a graph backend.
+            graph,
             // The claim tools + `claims` arg, and verify_run / add_evidence +
             // the verify triggers — where the claims layer is on.
             claims: claimsAuthoring,
@@ -3701,13 +3708,17 @@ export async function createStrut<TServices = unknown>(
   // ── Health ───────────────────────────────────────────────────────────────
 
   // Open to a probe (a container healthcheck has no key), which learns
-  // nothing but that the process answers.
+  // nothing but that the process answers. With the key: where the data is,
+  // how many steps loaded, and which backend holds the workspace — `fs`,
+  // `neo4j`, or `ladybug` with the file's path (plans/ladybug-backend.md).
   app.get("/health", (c) => {
     if (!carriesApiKey(c)) return c.json({ ok: true });
+    const wg = workspace.graph;
     return c.json({
       ok: true,
       dataDir,
       stepCount: Object.keys(registry).length,
+      workspace: { backend: wg?.kind ?? "fs", ...(wg?.kind === "ladybug" ? { path: wg.cfg.path } : {}) },
     });
   });
 
