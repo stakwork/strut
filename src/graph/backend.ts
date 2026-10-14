@@ -16,14 +16,26 @@
  *      this process that embeds every marked node whoever wrote it, strips
  *      the no-embed types, and keeps up with newcomers. Nothing waits on it.
  *
- * Consumers (the `graph/*` lab steps, a future `Neo4jWorkspaceStore` and
+ * Consumers (the `graph/*` lab steps, the `GraphWorkspaceStore` and the
  * run projector) call `openGraphBackend(cfg)` and share the instance.
+ *
+ * A backend IS a `GraphEngine` (`engine.ts`): `kind`, `query`, `tx`, the
+ * dialect helpers and the three engine seams, plus the writers, the reader
+ * and the boot reports on top. The Neo4j one is built here over a `Bolt`;
+ * the Ladybug one (plans/ladybug-backend.md) over a `LadybugHandle`, whose
+ * open IS the schema (the DDL from the closed registry) — no seeds, no
+ * migrations, and until slice 3 no reader.
  */
-import { Bolt, graphConfigFromEnv, type GraphConfig } from "./bolt.js";
+import { resolve } from "node:path";
+import { Bolt, graphConfigFromEnv, type Neo4jConfig } from "./bolt.js";
 import { upgradeClaimSchema, type ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { EmbeddingPass, MiniLMEmbedder, WorkerEmbedder, type EmbeddingPassOptions } from "./embeddings.js";
+import type { GraphEngine } from "./engine.js";
 import { reconcileIndexLists, type IndexReconcileReport } from "./index-reconcile.js";
+import { openLadybug, type LadybugHandle } from "./ladybug/db.js";
+import { LadybugEngine } from "./ladybug/engine.js";
+import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
@@ -32,6 +44,21 @@ import { GraphReader } from "./search.js";
 import { migrateVeinToStrut, type VeinMigrationReport } from "./vein-migration.js";
 import { migrateRunStatus, type RunStatusMigrationReport } from "./run-status-migration.js";
 import { migrateExactKeys, type ExactKeyMigrationReport } from "./exact-key-migration.js";
+
+/** A LadybugDB file (plans/ladybug-backend.md §3.2). */
+export interface LadybugConfig {
+  kind: "ladybug";
+  /** The database file; its folder is created owner-only. */
+  path: string;
+  /** Always `default`: one namespace per file. */
+  namespace: string;
+  /** Where the `vector` + `fts` extensions are (`STRUT_LADYBUG_EXTENSION_DIR`). */
+  extensionDir?: string;
+}
+
+export type GraphConfig = Neo4jConfig | LadybugConfig;
+
+const isLadybug = (cfg: GraphConfig): cfg is LadybugConfig => cfg.kind === "ladybug";
 
 export interface GraphBackendOptions {
   /** `false` disables embeddings entirely (vectors stay NULL, search is
@@ -50,9 +77,9 @@ export interface GraphBackendOptions {
   pass?: EmbeddingPassOptions;
 }
 
-export interface GraphBackend {
+/** What every backend has, whatever the engine. */
+export interface GraphBackendBase extends GraphEngine {
   readonly cfg: GraphConfig;
-  readonly bolt: Bolt;
   readonly nodes: NodeWriter;
   readonly edges: EdgeWriter;
   readonly reader: GraphReader;
@@ -61,22 +88,40 @@ export interface GraphBackend {
   readonly embedder: Embedder | undefined;
   /** What the boot-time seed did (undefined when skipped). */
   readonly seed: SeedReport | undefined;
-  readonly veinMigration: VeinMigrationReport | undefined;
-  readonly runStatusMigration: RunStatusMigrationReport | undefined;
-  readonly exactKeyMigration: ExactKeyMigrationReport | undefined;
-  readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
-  readonly ontologySeed: OntologySeedReport | undefined;
-  readonly indexReconcile: IndexReconcileReport | undefined;
   /** The pass, running on its timer; undefined with embeddings off or the
    *  boot skipped. `status()` is `GET /graph/embeddings`. */
   readonly embeddings: EmbeddingPass | undefined;
   close(): Promise<void>;
 }
 
+/** The Neo4j backend: the driver, and the one-shot migrations a long-lived
+ *  jarvis graph needs (a fresh Ladybug file has none of them). */
+export interface Neo4jBackend extends GraphBackendBase {
+  readonly kind: "neo4j";
+  readonly cfg: Neo4jConfig;
+  readonly bolt: Bolt;
+  readonly veinMigration: VeinMigrationReport | undefined;
+  readonly runStatusMigration: RunStatusMigrationReport | undefined;
+  readonly exactKeyMigration: ExactKeyMigrationReport | undefined;
+  readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
+  readonly ontologySeed: OntologySeedReport | undefined;
+  readonly indexReconcile: IndexReconcileReport | undefined;
+}
+
+/** The Ladybug backend: one file, the closed registry's ten types. */
+export interface LadybugBackend extends GraphBackendBase {
+  readonly kind: "ladybug";
+  readonly cfg: LadybugConfig;
+  readonly lbug: LadybugHandle;
+}
+
+export type GraphBackend = Neo4jBackend | LadybugBackend;
+
 const cache = new Map<string, Promise<GraphBackend>>();
 
 function keyOf(cfg: GraphConfig, opts: GraphBackendOptions): string {
   const emb = opts.embeddings === false ? "off" : typeof opts.embeddings === "object" ? "custom" : "minilm";
+  if (isLadybug(cfg)) return ["ladybug", resolve(cfg.path), cfg.namespace, emb].join("|");
   return [cfg.uri, cfg.user, cfg.database ?? "", cfg.namespace, emb, opts.seedOntology ? "ont" : ""].join("|");
 }
 
@@ -85,17 +130,71 @@ function keyOf(cfg: GraphConfig, opts: GraphBackendOptions): string {
  * connectivity, seeding, embedder load, and the backfill sweep; later calls
  * get the same instance. A failed open is not cached.
  */
+export function openGraphBackend(cfg: Neo4jConfig, opts?: GraphBackendOptions): Promise<Neo4jBackend>;
+export function openGraphBackend(cfg: LadybugConfig, opts?: GraphBackendOptions): Promise<LadybugBackend>;
+export function openGraphBackend(cfg: GraphConfig, opts?: GraphBackendOptions): Promise<GraphBackend>;
 export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {}): Promise<GraphBackend> {
   const key = keyOf(cfg, opts);
   let p = cache.get(key);
   if (!p) {
-    p = open(cfg, opts).catch((e) => {
+    p = (isLadybug(cfg) ? openLadybugBackend(cfg, opts) : open(cfg, opts)).catch((e) => {
       cache.delete(key);
       throw e;
     });
     cache.set(key, p);
   }
   return p;
+}
+
+/** The reader lands in slice 3 (plans/ladybug-backend.md §6); until then any
+ *  read through it says so instead of running Neo4j Cypher on a file. */
+function noReaderYet(): GraphReader {
+  return new Proxy({} as GraphReader, {
+    get: (_t, prop) => {
+      if (typeof prop === "symbol" || prop === "then") return undefined;
+      return () => {
+        throw new Error(`GraphReader.${String(prop)} is not available on the ladybug backend yet (plans/ladybug-backend.md §6, slice 3)`);
+      };
+    },
+  });
+}
+
+async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions): Promise<LadybugBackend> {
+  if (cfg.namespace !== "default") throw new Error(`a ladybug file holds one namespace, default; got ${cfg.namespace}`);
+  const lbug = await openLadybug(cfg.path, { extensionDir: cfg.extensionDir });
+  try {
+    const embedder: Embedder | undefined =
+      opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await MiniLMEmbedder.load();
+    const engine = new LadybugEngine(lbug, cfg.namespace);
+    const schemas = new SchemaResolver(engine);
+    const backend: LadybugBackend = {
+      kind: "ladybug",
+      cfg,
+      lbug,
+      namespace: engine.namespace,
+      dialect: engine.dialect,
+      query: (cypher, params) => engine.query(cypher, params),
+      tx: (fn) => engine.tx(fn),
+      nodeEngine: engine.nodeEngine,
+      edgeEngine: engine.edgeEngine,
+      schemaSource: engine.schemaSource,
+      nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
+      edges: new EdgeWriter(engine, { resolver: schemas }),
+      reader: noReaderYet(),
+      schemas,
+      embedder,
+      seed: undefined,
+      embeddings: undefined,
+      async close() {
+        for (const [k, p] of cache) if ((await p.catch(() => null)) === backend) cache.delete(k);
+        await lbug.close();
+      },
+    };
+    return backend;
+  } catch (e) {
+    await lbug.close().catch(() => undefined);
+    throw e;
+  }
 }
 
 /** `openGraphBackend` from `NEO4J_URI`/`NEO4J_USER`/`NEO4J_PASSWORD`/
@@ -122,8 +221,9 @@ export async function closeGraphBackends(): Promise<void> {
   await Promise.all(all.map((p) => p.then((b) => b.close()).catch(() => undefined)));
 }
 
-async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphBackend> {
+async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jBackend> {
   const bolt = new Bolt(cfg);
+  const engine = new Neo4jEngine(bolt);
   try {
     await bolt.verify();
     const embedder: Embedder | undefined =
@@ -155,7 +255,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
         } else if (claimSchemaUpgrade.status === "skipped_duplicates") {
           console.warn(`[graph] more than one Claim schema node — left alone; claims cannot be written until that is resolved by hand`);
         }
-        ontologySeed = await seedJarvisOntology(bolt);
+        ontologySeed = await seedJarvisOntology(engine);
       }
       // Before the seed, which is add-only: it would keep the old `status`
       // attribute and the fulltext index built over it.
@@ -169,7 +269,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
       if (exactKeyMigration.status === "migrated") {
         console.warn(`[graph] re-keyed workspace nodes on their exact names: ${JSON.stringify(exactKeyMigration)}`);
       }
-      seed = await seedStrutDomain(bolt);
+      seed = await seedStrutDomain(engine);
       // Not gated on `seedOntology`: a jarvis-hosted graph is the one that
       // needs it (its Schemas predate jarvis's own widening).
       indexReconcile = await reconcileIndexLists(bolt);
@@ -177,7 +277,7 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
         console.warn(`[graph] widened stale Schema index lists to the bundled library's: ${JSON.stringify(indexReconcile.widened)}`);
       }
     }
-    const schemas = new SchemaResolver(bolt);
+    const schemas = new SchemaResolver(engine);
     // The pass starts now and runs in the background; the old awaited
     // backfill held the boot for as long as the sweep took. It embeds in a
     // worker thread: onnxruntime runs a model synchronously, and hours of
@@ -186,11 +286,19 @@ async function open(cfg: GraphConfig, opts: GraphBackendOptions): Promise<GraphB
     // injected embedder is used as it is.
     const passWorker = embedder && !opts.skipBoot && typeof opts.embeddings !== "object" ? new WorkerEmbedder() : undefined;
     const embeddings = embedder && !opts.skipBoot ? new EmbeddingPass(bolt, passWorker ?? embedder, schemas, opts.pass) : undefined;
-    const backend: GraphBackend = {
+    const backend: Neo4jBackend = {
+      kind: "neo4j",
       cfg,
       bolt,
-      nodes: new NodeWriter(bolt, { embedder, resolver: schemas }),
-      edges: new EdgeWriter(bolt, { resolver: schemas }),
+      namespace: engine.namespace,
+      dialect: engine.dialect,
+      query: (cypher, params) => engine.query(cypher, params),
+      tx: (fn) => engine.tx(fn),
+      nodeEngine: engine.nodeEngine,
+      edgeEngine: engine.edgeEngine,
+      schemaSource: engine.schemaSource,
+      nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
+      edges: new EdgeWriter(engine, { resolver: schemas }),
       reader: new GraphReader(bolt, { embedder, resolver: schemas }),
       schemas,
       embedder,

@@ -11,7 +11,7 @@
 import { join } from "node:path";
 import type { GraphBackend, GraphBackendOptions } from "./backend.js";
 import { openGraphBackendFromEnv } from "./backend.js";
-import { Neo4jWorkspaceStore, type Neo4jWorkspaceStoreOptions } from "./workspace-store.js";
+import { GraphWorkspaceStore, type GraphWorkspaceStoreOptions } from "./workspace-store.js";
 
 /** Graph unless `STRUT_WORKSPACE_BACKEND=fs` (case-insensitive; `file` /
  *  `filesystem` accepted too). Any other value — including unset or the
@@ -39,7 +39,7 @@ export function graphMaterializeDir(dataDir: string): string {
 }
 
 /**
- * Open the graph backend from env and wrap it in a `Neo4jWorkspaceStore`.
+ * Open the graph backend from env and wrap it in a `GraphWorkspaceStore`.
  * Connection: `NEO4J_URI`, else `bolt://<NEO4J_HOST>` (default
  * `localhost:7687`); `NEO4J_USER` / `NEO4J_PASSWORD` default to
  * neo4j / testtest — the same resolution as the mcp host, so a deployment's
@@ -48,10 +48,10 @@ export function graphMaterializeDir(dataDir: string): string {
  */
 export async function graphWorkspaceFromEnv(
   env: Record<string, string | undefined> = process.env,
-  opts: { dataDir?: string; backend?: GraphBackendOptions; store?: Neo4jWorkspaceStoreOptions } = {},
-): Promise<{ backend: GraphBackend; workspace: Neo4jWorkspaceStore }> {
+  opts: { dataDir?: string; backend?: GraphBackendOptions; store?: GraphWorkspaceStoreOptions } = {},
+): Promise<{ backend: GraphBackend; workspace: GraphWorkspaceStore }> {
   const backend = await openGraphBackendFromEnv({ NEO4J_HOST: DEFAULT_NEO4J_HOST, ...env }, opts.backend)!;
   const dataDir = opts.dataDir ?? env["STRUT_WORKSPACE"] ?? "./workspace";
   const store = { materializeDir: graphMaterializeDir(dataDir), ...opts.store };
-  return { backend, workspace: new Neo4jWorkspaceStore(backend, store) };
+  return { backend, workspace: new GraphWorkspaceStore(backend, store) };
 }

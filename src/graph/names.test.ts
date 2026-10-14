@@ -5,13 +5,13 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Bolt } from "./bolt.js";
-import { closeGraphBackends, openGraphBackend, type GraphBackend } from "./backend.js";
+import { closeGraphBackends, openGraphBackend, type Neo4jBackend } from "./backend.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 
 const cfg = testGraphConfig();
 
 describe("GraphReader.namesLike (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let b: GraphBackend;
+  let b: Neo4jBackend;
   before(async () => {
     const bolt = new Bolt(cfg!);
     await wipeGraph(bolt);

@@ -22,7 +22,7 @@ import { buildAuthoringCapability, type AuthoringCapability } from "../authoring
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
 import type { VerifyResult, Verifier } from "../verify.js";
 import { projectionsSettled } from "./projector.js";
-import { openGraphBackend, type GraphBackend } from "./backend.js";
+import { openGraphBackend, type Neo4jBackend } from "./backend.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 
@@ -31,7 +31,7 @@ const SRC = (type: string, tag: string) => `// ${tag}\nimport { z, defineStep } 
 const WF = (name: string, steps: string) => `name: ${name}\nsteps:\n${steps}`;
 
 describe("verify pass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let backend: GraphBackend;
+  let backend: Neo4jBackend;
   let dir: string;
   let ws: Neo4jWorkspaceStore;
   let store: MemoryRunStore;

@@ -290,7 +290,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
     // Settled runs already in the graph don't need re-reading.
     let settled = new Set<string>();
     if (opts.skipSettled !== false) {
-      const rows = await backend.bolt.run(
+      const rows = await backend.query(
         `MATCH (r:StrutRun {namespace: $ns, workflow_name: $wf}) WHERE r.run_id IN $ids RETURN r.run_id AS id, r.run_status AS status`,
         { ns, wf: workflow, ids: runIds },
       );
@@ -353,7 +353,7 @@ export async function projectRun(
   // at another database or a since-deleted node).
   const wanted = new Set(p.toolCalls.flatMap((t) => t.accessed.map((n) => n.ref_id)));
   if (wanted.size) {
-    const rows = await backend.bolt.run(`MATCH (n:Data_Bank) WHERE n.ref_id IN $ids RETURN DISTINCT n.ref_id AS ref_id`, { ids: [...wanted] });
+    const rows = await backend.query(`MATCH (n:Data_Bank) WHERE n.ref_id IN $ids RETURN DISTINCT n.ref_id AS ref_id`, { ids: [...wanted] });
     const present = new Set(rows.map((r) => r["ref_id"] as string));
     p.toolCalls.forEach((t, i) => {
       for (const n of t.accessed) {
@@ -367,13 +367,13 @@ export async function projectRun(
   const stepType = stepTypeOfRunKey(workflow);
   const stepHash = stepType ? p.stepHashes?.[stepType] : undefined;
   if (stepType && stepHash) {
-    const rows = await backend.bolt.run(
+    const rows = await backend.query(
       `MATCH (v:StrutStepVersion {namespace: $ns, step_type: $type, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
       { ns, type: stepType, h: stepHash },
     );
     if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
   } else if (p.workflowHash) {
-    const rows = await backend.bolt.run(
+    const rows = await backend.query(
       `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $wf, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
       { ns, wf: workflow, h: p.workflowHash },
     );
@@ -431,7 +431,7 @@ export async function runRef(backend: GraphBackend, store: RunStore, workflow: s
   // Lazy: the writer loads the driver, and this module is imported by hosts
   // that have no graph.
   const { composeNodeKey } = await import("./node-writer.js");
-  const rows = await backend.bolt.run(
+  const rows = await backend.query(
     `MATCH (r:StrutRun {node_key: $key, namespace: $ns}) WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
     { key: composeNodeKey(getStrutSchema("StrutRun")!, { run_id: runId }), ns: backend.cfg.namespace, wf: workflow },
   );
@@ -538,7 +538,7 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
     const edges: EdgeInput[] = turns.map((_, i) => ({ edge: "IN_CHAT", source_ref_id: written[1 + i]!.ref_id, target_ref_id: chatRef }));
     const runIds = spawnedRunIds(messages);
     if (runIds.length) {
-      const rows = await backend.bolt.run(
+      const rows = await backend.query(
         `MATCH (r:StrutRun {namespace: $ns}) WHERE r.run_id IN $ids RETURN r.ref_id AS ref_id`,
         { ns, ids: runIds },
       );

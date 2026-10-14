@@ -24,11 +24,14 @@
  * allowlist, else an edge schema must exist between the endpoint types or
  * their ancestors (or the `*` wildcard). Both endpoints must resolve — a
  * miss is an error, not a silent zero-row no-op.
+ *
+ * The statements live behind `EdgeEngine` (`engine.ts`): `neo4j-engine.ts`
+ * holds the MERGE and the `shortestPath` cycle check, `ladybug/engine.ts`
+ * the rel-table form. This file validates and decides; it issues no Cypher.
  */
 import { randomUUID } from "node:crypto";
-import type { ManagedTransaction } from "neo4j-driver";
-import { Bolt, int, txRows, type Row } from "./bolt.js";
-import { EDGE_LIVE } from "./deletion.js";
+import type { EdgeMergeRow, EngineLike, GraphEngine, GraphTx } from "./engine.js";
+import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { STRUT_EDGES, WILDCARD_TARGET_EDGES, isStrutType, typeLabelOf } from "./strut-schemas.js";
@@ -41,8 +44,8 @@ export interface EdgeInput {
   target_ref_id: string;
   /** Extra edge attributes — unvalidated passthrough, as in jarvis. Stamp
    *  keys (`ref_id`, `edge_key`, `weight`, `date_added_to_graph`) may not
-   *  be supplied. Plain JS numbers are written as FLOAT; wrap with `int()`
-   *  from `bolt.ts` for an Integer. */
+   *  be supplied. On Neo4j a plain JS number is written as FLOAT; wrap with
+   *  `int()` from `bolt.ts` for an Integer. */
   properties?: Record<string, unknown>;
   /** Overrides the `weight: 1` stamp on create (jarvis accepts a caller
    *  weight on POST /v2/edges). Written as an Integer when integral. */
@@ -148,11 +151,10 @@ interface ResolvedEdge {
 
 export class EdgeWriter {
   readonly resolver: SchemaResolver;
-  constructor(
-    private readonly bolt: Bolt,
-    opts: EdgeWriterOptions = {},
-  ) {
-    this.resolver = opts.resolver ?? new SchemaResolver(bolt);
+  private readonly engine: GraphEngine;
+  constructor(engine: EngineLike, opts: EdgeWriterOptions = {}) {
+    this.engine = asEngine(engine);
+    this.resolver = opts.resolver ?? new SchemaResolver(this.engine);
   }
 
   async write(input: EdgeInput): Promise<EdgeWriteResult> {
@@ -170,12 +172,12 @@ export class EdgeWriter {
     if (inputs.length === 0) return [];
     for (const i of inputs) validateEdgeShape(i);
     const results: EdgeWriteResult[] = new Array(inputs.length);
-    await this.bolt.write(async (tx) => {
+    await this.engine.tx(async (tx) => {
       const resolved = await this.validateEndpoints(tx, inputs);
       const byType = new Map<string, number[]>();
       inputs.forEach((i, idx) => byType.set(i.edge, [...(byType.get(i.edge) ?? []), idx]));
       for (const [edge, idxs] of byType) {
-        const out = await mergeEdges(tx, edge, idxs.map((i) => resolved[i]!));
+        const out = await this.mergeEdges(tx, edge, idxs.map((i) => resolved[i]!));
         idxs.forEach((i, k) => {
           results[i] = out[k]!;
         });
@@ -192,8 +194,8 @@ export class EdgeWriter {
    * flagged edges are skipped; more than one live edge of that type between the
    * endpoints — distinct edge_keys — is an error: pass the ref_id).
    * Identity stamps (`ref_id`, `edge_key`, `date_added_to_graph`,
-   * `unique_source_id`) cannot be set or removed; `weight` can. Numbers
-   * write as FLOAT (an integral `weight` as Integer, like create).
+   * `unique_source_id`) cannot be set or removed; `weight` can. On Neo4j
+   * numbers write as FLOAT (an integral `weight` as Integer, like create).
    */
   async update(where: EdgeLocator, patch: EdgeUpdate): Promise<EdgeUpdateResult> {
     const set: Record<string, unknown> = {};
@@ -201,7 +203,7 @@ export class EdgeWriter {
       if (v === undefined) continue;
       if (PROTECTED.has(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge stamp is system-managed", k);
       if (!IDENT.test(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge property is not a bare identifier", k);
-      set[k] = k === "weight" && typeof v === "number" && Number.isInteger(v) ? int(v) : v;
+      set[k] = v;
     }
     const remove = [...new Set(patch.remove ?? [])];
     for (const k of remove) {
@@ -210,51 +212,28 @@ export class EdgeWriter {
     }
     if (Object.keys(set).length === 0 && remove.length === 0) throw new GraphValidationError("MISSING_REQUIRED", "edge", "nothing to set or remove");
 
-    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `r.\`${k}\``).join(", ")}` : "";
-    const ret = `RETURN r.ref_id AS ref_id, type(r) AS edge, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id`;
-    return this.bolt.write(async (tx) => {
-      let rows: Row[];
+    return this.engine.tx(async (tx) => {
+      let r;
       if ("ref_id" in where) {
         if (!where.ref_id) throw new GraphValidationError("MISSING_REQUIRED", "edge", "ref_id is required");
-        rows = await txRows(tx, `MATCH (s)-[r {ref_id: $ref_id}]->(t) SET r += $set ${removeClause} ${ret}`, { ref_id: where.ref_id, set });
-        if (rows.length === 0) throw new GraphValidationError("NOT_FOUND", "edge", `no edge with ref_id ${where.ref_id}`);
+        r = await this.engine.edgeEngine.setProps(tx, where.ref_id, set, remove);
+        if (!r) throw new GraphValidationError("NOT_FOUND", "edge", `no edge with ref_id ${where.ref_id}`);
       } else {
         const edge = where.edge.toUpperCase().replace(/ /g, "_");
         if (!EDGE_TYPE.test(edge)) throw new GraphValidationError("UNKNOWN_TYPE", edge, "edge type must match ^[A-Z][A-Z0-9_]*$");
         if (!where.source_ref_id || !where.target_ref_id) throw new GraphValidationError("MISSING_REQUIRED", edge, "source_ref_id and target_ref_id are required");
-        const found = await txRows(
-          tx,
-          `MATCH (source:Data_Bank {ref_id: $src})
-           MATCH (target:Data_Bank {ref_id: $tgt})
-           OPTIONAL MATCH (source)-[:IS_ALIAS]->(sa)
-           OPTIONAL MATCH (target)-[:IS_ALIAS]->(ta)
-           WITH COALESCE(sa, source) AS s, COALESCE(ta, target) AS t
-           MATCH (s)-[r:\`${edge}\`]->(t)
-           WHERE ${EDGE_LIVE("r")}
-           RETURN r.ref_id AS ref_id`,
-          { src: where.source_ref_id, tgt: where.target_ref_id },
-        );
+        const found = await this.engine.edgeEngine.findByTriple(tx, edge, where.source_ref_id, where.target_ref_id);
         if (found.length === 0) throw new GraphValidationError("NOT_FOUND", edge, `no ${edge} edge from ${where.source_ref_id} to ${where.target_ref_id}`);
         if (found.length > 1) throw new GraphValidationError("DUPLICATE_KEY", edge, `${found.length} ${edge} edges between those nodes — pass the edge ref_id`);
-        const ref_id = String(found[0]!["ref_id"]);
-        rows = await txRows(tx, `MATCH (s)-[r {ref_id: $ref_id}]->(t) SET r += $set ${removeClause} ${ret}`, { ref_id, set });
+        r = (await this.engine.edgeEngine.setProps(tx, found[0]!, set, remove))!;
       }
-      const r = rows[0]!;
-      return {
-        ref_id: String(r["ref_id"]),
-        edge: String(r["edge"]),
-        source_ref_id: String(r["source_ref_id"]),
-        target_ref_id: String(r["target_ref_id"]),
-        updated: Object.keys(set),
-        removed: remove,
-      };
+      return { ...r, updated: Object.keys(set), removed: remove };
     });
   }
 
   /** Edge delete (`DELETE r`), by edge ref_id. false: no such edge. */
   async delete(ref_id: string): Promise<boolean> {
-    const rows = await this.bolt.run(`MATCH ()-[r {ref_id: $ref_id}]->() DELETE r RETURN count(r) AS n`, { ref_id });
-    return Number(rows[0]?.["n"] ?? 0) > 0;
+    return this.engine.edgeEngine.delete(ref_id);
   }
 
   /**
@@ -272,22 +251,13 @@ export class EdgeWriter {
     if (!m.ref_id || !m.to_ref_id) throw new GraphValidationError("MISSING_REQUIRED", edge, "ref_id and to_ref_id are required");
     if (m.direction !== "forward" && m.direction !== "reverse") throw new GraphValidationError("MISSING_REQUIRED", edge, "direction must be forward or reverse");
     const forward = m.direction === "forward";
-    const hop = forward ? `-[r:\`${edge}\`]->` : `<-[r:\`${edge}\`]-`;
     const way = forward ? `(node)-[${edge}]->(…)` : `(…)-[${edge}]->(node)`;
-    return this.bolt.write(async (tx) => {
-      const rows = await txRows(
-        tx,
-        `MATCH (x:Data_Bank {ref_id: $ref_id})
-         OPTIONAL MATCH (x)-[:IS_ALIAS]->(xa)
-         WITH COALESCE(xa, x) AS n
-         OPTIONAL MATCH (n)${hop}(p) WHERE ${EDGE_LIVE("r")}
-         RETURN n.ref_id AS node, p.ref_id AS other, r.ref_id AS edge_ref_id, properties(r) AS props`,
-        { ref_id: m.ref_id },
-      );
-      if (rows.length === 0) throw new GraphValidationError("NOT_FOUND", edge, `no node with ref_id ${m.ref_id}`);
-      const node = String(rows[0]!["node"]);
-      const current = rows.filter((r) => r["other"] != null);
-      const hits = m.from_ref_id ? current.filter((r) => r["other"] === m.from_ref_id) : current;
+    return this.engine.tx(async (tx) => {
+      const found = await this.engine.edgeEngine.liveEdgesOf(tx, m.ref_id, edge, forward);
+      if (!found) throw new GraphValidationError("NOT_FOUND", edge, `no node with ref_id ${m.ref_id}`);
+      const node = found.node;
+      const current = found.edges;
+      const hits = m.from_ref_id ? current.filter((r) => r.other === m.from_ref_id) : current;
       if (hits.length === 0) {
         throw new GraphValidationError(
           "NOT_FOUND",
@@ -298,61 +268,38 @@ export class EdgeWriter {
         );
       }
       if (hits.length > 1) {
-        throw new GraphValidationError("DUPLICATE_KEY", edge, `${node} has ${hits.length} live ${way} edges (to ${hits.map((h) => h["other"]).join(", ")}) — pass from_ref_id`);
+        throw new GraphValidationError("DUPLICATE_KEY", edge, `${node} has ${hits.length} live ${way} edges (to ${hits.map((h) => h.other).join(", ")}) — pass from_ref_id`);
       }
       const old = hits[0]!;
-      const from = String(old["other"]);
-      const unmoved = { moved: false, ref_id: node, from_ref_id: from, to_ref_id: m.to_ref_id, edge_ref_id: String(old["edge_ref_id"]), previous_edge_ref_id: String(old["edge_ref_id"]) };
+      const from = old.other;
+      const unmoved = { moved: false, ref_id: node, from_ref_id: from, to_ref_id: m.to_ref_id, edge_ref_id: old.edge_ref_id, previous_edge_ref_id: old.edge_ref_id };
       if (m.to_ref_id === from) return unmoved;
       if (m.to_ref_id === node) throw new GraphValidationError("WRONG_TYPE", edge, "a node cannot be moved under itself");
 
       // Everything below the node along `edge` — the target must not be there.
-      const cycle = await txRows(
-        tx,
-        `MATCH (t0:Data_Bank {ref_id: $to})
-         OPTIONAL MATCH (t0)-[:IS_ALIAS]->(ta)
-         WITH COALESCE(ta, t0) AS t
-         MATCH (n:Data_Bank {ref_id: $node})
-         MATCH path = shortestPath(${forward ? `(t)-[:\`${edge}\`*1..]->(n)` : `(n)-[:\`${edge}\`*1..]->(t)`})
-         WHERE ALL(rel IN relationships(path) WHERE ${EDGE_LIVE("rel")})
-         RETURN t.ref_id AS t LIMIT 1`,
-        { to: m.to_ref_id, node },
-      );
-      if (cycle.length > 0) throw new GraphValidationError("WRONG_TYPE", edge, `${m.to_ref_id} is under ${node} along ${edge} — moving there would make a cycle`);
+      if (await this.engine.edgeEngine.wouldCycle(tx, edge, node, m.to_ref_id, forward)) {
+        throw new GraphValidationError("WRONG_TYPE", edge, `${m.to_ref_id} is under ${node} along ${edge} — moving there would make a cycle`);
+      }
 
-      const props = Object.fromEntries(
-        Object.entries((old["props"] ?? {}) as Record<string, unknown>).filter(([k]) => !STAMPS.has(k) && k !== "is_muted" && k !== "is_deleted"),
-      );
+      const props = Object.fromEntries(Object.entries(old.props).filter(([k]) => !STAMPS.has(k) && k !== "is_muted" && k !== "is_deleted"));
       const input: EdgeInput = forward
         ? { edge, source_ref_id: node, target_ref_id: m.to_ref_id, properties: props }
         : { edge, source_ref_id: m.to_ref_id, target_ref_id: node, properties: props };
       validateEdgeShape(input);
       const resolved = await this.validateEndpoints(tx, [input]);
-      const [written] = await mergeEdges(tx, edge, resolved);
+      const [written] = await this.mergeEdges(tx, edge, resolved);
       // `to_ref_id` was an alias of where it already hangs.
-      if (written!.ref_id === old["edge_ref_id"]) return unmoved;
-      const params = { old: old["edge_ref_id"], new: written!.ref_id };
-      if (written!.created) {
-        // The old edge's properties verbatim (Integers stay Integers), its
-        // own stamps back on top.
-        await txRows(
-          tx,
-          `MATCH ()-[old {ref_id: $old}]->()
-           MATCH ()-[new {ref_id: $new}]->()
-           WITH old, new, new.edge_key AS edge_key, new.date_added_to_graph AS added
-           SET new += properties(old)
-           SET new.ref_id = $new, new.edge_key = edge_key, new.date_added_to_graph = added, new.unique_source_id = $uid`,
-          { ...params, uid: resolved[0]!.unique_source_id ?? null },
-        );
-      }
-      await txRows(tx, `MATCH ()-[old {ref_id: $old}]->() DELETE old`, params);
+      if (written!.ref_id === old.edge_ref_id) return unmoved;
+      // The old edge's properties verbatim, its own stamps back on top.
+      if (written!.created) await this.engine.edgeEngine.copyProps(tx, old.edge_ref_id, written!.ref_id, resolved[0]!.unique_source_id ?? null);
+      await this.engine.edgeEngine.delete(old.edge_ref_id, tx);
       return {
         moved: true,
         ref_id: node,
         from_ref_id: from,
         to_ref_id: forward ? written!.target_ref_id : written!.source_ref_id,
         edge_ref_id: written!.ref_id,
-        previous_edge_ref_id: String(old["edge_ref_id"]),
+        previous_edge_ref_id: old.edge_ref_id,
       };
     });
   }
@@ -360,18 +307,17 @@ export class EdgeWriter {
   /** Resolve every endpoint's type label and check each triple: Strut
    *  registry for Strut sources, jarvis's allowlist/edge-schema rules for the
    *  rest. Throws on a missing endpoint or disallowed triple. */
-  private async validateEndpoints(tx: ManagedTransaction, inputs: EdgeInput[]): Promise<ResolvedEdge[]> {
+  private async validateEndpoints(tx: GraphTx, inputs: EdgeInput[]): Promise<ResolvedEdge[]> {
     const ids = [...new Set(inputs.flatMap((i) => [i.source_ref_id, i.target_ref_id]))];
-    const rows = await txRows(tx, `UNWIND $ids AS id MATCH (n:Data_Bank {ref_id: id}) RETURN id, labels(n) AS labels, n.unique_source_id AS uid`, { ids });
-    const nodes = new Map(rows.map((r) => [r["id"] as string, { labels: r["labels"] as string[], uid: r["uid"] as string | null }]));
+    const nodes = await this.engine.edgeEngine.endpoints(tx, ids);
     const out: ResolvedEdge[] = [];
     for (const i of inputs) {
       const s = nodes.get(i.source_ref_id);
       const t = nodes.get(i.target_ref_id);
       if (!s) throw new GraphValidationError("MISSING_REQUIRED", i.edge, `source ${i.source_ref_id} does not resolve`, "source_ref_id");
       if (!t) throw new GraphValidationError("MISSING_REQUIRED", i.edge, `target ${i.target_ref_id} does not resolve`, "target_ref_id");
-      const st = typeLabelOf(s.labels);
-      const tt = typeLabelOf(t.labels);
+      const st = s.type;
+      const tt = t.type;
       if (!st) throw new GraphValidationError("WRONG_TYPE", i.edge, "source node has no type label", "source_ref_id");
       let edge_key = edgeKeyFor(i.edge);
       if (isStrutType(st)) {
@@ -388,6 +334,29 @@ export class EdgeWriter {
     }
     return out;
   }
+
+  /** Stamp every edge (`ref_id`, `edge_key`, `weight` 1 unless given,
+   *  `date_added_to_graph`, `unique_source_id` when both ends share one) and
+   *  merge the batch; results in input order. */
+  private async mergeEdges(tx: GraphTx, edge: string, edges: ResolvedEdge[]): Promise<EdgeWriteResult[]> {
+    const rows: EdgeMergeRow[] = edges.map((e, k) => ({
+      k,
+      src: e.input.source_ref_id,
+      tgt: e.input.target_ref_id,
+      edge_key: e.edge_key,
+      ref_id: randomUUID(),
+      weight: e.input.weight ?? 1,
+      date_added_to_graph: Date.now(),
+      ...(e.unique_source_id ? { unique_source_id: e.unique_source_id } : {}),
+      props: e.input.properties ?? {},
+    }));
+    const out = await this.engine.edgeEngine.mergeBatch(tx, edge, rows);
+    const byK = new Map(out.map((r) => [r.k, r]));
+    return edges.map((e, k) => {
+      const r = byK.get(k)!;
+      return { ref_id: r.ref_id, edge_key: e.edge_key, created: r.created, source_ref_id: r.source_ref_id, target_ref_id: r.target_ref_id };
+    });
+  }
 }
 
 function validateEdgeShape(i: EdgeInput): void {
@@ -397,50 +366,4 @@ function validateEdgeShape(i: EdgeInput): void {
     if (STAMPS.has(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", i.edge, "edge stamp is system-managed", k);
     if (!IDENT.test(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", i.edge, "edge property is not a bare identifier", k);
   }
-}
-
-async function mergeEdges(tx: ManagedTransaction, edge: string, edges: ResolvedEdge[]): Promise<EdgeWriteResult[]> {
-  const rows = edges.map((e, k) => ({
-    k,
-    src: e.input.source_ref_id,
-    tgt: e.input.target_ref_id,
-    edge_key: e.edge_key,
-    on_create: {
-      ...(e.input.properties ?? {}),
-      ref_id: randomUUID(),
-      edge_key: e.edge_key,
-      weight: e.input.weight === undefined ? int(1) : Number.isInteger(e.input.weight) ? int(e.input.weight) : e.input.weight,
-      date_added_to_graph: int(Date.now()),
-      ...(e.unique_source_id ? { unique_source_id: e.unique_source_id } : {}),
-    },
-  }));
-  const out = await txRows(
-    tx,
-    `UNWIND $edges AS e
-     MATCH (source:Data_Bank {ref_id: e.src})
-     MATCH (target:Data_Bank {ref_id: e.tgt})
-     OPTIONAL MATCH (source)-[:IS_ALIAS]->(sa)
-     OPTIONAL MATCH (target)-[:IS_ALIAS]->(ta)
-     WITH COALESCE(sa, source) AS ns, COALESCE(ta, target) AS nt, e
-     MERGE (ns)-[r:\`${edge}\` {edge_key: e.edge_key}]->(nt)
-     ON CREATE SET r += e.on_create
-     ON MATCH SET r.is_muted = null, r.is_deleted = null, r.muted_by_delete_of = null
-     RETURN e.k AS k, r.ref_id AS ref_id, r.ref_id = e.on_create.ref_id AS created,
-            ns.ref_id AS source_ref_id, nt.ref_id AS target_ref_id`,
-    { edges: rows },
-  );
-  if (out.length !== edges.length) {
-    throw new Error(`edge MERGE for ${edge} returned ${out.length} rows for ${edges.length} inputs`);
-  }
-  const byK = new Map(out.map((r) => [r["k"] as number, r]));
-  return edges.map((e, k) => {
-    const r = byK.get(k)!;
-    return {
-      ref_id: r["ref_id"] as string,
-      edge_key: e.edge_key,
-      created: r["created"] as boolean,
-      source_ref_id: r["source_ref_id"] as string,
-      target_ref_id: r["target_ref_id"] as string,
-    };
-  });
 }

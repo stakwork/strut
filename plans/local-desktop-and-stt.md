@@ -244,7 +244,11 @@ WebView). Microphone capture stays in the host, not the webview (§4.6).
 
 ### 3.1 LadybugDB as a local graph backend
 
-Idea, not decided. Needs team discussion.
+**Planned in `plans/ladybug-backend.md` (2026-10-14)** — the spike suggested
+below was run, the conform-or-not question is answered there (jarvis-shaped
+rows, Ladybug-native tables: one `Node` table, a rel table per edge type),
+and the slices are laid out. What follows is the original sketch, kept for
+the reasoning.
 
 - **What it is.** [LadybugDB](https://github.com/LadybugDB/ladybug) is the
   maintained fork of Kuzu (Kuzu was acquired by Apple and archived late 2025;

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { RunEvent } from "../core.js";
 import { MemoryRunStore } from "../store.js";
 import { MemoryChatStore } from "../chat-store.js";
-import { openGraphBackend, type GraphBackend } from "./backend.js";
+import { openGraphBackend, type Neo4jBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
@@ -18,7 +18,7 @@ import { createStrut } from "../createStrut.js";
 import { runWorkflow } from "../runner.js";
 
 const cfg = testGraphConfig();
-let backend: GraphBackend;
+let backend: Neo4jBackend;
 
 const WF = "harvey-deliver";
 const RUN = "1788307097627";

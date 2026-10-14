@@ -138,6 +138,8 @@ export async function readQuery(
   const maxString = opts.maxStringLength ?? DEFAULT_MAX_STRING;
 
   const started = Date.now();
+  // The read-only Ladybug handle comes in slice 4 (plans/ladybug-backend.md §6).
+  if (backend.kind !== "neo4j") throw new Error(`graph_query runs on the Neo4j backend only for now (this is ${backend.kind})`);
   const session = backend.bolt.session("READ");
   try {
     return await session.executeRead(

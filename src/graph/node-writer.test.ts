@@ -1,6 +1,7 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { GraphBackend } from "./backend.js";
 import { Bolt } from "./bolt.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import {
@@ -15,9 +16,8 @@ import {
 } from "./node-writer.js";
 import { getStrutSchema } from "./strut-schemas.js";
 import { fromStrut } from "./schema-resolver.js";
-import { graphSnapshot, testGraphConfig, wipeGraph } from "./test-util.js";
+import { edgeCount, graphSnapshot, nodeCount, rawNode, setNodeProps, testBackends, testGraphConfig } from "./test-util.js";
 
-const cfg = testGraphConfig();
 const fixturesDir = new URL("./fixtures/", import.meta.url);
 
 function rejects(fn: () => unknown, code: string, attribute?: string) {
@@ -172,290 +172,319 @@ describe("buildSearchText (Data_Bank)", () => {
   });
 });
 
-describe("NodeWriter (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let bolt: Bolt;
-  let writer: NodeWriter;
-  before(async () => {
-    bolt = new Bolt(cfg!);
-    await bolt.verify();
-  });
-  after(async () => {
-    await bolt?.close();
-  });
-  beforeEach(async () => {
-    await wipeGraph(bolt);
-    await seedStrutDomain(bolt);
-    writer = new NodeWriter(bolt);
-  });
+for (const tb of testBackends()) {
+  describe(`NodeWriter on ${tb.name}`, { skip: tb.skip }, () => {
+    const neo = tb.kind === "neo4j";
+    const neoOnly = (why: string) => ({ skip: neo ? false : `neo4j only: ${why}` });
+    let backend: GraphBackend;
+    let writer: NodeWriter;
+    before(async () => {
+      backend = await tb.open();
+    });
+    after(async () => {
+      await tb.close(backend);
+    });
+    beforeEach(async () => {
+      await tb.wipe(backend);
+      await seedStrutDomain(backend);
+      writer = backend.nodes;
+    });
 
-  async function node(ref_id: string) {
-    const rows = await bolt.run(
-      `MATCH (n:Data_Bank {ref_id: $r})
-       RETURN labels(n) AS labels, properties(n) AS props,
-              valueType(n.date_added_to_graph) AS dateType, valueType(n.started_at) AS startedType,
-              valueType(n.duration_ms) AS durType, valueType(n.weight) AS weightType`,
-      { r: ref_id },
-    );
-    return rows[0]!;
-  }
-
-  it("create: jarvis label set, stamps, node_key, Data_Bank, typed ints", async () => {
-    const t0 = Date.now();
-    const r = await writer.write({ type: "StrutRun", data: { ...RUN, weight: 1, log_ref: "" } });
-    assert.equal(r.outcome, "created");
-    assert.equal(r.node_key, "strutrun-1725220000123");
-    assert.match(r.ref_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-
-    const n = await node(r.ref_id);
-    assert.deepEqual([...(n["labels"] as string[])].sort(), ["Data_Bank", "Domain_strut", "Node", "StrutRun"]);
-    const p = n["props"] as Record<string, unknown>;
-    assert.equal(p["namespace"], "default");
-    assert.equal(p["node_key"], "strutrun-1725220000123");
-    assert.ok((p["date_added_to_graph"] as number) >= t0 && (p["date_added_to_graph"] as number) <= Date.now() + 1);
-    assert.equal(n["dateType"], "INTEGER NOT NULL", "date_added_to_graph is a Neo4j Integer (ms)");
-    assert.equal(p["started_at"], 1788292800);
-    assert.equal(n["startedType"], "INTEGER NOT NULL", "datetime attrs are Integer seconds");
-    assert.equal(n["durType"], "INTEGER NOT NULL");
-    assert.equal(n["weightType"], "FLOAT NOT NULL");
-    assert.equal(p["Data_Bank"], "harvey-deliver\nsuccess\nDelivered 60 of 60");
-    assert.deepEqual(p["_search_fields_used"], ["workflow_name", "run_status", "summary"]);
-    assert.ok(!("log_ref" in p), "empty string never written");
-    assert.ok(!("text_embeddings" in p), "no embedder → NULL, not a marker");
-    assert.ok(!("is_deleted" in p));
-    assert.deepEqual(
-      Object.keys(p).sort(),
-      ["Data_Bank", "_search_fields_used", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "weight", "workflow_name"],
-    );
-  });
-
-  it("create on an existing key is a no-op returning the existing ref_id", async () => {
-    const a = await writer.write({ type: "StrutRun", data: RUN });
-    const snap = await graphSnapshot(bolt);
-    const b = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "CHANGED" } });
-    assert.equal(b.outcome, "existing");
-    assert.equal(b.ref_id, a.ref_id);
-    assert.deepEqual(await graphSnapshot(bolt), snap);
-  });
-
-  it("upsert updates everything except the preserved identity and rebuilds Data_Bank", async () => {
-    const a = await writer.write({ type: "StrutRun", data: RUN });
-    const before = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_status: "error", summary: "boom", error_message: "x" } }, "upsert");
-    assert.equal(b.outcome, "updated");
-    assert.equal(b.ref_id, a.ref_id);
-    const after = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(after["date_added_to_graph"], before["date_added_to_graph"]);
-    assert.equal(after["node_key"], before["node_key"]);
-    assert.equal(after["run_status"], "error");
-    assert.equal(after["error_message"], "x");
-    assert.equal(after["Data_Bank"], "harvey-deliver\nerror\nboom");
-    assert.ok(!("is_deleted" in after), "upsert on a live node does not add is_deleted");
-  });
-
-  it("soft delete stamps deleted_at (ms Integer, first time kept) + is_deleted and deletes only in-scope edges", async () => {
-    const a = await writer.write({ type: "StrutRun", data: RUN });
-    const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_id: "2" } });
-    // In scope: another Data_Bank node in this namespace. Out of scope (R4):
-    // a Schema node, and a Data_Bank node in another namespace.
-    await bolt.run(
-      `MATCH (a:Data_Bank {ref_id: $a}), (b:Data_Bank {ref_id: $b})
-       CREATE (s:Schema {type: "Scratch", ref_id: "schema-x"})
-       CREATE (o:Concept:Node:Data_Bank {ref_id: "other-ns", node_key: "concept-o", namespace: "elsewhere"})
-       CREATE (a)-[:IN_RUN {ref_id: "e-in"}]->(b), (a)-[:INSTANCE_OF {ref_id: "e-schema"}]->(s), (o)-[:MENTIONS {ref_id: "e-ns"}]->(a)`,
-      { a: a.ref_id, b: b.ref_id },
-    );
-    const t0 = Date.now();
-    assert.equal(await writer.softDelete(a.ref_id), true);
-    const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p["is_deleted"], true);
-    assert.ok(typeof p["deleted_at"] === "number" && p["deleted_at"] >= t0 && p["deleted_at"] <= Date.now(), `deleted_at in ms, got ${p["deleted_at"]}`);
-    const vt = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN valueType(n.deleted_at) AS t`, { r: a.ref_id });
-    assert.equal(vt[0]!["t"], "INTEGER NOT NULL");
-    const left = await bolt.run(`MATCH ()-[r]-() WHERE r.ref_id STARTS WITH "e-" RETURN DISTINCT r.ref_id AS r ORDER BY r`);
-    assert.deepEqual(left.map((r) => r["r"]), ["e-ns", "e-schema"], "the in-scope edge is gone; Schema and other-namespace edges stay");
-
-    // A second delete keeps the first time.
-    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.deleted_at = 1`, { r: a.ref_id });
-    assert.equal(await writer.softDelete(a.ref_id), true);
-    assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["deleted_at"], 1);
-  });
-
-  it("soft delete + create restores in place (both markers cleared, no edges back); a muted one is restored but stays muted", async () => {
-    const a = await writer.write({ type: "StrutRun", data: RUN });
-    const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_id: "2" } });
-    await bolt.run(`MATCH (a:Data_Bank {ref_id: $a}), (b:Data_Bank {ref_id: $b}) CREATE (a)-[:IN_RUN {ref_id: "e-in"}]->(b)`, { a: a.ref_id, b: b.ref_id });
-    assert.equal(await writer.softDelete(a.ref_id), true);
-    assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["is_deleted"], true);
-    const r = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "back" } });
-    assert.equal(r.outcome, "restored");
-    assert.equal(r.ref_id, a.ref_id);
-    const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.ok(!("is_deleted" in p) && !("deleted_at" in p), "a restore clears both markers");
-    assert.equal(p["summary"], "back");
-    const edges = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r})-[e]-() RETURN count(e) AS c`, { r: a.ref_id });
-    assert.equal(edges[0]!["c"], 0, "a restore brings back no edges");
-
-    // A node with only deleted_at (no is_deleted) is deleted, and restored.
-    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.deleted_at = 5`, { r: a.ref_id });
-    const r1 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "again" } });
-    assert.equal(r1.outcome, "restored");
-    const p1 = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.ok(!("deleted_at" in p1));
-    assert.equal(p1["summary"], "again");
-
-    // Delete and mute are independent: a muted, deleted node is restored
-    // (deleted_at cleared) but stays muted.
-    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.is_muted = true`, { r: a.ref_id });
-    assert.equal(await writer.softDelete(a.ref_id), true);
-    const r2 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "muted" } });
-    assert.equal(r2.outcome, "restored");
-    const p2 = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.ok(!("deleted_at" in p2) && !("is_deleted" in p2));
-    assert.equal(p2["is_muted"], true);
-    assert.equal(p2["summary"], "muted");
-    assert.equal(await writer.softDelete("not-a-ref"), false);
-  });
-
-  it("writeMany: mixed types in one tx, input-order results, per-type UNWIND", async () => {
-    const rs = await writer.writeMany([
-      { type: "StrutChat", data: { chat_id: "c1", title: "Hello", created_at: 1788292800 } },
-      { type: "StrutRun", data: RUN },
-      { type: "StrutTurn", data: { chat_id: "c1", turn: 0, user_text_preview: "hi" } },
-      { type: "StrutRun", data: { ...RUN, run_id: "2" } },
-    ]);
-    assert.deepEqual(rs.map((r) => r.outcome), ["created", "created", "created", "created"]);
-    assert.deepEqual(rs.map((r) => r.node_key), ["strutchat-c1", "strutrun-1725220000123", "strutturn-c1-0", "strutrun-2"]);
-    const count = await bolt.run(`MATCH (n:Domain_strut) RETURN count(n) AS c`);
-    assert.equal(count[0]!["c"], 4);
-    // Turn with no index text → no Data_Bank, no _search_fields_used.
-    const turn = (await node(rs[2]!.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(turn["Data_Bank"], "hi");
-    const rs2 = await writer.writeMany([
-      { type: "StrutRun", data: { ...RUN, summary: "again" } },
-      { type: "StrutRun", data: { ...RUN, run_id: "3" } },
-    ]);
-    assert.deepEqual(rs2.map((r) => r.outcome), ["existing", "created"]);
-    assert.equal(rs2[0]!.ref_id, rs[1]!.ref_id);
-  });
-
-  it("a validation failure anywhere in a batch writes nothing", async () => {
-    const snap = await graphSnapshot(bolt);
-    await assert.rejects(
-      writer.writeMany([
-        { type: "StrutRun", data: RUN },
-        { type: "StrutRun", data: { ...RUN, run_id: "2", bogus: 1 } },
-      ]),
-      GraphValidationError,
-    );
-    assert.deepEqual(await graphSnapshot(bolt), snap);
-  });
-
-  it("with an embedder: text_embeddings + per-stem vectors, rebuilt on upsert", async () => {
-    const seen: string[] = [];
-    const fake: Embedder = {
+    const node = (ref_id: string) => rawNode(backend, ref_id);
+    const props = async (ref_id: string) => (await node(ref_id))!.props;
+    const fakeEmbedder = (seen: string[]): Embedder => ({
       async embed(texts) {
         seen.push(...texts);
         return texts.map((t) => Array.from({ length: 384 }, (_, i) => (i === 0 ? t.length : 0)));
       },
-    };
-    const w = new NodeWriter(bolt, { embedder: fake });
-    const r = await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "d", input_schema: "{a}", output_schema: "" } });
-    assert.deepEqual(seen, ["x/y\nd", "Input:\n{a}"]);
-    const p = (await node(r.ref_id))["props"] as Record<string, unknown>;
-    assert.equal((p["text_embeddings"] as number[]).length, 384);
-    assert.equal((p["text_embeddings"] as number[])[0], "x/y\nd".length);
-    assert.equal((p["input_embeddings"] as number[])[0], "Input:\n{a}".length);
-    assert.ok(!("output_embeddings" in p));
-    const vt = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN valueType(n.text_embeddings) AS t`, { r: r.ref_id });
-    assert.equal(vt[0]!["t"], "LIST<FLOAT NOT NULL> NOT NULL");
+    });
+    const JOB = { job_id: "job-1", title: "A job", created_at: 1788292800 };
 
-    await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "dd", input_schema: "{ab}" } }, "upsert");
-    const p2 = (await node(r.ref_id))["props"] as Record<string, unknown>;
-    assert.equal((p2["text_embeddings"] as number[])[0], "x/y\ndd".length);
-    assert.equal((p2["input_embeddings"] as number[])[0], "Input:\n{ab}".length);
-  });
+    it("create: the type, the stamps, node_key, Data_Bank — and on Neo4j jarvis's label set and typed ints", async () => {
+      const t0 = Date.now();
+      const r = await writer.write({ type: "StrutRun", data: { ...RUN, log_ref: "", ...(neo ? { weight: 1 } : {}) } });
+      assert.equal(r.outcome, "created");
+      assert.equal(r.node_key, "strutrun-1725220000123");
+      assert.match(r.ref_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
-  it("update: merge, remove, re-validate, re-key with collision check, rebuild Data_Bank", async () => {
-    const seen: string[] = [];
-    const fake: Embedder = { async embed(texts) { seen.push(...texts); return texts.map((t) => Array.from({ length: 384 }, (_, i) => (i === 0 ? t.length : 0))); } };
-    const w = new NodeWriter(bolt, { embedder: fake });
-    const a = await w.write({ type: "StrutRun", data: { ...RUN, log_ref: "runs/1" } });
-    const before = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    const u = await w.update(a.ref_id, { set: { run_status: "error", error_message: "boom" }, remove: ["log_ref"] });
-    assert.deepEqual(u, { ref_id: a.ref_id, node_key: "strutrun-1725220000123", rekeyed: false });
-    const p = (await node(a.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p["run_status"], "error");
-    assert.equal(p["error_message"], "boom");
-    assert.ok(!("log_ref" in p));
-    assert.equal(p["summary"], RUN.summary, "untouched attrs survive");
-    assert.equal(p["date_added_to_graph"], before["date_added_to_graph"]);
-    assert.equal(p["Data_Bank"], "harvey-deliver\nerror\nDelivered 60 of 60");
-    assert.equal((p["text_embeddings"] as number[])[0], "harvey-deliver\nerror\nDelivered 60 of 60".length);
-    // Remove every index field but one → Data_Bank rebuilt; remove all → dropped.
-    await w.update(a.ref_id, { remove: ["summary"] });
-    assert.equal(((await node(a.ref_id))["props"] as Record<string, unknown>)["Data_Bank"], "harvey-deliver\nerror");
-    // Validation still applies to the merged payload.
-    await assert.rejects(w.update(a.ref_id, { set: { bogus: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
-    await assert.rejects(w.update(a.ref_id, { remove: ["run_status"] }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
-    await assert.rejects(w.update(a.ref_id, { set: { duration_ms: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE");
-    await assert.rejects(w.update("nope", { set: { status: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "NOT_FOUND");
-    // Re-key: editing an identity attr recomposes node_key; colliding fails.
-    const b = await w.write({ type: "StrutRun", data: { ...RUN, run_id: "other" } });
-    await assert.rejects(w.update(b.ref_id, { set: { run_id: "1725220000123" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "DUPLICATE_KEY");
-    const rk = await w.update(b.ref_id, { set: { run_id: "renamed" } });
-    assert.deepEqual(rk, { ref_id: b.ref_id, node_key: "strutrun-renamed", rekeyed: true });
-    assert.equal(((await node(b.ref_id))["props"] as Record<string, unknown>)["node_key"], "strutrun-renamed");
-    // Without an embedder, a changed text drops the stale vector so backfill heals it.
-    const plain = new NodeWriter(bolt);
-    await plain.update(a.ref_id, { set: { run_status: "success" } });
-    assert.ok(!("text_embeddings" in ((await node(a.ref_id))["props"] as Record<string, unknown>)));
-  });
+      const n = (await node(r.ref_id))!;
+      assert.equal(n.type, "StrutRun");
+      const p = n.props;
+      assert.equal(p["namespace"], "default");
+      assert.equal(p["node_key"], "strutrun-1725220000123");
+      assert.ok((p["date_added_to_graph"] as number) >= t0 && (p["date_added_to_graph"] as number) <= Date.now() + 1);
+      assert.equal(p["started_at"], 1788292800);
+      assert.equal(p["Data_Bank"], "harvey-deliver\nsuccess\nDelivered 60 of 60");
+      assert.ok(!("log_ref" in p), "empty string never written");
+      assert.ok(!("text_embeddings" in p), "no embedder → NULL, not a marker");
+      assert.ok(!("is_deleted" in p) && !("deleted_at" in p));
+      if (neo) {
+        assert.deepEqual(p["_search_fields_used"], ["workflow_name", "run_status", "summary"]);
+        assert.deepEqual(
+          Object.keys(p).sort(),
+          ["Data_Bank", "_search_fields_used", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "weight", "workflow_name"],
+        );
+        const bolt = (backend as { bolt: Bolt }).bolt;
+        const rows = await bolt.run(
+          `MATCH (n:Data_Bank {ref_id: $r})
+           RETURN labels(n) AS labels, valueType(n.date_added_to_graph) AS dateType, valueType(n.started_at) AS startedType,
+                  valueType(n.duration_ms) AS durType, valueType(n.weight) AS weightType`,
+          { r: r.ref_id },
+        );
+        assert.deepEqual([...(rows[0]!["labels"] as string[])].sort(), ["Data_Bank", "Domain_strut", "Node", "StrutRun"]);
+        assert.equal(rows[0]!["dateType"], "INTEGER NOT NULL", "date_added_to_graph is a Neo4j Integer (ms)");
+        assert.equal(rows[0]!["startedType"], "INTEGER NOT NULL", "datetime attrs are Integer seconds");
+        assert.equal(rows[0]!["durType"], "INTEGER NOT NULL");
+        assert.equal(rows[0]!["weightType"], "FLOAT NOT NULL");
+      } else {
+        // The file keeps no jarvis stamps and no `_search_fields_used`.
+        assert.deepEqual(
+          Object.keys(p).sort(),
+          ["Data_Bank", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "workflow_name"],
+        );
+      }
+    });
 
-  it("the no-embed mark: an execution record gets Data_Bank and no vector, with an embedder, on write and on update", async () => {
-    const seen: string[] = [];
-    const fake: Embedder = { async embed(texts) { seen.push(...texts); return texts.map((t) => Array.from({ length: 384 }, (_, i) => (i === 0 ? t.length : 0))); } };
-    const w = new NodeWriter(bolt, { embedder: fake });
-    const tc = await w.write({ type: "StrutToolCall", data: { run_id: "r", path: "wf/agent", seq: 1, tool_name: "bash", input_preview: "ls" } });
-    const turn = await w.write({ type: "StrutTurn", data: { chat_id: "c", turn: 1, user_text_preview: "hello" } });
-    assert.deepEqual(seen, [], "nothing embedded");
-    const p = (await node(tc.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p["Data_Bank"], "bash\nls");
-    assert.deepEqual(p["_search_fields_used"], ["tool_name", "input_preview"]);
-    assert.ok(!("text_embeddings" in p));
-    assert.equal(((await node(turn.ref_id))["props"] as Record<string, unknown>)["Data_Bank"], "hello");
-    assert.ok(!("text_embeddings" in ((await node(turn.ref_id))["props"] as Record<string, unknown>)));
-    // A vector an earlier strut left on one goes with the next update.
-    await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) SET n.text_embeddings = [1.0]`, { r: tc.ref_id });
-    await w.update(tc.ref_id, { set: { input_preview: "pwd" } });
-    const p2 = (await node(tc.ref_id))["props"] as Record<string, unknown>;
-    assert.equal(p2["Data_Bank"], "bash\npwd");
-    assert.ok(!("text_embeddings" in p2));
-    assert.deepEqual(seen, []);
-    // An embedded type still is.
-    await w.write({ type: "StrutRun", data: RUN });
-    assert.deepEqual(seen, ["harvey-deliver\nsuccess\nDelivered 60 of 60"]);
-  });
-
-  it("per-write namespace overrides the backend default", async () => {
-    const r = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
-    assert.equal(((await node(r.ref_id))["props"] as Record<string, unknown>)["namespace"], "tenant-z");
-    const again = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
-    assert.equal(again.outcome, "existing");
-    const dflt = await writer.write({ type: "StrutRun", data: RUN });
-    assert.equal(dflt.outcome, "created");
-  });
-
-  it("namespace scopes identity", async () => {
-    const other = new Bolt({ ...cfg!, namespace: "tenant-b" });
-    try {
+    it("create on an existing key is a no-op returning the existing ref_id", async () => {
       const a = await writer.write({ type: "StrutRun", data: RUN });
-      const b = await new NodeWriter(other).write({ type: "StrutRun", data: RUN });
-      assert.equal(b.outcome, "created");
-      assert.notEqual(a.ref_id, b.ref_id);
-      const ns = await bolt.run(`MATCH (n:StrutRun) RETURN n.namespace AS ns ORDER BY ns`);
-      assert.deepEqual(ns.map((r) => r["ns"]), ["default", "tenant-b"]);
-    } finally {
-      await other.close();
-    }
+      const snap = await graphSnapshot(backend);
+      const b = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "CHANGED" } });
+      assert.equal(b.outcome, "existing");
+      assert.equal(b.ref_id, a.ref_id);
+      assert.deepEqual(await graphSnapshot(backend), snap);
+    });
+
+    it("upsert updates everything except the preserved identity and rebuilds Data_Bank", async () => {
+      const a = await writer.write({ type: "StrutRun", data: RUN });
+      const before = await props(a.ref_id);
+      const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_status: "error", summary: "boom", error_message: "x" } }, "upsert");
+      assert.equal(b.outcome, "updated");
+      assert.equal(b.ref_id, a.ref_id);
+      const after = await props(a.ref_id);
+      assert.equal(after["date_added_to_graph"], before["date_added_to_graph"]);
+      assert.equal(after["node_key"], before["node_key"]);
+      assert.equal(after["run_status"], "error");
+      assert.equal(after["error_message"], "x");
+      assert.equal(after["Data_Bank"], "harvey-deliver\nerror\nboom");
+      assert.ok(!("is_deleted" in after), "upsert on a live node does not add is_deleted");
+    });
+
+    it("soft delete stamps deleted_at (ms, first time kept) and deletes the node's edges", async () => {
+      const run = await writer.write({ type: "StrutRun", data: RUN });
+      const job = await writer.write({ type: "StrutJob", data: JOB });
+      await backend.edges.write({ edge: "IN_JOB", source_ref_id: run.ref_id, target_ref_id: job.ref_id });
+      assert.equal(await edgeCount(backend, "IN_JOB"), 1);
+      const t0 = Date.now();
+      assert.equal(await writer.softDelete(run.ref_id), true);
+      const p = await props(run.ref_id);
+      assert.ok(typeof p["deleted_at"] === "number" && p["deleted_at"] >= t0 && p["deleted_at"] <= Date.now(), `deleted_at in ms, got ${p["deleted_at"]}`);
+      if (neo) assert.equal(p["is_deleted"], true);
+      assert.equal(await edgeCount(backend, "IN_JOB"), 0, "the edge is gone");
+      assert.equal(await nodeCount(backend, "StrutRun"), 0, "hidden from live reads");
+      assert.equal(await nodeCount(backend, "StrutJob"), 1, "the other end stays");
+
+      // A second delete keeps the first time.
+      await setNodeProps(backend, run.ref_id, { deleted_at: 1 });
+      assert.equal(await writer.softDelete(run.ref_id), true);
+      assert.equal((await props(run.ref_id))["deleted_at"], 1);
+      assert.equal(await writer.softDelete("not-a-ref"), false);
+      assert.equal(await writer.softDelete(job.ref_id), true, "any Strut node");
+    });
+
+    it("soft delete scope: only in-scope edges go (Schema and other-namespace ends stay)", neoOnly("Schema nodes and namespaces exist only on Neo4j"), async () => {
+      const bolt = (backend as { bolt: Bolt }).bolt;
+      const a = await writer.write({ type: "StrutRun", data: RUN });
+      const b = await writer.write({ type: "StrutRun", data: { ...RUN, run_id: "2" } });
+      await bolt.run(
+        `MATCH (a:Data_Bank {ref_id: $a}), (b:Data_Bank {ref_id: $b})
+         CREATE (s:Schema {type: "Scratch", ref_id: "schema-x"})
+         CREATE (o:Concept:Node:Data_Bank {ref_id: "other-ns", node_key: "concept-o", namespace: "elsewhere"})
+         CREATE (a)-[:IN_RUN {ref_id: "e-in"}]->(b), (a)-[:INSTANCE_OF {ref_id: "e-schema"}]->(s), (o)-[:MENTIONS {ref_id: "e-ns"}]->(a)`,
+        { a: a.ref_id, b: b.ref_id },
+      );
+      assert.equal(await writer.softDelete(a.ref_id), true);
+      const vt = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN valueType(n.deleted_at) AS t`, { r: a.ref_id });
+      assert.equal(vt[0]!["t"], "INTEGER NOT NULL");
+      const left = await bolt.run(`MATCH ()-[r]-() WHERE r.ref_id STARTS WITH "e-" RETURN DISTINCT r.ref_id AS r ORDER BY r`);
+      assert.deepEqual(left.map((r) => r["r"]), ["e-ns", "e-schema"], "the in-scope edge is gone; Schema and other-namespace edges stay");
+    });
+
+    it("soft delete + create restores in place (markers cleared, no edges back)", async () => {
+      const run = await writer.write({ type: "StrutRun", data: RUN });
+      const job = await writer.write({ type: "StrutJob", data: JOB });
+      await backend.edges.write({ edge: "IN_JOB", source_ref_id: run.ref_id, target_ref_id: job.ref_id });
+      assert.equal(await writer.softDelete(run.ref_id), true);
+      const r = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "back" } });
+      assert.equal(r.outcome, "restored");
+      assert.equal(r.ref_id, run.ref_id);
+      const p = await props(run.ref_id);
+      assert.ok(!("is_deleted" in p) && !("deleted_at" in p), "a restore clears the markers");
+      assert.equal(p["summary"], "back");
+      assert.equal(await edgeCount(backend, "IN_JOB"), 0, "a restore brings back no edges");
+
+      // A node with only deleted_at set is deleted, and restored.
+      await setNodeProps(backend, run.ref_id, { deleted_at: 5 });
+      const r1 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "again" } });
+      assert.equal(r1.outcome, "restored");
+      const p1 = await props(run.ref_id);
+      assert.ok(!("deleted_at" in p1));
+      assert.equal(p1["summary"], "again");
+    });
+
+    it("delete and mute are independent: a muted, deleted node is restored but stays muted", neoOnly("is_muted is a jarvis stamp the file does not keep"), async () => {
+      const a = await writer.write({ type: "StrutRun", data: RUN });
+      await setNodeProps(backend, a.ref_id, { is_muted: true });
+      assert.equal(await writer.softDelete(a.ref_id), true);
+      const r2 = await writer.write({ type: "StrutRun", data: { ...RUN, summary: "muted" } });
+      assert.equal(r2.outcome, "restored");
+      const p2 = await props(a.ref_id);
+      assert.ok(!("deleted_at" in p2) && !("is_deleted" in p2));
+      assert.equal(p2["is_muted"], true);
+      assert.equal(p2["summary"], "muted");
+    });
+
+    it("writeMany: mixed types in one tx, input-order results, per-type batches", async () => {
+      const rs = await writer.writeMany([
+        { type: "StrutJob", data: JOB },
+        { type: "StrutRun", data: RUN },
+        { type: "StrutWorkflow", data: { name: "wf", description: "a workflow" } },
+        { type: "StrutRun", data: { ...RUN, run_id: "2" } },
+      ]);
+      assert.deepEqual(rs.map((r) => r.outcome), ["created", "created", "created", "created"]);
+      assert.deepEqual(rs.map((r) => r.node_key), ["strutjob-6a6f622d31", "strutrun-1725220000123", "strutworkflow-7766", "strutrun-2"]);
+      assert.equal(await nodeCount(backend), 4);
+      assert.equal((await props(rs[2]!.ref_id))["Data_Bank"], "wf\na workflow");
+      const rs2 = await writer.writeMany([
+        { type: "StrutRun", data: { ...RUN, summary: "again" } },
+        { type: "StrutRun", data: { ...RUN, run_id: "3" } },
+      ]);
+      assert.deepEqual(rs2.map((r) => r.outcome), ["existing", "created"]);
+      assert.equal(rs2[0]!.ref_id, rs[1]!.ref_id);
+    });
+
+    it("a validation failure anywhere in a batch writes nothing", async () => {
+      const snap = await graphSnapshot(backend);
+      await assert.rejects(
+        writer.writeMany([
+          { type: "StrutRun", data: RUN },
+          { type: "StrutRun", data: { ...RUN, run_id: "2", bogus: 1 } },
+        ]),
+        GraphValidationError,
+      );
+      assert.deepEqual(await graphSnapshot(backend), snap);
+    });
+
+    it("with an embedder: text_embeddings rebuilt on upsert; per-stem vectors on Neo4j only", async () => {
+      const seen: string[] = [];
+      const w = new NodeWriter(backend, { embedder: fakeEmbedder(seen), resolver: backend.schemas });
+      const r = await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "d", input_schema: "{a}", output_schema: "" } });
+      const p = await props(r.ref_id);
+      assert.equal((p["text_embeddings"] as number[]).length, 384);
+      assert.equal((p["text_embeddings"] as number[])[0], "x/y\nd".length);
+      if (neo) {
+        assert.deepEqual(seen, ["x/y\nd", "Input:\n{a}"]);
+        assert.equal((p["input_embeddings"] as number[])[0], "Input:\n{a}".length);
+        assert.ok(!("output_embeddings" in p));
+        const vt = await (backend as { bolt: Bolt }).bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN valueType(n.text_embeddings) AS t`, { r: r.ref_id });
+        assert.equal(vt[0]!["t"], "LIST<FLOAT NOT NULL> NOT NULL");
+      } else {
+        assert.deepEqual(seen, ["x/y\nd"], "no per-stem vectors in the file");
+        assert.ok(!("input_embeddings" in p));
+      }
+      await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "dd", input_schema: "{ab}" } }, "upsert");
+      const p2 = await props(r.ref_id);
+      assert.equal((p2["text_embeddings"] as number[])[0], "x/y\ndd".length);
+      if (neo) assert.equal((p2["input_embeddings"] as number[])[0], "Input:\n{ab}".length);
+    });
+
+    it("update: merge, remove, re-validate, re-key with collision check, rebuild Data_Bank", async () => {
+      const seen: string[] = [];
+      const w = new NodeWriter(backend, { embedder: fakeEmbedder(seen), resolver: backend.schemas });
+      const a = await w.write({ type: "StrutRun", data: { ...RUN, log_ref: "runs/1" } });
+      const before = await props(a.ref_id);
+      const u = await w.update(a.ref_id, { set: { run_status: "error", error_message: "boom" }, remove: ["log_ref"] });
+      assert.deepEqual(u, { ref_id: a.ref_id, node_key: "strutrun-1725220000123", rekeyed: false });
+      const p = await props(a.ref_id);
+      assert.equal(p["run_status"], "error");
+      assert.equal(p["error_message"], "boom");
+      assert.ok(!("log_ref" in p));
+      assert.equal(p["summary"], RUN.summary, "untouched attrs survive");
+      assert.equal(p["date_added_to_graph"], before["date_added_to_graph"]);
+      assert.equal(p["Data_Bank"], "harvey-deliver\nerror\nDelivered 60 of 60");
+      assert.equal((p["text_embeddings"] as number[])[0], "harvey-deliver\nerror\nDelivered 60 of 60".length);
+      // Remove every index field but one → Data_Bank rebuilt; remove all → dropped.
+      await w.update(a.ref_id, { remove: ["summary"] });
+      assert.equal((await props(a.ref_id))["Data_Bank"], "harvey-deliver\nerror");
+      // Validation still applies to the merged payload.
+      await assert.rejects(w.update(a.ref_id, { set: { bogus: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
+      await assert.rejects(w.update(a.ref_id, { remove: ["run_status"] }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
+      await assert.rejects(w.update(a.ref_id, { set: { duration_ms: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE");
+      await assert.rejects(w.update("nope", { set: { status: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "NOT_FOUND");
+      // Re-key: editing an identity attr recomposes node_key; colliding fails.
+      const b = await w.write({ type: "StrutRun", data: { ...RUN, run_id: "other" } });
+      await assert.rejects(w.update(b.ref_id, { set: { run_id: "1725220000123" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "DUPLICATE_KEY");
+      const rk = await w.update(b.ref_id, { set: { run_id: "renamed" } });
+      assert.deepEqual(rk, { ref_id: b.ref_id, node_key: "strutrun-renamed", rekeyed: true });
+      assert.equal((await props(b.ref_id))["node_key"], "strutrun-renamed");
+      // Without an embedder, a changed text drops the stale vector so backfill heals it.
+      await writer.update(a.ref_id, { set: { run_status: "success" } });
+      assert.ok(!("text_embeddings" in (await props(a.ref_id))));
+    });
+
+    it("the no-embed mark: an execution record gets Data_Bank and no vector", neoOnly("the no-embed types (tool calls, turns) are not in the file"), async () => {
+      const seen: string[] = [];
+      const w = new NodeWriter(backend, { embedder: fakeEmbedder(seen), resolver: backend.schemas });
+      const tc = await w.write({ type: "StrutToolCall", data: { run_id: "r", path: "wf/agent", seq: 1, tool_name: "bash", input_preview: "ls" } });
+      const turn = await w.write({ type: "StrutTurn", data: { chat_id: "c", turn: 1, user_text_preview: "hello" } });
+      assert.deepEqual(seen, [], "nothing embedded");
+      const p = await props(tc.ref_id);
+      assert.equal(p["Data_Bank"], "bash\nls");
+      assert.deepEqual(p["_search_fields_used"], ["tool_name", "input_preview"]);
+      assert.ok(!("text_embeddings" in p));
+      assert.equal((await props(turn.ref_id))["Data_Bank"], "hello");
+      assert.ok(!("text_embeddings" in (await props(turn.ref_id))));
+      // A vector an earlier strut left on one goes with the next update.
+      await setNodeProps(backend, tc.ref_id, { text_embeddings: [1.0] });
+      await w.update(tc.ref_id, { set: { input_preview: "pwd" } });
+      const p2 = await props(tc.ref_id);
+      assert.equal(p2["Data_Bank"], "bash\npwd");
+      assert.ok(!("text_embeddings" in p2));
+      assert.deepEqual(seen, []);
+      // An embedded type still is.
+      await w.write({ type: "StrutRun", data: RUN });
+      assert.deepEqual(seen, ["harvey-deliver\nsuccess\nDelivered 60 of 60"]);
+    });
+
+    it("per-write namespace overrides the backend default", neoOnly("a ladybug file holds one namespace"), async () => {
+      const r = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
+      assert.equal((await props(r.ref_id))["namespace"], "tenant-z");
+      const again = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
+      assert.equal(again.outcome, "existing");
+      const dflt = await writer.write({ type: "StrutRun", data: RUN });
+      assert.equal(dflt.outcome, "created");
+    });
+
+    it("namespace scopes identity", neoOnly("a ladybug file holds one namespace"), async () => {
+      const other = new Bolt({ ...testGraphConfig()!, namespace: "tenant-b" });
+      try {
+        const a = await writer.write({ type: "StrutRun", data: RUN });
+        const b = await new NodeWriter(other).write({ type: "StrutRun", data: RUN });
+        assert.equal(b.outcome, "created");
+        assert.notEqual(a.ref_id, b.ref_id);
+        const ns = await other.run(`MATCH (n:StrutRun) RETURN n.namespace AS ns ORDER BY ns`);
+        assert.deepEqual(ns.map((r) => r["ns"]), ["default", "tenant-b"]);
+      } finally {
+        await other.close();
+      }
+    });
+
+    it("the file holds one namespace, the registry's types, and none of Thing's vestiges", { skip: neo && "ladybug only" }, async () => {
+      await assert.rejects(writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
+      await assert.rejects(writer.write({ type: "StrutToolCall", data: { run_id: "r", path: "p", seq: 1, tool_name: "bash" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
+      await assert.rejects(writer.write({ type: "StrutRun", data: { ...RUN, weight: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "weight");
+      const c = await writer.write({ type: "concept", data: { name: "Job", description: "the root" } });
+      assert.equal(c.node_type, "Concept");
+      assert.equal(c.node_key, "concept-job");
+    });
   });
-});
+}

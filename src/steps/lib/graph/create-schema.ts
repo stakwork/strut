@@ -52,7 +52,7 @@ export default defineStep({
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const { createNodeSchema } = await import("../../../graph/schema-crud.js");
-      const r = await createNodeSchema(b.bolt, b.schemas, {
+      const r = await createNodeSchema(b, b.schemas, {
         type: cfg.type,
         parent: cfg.parent,
         attributes: cfg.attributes ?? {},

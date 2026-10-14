@@ -400,7 +400,7 @@ export {
   Bolt,
   graphConfigFromEnv,
   int as neo4jInt,
-  type GraphConfig,
+  type Neo4jConfig,
 } from "./graph/bolt.js";
 export {
   STRUT_SCHEMAS,
@@ -562,12 +562,25 @@ export {
   openGraphBackendFromEnv,
   closeGraphBackends,
   type GraphBackend,
+  type GraphBackendBase,
+  type GraphConfig,
+  type Neo4jBackend,
+  type LadybugBackend,
+  type LadybugConfig,
   type GraphBackendOptions,
 } from "./graph/backend.js";
+// The engine seams (plans/ladybug-backend.md §4): what the graph layer
+// needs from a database, with one implementation per engine.
+export type { GraphEngine, GraphKind, GraphTx, Dialect, NodeEngine, EdgeEngine, SchemaSource, EngineLike, Params, Row } from "./graph/engine.js";
+export { Neo4jEngine, asEngine, NEO4J_DIALECT } from "./graph/neo4j-engine.js";
+// The Ladybug engine: the graph layer strut owns on one file (plans/ladybug-backend.md).
+export { LadybugEngine, LADYBUG_DIALECT } from "./graph/ladybug/engine.js";
+export { openLadybug, loadLadybug, ddlStatements as ladybugDdl, type LadybugHandle } from "./graph/ladybug/db.js";
+export { LADYBUG_SCHEMAS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, ladybugSchema, ladybugEdge, nodeColumns as ladybugNodeColumns } from "./graph/ladybug/registry.js";
 // Read-only raw Cypher (the chat builder's graph_query tool).
 export { readQuery, findWriteKeyword, compactValue, ReadOnlyViolation, type ReadQueryOptions, type ReadQueryResult } from "./graph/query.js";
 // Graph-backed workspace + the run/chat projector (plans/generic-storage.md §7).
-export { Neo4jWorkspaceStore, type Neo4jWorkspaceStoreOptions } from "./graph/workspace-store.js";
+export { GraphWorkspaceStore, Neo4jWorkspaceStore, type GraphWorkspaceStoreOptions, type Neo4jWorkspaceStoreOptions } from "./graph/workspace-store.js";
 export { graphWorkspaceFromEnv, graphWorkspaceRequested, graphMaterializeDir } from "./graph/wiring.js";
 export {
   projectRuns,

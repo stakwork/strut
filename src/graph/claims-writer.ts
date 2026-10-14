@@ -90,7 +90,7 @@ export class ClaimsWriter {
   readonly reader: ClaimsReader;
 
   constructor(
-    private readonly graph: Pick<GraphBackend, "bolt" | "nodes" | "edges">,
+    private readonly graph: Pick<GraphBackend, "query" | "namespace" | "nodes" | "edges">,
     reader?: ClaimsReader,
   ) {
     this.reader = reader ?? new ClaimsReader(graph);

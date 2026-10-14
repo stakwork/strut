@@ -30,14 +30,20 @@
  * pending marker — jarvis's "pending" state is simply `text_embeddings IS
  * NULL`). Without an `Embedder` the vectors stay NULL and the boot sweep
  * (`embeddings.ts`) heals them.
+ *
+ * The statements live behind `NodeEngine` (`engine.ts`): `neo4j-engine.ts`
+ * holds the MERGE template, `ladybug/engine.ts` the one-table form. This
+ * file validates, composes and decides; it issues no Cypher.
  */
 import { createHash, randomUUID } from "node:crypto";
-import type { ManagedTransaction } from "neo4j-driver";
-import { Bolt, int, txRows } from "./bolt.js";
+import { int } from "./bolt.js";
 import { EVIDENCE_TYPE } from "./claims.js";
-import { DELETE_NODE_TAIL, NODE_LIVE, nowMs } from "./deletion.js";
+import type { EngineLike, GraphEngine, PreparedNode, WriteMode, WriteOutcome } from "./engine.js";
+import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
-import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, typeLabelOf, vectorStem } from "./strut-schemas.js";
+import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
+
+export type { PreparedNode, WriteMode, WriteOutcome };
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -73,7 +79,9 @@ export interface ValidatedNode {
    *  null/undefined and empty strings dropped. Used for node_key and
    *  Data_Bank composition. */
   values: Record<string, unknown>;
-  /** The same values as Neo4j parameter values (ints wrapped). */
+  /** The same values as Neo4j parameter values (ints wrapped) — what a
+   *  caller feeding bolt directly needs; the writer hands the engine
+   *  `values` and lets it wrap. */
   params: Record<string, unknown>;
 }
 
@@ -336,9 +344,6 @@ export interface Embedder {
   embed(texts: string[]): Promise<number[][]>;
 }
 
-export type WriteMode = "create" | "upsert";
-export type WriteOutcome = "created" | "existing" | "restored" | "updated";
-
 export interface NodeInput {
   /** Node type — a Strut type (exact) or any jarvis type (resolved
    *  case-insensitively against the live schema). */
@@ -385,21 +390,15 @@ export interface NodeUpdateResult {
 /** Identity props never touched after create. */
 const PRESERVED = new Set(["ref_id", "node_key", "namespace", "date_added_to_graph"]);
 
-interface PreparedNode {
-  schema: NodeSchema;
-  node_key: string;
-  ref_id: string;
-  onCreate: Record<string, unknown>;
-  onMatch: Record<string, unknown>;
-}
-
 export class NodeWriter {
   readonly resolver: SchemaResolver;
+  private readonly engine: GraphEngine;
   constructor(
-    private readonly bolt: Bolt,
+    engine: EngineLike,
     private readonly opts: NodeWriterOptions = {},
   ) {
-    this.resolver = opts.resolver ?? new SchemaResolver(bolt);
+    this.engine = asEngine(engine);
+    this.resolver = opts.resolver ?? new SchemaResolver(this.engine);
   }
 
   /** Validate + compose everything except the MERGE. Exposed for tests and
@@ -410,7 +409,7 @@ export class NodeWriter {
   }
 
   async prepareMany(inputs: NodeInput[], opts: WriteOptions = {}): Promise<PreparedNode[]> {
-    const namespace = opts.namespace ?? this.bolt.namespace;
+    const namespace = opts.namespace ?? this.engine.namespace;
     const validated: ValidatedNode[] = [];
     for (const i of inputs) {
       const schema = await this.resolver.schema(i.type);
@@ -423,7 +422,7 @@ export class NodeWriter {
       const node_key = composeNodeKey(v.schema, v.values);
       const ref_id = randomUUID();
       const { text, fields } = buildSearchText(v.schema, v.values);
-      const props: Record<string, unknown> = { ...v.params };
+      const props: Record<string, unknown> = { ...v.values };
       if (text !== null) {
         props["Data_Bank"] = text;
         props["_search_fields_used"] = fields;
@@ -436,22 +435,12 @@ export class NodeWriter {
         const rendered = renderVectorField(vi, raw);
         if (rendered) jobs.push({ idx, column: embeddingColumn(vi), text: rendered });
       }
-      const onMatch: Record<string, unknown> = {};
-      for (const [k, val] of Object.entries(props)) if (!PRESERVED.has(k)) onMatch[k] = val;
-      return {
-        schema: v.schema,
-        node_key,
-        ref_id,
-        onCreate: { ...props, ref_id, node_key, namespace, date_added_to_graph: int(Date.now()) },
-        onMatch,
-      };
+      return { schema: v.schema, node_key, ref_id, namespace, props };
     });
     if (this.opts.embedder && jobs.length) {
       const vectors = await this.opts.embedder.embed(jobs.map((j) => j.text));
       jobs.forEach((j, i) => {
-        const p = prepared[j.idx]!;
-        p.onCreate[j.column] = vectors[i];
-        p.onMatch[j.column] = vectors[i];
+        prepared[j.idx]!.props[j.column] = vectors[i];
       });
     }
     return prepared;
@@ -464,13 +453,13 @@ export class NodeWriter {
   }
 
   /**
-   * Write many nodes (any mix of types) in one transaction — one UNWIND
-   * MERGE per type, same resulting state as the single form. Results are in
-   * input order. All-or-nothing: a validation error anywhere writes nothing.
+   * Write many nodes (any mix of types) in one transaction — one batch per
+   * type, same resulting state as the single form. Results are in input
+   * order. All-or-nothing: a validation error anywhere writes nothing.
    */
   async writeMany(inputs: NodeInput[], mode: WriteMode = "create", opts: WriteOptions = {}): Promise<NodeWriteResult[]> {
     if (inputs.length === 0) return [];
-    const namespace = opts.namespace ?? this.bolt.namespace;
+    const namespace = opts.namespace ?? this.engine.namespace;
     const prepared = await this.prepareMany(inputs, { namespace });
     const byType = new Map<string, Array<{ i: number; p: PreparedNode }>>();
     prepared.forEach((p, i) => {
@@ -479,9 +468,9 @@ export class NodeWriter {
       byType.set(p.schema.type, list);
     });
     const results: NodeWriteResult[] = new Array(inputs.length);
-    await this.bolt.write(async (tx) => {
+    await this.engine.tx(async (tx) => {
       for (const [type, rows] of byType) {
-        const out = await mergeBatch(tx, rows[0]!.p.schema, namespace, rows.map((r) => r.p), mode);
+        const out = await this.engine.nodeEngine.mergeBatch(tx, rows[0]!.p.schema, namespace, rows.map((r) => r.p), mode);
         rows.forEach((r, k) => {
           results[r.i] = { ...out[k]!, node_type: type };
         });
@@ -502,12 +491,11 @@ export class NodeWriter {
   async update(ref_id: string, patch: NodeUpdate): Promise<NodeUpdateResult> {
     const remove = patch.remove ?? [];
     const set = patch.set ?? {};
-    return this.bolt.write(async (tx) => {
-      const rows = await txRows(tx, `MATCH (n:Data_Bank {ref_id: $ref_id}) RETURN labels(n) AS labels, properties(n) AS props`, { ref_id });
-      if (rows.length === 0) throw new GraphValidationError("NOT_FOUND", "?", `no node with ref_id ${ref_id}`);
-      const labels = rows[0]!["labels"] as string[];
-      const props = rows[0]!["props"] as Record<string, unknown>;
-      const type = typeLabelOf(labels) ?? "?";
+    return this.engine.tx(async (tx) => {
+      const raw = await this.engine.nodeEngine.readRaw(tx, ref_id);
+      if (!raw) throw new GraphValidationError("NOT_FOUND", "?", `no node with ref_id ${ref_id}`);
+      const props = raw.props;
+      const type = raw.type ?? "?";
       const schema = await this.resolver.schema(type, tx);
       if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", type, "stored node's type has no schema");
       const attrs = schema.attributes;
@@ -527,16 +515,13 @@ export class NodeWriter {
       const node_key = p!.node_key;
       const rekeyed = node_key !== props["node_key"];
       if (rekeyed) {
-        const clash = await txRows(
-          tx,
-          `MATCH (m:\`${schema.type}\` {node_key: $k, namespace: $ns}) WHERE m.ref_id <> $ref_id RETURN m.ref_id AS ref_id LIMIT 1`,
-          { k: node_key, ns: props["namespace"], ref_id },
-        );
-        if (clash.length) throw new GraphValidationError("DUPLICATE_KEY", type, `Node already exists in the graph with node_key: ${node_key}`);
+        const clash = await this.engine.nodeEngine.refByKey(tx, schema.type, node_key, String(props["namespace"]));
+        if (clash && clash !== ref_id) throw new GraphValidationError("DUPLICATE_KEY", type, `Node already exists in the graph with node_key: ${node_key}`);
       }
 
       // Everything the fresh payload would carry, minus identity stamps.
-      const setMap: Record<string, unknown> = { ...p!.onMatch, node_key };
+      const setMap: Record<string, unknown> = { node_key };
+      for (const [k, val] of Object.entries(p!.props)) if (!PRESERVED.has(k)) setMap[k] = val;
       const drop = new Set<string>(remove);
       if (!("Data_Bank" in setMap)) for (const k of ["Data_Bank", "_search_fields_used", "text_embeddings"]) drop.add(k);
       else if (!schema.embed) drop.add("text_embeddings"); // a vector an earlier writer left on a no-embed node goes with the update
@@ -550,8 +535,7 @@ export class NodeWriter {
       // Attributes present before but absent from the merged payload
       // (e.g. explicitly set to null) go too.
       for (const k of Object.keys(attrs)) if (k in props && !(k in setMap) && !drop.has(k) && !(k in merged)) drop.add(k);
-      const removeClause = drop.size ? `REMOVE ${[...drop].map((k) => `n.\`${k}\``).join(", ")}` : "";
-      await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) SET n += $set ${removeClause}`, { ref_id, set: setMap });
+      await this.engine.nodeEngine.update(tx, schema, ref_id, setMap, [...drop]);
       return { ref_id, node_key, rekeyed };
     });
   }
@@ -560,11 +544,7 @@ export class NodeWriter {
    *  time is kept) + `is_deleted`, and hard-deletes the node's in-scope edges
    *  in the same statement. Scoped to Strut's own nodes in this namespace. */
   async softDelete(ref_id: string): Promise<boolean> {
-    const rows = await this.bolt.run(
-      `MATCH (n:\`${STRUT_DOMAIN_LABEL}\` {ref_id: $ref_id, namespace: $ns}) ${DELETE_NODE_TAIL("n")}`,
-      { ref_id, ns: this.bolt.namespace, now_ms: nowMs() },
-    );
-    return rows.length > 0;
+    return this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { domainLabel: STRUT_DOMAIN_LABEL });
   }
 
   /** `softDelete` for the one non-Strut node strut retires: a stale
@@ -572,73 +552,6 @@ export class NodeWriter {
    *  domain, so `softDelete`'s `Domain_strut` guard stays; this matches only
    *  a planned slot in this namespace. */
   async retirePlannedEvidence(ref_id: string): Promise<boolean> {
-    const rows = await this.bolt.run(
-      `MATCH (n:\`${EVIDENCE_TYPE}\` {ref_id: $ref_id, namespace: $ns, evidence_status: 'planned'}) ${DELETE_NODE_TAIL("n")}`,
-      { ref_id, ns: this.bolt.namespace, now_ms: nowMs() },
-    );
-    return rows.length > 0;
+    return this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { type: EVIDENCE_TYPE, props: { evidence_status: "planned" } });
   }
-}
-
-/**
- * The one Cypher template, UNWIND form. Labels = `Type` + Node + Data_Bank
- * + the schema's Domain_* labels; identity = (node_key, namespace). ON
- * CREATE gets the full stamped payload; ON MATCH gets the non-identity
- * payload only when the mode is `upsert` or the node is soft-deleted
- * (restore). A restore clears both delete markers (`deleted_at`,
- * `is_deleted`) and never touches `is_muted`; otherwise the markers are left
- * exactly as they were. Whether the
- * node was deleted is read in a WITH before the MERGE: SET items apply in
- * order, so a CASE reading a marker an earlier item cleared would never fire.
- *
- * Outcome per row comes from a pre-read in the same transaction; the MERGE
- * itself stays race-safe (a concurrent create just turns into a match).
- */
-async function mergeBatch(
-  tx: ManagedTransaction,
-  schema: NodeSchema,
-  namespace: string,
-  nodes: PreparedNode[],
-  mode: WriteMode,
-): Promise<Array<Omit<NodeWriteResult, "node_type">>> {
-  const type = schema.type;
-  const labels = [`\`${type}\``, "Node", "Data_Bank", ...schema.domainLabels.map((l) => `\`${l}\``)].join(":");
-  const before = await txRows(
-    tx,
-    `UNWIND $keys AS k
-     MATCH (n:\`${type}\` {node_key: k, namespace: $ns})
-     RETURN k AS node_key, NOT ${NODE_LIVE("n")} AS deleted`,
-    { keys: nodes.map((n) => n.node_key), ns: namespace },
-  );
-  const deleted = new Set(before.filter((r) => r["deleted"] === true).map((r) => r["node_key"] as string));
-
-  const rows = await txRows(
-    tx,
-    `UNWIND $rows AS row
-     OPTIONAL MATCH (prior:\`${type}\` {node_key: row.node_key, namespace: $ns})
-     WITH row, prior IS NOT NULL AND NOT ${NODE_LIVE("prior")} AS restore
-     MERGE (node:${labels} {node_key: row.node_key, namespace: $ns})
-     ON CREATE SET node += row.on_create
-     ON MATCH SET
-       node += CASE WHEN $mode = 'upsert' OR restore THEN row.on_match ELSE {} END,
-       node.deleted_at = CASE WHEN restore THEN null ELSE node.deleted_at END,
-       node.is_deleted = CASE WHEN restore THEN null ELSE node.is_deleted END
-     RETURN row.node_key AS node_key, node.ref_id AS ref_id, node.ref_id = row.on_create.ref_id AS created`,
-    {
-      rows: nodes.map((n) => ({ node_key: n.node_key, on_create: n.onCreate, on_match: n.onMatch })),
-      ns: namespace,
-      mode,
-    },
-  );
-  const byKey = new Map(rows.map((r) => [r["node_key"] as string, r]));
-  return nodes.map((n) => {
-    const r = byKey.get(n.node_key)!;
-    const created = r["created"] as boolean;
-    let outcome: WriteOutcome;
-    if (created) outcome = "created";
-    else if (deleted.has(n.node_key)) outcome = "restored";
-    else if (mode === "upsert") outcome = "updated";
-    else outcome = "existing";
-    return { ref_id: r["ref_id"] as string, node_key: n.node_key, outcome };
-  });
 }
