@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { EntityRef, type EntityRefT, type Query, canonical, exclusive, memoryDb, newRefId, normalize } from "./_db.js";
-import { fitNote, resolve, termName, type Resolved as Term } from "./_ontology.js";
+import { fitNote, resolve, termName, vocabulary, type Resolved as Term } from "./_ontology.js";
 
 const FactInput = z.object({
   subject: EntityRef,
@@ -17,7 +17,7 @@ const FactInput = z.object({
 
 type Resolved = { ref_id: string; type: string; name: string; status: "matched" | "created"; similar?: { ref_id: string; name: string }[] };
 
-// Matching, cheapest first: an explicit ref_id, the single Self node, then the
+// Matching, cheapest first: an explicit ref_id, the one entity of the user type, then the
 // exact normalised name or alias within the type. Fuzzy and model matching
 // come later; until then a new entity reports close names as `similar`.
 async function resolveEntity(query: Query, ref: EntityRefT, type: string, createdBy: string, now: number): Promise<Resolved> {
@@ -27,8 +27,8 @@ async function resolveEntity(query: Query, ref: EntityRefT, type: string, create
     if (hit) return { ...(hit as Resolved), status: "matched" };
   }
   const key = normalize(ref.name);
-  const [hit] = type === "Self"
-    ? await query("MATCH (e:Entity) WHERE e.type = 'Self' AND e.deleted_at IS NULL RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1")
+  const [hit] = (await vocabulary(query)).role(type) === "user"
+    ? await query("MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1", { type })
     : await query(
         `MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL AND (lower(e.name) = $key OR list_contains(e.aliases, $key))
          RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1`,
@@ -125,7 +125,7 @@ export default defineStep({
         const object = f.object ? await entity(f.object) : undefined;
         const p = await resolve(query, "predicate", f.predicate, by, { subject: subject.type, object: object?.type });
         noteTerm(p);
-        const note = fitNote(p.term, subject.type, object?.type);
+        const note = fitNote(await vocabulary(query), p.term, subject.type, object?.type);
         if (note) ontology.notes.push(note);
         const predicate = p.term.name;
 
