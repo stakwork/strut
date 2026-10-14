@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { EntityRef, type EntityRefT, type Query, canonical, editAliases, memoryWrite, newRefId, normalize, supersede } from "./_db.js";
-import { fitNote, resolve, termName, vocabulary, type Resolved as Term } from "./_ontology.js";
+import { fitNote, resolve, termName, vocabulary, type Resolved as Term, type Vocabulary } from "./_ontology.js";
 
 const FactInput = z.object({
   subject: EntityRef,
@@ -38,19 +38,31 @@ function worldTime(given: string): number | undefined {
 
 type Resolved = { ref_id: string; type: string; name: string; status: "matched" | "created"; similar?: { ref_id: string; name: string }[] };
 
+// A person's one-word alias ("kate", left by merging a Kate into Kate O'Brien) is only a first
+// name: recall still finds her by it, but a write resolves it only to someone so named.
+// A person is a type named as the user is, as in memory/duplicates.
+const aliasResolves = (vocab: Vocabulary, type: string, key: string) => {
+  const user = vocab.userType();
+  return key.includes(" ") || !user || vocab.naming(type) !== vocab.naming(user);
+};
+
 // Matching, cheapest first: an explicit ref_id, the one entity of the user type, then the
-// exact normalised name or alias within the type, a name before an alias, then the oldest.
+// exact normalised name or (many-word) alias within the type, a name before an alias, then the oldest.
 // Fuzzy and model matching come later; until then a new entity reports close names as `similar`.
 async function find(query: Query, type: string, name: string): Promise<Resolved | undefined> {
-  const [hit] = (await vocabulary(query)).role(type) === "user"
-    ? await query("MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1", { type })
-    : await query(
-        `MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL AND (lower(e.name) = $key OR list_contains(e.aliases, $key))
-         RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name
-         ORDER BY CASE WHEN lower(e.name) = $key THEN 0 ELSE 1 END, e.created_at LIMIT 1`,
-        { type, key: normalize(name) },
-      );
-  return hit && { ...(hit as Resolved), status: "matched" };
+  const vocab = await vocabulary(query);
+  if (vocab.role(type) === "user") {
+    const [hit] = await query("MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name LIMIT 1", { type });
+    return hit && { ...(hit as Resolved), status: "matched" };
+  }
+  const key = normalize(name);
+  const rows = (await query(
+    `MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL AND (lower(e.name) = $key OR list_contains(e.aliases, $key))
+     RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name ORDER BY e.created_at`,
+    { type, key },
+  )) as Resolved[];
+  const hit = rows.find((e) => normalize(e.name) === key) ?? (aliasResolves(vocab, type, key) ? rows[0] : undefined);
+  return hit && { ...hit, status: "matched" };
 }
 
 async function resolveEntity(query: Query, ref: EntityRefT, type: string, createdBy: string, now: number): Promise<Resolved> {
@@ -66,9 +78,9 @@ async function resolveEntity(query: Query, ref: EntityRefT, type: string, create
   const firstWord = key.split(" ")[0] ?? key;
   const similar = firstWord.length >= 3
     ? await query(
-        `MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL AND lower(e.name) CONTAINS $w
+        `MATCH (e:Entity) WHERE e.type = $type AND e.deleted_at IS NULL AND (lower(e.name) CONTAINS $w OR list_contains(e.aliases, $key))
          RETURN e.ref_id AS ref_id, e.name AS name LIMIT 3`,
-        { type, w: firstWord },
+        { type, w: firstWord, key },
       )
     : [];
   const ref_id = newRefId();
@@ -199,12 +211,13 @@ export default defineStep({
             .filter((t) => vocab.ancestors(subject.type).includes(t) || vocab.ancestors(t).includes(subject.type))
             // Sharing a name with the user is not being them.
             .filter((t) => vocab.role(t) !== "user");
-          similar = (await query(
+          const byAlias = aliasResolves(vocab, subject.type, alias);
+          similar = ((await query(
             `MATCH (e:Entity) WHERE e.deleted_at IS NULL AND e.ref_id <> $id AND e.type IN $types
                AND (lower(e.name) = $key OR list_contains(e.aliases, $key))
-             RETURN e.ref_id AS ref_id, e.name AS name ORDER BY e.created_at LIMIT 3`,
+             RETURN e.ref_id AS ref_id, e.name AS name ORDER BY e.created_at`,
             { id: subject.ref_id, types: [subject.type, ...lineage], key: alias },
-          )) as typeof similar;
+          )) as typeof similar).filter((e) => byAlias || normalize(e.name) === alias).slice(0, 3);
           if (similar.length) alias = undefined;
           // A name replaced later stays an alias: an old name still finds them.
           else await editAliases(query, subject.ref_id, [alias], now);

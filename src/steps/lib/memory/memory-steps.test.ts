@@ -803,4 +803,37 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
     const pairs = await run("memory/duplicates", {}, one);
     assert.ok(!pairs.some((p: any) => p.a.node_type === "Self" || p.b.node_type === "Self"), JSON.stringify(pairs));
   });
+
+  it("a one-word alias a merge left does not resolve a write; the entity's own name and a many-word alias do", async () => {
+    const db = ctxAt("bare-alias.lbug");
+    const said = async (name: string, type = "Person") => (await run("memory/remember", { episode: `${name}.`, mentions: [{ type, name }] }, db)).entities[0];
+    const wife = await said("Kate O'Brien");
+    await run("memory/merge", { keep: wife.ref_id, duplicate: (await said("Kate")).ref_id }, db);
+    await run("memory/merge", { keep: wife.ref_id, duplicate: (await said("Katie Fairweather")).ref_id }, db);
+
+    const colleague = await said("Kate");
+    assert.equal(colleague.status, "created", "a bare first name is not taken for Kate O'Brien");
+    assert.deepEqual(colleague.similar?.map((e: any) => e.ref_id), [wife.ref_id]);
+    assert.equal((await said("kate o'brien")).ref_id, wife.ref_id);
+    assert.equal((await said("Katie Fairweather")).ref_id, wife.ref_id, "a many-word alias still resolves");
+    assert.equal((await said("Kate")).ref_id, colleague.ref_id, "the same Kate said again is one person");
+    assert.ok((await run("memory/recall", { q: "Kate", type: "Person" }, db)).some((h: any) => h.ref_id === wife.ref_id));
+
+    // Naming someone Kate is not blocked by her one-word alias either.
+    const named = await run("memory/remember", {
+      episode: "Sam goes by Kate.",
+      facts: [{ subject: person("Sam Fairweather"), predicate: "name", object: person("Kate"), text: "Sam goes by Kate." }],
+    }, db);
+    assert.ok(!named.facts[0].similar?.some((e: any) => e.ref_id === wife.ref_id));
+    const bob = await run("memory/remember", {
+      episode: "Robert goes by Bob.",
+      facts: [{ subject: person("Robert Fairweather"), predicate: "name", object: person("Bob"), text: "Robert goes by Bob." }],
+    }, db);
+    assert.deepEqual((await said("Bob")).similar?.map((e: any) => e.ref_id), [bob.entities[0].ref_id], "a one-word nickname lists its owner as similar");
+
+    // Only people's one-word aliases are first names: a merged-in org name still resolves.
+    const acme = await said("Fairweather Holdings", "Organization");
+    await run("memory/merge", { keep: acme.ref_id, duplicate: (await said("Fairweather", "Organization")).ref_id }, db);
+    assert.equal((await said("Fairweather", "Organization")).ref_id, acme.ref_id);
+  });
 });
