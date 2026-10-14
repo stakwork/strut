@@ -117,9 +117,9 @@ describe("ladybug handle", { skip }, () => {
     } finally {
       await ro.close();
     }
-    // A connection, not a second Database (which reserves 8 TB of address
-    // space per open and never gives it back — seven opens, then "Mmap for
-    // size 8796093022208 failed"): twenty are nothing.
+    // A connection, not a second Database (every Database reserves 8 TB of
+    // address space and never gives it back — about eight per process, then
+    // "Mmap for size 8796093022208 failed"): twenty are nothing.
     for (let i = 0; i < 20; i++) {
       const again = await h.readOnly();
       assert.equal((await again.query("MATCH (n:Node) RETURN count(n) AS c"))[0]!["c"], 4);

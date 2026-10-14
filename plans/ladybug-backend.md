@@ -279,8 +279,11 @@ failure (§2); a `readOnly()` handle for `graph_query` — a connection of its
 own whose every statement runs inside `BEGIN TRANSACTION READ ONLY`, which
 the engine refuses writes and catalog changes in (slice 4 found the second
 `Database` opened read-only, first planned here, reserves 8 TB of address
-space per open and `close()` never returns it: the eighth open in a process
-fails with "Mmap for size 8796093022208 failed"; a `COPY … TO` file write
+space like every `Database` object, and `close()` never returns it: a
+process gets about eight in its life — one read-write plus seven read-only
+in the probe, then "Mmap for size 8796093022208 failed". Two long-lived
+files, the graph's and memory's, are two of the eight; a `Database` per
+model query was the problem; a `COPY … TO` file write
 IS allowed in a read-only transaction, so `query.ts`'s keyword gate is what
 keeps the machine out of reach). On open: load `vector` and `fts` by path
 (`STRUT_LADYBUG_EXTENSION_DIR`; unset → `INSTALL vector` / `INSTALL fts`,
@@ -556,7 +559,8 @@ skips and says so, never silently.
   checks before open, the test helper removes both.
 - **A `Database` reserves 8 TB of address space** (its VM region) on open,
   read-only or not, and `close()` does not return it: a process can open
-  about seven. One handle per file per process (the registry on
+  about eight in its life. Two files — the graph's and memory's (§7.2) —
+  are fine; opening one per query is not. One handle per file per process (the registry on
   `globalThis`) is the rule; the model's Cypher runs in a READ ONLY
   transaction, never on a second `Database`. `npm test` runs its files in
   separate processes, but many Ladybug-opening files in parallel beside

@@ -12,9 +12,12 @@
  * ROLLBACK, one writer at a time — and `readOnly()` for the model's own
  * Cypher: a connection of its own whose every statement runs inside
  * `BEGIN TRANSACTION READ ONLY`, which the engine refuses writes in. (Not a
- * second `Database` opened read-only, as first planned: one reserves 8 TB
- * of address space and `close()` never returns it — the eighth open in a
- * process fails with "Mmap for size 8796093022208 failed".) On open: the
+ * second `Database` opened read-only, as first planned: EVERY `Database`
+ * object reserves 8 TB of address space and `close()` never returns it, so
+ * a process gets about eight in its life — the probe's read-write handle
+ * plus seven read-only opens, then "Mmap for size 8796093022208 failed".
+ * Two long-lived files, the graph and memory's, are two; a Database per
+ * query was the problem.) On open: the
  * `vector` and `fts` extensions (REQUIRED, ruling 4:
  * an open without them fails with the hint), the DDL (§3.1; every column
  * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the registry
