@@ -31,6 +31,13 @@
  *
  * Not projected: `PROMOTED_FROM` — promotions publish a new version without
  * recording the source run.
+ *
+ * On a backend whose schema is a closed registry (a LadybugDB file,
+ * plans/ladybug-backend.md ruling 6) only the types the file holds are
+ * written: `StrutRun` and `StrutJob` with `EXECUTED` and `IN_JOB`; the
+ * agent sessions, tool calls, their edges and the whole chat projection are
+ * skipped there, and the report counts what was written. The statements
+ * are written with the backend's dialect helpers (`engine.ts`).
  */
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
@@ -41,6 +48,22 @@ import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
 import { PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
+
+/** Does this backend hold nodes of `type`: every type on Neo4j (jarvis's
+ *  meta-graph is open), the registry's on a Ladybug file. */
+function holds(backend: GraphBackend, type: string): boolean {
+  const registry = backend.schemaSource.registry;
+  return !registry || registry.schema(type) !== null;
+}
+
+/** The `unique_source_id` reconciliation stamp is jarvis's (Thing's); a
+ *  registry that leaves it off gets the nodes without it — identity is the
+ *  node_key there anyway. */
+function fit(backend: GraphBackend, nodes: NodeInput[]): NodeInput[] {
+  const registry = backend.schemaSource.registry;
+  if (!registry) return nodes;
+  return nodes.map((n) => (registry.schema(n.type)?.attributes["unique_source_id"] ? n : { ...n, data: Object.fromEntries(Object.entries(n.data).filter(([k]) => k !== "unique_source_id")) }));
+}
 
 /** What the projector needs of the job index (plans/job-index.md §6): a
  *  job read back, to upsert its `StrutJob`. `createStrut` hands its
@@ -117,7 +140,7 @@ function runStatus(summary: RunSummary | null, events: RunEvent[]): string {
   return "stale";
 }
 
-interface RunProjection {
+export interface RunProjection {
   run: NodeInput;
   sessions: NodeInput[];
   toolCalls: Array<{ node: NodeInput; sessionPath: string; accessed: AccessedNode[] }>;
@@ -281,7 +304,7 @@ export function jobNode(view: JobView): NodeInput {
 /** Project runs from a `RunStore` into the graph. */
 export async function projectRuns(backend: GraphBackend, store: RunStore, opts: ProjectRunsOptions): Promise<ProjectReport> {
   const report = emptyReport();
-  const ns = backend.cfg.namespace;
+  const { namespace: ns, dialect: d } = backend;
   for (const workflow of opts.workflows) {
     let runIds = await store.listRuns(workflow);
     if (opts.limitPerWorkflow != null) runIds = runIds.slice(0, opts.limitPerWorkflow);
@@ -291,7 +314,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
     let settled = new Set<string>();
     if (opts.skipSettled !== false) {
       const rows = await backend.query(
-        `MATCH (r:StrutRun {namespace: $ns, workflow_name: $wf}) WHERE r.run_id IN $ids RETURN r.run_id AS id, r.run_status AS status`,
+        `MATCH ${d.node("r", "StrutRun", { namespace: "$ns", workflow_name: "$wf" })} WHERE r.run_id IN $ids RETURN r.run_id AS id, r.run_status AS status`,
         { ns, wf: workflow, ids: runIds },
       );
       settled = new Set(rows.filter((r) => isTerminalStatus(r["status"])).map((r) => r["id"] as string));
@@ -325,12 +348,17 @@ export async function projectRun(
   report: ProjectReport = emptyReport(),
   jobs?: JobReader,
 ): Promise<string | null> {
-  const ns = backend.cfg.namespace;
+  const { namespace: ns, dialect: d } = backend;
   const [events, summary] = await Promise.all([store.getRunEvents(workflow, runId), store.getRunSummary(workflow, runId)]);
   const p = projectRunEvents(workflow, runId, events, summary);
   if (!p) return null;
 
-  const nodes = [p.run, ...p.sessions, ...p.toolCalls.map((t) => t.node)];
+  // A file that holds no agent sessions (and so no tool calls) gets the run alone.
+  if (!holds(backend, "StrutAgentSession")) {
+    p.sessions = [];
+    p.toolCalls = [];
+  }
+  const nodes = fit(backend, [p.run, ...p.sessions, ...p.toolCalls.map((t) => t.node)]);
   const written = await backend.nodes.writeMany(nodes, "upsert");
   const runRef = written[0]!.ref_id;
   const sessionRef = new Map<string, string>();
@@ -350,9 +378,10 @@ export async function projectRun(
   });
   // ACCESSED: only toward nodes this graph actually holds (the edge
   // writer treats a missing endpoint as an error, and a ref may point
-  // at another database or a since-deleted node).
+  // at another database or a since-deleted node). Neo4j's `:Data_Bank` is
+  // every data node; tool calls exist nowhere else.
   const wanted = new Set(p.toolCalls.flatMap((t) => t.accessed.map((n) => n.ref_id)));
-  if (wanted.size) {
+  if (wanted.size && backend.kind === "neo4j") {
     const rows = await backend.query(`MATCH (n:Data_Bank) WHERE n.ref_id IN $ids RETURN DISTINCT n.ref_id AS ref_id`, { ids: [...wanted] });
     const present = new Set(rows.map((r) => r["ref_id"] as string));
     p.toolCalls.forEach((t, i) => {
@@ -368,13 +397,13 @@ export async function projectRun(
   const stepHash = stepType ? p.stepHashes?.[stepType] : undefined;
   if (stepType && stepHash) {
     const rows = await backend.query(
-      `MATCH (v:StrutStepVersion {namespace: $ns, step_type: $type, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
+      `MATCH ${d.node("v", "StrutStepVersion", { namespace: "$ns", step_type: "$type", content_hash: "$h" })} RETURN v.ref_id AS ref_id LIMIT 1`,
       { ns, type: stepType, h: stepHash },
     );
     if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
   } else if (p.workflowHash) {
     const rows = await backend.query(
-      `MATCH (v:StrutWorkflowVersion {namespace: $ns, name: $wf, content_hash: $h}) RETURN v.ref_id AS ref_id LIMIT 1`,
+      `MATCH ${d.node("v", "StrutWorkflowVersion", { namespace: "$ns", name: "$wf", content_hash: "$h" })} RETURN v.ref_id AS ref_id LIMIT 1`,
       { ns, wf: workflow, h: p.workflowHash },
     );
     if (rows.length) edges.push({ edge: "EXECUTED", source_ref_id: runRef, target_ref_id: rows[0]!["ref_id"] as string });
@@ -386,7 +415,7 @@ export async function projectRun(
   if (p.job && jobs?.get) {
     const view = await jobs.get(p.job);
     if (view) {
-      const [node] = await backend.nodes.writeMany([jobNode(view)], "upsert");
+      const [node] = await backend.nodes.writeMany(fit(backend, [jobNode(view)]), "upsert");
       edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: node!.ref_id });
       report.jobs++;
     }
@@ -432,8 +461,8 @@ export async function runRef(backend: GraphBackend, store: RunStore, workflow: s
   // that have no graph.
   const { composeNodeKey } = await import("./node-writer.js");
   const rows = await backend.query(
-    `MATCH (r:StrutRun {node_key: $key, namespace: $ns}) WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
-    { key: composeNodeKey(getStrutSchema("StrutRun")!, { run_id: runId }), ns: backend.cfg.namespace, wf: workflow },
+    `MATCH ${backend.dialect.node("r", "StrutRun", { node_key: "$key", namespace: "$ns" })} WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
+    { key: composeNodeKey(getStrutSchema("StrutRun")!, { run_id: runId }), ns: backend.namespace, wf: workflow },
   );
   const held = rows[0];
   if (held && isTerminalStatus(held["status"])) return held["ref_id"] as string;
@@ -489,10 +518,12 @@ export function spawnedRunIds(messages: StoredMessage[]): string[] {
   return [...ids];
 }
 
-/** Project every chat (and its turns) from a `ChatStore` into the graph. */
+/** Project every chat (and its turns) from a `ChatStore` into the graph.
+ *  Nothing on a backend that holds no chats (a Ladybug file). */
 export async function projectChats(backend: GraphBackend, chatStore: ChatStore): Promise<ProjectReport> {
   const report = emptyReport();
-  const ns = backend.cfg.namespace;
+  if (!holds(backend, "StrutChat")) return report;
+  const { namespace: ns, dialect: d } = backend;
   for (const meta of await chatStore.listChats()) {
     const messages = await chatStore.loadMessages(meta.id);
     const turns: NodeInput[] = [];
@@ -539,7 +570,7 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
     const runIds = spawnedRunIds(messages);
     if (runIds.length) {
       const rows = await backend.query(
-        `MATCH (r:StrutRun {namespace: $ns}) WHERE r.run_id IN $ids RETURN r.ref_id AS ref_id`,
+        `MATCH ${d.node("r", "StrutRun", { namespace: "$ns" })} WHERE r.run_id IN $ids RETURN r.ref_id AS ref_id`,
         { ns, ids: runIds },
       );
       for (const r of rows) edges.push({ edge: "SPAWNED", source_ref_id: chatRef, target_ref_id: r["ref_id"] as string });

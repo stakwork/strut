@@ -124,7 +124,11 @@ export const LADYBUG_EDGES: readonly LadybugEdgeDef[] = [
   { edge: "TESTS", source: CHECK_TYPE, target: CLAIM_TYPE },
   { edge: "EVIDENCED_BY", source: CLAIM_TYPE, target: EVIDENCE_TYPE },
   { edge: "PRODUCED_BY", source: EVIDENCE_TYPE, target: CHECK_TYPE },
+  // A run check's evidence has the run as its source; a publish check's has
+  // the version it read (verify.ts).
   { edge: "HAS_SOURCE", source: EVIDENCE_TYPE, target: "StrutRun" },
+  { edge: "HAS_SOURCE", source: EVIDENCE_TYPE, target: "StrutWorkflowVersion" },
+  { edge: "HAS_SOURCE", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
   { edge: "SUPERSEDES", source: CLAIM_TYPE, target: CLAIM_TYPE },
   { edge: "SUPERSEDES", source: CHECK_TYPE, target: CHECK_TYPE },
   { edge: "CHILD_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },

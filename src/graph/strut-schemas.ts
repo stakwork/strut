@@ -480,6 +480,12 @@ export function typeLabelOf(labels: string[]): string | undefined {
   return labels.find((l) => !STRUCTURAL_LABEL.test(l));
 }
 
+/** The type a `Dialect.typeOf(alias)` column holds: Neo4j's label list
+ *  (→ `typeLabelOf`), Ladybug's `node_type` string as it is. */
+export function typeValue(v: unknown): string | undefined {
+  return Array.isArray(v) ? typeLabelOf(v.map(String)) : typeof v === "string" ? v : undefined;
+}
+
 const BY_TYPE = new Map(STRUT_SCHEMAS.map((s) => [s.type, s]));
 
 /** Exact-match lookup (jarvis resolves case-insensitively; we don't). */
