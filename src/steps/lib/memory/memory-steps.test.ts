@@ -38,8 +38,8 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
   const me = { type: "Self", name: "Me" };
   const ids: Record<string, string> = {};
 
-  it("registers the six steps, and not the shared modules", () => {
-    assert.deepEqual(types.sort(), ["memory/forget", "memory/get", "memory/merge", "memory/ontology", "memory/recall", "memory/remember"]);
+  it("registers the seven steps, and not the shared modules", () => {
+    assert.deepEqual(types.sort(), ["memory/duplicates", "memory/forget", "memory/get", "memory/merge", "memory/ontology", "memory/recall", "memory/remember"]);
   });
 
   it("remember creates Self and the fact, resolving an alias predicate", async () => {
@@ -668,5 +668,67 @@ describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is
       facts: [{ subject: me, predicate: "owes", object: kate, text: "Me owes Kate a tenner." }],
     }, other);
     assert.equal(said.facts[0].about_user_from, undefined);
+  });
+});
+
+describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "strut-memory-dups-"));
+  const ctx = ({
+    runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {},
+    services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "graph.lbug") : undefined) } },
+  }) as unknown as StepContext;
+  let run: (type: string, input: unknown) => Promise<any>;
+  before(async () => {
+    const { registry } = await buildRegistry();
+    run = (type, input) => {
+      const def = registry[type] as unknown as StepDef;
+      return def.run(def.input.parse(input), ctx);
+    };
+  });
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const person = (name: string) => ({ type: "Person", name });
+  const pairOf = (p: any) => [p.a.name, p.b.name].sort().join(" + ");
+
+  it("offers the user saved as a Person, and Kate beside Katie Moss; not unrelated names", async () => {
+    // The name kept on the fact (its object), not read from the sentence.
+    await run("memory/remember", { episode: "I'm Tom Smith.", facts: [{ subject: { type: "Self", name: "Me" }, predicate: "name", object: { type: "Person", name: "Tom Smith" }, text: "I'm Tom Smith." }] });
+    await run("memory/remember", { episode: "Tom Smith and Tom wrote the doc.", mentions: [person("Tom Smith"), person("Tom")] });
+    await run("memory/remember", {
+      episode: "My sister Kate lives in Leeds.",
+      facts: [{ subject: person("Kate"), predicate: "lives_in", object: { type: "Place", name: "Leeds" }, text: "Kate lives in Leeds." }],
+    });
+    await run("memory/remember", {
+      episode: "Katie Moss lives in Leeds.",
+      facts: [{ subject: person("Katie Moss"), predicate: "lives_in", object: { type: "Place", name: "Leeds" }, text: "Katie Moss lives in Leeds." }],
+    });
+    await run("memory/remember", { episode: "Kate Brown and Bob Lee called.", mentions: [person("Katie Brown"), person("Bob Lee"), person("Robert Lee")] });
+    await run("memory/remember", { episode: "Mercury the planet.", mentions: [{ type: "Topic", name: "Mercury" }, person("Mercury")] });
+
+    const pairs = await run("memory/duplicates", {});
+    const names = pairs.map(pairOf);
+    assert.equal(names[0], "Me + Tom Smith", "the user, strongest");
+    assert.equal(pairs[0].a.node_type, "Self");
+    assert.match(pairs[0].reason, /named as the user/);
+    for (const want of ["Kate + Katie Moss", "Bob Lee + Robert Lee", "Mercury + Mercury"]) assert.ok(names.includes(want), `${want} in ${names}`);
+    assert.ok(!names.includes("Katie Brown + Katie Moss"), "different surnames are not offered");
+    assert.ok(!names.includes("Me + Tom"), "a Person with only the user's first name is not offered as the user");
+    for (const p of pairs) {
+      assert.deepEqual(Object.keys(p).sort(), ["a", "b", "reason"]);
+      assert.deepEqual(Object.keys(p.a).sort(), ["name", "node_type", "ref_id"]);
+    }
+    assert.equal((await run("memory/duplicates", { limit: 1 })).length, 1);
+  });
+
+  it("merge records who merged, and a merged-away entity is no longer offered", async () => {
+    const pairs = await run("memory/duplicates", {});
+    const kate = pairs.find((p: any) => pairOf(p) === "Kate + Katie Moss");
+    const [keep, dup] = kate.a.name === "Katie Moss" ? [kate.a, kate.b] : [kate.b, kate.a];
+    const out = await run("memory/merge", { keep: keep.ref_id, duplicate: dup.ref_id, created_by: "janitor" });
+    assert.equal(out.merged.ref_id, dup.ref_id);
+    const query = await memoryDb(ctx);
+    const [row] = await query("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.deleted_reason AS why", { id: dup.ref_id });
+    assert.equal(row!.why, `merged into ${keep.ref_id} by janitor`);
+    assert.ok(!(await run("memory/duplicates", {})).some((p: any) => p.a.ref_id === dup.ref_id || p.b.ref_id === dup.ref_id));
   });
 });

@@ -29,6 +29,7 @@ export default defineStep({
   input: z.object({
     keep: z.string().describe("The ref_id of the entity to keep."),
     duplicate: z.string().describe("The ref_id of the entity that is the same thing."),
+    created_by: z.string().optional().default("agent").describe("Who is merging: 'agent' or 'user'."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -62,7 +63,7 @@ export default defineStep({
       await query("MATCH (d:Entity), (k:Entity) WHERE d.ref_id = $dup AND k.ref_id = $keep CREATE (d)-[:ALIAS_OF]->(k)", { dup, keep });
       await query(
         "MATCH (d:Entity) WHERE d.ref_id = $dup SET d.deleted_at = $now, d.deleted_reason = $why, d.updated_at = $now",
-        { dup, now, why: `merged into ${keep}` },
+        { dup, now, why: `merged into ${keep} by ${cfg.created_by}` },
       );
 
       // Tidy the kept entity's current facts: a repeat, or a second value of a

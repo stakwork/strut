@@ -59,6 +59,7 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
+import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerStore, peersCapability, type Peer } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
@@ -255,6 +256,9 @@ export interface StrutOptions<TServices = unknown> {
    *  appended to the agent's system prompt after strut's — the twin of
    *  `chatSystem`; the merged text is what is hashed. `false` seeds nothing. */
   job?: false | JobSeedOptions;
+  /** The built-in automations strut ships (src/system-workflows.ts),
+   *  installed at boot with their automations off. `false` installs none. */
+  systemWorkflows?: false;
 
   /** The strut graph backend, when the deployment has one (server.ts passes
    *  the one behind its graph-backed workspace). Enables the chat builder's
@@ -755,6 +759,15 @@ export async function createStrut<TServices = unknown>(
       if (changed) console.log(`[job] seeded workflow: job @ ${version}`);
     } catch (err) {
       console.warn(`[job] could not seed the job workflow:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  // The built-in automations strut ships (src/system-workflows.ts): each a
+  // workflow of category "system" plus its automation, installed off. Before
+  // the scheduler's first load, so a new one is scheduled once turned on.
+  if (opts.systemWorkflows !== false) {
+    for (const w of await installSystemWorkflows(workspace)) {
+      if (w.action !== "unchanged" || w.automation) console.log(`[system] ${w.name} @ ${w.version}: ${w.action}${w.automation ? `, automation ${w.automation} (off)` : ""}`);
     }
   }
 
