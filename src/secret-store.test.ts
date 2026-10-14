@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -96,11 +96,42 @@ describe("FileSecretStore", () => {
     assert.deepEqual((await c.list()).map((s) => s.name), ["FIRST", "MODEL", "PORT", "TOKEN"]);
   });
 
-  it("starts afresh over an unreadable file", async () => {
+  it("moves an unreadable file aside, bytes intact, and starts afresh", async () => {
     await writeFile(join(tempDir, "secrets.json"), "{not json");
     const s = new FileSecretStore(tempDir);
+    assert.deepEqual(await s.list(), []);
+    const aside = (await readdir(tempDir)).filter((f) => f.startsWith("secrets.json.corrupt-"));
+    assert.equal(aside.length, 1);
+    assert.equal(await readFile(join(tempDir, aside[0]), "utf-8"), "{not json");
     await s.set("A", "1");
     assert.equal(await new FileSecretStore(tempDir).get("A"), "1");
+  });
+
+  it("leaves a file it can't read in place, and tries again next time", async () => {
+    const file = join(tempDir, "secrets.json");
+    await mkdir(file); // reading a directory fails with EISDIR, not a parse error
+    const s = new FileSecretStore(tempDir);
+    await assert.rejects(() => s.list(), { code: "EISDIR" });
+    assert.ok((await stat(file)).isDirectory());
+    await rm(file, { recursive: true });
+    assert.deepEqual(await s.list(), []);
+  });
+
+  it("writes the file owner-only, tightening an existing 0644 file", async () => {
+    const file = join(tempDir, "secrets.json");
+    await new FileSecretStore(tempDir).set("A", "1");
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+    await chmod(file, 0o644);
+    await new FileSecretStore(tempDir).set("B", "2");
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+  });
+
+  it("leaves no temp files behind", async () => {
+    const s = new FileSecretStore(tempDir);
+    await Promise.all([s.set("A", "1"), s.set("B", "2"), s.delete("A")]);
+    await new FileSecretStore(tempDir, "other.json").set("C", "3");
+    assert.deepEqual((await readdir(tempDir)).sort(), ["other.json", "secrets.json"]);
   });
 
   it("persists encrypted; plaintext never hits disk; round-trips across instances", async () => {
