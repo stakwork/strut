@@ -78,6 +78,10 @@ export interface JobArtifact extends ArtifactRef {
 /** `GET /jobs/:id`. */
 export interface JobView extends Omit<JobListing, "runs" | "holds"> {
   holds: JobHold[];
+  /** The address of what the job holds, by kind: the first hold of each
+   *  kind that has a `url` (`{ pod: "https://…" }`). A job with two pods
+   *  names them by id in `holds`. */
+  urls: Record<string, string>;
   /** The repositories checked out into the directory, relative to it. */
   repos: string[];
   /** Every file in the directory, repositories skipped. */
@@ -156,6 +160,14 @@ export function headTail(s: string, max: number): { text: string; truncated?: tr
   if (s.length <= max) return { text: s };
   const half = Math.max(0, Math.floor(max / 2));
   return { text: `${s.slice(0, half)}\n[... ${s.length - 2 * half} chars truncated ...]\n${s.slice(s.length - half)}`, truncated: true };
+}
+
+/** `urls` (plans/job-claims.md §3): a fold over the holds by kind, the
+ *  first with a url winning. */
+export function holdUrls(holds: readonly JobHold[]): Record<string, string> {
+  const urls: Record<string, string> = {};
+  for (const h of holds) if (h.url && !(h.kind in urls)) urls[h.kind] = h.url;
+  return urls;
 }
 
 /** A record from before `actors` was kept has only its first actor. */
@@ -307,6 +319,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       return {
         ...head,
         holds: rec.holds ?? [],
+        urls: holdUrls(rec.holds ?? []),
         repos: Object.keys(rec.repos).map((dir) => relative(root, dir)),
         files: await listJobFiles(root, rec),
         runs,

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { z } from "zod";
 import type { Flow } from "./core.js";
 import type { SubjectLedgerRow, SubjectRef } from "./graph/claims.js";
-import { VERIFY_NOTIFICATION_PREFIX, buildLedger, formatLedgerLines, formatVerifyNotification, ledgerIsEmpty, subjectsOfFlow } from "./ledger.js";
+import { VERIFY_NOTIFICATION_PREFIX, buildLedger, evidenceLocator, formatLedgerLines, formatVerifyNotification, latestRefs, ledgerIsEmpty, subjectsOfFlow } from "./ledger.js";
 import type { VerifiedCheck } from "./verify.js";
 
 const STEP: SubjectRef = { kind: "step", type: "clip/compute-times" };
@@ -63,6 +63,33 @@ describe("buildLedger", () => {
     assert.deepEqual(ledger["clip/compute-times"]!.map((c) => c.checks.map((k) => k.lastVerify)), [[{ pending: true }, { pending: true }], [{ planned: "slot-1" }]]);
     assert.deepEqual(ledger["youtube-clip"]![0]!.checks[0]!.lastVerify, undefined);
     assert.ok(ledgerIsEmpty(await buildLedger(reader({}), [STEP])));
+  });
+
+  it("latest carries `about` (the version observed) and `locator` (url, file) when the evidence has them — absent otherwise (plans/job-claims.md §6)", async () => {
+    const latest = (over: Partial<SubjectLedgerRow["status"]["latest"] & {}>) => ({
+      ref_id: "e", id: "e1", name: "n", claim_id: "c1", content: "settings reached", observed_at: 99, evidence_mode: "observed", check_id: "k1", ...over,
+    });
+    const rows = {
+      "youtube-clip": [
+        row("c1", "the page renders", "supported", [{ id: "k1", step_type: "http/verify" }], {
+          latest: latest({
+            about: { kind: "workflow", name: "youtube-clip", content_hash: "1700" },
+            source: { ref_id: "r", post_url: "/jobs/j-1/files/shots/001.png", context: { checkVersion: "http/verify@abc", file: "shots/001.png" } },
+          }),
+        }),
+        row("c2", "the api answers", "supported", [{ id: "k2", step_type: "http/verify" }], { latest: latest({ source: { ref_id: "r", post_url: "https://pod.example/api" } }) }),
+        row("c3", "nothing pointed at", "supported", [{ id: "k3" }], { latest: latest({ source: { ref_id: "r", context: { checkVersion: "exec" } } }) }),
+      ],
+    };
+    const ledger = await buildLedger(reader(rows), [WF]);
+    assert.deepEqual(ledger["youtube-clip"]!.map((c) => c.latest), [
+      { content: "settings reached", observed_at: 99, mode: "observed", check: "k1", checkVersion: "http/verify@abc", about: "1700", locator: { url: "/jobs/j-1/files/shots/001.png", file: "shots/001.png" } },
+      { content: "settings reached", observed_at: 99, mode: "observed", check: "k1", locator: { url: "https://pod.example/api" } },
+      { content: "settings reached", observed_at: 99, mode: "observed", check: "k1", checkVersion: "exec" },
+    ]);
+    // The same two fields the panel's listing (claims-authoring listClaims) puts on ITS latest.
+    assert.deepEqual(latestRefs({ about: { kind: "step", name: "s", content_hash: "h" }, source: { ref_id: "r", context: { file: "" } } }), { about: "h" });
+    assert.equal(evidenceLocator({ source: { ref_id: "r", context: { file: 12 } } }), undefined, "a context whose file is not a string points at nothing");
   });
 
   it("a workflow and a step that share a name stay apart", async () => {

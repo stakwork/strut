@@ -38,6 +38,7 @@ import type { GraphBackend } from "./graph/backend.js";
 import { ClaimsReader, isExternalCheck, type CheckPolicy, type CheckRow, type ClaimStatus, type EvidenceRow, type RunEvidenceRow, type RunWhen, type SubjectRef } from "./graph/claims.js";
 import { ClaimsError, ClaimsWriter, boundedName, type CheckData } from "./graph/claims-writer.js";
 import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
+import { latestRefs, type EvidenceLocator } from "./ledger.js";
 
 // ── Inputs (the tool-facing shapes) ─────────────────────────────────────────
 
@@ -141,8 +142,19 @@ export interface ClaimListing {
   assertedOnly: boolean;
   unverified: number;
   openSlot: boolean;
-  /** The newest evidence carrying the verdict. */
-  latest?: { content?: string; observedAt?: number; mode?: string; check?: string; checkVersion?: string; by?: string; run?: { name?: string; runId?: string; path?: string } };
+  /** The newest evidence carrying the verdict. `about` is the version it
+   *  observed; `locator` where to look (a job file's url, a file). */
+  latest?: {
+    content?: string;
+    observedAt?: number;
+    mode?: string;
+    check?: string;
+    checkVersion?: string;
+    by?: string;
+    run?: { name?: string; runId?: string; path?: string };
+    about?: string;
+    locator?: EvidenceLocator;
+  };
   /** Open questions an external check is waiting on — the panel's to-dos. */
   slots: Array<{ evidence: string; check?: string; question?: string; run?: { name?: string; runId?: string; path?: string } }>;
   checks: Array<{
@@ -572,6 +584,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
                     ...(r.status.latest.source?.context?.checkVersion ? { checkVersion: r.status.latest.source.context.checkVersion } : {}),
                     ...(r.status.latest.source?.context?.by ? { by: r.status.latest.source.context.by } : {}),
                     ...(r.status.latest.source?.run_id ? { run: runOf(r.status.latest) } : {}),
+                    ...latestRefs(r.status.latest),
                   },
                 }
               : {}),
