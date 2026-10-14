@@ -546,7 +546,8 @@ export { JARVIS_ONTOLOGY, type OntologyFixture } from "./graph/fixtures/jarvis-o
 export { MiniLMEmbedder, EmbeddingPass, EMBEDDING_DIM, type EmbeddingPassOptions, type EmbeddingPassStatus } from "./graph/embeddings.js";
 export { reconcileIndexLists, widenedIndex, type IndexReconcileReport } from "./graph/index-reconcile.js";
 export {
-  GraphReader,
+  type GraphReader,
+  Neo4jReader,
   GraphReadError,
   type NodeEnvelope,
   type EdgeEnvelope,
@@ -575,6 +576,7 @@ export type { GraphEngine, GraphKind, GraphTx, Dialect, NodeEngine, EdgeEngine, 
 export { Neo4jEngine, asEngine, NEO4J_DIALECT } from "./graph/neo4j-engine.js";
 // The Ladybug engine: the graph layer strut owns on one file (plans/ladybug-backend.md).
 export { LadybugEngine, LADYBUG_DIALECT } from "./graph/ladybug/engine.js";
+export { LadybugReader, type LadybugReaderOptions } from "./graph/ladybug/reader.js";
 export { openLadybug, loadLadybug, ddlStatements as ladybugDdl, type LadybugHandle } from "./graph/ladybug/db.js";
 export { LADYBUG_SCHEMAS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, ladybugSchema, ladybugEdge, nodeColumns as ladybugNodeColumns } from "./graph/ladybug/registry.js";
 // Read-only raw Cypher (the chat builder's graph_query tool).

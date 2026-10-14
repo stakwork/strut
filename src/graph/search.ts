@@ -13,6 +13,15 @@
  *
  * Everything jarvis does beyond these (radar, scratchpad, legal boosts,
  * paid-property stripping, S3 presigning, GDS) is out of scope by design.
+ *
+ * `GraphReader` is the INTERFACE every consumer reads through
+ * (`backend.reader`: the `graph/*` steps, `GET /graph/nodes`, the walk);
+ * `Neo4jReader` below is jarvis's read paths over bolt, and
+ * `ladybug/reader.ts` the same surface over one Ladybug file
+ * (plans/ladybug-backend.md §6, slice 3). The ranking — `fuseHits`,
+ * `applyTitleBoost`, `applyUsageTiebreak`, `serializeNode` and the rest of
+ * the pure helpers — is shared: an engine's retrievers hand back `Hit`s
+ * and the same pipeline orders them.
  */
 import { randomUUID } from "node:crypto";
 import type { ManagedTransaction } from "neo4j-driver";
@@ -362,7 +371,7 @@ export interface RankedEntry {
   extra: { score: number; match_type: string };
 }
 
-function refIdOf(n: HitNode): string {
+export function refIdOf(n: HitNode): string {
   return String(n.properties["ref_id"] ?? "");
 }
 
@@ -378,7 +387,8 @@ export function rankHits(hits: Hit[]): Hit[] {
   return [...best.values()].sort((a, b) => b.raw_score - a.raw_score);
 }
 
-const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+/** String order for the ranking's tiebreaks. */
+export const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** `_fuse_search_hits`: weighted RRF, `(-score, best_rank, ref_id)` order,
  *  score normalized to the top entry. `weights` per source; a source it
@@ -417,6 +427,23 @@ export function fuseHits(fulltext: Hit[], semantic: Hit[], buckets: Record<strin
     };
   }
   return ranked;
+}
+
+/** jarvis wraps every retriever in try/except and logs — a failing layer
+ *  (Lucene clause explosion, a missing index, a model gap) must never sink
+ *  the whole search. The wrapper pushes the message onto `warnings` and
+ *  returns `empty` for that layer. */
+export function retrieverLayer(warnings: string[]): <T>(name: string, fn: () => Promise<T>, empty: T) => Promise<T> {
+  return async (name, fn, empty) => {
+    try {
+      return await fn();
+    } catch (e) {
+      const msg = `${name} layer error: ${(e as Error)?.message?.split("\n")[0] ?? String(e)}`;
+      warnings.push(msg);
+      console.warn(`[graph search] ${msg}`);
+      return empty;
+    }
+  };
 }
 
 export function titleMatchMultiplier(qLower: string, valLower: string): number {
@@ -481,7 +508,8 @@ export function serializeNode(n: HitNode, extra?: Record<string, unknown>): Node
   return out;
 }
 
-function serializeEdge(type: string, props: Record<string, unknown>, source: string, target: string): EdgeEnvelope {
+/** `_serialize_edge`: the edge envelope, generic stamps stripped. */
+export function serializeEdge(type: string, props: Record<string, unknown>, source: string, target: string): EdgeEnvelope {
   const filtered: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_EDGE_PROPERTIES.has(k)) filtered[k] = v;
   const out: EdgeEnvelope = { source, target, ref_id: String(props["ref_id"] ?? ""), edge_type: type, properties: filtered };
@@ -498,7 +526,7 @@ function visibility(alias: string): string {
 }
 
 /** GET /v2/nodes/:ref_id's response shape for one node. */
-function envelope(n: HitNode): NodeEnvelope {
+export function envelope(n: HitNode): NodeEnvelope {
   const p = n.properties;
   const env = serializeNode(n);
   delete env.date_added_to_graph;
@@ -531,7 +559,45 @@ export interface NameHit {
   description?: string;
 }
 
-export class GraphReader {
+/**
+ * The read surface, whatever the engine. Every method answers in jarvis's
+ * shapes (above); a backend's `reader` is one of these. The Neo4j reader
+ * resolves types through the live Schema meta-graph and routes a search
+ * through domain indexes; the Ladybug reader resolves them from the
+ * closed registry and reads one FTS and one HNSW index. What one engine
+ * cannot answer it says so: a namespace other than `default` or a
+ * `registerNamespace` on a Ladybug file is a `GraphReadError`.
+ */
+export interface GraphReader {
+  /** Registered namespaces beyond the implicit `default`. */
+  listNamespaces(): Promise<string[]>;
+  /** Idempotent `POST /namespace`. */
+  registerNamespace(name: string): Promise<{ namespace: string; created: boolean }>;
+  /** `default` always resolves; anything else must be registered. */
+  resolveNamespace(namespace: string | undefined): Promise<string>;
+  /** GET /v2/nodes/:ref_id — null when absent or hidden. */
+  getNode(ref_id: string): Promise<NodeEnvelope | null>;
+  /** The node of `type` under `node_key` — an exact lookup, never a search. */
+  getNodeByKey(type: string, node_key: string, namespace?: string): Promise<NodeEnvelope | null>;
+  /** The nodes of `type` whose name contains a fragment — the typeahead. */
+  namesLike(type: string, q: string, limit?: number, namespace?: string): Promise<NameHit[]>;
+  /** `(edge_type, target_type, direction) → count` around one node. */
+  connectionCounts(ref_id: string, namespace?: string): Promise<ConnectionCount[]>;
+  /** `{ref_id: {EDGE_TYPE: count}}` for a batch of nodes. */
+  edgeCounts(ref_ids: string[], namespace: string, pinNamespace?: boolean): Promise<Record<string, Record<string, number>>>;
+  /** One hop out, importance first, with the source node in `nodes`. */
+  neighbors(ref_id: string, p?: NeighborsParams): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }>;
+  /** Hybrid search: keyword + semantic, fused, boosted, paged. */
+  search(p: SearchParams): Promise<SearchResult>;
+  /** Every schema, split into core keys + attributes, with the edge triples. */
+  listSchemas(opts?: { domains?: string[]; includeDeleted?: boolean }): Promise<{ schemas: SchemaEnvelope[]; edges: OntologyEdge[] }>;
+  /** One schema by type, case-insensitive; null when unknown. */
+  getSchema(type: string): Promise<SchemaEnvelope | null>;
+}
+
+/** jarvis's read paths over bolt: the live `:Schema` meta-graph, domain
+ *  routing, Lucene. */
+export class Neo4jReader implements GraphReader {
   constructor(
     private readonly bolt: Bolt,
     private readonly opts: GraphReaderOptions = {},
@@ -832,19 +898,7 @@ export class GraphReader {
       let ftTruncated = false;
       let semTruncated = false;
       const warnings: string[] = [];
-      // jarvis wraps every retriever in try/except and logs — a failing
-      // layer (Lucene clause explosion, missing index, model gap) must never
-      // sink the whole search.
-      const layer = async <T>(name: string, fn: () => Promise<T>, empty: T): Promise<T> => {
-        try {
-          return await fn();
-        } catch (e) {
-          const msg = `${name} layer error: ${(e as Error)?.message?.split("\n")[0] ?? String(e)}`;
-          warnings.push(msg);
-          console.warn(`[graph search] ${msg}`);
-          return empty;
-        }
-      };
+      const layer = retrieverLayer(warnings);
 
       const runFulltext = async (indexes: string[], lucene: string, k: number): Promise<Hit[]> => {
         const all: Hit[] = [];

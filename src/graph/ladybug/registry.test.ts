@@ -68,6 +68,6 @@ describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
     for (const k of ["is_deleted", "is_muted", "relevancy_score", "weight", "unique_source_id", "_search_fields_used", "input_embeddings", "attrs", "domain"]) assert.ok(!(k in cols), k);
     for (const k of Object.keys(GENERIC_COLUMNS)) assert.ok(cols[k], k);
     assert.ok(Object.keys(cols).length > 60 && Object.keys(cols).length < 100, `${Object.keys(cols).length} columns`);
-    assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "date_added_to_graph", "weight", "strength", "context", "start_time", "end_time", "post_url"]);
+    assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "date_added_to_graph", "weight", "importance", "strength", "context", "start_time", "end_time", "post_url"]);
   });
 });

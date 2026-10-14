@@ -13,7 +13,7 @@ import { JARVIS_ONTOLOGY } from "./fixtures/jarvis-ontology.js";
 import { EDGE_TYPES_ALLOWLIST, SchemaResolver } from "./schema-resolver.js";
 import { GraphValidationError, NodeWriter, buildSearchText } from "./node-writer.js";
 import { EdgeWriter } from "./edge-writer.js";
-import { GraphReader } from "./search.js";
+import { Neo4jReader } from "./search.js";
 import type { GraphBackend } from "./backend.js";
 import { createNodeSchema } from "./schema-crud.js";
 import { graphSnapshot, rawEdge, schemaObjectNames, testBackends, testGraphConfig, wipeGraph } from "./test-util.js";
@@ -211,7 +211,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     await assert.rejects(nodes.write({ type: "Nope", data: { name: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
     // Completion-marker update (the harvey ingest dedupe): status is a Document attr.
     await nodes.update(docRef, { set: { status: "ingested" } });
-    const got = await new GraphReader(bolt).getNode(docRef);
+    const got = await new Neo4jReader(bolt).getNode(docRef);
     assert.equal(got?.properties["status"], "ingested");
   });
 
@@ -251,7 +251,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     assert.deepEqual(rs.map((r) => r.edge_key), ["has_requirement", "has_trigger", "has_output", "has_criterion_result", "has_trigger"]);
     await assert.rejects(edges.write({ edge: "HAS_OUTPUT", source_ref_id: evalset!.ref_id, target_ref_id: trigger!.ref_id }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE");
     // Namespace scoping + counts read back like jarvis.
-    const reader = new GraphReader(bolt, { resolver });
+    const reader = new Neo4jReader(bolt, { resolver });
     assert.deepEqual(await reader.connectionCounts(evalset!.ref_id), [
       { edge_type: "HAS_REQUIREMENT", target_type: "EvalRequirement", direction: "out", count: 1 },
       { edge_type: "HAS_TRIGGER", target_type: "EvalTrigger", direction: "out", count: 1 },
@@ -268,7 +268,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
 
   it("search + ontology cover jarvis types (type filter is case-insensitive)", async () => {
     await bolt.run(`CALL db.awaitIndexes(60)`);
-    const reader = new GraphReader(bolt, { resolver });
+    const reader = new Neo4jReader(bolt, { resolver });
     const r = await reader.search({ q: "Data Room", types: ["document"], domains: ["content"] });
     assert.equal(r.nodes[0]?.ref_id, docRef);
     assert.equal(r.nodes[0]?.node_type, "Document");
