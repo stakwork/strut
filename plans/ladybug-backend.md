@@ -1,48 +1,57 @@
-# LadybugDB graph backend — one file, the whole graph layer
+# LadybugDB graph backend — one file, the graph layer strut owns
 
-**Status (2026-10-14): decided (§7), probed, nothing built.** The dialect and
-performance facts in §2 come from two scratch probes run against
-`@ladybugdb/core` 0.21.2 on darwin-arm64 on the day of writing; everything
-else is a plan. Supersedes the "idea, not decided" sketch in
-`local-desktop-and-stt.md` §3.1. Companions: `jarvis-graph-compat.md` (the
-node model the Neo4j backend implements), `generic-storage.md` §7 (the
-storage boundary), `claims.md` (why claims need a graph).
+**Status (2026-10-14): decided (§7), probed, slice 1 in progress.** The
+dialect and performance facts in §2 come from scratch probes against
+`@ladybugdb/core` 0.21.2 on darwin-arm64. Supersedes the "idea, not
+decided" sketch in `local-desktop-and-stt.md` §3.1 and the first draft of
+this plan, which kept the whole jarvis ontology (ruling 6). Companions:
+`jarvis-graph-compat.md` (the node model the Neo4j backend implements),
+`generic-storage.md` §7 (the storage boundary), `claims.md` (why claims
+need a graph).
 
 ## Goal
 
-A desktop strut is a FULL graph-backed strut — the graph workspace store,
-claims / checks / evidence and the verify pass, the run projector, the
-`graph/*` steps, hybrid search, the builder's `graph_query` / `graph_get` /
-`graph_walk`, the run flyout's accessed nodes — on **one LadybugDB file
-under `dataDir`**. No Neo4j, no JVM, no daemon, no port. Today all of that
-exists only on `Neo4jWorkspaceStore`; the fs workspace has no claims
-(`GET /claims` → `{ enabled: false }`), and the desktop runs fs.
+A desktop strut keeps the graph layer **strut itself owns** on one
+LadybugDB file under `dataDir`: the graph workspace store (workflows and
+steps as nodes), the runs and jobs the projector mirrors, claims / checks /
+evidence and the verify pass, and Concepts — the knowledge tree the job
+agent reads. No Neo4j, no JVM, no daemon, no port. Today all of that exists
+only on the Neo4j backend; the fs workspace has no claims (`GET /claims` →
+`{ enabled: false }`), and the desktop runs fs.
 
 Third backend after Neo4j and fs: `STRUT_WORKSPACE_BACKEND=ladybug`.
 
 ## Non-goals
 
+- **A clean break from the jarvis schemas.** The Ladybug file holds TEN
+  node types, declared in code (§3), and nothing else: no `:Schema`
+  meta-graph, no `About`, no CHILD_OF ancestor walks, no bundled ontology,
+  no runtime schema registration, no `IS_ALIAS` rewrite. Document,
+  Person, EvalSet and the other 140 jarvis types do not exist there. The
+  Neo4j backend keeps all of that as it is — jarvis owns that graph.
+- **Not the generic `graph/*` surface.** `graph/create-schema`,
+  `graph/create-node` of an arbitrary type, `graph_query` over jarvis types:
+  Neo4j only. What a desktop needs is the workspace store, the claim
+  layer, and Concept reads; the read surface in slice 3 is sized to that.
 - **Runs, chats, secrets, sessions, artifacts stay in their file stores.**
-  On the Neo4j backend they are files under `dataDir` too, and the projector
-  mirrors every finished run into the graph; the same here. "One file" means
-  the GRAPH layer in one file. A `LadybugRunStore` is a separate decision
-  (§9).
+  On Neo4j they are files under `dataDir` too, and the projector mirrors
+  finished runs into the graph; the same here. "One file" means the GRAPH
+  layer in one file. A `LadybugRunStore` is a separate decision (§9).
 - **Not replacing Neo4j on swarms**, and not jarvis reading a Ladybug file.
-  The rows stay jarvis-SHAPED (§3) so a desktop graph can be pushed to a
-  swarm's Neo4j later as a row → labels mapping; nothing more.
-- **`memory/*` keeps its own file and tables** (ruling 2026-10-13: Graphiti
-  shape, not behind `GraphBackend`). The shared handle in §3.2 makes "same
-  file" a path change later; this plan does not make it.
-- **No runtime translation of Neo4j Cypher text.** A regex layer that turns
-  `MATCH (c:Claim …)` into Ladybug Cypher would fail unreadably on the first
-  statement it misparsed. Engine-specific code is engine-specific code.
+  The rows keep jarvis's identity scheme (`ref_id`, `node_key`,
+  `date_added_to_graph`) so a desktop graph can be pushed to a swarm later
+  as a row → labels mapping; nothing more.
+- **`memory/*` keeps its own file and tables** (ruling 2026-10-13). The
+  shared handle (§3.2) makes "same file" a path change later.
+- **No runtime translation of Neo4j Cypher text.** Engine-specific code is
+  engine-specific code.
 
 ## 1. What exists — the seam today
 
 `GraphBackend` (`src/graph/backend.ts`) is one object: `{ cfg, bolt, nodes,
-edges, reader, schemas, embedder, embeddings, close }`. Every byte of Cypher
-goes through `Bolt` (`bolt.ts`, the neo4j-driver wrapper): 17 files, ~230
-statements. Who issues them, and what kind:
+edges, reader, schemas, embedder, embeddings, close }`. Before slice 1
+every byte of Cypher went through `Bolt` (`bolt.ts`, the neo4j-driver
+wrapper): 17 files, ~230 statements. Who issues them, and what kind:
 
 | Module | Statements | Kind |
 | --- | --- | --- |
@@ -61,8 +70,7 @@ statements. Who issues them, and what kind:
 
 Never touch `bolt`: `claims-writer.ts`, `claims-authoring.ts`, `verify.ts`,
 `ledger.ts`, the chat tools, `createStrut.ts` (the claims gate is
-`workspace.graph`), and every `graph/*` step except `create-schema`
-(`createNodeSchema(b.bolt, …)`).
+`workspace.graph`), and every `graph/*` step except `create-schema`.
 
 The node model (jarvis's, `jarvis-graph-compat.md`): a node carries labels
 `Type:Node:Data_Bank:Domain_*`; identity `(node_key, namespace)` with a
@@ -75,186 +83,204 @@ edge rows are the registry in `strut-schemas.ts`; `Claim` / `Check` /
 
 ## 2. Probe facts (2026-10-14, `@ladybugdb/core` 0.21.2, darwin-arm64)
 
-Run in a scratch folder against a one-`Node`-table schema with 100k rows
-(the shape §3 proposes). Not in the repo; the first slice turns them into
-tests.
+Run in a scratch folder against a one-`Node`-table schema (the shape §3
+proposes). Slice 1's tests pin what it relies on.
 
 **Works:**
 
-- DDL: `CREATE NODE TABLE … FLOAT[384]` with a backticked `Data_Bank`
-  column; `ALTER TABLE ADD IF NOT EXISTS` on node and rel tables, with
-  indexes present and inside a transaction; one `REL TABLE` per edge type
-  `FROM Node TO Node` with properties; `CALL SHOW_TABLES()` /
-  `TABLE_INFO()` / `SHOW_CONNECTION()` / `SHOW_INDEXES()`.
+- DDL: `CREATE NODE TABLE … FLOAT[384]` with backticked `Data_Bank` and
+  `_search_fields_used` columns; `ALTER TABLE ADD IF NOT EXISTS` on node
+  and rel tables, with indexes present and inside a transaction (60
+  ALTERs ≈ 250 ms the first time, 10 ms when they are no-ops); one
+  `REL TABLE` per edge type `FROM Node TO Node` with properties; a rel
+  table with TWO pairs (`CHILD_OF(FROM Schema TO Schema, FROM Node TO
+  Node)`); `CALL SHOW_TABLES()` / `TABLE_INFO()` / `SHOW_CONNECTION()` /
+  `SHOW_INDEXES()`. A fresh open with the two extensions ≈ 45 ms.
 - `MERGE` keyed on the PRIMARY KEY with `ON CREATE SET` / `ON MATCH SET`;
-  `UNWIND $rows` over a list of structs (null fields fine) for `CREATE` and
-  `MATCH … SET`; `MATCH (n:Node {a: $x, b: $y})` inline patterns.
+  `MERGE (a)-[r:E {edge_key: $k}]->(b)` between two bound nodes; `UNWIND
+  $rows` over a list of structs (null fields, a `FLOAT[384]` and a
+  `STRING[]` inside the struct all fine) for `CREATE` and `MATCH … SET`
+  with explicit column lists; `MATCH (n:Node {a: $x, b: $y})` inline
+  patterns; a `UNWIND $keys AS k MATCH (n:Node {node_key: k …})`
+  pre-read.
 - `OPTIONAL MATCH … WHERE` on a pattern connected to a bound variable;
-  `EXISTS { MATCH … }` subqueries, nested rel chains included; `x IN [..]`,
-  `CASE WHEN` (also in `ORDER BY`), `coalesce`; multi-type rels
-  `-[r:A|B]->`; unlabeled `-[r]->` across every rel table + `label(r)`;
-  `DELETE r` with a count; `RETURN n` (a struct of every column, nulls
-  present), `properties(n)`, `label(n)`, `{a: n.a, b: n.b} AS m`.
-- Functions: `lower` and `toLower`, `CONTAINS` / `STARTS WITH` and
-  `contains()` / `starts_with()`, `=~` and `regexp_matches`, `any` / `all`
-  / `none`, `size`, `list_contains`, `range`, `list_reduce`, `list_filter`
-  / `list_transform` lambdas, `gen_random_uuid`, `CAST` / `to_int64`,
-  `string_split`, `count(DISTINCT)`, `SKIP` / `LIMIT`.
-- Params: lists in `IN`, null (`$x IS NULL OR …`), booleans, `FLOAT[384]`
-  on `SET` with or without `CAST`, `STRING[]`.
-- Paths: `-[:E* SHORTEST 1..10]->`; the recursive-rel filter
-  `(r, n | WHERE …)`.
+  `EXISTS { MATCH … }` subqueries; `x IN [..]`, `CASE WHEN` (also in
+  `ORDER BY`), `coalesce`; multi-type rels `-[r:A|B]->`; unlabeled
+  `-[r]->` across every rel table + `label(r)`; undirected `-[r]-` reads;
+  `DELETE r` with a count; `DETACH DELETE n`; `RETURN n` (a struct of
+  every column, nulls present, plus `_label` / `_id`), `properties(r)`
+  (user props only), `{a: n.a, b: n.b} AS m` (nulls present).
+- Functions: `lower` and `toLower`, `CONTAINS` / `STARTS WITH`, `=~`,
+  `any` / `all` / `none`, `size`, `list_contains`, `range`, `list_reduce`,
+  `list_filter` / `list_transform` lambdas, `gen_random_uuid`, `CAST` /
+  `to_int64`, `string_split`, `count(DISTINCT)`, `SKIP` / `LIMIT`.
+- Params: lists in `IN`, null, booleans, `FLOAT[384]` on `SET` with or
+  without `CAST`, `STRING[]`; a JS number into an INT64 column (a
+  fraction is truncated — the writer validates ints first). INT64 reads
+  back as a plain JS `number`.
+- Paths: `-[:E* SHORTEST 1..10]->` with the recursive-rel filter
+  `(r, n | WHERE …)`; `length(p)`.
 - Transactions: `BEGIN TRANSACTION` … DDL + writes … `COMMIT` / `ROLLBACK`;
-  snapshot isolation — a second `Connection` on the same `Database` sees
-  committed state only. A second `Database` handle on the same file in
-  the same process opened too (read-write AND read-only); the plan still
-  uses one handle per file (§3.2).
-- Extensions: `LOAD EXTENSION '<absolute path>'` (the bundled form);
-  `CALL CREATE_VECTOR_INDEX('Node', 'node_vec', 'text_embeddings')` with
-  most vectors NULL; `QUERY_VECTOR_INDEX('Node', 'node_vec', $v, k)` with
-  a PLAIN parameter (a `CAST(...)` expression there is rejected), `efs :=`,
-  and `WITH node, distance WHERE …` post-filters; **the HNSW index tracks
-  rows embedded or re-embedded after it was built**.
-  `CREATE_FTS_INDEX('Node', 'node_fts', ['Data_Bank', 'name'], stemmer :=
-  'porter')`, `QUERY_FTS_INDEX(…, conjunctive := true, top := k)` with
-  `WITH node, score WHERE …`; **the FTS index tracks later inserts and
-  updates** (no rebuild); quotes and slashes in a query do not error.
+  snapshot isolation — a second `Connection` sees committed state only.
+  A second `Database` handle on the same file opened READ-ONLY while the
+  first is open (`new Database(path, 0, true, true)`).
+- Extensions: `LOAD EXTENSION '<absolute path>'` (the bundled form, from
+  `~/.lbdb/extension/0.21.0/<platform>/<name>/lib<name>.lbug_extension`);
+  `CALL CREATE_VECTOR_INDEX('Node', 'node_vec', 'text_embeddings', metric
+  := 'cosine')` with every vector NULL; `CREATE_FTS_INDEX('Node',
+  'node_fts', ['Data_Bank', 'name'], stemmer := 'porter')`; both track
+  later inserts and updates (no rebuild).
+- The addon: `@ladybugdb/core` is a shim whose install script copies
+  `lbugjs.node` from the platform package; with scripts blocked (CI's
+  `--ignore-scripts`) the shim fails to load but
+  `@ladybugdb/core-<platform>-<arch>` loads directly — the handle tries
+  both (§3.2).
 
 **Does not work (and the rewrite):**
 
 - `MERGE` on a non-PK pattern — `Create node n expects primary key ref_id
-  as input` → identity `(node_key, namespace)` is resolved by a pre-read
-  in the write transaction, then `CREATE` or `SET` (§4, node engine).
+  as input` → identity `(node_type, node_key)` is resolved by a pre-read in
+  the write transaction, then `CREATE` or `SET` (§4, node engine).
 - `SET n += map` → explicit column lists, built in TS from the schema.
+- **`OPTIONAL MATCH … collect(…)` loses the OUTER row's fields** when the
+  optional side matched nothing and the outer pattern carried inline
+  properties (`MATCH (w:Node {node_type: 'X'}) OPTIONAL MATCH (v)-[…]->(w)
+  RETURN w.ref_id, collect(v.ref_id)` returns `null` for `w.ref_id` on a
+  row with no `v`). The two list reads are two statements joined in TS on
+  both engines (§4).
 - List comprehensions `[x IN l WHERE … | …]` and dynamic property reads
   `n[f]` → `list_filter` / `list_transform`; one table makes the dynamic
   read unnecessary (columns are known).
 - `WITH … ORDER BY` without `SKIP`/`LIMIT` → order in `RETURN` or in TS.
-- `OPTIONAL MATCH` on a pattern NOT connected to a bound variable
-  (`Variable w is not in scope`) → connect it (`(v)-[:VERSION_OF]->(w)`)
-  or two reads joined in TS.
+- `OPTIONAL MATCH` on a pattern NOT connected to a bound variable →
+  connect it, or two reads joined in TS.
 - Undirected `DELETE`, and an aggregate followed by `DELETE` in one
   statement → the soft-delete tail is three statements in one transaction.
 - A pattern naming a table that does not exist is a BINDER ERROR, not an
-  empty result → a TS registry of existing rel tables (§3.1).
+  empty result → every edge type the file knows has its rel table from
+  the first open (§3.1); nothing else is ever named.
+- **A failed statement inside a transaction ends it**: the engine rolls
+  back and the NEXT statement runs auto-commit and persists. The handle's
+  `withWrite` refuses every statement after the first failure with that
+  failure, and skips the ROLLBACK.
+- A string param into an INT64 column is a binder error (no implicit
+  cast); `undefined` in a param is not a value (the handle writes null).
 - Neo4j names: `randomUUID`, `toInteger`, `split`, `reduce`, `keys()`,
   `timestamp()`, `elementId`, `labels()`, `type(r)`, `startNode` /
-  `endNode`, `properties()` on a map, `CAST(timestamp AS INT64)` → dialect
-  helpers (§4); stamps come from TS as they already do for
-  `date_added_to_graph`.
+  `endNode`, `properties()` on a map → dialect helpers (§4); stamps come
+  from TS as they already do for `date_added_to_graph`.
 
 **Numbers (100k rows, no vectors unless said):** bulk `CREATE` 12.5k rows/s;
-PK lookup 0.6 ms; non-PK scan (`node_key` + `namespace`) 12 ms; a 200-key
+PK lookup 0.6 ms; non-PK scan (`node_key` + `node_type`) 12 ms; a 200-key
 pre-read in one `UNWIND` 10 ms; `lower(name) CONTAINS` scan 8 ms; HNSW
 build on 100k mostly-NULL vectors 85 ms; vector query k=5 10 ms; FTS build
-1.2 s, query 20–60 ms, rebuild 1.1 s; file 51 MB. Earlier measurements
-(2026-10-13, same package): HNSW build over 100k real vectors 47 s,
-incremental insert into an existing index ≈ 12 ms per vector; one
-read-write PROCESS per file (a second gets a lock error), N read-only.
+1.2 s, query 20–60 ms; file 51 MB. Earlier (2026-10-13): HNSW build over
+100k real vectors 47 s, incremental insert ≈ 12 ms per vector; one
+read-write PROCESS per file, N read-only.
 
-## 3. The decision: jarvis-shaped rows in Ladybug-native tables
+## 3. The decision: a closed registry of ten types, in code
 
-`local-desktop-and-stt.md` §3.1 asked how much to conform. The answer is
-**conform at the DATA level, not the storage level.** Every row keeps
-`ref_id`, `node_key`, `namespace`, `node_type`, `Data_Bank`,
-`text_embeddings`, `date_added_to_graph`, `deleted_at` / `is_deleted` /
-`is_muted`, the same ids and keys, and every attribute is validated
-against the same Schema meta-graph by the same TS code. Nothing of Neo4j's
-STORAGE comes along: no multi-label nodes, no constraints, no Lucene.
+**Ladybug holds exactly these node types** (ruling 6):
 
-Why: the writers' validation and composition, the claim contract, the
-projector fold, the ledger, the UI and the `graph/*` step contracts do not
-change at all; a push to a swarm is `(node_type, domain) → labels`; and
-ONE node table gives one HNSW and one FTS index. The alternative — a node
-table per type, the `memory/*` pattern — is Ladybug-idiomatic but costs a
-DDL per registered type (the bundled ontology has 153), N index calls per
-untyped search, and 150 HNSW builds, for no gain the data model needs.
+| Group | Types | Why |
+| --- | --- | --- |
+| the workspace store | `StrutWorkflow`, `StrutWorkflowVersion`, `StrutStep`, `StrutStepVersion` | what `GraphWorkspaceStore` reads and writes |
+| execution | `StrutRun`, `StrutJob` | evidence hangs off a run (`HAS_SOURCE`), `EXECUTED` ties it to the version; one node per job with its title and deliverables |
+| the truth layer | `Claim`, `Check`, `Evidence` | plans/claims.md |
+| knowledge | `Concept` | the tree the job agent reads, `CHILD_OF` between Concepts |
+
+Dropped from the file: `StrutAgentSession`, `StrutToolCall`, `StrutChat`,
+`StrutTurn` (swarm bookkeeping — a tool call exists so an `ACCESSED` edge
+can point at the Concept an agent read, and nothing on the desktop writes
+those; the run flyout and the Jobs sidebar read the event log), `Person`
+(so no `PUBLISHED_BY`), `Thing` as a node, and the edges `IS_ALIAS`,
+`ACCESSED`, `IN_RUN`, `IN_SESSION`, `SPAWNED`, `IN_CHAT`. The projector
+skips the dropped types on Ladybug (slice 2); Neo4j keeps writing them.
+
+**The registry is `src/graph/ladybug/registry.ts`**: the six Strut schemas
+by name from `strut-schemas.ts` (with `Thing`'s vestige attributes —
+`weight`, `is_muted`, `unique_source_id`, `image_url` — left off; `name`
+and `description` kept), and the four jarvis-named types declared with
+exactly the attributes strut writes and reads: `Claim` (`id`, `name`,
+`claim_text`, `speaker_name`, `belief_valid_from`, `belief_valid_to`),
+`Check` (the thirteen `CHECK_FIELDS` of `claims.ts`), `Evidence` (`id`,
+`name`, `description`, `content`, `evidence_mode`, `evidence_status`,
+`observed_at`), `Concept` (`name`, `description`, `docs`, `id`, `repo`,
+`file`, `pr_numbers`, `commit_shas` — jarvis's string `created_at` /
+`last_updated` and the deprecated `documentation` left off; a row's
+creation is `date_added_to_graph`). Same `node_key` specs, same edge
+names as jarvis, so the ids and keys a desktop writes match a swarm's. The
+edge registry: the Strut rows whose ends are kept types, the six claim
+edges with their endpoint types (`ABOUT` from a Claim to a Workflow or
+Step and from Evidence to a Version; `TESTS`; `EVIDENCED_BY`;
+`PRODUCED_BY`; `HAS_SOURCE`; `SUPERSEDES` for Claims and for Checks), and
+`Concept -[CHILD_OF]-> Concept`. The module asserts at load that no two
+types declare one attribute name with different column types.
+
+**Conform at the DATA level, not the storage level.** Every row keeps
+`ref_id`, `node_key`, `namespace` (always `default`; kept because the
+shared writer stamps it and every pattern carries it), `date_added_to_graph`,
+`deleted_at`, `Data_Bank`, `text_embeddings`, and its attributes under
+their jarvis names, validated and composed by the SAME TS code the Neo4j
+backend runs. Nothing of Neo4j's STORAGE comes along (no labels, no
+constraints, no Lucene) and none of jarvis's unread stamps: no
+`is_deleted` (soft-deleted = `deleted_at` set), no `is_muted`, no
+`relevancy_score`, `weight`, `unique_source_id`, `_search_fields_used`,
+no per-stem `input_embeddings` / `output_embeddings`, no `Domain_*`
+(the registry knows a type's domain). Why: the writers' validation and
+composition, the claim contract, the projector fold, the ledger and the
+UI do not change; one node table gives one HNSW and one FTS index; a
+push to a swarm is `node_type → labels` plus the stamps jarvis expects.
 
 ### 3.1 Tables
 
-- **`Node`** — one table, PRIMARY KEY `ref_id` (what edges, claims, the
-  projector and every read key on; the only hash lookup Ladybug has).
-  Columns:
-  - generic: `node_key`, `namespace`, `node_type` (the type label),
-    `domain` (`strut` / the Schema's domain, lower — the `Domain_*` label
-    as a value), `Data_Bank`, `text_embeddings FLOAT[384]`,
-    `date_added_to_graph INT64`, `updated_at`, `deleted_at INT64`,
-    `is_deleted BOOL`, `is_muted BOOL`, `relevancy_score`, `weight`;
-  - **hot columns**: every attribute of the ten Strut types (55 names, no
-    type conflicts among them), every attribute of `Claim` / `Check` /
-    `Evidence` (32, no conflicts with Strut's), and `name`,
-    `description`, `status`, `importance` (what reads filter and order
-    on: `namesLike`, `visibility()`, neighbors). Grammar → column type:
-    `string` STRING, `int` / `datetime` INT64 (epoch seconds, as the
-    writer already normalizes), `float` DOUBLE, `boolean` BOOL, `list`
-    STRING[]. Added with `ALTER TABLE Node ADD IF NOT EXISTS` at open
-    from the registries — the mechanical form of the "a new graph field
-    needs a schema entry" convention; a new Strut attribute is one line in
-    `strut-schemas.ts` and lands on restart;
-  - **`attrs STRING`** — JSON text of every OTHER attribute (the bundled
-    ontology declares 606 attribute names across 147 schemas, with 18
-    name/type conflicts among them: `created_at` is a datetime on every
-    Strut and claim type and a string on `Concept` / `Feature`; `id` a
-    string on 19 types and an int on 3). Routing rule, decided per
-    (schema, attribute) by the writer, which knows both: a hot column
-    when the attribute's declared type matches the column's, else
-    `attrs`. Reads merge columns and parsed `attrs` into the envelope.
-    No JSON extension: the text is parsed in TS, never queried. A unit
-    test over the fixture asserts the routing is deterministic and
-    conflict-free.
-- **One REL table per edge type**, `<EDGE>(FROM Node TO Node, …)`, every
-  one with the same columns: `ref_id`, `edge_key`, `date_added_to_graph`,
-  `unique_source_id`, `weight`, `is_muted`, `is_deleted`,
-  `muted_by_delete_of`, `importance DOUBLE`, and the claim edges' own
-  (`strength DOUBLE`, `context`, `start_time`, `end_time`, `post_url`),
-  plus `props STRING` for the rest. Created on first use (`CREATE REL
-  TABLE IF NOT EXISTS`, inside the write) — jarvis's allowlist and
-  `create_schema_if_missing` mean the edge vocabulary is open. A TS set
-  of existing rel tables (from `SHOW_TABLES()` at open, maintained on
-  create) lets a read that names an unknown edge type answer empty
-  instead of hitting the binder error; `-[r]->` reads need nothing.
-- **`Schema`** (PK `type`) — the meta-graph as rows: the core properties
-  as columns (`parent`, `node_key`, `index STRING[]`, `vector_index
-  STRING[]`, `title_key`, `description_key`, `domain`, `embed BOOL`,
-  `icon`, `shape`, colours, `type_description`, `display_name`, `ref_id`,
-  `is_deleted`) + `attributes STRING` (JSON, name → grammar).
-  `CHILD_OF(FROM Schema TO Schema)`. Edge schemas: jarvis stores one as a
-  REL OF THAT TYPE between two Schema nodes; here `EDGE_SCHEMA(FROM Schema
-  TO Schema, edge_type STRING, ref_id, props STRING)` — one table, the
-  type a column, which the resolver's walks read 1:1. `About`
-  (hidden types / domains) → a `Meta(key PK, value STRING)` row.
-  `Migration(migration_id PK, executed_at INT64)` — the same ledger, so
-  boot steps (the Schema `index` reconcile) stay idempotent the same way.
+- **`Node`** — one table, PRIMARY KEY `ref_id`. Columns: the generic
+  `node_key`, `namespace`, `node_type`, `Data_Bank`, `text_embeddings
+  FLOAT[384]`, `date_added_to_graph INT64`, `deleted_at INT64`; and one
+  column per attribute of the ten types (the union, ~70 names; grammar →
+  type: `string` STRING, `int` / `datetime` INT64 (epoch seconds, as the
+  writer normalizes), `float` DOUBLE, `boolean` BOOL, `list` STRING[]).
+  Added with `ALTER TABLE Node ADD IF NOT EXISTS` at open from the
+  registry — a new attribute is one line in the registry and lands on
+  restart. No JSON column: with a closed registry every attribute is a
+  column.
+- **One REL table per edge type**, `<EDGE>(FROM Node TO Node, …)`: the
+  fourteen the registry names (`VERSION_OF`, `ACTIVE_VERSION`,
+  `USES_STEP`, `DEPENDS_ON`, `EXECUTED`, `PROMOTED_FROM`, `IN_JOB`,
+  `ABOUT`, `TESTS`, `EVIDENCED_BY`, `PRODUCED_BY`, `HAS_SOURCE`,
+  `SUPERSEDES`, `CHILD_OF`), every one with the same columns: `ref_id`,
+  `edge_key`, `date_added_to_graph INT64`, `weight DOUBLE`, and the
+  properties the claim layer writes — `strength DOUBLE` (EVIDENCED_BY),
+  `context STRING`, `start_time INT64`, `end_time INT64`, `post_url STRING`
+  (HAS_SOURCE). All created at open; an edge property outside this list is
+  an error, not a JSON blob. No edge flags: an edge is live or gone.
+- **`Migration(migration_id PK, executed_at INT64)`** — the same ledger
+  the Neo4j seed stamps, so boot steps stay idempotent the same way.
 - **Indexes**: `node_vec` (HNSW, cosine) on `Node.text_embeddings`, created
-  at open — fine with every vector NULL, and the pass fills them in;
-  `node_fts` over `[Data_Bank, name]` with the porter stemmer. A Schema
-  with `vector_index` (the `input_q` / `output_q` search types) gets its
-  `<stem>_embeddings FLOAT[384]` column and one HNSW each, only when such a
-  Schema exists (`vectorIndexedPairs`). No constraints: the PK is the only
-  uniqueness; `(node_key, namespace)` identity is the writer's pre-read
+  at open — fine with every vector NULL; `node_fts` over `[Data_Bank,
+  name]` with the porter stemmer. No constraints: the PK is the only
+  uniqueness; `(node_type, node_key)` identity is the writer's pre-read
   under the single writer.
-- **Namespace**: one per file, always `default`. The column stays (the
-  push path reads it); `registerNamespace` refuses, `listNamespaces` is
-  `["default"]`.
 
 ### 3.2 The handle — `src/graph/ladybug/db.ts`
 
-The generalization of `steps/lib/memory/_db.ts`'s `connection()`, which
-already has the right shape: one `Database` per ABSOLUTE PATH per process
-on a `globalThis` registry (so a re-imported module shares it, and
-`memory/*` can adopt it later); the folder created owner-only (0700); the
-addon `await import()`-ed on first use with the install hint on failure;
-a read `Connection` plus a write `Connection` with a queue — `withWrite(fn)`
-runs `fn` under `BEGIN TRANSACTION` … `COMMIT` / `ROLLBACK`, one at a time
-(the engine-level transaction every writer uses); a `readOnly()` handle
-(a second `Database` opened read-only) for `graph_query`. On open: load
-the `vector` and `fts` extensions by path (`STRUT_LADYBUG_EXTENSION_DIR`;
-unset → `INSTALL vector` / `INSTALL fts`, the dev download), then the DDL
-of §3.1 (tables, `ALTER ADD` for every hot column, rel tables for
-`STRUT_EDGES` + `CLAIM_EDGES` + `CHILD_OF` / `IS_ALIAS`, indexes), then an
-append-only `MIGRATIONS` list like memory's. An orphan `.wal` beside a
-missing file is removed before open (a stale WAL fails every query with
-"Database ID … does not match").
+The generalization of `steps/lib/memory/_db.ts`'s `connection()`: one
+`Database` per ABSOLUTE PATH per process on a `globalThis` registry (so a
+re-imported module shares it, and `memory/*` can adopt it later); the
+folder created owner-only (0700); the addon `await import()`-ed on first
+use — `@ladybugdb/core`, else the platform package it shims — with the
+install hint on failure; a read `Connection` plus a write `Connection`
+with a queue — `withWrite(fn)` runs `fn` under `BEGIN TRANSACTION` …
+`COMMIT` / `ROLLBACK`, one at a time, and refuses every statement after a
+failure (§2); a `readOnly()` handle (a second `Database` opened
+read-only) for `graph_query`. On open: load `vector` and `fts` by path
+(`STRUT_LADYBUG_EXTENSION_DIR`; unset → `INSTALL vector` / `INSTALL fts`,
+the dev download) — an open without both FAILS with the hint (ruling 4);
+then the DDL of §3.1, the indexes, the append-only `MIGRATIONS` list. An
+orphan `.wal` beside a missing file is removed before open (a stale WAL
+fails every query with "Database ID … does not match"). Rows come back
+the way Neo4j's do: INT64 as a number, a struct's null fields and the
+engine's `_label` / `_id` keys dropped.
 
 ## 4. The seams — how Neo4j and Ladybug share code
 
@@ -262,147 +288,130 @@ Principle: **pure code is shared as it is; each class that issues Cypher
 gets its engine-specific part pulled behind a SMALL interface with two
 implementations; the pattern-level statements run on BOTH engines through
 a fixed set of dialect helpers; migrations and Neo4j DDL are Neo4j-only.**
-The Neo4j implementation of every engine interface is today's code,
-moved, not rewritten — `npm run test:graph` stays green through the
-extraction before any Ladybug code exists.
+The Neo4j implementation of every engine interface is today's code, moved
+(slice 1 step 1, done: `test:graph` stayed green through the extraction).
 
-- **`GraphBackend`** gains `kind: "neo4j" | "ladybug"`, `query(cypher,
-  params)` (one auto-commit statement on the engine — what the
-  pattern-level readers call instead of `bolt.run`), `tx(fn)` (the
-  engine's write transaction), and `dialect` (below). `bolt` becomes
-  `bolt?` (Neo4j only); `lbug?` is the Ladybug handle. `GraphConfig`
-  becomes `Neo4jConfig | LadybugConfig` (`{ kind: "ladybug", path,
-  namespace: "default" }`); `openGraphBackend` caches by path. The
-  Ladybug open runs: DDL, the Thing + Strut Schema rows and edge schemas
-  (today's seed logic over the Schema source), **the bundled jarvis
-  ontology fixture always** (`Claim` / `Check` / `Evidence` / `Concept` /
-  `Person` live there; 153 rows, cheap), the Schema `index` reconcile
-  (shared logic, Schema rows), then starts the pass. No vein / run-status
-  / exact-key / claim-upgrade migrations: nothing to migrate.
-- **Dialect helpers** — a fixed set, on `backend.dialect`, used by
-  `workspace-store.ts`, `claims.ts`, `projector.ts`, `deletion.ts`:
-  `node(alias, type, props?)` → ``(c:`Claim` {…})`` vs `(c:Node
-  {node_type: 'Claim', …})`; `isType(alias, types[])` → `(s:StrutStep OR
-  s:StrutWorkflow)` vs `s.node_type IN [...]`; `typeOf(alias)` →
-  `labels(n)` (then `typeLabelOf`) vs `n.node_type`; `edgeType(r)` →
-  `type(r)` vs `label(r)`; `int(x)` → `toInteger` vs `CAST`; `lower(x)`;
-  `project(alias, fields)` → the `{a: n.a}` struct form, which both
-  accept (never `properties(n)` on a hot path: a Ladybug node struct
-  carries every column). The rule: **no ninth helper** — a statement that
-  cannot be written with these becomes a method on an engine interface.
-  Two Neo4j statements change shape to stay neutral, and the live suite
-  guards them: the workspace store's list reads connect their `OPTIONAL
-  MATCH` through `VERSION_OF` (more correct than matching on `name`
-  anyway) and order in TS; `DELETE_NODE_TAIL` becomes three statements in
-  one transaction (SET, delete outgoing, delete incoming).
+- **`GraphBackend` IS a `GraphEngine`** (`engine.ts`): `kind: "neo4j" |
+  "ladybug"`, `query(cypher, params)` (one auto-commit statement — what
+  the pattern-level readers call instead of `bolt.run`), `tx(fn)` (the
+  engine's write transaction), `dialect`, and the three seams
+  `nodeEngine` / `edgeEngine` / `schemaSource`. `bolt` is Neo4j's;
+  `lbug` the Ladybug handle. `GraphConfig` is `Neo4jConfig |
+  LadybugConfig` (`{ kind: "ladybug", path, namespace: "default" }`);
+  `openGraphBackend` is overloaded per config and caches by path. The
+  Ladybug open runs the DDL (the handle) and nothing else: no seeds (the
+  registry is the schema), no migrations (nothing to migrate).
+- **Dialect helpers** — nine, on `backend.dialect`, used by
+  `workspace-store.ts` and, in slice 2, `claims.ts`, `projector.ts`,
+  `deletion.ts`: `node(alias, type, props?)` → ``(c:`Claim` {…})`` vs
+  `(c:Node {node_type: 'Claim', …})`; `isType(alias, types[])`;
+  `typeOf(alias)` → `labels(n)` (then `typeLabelOf`) vs `n.node_type`;
+  `edgeType(r)` → `type(r)` vs `label(r)`; `live(alias)` → `NODE_LIVE`
+  vs `deleted_at IS NULL`; `edgeLive(r)` → `EDGE_LIVE` vs `true`;
+  `int(x)`; `lower(x)`; `project(alias, fields)` → the `{a: n.a}` struct
+  form (never `properties(n)` on a hot path). The rule: **no tenth
+  helper** — a statement that cannot be written with these becomes a
+  method on an engine interface. The workspace store's two list reads
+  are TWO statements each (the workflows, then every live version with
+  the `VERSION_OF` target it belongs to), joined and ordered in TS — the
+  `OPTIONAL MATCH … collect` form is a Ladybug bug (§2) and the
+  `name`-join it replaced was looser than the edge anyway.
 - **`NodeWriter`** keeps `validateNode`, `composeNodeKey`, `buildSearchText`,
   the embed-before-write, the outcome classification, and `update` /
-  `softDelete` / `retirePlannedEvidence` semantics; the Cypher moves
-  behind `NodeEngine { mergeBatch(schema, rows, mode), update(ref, set,
-  remove), softDelete(ref), readRaw(ref) }`. Neo4j: today's `mergeBatch`.
-  Ladybug: pre-read `(node_key, namespace)` for the batch in the write
-  transaction → `CREATE` the misses with fresh `ref_id`s, `SET` the hits
-  (upsert or restore) with explicit column lists from the schema, non-hot
-  attributes folded into `attrs`.
-- **`EdgeWriter`** → `EdgeEngine { ensure(edgeType), mergeBatch(edgeType,
-  rows), update(where, set, remove), delete(ref), move(m), aliasTargets(refs)
-  }`; the cycle check's `shortestPath` is `SHORTEST`; `SET r += $set` is
-  an explicit list.
-- **`SchemaResolver`** keeps merging, the ancestor walk order, caches and
-  canonicalization over `SchemaSource { schema(type), ancestors(type),
-  typeLike(t), hidden(), edgeSchema(src, edge, tgt) and the three ancestor
-  walks, createEdgeSchema, upsertSchema }` — seven reads, one write. Neo4j:
-  the `:Schema` graph as today. Ladybug: the `Schema` table + `CHILD_OF` +
-  `EDGE_SCHEMA`. `schema-seed.ts` / `ontology-seed.ts` / `schema-crud.ts`
-  write Schema rows through `upsertSchema` on both; their Neo4j DDL
-  (constraints, vector / fulltext indexes) stays behind `kind === "neo4j"`.
-- **`GraphReader`** becomes an interface (today's method list);
-  `Neo4jReader` is today's class; `LadybugReader` is new: `getNode` /
-  `getNodeByKey` / `namesLike` / `connectionCounts` / `edgeCounts` /
-  `neighbors` (two directed halves — no `startNode`), `listSchemas` /
-  `getSchema` over the Schema table, and `search` = FTS
-  (`QUERY_FTS_INDEX`, conjunctive for an exact query, disjunctive
-  otherwise; a quoted phrase and `exclude` / `linked` as `WITH … WHERE`
-  post-filters under the same `overfetch`) + vector (`QUERY_VECTOR_INDEX`
-  over-fetched and post-filtered by `node_type`, as the typed Neo4j path
-  already is) → the SAME `fuseHits`, `applyTitleBoost`,
-  `applyUsageTiebreak`, `serializeNode`. Lucene escaping and the fuzzy
-  `~` fallback have no twin and are not needed: the vector half covers
-  near-misses, and a desktop graph is small.
-- **`EmbeddingPass`** keeps the timer, budget, status, sweep order and
-  `decideRow`; the reads move behind `PassSource { types(), page(type,
-  cursor), writeVectors(rows), removeVectors(ids), newcomers(after) }`.
-  Ladybug pages by `ref_id` within `node_type = $t`, reads index fields
-  from columns and `attrs`; the "stamp the missing label" repair step
-  vanishes (one table).
-- **`query.ts`**: the model's Cypher runs on the read-only handle — a real
-  guarantee, as Neo4j's READ transaction is; the keyword gate gains
-  `COPY`, `INSTALL`, `LOAD`, `ATTACH`, `IMPORT`. The builder's prompt line
-  for `graph_query` gets one sentence per backend (one `Node` table,
-  `node_type`, a rel table per edge type, `label(r)`), rendered at the
-  chat's first turn like the rest.
-- **`graph/*` steps**: `graphCtx` (`_shared.ts`) prefers the backend the
-  SERVER wired — `createStrut` puts `opts.graph ?? workspace.graph` on
-  `ctx.services.graph`, the way the chat tools already get `deps.graph` —
-  and falls back to the env resolution it does today. `create-schema`
-  calls `createNodeSchema(backend, …)`, not `b.bolt`.
+  `softDelete` / `retirePlannedEvidence` semantics; the Cypher sits behind
+  `NodeEngine { mergeBatch, readRaw, refByKey, update, softDelete }`.
+  Values cross the seam as plain JS; the Neo4j engine wraps Integers from
+  the schema (`int()` lives nowhere else). Ladybug: pre-read `(node_type,
+  node_key)` for the batch in the write transaction → `CREATE` the misses
+  with their `ref_id`s in one UNWIND (all-null columns left out of the
+  row shape), `SET` the hits (upsert or restore) one by one with explicit
+  column lists; `softDelete` is three statements (stamp `deleted_at`,
+  delete outgoing, delete incoming). `_search_fields_used` and a write's
+  `namespace` other than `default` are refused there.
+- **`EdgeWriter`** → `EdgeEngine { endpoints, mergeBatch, setProps,
+  findByTriple, delete, liveEdgesOf, wouldCycle, copyProps }`; the cycle
+  check's `shortestPath` is `SHORTEST`; `SET r += $set` is an explicit
+  list over the edge columns; no alias rewrite on Ladybug.
+- **`SchemaResolver`** keeps merging, caches and canonicalization over
+  `SchemaSource` — seven reads, the writes, and on Ladybug a `registry`:
+  when the source carries one the resolver resolves types and edge rules
+  from it alone (case-insensitive on the type name, exact on the edge
+  triple, no allowlist, no hidden domains) and `createEdgeSchema` is
+  refused. Neo4j: the `:Schema` graph as today. `schema-seed.ts` /
+  `ontology-seed.ts` / `schema-crud.ts` write through the source on Neo4j
+  and return at once on a closed registry (`mode: "closed"`).
+- **`GraphReader`** becomes an interface in slice 3 (today's method list);
+  `Neo4jReader` is today's class; `LadybugReader` is sized to the ten
+  types: `getNode` / `getNodeByKey` / `namesLike` / `neighbors` /
+  `connectionCounts`, `listSchemas` / `getSchema` over the registry, and
+  `search` = FTS (`QUERY_FTS_INDEX`) + vector (`QUERY_VECTOR_INDEX`) over
+  the one table → the SAME `fuseHits`, `applyTitleBoost`, `serializeNode`.
+  Until then the Ladybug backend's `reader` throws on use.
+- **Embeddings**: the writer computes a node's vector inline when the
+  backend has an embedder, as on Neo4j. The `EmbeddingPass` (healing
+  nodes OTHER writers left unembedded) has no job on a file strut alone
+  writes; slice 3 decides whether a `PassSource` is worth having at all.
+- **`query.ts`**: slice 4 runs the model's Cypher on the read-only
+  handle; the keyword gate gains `COPY`, `INSTALL`, `LOAD`, `ATTACH`,
+  `IMPORT`; the prompt line for `graph_query` gets one sentence per
+  backend. Until then `graph_query` is Neo4j-only.
+- **`graph/*` steps**: `graphCtx` prefers the backend the SERVER wired
+  (slice 4) and the Concept reads work there; a step that registers a
+  type or writes one outside the registry fails on Ladybug with the
+  closed-registry error.
 - **`workspace-store.ts`**: `Neo4jWorkspaceStore` → `GraphWorkspaceStore`
   over any `GraphBackend`, the old name kept as an alias export (mcp's
   `createLabStrut` imports `graphWorkspaceFromEnv` and logs the class
   name). It passes `workspaceConformance` on both engines.
 - **`createStrut.ts`**: unchanged in substance — the claims gate is
-  `workspace.graph`, the projector hook `workspace.graph`, the
-  `/graph/*` routes `opts.graph ?? workspace.graph`. One line for
-  `services.graph`.
-- **Wiring**: `STRUT_WORKSPACE_BACKEND=ladybug` → `wiring.ts`
+  `workspace.graph`, the projector hook `workspace.graph`. One line for
+  `services.graph` in slice 4.
+- **Wiring** (slice 4): `STRUT_WORKSPACE_BACKEND=ladybug` → `wiring.ts`
   `ladybugWorkspaceFromEnv` → `{ backend, workspace }` with the file at
   `STRUT_GRAPH_DB` (default `<dataDir>/graph.lbug`) and the materialize
-  dir `steps/_graph` as today; `server.ts`'s graph branch covers both
-  kinds. `GET /health` (keyed) reports `workspace: { backend }`.
+  dir `steps/_graph` as today; `GET /health` (keyed) reports `workspace:
+  { backend }`.
 
 ## 5. Tests
 
-Today the graph layer has 260 live cases under `npm run test:graph`
-(Neo4j, wiping a throwaway database; opt-in by `STRUT_TEST_NEO4J_URI`).
-The behavioral suites — `claims`, `claims-authoring`, `verify`,
-`projector`, `workspace-store` (the conformance suite), `node-writer`,
-`edge-writer`, `search`, `names`, `schema-resolver`, `query`,
-`graph-steps` — take their backend from one helper, `testBackends()`:
-**always Ladybug** (a temp file per `describe`, removed after; skipped
-with the reason printed when the addon or the extensions are missing,
-exactly as `memory-steps.test.ts` does) **and Neo4j when the env names
-one**. So the same suite runs offline in `npm test` against Ladybug and
-live against Neo4j — the graph layer's conformance suite, as
-`storage-conformance.test.ts` is for the stores. Neo4j-internal tests
-(`schema-seed` DDL, the migrations, `index-reconcile`, `wiring`, the
-pass's paging, `test-util`'s snapshot) stay live-only. A few asserts split
-on `kind` (labels in a snapshot → `node_type`).
+The behavioral suites — `workspace-store` (the conformance suite),
+`node-writer`, `edge-writer`, the registry half of `schema-resolver`, and
+in later slices `claims`, `claims-authoring`, `verify`, `projector`,
+`search`, `names` — take their backend from one helper,
+`testBackends()` (`src/graph/test-util.ts`): **always Ladybug** (a temp
+file per `describe`, removed after; skipped with the reason printed when
+the addon or the extensions are missing, exactly as `memory-steps.test.ts`
+does) **and Neo4j when `STRUT_TEST_NEO4J_URI` names one**. So the same
+suite runs offline in `npm test` against Ladybug and live against Neo4j —
+the graph layer's conformance suite, as `storage-conformance.test.ts` is
+for the stores. Neo4j-internal tests (`schema-seed` DDL, the jarvis
+ontology, `schema-crud`, the migrations, `index-reconcile`, `wiring`, the
+pass, `test-util`'s snapshot) stay live-only. A few asserts split on
+`kind` (labels and `valueType` on Neo4j; a plain column on Ladybug).
 
-CI (`tests.yml`) installs with `--ignore-scripts`; the addon loaded here
-with its install script blocked (the platform package carries
-`lbugjs.node`), so Linux should match — verify in slice 1. The two
-extension files are fetched once into a cached `~/.lbdb` or vendored by a
-script per platform; if CI cannot, the suite skips and says so, never
-silently.
+CI (`tests.yml`) installs with `--ignore-scripts`; the handle loads the
+platform package directly (§2), so Linux matches. The two extension files
+are fetched once by `INSTALL` into `~/.lbdb`; if CI cannot, the suite
+skips and says so, never silently.
 
 ## 6. Build order — four slices, each green
 
-1. **Handle, DDL, engines, conformance.** `ladybug/db.ts`; `kind` /
-   `query` / `tx` / `dialect` on `GraphBackend`; `NodeEngine` /
-   `EdgeEngine` / `SchemaSource` extracted with the Neo4j code moved behind
-   them (`test:graph` green, no behavior change); the Ladybug
-   implementations; seeds through `SchemaSource`; `GraphWorkspaceStore`
-   passes `workspaceConformance` on a Ladybug file in `npm test`. ~4 days.
-2. **Claims on a file.** The dialect helpers through `workspace-store`,
-   `claims.ts`, `projector.ts`, `deletion.ts` (with the two connected
-   rewrites); `claims` / `claims-authoring` / `verify` / `projector` tests
-   on both backends → claims, checks, evidence, the verify pass, the
-   ledger, the Claims panel and the run projection work on a Ladybug
-   file. ~3 days. **This is the slice that answers the goal.**
-3. **The read surface.** `LadybugReader` (lookups, neighbors, schemas, then
-   search over FTS + HNSW) and `PassSource` → `graph/*` steps, `graph_get`
-   / `graph_walk` / `graph_query`, the run flyout's nodes, semantic search;
-   `search` / `names` / `graph-steps` tests on both. ~4 days.
+1. **Seams, handle, engine, conformance.** `kind` / `query` / `tx` /
+   `dialect` on `GraphBackend`; `NodeEngine` / `EdgeEngine` /
+   `SchemaSource` extracted with the Neo4j code moved behind them
+   (DONE, no behavior change); the registry; `ladybug/db.ts`; the
+   Ladybug implementations; `GraphWorkspaceStore` passes
+   `workspaceConformance` on a Ladybug file in `npm test`.
+2. **Claims on a file.** The dialect helpers through `claims.ts`,
+   `projector.ts` (skipping the dropped types on Ladybug), `deletion.ts`;
+   `claims` / `claims-authoring` / `verify` / `projector` tests on both
+   backends → claims, checks, evidence, the verify pass, the ledger, the
+   Claims panel and the run projection work on a Ladybug file. **This is
+   the slice that answers the goal.**
+3. **The read surface.** `LadybugReader` sized to the ten types (lookups,
+   neighbors, the Concept tree, search over FTS + HNSW) → `graph-get` /
+   `graph-search` / `graph-neighbors` on Concepts, `graph_get` in the
+   builder, the run flyout's nodes; `search` / `names` tests on both.
 4. **Wiring and the desktop.** Env + `wiring.ts` + `server.ts`;
    `services.graph` for the steps; the read-only handle for `query.ts` +
    the prompt sentence; `/health`; `package-desktop.mjs` ships the two
@@ -414,10 +423,7 @@ silently.
    published through the store with its label and metadata, ledger-stamped,
    the fs directory renamed aside — a boot step, not a script, per the
    repo's rule); docs: AGENTS.md's stack row and Environment table, the
-   desktop plan's §3.1 pointer. ~3 days.
-
-About three weeks. Slice 2 is the first useful desktop milestone, slice 3
-the "full graph" one.
+   desktop plan's §3.1 pointer.
 
 ## 7. Decisions (Evan, 2026-10-14)
 
@@ -435,44 +441,50 @@ the "full graph" one.
 4. **The extensions are required.** An open without `vector` + `fts` fails
    with the install hint; the packager bundles both in `native/`, dev
    installs them once. One search path.
-5. **The hot-column rule for jarvis types** (§3.1) stands as written — not
-   raised; the fixture test is what guards it.
+5. ~~The hot-column rule for jarvis types~~ — superseded by 6.
+6. **A clean break from the jarvis schemas: ten types, in code, nothing
+   else.** The six Strut types the store and the projector need
+   (`StrutWorkflow`, `StrutWorkflowVersion`, `StrutStep`,
+   `StrutStepVersion`, `StrutRun`, `StrutJob`), the three claim types, and
+   `Concept`; no tool calls, turns, chats or agent sessions in the file;
+   no jarvis ontology, no Schema meta-graph, no runtime schema
+   registration, no generic `graph/*` surface. Every attribute is a real
+   column; jarvis's unread stamps (`is_deleted`, `is_muted`,
+   `relevancy_score`, `weight`, `unique_source_id`, `_search_fields_used`,
+   the per-stem vectors) are not in the table.
 
 ## 8. Risks and gotchas (from the probes)
 
-- **No uniqueness on `(node_key, namespace)`.** The single writer (the
+- **No uniqueness on `(node_type, node_key)`.** The single writer (the
   handle's queue) is what keeps two rows from sharing a key; the pre-read
   is a scan — 10 ms per 200 keys at 100k rows, fine for a personal graph.
-  Past ~1M rows a `key`-PK variant with `ref_id` as a column is the fix;
-  not now.
-- **Unknown table = error.** Every edge type needs its rel table before a
-  read names it; writes `ensure()`, reads filter requested types against
-  the registry.
-- **HNSW incremental cost** ≈ 12 ms per vector: the pass's batches of 100
-  are ~1.2 s, inside its 15 s/min budget. A BULK import of embedded nodes
-  (a code graph) should drop the index, load, and rebuild it (one minute
-  for 100k) rather than pay 12 ms a row.
+- **A failed statement ends the transaction** and the next one would
+  auto-commit: `withWrite` refuses everything after the first failure.
+- **`OPTIONAL MATCH … collect` is unreliable** (§2): never aggregate over
+  an optional side; join in TS.
+- **HNSW incremental cost** ≈ 12 ms per vector: fine for the writer's
+  inline embedding. A BULK import of embedded nodes should drop the
+  index, load, and rebuild it rather than pay 12 ms a row.
 - **FTS is BM25 over tokens**: no phrase, fuzzy or per-field boost
-  operators. Phrases are post-filters; camelCase is one token (the memory
-  note) — `Data_Bank` composition already splits names into words.
-- **Node structs carry every column** (~100 once the hot columns are in):
-  project in hot reads; `RETURN n` only where today's envelopes need the
-  whole node.
+  operators. Phrases are post-filters in slice 3.
+- **Node structs carry every column** (~80): project in hot reads;
+  `RETURN n` only where today's envelopes need the whole node.
 - **Extensions are versioned with the core** and downloaded from
   extension.ladybugdb.com in dev; a notarised app cannot download, so the
-  packager bundles them (§6.4). `algo` is broken on macOS (memory note);
-  nothing here needs it.
+  packager bundles them (§6.4). `algo` is broken on macOS; nothing here
+  needs it.
 - **A stale `.wal`** beside a missing file fails every query; the handle
   checks before open, the test helper removes both.
-- **Prompt cache**: the `graph_query` prompt sentence is rendered once per
-  chat like the rest of the system prompt; nothing here re-renders
-  history.
+- **The Neo4j backend is unchanged**: the four dropped types, `IS_ALIAS`,
+  Thing's attributes and the jarvis ontology are all still written and
+  read there. Only the Ladybug engine knows the file holds less.
 
 ## 9. Later
 
 - `memory/*` onto the shared handle; same file if wanted (decision 2).
-- Push a desktop graph to a swarm's Neo4j: rows → labels, same `ref_id`s
-  and `node_key`s — the reason the rows stay jarvis-shaped.
+- Push a desktop graph to a swarm's Neo4j: `node_type → labels`, the
+  same `ref_id`s and `node_key`s, the stamps jarvis expects added on the
+  way.
 - `LadybugRunStore`, if "everything in one file" is wanted (decision 3).
-- Code graphs on desktop: stakgraph's JSONL `COPY`-ed into `Node` with the
-  index rebuilt around the load (the 2026-10-13 code-store assessment).
+- Claims ABOUT a `StrutJob` (the 2026-10-14 proposal): one more edge row
+  in the registry when ruled.
