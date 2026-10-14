@@ -1,5 +1,5 @@
 name: tidy-memory
-description: Once a day, merges people and things saved twice.
+description: Finds people and places saved more than once and merges them.
 # A system workflow (src/system-workflows.ts): installed at boot with its
 # automation, off. Names no model, so the agent uses STRUT_DEFAULT_MODEL.
 # No built-in tools (no shell, no files, no web) and no memory/remember or
