@@ -438,9 +438,25 @@ for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { sk
     const meta = buildAuthoringCapability({ workspace: ws, store: new MemoryRunStore(), getRegistry, claims: withJobs });
     idOf(await meta.addClaim({ subjects: [JOB], text: "GET /api/settings answers 200", checks: [EXEC] }));
     assert.equal(((await meta.listClaims(JOB)) as { claims: unknown[] }).claims.length, 3);
-    // Fixed point 1 holds on a job as written today: it may not hang a check
-    // on the person's claim (plans/job-claims.md §1's ruling is the owner's).
-    assert.match(errOf(await meta.addCheck(id, EXEC)), /only adds checks to claims it wrote/);
+    // Fixed point 1's one exception (plans/job-claims.md §1, ruled A): on a
+    // job the agent may hang its instrument on the PERSON's claim — stamped
+    // `ai`, `manual` like every job check — and the person's own external
+    // check stays beside it as a separate stream…
+    const mine = idOf(await meta.addCheck(id, { type: "exec", name: "probe", config: { cmd: "true" } }));
+    const personsClaim = (await withJobs.listClaims(JOB) as { claims: Array<{ id: string; checks: Array<{ id: string; name: string; policy?: string; publisher?: string; external: boolean }> }> }).claims.find((c) => c.id === id)!;
+    const added = personsClaim.checks.find((x) => x.id === mine)!;
+    assert.deepEqual([added.publisher, added.policy, added.external], [AI_PUBLISHER, "manual", false]);
+    assert.ok(personsClaim.checks.some((x) => x.external && x.publisher === "evan"), "the person's external check is still there");
+    // …while edit / retire / detach stay scoped: the person's claim and checks are not the agent's to change.
+    const personsCheck = personsClaim.checks.find((x) => x.external)!.id;
+    assert.match(errOf(await meta.editClaim(id, "anything renders")), /only edits claims it wrote/);
+    assert.match(errOf(await meta.retireClaim(id)), /only retires claims it wrote/);
+    assert.match(errOf(await meta.editCheck(personsCheck, { description: "glance at it" })), /only edits checks it wrote/);
+    assert.match(errOf(await meta.retireCheck(personsCheck)), /only retires checks it wrote/);
+    assert.match(errOf(await meta.detachClaim(id, SEEDED)), /only detaches claims it wrote/);
+    // On a template the rule is untouched (the fixed point 1 case above).
+    const onTemplate = idOf(await withJobs.addClaim({ subjects: [SEEDED], text: "answers in prose", checks: [EXEC] }, human));
+    assert.match(errOf(await meta.addCheck(onTemplate, EXEC)), /only adds checks to claims it wrote/);
   });
 
   it("fixed point 2 — an ai-stamped check may never reach a grader: by name, through a subflow, via a grant, or unresolvably", async () => {

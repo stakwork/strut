@@ -2,10 +2,9 @@
 
 > **Status (2026-10-14): built in strut**, from one design conversation
 > with the owner. The rulings in "Decided" are his; the rows marked
-> *proposed* are mine, built as proposed and open to a ruling — except §1's
-> fixed point 1, which is still as `claims.md` §4.1 states it (an `ai`
-> author may not hang a check on a person's claim, on a job either) until
-> the owner rules. Items 1–5, 7 and 8 of §10 are built; 6 (the web UI) is a
+> *proposed* are mine, built as proposed and open to a ruling; §1's fixed
+> point 1 he ruled on (A: on a job an `ai` author may add a check to a
+> person's claim), and it is built so. Items 1–5, 7 and 8 of §10 are built; 6 (the web UI) is a
 > second PR; 9 (the lab) and 10 (hive) follow the pin bump. Companion to
 > `claims.md` (the layer this reuses — read its Design and §4 first),
 > `jobs.md` (the job, its directory, holds and deliverables),
@@ -53,6 +52,7 @@ The pieces are all there and none of them meets:
 | `StrutArtifact` | **Not now.** Claims are per job; the artifact id is the obvious subject for a later per-deliverable split, and nothing here needs a node to point at |
 | What hive shows | **One `claims` card per job**, hive's own like `run_graph`, every turn a version, read from the swarm after the turn beside the artifact list. The check run is neither a turn nor an artifact |
 | Feedback | **Supports / Refutes on a slot is a write, no turn. A refutation with a note is a turn**, one line through the artifact-event door, so the agent fixes and re-verifies |
+| Fixed point 1 on a job | **Ruled A (2026-10-14): on a job subject an `ai` author may add a check to a person's claim; the person's external check stays beside it** as a separate stream. Edit / retire / detach stay scoped to the author; on a template the rule is untouched |
 
 ## Design in one paragraph
 
@@ -112,16 +112,16 @@ of `claims.md` §4.1:
 Fixed point 1 says an `ai` author may add a check only to a claim stamped
 `ai`. For a job that bites: the person writes "the settings page renders"
 from hive, and the agent cannot hang its `browser/verify` on it.
-*Proposed (open — built as the rule stands, the carve-out unwritten):* for a job subject an `ai` author MAY add a check to a person's
+*Ruled A (2026-10-14; built — `addCheck` skips the ownership check when the claim's subjects include a job):* for a job subject an `ai` author MAY add a check to a person's
 claim. The person's own check — an external one, opened as a slot — stays
 beside it as a separate stream, the ledger still reports `openSlot` and
 `assertedOnly` on their own, and the thing fixed point 1 guards against (a
 seeded contract line silenced by an always-passing check) has no seeded
 line here: the person's claim is the acceptance criterion and the person
-reads the screenshot. The alternative, if the rule should hold: every
-person's claim gets an external check by default and the prompt tells the
-agent to author its own mirror of the ask. The scoping on edit / retire /
-detach is unchanged either way.
+reads the screenshot. (The alternative, not taken: every person's claim
+gets an external check by default and the prompt tells the agent to
+author its own mirror of the ask.) The scoping on edit / retire / detach
+is unchanged.
 
 ## 2. The version is the turn
 

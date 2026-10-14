@@ -27,7 +27,12 @@
  *     stamped (`Check.publisher`), may ADD a check only to a claim it
  *     stamped, and may attach claims only to subjects it published. An
  *     always-passing check hung on a seeded contract line would otherwise
- *     read as `supported` whenever the real check was skipped;
+ *     read as `supported` whenever the real check was skipped. ONE
+ *     exception, ruled (plans/job-claims.md §1): on a JOB subject it may
+ *     add a check to a person's claim — the person's acceptance criterion
+ *     is what the agent's instrument should test, there is no seeded line
+ *     to silence, and the person's own external check stays beside it as a
+ *     separate stream; edit / retire / detach stay scoped;
  *   - FIXED POINT 2 — a check stamped `ai` may not reach a grader: nothing
  *     SEALED (`src/sealed.ts`: the sealed namespaces `eval/*`, `meta/*` plus
  *     `STRUT_SEALED`, a step def's `sealed: true`, a workflow's `sealed:
@@ -568,8 +573,10 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async addCheck(claimId: string, spec: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
-        await requireOwnClaim(claimId, actor, "adds checks to");
         const job = onJob(await subjectsOfClaim(claimId));
+        // Fixed point 1's one exception (plans/job-claims.md §1, ruled): on a
+        // job the agent may hang its instrument on the person's claim.
+        if (!job) await requireOwnClaim(claimId, actor, "adds checks to");
         return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", await normalizeCtx(), job))) };
       } catch (e) {
         return fail(e);
