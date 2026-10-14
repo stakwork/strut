@@ -7,13 +7,20 @@
  *
  *   {"event":"ready","port":51234,"host":"127.0.0.1","key":"…"}
  *
- * Defaults (each one an env override): filesystem workspace (no Neo4j),
- * bind 127.0.0.1 on an OS-picked port, workspace under the platform
- * app-support dir, models under the platform cache dir, a random API key
- * per launch. `--open` launches the web UI in the default browser, which
- * has dictation built in — the quickest way to try the recognizer.
+ * Defaults (each one an env override): the workspace on one LadybugDB file
+ * when the package carries Ladybug and its two extensions in native/
+ * (plans/ladybug-backend.md §7.1: `desktop.json`, written by
+ * package-desktop.mjs, says what was staged — a filesystem workspace the
+ * package finds under the data dir is imported into the file at the first
+ * boot), else the filesystem workspace; the graph's embedder on only when
+ * the embeddings stack came along; bind 127.0.0.1 on an OS-picked port;
+ * workspace under the platform app-support dir, models under the platform
+ * cache dir, a random API key per launch. `--open` launches the web UI in
+ * the default browser, which has dictation built in — the quickest way to
+ * try the recognizer.
  */
 import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -42,8 +49,10 @@ Runs strut locally with desktop defaults. Prints a JSON ready line on stdout
   --open   open the web UI in the default browser
 
 Env overrides (all optional): STRUT_WORKSPACE, STRUT_CACHE_DIR, STRUT_API_KEY,
-STRUT_HOST, STRUT_PORT, STRUT_WORKSPACE_BACKEND, STRUT_SECRET_KEY,
-STRUT_STT_MODEL, STRUT_STT_PARTIAL_MODEL, ANTHROPIC_API_KEY.
+STRUT_HOST, STRUT_PORT, STRUT_WORKSPACE_BACKEND (ladybug when the package
+carries it, else fs), STRUT_GRAPH_DB, STRUT_LADYBUG_EXTENSION_DIR,
+STRUT_GRAPH_EMBEDDINGS, STRUT_SECRET_KEY, STRUT_STT_MODEL,
+STRUT_STT_PARTIAL_MODEL, ANTHROPIC_API_KEY.
 
 STRUT_EXIT_ON_STDIN_EOF=1 exits when stdin closes: a host that spawns strut
 with a stdin pipe it never writes to gets it shut down when the host dies,
@@ -70,7 +79,26 @@ const cacheRoot =
       ? env["LOCALAPPDATA"] || join(home, "AppData", "Local")
       : env["XDG_CACHE_HOME"] || join(home, ".cache");
 
-dflt("STRUT_WORKSPACE_BACKEND", "fs");
+// What package-desktop.mjs staged (absent when run from a checkout: fs).
+let staged = {};
+try {
+  staged = JSON.parse(readFileSync(join(here, "desktop.json"), "utf-8"));
+} catch {
+  /* no manifest: a checkout, not a package */
+}
+const nativeDir = join(here, "native");
+const ladybug =
+  staged.ladybug === true &&
+  ["lbugjs.node", "libvector.lbug_extension", "libfts.lbug_extension"].every((f) => existsSync(join(nativeDir, f)));
+dflt("STRUT_WORKSPACE_BACKEND", ladybug ? "ladybug" : "fs");
+if (ladybug) {
+  // The graph backend REQUIRES both extensions (ruling 4); the package's
+  // copies, never a download — a notarised app cannot fetch them.
+  dflt("STRUT_LADYBUG_EXTENSION_DIR", nativeDir);
+  // Without the embeddings stack (package:desktop --embeddings) the graph is
+  // fulltext-only; the default would try to load MiniLM and fail the boot.
+  if (!staged.embeddings) dflt("STRUT_GRAPH_EMBEDDINGS", "off");
+}
 dflt("STRUT_HOST", "127.0.0.1");
 dflt("STRUT_PORT", "0");
 dflt("STRUT_WORKSPACE", join(appSupport, "strut", "workspace"));
