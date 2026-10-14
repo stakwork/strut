@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { iso, memoryDb, normalize } from "./_db.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
+import en from "./_lang-en.js";
 
-const STOP = new Set(["the", "and", "what", "who", "whom", "whose", "where", "when", "which", "does", "did", "about", "with", "for", "you", "your", "know", "tell", "are", "was", "has", "have", "this", "that"]);
+const LANGS = new Map([["en", en]]);
 
 // Plain word matching over names and fact text, ranked by how many words hit.
 // Fine at personal scale; Ladybug's full-text and vector indexes replace it later.
@@ -11,7 +13,7 @@ export default defineStep({
   description:
     "Search long-term memory. Returns small results: ref_id, name, node_type, a short description, and an edges count. " +
     "Facts come back as their sentence. Call memory/get on a ref_id for the full node. " +
-    "For anything about the user themselves, memory/get with type 'Self' returns everything known about them.",
+    "For anything about the user themselves, memory/get with user: true returns everything known about them.",
   input: z.object({
     q: z.string().describe("Plain words, e.g. 'Kate cooking' or 'my name'."),
     type: z.string().optional().describe("Comma-separated filter: entity types (Person, Topic, …) and/or 'Fact'."),
@@ -20,8 +22,13 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
+    // Secret store, then env, like STRUT_MEMORY_DB.
+    const code = (await (ctx.services as Partial<StrutCapabilities> | undefined)?.secrets?.get("STRUT_MEMORY_LANG")) || "en";
+    const lang = LANGS.get(code);
+    if (!lang) return { error: `invalid_config: STRUT_MEMORY_LANG ${code} is not one of ${[...LANGS.keys()].join(", ")}` };
+    const stop = new Set(lang.stop);
     const query = await memoryDb(ctx);
-    const words = normalize(cfg.q).split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w));
+    const words = normalize(cfg.q).split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !stop.has(w));
     const terms = words.length ? words : [normalize(cfg.q)];
     const types = cfg.type ? new Set(cfg.type.split(",").map((t) => t.trim())) : undefined;
     const score = (text: string) => terms.reduce((n, w) => n + (normalize(text).includes(w) ? 1 : 0), 0);

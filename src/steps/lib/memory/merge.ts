@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { type Query, exclusive, memoryDb, normalize } from "./_db.js";
-import { lookup } from "./_ontology.js";
+import { lookup, vocabulary } from "./_ontology.js";
 
 /** Moves every `edge` between `table` nodes and the duplicate onto the kept entity. */
 async function repoint(query: Query, edge: string, table: "Fact" | "Episode", dup: string, keep: string): Promise<number> {
@@ -42,7 +42,9 @@ export default defineStep({
       ).then((r) => r[0]);
       const [kept, gone] = [await read(keep), await read(dup)];
       if (!kept || !gone) return { error: `not_found: ${!kept ? keep : dup} is not an entity in memory` };
-      if (gone.type === "Self") return { error: "refused: Self cannot be merged into another entity; merge the other one into Self" };
+      if ((await vocabulary(query)).role(gone.type) === "user") {
+        return { error: "refused: the user cannot be merged into another entity; merge the other one into the user" };
+      }
       const notes = kept.type === gone.type ? [] : [`Merged a ${gone.type} into a ${kept.type}.`];
 
       const moved = {

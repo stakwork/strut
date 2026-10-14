@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { type Query, type Row, canonical, iso, memoryDb, normalize } from "./_db.js";
-import { lookup } from "./_ontology.js";
+import { vocabulary } from "./_ontology.js";
 
 async function entity(query: Query, where: string, params: Record<string, unknown>) {
   const [e] = await query(
@@ -28,6 +28,8 @@ async function entity(query: Query, where: string, params: Record<string, unknow
   return {
     ref_id: e.ref_id,
     node_type: e.type,
+    // Marks the user, so a reader needs no type name to know them.
+    ...((await vocabulary(query)).role(e.type) === "user" ? { user: true } : {}),
     name: e.name,
     summary: e.summary,
     aliases: e.aliases,
@@ -105,11 +107,13 @@ export default defineStep({
   description:
     "Read one node from long-term memory in full. An entity comes with its current facts; a fact with its subject, " +
     "the episodes it came from and what it superseded; an episode with what it mentions. " +
-    "Pass a ref_id, or a type and name (type 'Self' alone returns the user).",
+    "Pass a ref_id, or a type and name; `user: true` (or the user type alone) returns the user. " +
+    "`user: true` goes alone, without a type or name; a ref_id takes precedence over the rest.",
   input: z.object({
     ref_id: z.string().optional(),
-    type: z.string().optional().describe("An entity type, e.g. Person; Self alone is the user."),
+    type: z.string().optional().describe("An entity type, e.g. Person; the user type alone is the user."),
     name: z.string().optional(),
+    user: z.boolean().optional().describe("The user themselves: no type needed."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -121,12 +125,15 @@ export default defineStep({
       if (!node) return { error: `not_found: no node with ref_id ${cfg.ref_id}` };
       return id === cfg.ref_id ? node : { ...node, merged_from: cfg.ref_id };
     }
-    const type = cfg.type ? (await lookup(query, "entity_type", cfg.type))?.name ?? cfg.type : undefined;
-    if (type === "Self") return (await entity(query, "e.type = 'Self'", {})) ?? { error: "not_found: nothing is known about the user yet" };
+    if (cfg.user && (cfg.type || cfg.name)) return { error: "invalid_input: pass user: true alone, or a type and name" };
+    const vocab = await vocabulary(query);
+    const type = cfg.user ? vocab.userType() : cfg.type ? vocab.term("entity_type", cfg.type)?.name ?? cfg.type : undefined;
+    if (cfg.user && !type) return { error: "not_found: this memory has no user type" };
+    if (type && vocab.role(type) === "user") return (await entity(query, "e.type = $type", { type })) ?? { error: "not_found: nothing is known about the user yet" };
     if (type && cfg.name) {
       const node = await entity(query, "e.type = $type AND (lower(e.name) = $key OR list_contains(e.aliases, $key))", { type, key: normalize(cfg.name) });
       return node ?? { error: `not_found: no ${type} named ${cfg.name}` };
     }
-    return { error: "invalid_input: pass a ref_id, type 'Self', or a type and name" };
+    return { error: "invalid_input: pass a ref_id, user: true, or a type and name" };
   },
 });

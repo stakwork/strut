@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { type Query, canonical, exclusive, memoryDb } from "./_db.js";
+import { vocabulary } from "./_ontology.js";
 
 // Soft delete: the nodes stay, marked with when and why, so a janitor can
 // purge them once every copy has seen the forget, and nothing reads them
@@ -19,7 +20,7 @@ export default defineStep({
   type: "memory/forget",
   description:
     "Forget a node of long-term memory, with the reason. An entity takes all its facts with it; an episode, the facts " +
-    "that came only from it; a fact, only itself. The user (Self) cannot be forgotten whole: forget their facts instead. " +
+    "that came only from it; a fact, only itself. The user (memory/ontology's user_type) cannot be forgotten whole: forget their facts instead. " +
     "To replace a fact that changed, remember the new one instead; forget is for what is wrong or unwanted.",
   input: z.object({
     ref_id: z.string(),
@@ -34,7 +35,7 @@ export default defineStep({
       const id = await canonical(query, cfg.ref_id);
       const [entity] = await query("MATCH (e:Entity) WHERE e.ref_id = $id AND e.deleted_at IS NULL RETURN e.type AS type, e.name AS name", { id });
       if (entity) {
-        if (entity.type === "Self") return { error: "refused: the user cannot be forgotten whole; forget their facts one by one" };
+        if ((await vocabulary(query)).role(entity.type) === "user") return { error: "refused: the user cannot be forgotten whole; forget their facts one by one" };
         const facts = (await query(
           "MATCH (f:Fact)-[]->(e:Entity) WHERE e.ref_id = $id AND f.deleted_at IS NULL RETURN DISTINCT f.ref_id AS id", { id },
         )).map((r) => r.id as string);

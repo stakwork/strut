@@ -11,7 +11,6 @@
 // transaction around them. A failure part-way can leave a partial write (an
 // episode without its facts, a fact without its episode link); a later
 // remember of the same thing repeats it rather than repairing it.
-import type { Connection } from "@ladybugdb/core";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -19,11 +18,15 @@ import { z } from "zod";
 import type { StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { ONTOLOGY_DDL, seed } from "./_ontology.js";
+import { SEED } from "./_ontology-seed.js";
 
 export const EntityRef = z.object({
   ref_id: z.string().optional().describe("An existing entity's ref_id, when you already know it."),
-  type: z.string().min(1).describe("An entity type from memory/ontology, e.g. Person. Self is the user; Task is something to do later. A new type is kept as proposed."),
-  name: z.string().min(1).describe("The entity's name, e.g. 'Kate' or 'Friday Night Chef'. For Self, use 'Me'."),
+  type: z.string().min(1).describe(
+    "An entity type from memory/ontology, e.g. Person; each type's description says when to use it, and user_type is the user. " +
+      "A new type is kept as proposed.",
+  ),
+  name: z.string().min(1).describe("The entity's name, e.g. 'Kate' or 'Friday Night Chef'."),
 });
 export type EntityRefT = z.infer<typeof EntityRef>;
 
@@ -50,6 +53,10 @@ const MIGRATIONS = [
   "ALTER TABLE Entity ADD IF NOT EXISTS deleted_reason STRING",
   "ALTER TABLE Fact ADD IF NOT EXISTS deleted_reason STRING",
   "ALTER TABLE Episode ADD IF NOT EXISTS deleted_reason STRING",
+  // No default: rows written before read NULL, which seed() backfills.
+  "ALTER TABLE Ontology ADD IF NOT EXISTS parent STRING",
+  "ALTER TABLE Ontology ADD IF NOT EXISTS naming STRING",
+  "ALTER TABLE Ontology ADD IF NOT EXISTS role STRING",
 ];
 
 export type Row = Record<string, any>;
@@ -57,6 +64,8 @@ export type Query = (cypher: string, params?: Record<string, any>) => Promise<Ro
 
 // One handle per database file per process: Ladybug allows one open
 // database per file. Kept on globalThis so a re-imported module shares it.
+// The handle is the query function itself, one per file, so a cache keyed
+// by it (_ontology.ts vocabulary) is per database.
 const HANDLES = Symbol.for("strut.memory.ladybug");
 
 /** `STRUT_MEMORY_DB` (secret store → env), else `<dataDir>/memory/graph.lbug`; absolute, so
@@ -71,7 +80,7 @@ async function dbPath(ctx?: StepContext<StrutCapabilities>): Promise<string> {
   return resolve(join(services.dataDir, "memory", "graph.lbug"));
 }
 
-async function open(path: string): Promise<Connection> {
+async function open(path: string): Promise<Query> {
   // Owner-only: whatever modes Ladybug gives its files, nobody else on
   // this machine can reach them through this folder. A folder that was
   // already there keeps its modes; an open one gets a warning.
@@ -90,12 +99,19 @@ async function open(path: string): Promise<Connection> {
   });
   const conn = new lbug.Connection(new lbug.Database(path));
   for (const ddl of [...SCHEMA, ...MIGRATIONS]) await conn.query(ddl);
-  await seed(conn);
-  return conn;
+  const query: Query = async (cypher, params = {}) => {
+    const result = Object.keys(params).length
+      ? await conn.execute(await conn.prepare(cypher), params)
+      : await conn.query(cypher);
+    const last = Array.isArray(result) ? result[result.length - 1]! : result;
+    return (await last.getAll()) as Row[];
+  };
+  await seed(query, SEED);
+  return query;
 }
 
-function connection(path: string): Promise<Connection> {
-  const g = globalThis as Record<symbol, Map<string, Promise<Connection>> | undefined>;
+function connection(path: string): Promise<Query> {
+  const g = globalThis as Record<symbol, Map<string, Promise<Query>> | undefined>;
   const handles = (g[HANDLES] ??= new Map());
   let handle = handles.get(path);
   if (!handle) {
@@ -109,14 +125,7 @@ function connection(path: string): Promise<Connection> {
 
 /** The memory graph this run's deployment keeps, as a query function. */
 export async function memoryDb(ctx?: StepContext<unknown>): Promise<Query> {
-  const conn = await connection(await dbPath(ctx as StepContext<StrutCapabilities> | undefined));
-  return async (cypher, params = {}) => {
-    const result = Object.keys(params).length
-      ? await conn.execute(await conn.prepare(cypher), params)
-      : await conn.query(cypher);
-    const last = Array.isArray(result) ? result[result.length - 1]! : result;
-    return (await last.getAll()) as Row[];
-  };
+  return connection(await dbPath(ctx as StepContext<StrutCapabilities> | undefined));
 }
 
 // Writes go one at a time so a remember never interleaves with another.
