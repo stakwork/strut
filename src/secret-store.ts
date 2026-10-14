@@ -145,10 +145,9 @@ export class FileSecretStore implements SecretStore {
   }
 
   private load(): Promise<SecretsFile> {
-    this.loaded ??= readFile(this.file, "utf-8").then(
-      (raw) => JSON.parse(raw) as SecretsFile,
-      () => ({ version: 1, salt: randomBytes(16).toString("base64"), secrets: {} }),
-    );
+    this.loaded ??= readFile(this.file, "utf-8")
+      .then((raw) => JSON.parse(raw) as SecretsFile)
+      .catch((): SecretsFile => ({ version: 1, salt: randomBytes(16).toString("base64"), secrets: {} }));
     return this.loaded;
   }
 
