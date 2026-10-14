@@ -16,6 +16,7 @@ import { RunController } from "./run-control.js";
 import { artifactKind, resolveArtifactRefs } from "./artifact-refs.js";
 import { mediaOf } from "./core.js";
 import { MemorySessionStore } from "./session-store.js";
+import { holdUrls } from "./job-index.js";
 import jobDir from "./steps/lib/job/dir.js";
 import jobRead from "./steps/lib/job/read.js";
 import pack from "./steps/core/pack.js";
@@ -326,9 +327,11 @@ describe("jobs — the directory", () => {
       assert.ok(existsSync(`${jobRoot(dataDir, "h-1")}.json`), "the record, before any job/dir");
       assert.ok(!existsSync(jobRoot(dataDir, "h-1")));
 
-      await jobs.hold("h-1", pod("pod-a", "pod-a-again"));
+      await jobs.hold("h-1", { ...pod("pod-a", "pod-a-again"), url: "https://pod-a.example" });
       holds = await jobs.holds("h-1");
       assert.deepEqual(holds.map((h) => h.release.input), [{ podId: "pod-b" }, { podId: "pod-a-again" }], "a re-claim replaces");
+      assert.deepEqual(holds.map((h) => h.url), [undefined, "https://pod-a.example"], "a hold's url round-trips (plans/job-claims.md §3)");
+      assert.equal((await readJobRecord(jobRoot(dataDir, "h-1")))!.holds![1]!.url, "https://pod-a.example", "on the record");
 
       await jobs.release("h-1", "pod-b");
       await jobs.release("h-1", "never");
@@ -845,6 +848,24 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.deepEqual([capped.threads.length, capped.omittedRuns], [1, 1]);
     assert.equal((await api("/jobs/nope")).status, 404);
     assert.equal((await api("/jobs/bad%20id")).status, 400);
+  });
+
+  it("GET /jobs/:id passes the holds through, url included, and folds `urls` by kind — the first hold of each kind with one wins, one without is skipped", async () => {
+    const { api } = await boot();
+    const jobs = jobsCapability(tempDir);
+    const hold = (id: string, kind: string, url?: string) => ({ id, kind, release: { type: "fake/release", input: { id } }, ...(url ? { url } : {}) });
+    await jobs.hold("j-u", hold("pod-1", "pod"));
+    await jobs.hold("j-u", hold("pod-2", "pod", "https://pod-2.example"));
+    await jobs.hold("j-u", hold("pod-3", "pod", "https://pod-3.example"));
+    await jobs.hold("j-u", hold("vm-1", "vm"));
+    await jobs.hold("j-u", hold("browser-1", "browser", "ws://browser-1.example"));
+    const v = (await api("/jobs/j-u")).json;
+    assert.deepEqual(
+      v.holds.map((h: any) => [h.id, h.kind, h.url]),
+      [["pod-1", "pod", undefined], ["pod-2", "pod", "https://pod-2.example"], ["pod-3", "pod", "https://pod-3.example"], ["vm-1", "vm", undefined], ["browser-1", "browser", "ws://browser-1.example"]],
+    );
+    assert.deepEqual(v.urls, { pod: "https://pod-2.example", browser: "ws://browser-1.example" });
+    assert.deepEqual(holdUrls([]), {});
   });
 
   it("a run in flight is `running` and holds the job; a sealed workflow's run shows its status and nothing more", async () => {

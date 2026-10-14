@@ -2,7 +2,12 @@
 
 > **Status (2026-10-14): proposed**, from one design conversation with the
 > owner. The rulings in "Decided" are his; the rows marked *proposed* are
-> mine and need one. Nothing is built. Companion to `claims.md` (the layer
+> mine and need one. The pieces that never touch `src/graph/` are built
+> (`http/verify` §4, `url` on a hold and `urls` on the view §3,
+> `buildJobSubject` §3 in `src/job-subject.ts`, `about` + `locator` on the
+> ledger's `latest` §6); the job subject kind, the pass, the doors and the
+> UI wait on the Ladybug backend's rewrite of the graph layer
+> (`ladybug-backend.md`). Companion to `claims.md` (the layer
 > this reuses — read its Design and §4 first), `jobs.md` (the job, its
 > directory, holds and deliverables), `job-index.md` (the read side this
 > extends) and `job-artifact-events.md` (the door a person's feedback comes
@@ -241,7 +246,7 @@ config:
   url: "{{ input.urls.pod }}/api/settings"
   method: GET
   headers: { Accept: application/json }
-  secrets: { Authorization: "Bearer {{ secret.API_TOKEN }}" }   # values resolved by NAME through ctx.services.secrets, masked from content
+  secrets: { Authorization: "Bearer {API_TOKEN}" }   # {NAME} (single braces — the {{ }} engine never sees it) is the secret NAME, resolved through ctx.services.secrets, masked from content and failed
   expect:
     status: 200
     headers: { content-type: "application/json" }
@@ -253,10 +258,11 @@ config:
 Output `{ supports, content, locator: { url }, status, ms, failed }`. A
 status that is not the expected one is a refutation, 500 included; a
 connection refused, DNS failure or timeout is cannot-run. `content` is
-the status, the time and a bounded excerpt of the body, so the person sees
-what came back. A check's config is a graph property, so a credential may
-only ever be NAMED here — the secret store's actor binding means the
-launching person's token is what resolves.
+the status, the time, which expectations failed and a bounded excerpt of
+the body, so the person sees what came back. A check's config is a graph
+property, so a credential may only ever be NAMED here — a missing one
+throws (cannot-run), and the secret store's actor binding means the
+launching person's token is what resolves. Built: `src/steps/lib/http/verify.ts`.
 
 **Shell and tests** need nothing new. `exec` with `cwd: "{{ input.dir }}"`
 maps exit codes as today; `pod/run-tests` returns `{ success, apps }`, so

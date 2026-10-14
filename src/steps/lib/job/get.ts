@@ -20,7 +20,7 @@ export default defineStep({
   description:
     `One job, read back: its runs ({ workflow, runId, status, at, parentRunId?, durationMs?, error? }, newest first — a run with a parentRunId is one a turn launched, not a turn), ` +
     `its threads (sessions: [{ id, turns, updatedAt, busy? }] — a thread's id is what an agent step's \`session\` takes to CONTINUE it; busy = mid-turn now), ` +
-    `its holds, repos and files, \`dir\` (its directory on this host; files and artifact paths are relative to it), ` +
+    `its holds (each with a \`url\` when what it holds has an address) and \`urls\` — the first hold of each kind that has one, { pod: "https://…" } — its repos and files, \`dir\` (its directory on this host; files and artifact paths are relative to it), ` +
     `\`artifacts\`: the job's CURRENT deliverables, the latest version of each — { id, kind, title, summary?, url, path?, runId } (\`path\` is what job/read takes) — and \`text\`, the job's latest reply. ` +
     `A run of a sealed workflow shows its status and nothing more. ` +
     `With \`threads: true\`, also \`threads\`: the job's agent threads — every agent execution grouped by session, each turn with its run, tool-call count, tokens and cost, and what it spawned (sub-agents, child runs, peer runs) — the job's execution as a tree.`,

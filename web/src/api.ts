@@ -772,7 +772,9 @@ export interface JobRunView {
 
 /** `GET /jobs/:id`. */
 export interface JobView extends Omit<JobListing, "runs" | "holds"> {
-  holds: Array<{ id: string; kind: string; since: string }>;
+  holds: Array<{ id: string; kind: string; since: string; note?: string; url?: string }>;
+  /** The first hold of each kind that has a url: `{ pod: "https://…" }`. */
+  urls: Record<string, string>;
   repos: string[];
   files: string[];
   runs: JobRunView[];
@@ -1329,7 +1331,19 @@ export interface ClaimEntry {
   /** Active checks with no evidence about the active version. */
   unverified: number;
   openSlot: boolean;
-  latest?: { content?: string; observedAt?: number; mode?: string; check?: string; checkVersion?: string; by?: string; run?: ClaimRunRef };
+  latest?: {
+    content?: string;
+    observedAt?: number;
+    mode?: string;
+    check?: string;
+    checkVersion?: string;
+    by?: string;
+    run?: ClaimRunRef;
+    /** The version it observed: a hash, or a job turn's run id. */
+    about?: string;
+    /** Where to look: a job file's url (a screenshot), the file itself. */
+    locator?: { url?: string; file?: string };
+  };
   /** Questions an external check is waiting on — the panel's to-dos. */
   slots: Array<{ evidence: string; check?: string; question?: string; run?: ClaimRunRef }>;
   checks: ClaimCheck[];
