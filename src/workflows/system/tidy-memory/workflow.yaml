@@ -3,30 +3,35 @@ description: Once a day, merges people and things saved twice.
 # A system workflow (src/system-workflows.ts): installed at boot with its
 # automation, off. Names no model, so the agent uses STRUT_DEFAULT_MODEL.
 # No built-in tools (no shell, no files, no web) and no memory/remember or
-# memory/forget: it can only read memory and merge. memory/merge refuses to
-# merge Self away, and stamps its writes "janitor".
+# memory/forget: it can only list candidates, read them and merge. Stamped
+# "janitor", memory/merge refuses to merge Self away, takes only a pair
+# memory/duplicates offers (into Self only on the user's full name), and stops
+# at 10 merges a day.
 steps:
   - id: tidy
     type: agent
     config:
       cwd: "."
       toolFilter: [none]
-      agentTools: [memory/duplicates, memory/get, memory/recall, memory/merge]
-      maxSteps: 40
+      agentTools: [memory/duplicates, memory/get, memory/merge]
+      maxSteps: 60
       system: You tidy a person's long-term memory. You merge entities only when you are sure they are the same person or thing.
       prompt: |
         Tidy the user's memory. Call memory_duplicates. For each pair, call
-        memory_get on both. Merge with memory_merge only when you are sure they
+        memory_get on both. Only those pairs can be merged: memory_merge
+        refuses any other. Merge with memory_merge only when you are sure they
         are the same person or thing: the names fit (a nickname or a full
         name), nothing conflicts (different surnames, employers, cities, or
-        relationships to the user), and at least one thing links them (a shared
-        fact, the same relationship to the user, or a Person with the user's
-        full name). A shared first name alone is not a link. Keep the entity
-        with more facts, and always keep Self: merge the Person into Self,
-        never the other way. Merge at most 10 pairs. Finish
-        with one line per merge ("Kate into Katie Moss: same sister, same
-        city"), then one line naming the pairs you left alone. If nothing was
-        merged, say "Nothing to merge".
+        relationships to the user), and something links them (the same
+        relationship to the user, a shared fact beyond where they live or
+        work, or a Person with the user's full name). A shared first name
+        alone is not a link, and neither is a shared city, address or
+        employer alone: relatives share them. Keep the entity with more
+        facts, and always keep Self: merge the Person into Self, never the
+        other way. Merge at most 10 pairs; when memory_merge says the day's
+        limit is reached, stop. Finish with one line per merge ("Kate into
+        Katie Moss: same sister, same city"), then one line naming the pairs
+        you left alone. If nothing was merged, say "Nothing to merge".
   # The run's output: the agent's final answer and what it cost.
   - id: result
     type: pack

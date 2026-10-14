@@ -673,16 +673,17 @@ describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is
 
 describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-memory-dups-"));
-  const ctx = ({
+  const ctxAt = (db: string) => ({
     runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {},
-    services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "graph.lbug") : undefined) } },
+    services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, db) : undefined) } },
   }) as unknown as StepContext;
-  let run: (type: string, input: unknown) => Promise<any>;
+  const ctx = ctxAt("graph.lbug");
+  let run: (type: string, input: unknown, c?: StepContext) => Promise<any>;
   before(async () => {
     const { registry } = await buildRegistry();
-    run = (type, input) => {
+    run = (type, input, c = ctx) => {
       const def = registry[type] as unknown as StepDef;
-      return def.run(def.input.parse(input), ctx);
+      return def.run(def.input.parse(input), c);
     };
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
@@ -730,5 +731,76 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
     const [row] = await query("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.deleted_reason AS why", { id: dup.ref_id });
     assert.equal(row!.why, `merged into ${keep.ref_id} by janitor`);
     assert.ok(!(await run("memory/duplicates", {})).some((p: any) => p.a.ref_id === dup.ref_id || p.b.ref_id === dup.ref_id));
+  });
+
+  it("a single alias word is a first name: a second Kate beside Katie Moss (alias kate) is not \"same name\"", async () => {
+    const now = Date.now();
+    await memoryWrite(ctx, (q) => q(
+      "CREATE (:Entity {ref_id: 'kate-2', type: 'Person', name: 'Kate', aliases: [], created_by: 'test', created_at: $now, updated_at: $now})", { now },
+    ));
+    const pair = (await run("memory/duplicates", { limit: 100 })).find((p: any) => [p.a.ref_id, p.b.ref_id].includes("kate-2") && pairOf(p) === "Kate + Katie Moss");
+    assert.ok(pair, "still a candidate");
+    assert.equal(pair.reason, 'both go by "kate"');
+  });
+
+  it("names outside a-z keep their letters", async () => {
+    await run("memory/remember", {
+      episode: "Łukasz, Łukasz Nowak, Søren, Søren Kierkegaard, Иван and Иван Петров met.",
+      mentions: [person("Łukasz"), person("Łukasz Nowak"), person("Søren"), person("Søren Kierkegaard"), person("Иван"), person("Иван Петров")],
+    });
+    const pairs = await run("memory/duplicates", { limit: 100 });
+    for (const [want, why] of [["Łukasz + Łukasz Nowak", "łukasz"], ["Søren + Søren Kierkegaard", "søren"], ["Иван + Иван Петров", "иван"]]) {
+      const p = pairs.find((x: any) => pairOf(x) === want);
+      assert.ok(p, `${want} in ${pairs.map(pairOf)}`);
+      assert.equal(p.reason, `same first name "${why}"`);
+    }
+    assert.ok(!pairs.some((x: any) => pairOf(x) === "Søren + Søren Kierkegaard" && /"s"/.test(x.reason)));
+  });
+
+  it("the janitor merges only an offered pair; an agent or the user may merge any", async () => {
+    await run("memory/remember", { episode: "Oslo, Bergen, Turin and Milan.", mentions: [{ type: "Place", name: "Oslo" }, { type: "Place", name: "Bergen" }, { type: "Place", name: "Turin" }, { type: "Place", name: "Milan" }] });
+    const id = async (name: string) => (await (await memoryDb(ctx))("MATCH (e:Entity) WHERE e.name = $name AND e.deleted_at IS NULL RETURN e.ref_id AS id", { name }))[0]!.id as string;
+    const out = await run("memory/merge", { keep: await id("Oslo"), duplicate: await id("Bergen"), created_by: "janitor" });
+    assert.match(out.error, /^refused: the janitor may only merge a pair memory_duplicates offers/);
+    assert.equal((await run("memory/merge", { keep: await id("Oslo"), duplicate: await id("Bergen"), created_by: "agent" })).merged.name, "Bergen");
+    assert.equal((await run("memory/merge", { keep: await id("Turin"), duplicate: await id("Milan"), created_by: "user" })).merged.name, "Milan");
+  });
+
+  it("the janitor merges into the user only the Person with the user's full name", async () => {
+    const pairs = await run("memory/duplicates", { limit: 100 });
+    const self = pairs[0].a.node_type === "Self" ? pairs[0].a : pairs[0].b;
+    const tom = (await (await memoryDb(ctx))("MATCH (e:Entity) WHERE e.name = 'Tom' AND e.deleted_at IS NULL RETURN e.ref_id AS id"))[0]!.id;
+    assert.match((await run("memory/merge", { keep: self.ref_id, duplicate: tom, created_by: "janitor" })).error, /^refused: the janitor may only merge/);
+    const full = pairs[0].a.node_type === "Self" ? pairs[0].b : pairs[0].a;
+    assert.equal(full.name, "Tom Smith");
+    assert.equal((await run("memory/merge", { keep: self.ref_id, duplicate: full.ref_id, created_by: "janitor" })).merged.name, "Tom Smith");
+  });
+
+  it("the janitor stops at 10 merges in 24 hours; older ones and other writers do not count", async () => {
+    const now = Date.now();
+    const query = await memoryDb(ctx);
+    const [{ n }] = await query("MATCH (e:Entity) WHERE e.deleted_reason ENDS WITH ' by janitor' RETURN count(e) AS n") as any;
+    await memoryWrite(ctx, async (q) => {
+      for (let i = Number(n); i < 10; i++) {
+        await q("CREATE (:Entity {ref_id: $id, type: 'Person', name: 'x', aliases: [], deleted_at: $now, deleted_reason: 'merged into y by janitor'})", { id: `cap-${i}`, now });
+      }
+      // Outside the window, and by someone else: neither counts.
+      await q("CREATE (:Entity {ref_id: 'cap-old', type: 'Person', name: 'x', aliases: [], deleted_at: $old, deleted_reason: 'merged into y by janitor'})", { old: now - 25 * 3600_000 });
+      await q("CREATE (:Entity {ref_id: 'cap-agent', type: 'Person', name: 'x', aliases: [], deleted_at: $now, deleted_reason: 'merged into y by agent'})", { now });
+    });
+    const pair = (await run("memory/duplicates", {})).find((p: any) => pairOf(p) === "Bob Lee + Robert Lee");
+    const out = await run("memory/merge", { keep: pair.a.ref_id, duplicate: pair.b.ref_id, created_by: "janitor" });
+    assert.match(out.error, /^refused: the janitor has already merged 10 pairs in the last 24 hours/);
+    // One under the cap merges again.
+    await memoryWrite(ctx, (q) => q("MATCH (e:Entity) WHERE e.ref_id = 'cap-9' OR e.ref_id = 'cap-0' SET e.deleted_at = 1"));
+    assert.equal((await run("memory/merge", { keep: pair.a.ref_id, duplicate: pair.b.ref_id, created_by: "janitor" })).kept.ref_id, pair.a.ref_id);
+  });
+
+  it("a user who gave one name (\"call me Tom\") is never offered against a Person", async () => {
+    const one = ctxAt("one-name.lbug");
+    await run("memory/remember", { episode: "Call me Tom.", facts: [{ subject: { type: "Self", name: "Me" }, predicate: "name", object: { type: "Person", name: "Tom" }, text: "Call me Tom." }] }, one);
+    await run("memory/remember", { episode: "Tom from work called.", mentions: [person("Tom")] }, one);
+    const pairs = await run("memory/duplicates", {}, one);
+    assert.ok(!pairs.some((p: any) => p.a.node_type === "Self" || p.b.node_type === "Self"), JSON.stringify(pairs));
   });
 });

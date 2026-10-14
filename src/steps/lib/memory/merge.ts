@@ -2,6 +2,28 @@ import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { type Query, type Row, editAliases, memoryWrite, supersede } from "./_db.js";
 import { lookup, vocabulary } from "./_ontology.js";
+import { candidatePairs } from "./duplicates.js";
+import { SYSTEM_WRITER as JANITOR } from "../../../system-workflows.js";
+
+/** The janitor (a system workflow, src/system-workflows.ts) merges with no
+ *  person watching and no undo, reading memory that holds what other people
+ *  said. So, in code: only a pair memory/duplicates offers, into the user only
+ *  on the full-name match, and at most JANITOR_CAP merges in a rolling day. */
+export const JANITOR_CAP = 10;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+async function janitorRefusal(query: Query, keep: string, dup: string, keepIsUser: boolean, now: number): Promise<string | undefined> {
+  const [{ n } = { n: 0 }] = await query(
+    `MATCH (e:Entity) WHERE e.deleted_at > $since AND e.deleted_reason STARTS WITH "merged into " AND e.deleted_reason ENDS WITH $by
+     RETURN count(e) AS n`,
+    { since: now - DAY_MS, by: ` by ${JANITOR}` },
+  );
+  if (Number(n) >= JANITOR_CAP) return `refused: the janitor has already merged ${JANITOR_CAP} pairs in the last 24 hours; stop merging`;
+  const pair = (await candidatePairs(query)).find((p) => (p.a.ref_id === keep && p.b.ref_id === dup) || (p.a.ref_id === dup && p.b.ref_id === keep));
+  if (!pair) return "refused: the janitor may only merge a pair memory_duplicates offers; this pair is not one";
+  if (keepIsUser && pair.score < 100) return "refused: the janitor may merge into the user only a Person with the user's full name";
+  return undefined;
+}
 
 /** Moves every `edge` between `table` nodes and the duplicate onto the kept entity. */
 async function repoint(query: Query, edge: string, table: "Fact" | "Episode", dup: string, keep: string): Promise<number> {
@@ -42,8 +64,13 @@ export default defineStep({
       ).then((r) => r[0]);
       const [kept, gone] = [await read(keep), await read(dup)];
       if (!kept || !gone) return { error: `not_found: ${!kept ? keep : dup} is not an entity in memory` };
-      if ((await vocabulary(query)).role(gone.type) === "user") {
+      const vocab = await vocabulary(query);
+      if (vocab.role(gone.type) === "user") {
         return { error: "refused: the user cannot be merged into another entity; merge the other one into the user" };
+      }
+      if (cfg.created_by === JANITOR) {
+        const refusal = await janitorRefusal(query, keep, dup, vocab.role(kept.type) === "user", now);
+        if (refusal) return { error: refusal };
       }
       const notes = kept.type === gone.type ? [] : [`Merged a ${gone.type} into a ${kept.type}.`];
 

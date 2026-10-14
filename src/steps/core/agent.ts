@@ -703,6 +703,9 @@ export function buildRegistryTools(
   for (const stepType of expandAgentTools(names, registry)) {
     const def = registry[stepType];
     if (!def) {
+      // A system workflow's tools are its guard rails (tidy-memory without
+      // memory/duplicates merges blind): an older strut refuses to run it.
+      if (writerOf(ctx) === SYSTEM_WRITER) throw new Error(`agent: agentTools: unknown step type "${stepType}"`);
       console.warn(`[agent] agentTools: unknown step type "${stepType}" — skipping`);
       continue;
     }
@@ -1092,11 +1095,17 @@ export default defineStep({
       if (ctx?.agentTool) throw new Error("agent: a sub-agent (an agent called as a tool) cannot take a `session`");
     }
     // No model named: the deployment's default (STRUT_DEFAULT_MODEL, secret
-    // store then env — what a desktop host sets to the connected model).
+    // store then env — what a desktop host sets to the connected model). It
+    // names its own provider, so a lone `provider` is ignored with it.
     const defaultModel = cfg.model ? undefined : (await (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets?.get("STRUT_DEFAULT_MODEL")) || undefined;
+    // A system workflow runs only on the connected model: when the host
+    // disconnects it (deletes STRUT_DEFAULT_MODEL), never a silent fallback.
+    if (!cfg.model && !defaultModel && writerOf(ctx) === SYSTEM_WRITER) {
+      throw new Error("agent: no model connected (STRUT_DEFAULT_MODEL is not set)");
+    }
     const modelName = cfg.model ?? defaultModel ?? process.env["STRUT_LLM_MODEL"];
     // STRUT_LLM_PROVIDER goes with STRUT_LLM_MODEL; a default model names its own provider.
-    const providerHint = cfg.provider ?? (defaultModel ? undefined : process.env["STRUT_LLM_PROVIDER"]);
+    const providerHint = defaultModel ? undefined : (cfg.provider ?? process.env["STRUT_LLM_PROVIDER"]);
     const { provider } = canonicalModelName(modelName, providerHint);
 
     // Anthropic-only extras: the provider-defined text

@@ -8,7 +8,7 @@ import { validateWorkflowYaml } from "./validate.js";
 import { WorkspaceManager, flowFromYaml } from "./workspace.js";
 import { createStrut } from "./createStrut.js";
 import { MemoryRunStore } from "./store.js";
-import { SYSTEM_DIR, installSystemWorkflow, isSystemWorkflow, shippedVersionLabel } from "./system-workflows.js";
+import { SYSTEM_DIR, installSystemWorkflow, installSystemWorkflows, isSystemWorkflow, shippedVersionLabel } from "./system-workflows.js";
 
 const yamlV = (n: number) => `name: sys\ndescription: A system workflow.\nsteps:\n  - id: out\n    type: pack\n    config: { n: ${n} }\n`;
 const automationJson = { name: "Sys", trigger: { every: "day", at: ["12:30"] } };
@@ -29,7 +29,7 @@ describe("system workflows", () => {
     const flow = flowFromYaml("tidy-memory", "v1", text);
     assert.deepEqual(flow.steps.map((s) => s.type), ["agent", "pack"]);
     const cfg = flow.steps[0]!.config as Record<string, unknown>;
-    assert.deepEqual(cfg["agentTools"], ["memory/duplicates", "memory/get", "memory/recall", "memory/merge"]);
+    assert.deepEqual(cfg["agentTools"], ["memory/duplicates", "memory/get", "memory/merge"]);
     assert.deepEqual(cfg["toolFilter"], ["none"]);
     assert.equal(cfg["model"], undefined);
     assert.deepEqual(flow.steps[1]!.config, { text: "{{ tidy.result }}", cost: "{{ tidy.cost }}" });
@@ -99,6 +99,19 @@ describe("system workflows", () => {
     assert.deepEqual(Object.keys(meta.versions), ["v1"]);
     assert.equal(meta.category, "mine");
     assert.equal(meta.automations, undefined);
+  });
+
+  it("a system workflow strut no longer ships has its automations switched off at boot", async () => {
+    await installSystemWorkflow(ws, "gone", yamlV(1), automationJson);
+    const [a] = (await ws.getWorkflowMetadata("gone"))!.automations!;
+    await ws.setWorkflowAutomations("gone", [{ ...a!, enabled: true }]);
+    await ws.publishWorkflow("mine", "v1", yamlV(2));
+    await ws.setWorkflowAutomations("mine", [{ ...a!, id: "a-mine", enabled: true }]);
+
+    await installSystemWorkflows(ws);
+    assert.equal((await ws.getWorkflowMetadata("gone"))!.automations![0]!.enabled, false);
+    assert.equal((await ws.getWorkflowMetadata("mine"))!.automations![0]!.enabled, true, "not a system workflow: untouched");
+    assert.equal((await ws.getWorkflowMetadata("tidy-memory"))!.automations![0]!.enabled, false, "shipped, installed off");
   });
 
   it("createStrut installs tidy-memory at boot, and GET /automations carries each workflow's category", async () => {

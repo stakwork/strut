@@ -100,9 +100,11 @@ describe("agentTools (buildRegistryTools — tools are steps)", () => {
     assert.equal((tools["demo_echo"] as any).inputSchema, echoStep.input);
   });
 
-  it("skips unknown step types (no throw)", () => {
+  it("skips unknown step types (no throw), except in a system workflow", () => {
     const tools = buildRegistryTools(["nope/missing", "demo/echo"], registry, undefined, fakeTool);
     assert.deepEqual(Object.keys(tools), ["demo_echo"]);
+    const ctx = { runId: "r", path: "tidy-memory/tidy", scope: {}, input: undefined, emit: async () => {}, services: undefined, registry } as unknown as StepContext;
+    assert.throws(() => buildRegistryTools(["nope/missing", "demo/echo"], registry, ctx, fakeTool), /unknown step type "nope\/missing"/);
   });
 
   it("returns {} with no names or no registry", () => {
@@ -1033,7 +1035,7 @@ describe("mid-stream socket death is resumed, not lost", () => {
 
   let cwd = "";
   let saved: Record<string, string | undefined> = {};
-  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_LLM_PROVIDER", "AI_SDK_LOG_WARNINGS"];
+  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_LLM_PROVIDER", "STRUT_LLM_MODEL", "AI_SDK_LOG_WARNINGS"];
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "strut-stream-"));
     saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
@@ -1109,6 +1111,30 @@ describe("mid-stream socket death is resumed, not lost", () => {
       ) as any;
       assert.equal(out.result, "done");
       assert.ok((s.bodies[0] ?? "").includes('"model":"claude-opus-4-8"'), s.bodies[0]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a system workflow with no STRUT_DEFAULT_MODEL fails fast; any other agent step still falls back to STRUT_LLM_MODEL", async () => {
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(toolUse("toolu_1", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    process.env["STRUT_LLM_MODEL"] = "anthropic/claude-sonnet-4-5";
+    const secrets = { get: async () => undefined };
+    const at = (path: string) => agent.run(
+      (agent.input as any).parse({ cwd, system: "sys", prompt: "go", finalAnswer: "Report.", toolFilter: ["none"] }),
+      { runId: "r", path, scope: {}, input: undefined, emit: async () => {}, services: { secrets }, registry: {} } as any,
+    ) as Promise<any>;
+    try {
+      await assert.rejects(at("tidy-memory/tidy"), /no model connected \(STRUT_DEFAULT_MODEL is not set\)/);
+      assert.equal(s.bodies.length, 0, "nothing reached the wire");
+      assert.equal((await at("my-flow/step")).result, "done");
+      assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-4-5"'), s.bodies[0]);
     } finally {
       s.close();
     }

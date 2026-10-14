@@ -106,5 +106,16 @@ export async function installSystemWorkflows(workspace: WorkspaceStore): Promise
       console.warn(`[system] could not install ${name}:`, err instanceof Error ? err.message : err);
     }
   }
+  // A built-in strut no longer ships (removed or renamed) keeps its record,
+  // but its automations are switched off: nothing runs that strut did not ship.
+  try {
+    for (const w of await workspace.listWorkflows()) {
+      if (w.category !== SYSTEM_CATEGORY || SHIPPED.includes(w.name) || !w.automations?.some((a) => a.enabled)) continue;
+      await workspace.setWorkflowAutomations(w.name, w.automations.map((a) => ({ ...a, enabled: false })));
+      console.log(`[system] ${w.name} is no longer shipped: its automations are off`);
+    }
+  } catch (err) {
+    console.warn("[system] could not check for unshipped system workflows:", err instanceof Error ? err.message : err);
+  }
   return out;
 }
