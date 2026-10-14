@@ -66,6 +66,8 @@ export async function seedJarvisOntology(e: EngineLike, fixture: OntologyFixture
   const src = engine.schemaSource;
   const bolt = engine.bolt;
   const report: OntologySeedReport = { createdSchemas: [], createdEdgeSchemas: 0, domains: [], skippedSchemaObjects: [] };
+  // A closed registry (Ladybug) holds no jarvis ontology: nothing to seed.
+  if (src.registry) return report;
   // Neo4j DDL only (see schema-seed.ts).
   const ddl = async (cypher: string) => {
     if (!bolt) return;

@@ -168,6 +168,7 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
   const engine = asEngine(e);
   const src = engine.schemaSource;
   const plan = planNodeSchema(input);
+  if (src.registry) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, `the ${engine.kind} backend's types are a closed registry (plans/ladybug-backend.md §3); a type cannot be registered at runtime`);
 
   // Adopt the live casing of an existing type / parent (jarvis
   // `resolve_graph_label` / `resolve_canonical_node_type`).

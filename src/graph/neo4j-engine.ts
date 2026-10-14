@@ -52,6 +52,8 @@ export const NEO4J_DIALECT: Dialect = {
   isType: (alias, types) => `(${types.map((t) => `${alias}:${q(t)}`).join(" OR ")})`,
   typeOf: (alias) => `labels(${alias})`,
   edgeType: (alias) => `type(${alias})`,
+  live: (alias) => NODE_LIVE(alias),
+  edgeLive: (alias) => EDGE_LIVE(alias),
   int: (expr) => `toInteger(${expr})`,
   lower: (expr) => `toLower(${expr})`,
   project: (alias, fields) => `{${fields.map((f) => `${q(f)}: ${alias}.${q(f)}`).join(", ")}}`,

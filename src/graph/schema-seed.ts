@@ -65,7 +65,8 @@ export async function schemaStatement(bolt: Bolt, cypher: string): Promise<strin
 }
 
 export interface SeedReport {
-  mode: "standalone" | "shared";
+  /** `closed`: the engine's types are a registry in code (Ladybug) — nothing to seed. */
+  mode: "standalone" | "shared" | "closed";
   /** Schema types created on this run. */
   createdSchemas: string[];
   /** Existing schemas that were extended with missing keys (add-only). */
@@ -110,6 +111,7 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     skippedEdgeSchemas: [],
     skippedSchemaObjects: [],
   };
+  if (src.registry) return { ...report, mode: "closed" };
   // Neo4j DDL (constraints, search indexes): nothing to run on Ladybug,
   // whose tables and indexes the handle creates at open.
   const ddl = async (cypher: string) => {

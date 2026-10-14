@@ -38,10 +38,10 @@ export interface GraphTx {
 }
 
 /**
- * The fixed set of dialect helpers (§4). A pattern-level statement that
- * cannot be written with these becomes a method on an engine interface —
- * there is no ninth helper. Every argument is Cypher text (an alias, a
- * `$param`, an expression), never a value.
+ * The fixed set of dialect helpers (§4), nine of them. A pattern-level
+ * statement that cannot be written with these becomes a method on an
+ * engine interface — there is no tenth helper. Every argument is Cypher
+ * text (an alias, a `$param`, an expression), never a value.
  */
 export interface Dialect {
   readonly kind: GraphKind;
@@ -56,6 +56,12 @@ export interface Dialect {
   typeOf(alias: string): string;
   /** The type of a bound relationship: `type(r)` vs `label(r)`. */
   edgeType(alias: string): string;
+  /** A node that is not soft-deleted: `NODE_LIVE` (`deletion.ts`) vs
+   *  `a.deleted_at IS NULL` — the file has no `is_deleted`. */
+  live(alias: string): string;
+  /** An edge that carries no legacy flag: `EDGE_LIVE` vs `true` — on
+   *  Ladybug an edge is live or gone. */
+  edgeLive(alias: string): string;
   /** An integer cast: `toInteger(x)` vs `CAST(x AS INT64)`. */
   int(expr: string): string;
   lower(expr: string): string;
@@ -190,7 +196,19 @@ export interface EdgeSchemaRow {
  *  `get_schema_edge_by_edge_type`). */
 export type EdgeSchemaWalk = "exact" | "source-ancestor" | "target-ancestor" | "both-ancestors" | "wildcard";
 
+/** A schema source that is a registry in code (Ladybug, `ladybug/registry.ts`):
+ *  the resolver resolves types and edge rules from it alone — case-insensitive
+ *  on the type name, exact on the edge triple, no allowlist, no hidden
+ *  domains — and every write below is refused. */
+export interface ClosedRegistry {
+  schema(type: string): NodeSchema | null;
+  types(): readonly NodeSchema[];
+  edge(edge: string, source: string, target: string): EdgeSchemaRow | null;
+}
+
 export interface SchemaSource {
+  /** Present when the source is a closed registry (ruling 6). */
+  readonly registry?: ClosedRegistry;
   /** The Schema whose type matches case-insensitively, exact case first.
    *  `live` skips soft-deleted ones and the `*` sentinel. */
   schemaRow(type: string, opts?: { live?: boolean }, tx?: GraphTx): Promise<SchemaRow | null>;

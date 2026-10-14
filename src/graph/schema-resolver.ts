@@ -23,8 +23,11 @@
  * TTL, like jarvis's in-process caches.
  *
  * The reads and the one write live behind `SchemaSource` (`engine.ts`):
- * the `:Schema` meta-graph on Neo4j, the `Schema` table on Ladybug. This
- * file merges, walks, caches and canonicalizes; it issues no Cypher.
+ * the `:Schema` meta-graph on Neo4j; on Ladybug a closed registry in code
+ * (`ladybug/registry.ts`, ruling 6), which resolves types case-insensitively
+ * and edge triples exactly, knows no allowlist, no hidden domains and no
+ * ancestors, and refuses `createEdgeSchema`. This file merges, walks,
+ * caches and canonicalizes; it issues no Cypher.
  */
 import { randomUUID } from "node:crypto";
 import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.js";
@@ -114,6 +117,11 @@ export class SchemaResolver {
     return this.engine.schemaSource;
   }
 
+  /** The closed registry, when the engine has one (Ladybug). */
+  get registry() {
+    return this.source.registry;
+  }
+
   /** Drop every cache (call after seeding or schema edits). */
   invalidate(): void {
     this.types.clear();
@@ -140,6 +148,7 @@ export class SchemaResolver {
   async resolveType(raw: string, tx?: GraphTx): Promise<string | null> {
     const key = raw.trim();
     if (!key) return null;
+    if (this.registry) return this.registry.schema(key)?.type ?? null;
     if (getStrutSchema(key)) return key;
     const c = this.types.get(key.toLowerCase());
     if (this.fresh(c)) return c.value;
@@ -152,6 +161,7 @@ export class SchemaResolver {
 
   /** The merged schema for a (raw) type, or null when unknown. */
   async schema(raw: string, tx?: GraphTx): Promise<NodeSchema | null> {
+    if (this.registry) return this.registry.schema(raw);
     const type = await this.resolveType(raw, tx);
     if (!type) return null;
     const c = this.schemas.get(type);
@@ -212,6 +222,7 @@ export class SchemaResolver {
 
   /** `About.hidden_domains` (lowercased) and `hidden_types`. */
   async hiddenSets(tx?: GraphTx): Promise<{ domains: Set<string>; types: Set<string> }> {
+    if (this.registry) return { domains: new Set(), types: new Set() };
     if (this.fresh(this.hidden)) return this.hidden.value;
     const { domains: d, types: t } = await this.source.hidden(tx);
     const value = {
@@ -228,6 +239,10 @@ export class SchemaResolver {
    * canonical labels. Returns the match, or null.
    */
   async edgeSchema(edge: string, sourceType: string, targetType: string, tx?: GraphTx): Promise<EdgeSchemaMatch | null> {
+    if (this.registry) {
+      const row = this.registry.edge(edge, sourceType, targetType);
+      return row ? { source: row.source, target: row.target, edge_type: row.edge_type, properties: row.props, via: "exact" } : null;
+    }
     if (EDGE_TYPES_ALLOWLIST.has(edge)) return { source: sourceType, target: targetType, edge_type: edge, properties: {}, via: "allowlist" };
     const key = `${sourceType}|${edge}|${targetType}`;
     const c = this.edges.get(key);
@@ -260,6 +275,7 @@ export class SchemaResolver {
   async createEdgeSchema(sourceType: string, edge: string, targetType: string): Promise<{ created: boolean; ref_id: string }> {
     const edgeType = edge.toUpperCase().replace(/ /g, "_");
     if (!/^[A-Z][A-Z0-9_]*$/.test(edgeType)) throw new Error(`invalid edge type ${edge}`);
+    if (this.registry) throw new Error(`the ${this.engine.kind} backend's types and edges are a closed registry (plans/ladybug-backend.md §3): ${sourceType}-[${edgeType}]->${targetType} cannot be registered at runtime`);
     return this.engine.tx(async (tx) => {
       for (const t of [sourceType, targetType]) {
         if (t === "*") {

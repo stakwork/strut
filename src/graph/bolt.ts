@@ -21,7 +21,10 @@ import neo4j, {
   type Session,
 } from "neo4j-driver";
 
-export interface GraphConfig {
+export interface Neo4jConfig {
+  /** Absent means Neo4j (the first backend); `backend.ts` discriminates
+   *  the `GraphConfig` union on it. */
+  kind?: "neo4j";
   /** bolt:// or neo4j:// URI. */
   uri: string;
   user: string;
@@ -43,7 +46,7 @@ export const DEFAULT_NAMESPACE = "default";
  */
 export function graphConfigFromEnv(
   env: Record<string, string | undefined> = process.env,
-): GraphConfig | null {
+): Neo4jConfig | null {
   const uri = env["NEO4J_URI"] || (env["NEO4J_HOST"] ? `bolt://${env["NEO4J_HOST"]}` : undefined);
   if (!uri) return null;
   return {
@@ -90,10 +93,10 @@ function plainMap(m: Record<string, unknown>): Record<string, unknown> {
 }
 
 export class Bolt {
-  readonly cfg: GraphConfig;
+  readonly cfg: Neo4jConfig;
   private driver: Driver;
 
-  constructor(cfg: GraphConfig) {
+  constructor(cfg: Neo4jConfig) {
     this.cfg = cfg;
     this.driver = neo4j.driver(cfg.uri, neo4j.auth.basic(cfg.user, cfg.password), {
       disableLosslessIntegers: true,
