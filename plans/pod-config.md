@@ -1,15 +1,18 @@
 # Pod config — a job fixes its pod, then the pool
 
-> **Status (2026-10-14): proposed, unbuilt.** Written after a review of
-> staklink's `/repair` and `/agent` (`staklink@2791da6`), the lab's `pod/*`
-> steps and `Pod` Concept (`stakgraph@2cba91ef`), and hive's pool config +
-> diagnose API (`hive@5948ee29f`: #5493, #5507, `docs/pool-config-agent-api.md`)
-> and its pod-repair cron. Rulings already made in conversation: repair
-> happens POD-LOCAL first and is PROMOTED to the pool once it is a fix; one
-> generic `Pod Config` Concept, no per-workspace one (a later addition at
-> most) — a job finds an earlier repair through the job index; secrets are
-> V2 (§9): v1 is getting pods set up. Companions this does not reopen:
-> `jobs.md` (holds, §6), `job-index.md`, `elicitation.md`.
+> **Status (2026-10-14): proposed, unbuilt; rulings confirmed the same day
+> (§10).** Written after a review of staklink's `/repair` and `/agent`
+> (`staklink@2791da6`), the lab's `pod/*` steps and `Pod` Concept
+> (`stakgraph@2cba91ef`), and hive's pool config + diagnose API
+> (`hive@5948ee29f`: #5493, #5507, `docs/pool-config-agent-api.md`), its
+> pod-repair cron and its artifact events. Rulings already made in
+> conversation: repair happens POD-LOCAL first and is PROMOTED to the pool
+> once it is a fix; one generic `Pod Config` Concept, no per-workspace one
+> (a later addition at most) — a job finds an earlier repair through the
+> job index; secrets are V2 (§9): v1 is getting pods set up; and v1 takes
+> the simple, flexible option wherever one will do — more waits for a case
+> that needs it. Companions this does not reopen: `jobs.md` (holds, §6),
+> `job-index.md`, `elicitation.md`.
 
 ## 1. Goal
 
@@ -33,11 +36,18 @@ and a later job can find how it was done.
   /api/workspaces/{slug}/stakgraph` with an org key — `services`, env vars
   (masked on read, a masked value written back keeps the stored one),
   `containerFiles` (base64), CPU/memory — and a `rollout` to poll after a
-  PUT (`rolling | ready | failed`, keyed by `changeId`). `pm2.config.js` is
-  regenerated from `services`.
+  PUT (`rolling | ready | failed`, keyed by `changeId`). `services` and the
+  env list, when sent, replace the stored ones whole. `pm2.config.js` is
+  regenerated from `services` with the env values in it, and
+  `containerFiles` come back unmasked, so the stored file shows what the
+  masked lists hide. A pm2 field beyond a service's `scripts`, `port`,
+  `cwd`, `env` and `interpreter` rides in its `advanced`.
 - **Hive's diagnose API** (#5507): `pool/status`, `pool/pods` (with
   `generation: new | old`), `pool/{podId}/processes`, `pool/{podId}/logs`,
   log values redacted.
+- **Hive's artifact events**: a GitHub event on a pull request a job
+  reported — its merge — becomes a turn on that job
+  (`src/services/strut-jobs/artifact-events.ts`).
 - **The lab's `pod/*`**: claim, release, latest, agent, agent-start,
   agent-status, diff, branch-diff, push, run-tests. Nothing reads or writes
   the pool config.
@@ -66,28 +76,52 @@ straight to §4.
 
 ## 4. Promotion — pod-local fix → every pod
 
-1. The fix works in the pod and the agent has judged it.
+1. The fix works in the pod and the agent has judged it. A fix that needs
+   repository changes — a start script, a seed, mock code, shipped by
+   `pod/push` as a PR — waits for that PR to merge: until then a fresh pod
+   lacks the code the config relies on. The merge reaches the job as a
+   turn (hive's artifact events, §2), and promotion goes on from there.
 2. **`pod/config { control?, sealed?, workspace }`** (lab) reads hive's
    stored config (`GET …/stakgraph`, `containerFiles` decoded) and, with a
-   claimed pod, the pod's LIVE config (§7), and returns both with a per-file
-   diff and the `services` change the live pm2 file implies. `pm2.config.js`
-   is regenerated from `services`, so promotion is always expressed as a
-   `services` edit, never the raw file.
+   claimed pod, the files the pod runs from (§7), and returns both with a
+   per-file diff. The plumbing stays flexible:
+   - env values in both pm2 files are masked the way hive masks them
+     (`ab******yz`), so an unchanged value diffs equal and no value reaches
+     the run log or the model;
+   - a compose file is `docker-compose.yml` whichever name it has on the
+     pod (`.yml` or `.yaml`);
+   - `devcontainer.json` is left out: nothing here edits it.
+
+   No pm2 parser: the agent reads the pm2 diff and writes the change as
+   `services` edits itself (ruling 3), and the fresh pod (step 6) checks the
+   file hive regenerates from them.
 3. The agent ends its turn with an `ask`: the diff, what it verified, "apply
    to every pod of the workspace?". A pool PUT is outward-facing; the person
-   decides.
+   decides. The `Pod Config` Concept says so; no step checks. With a PR
+   pending, the ask can go out with it ("once this merges, apply to every
+   pod?"), and the merge's turn promotes on that yes.
 4. On yes, **`pod/config-set { workspace, services?, env?, containerFiles?,
-   wait? }`** (lab): `PUT …/stakgraph` (masked env values round-trip as
-   stored), then polls `rollout` for its `changeId` until `ready` or
-   `failed` (default wait 20 min; on a timeout the error names the
-   `changeId`, and `pod/config` reads the rollout).
+   wait? }`** (lab) takes only what changes, by name: `services` and `env`
+   as maps — a name set to a value is written (a service as a whole),
+   `null` removes it, a name left out stays as stored — and
+   `containerFiles` as text (either compose name lands as
+   `docker-compose.yml`). It reads the stored config right before its `PUT
+   …/stakgraph` and writes the merged lists, so an edit someone made since
+   the agent's read survives (masked env values round-trip as stored).
+   Then it polls `rollout` until its `changeId` — or a later one, whose
+   push carries hive's whole stored state, this change included — is
+   `ready` or `failed` (default wait 20 min; on a timeout the error names
+   the `changeId`, and `pod/config` reads the rollout).
 5. **`pod/claim { workspace, fresh: true }`** claims a pod created after the
-   push (hive: `?generation=new` on claim-pod, 409 when none is ready yet).
-   The job holds two pods for this; the second is released at the end.
+   push (hive: `?generation=new` on claim-pod, 409 when none is ready yet,
+   which the step reports like an empty pool: try again shortly). The job
+   holds two pods for this; the second is released at the end.
 6. The agent runs the same check on the fresh pod. This is the step that
    catches state made by hand: the bucket goose created in rustfs exists
    only on the first pod, and the fix is not done until creating it is in
-   config (`POST_START_COMMAND`, or an init service in compose).
+   config (`POST_START_COMMAND`, or an init service in compose). When the
+   check fails, the agent fixes forward (another promotion) or reverts its
+   edits, and says which.
 7. §5, then `pod/release` the fresh pod.
 
 ## 5. Finding an earlier repair
@@ -117,16 +151,21 @@ instance once a summary has to outlive the jobs that wrote it.
 - **`Pod Config`** (new, under `Pod`, generic — nothing in it names a
   workspace, a framework it assumes, or a domain): §3's in-pod knowledge
   from `repair.ts`; look for an earlier `pod-config` deliverable first;
+  promote what every job on the workspace needs (the app does not run, a
+  service is missing) and keep what only this request needs pod-local,
+  reported but not promoted; a fix that needs a PR waits for its merge;
   promotion as §4 with its `ask`; verify on a fresh pod; report §5's
-  deliverable.
+  deliverable; no credential is promoted (§9).
 - **`Pod`**: one paragraph pointing to `Pod Config` when the app does not
   run, or must run differently for this request.
 
 ## 7. staklink
 
-- **`GET /pod-config`** — the live `pm2.config.js`, `docker-compose.yaml`,
-  `Dockerfile` as they are on the pod. What `pod/config` diffs against hive.
-  Behind the pod's existing auth, like `/agent`.
+- **`GET /pod-config`** — the files the pod runs from, as they are: the pm2
+  config staklink loads, the compose file under whichever name it has, the
+  `Dockerfile`, each with its path. What `pod/config` diffs against hive;
+  the lab normalizes the names. Behind the pod's existing auth, like
+  `/agent`.
 
 ## 8. Order
 
@@ -135,13 +174,18 @@ instance once a summary has to outlive the jobs that wrote it.
 3. lab: `pod/config`, `pod/config-set`, `fresh` on `pod/claim`, the
    `Pod Config` Concept, the `Pod` paragraph.
 4. Live on swarm38: a workspace whose pod does not run (fix → promote →
-   fresh pod) and a rustfs case (extra container, its state in config);
-   then a second job on the same workspace finds the first one's
-   `pod-config`.
-5. Retire hive's pod-repair cron → Stakwork → `/repair`; then `/repair`
-   itself. Hive's cron could later launch a `job` instead — not this plan.
+   fresh pod), a rustfs case (extra container, its state in config) and a
+   fix that needs a PR (promoted on its merge); then a second job on the
+   same workspace finds the first one's `pod-config`.
+5. Retire hive's pod-repair cron → Stakwork → `/repair`, then `/repair`
+   itself, once something else does a new workspace's first setup — today
+   only the cron does. Hive's cron launching a `job` is the likely one; not
+   this plan.
 
 ## 9. V2 — secrets (needs more thought)
+
+Until then no credential is promoted: when the app needs one, the agent
+says which, and a person sets it in hive.
 
 The case: an AI chat app cloned to a pod with no `ANTHROPIC_API_KEY`; the
 agent asks for one and tests the live app against the real provider, without
@@ -168,11 +212,16 @@ when the person answering is not the job's principal? A secret is never
 promoted to the pool (it would run everyone's pods on one person's key and
 bill) — is a workspace-wide key always a person setting it in hive?
 
-## 10. Proposed rulings — confirm before building
+## 10. Rulings — confirmed 2026-10-14
 
-1. Promotion always asks first.
+1. Promotion always asks first — a convention in the `Pod Config` Concept;
+   no code enforces it.
 2. Verifying a promotion needs a fresh-generation pod, the job holding two
    pods for the while.
 3. Promotion goes through `services`, never a raw `pm2.config.js`.
 4. The look-back is the job index over a `pod-config` deliverable; no new
    store, no per-workspace Concept in v1.
+5. A fix that needs repository changes is promoted once its PR merges.
+6. `devcontainer.json` is never edited; a compose file is one file under
+   either name.
+7. Secrets are V2 (§9).
