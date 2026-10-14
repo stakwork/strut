@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm, readFile } from "node:fs/promises";
+import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -84,6 +84,23 @@ describe("FileSecretStore", () => {
   });
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("keeps every write when several race the first read", async () => {
+    const a = new FileSecretStore(tempDir);
+    await a.set("FIRST", "1");
+    // A fresh instance, as a restarted server: the first writes all arrive before the file is read.
+    const b = new FileSecretStore(tempDir);
+    await Promise.all([b.set("TOKEN", "t"), b.set("PORT", "p"), b.set("MODEL", "m")]);
+    const c = new FileSecretStore(tempDir);
+    assert.deepEqual((await c.list()).map((s) => s.name), ["FIRST", "MODEL", "PORT", "TOKEN"]);
+  });
+
+  it("starts afresh over an unreadable file", async () => {
+    await writeFile(join(tempDir, "secrets.json"), "{not json");
+    const s = new FileSecretStore(tempDir);
+    await s.set("A", "1");
+    assert.equal(await new FileSecretStore(tempDir).get("A"), "1");
   });
 
   it("persists encrypted; plaintext never hits disk; round-trips across instances", async () => {
