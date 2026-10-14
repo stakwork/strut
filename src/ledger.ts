@@ -16,7 +16,7 @@
  */
 import { flowClosure } from "./closure.js";
 import type { Flow } from "./core.js";
-import { isExternalCheck, subjectName, type ClaimsReader, type SubjectRef } from "./graph/claims.js";
+import { isExternalCheck, subjectName, type ClaimsReader, type EvidenceRow, type SubjectRef } from "./graph/claims.js";
 import type { SubflowResolver } from "./runner.js";
 import type { LastVerify, VerifyResult } from "./verify.js";
 
@@ -36,8 +36,42 @@ export interface LedgerClaim {
   assertedOnly: boolean;
   /** Active checks with no evidence about the active version. */
   unverified: number;
-  latest?: { content?: string; observed_at?: number; mode?: string; check?: string; checkVersion?: string };
+  latest?: {
+    content?: string;
+    observed_at?: number;
+    mode?: string;
+    check?: string;
+    checkVersion?: string;
+    /** The version it is about (`about.content_hash`): a workflow's or
+     *  step's hash; for a job, the turn's run id (plans/job-claims.md §6). */
+    about?: string;
+    /** Where to look: what the check pointed at — a job file's url (a
+     *  screenshot), the file itself. */
+    locator?: EvidenceLocator;
+  };
   checks: LedgerCheck[];
+}
+
+export interface EvidenceLocator {
+  url?: string;
+  file?: string;
+}
+
+/** What one evidence row points at, read off `HAS_SOURCE`: `post_url` and
+ *  the context's `file`. Absent when it points at nothing. */
+export function evidenceLocator(e: Pick<EvidenceRow, "source">): EvidenceLocator | undefined {
+  const url = e.source?.post_url;
+  const file = e.source?.context?.["file"];
+  const locator: EvidenceLocator = { ...(typeof url === "string" && url ? { url } : {}), ...(typeof file === "string" && file ? { file } : {}) };
+  return Object.keys(locator).length ? locator : undefined;
+}
+
+/** `about` + `locator` for a `latest`, the two fields every listing of a
+ *  claim's newest evidence carries (the ledger here, the panel's
+ *  `listClaims`). */
+export function latestRefs(e: Pick<EvidenceRow, "about" | "source">): { about?: string; locator?: EvidenceLocator } {
+  const locator = evidenceLocator(e);
+  return { ...(e.about?.content_hash ? { about: e.about.content_hash } : {}), ...(locator ? { locator } : {}) };
 }
 
 /** One list per subject: a workflow by name, a step by type (`step:<type>`
@@ -87,6 +121,7 @@ export async function buildLedger(
               ...(r.status.latest.evidence_mode ? { mode: r.status.latest.evidence_mode } : {}),
               ...(r.status.latest.check_id ? { check: r.status.latest.check_id } : {}),
               ...(r.status.latest.source?.context?.checkVersion ? { checkVersion: r.status.latest.source.context.checkVersion } : {}),
+              ...latestRefs(r.status.latest),
             },
           }
         : {}),

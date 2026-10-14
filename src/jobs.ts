@@ -92,6 +92,11 @@ export interface JobHold {
    *  no run. */
   release: { type: string; input: unknown };
   note?: string;
+  /** Where to find it, when it has an address (a pod's frontend). What a
+   *  job check reads as `{{ input.urls.<kind> }}` (job-index.ts `urls`;
+   *  plans/job-claims.md §3) — so a check survives a dropped and
+   *  re-claimed pod without an edit. Passed through, never read here. */
+  url?: string;
 }
 
 /** Where a job's directory lives — the same path for every run that names
