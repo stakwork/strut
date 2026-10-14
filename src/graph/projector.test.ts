@@ -6,10 +6,10 @@ import { join } from "node:path";
 import type { RunEvent } from "../core.js";
 import { MemoryRunStore } from "../store.js";
 import { MemoryChatStore } from "../chat-store.js";
-import { openGraphBackend, type Neo4jBackend } from "./backend.js";
+import type { GraphBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
-import { testGraphConfig, wipeGraph } from "./test-util.js";
-import { Neo4jWorkspaceStore } from "./workspace-store.js";
+import { edgeCount, nodeCount, rawWrite, testBackends } from "./test-util.js";
+import { GraphWorkspaceStore } from "./workspace-store.js";
 import { jobNode, messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, spawnedRunIds } from "./projector.js";
 import type { JobView } from "../job-index.js";
 import { runStep } from "../run-step.js";
@@ -17,8 +17,6 @@ import { buildRegistry, coreRegistry } from "../steps/registry.js";
 import { createStrut } from "../createStrut.js";
 import { runWorkflow } from "../runner.js";
 
-const cfg = testGraphConfig();
-let backend: Neo4jBackend;
 
 const WF = "harvey-deliver";
 const RUN = "1788307097627";
@@ -204,30 +202,49 @@ describe("projectRunEvents (pure)", () => {
   });
 });
 
-describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
+for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.skip }, () => {
+  const neo = tb.kind === "neo4j";
+  const neoOnly = (why: string) => ({ skip: neo ? false : `neo4j only: ${why}` });
+  let backend: GraphBackend;
   let store: MemoryRunStore;
-  let ws: Neo4jWorkspaceStore;
+  let ws: GraphWorkspaceStore;
+  const d = () => backend.dialect;
 
   before(async () => {
-    backend = await openGraphBackend(cfg!, { embeddings: false, skipBoot: true });
+    backend = await tb.open();
   });
   after(async () => {
-    await backend.close();
+    await tb.close(backend);
   });
   beforeEach(async () => {
-    await wipeGraph(backend.bolt);
-    await seedStrutDomain(backend.bolt);
+    await tb.wipe(backend);
+    await seedStrutDomain(backend);
     store = new MemoryRunStore();
-    ws = new Neo4jWorkspaceStore(backend);
+    ws = new GraphWorkspaceStore(backend);
     await ws.publishWorkflow(WF, "v1", { steps: [{ id: "plan", type: "agent", config: {} }] });
   });
 
-  const count = async (label: string) =>
-    Number((await backend.bolt.run(`MATCH (n:\`${label}\`) RETURN count(n) AS c`))[0]!["c"]);
-  const edges = async (edge: string) =>
-    Number((await backend.bolt.run(`MATCH (:Data_Bank)-[r:\`${edge}\`]->(:Data_Bank) RETURN count(r) AS c`))[0]!["c"]);
+  const count = (type: string) => nodeCount(backend, type);
+  const edges = (edge: string) => edgeCount(backend, edge);
 
-  it("projects runs into StrutRun / StrutAgentSession / StrutToolCall with IN_RUN, IN_SESSION, EXECUTED edges", async () => {
+  it("a file holds the run and its edges alone: agent sessions, tool calls and chats are skipped", { skip: neo && "ladybug only" }, async () => {
+    const hash = (await ws.getWorkflowHash(WF))!;
+    for (const e of sampleEvents(hash)) await store.append(WF, RUN, e);
+    const report = await projectRuns(backend, store, { workflows: [WF] });
+    assert.deepEqual(
+      [report.runs, report.sessions, report.toolCalls, report.edges, report.accessed, report.unresolved, report.skipped],
+      [1, 0, 0, 1, 0, 0, 0],
+    );
+    assert.equal(await count("StrutRun"), 1);
+    assert.equal(await edges("EXECUTED"), 1);
+    assert.equal(await edgeCount(backend), 3, "VERSION_OF + ACTIVE_VERSION from the publish, EXECUTED from the projection — nothing else");
+    const chats = new MemoryChatStore();
+    await chats.createChat({ id: "c1", title: "Deliver", model: "claude" });
+    await chats.appendMessages("c1", [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]);
+    assert.deepEqual((await projectChats(backend, chats)).chats, 0);
+  });
+
+  it("projects runs into StrutRun / StrutAgentSession / StrutToolCall with IN_RUN, IN_SESSION, EXECUTED edges", neoOnly("agent sessions, tool calls and ACCESSED are not in the file"), async () => {
     const hash = (await ws.getWorkflowHash(WF))!;
     for (const e of sampleEvents(hash)) await store.append(WF, RUN, e);
     await store.finalize(WF, RUN, {
@@ -236,7 +253,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
 
     // Two jarvis-style Concept nodes (no Strut label) the search step reported touching.
     for (const [r, name] of [[CONCEPT_A, "a"], [CONCEPT_B, "b"]]) {
-      await backend.bolt.run(`CREATE (:Concept:Node:Data_Bank:Domain_general {ref_id: $r, node_key: $k, namespace: "default", name: $n})`, { r, k: `concept-${name}`, n: name });
+      await rawWrite(backend, `CREATE (:Concept:Node:Data_Bank:Domain_general {ref_id: $r, node_key: $k, namespace: "default", name: $n})`, { r, k: `concept-${name}`, n: name });
     }
 
     const report = await projectRuns(backend, store, { workflows: [WF] });
@@ -251,7 +268,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.equal(await edges("IN_SESSION"), 2);
     assert.equal(await edges("EXECUTED"), 1);
 
-    const run = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN properties(r) AS p`))[0]!["p"] as Record<string, unknown>;
+    const run = (await backend.query(`MATCH (r:StrutRun) RETURN properties(r) AS p`))[0]!["p"] as Record<string, unknown>;
     assert.equal(run["run_status"], "success");
     assert.equal(run["output_preview"], '{"delivered":60}');
     assert.equal(run["unique_source_id"], `strutrun:${RUN}`);
@@ -259,7 +276,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.equal(run["duration_ms"], 9000);
 
     // "which runs executed this version" is one hop.
-    const rows = await backend.bolt.run(
+    const rows = await backend.query(
       `MATCH (r:StrutRun)-[:EXECUTED]->(v:StrutWorkflowVersion)<-[:ACTIVE_VERSION]-(w:StrutWorkflow) RETURN w.name AS wf, r.run_id AS run`,
     );
     assert.deepEqual(rows, [{ wf: WF, run: RUN }]);
@@ -267,7 +284,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     // ACCESSED: the search call → each concept it reported (the unknown ref
     // is skipped, never an error); the full provenance chain is queryable.
     assert.equal(await edges("ACCESSED"), 2);
-    const touched = await backend.bolt.run(
+    const touched = await backend.query(
       `MATCH (r:StrutRun)<-[:IN_RUN]-(:StrutAgentSession)<-[:IN_SESSION]-(t:StrutToolCall)-[:ACCESSED]->(c:Concept) RETURN r.run_id AS run, t.tool_name AS tool, c.name AS concept ORDER BY concept`,
     );
     assert.deepEqual(touched, [
@@ -279,9 +296,9 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.equal(await edges("ACCESSED"), 2);
   });
 
-  it("a thread is queryable across runs: which nodes each turn of a session touched", async () => {
+  it("a thread is queryable across runs: which nodes each turn of a session touched", neoOnly("agent sessions are not in the file"), async () => {
     for (const [r, name] of [[CONCEPT_A, "a"], [CONCEPT_B, "b"]]) {
-      await backend.bolt.run(`CREATE (:Concept:Node:Data_Bank:Domain_general {ref_id: $r, node_key: $k, namespace: "default", name: $n})`, { r, k: `concept-${name}`, n: name });
+      await rawWrite(backend, `CREATE (:Concept:Node:Data_Bank:Domain_general {ref_id: $r, node_key: $k, namespace: "default", name: $n})`, { r, k: `concept-${name}`, n: name });
     }
     // One run per turn; a third run whose agent took no session.
     const turnRun = (runId: string, session: { id: string; turn: number } | null, touched: string): RunEvent[] =>
@@ -302,7 +319,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
 
     const report = await projectRuns(backend, store, { workflows: [WF] });
     assert.deepEqual([report.runs, report.sessions, report.accessed], [3, 3, 3]);
-    const thread = await backend.bolt.run(
+    const thread = await backend.query(
       `MATCH (s:StrutAgentSession {session_id: $id})<-[:IN_SESSION]-(:StrutToolCall)-[:ACCESSED]->(c:Concept)
        RETURN s.session_turn AS turn, s.run_id AS run, c.name AS concept ORDER BY turn`,
       { id: "thread-1" },
@@ -311,7 +328,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
       { turn: 0, run: "1788307097001", concept: "a" },
       { turn: 1, run: "1788307097002", concept: "b" },
     ]);
-    const oneShot = await backend.bolt.run(`MATCH (s:StrutAgentSession {run_id: "1788307097003"}) RETURN s.session_id AS id, s.session_turn AS turn`);
+    const oneShot = await backend.query(`MATCH (s:StrutAgentSession {run_id: "1788307097003"}) RETURN s.session_id AS id, s.session_turn AS turn`);
     assert.deepEqual(oneShot, [{ id: null, turn: null }]);
   });
 
@@ -320,10 +337,14 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     const yaml = (name: string, step: string) => `name: ${name}\nsteps:\n${step}`;
     await ws.publishWorkflowByContent("greets", yaml("greets", `  - id: hi\n    type: log\n    config: { message: "hi" }\n`));
     await ws.publishWorkflowByContent("fails", yaml("fails", `  - id: x\n    type: exec\n    config: { cmd: bash, args: ["-c", "exit 3"] }\n`));
-    const runs = () => backend.bolt.run(`MATCH (r:StrutRun) OPTIONAL MATCH (r)-[:EXECUTED]->(v:StrutWorkflowVersion) RETURN r.workflow_name AS wf, r.run_status AS status, v.name AS executed ORDER BY wf`);
+    // Every run here has its EXECUTED edge, so a plain MATCH says what an OPTIONAL one would (and Ladybug answers it right).
+    const runs = async () =>
+      (await backend.query(`MATCH ${d().node("r", "StrutRun")}-[:EXECUTED]->${d().node("v", "StrutWorkflowVersion")} RETURN r.workflow_name AS wf, r.run_status AS status, v.name AS executed`)).sort((a, b) =>
+        String(a["wf"]).localeCompare(String(b["wf"])),
+      );
     try {
       for (const claims of [false, true]) {
-        await backend.bolt.run(`MATCH (r:StrutRun) DETACH DELETE r`);
+        await rawWrite(backend, `MATCH ${d().node("r", "StrutRun")} DETACH DELETE r`);
         const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, claims, serveUi: false, enableChat: false, stt: false, scheduler: false });
         const ok = await strut.run("greets", {});
         const bad = await strut.run("fails", {});
@@ -352,11 +373,11 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     }
   });
 
-  it("GET /graph/nodes/:ref_id: a node as the graph holds it now; 404 when it is gone", async () => {
+  it("GET /graph/nodes/:ref_id: a node as the graph holds it now; 404 when it is gone", neoOnly("the Ladybug reader lands in slice 3"), async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "strut-node-"));
     const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, serveUi: false, enableChat: false, stt: false, scheduler: false });
     try {
-      const wfRef = (await backend.bolt.run(`MATCH (w:StrutWorkflow {name: $n}) RETURN w.ref_id AS r`, { n: WF }))[0]!["r"] as string;
+      const wfRef = (await backend.query(`MATCH ${d().node("w", "StrutWorkflow", { name: "$n" })} RETURN w.ref_id AS r`, { n: WF }))[0]!["r"] as string;
       const res = await strut.app.request(`/graph/nodes/${wfRef}`);
       assert.equal(res.status, 200);
       const node = (await res.json()) as { ref_id: string; node_type: string; name: string; properties: Record<string, unknown> };
@@ -423,8 +444,8 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     await ws.publishStep("clip/compute-times", src("two"), "two");
     const runRef = await projectRun(backend, store, r.kept!, r.runId);
     assert.ok(runRef);
-    const rows = await backend.bolt.run(
-      `MATCH (run:StrutRun {run_id: $id})-[:EXECUTED]->(v:StrutStepVersion) RETURN run.ref_id AS ref, run.workflow_name AS wf, run.log_ref AS log, v.content_hash AS hash, v.description AS d`,
+    const rows = await backend.query(
+      `MATCH ${d().node("run", "StrutRun", { run_id: "$id" })}-[:EXECUTED]->${d().node("v", "StrutStepVersion")} RETURN run.ref_id AS ref, run.workflow_name AS wf, run.log_ref AS log, v.content_hash AS hash, v.description AS d`,
       { id: r.runId },
     );
     assert.deepEqual(rows, [{ ref: runRef, wf: "step:clip/compute-times", log: `step:clip/compute-times/${r.runId}`, hash: v1Hash, d: "one" }]);
@@ -445,22 +466,24 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     for (const e of events.slice(0, 7)) await store.append(WF, RUN, e); // no terminal event yet
     let report = await projectRuns(backend, store, { workflows: [WF] });
     assert.equal(report.runs, 1);
-    let run = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.run_status AS s, r.ref_id AS id`))[0]!;
+    let run = (await backend.query(`MATCH ${d().node("r", "StrutRun")} RETURN r.run_status AS s, r.ref_id AS id`))[0]!;
     assert.equal(run["s"], "stale");
 
     // Re-run with nothing new: the stale run is re-read (not settled), same nodes.
     report = await projectRuns(backend, store, { workflows: [WF] });
     assert.equal(report.runs, 1);
     assert.equal(await count("StrutRun"), 1);
-    assert.equal(await count("StrutToolCall"), 2);
-    assert.equal(await edges("IN_SESSION"), 2);
+    if (neo) {
+      assert.equal(await count("StrutToolCall"), 2);
+      assert.equal(await edges("IN_SESSION"), 2);
+    }
 
     for (const e of events.slice(7)) await store.append(WF, RUN, e);
     await store.finalize(WF, RUN, {
       runId: RUN, workflow: WF, startedAt: ts(0), finishedAt: ts(9), durationMs: 9000, status: "success", input: {},
     });
     report = await projectRuns(backend, store, { workflows: [WF] });
-    const after = (await backend.bolt.run(`MATCH (r:StrutRun) RETURN r.run_status AS s, r.ref_id AS id`))[0]!;
+    const after = (await backend.query(`MATCH ${d().node("r", "StrutRun")} RETURN r.run_status AS s, r.ref_id AS id`))[0]!;
     assert.equal(after["s"], "success");
     assert.equal(after["id"], run["id"], "upsert keeps the node identity");
 
@@ -471,7 +494,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.equal(await count("StrutRun"), 1);
   });
 
-  it("projects chats and turns with IN_CHAT edges and SPAWNED edges to runs the chat launched", async () => {
+  it("projects chats and turns with IN_CHAT edges and SPAWNED edges to runs the chat launched", neoOnly("chats and turns are not in the file"), async () => {
     for (const e of sampleEvents("h")) await store.append(WF, RUN, e);
     const chats = new MemoryChatStore();
     await chats.createChat({ id: "c1", title: "Deliver", model: "claude" });
@@ -489,18 +512,18 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.deepEqual([report.runs, report.chats, report.turns], [1, 1, 2]);
     assert.equal(await edges("IN_CHAT"), 2);
     assert.equal(await edges("SPAWNED"), 1);
-    const turns = await backend.bolt.run(`MATCH (t:StrutTurn) RETURN t.turn AS n, t.user_text_preview AS u, t.assistant_text_preview AS a ORDER BY n`);
+    const turns = await backend.query(`MATCH (t:StrutTurn) RETURN t.turn AS n, t.user_text_preview AS u, t.assistant_text_preview AS a ORDER BY n`);
     assert.deepEqual(turns, [
       { n: 0, u: "run the delivery", a: "Done — 60 delivered." },
       { n: 1, u: "thanks", a: "Any time." },
     ]);
-    const chain = await backend.bolt.run(`MATCH (c:StrutChat)-[:SPAWNED]->(r:StrutRun)<-[:IN_RUN]-(s:StrutAgentSession)<-[:IN_SESSION]-(t:StrutToolCall) RETURN count(t) AS c`);
+    const chain = await backend.query(`MATCH (c:StrutChat)-[:SPAWNED]->(r:StrutRun)<-[:IN_RUN]-(s:StrutAgentSession)<-[:IN_SESSION]-(t:StrutToolCall) RETURN count(t) AS c`);
     assert.equal(chain[0]!["c"], 2, "chat → run → session → tool call provenance chain");
 
     // Idempotent.
     await projectChats(backend, chats);
     assert.equal(await count("StrutChat"), 1);
-    const [chatNode] = await backend.bolt.run(`MATCH (c:StrutChat) RETURN c.created_by AS created_by`);
+    const [chatNode] = await backend.query(`MATCH (c:StrutChat) RETURN c.created_by AS created_by`);
     assert.equal(chatNode!["created_by"], "evanfeenstra-s8fhs8efhs8ehf", "who started the chat is projected whole");
     assert.equal(await count("StrutTurn"), 2);
     assert.equal(await edges("IN_CHAT"), 2);
@@ -526,18 +549,19 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
     assert.deepEqual([report.runs, report.jobs], [2, 2]);
     assert.equal(await count("StrutJob"), 1, "one node per job, upserted per run");
     assert.equal(await edges("IN_JOB"), 2);
-    const [node] = await backend.bolt.run(`MATCH (j:StrutJob) RETURN properties(j) AS p`);
+    const JOB_FIELDS = ["job_id", "title", "summary", "run_count", "artifact_count", "log_ref", "created_at"];
+    const [node] = await backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN ${d().project("j", JOB_FIELDS)} AS p`);
     const p = node!["p"] as Record<string, unknown>;
     assert.deepEqual(
       [p["job_id"], p["title"], p["summary"], p["run_count"], p["artifact_count"], p["log_ref"]],
       ["j-g", "Landing page", "Plan — the landing page\nrevised", 2, 1, "j-g"],
     );
     assert.deepEqual(
-      await backend.bolt.run(`MATCH (r:StrutRun)-[:IN_JOB]->(j:StrutJob) RETURN r.run_id AS run, r.job AS job ORDER BY run`),
+      (await backend.query(`MATCH ${d().node("r", "StrutRun")}-[:IN_JOB]->${d().node("j", "StrutJob")} RETURN r.run_id AS run, r.job AS job`)).sort((a, b) => String(a["run"]).localeCompare(String(b["run"]))),
       [{ run: RUN, job: "j-g" }, { run: RUN2, job: "j-g" }],
     );
     // A job's id can hold what the sanitizer would strip: the key is exact.
-    const [key] = await backend.bolt.run(`MATCH (j:StrutJob) RETURN j.node_key AS k`);
+    const [key] = await backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN j.node_key AS k`);
     assert.match(String(key!["k"]), /^strutjob-[0-9a-f]+$/);
 
     // Without an index nothing is written, and the node stays; a deleted
@@ -556,7 +580,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
       "name: deliver\nsteps:\n  - id: result\n    type: pack\n    config:\n      text: \"{{ input.text }}\"\n      artifacts:\n        - { id: \"{{ input.id }}\", title: \"{{ input.title }}\", summary: \"{{ input.summary }}\", content: \"x\" }\n",
     );
     const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, serveUi: false, enableChat: false, stt: false, scheduler: false });
-    const jobNodes = () => backend.bolt.run(`MATCH (j:StrutJob) RETURN properties(j) AS p`);
+    const jobNodes = () => backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN ${d().project("j", ["job_id", "title", "summary", "run_count", "artifact_count", "created_at"])} AS p`);
     try {
       const first = await strut.run("deliver", { id: "plan", title: "Plan", summary: "the landing page", text: "drafted" }, { job: "j-h", title: "Landing page" });
       assert.equal(first.status, "success");
@@ -579,7 +603,7 @@ describe("projector (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI n
       await projectRunOnce(backend, store, "deliver", plain.runId);
       assert.equal(await count("StrutJob"), 1);
       assert.equal(await edges("IN_JOB"), 2);
-      const [run] = await backend.bolt.run(`MATCH (r:StrutRun {run_id: $id}) RETURN r.job AS job`, { id: plain.runId });
+      const [run] = await backend.query(`MATCH ${d().node("r", "StrutRun", { run_id: "$id" })} RETURN r.job AS job`, { id: plain.runId });
       assert.equal(run!["job"], null);
     } finally {
       await strut.close();

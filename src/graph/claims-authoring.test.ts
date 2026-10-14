@@ -19,12 +19,11 @@ import { buildTools } from "../ai/tools.js";
 import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema } from "../claims-schemas.js";
-import { openGraphBackend, type Neo4jBackend } from "./backend.js";
+import type { GraphBackend } from "./backend.js";
 import { evidenceId } from "./claims.js";
-import { Neo4jWorkspaceStore } from "./workspace-store.js";
-import { testGraphConfig, wipeGraph } from "./test-util.js";
+import { GraphWorkspaceStore } from "./workspace-store.js";
+import { anyNode, rawWrite, testBackends } from "./test-util.js";
 
-const cfg = testGraphConfig();
 
 // ── Pure ────────────────────────────────────────────────────────────────────
 
@@ -72,9 +71,11 @@ const STEP_SRC = (type: string, tag = "one") =>
   `import { z, defineStep } from "strut";\nexport default defineStep({ type: "${type}", description: "${tag}", input: z.any(), output: z.any(), run: async () => ({ tag: "${tag}" }) });\n`;
 const EXEC = { type: "exec", config: { cmd: "true" } };
 
-describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let backend: Neo4jBackend;
-  let ws: Neo4jWorkspaceStore;
+for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { skip: tb.skip }, () => {
+  const neo = tb.kind === "neo4j";
+  let backend: GraphBackend;
+  let ws: GraphWorkspaceStore;
+  const d = () => backend.dialect;
   let dir: string;
   let registry: StepRegistry;
   let claims: ClaimsAuthoring;
@@ -100,24 +101,25 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
   };
 
   before(async () => {
-    backend = await openGraphBackend(cfg!, { embeddings: false, skipBoot: true });
+    backend = await tb.open();
     dir = await mkdtemp(join(tmpdir(), "strut-claims-"));
     // Boot obligations by hand (skipBoot), ONCE: the ontology (Claim / Check /
-    // Evidence) + the Strut domain. Each test then clears data, not schemas.
-    await wipeGraph(backend.bolt);
+    // Evidence) + the Strut domain on Neo4j; a file has them in its registry.
+    // Each test then clears data, not schemas.
+    await tb.wipe(backend);
     const { seedJarvisOntology } = await import("./ontology-seed.js");
     const { seedStrutDomain } = await import("./schema-seed.js");
-    await seedJarvisOntology(backend.bolt);
-    await seedStrutDomain(backend.bolt);
+    await seedJarvisOntology(backend);
+    await seedStrutDomain(backend);
     backend.schemas.invalidate();
   });
   after(async () => {
-    await backend.close();
+    await tb.close(backend);
     await rm(dir, { recursive: true, force: true });
   });
   beforeEach(async () => {
-    await backend.bolt.run(`MATCH (n) WHERE NOT n:Schema AND NOT n:Migration DETACH DELETE n`);
-    ws = new Neo4jWorkspaceStore(backend, { materializeDir: join(dir, "steps") });
+    await tb.clear(backend);
+    ws = new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps") });
     // A registry the checks can name: core + a stand-in grader and an llm-ish judge.
     // A grader seals itself on its def (its namespace also holds the producer's door).
     const grader = defineStep({ type: "gaia/evaluate", sealed: true, input: z.any(), output: z.any(), run: async () => ({}) });
@@ -162,11 +164,12 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.deepEqual([code!.type, code!.config, code!.name, code!.when, code!.policy, code!.external, code!.publisher], ["exec", { cmd: "true" }, "exec", "run", "always", false, "ai"]);
     assert.deepEqual([external!.external, external!.type, external!.policy, external!.when], [true, undefined, "on_change", "run"]);
     // The graph shape: Claim —ABOUT→ the STABLE step, Check —TESTS→ Claim.
-    const shape = await backend.bolt.run(
-      `MATCH (k:Check)-[:TESTS]->(c:Claim)-[:ABOUT]->(s:StrutStep {step_type: "clip/compute-times"}) RETURN count(DISTINCT c) AS claims, count(k) AS checks`,
+    const shape = await backend.query(
+      `MATCH ${d().node("k", "Check")}-[:TESTS]->${d().node("c", "Claim")}-[:ABOUT]->${d().node("s", "StrutStep", { step_type: "$t" })} RETURN count(DISTINCT c.ref_id) AS claims, count(k) AS checks`,
+      { t: "clip/compute-times" },
     );
-    assert.deepEqual(shape, [{ claims: 3, checks: 4 }]);
-    const ids = await backend.bolt.run(`MATCH (n) WHERE n:Claim OR n:Check RETURN collect(n.id) AS ids`);
+    assert.deepEqual(shape.map((r) => [Number(r["claims"]), Number(r["checks"])]), [[3, 4]]);
+    const ids = await backend.query(`MATCH ${anyNode(backend, "n")} WHERE ${d().isType("n", ["Claim", "Check"])} RETURN collect(n.id) AS ids`);
     for (const id of ids[0]!["ids"] as string[]) assert.match(id, /^[a-z0-9]{32}$/);
   });
 
@@ -268,7 +271,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.match(errOf(await claims.addClaim({ subjects: [STEP], text: "  ", checks: [EXEC] }, chat)), /text is empty/);
     assert.match(errOf(await claims.addClaim({ subjects: [{ kind: "step", name: "exec" }], text: "t", checks: [EXEC] }, chat)), /built-in steps cannot/);
     assert.match(errOf(await claims.addClaim({ subjects: [], text: "t", checks: [EXEC] }, chat)), /at least one subject/);
-    assert.equal((await backend.bolt.run(`MATCH (n) WHERE n:Claim OR n:Check RETURN count(n) AS c`))[0]!["c"], 0);
+    assert.equal(Number((await backend.query(`MATCH ${anyNode(backend, "n")} WHERE ${d().isType("n", ["Claim", "Check"])} RETURN count(n) AS c`))[0]!["c"]), 0);
     assert.deepEqual(await claims.validateClaimsArg([{ text: "a", checks: [EXEC] }, { text: "a", checks: [EXEC] }], chat), { error: "claims[1]: the same text appears twice" });
   });
 
@@ -276,7 +279,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     const old = idOf(await claims.addClaim({ subjects: [STEP, CANDIDATE], text: "the clip contians the quote", checks: [EXEC] }, chat));
     const [check] = (await listed(STEP))[0]!.checks;
     // Evidence on the OLD claim, about the active version.
-    const v = (await backend.bolt.run(`MATCH (v:StrutStepVersion {step_type: "clip/compute-times"}) RETURN v.ref_id AS r`))[0]!["r"] as string;
+    const v = (await backend.query(`MATCH ${d().node("v", "StrutStepVersion", { step_type: "$t" })} RETURN v.ref_id AS r`, { t: "clip/compute-times" }))[0]!["r"] as string;
     const oldRef = (await claims.reader.getClaim(old))!.ref_id;
     const checkRef = (await claims.reader.getCheck(check!.id))!.ref_id;
     const e = await backend.nodes.write({ type: "Evidence", data: { id: evidenceId(check!.id, "run-1", "p"), name: "n", content: "ok", evidence_mode: "observed", evidence_status: "collected", observed_at: 100 } });
@@ -300,7 +303,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     }
     const predecessor = (await claims.reader.getClaim(old))!;
     assert.equal(typeof predecessor.belief_valid_to, "number");
-    assert.deepEqual(await backend.bolt.run(`MATCH (a:Claim {id: $a})-[:SUPERSEDES]->(b:Claim {id: $b}) RETURN count(*) AS c`, { a: successor, b: old }), [{ c: 1 }]);
+    assert.deepEqual((await backend.query(`MATCH ${d().node("a", "Claim", { id: "$a" })}-[:SUPERSEDES]->${d().node("b", "Claim", { id: "$b" })} RETURN count(*) AS c`, { a: successor, b: old })).map((r) => Number(r["c"])), [1]);
     assert.equal((await claims.reader.evidenceFor(old)).length, 1, "old evidence stays on the old node");
     assert.deepEqual((await claims.reader.claimsTestedBy(check!.id)).map((c) => c.id), [successor], "a check tests exactly ONE active claim");
     assert.match(errOf(await claims.editClaim(old, "again", chat)), /retired or superseded/);
@@ -313,7 +316,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
   it("edit_check: a successor takes over TESTS and the old check's evidence stops counting; the last check cannot be retired", async () => {
     const claim = idOf(await claims.addClaim({ subjects: [STEP], text: "bounds hold", checks: [EXEC] }, chat));
     const k1 = (await listed(STEP))[0]!.checks[0]!.id;
-    const v = (await backend.bolt.run(`MATCH (v:StrutStepVersion {step_type: "clip/compute-times"}) RETURN v.ref_id AS r`))[0]!["r"] as string;
+    const v = (await backend.query(`MATCH ${d().node("v", "StrutStepVersion", { step_type: "$t" })} RETURN v.ref_id AS r`, { t: "clip/compute-times" }))[0]!["r"] as string;
     const e = await backend.nodes.write({ type: "Evidence", data: { id: evidenceId(k1, "run-1", "p"), name: "n", content: "nope", evidence_mode: "observed", evidence_status: "collected", observed_at: 100 } });
     await backend.edges.writeMany([
       { edge: "EVIDENCED_BY", source_ref_id: (await claims.reader.getClaim(claim))!.ref_id, target_ref_id: e.ref_id, properties: { strength: -1 } },
@@ -328,7 +331,7 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.deepEqual([row!.status, row!.unverified], ["unknown", 1], "a changed instrument has measured nothing yet");
     assert.deepEqual(row!.checks.map((k) => [k.id, k.name, k.type, k.config, k.policy]), [[k2, "bounds", "exec", { cmd: "test", args: [1, "-lt", 2] }, "always"]]);
     assert.equal(typeof (await claims.reader.getCheck(k1))!.retired_at, "number");
-    assert.deepEqual(await backend.bolt.run(`MATCH (:Check {id: $a})-[:SUPERSEDES]->(:Check {id: $b}) RETURN count(*) AS c`, { a: k2, b: k1 }), [{ c: 1 }]);
+    assert.deepEqual((await backend.query(`MATCH ${d().node("x", "Check", { id: "$a" })}-[:SUPERSEDES]->${d().node("y", "Check", { id: "$b" })} RETURN count(*) AS c`, { a: k2, b: k1 })).map((r) => Number(r["c"])), [1]);
 
     assert.match(errOf(await claims.retireCheck(k2, chat)), /last active check/);
     const k3 = idOf(await claims.addCheck(claim, { description: "listen to the cut — code cannot hear" }, chat));
@@ -342,26 +345,28 @@ describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true });
     assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: false }, "idempotent");
     assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
-    assert.equal((await backend.bolt.run(`MATCH (c:Claim) RETURN count(c) AS c`))[0]!["c"], 1, "attached, never copied");
+    assert.equal(Number((await backend.query(`MATCH ${d().node("c", "Claim")} RETURN count(c) AS c`))[0]!["c"]), 1, "attached, never copied");
 
-    const about = `MATCH (:Claim {id: $id})-[r:ABOUT]->(s) WHERE s.name = $name OR s.step_type = $name RETURN r.ref_id AS r, r.is_muted AS muted`;
-    const [before] = await backend.bolt.run(about, { id, name: CANDIDATE.name });
+    const about = `MATCH ${d().node("c", "Claim", { id: "$id" })}-[r:ABOUT]->${d().node("s", "StrutWorkflow", { name: "$name" })} RETURN r.ref_id AS r`;
+    const [before] = await backend.query(about, { id, name: CANDIDATE.name });
     assert.deepEqual(await claims.detachClaim(id, CANDIDATE, chat), { ok: true, id, detached: true });
-    assert.deepEqual(await backend.bolt.run(about, { id, name: CANDIDATE.name }), [], "detach deletes the ABOUT edge");
+    assert.deepEqual(await backend.query(about, { id, name: CANDIDATE.name }), [], "detach deletes the ABOUT edge");
     assert.deepEqual(await listed(CANDIDATE), []);
     assert.deepEqual(await claims.detachClaim(id, CANDIDATE, chat), { ok: true, id, detached: false });
     assert.match(errOf(await claims.detachClaim(id, SEEDED, chat)), /only subject — retire the claim/);
     assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true }, "re-attaching writes a fresh edge");
-    const [fresh] = await backend.bolt.run(about, { id, name: CANDIDATE.name });
+    const [fresh] = await backend.query(about, { id, name: CANDIDATE.name });
     assert.notEqual(fresh!["r"], before!["r"]);
     assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
 
-    // A legacy muted edge (from before detach deleted edges) is made live by a re-attach.
-    await backend.bolt.run(`MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true`, { r: fresh!["r"] });
-    assert.deepEqual(await listed(CANDIDATE), []);
-    assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true });
-    assert.deepEqual(await backend.bolt.run(about, { id, name: CANDIDATE.name }), [{ r: fresh!["r"], muted: null }]);
-    assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
+    if (neo) {
+      // A legacy muted edge (from before detach deleted edges) is made live by a re-attach — the file has no edge flags.
+      await rawWrite(backend, `MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true`, { r: fresh!["r"] });
+      assert.deepEqual(await listed(CANDIDATE), []);
+      assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true });
+      assert.deepEqual(await backend.query(`${about}, r.is_muted AS muted`, { id, name: CANDIDATE.name }), [{ r: fresh!["r"], muted: null }]);
+      assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
+    }
   });
 
   it("fixed point 1 — the meta surface only touches what it stamped, on subjects it published", async () => {

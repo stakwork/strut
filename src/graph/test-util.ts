@@ -25,7 +25,7 @@ import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { Bolt, type Neo4jConfig } from "./bolt.js";
 import type { GraphKind } from "./engine.js";
 import { loadLadybug, openLadybug } from "./ladybug/db.js";
-import { typeLabelOf } from "./strut-schemas.js";
+import { typeLabelOf, typeValue } from "./strut-schemas.js";
 
 export function testGraphConfig(): Neo4jConfig | null {
   const uri = process.env["STRUT_TEST_NEO4J_URI"];
@@ -136,11 +136,8 @@ export function anyNode(b: GraphBackend, alias: string): string {
   return b.kind === "neo4j" ? `(${alias}:Data_Bank)` : `(${alias}:Node)`;
 }
 
-/** The type a `dialect.typeOf(alias)` column holds: a label list on Neo4j,
- *  the `node_type` string on Ladybug. */
-export function typeFrom(v: unknown): string | undefined {
-  return Array.isArray(v) ? typeLabelOf(v.map(String)) : typeof v === "string" ? v : undefined;
-}
+/** The type a `dialect.typeOf(alias)` column holds (`typeValue`). */
+export const typeFrom = typeValue;
 
 /** One raw write statement (test setup), on the engine's write path. */
 export async function rawWrite(b: GraphBackend, cypher: string, params: Record<string, unknown> = {}): Promise<void> {

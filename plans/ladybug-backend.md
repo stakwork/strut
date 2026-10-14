@@ -1,6 +1,6 @@
 # LadybugDB graph backend — one file, the graph layer strut owns
 
-**Status (2026-10-14): decided (§7), probed, slice 1 in progress.** The
+**Status (2026-10-14): decided (§7), probed, slices 1 and 2 built (§6).** The
 dialect and performance facts in §2 come from scratch probes against
 `@ladybugdb/core` 0.21.2 on darwin-arm64. Supersedes the "idea, not
 decided" sketch in `local-desktop-and-stt.md` §3.1 and the first draft of
@@ -213,7 +213,9 @@ names as jarvis, so the ids and keys a desktop writes match a swarm's. The
 edge registry: the Strut rows whose ends are kept types, the six claim
 edges with their endpoint types (`ABOUT` from a Claim to a Workflow or
 Step and from Evidence to a Version; `TESTS`; `EVIDENCED_BY`;
-`PRODUCED_BY`; `HAS_SOURCE`; `SUPERSEDES` for Claims and for Checks), and
+`PRODUCED_BY`; `HAS_SOURCE` from Evidence to the Run a run check observed
+or to the Version a publish check read; `SUPERSEDES` for Claims and for
+Checks), and
 `Concept -[CHILD_OF]-> Concept`. The module asserts at load that no two
 types declare one attribute name with different column types.
 
@@ -402,12 +404,18 @@ skips and says so, never silently.
    (DONE, no behavior change); the registry; `ladybug/db.ts`; the
    Ladybug implementations; `GraphWorkspaceStore` passes
    `workspaceConformance` on a Ladybug file in `npm test`.
-2. **Claims on a file.** The dialect helpers through `claims.ts`,
-   `projector.ts` (skipping the dropped types on Ladybug), `deletion.ts`;
-   `claims` / `claims-authoring` / `verify` / `projector` tests on both
-   backends → claims, checks, evidence, the verify pass, the ledger, the
-   Claims panel and the run projection work on a Ladybug file. **This is
-   the slice that answers the goal.**
+2. **Claims on a file.** The dialect helpers through `claims.ts` and
+   `projector.ts` (which skips the dropped types on a closed registry and
+   leaves jarvis's `unique_source_id` stamp off where the schema lacks
+   it); `deletion.ts` stays Neo4j's fragments, the neutral form being
+   `dialect.live` / `edgeLive`; `claims` / `claims-authoring` / `verify` /
+   `projector` tests on both backends → claims, checks, evidence, the
+   verify pass, the ledger, the Claims panel and the run projection work
+   on a Ladybug file (DONE). **This is the slice that answers the goal.**
+   Two more Ladybug facts came out of it: an untyped null parameter is a
+   BOOLEAN, so `$x IS NULL OR r.a = $x` fails on the string compare — a
+   filter is in the statement text only when asked for; and
+   `count(DISTINCT c)` over a node needs a property (`c.ref_id`).
 3. **The read surface.** `LadybugReader` sized to the ten types (lookups,
    neighbors, the Concept tree, search over FTS + HNSW) → `graph-get` /
    `graph-search` / `graph-neighbors` on Concepts, `graph_get` in the

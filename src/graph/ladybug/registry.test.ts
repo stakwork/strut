@@ -49,6 +49,7 @@ describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
     }
     for (const edge of Object.values(CLAIM_EDGES)) assert.ok(LADYBUG_EDGE_TYPES.includes(edge), edge);
     assert.ok(ladybugEdge("CHILD_OF", "Concept", "Concept"));
+    for (const t of ["StrutRun", "StrutWorkflowVersion", "StrutStepVersion"]) assert.ok(ladybugEdge("HAS_SOURCE", "Evidence", t), `a publish check's evidence has the version as its source: ${t}`);
     assert.equal(ladybugEdge("CHILD_OF", "Concept", "StrutRun"), null);
     assert.equal(ladybugEdge("ACCESSED", "StrutToolCall", "Concept"), null);
     assert.equal(ladybugEdge("PUBLISHED_BY", "StrutStepVersion", "Person"), null);
