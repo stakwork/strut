@@ -14,7 +14,9 @@ import { EDGE_TYPES_ALLOWLIST, SchemaResolver } from "./schema-resolver.js";
 import { GraphValidationError, NodeWriter, buildSearchText } from "./node-writer.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { GraphReader } from "./search.js";
-import { graphSnapshot, schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
+import type { GraphBackend } from "./backend.js";
+import { createNodeSchema } from "./schema-crud.js";
+import { graphSnapshot, rawEdge, schemaObjectNames, testBackends, testGraphConfig, wipeGraph } from "./test-util.js";
 
 const cfg = testGraphConfig();
 
@@ -278,3 +280,99 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     assert.equal(single?.attributes["agent"], "?string");
   });
 });
+
+/**
+ * What both engines must agree on: the ten types the Ladybug registry holds
+ * resolve the same way, the claim edges and the Concept tree write through
+ * the shared writers, and the registry refuses what the meta-graph allows.
+ * On Neo4j the types come from the jarvis ontology seeded once here.
+ */
+for (const tb of testBackends()) {
+  describe(`type and edge resolution on ${tb.name}`, { skip: tb.skip }, () => {
+    const neo = tb.kind === "neo4j";
+    let backend: GraphBackend;
+    before(async () => {
+      backend = await tb.open();
+      await tb.wipe(backend);
+      const ont = await seedJarvisOntology(backend);
+      const seed = await seedStrutDomain(backend);
+      if (neo) {
+        assert.equal(ont.createdSchemas.length, 153);
+        assert.equal(seed.mode, "shared");
+      } else {
+        assert.deepEqual(ont.createdSchemas, [], "a closed registry seeds nothing");
+        assert.equal(seed.mode, "closed");
+      }
+    });
+    after(async () => {
+      await tb.close(backend);
+    });
+
+    it("resolves the registry's types case-insensitively; the dropped types are unknown to the file", async () => {
+      const r = backend.schemas;
+      assert.equal(await r.resolveType("strutrun"), "StrutRun");
+      assert.equal(await r.resolveType(" claim "), "Claim");
+      assert.equal(await r.resolveType("CONCEPT"), "Concept");
+      assert.equal(await r.resolveType("Nope"), null);
+      assert.equal(await r.resolveType("StrutToolCall"), neo ? "StrutToolCall" : null);
+      assert.equal(await r.resolveType("Document"), neo ? "Document" : null);
+      const check = (await r.schema("Check"))!;
+      assert.equal(check.node_key, "check-id");
+      assert.equal(check.attributes["freshness_days"], "?int");
+      assert.equal(check.attributes["created_at"], "datetime");
+      const concept = (await r.schema("concept"))!;
+      assert.equal(concept.node_key, "concept-name");
+      assert.deepEqual(concept.index, ["name", "description", "docs"]);
+      assert.equal(concept.isStrut, false);
+      assert.equal((await r.schema("StrutJob"))!.isStrut, true);
+      assert.equal((await r.schema("StrutStep"))!.exact_key, true);
+    });
+
+    it("edge rules: the claim edges and the Concept tree on both; jarvis's allowlist on Neo4j only", async () => {
+      const r = backend.schemas;
+      assert.ok(await r.edgeSchema("TESTS", "Check", "Claim"));
+      assert.ok(await r.edgeSchema("EVIDENCED_BY", "Claim", "Evidence"));
+      assert.ok(await r.edgeSchema("PRODUCED_BY", "Evidence", "Check"));
+      assert.ok(await r.edgeSchema("CHILD_OF", "Concept", "Concept"));
+      // TESTS is on jarvis's allowlist, so Neo4j takes it either way round; the registry knows the direction.
+      assert.equal((await r.edgeSchema("TESTS", "Claim", "Check"))?.via, neo ? "allowlist" : undefined, "the other way round");
+      assert.equal((await r.edgeSchema("RELATED_TO", "Concept", "Concept"))?.via, neo ? "allowlist" : undefined);
+      assert.equal(await r.edgeSchema("MAPS_TO", "Concept", "Concept"), null);
+    });
+
+    it("writes the claim chain and a Concept tree through the shared writers", async () => {
+      const { nodes, edges } = backend;
+      const [wf, wfv, run, claim, check, ev, root, child] = (
+        await nodes.writeMany([
+          { type: "StrutWorkflow", data: { name: "wf" } },
+          { type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", created_at: 1 } },
+          { type: "StrutRun", data: { run_id: "r1", workflow_name: "wf", run_status: "success", started_at: 1 } },
+          { type: "Claim", data: { id: "c1", name: "it holds", claim_text: "it holds", belief_valid_from: 1 } },
+          { type: "Check", data: { id: "k1", name: "always", created_at: 1, run_when: "run", policy: "always" } },
+          { type: "Evidence", data: { id: "e1", name: "it holds", evidence_mode: "observed", evidence_status: "collected", observed_at: 2 } },
+          { type: "Concept", data: { name: "Job", description: "the root" } },
+          { type: "Concept", data: { name: "Plan Mode", docs: "how a plan is made" } },
+        ])
+      ).map((r) => r.ref_id) as string[];
+      const rs = await edges.writeMany([
+        { edge: "ABOUT", source_ref_id: claim!, target_ref_id: wf! },
+        { edge: "TESTS", source_ref_id: check!, target_ref_id: claim! },
+        { edge: "EVIDENCED_BY", source_ref_id: claim!, target_ref_id: ev!, properties: { strength: 1 } },
+        { edge: "PRODUCED_BY", source_ref_id: ev!, target_ref_id: check! },
+        { edge: "ABOUT", source_ref_id: ev!, target_ref_id: wfv! },
+        { edge: "HAS_SOURCE", source_ref_id: ev!, target_ref_id: run!, properties: { context: "{}" } },
+        { edge: "CHILD_OF", source_ref_id: child!, target_ref_id: root! },
+      ]);
+      assert.deepEqual(rs.map((r) => r.created), [true, true, true, true, true, true, true]);
+      assert.equal((await rawEdge(backend, rs[2]!.ref_id))!.props["strength"], 1);
+      await assert.rejects(nodes.write({ type: "Claim", data: { id: "c2", name: "x", claim_text: "t", bogus: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
+      await assert.rejects(nodes.write({ type: "Concept", data: { description: "no name" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
+    });
+
+    it("the file refuses what the meta-graph allows: runtime schemas and edge schemas", { skip: neo && "ladybug only" }, async () => {
+      await assert.rejects(backend.schemas.createEdgeSchema("Concept", "RELATED_TO", "Concept"), /closed registry/);
+      await assert.rejects(createNodeSchema(backend, backend.schemas, { type: "FieldNote", attributes: { description: "string" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
+      await assert.rejects(backend.nodes.write({ type: "Document", data: { source_link: "/x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
+    });
+  });
+}

@@ -19,7 +19,7 @@ import { buildTools } from "../ai/tools.js";
 import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema } from "../claims-schemas.js";
-import { openGraphBackend, type GraphBackend } from "./backend.js";
+import { openGraphBackend, type Neo4jBackend } from "./backend.js";
 import { evidenceId } from "./claims.js";
 import { Neo4jWorkspaceStore } from "./workspace-store.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
@@ -73,7 +73,7 @@ const STEP_SRC = (type: string, tag = "one") =>
 const EXEC = { type: "exec", config: { cmd: "true" } };
 
 describe("claims authoring (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let backend: GraphBackend;
+  let backend: Neo4jBackend;
   let ws: Neo4jWorkspaceStore;
   let dir: string;
   let registry: StepRegistry;

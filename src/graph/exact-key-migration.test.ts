@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openGraphBackend, type GraphBackend } from "./backend.js";
+import { openGraphBackend, type Neo4jBackend } from "./backend.js";
 import { composeNodeKey } from "./node-writer.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { getStrutSchema, nodeKeyFields, typeLabelOf } from "./strut-schemas.js";
@@ -16,7 +16,7 @@ const STEP = (type: string) => `export default { type: ${JSON.stringify(type)}, 
 const steps = (message: string) => ({ steps: [{ id: "a", type: "log", config: { message } }] });
 
 describe("exact-key-migration (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let backend: GraphBackend;
+  let backend: Neo4jBackend;
   let scratch: string;
   before(async () => {
     backend = await openGraphBackend(cfg!, { embeddings: false, skipBoot: true });

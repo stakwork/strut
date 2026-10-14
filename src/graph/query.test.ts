@@ -7,7 +7,7 @@ import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { buildTools } from "../ai/tools.js";
 import { compactValue, findWriteKeyword, readQuery, ReadOnlyViolation } from "./query.js";
-import { openGraphBackend, type GraphBackend } from "./backend.js";
+import { openGraphBackend, type Neo4jBackend } from "./backend.js";
 import { testGraphConfig, wipeGraph } from "./test-util.js";
 
 // ── Pure (no DB) ───────────────────────────────────────────────────────────
@@ -65,14 +65,14 @@ describe("compactValue", () => {
 });
 
 describe("graph_query tool gating", () => {
-  async function deps(graph?: GraphBackend) {
+  async function deps(graph?: Neo4jBackend) {
     const s = defineStep({ type: "noop", input: z.object({}), output: z.any(), async run() { return 1; } });
     const registry = await createRegistry([s]);
     return { workspace: new WorkspaceManager("/nonexistent-graph-query-test"), registry, store: new MemoryRunStore(), getRegistry: async () => registry, graph };
   }
   it("is absent without a backend and present with one", async () => {
     assert.ok(!("graph_query" in buildTools(await deps())));
-    const fake = { cfg: { namespace: "ns-x" } } as unknown as GraphBackend;
+    const fake = { cfg: { namespace: "ns-x" } } as unknown as Neo4jBackend;
     const tools = buildTools(await deps(fake)) as Record<string, { description?: string }>;
     assert.ok("graph_query" in tools);
     assert.match(tools["graph_query"]!.description ?? "", /"ns-x"/);
@@ -83,7 +83,7 @@ describe("graph_query tool gating", () => {
 
 const cfg = testGraphConfig();
 describe("readQuery (live)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let backend: GraphBackend;
+  let backend: Neo4jBackend;
   before(async () => {
     backend = await openGraphBackend(cfg!, { embeddings: false, skipBoot: true });
     await wipeGraph(backend.bolt);

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bolt } from "./bolt.js";
-import { openGraphBackend, type GraphBackend } from "./backend.js";
+import { openGraphBackend, type Neo4jBackend } from "./backend.js";
 import { seedStrutDomain, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2 } from "./schema-seed.js";
 import { STRUT_SCHEMAS, STRUT_DOMAIN_LABEL, searchableAttributes, vectorIndexedPairs, vectorIndexName, embeddingColumn } from "./strut-schemas.js";
 import { graphSnapshot, testGraphConfig, wipeGraph, type GraphSnapshot } from "./test-util.js";
@@ -128,7 +128,7 @@ export default defineStep({ type: "legacy/step", input: z.object({}), output: z.
 `;
 
 describe("migrateVeinToStrut (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_URI not set" }, () => {
-  let backend: GraphBackend;
+  let backend: Neo4jBackend;
   let scratch: string;
   const bolt = () => backend.bolt;
   const countLegacy = async () => {
