@@ -14,6 +14,7 @@
 import { join } from "node:path";
 import type { GraphBackend, GraphBackendOptions, LadybugBackend, LadybugConfig } from "./backend.js";
 import { embeddingsOn, openGraphBackend, openGraphBackendFromEnv } from "./backend.js";
+import { importFileWorkspace, type FileImportReport } from "./fs-import.js";
 import { GraphWorkspaceStore, type GraphWorkspaceStoreOptions } from "./workspace-store.js";
 
 export type WorkspaceBackend = "neo4j" | "ladybug" | "fs";
@@ -95,17 +96,31 @@ export function ladybugConfigFromEnv(env: Record<string, string | undefined>, da
 /**
  * The Ladybug twin of `graphWorkspaceFromEnv`: open the file named by
  * `ladybugConfigFromEnv` (`STRUT_GRAPH_EMBEDDINGS=off` leaves the embedder
- * out, as on Neo4j) and wrap it in a `GraphWorkspaceStore` materializing
- * custom steps under `dataDir`. An open without the addon or the two
- * extensions throws with the install hint (ruling 4) — never a degraded
- * backend.
+ * out, as on Neo4j), wrap it in a `GraphWorkspaceStore` materializing
+ * custom steps under `dataDir`, then IMPORT a filesystem workspace found
+ * under that same `dataDir` (`fs-import.ts`: a desktop that ran on fs
+ * until now — its files move aside once they are all in the graph). An
+ * open without the addon or the two extensions throws with the install
+ * hint (ruling 4) — never a degraded backend. An import that fails does
+ * not throw: `imported.status` is `failed`, the files are where they were,
+ * and the caller decides (server.ts boots on the filesystem workspace).
  */
 export async function ladybugWorkspaceFromEnv(
   env: Record<string, string | undefined> = process.env,
   opts: { dataDir?: string; backend?: GraphBackendOptions; store?: GraphWorkspaceStoreOptions } = {},
-): Promise<{ backend: LadybugBackend; workspace: GraphWorkspaceStore }> {
+): Promise<{ backend: LadybugBackend; workspace: GraphWorkspaceStore; imported: FileImportReport }> {
   const dataDir = opts.dataDir ?? env["STRUT_WORKSPACE"] ?? "./workspace";
   const backend = await openGraphBackend(ladybugConfigFromEnv(env, dataDir), { embeddings: embeddingsOn(env), ...opts.backend });
   const store = { materializeDir: graphMaterializeDir(dataDir), ...opts.store };
-  return { backend, workspace: new GraphWorkspaceStore(backend, store) };
+  const workspace = new GraphWorkspaceStore(backend, store);
+  const imported = await importFileWorkspace(dataDir, workspace);
+  if (imported.status === "imported") {
+    console.warn(
+      `[graph] imported the filesystem workspace under ${dataDir} into ${backend.cfg.path}: ` +
+        `${imported.workflows} workflow(s) / ${imported.workflowVersions} version(s), ${imported.steps} step(s) / ${imported.stepVersions} version(s); ` +
+        `the files moved to ${imported.movedTo}` +
+        (imported.skipped.length ? `; skipped (not active, refused by today's validation): ${imported.skipped.join("; ")}` : ""),
+    );
+  }
+  return { backend, workspace, imported };
 }
