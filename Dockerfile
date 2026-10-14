@@ -12,6 +12,18 @@
 # (STRUT_WORKSPACE_BACKEND=graph + NEO4J_URI). Runs, artifacts, secrets, and
 # models live under /data — mount volumes there.
 
+# Web UI → web/dist, served by the engine (STRUT_WEB_DIST default). It is
+# arch-independent, so it builds once on the build host, not per target. It
+# imports src/search.ts, hence the src copy. No web lockfile is committed
+# (package-lock.json is gitignored), so `npm install`, not `npm ci`.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+WORKDIR /usr/src/strut
+COPY web/package.json ./web/
+RUN npm install --prefix web
+COPY src ./src
+COPY web ./web
+RUN npm run build --prefix web
+
 FROM node:22-bookworm-slim
 
 WORKDIR /usr/src/strut
@@ -49,32 +61,26 @@ RUN ffmpeg -version | head -1 && yt-dlp --version && tesseract --version 2>&1 | 
 # Engine deps. yarn.lock is the lockfile (package-lock.json is gitignored).
 # --ignore-scripts skips the root `prepare`, so the build is explicit below and
 # this layer caches until the manifests change. It also skips the dependency
-# install scripts in this tree. Two are safe to lose: onnxruntime-node's only
-# fetches CUDA libs (the linux x64/arm64 CPU binaries the graph backend's MiniLM
-# embedder loads ship in the tarball), and sharp's only checks for its prebuilt
-# @img/* binary. Dev deps stay: tsc builds, and tsx is needed at
-# runtime to import the workspace's .ts custom steps.
+# install scripts in this tree; those of onnxruntime-node (CUDA libs only; the
+# CPU binaries ship in the tarball), sharp, esbuild and protobufjs only fetch
+# or verify optional binaries, so they are safe to lose. Dev deps stay: tsc
+# builds, and tsx is needed at runtime to import the workspace's .ts steps.
 # @ladybugdb/core's install script is not safe to lose: it copies the prebuilt
 # lbugjs.node from its per-platform package (core-linux-<arch>) into place, and
-# without it the memory/* steps fail to load. It is run on its own here.
+# without it the memory/* steps fail to load. It is run on its own here, then
+# the addon is loaded so a missing binary fails the build, not a workflow.
 COPY package.json yarn.lock ./
 RUN yarn install --frozen-lockfile --ignore-scripts && yarn cache clean \
-    && node node_modules/@ladybugdb/core/install.js
+    && node node_modules/@ladybugdb/core/install.js \
+    && node -e "require('@ladybugdb/core')"
 
-# Web UI deps. web/package-lock.json is gitignored (the root .gitignore drops
-# every package-lock.json), so a clean checkout - CI's - has none for `npm ci`;
-# resolve from web/package.json like strut-desktop.yml does.
-COPY web/package.json ./web/
-RUN npm install --prefix web
-
-# Engine build.
+# Engine build: tsc plus the src/workflows copy (job.yaml, the `job` workflow
+# seeded at boot), via package.json's build script.
 COPY tsconfig.json ./
 COPY src ./src
-RUN npx tsc
+RUN npm run build
 
-# Web UI build → web/dist, served by the engine (STRUT_WEB_DIST default).
-COPY web ./web
-RUN npm run build --prefix web
+COPY --from=web /usr/src/strut/web/dist ./web/dist
 
 ENV STRUT_WORKSPACE_BACKEND=fs \
     STRUT_WORKSPACE=/data/workspace \
