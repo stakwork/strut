@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Query, exclusive, memoryDb, normalize } from "./_db.js";
+import { type Query, type Row, editAliases, memoryWrite, supersede } from "./_db.js";
 import { lookup, vocabulary } from "./_ontology.js";
 
 /** Moves every `edge` between `table` nodes and the duplicate onto the kept entity. */
@@ -32,8 +32,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    const query = await memoryDb(ctx);
-    return exclusive(async () => {
+    return memoryWrite(ctx, async (query) => {
       const now = Date.now();
       const { keep, duplicate: dup } = cfg;
       if (keep === dup) return { error: "invalid_input: keep and duplicate are the same entity" };
@@ -58,8 +57,8 @@ export default defineStep({
         await query("MATCH (a:Entity), (k:Entity) WHERE a.ref_id IN $ids AND k.ref_id = $keep CREATE (a)-[:ALIAS_OF]->(k)", { ids: pointing, keep });
         await query("MATCH (a:Entity)-[r:ALIAS_OF]->(d:Entity) WHERE d.ref_id = $dup DELETE r", { dup });
       }
-      const aliases = [...new Set([...(kept.aliases ?? []), ...(gone.aliases ?? []), normalize(gone.name)])];
-      await query("MATCH (k:Entity) WHERE k.ref_id = $keep SET k.aliases = $aliases, k.updated_at = $now", { keep, aliases, now });
+      await query("MATCH (ep:Episode) WHERE ep.speaker = $dup SET ep.speaker = $keep", { dup, keep });
+      const aliases = await editAliases(query, keep, [...(gone.aliases ?? []), gone.name], now);
       await query("MATCH (d:Entity), (k:Entity) WHERE d.ref_id = $dup AND k.ref_id = $keep CREATE (d)-[:ALIAS_OF]->(k)", { dup, keep });
       await query(
         "MATCH (d:Entity) WHERE d.ref_id = $dup SET d.deleted_at = $now, d.deleted_reason = $why, d.updated_at = $now",
@@ -67,27 +66,31 @@ export default defineStep({
       );
 
       // Tidy the kept entity's current facts: a repeat, or a second value of a
-      // one-value predicate, is superseded by the newest.
-      const facts = await query(
+      // one-value predicate, is superseded by the newest: the one that began
+      // later when both say when, else the one memory learned last. A fact
+      // whose end has passed is not current, so never the one kept.
+      const newer = (a: Row, b: Row) =>
+        a.valid_at != null && b.valid_at != null && Number(a.valid_at) !== Number(b.valid_at)
+          ? Number(b.valid_at) - Number(a.valid_at)
+          : Number(b.created_at) - Number(a.created_at) || String(b.id).localeCompare(String(a.id));
+      const facts = (await query(
         `MATCH (f:Fact)-[:SUBJECT]->(k:Entity) WHERE k.ref_id = $keep AND f.expired_at IS NULL AND f.deleted_at IS NULL
-         RETURN f.ref_id AS id, f.predicate AS predicate, f.text AS text, f.valid_at AS at ORDER BY f.valid_at DESC`,
-        { keep },
-      );
+           AND (f.invalid_at IS NULL OR f.invalid_at > $now)
+         RETURN f.ref_id AS id, f.predicate AS predicate, f.text AS text, f.valid_at AS valid_at, f.created_at AS created_at`,
+        { keep, now },
+      )).sort(newer);
       const one = new Set<string>();
       for (const p of new Set(facts.map((f) => f.predicate as string))) {
         if ((await lookup(query, "predicate", p))?.cardinality === "one") one.add(p);
       }
-      const newest = new Map<string, string>();
+      const newest = new Map<string, { id: string; valid_at: unknown }>();
       const superseded: string[] = [];
       for (const f of facts) {
         const group = one.has(f.predicate) ? `${f.predicate}` : `${f.predicate}\u0000${f.text}`;
         const winner = newest.get(group);
-        if (!winner) { newest.set(group, f.id); continue; }
-        await query(
-          `MATCH (o:Fact), (n:Fact) WHERE o.ref_id = $old AND n.ref_id = $new
-           SET o.expired_at = $now, o.invalid_at = $now, o.updated_at = $now CREATE (n)-[:SUPERSEDES]->(o)`,
-          { old: f.id, new: winner, now },
-        );
+        if (!winner) { newest.set(group, { id: f.id, valid_at: f.valid_at }); continue; }
+        // As in remember: a replaced value ended when the kept one began, if known; a repeat just stops being held.
+        await supersede(query, winner.id, one.has(f.predicate) && winner.valid_at != null ? Number(winner.valid_at) : null, [f.id], now);
         superseded.push(f.id);
       }
       return {

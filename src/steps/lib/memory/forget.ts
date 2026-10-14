@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Query, canonical, exclusive, memoryDb } from "./_db.js";
+import { type Query, canonical, editAliases, memoryWrite, normalize } from "./_db.js";
 import { vocabulary } from "./_ontology.js";
 
 // Soft delete: the nodes stay, marked with when and why, so a janitor can
@@ -16,6 +16,36 @@ async function forgetNodes(query: Query, table: "Entity" | "Fact" | "Episode", i
   );
 }
 
+/** Forgotten name facts take back the alias they gave their subject, unless
+ *  another of its name facts not forgotten (held or replaced) gives the same
+ *  name, or it is the subject's own name. */
+async function unalias(query: Query, ids: string[], now: number) {
+  const vocab = await vocabulary(query);
+  const names = vocab.predicatesWithRole("alias");
+  const forgotten = await query(
+    `MATCH (f:Fact)-[:SUBJECT]->(s:Entity) WHERE f.ref_id IN $ids AND f.value IS NOT NULL AND f.predicate IN $names
+     RETURN f.value AS value, s.ref_id AS s, s.name AS name`,
+    { ids, names },
+  );
+  for (const f of forgotten) {
+    const key = normalize(f.value);
+    if (key === normalize(f.name)) continue;
+    const others = await query(
+      `MATCH (x:Fact)-[:SUBJECT]->(s:Entity) WHERE s.ref_id = $s AND x.deleted_at IS NULL AND x.value IS NOT NULL AND x.predicate IN $names
+       RETURN x.value AS value`,
+      { s: f.s, names },
+    );
+    if (others.some((o) => normalize(o.value) === key)) continue;
+    // A name an entity merged into this one brought with it stays.
+    const merged = await query(
+      `MATCH (d:Entity)-[:ALIAS_OF]->(s:Entity) WHERE s.ref_id = $s AND (lower(d.name) = $key OR list_contains(d.aliases, $key))
+       RETURN d.ref_id AS id LIMIT 1`,
+      { s: f.s, key },
+    );
+    if (!merged.length) await editAliases(query, f.s, [key], now, true);
+  }
+}
+
 export default defineStep({
   type: "memory/forget",
   description:
@@ -28,8 +58,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    const query = await memoryDb(ctx);
-    return exclusive(async () => {
+    return memoryWrite(ctx, async (query) => {
       const now = Date.now();
       // A merged-away entity means the one it was merged into, as in memory/get.
       const id = await canonical(query, cfg.ref_id);
@@ -49,6 +78,7 @@ export default defineStep({
       const [fact] = await query("MATCH (f:Fact) WHERE f.ref_id = $id AND f.deleted_at IS NULL RETURN f.text AS text", { id });
       if (fact) {
         await forgetNodes(query, "Fact", [id], cfg.reason, now);
+        await unalias(query, [id], now);
         return { forgotten: { ref_id: id, node_type: "Fact", name: fact.text } };
       }
       const [episode] = await query("MATCH (e:Episode) WHERE e.ref_id = $id AND e.deleted_at IS NULL RETURN e.content AS content", { id });
@@ -62,6 +92,7 @@ export default defineStep({
         )).map((r) => r.id as string);
         await forgetNodes(query, "Episode", [id], cfg.reason, now);
         await forgetNodes(query, "Fact", onlyHere, cfg.reason, now);
+        await unalias(query, onlyHere, now);
         return { forgotten: { ref_id: id, node_type: "Episode", name: String(episode.content).slice(0, 80) }, with_facts: onlyHere.length };
       }
       return { error: `not_found: no node with ref_id ${id}` };

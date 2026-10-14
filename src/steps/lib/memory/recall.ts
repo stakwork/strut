@@ -18,7 +18,7 @@ export default defineStep({
     q: z.string().describe("Plain words, e.g. 'Kate cooking' or 'my name'."),
     type: z.string().optional().describe("Comma-separated filter: entity types (Person, Topic, …) and/or 'Fact'."),
     limit: z.number().optional().default(10),
-    include_expired: z.boolean().optional().default(false).describe("Also return facts that were superseded."),
+    include_expired: z.boolean().optional().default(false).describe("Also return facts no longer held: superseded or ended."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -53,14 +53,17 @@ export default defineStep({
         `MATCH (f:Fact)-[:SUBJECT]->(s:Entity) WHERE f.deleted_at IS NULL
          OPTIONAL MATCH (f)-[:OBJECT]->(o:Entity)
          RETURN f.ref_id AS ref_id, f.text AS text, f.predicate AS predicate, f.valid_at AS valid_at,
-                f.expired_at AS expired_at, s.name AS subject, o.name AS object`,
+                f.invalid_at AS invalid_at, f.expired_at AS expired_at, s.name AS subject, o.name AS object`,
       );
       for (const r of rows) {
         if (r.expired_at != null && !cfg.include_expired) continue;
         const s = score(`${r.text} ${r.predicate} ${r.subject} ${r.object ?? ""}`);
         if (s === 0) continue;
+        // Dates only when known; a fact no longer held is marked past.
         const since = iso(r.valid_at)?.slice(0, 10);
-        const description = `${r.subject} · ${r.predicate}${r.object ? ` → ${r.object}` : ""}${since ? ` · since ${since}` : ""}${r.expired_at != null ? " · superseded" : ""}`;
+        const until = iso(r.invalid_at)?.slice(0, 10);
+        const description = `${r.subject} · ${r.predicate}${r.object ? ` → ${r.object}` : ""}${since ? ` · since ${since}` : ""}` +
+          `${until ? ` · until ${until}` : ""}${r.expired_at != null ? " · past" : ""}`;
         hits.push({ score: s, hit: { ref_id: r.ref_id, name: r.text, node_type: "Fact", description, edges: {} } });
       }
     }
