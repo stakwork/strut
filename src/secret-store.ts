@@ -134,27 +134,31 @@ function decrypt(enc: EncryptedValue, salt: Buffer): string {
  *  `mothership.ts` holds delegations off the services bag. */
 export class FileSecretStore implements SecretStore {
   private file: string;
-  private cache: SecretsFile | null = null;
+  /** The file as read once, shared: two calls racing the first read must
+   *  edit the same object, or the later save drops the earlier change. */
+  private loaded: Promise<SecretsFile> | null = null;
+  /** Saves run one after another, so the file is never written twice at once. */
+  private saving: Promise<void> = Promise.resolve();
 
   constructor(workspaceRoot: string, filename = "secrets.json") {
     this.file = join(workspaceRoot, filename);
   }
 
-  private async load(): Promise<SecretsFile> {
-    if (this.cache) return this.cache;
-    try {
-      const raw = await readFile(this.file, "utf-8");
-      this.cache = JSON.parse(raw) as SecretsFile;
-    } catch {
-      this.cache = { version: 1, salt: randomBytes(16).toString("base64"), secrets: {} };
-    }
-    return this.cache;
+  private load(): Promise<SecretsFile> {
+    this.loaded ??= readFile(this.file, "utf-8").then(
+      (raw) => JSON.parse(raw) as SecretsFile,
+      () => ({ version: 1, salt: randomBytes(16).toString("base64"), secrets: {} }),
+    );
+    return this.loaded;
   }
 
-  private async save(data: SecretsFile): Promise<void> {
-    this.cache = data;
-    await mkdir(dirname(this.file), { recursive: true });
-    await writeFile(this.file, JSON.stringify(data, null, 2), "utf-8");
+  private save(data: SecretsFile): Promise<void> {
+    const write = async () => {
+      await mkdir(dirname(this.file), { recursive: true });
+      await writeFile(this.file, JSON.stringify(data, null, 2), "utf-8");
+    };
+    this.saving = this.saving.then(write, write);
+    return this.saving;
   }
 
   async get(name: string): Promise<string | undefined> {

@@ -86,6 +86,16 @@ describe("FileSecretStore", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+  it("keeps every write when several race the first read", async () => {
+    const a = new FileSecretStore(tempDir);
+    await a.set("FIRST", "1");
+    // A fresh instance, as a restarted server: the first writes all arrive before the file is read.
+    const b = new FileSecretStore(tempDir);
+    await Promise.all([b.set("TOKEN", "t"), b.set("PORT", "p"), b.set("MODEL", "m")]);
+    const c = new FileSecretStore(tempDir);
+    assert.deepEqual((await c.list()).map((s) => s.name), ["FIRST", "MODEL", "PORT", "TOKEN"]);
+  });
+
   it("persists encrypted; plaintext never hits disk; round-trips across instances", async () => {
     const a = new FileSecretStore(tempDir);
     await a.set("API_KEY", "super-secret-value");
