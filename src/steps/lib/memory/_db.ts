@@ -7,17 +7,24 @@
 // overwritten. Vocabulary (entity types, predicates) lives in the Ontology
 // table (_ontology.ts).
 //
-// Writes are not atomic: remember and merge are many statements with no
-// transaction around them. A failure part-way can leave a partial write (an
-// episode without its facts, a fact without its episode link); a later
-// remember of the same thing repeats it rather than repairing it.
+// Two clocks: valid_at / invalid_at say when a fact was true in the world
+// (NULL when the words gave no time), created_at / expired_at when the memory
+// learned it and stopped holding it current.
+//
+// An episode's speaker is the ref_id of who said it; NULL means the user, so
+// an episode the user said before they had an entity needs none made.
+//
+// remember, merge and forget each run as one transaction on a connection of their
+// own (memoryWrite): a failure part-way leaves nothing behind, and a read on
+// the shared connection never sees a write in progress.
+import type { Connection } from "@ladybugdb/core";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type { StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { ONTOLOGY_DDL, seed } from "./_ontology.js";
+import { ONTOLOGY_DDL, invalidate, seed, wroteOntology } from "./_ontology.js";
 import { SEED } from "./_ontology-seed.js";
 
 export const EntityRef = z.object({
@@ -48,7 +55,8 @@ const SCHEMA = [
 ];
 
 // Changes to tables that already exist, in order. Each is safe to run again,
-// so they all run on every open; append, never edit one that has shipped.
+// so they all run on every open (once per process); append, never edit one
+// that has shipped. The Fact scans are fine at personal scale.
 const MIGRATIONS = [
   "ALTER TABLE Entity ADD IF NOT EXISTS deleted_reason STRING",
   "ALTER TABLE Fact ADD IF NOT EXISTS deleted_reason STRING",
@@ -57,15 +65,23 @@ const MIGRATIONS = [
   "ALTER TABLE Ontology ADD IF NOT EXISTS parent STRING",
   "ALTER TABLE Ontology ADD IF NOT EXISTS naming STRING",
   "ALTER TABLE Ontology ADD IF NOT EXISTS role STRING",
+  "ALTER TABLE Episode ADD IF NOT EXISTS speaker STRING",
+  // Facts written before world time stored record time in its place: a
+  // valid_at equal to created_at, an invalid_at equal to expired_at. Neither
+  // is a date the words gave. A new write makes them equal only when the
+  // date given is the very millisecond it was written.
+  "MATCH (f:Fact) WHERE f.valid_at = f.created_at SET f.valid_at = NULL",
+  "MATCH (f:Fact) WHERE f.invalid_at IS NOT NULL AND f.invalid_at = f.expired_at SET f.invalid_at = NULL",
+  // The name a name fact (predicate role alias) gave its subject as an alias, so forgetting the fact can take it back.
+  "ALTER TABLE Fact ADD IF NOT EXISTS value STRING",
 ];
 
 export type Row = Record<string, any>;
 export type Query = (cypher: string, params?: Record<string, any>) => Promise<Row[]>;
 
 // One handle per database file per process: Ladybug allows one open
-// database per file. Kept on globalThis so a re-imported module shares it.
-// The handle is the query function itself, one per file, so a cache keyed
-// by it (_ontology.ts vocabulary) is per database.
+// database per file. Kept on globalThis so a re-imported module shares it,
+// with the queue that runs its writes one at a time.
 const HANDLES = Symbol.for("strut.memory.ladybug");
 
 /** `STRUT_MEMORY_DB` (secret store → env), else `<dataDir>/memory/graph.lbug`; absolute, so
@@ -80,7 +96,9 @@ async function dbPath(ctx?: StepContext<StrutCapabilities>): Promise<string> {
   return resolve(join(services.dataDir, "memory", "graph.lbug"));
 }
 
-async function open(path: string): Promise<Query> {
+type Handle = { read: Query; write: Query; queue: Promise<unknown> };
+
+async function open(path: string): Promise<Handle> {
   // Owner-only: whatever modes Ladybug gives its files, nobody else on
   // this machine can reach them through this folder. A folder that was
   // already there keeps its modes; an open one gets a warning.
@@ -97,21 +115,16 @@ async function open(path: string): Promise<Query> {
         `(${err instanceof Error ? err.message : String(err)}). Install it with: npm install @ladybugdb/core`,
     );
   });
-  const conn = new lbug.Connection(new lbug.Database(path));
+  const db = new lbug.Database(path);
+  const conn = new lbug.Connection(db);
   for (const ddl of [...SCHEMA, ...MIGRATIONS]) await conn.query(ddl);
-  const query: Query = async (cypher, params = {}) => {
-    const result = Object.keys(params).length
-      ? await conn.execute(await conn.prepare(cypher), params)
-      : await conn.query(cypher);
-    const last = Array.isArray(result) ? result[result.length - 1]! : result;
-    return (await last.getAll()) as Row[];
-  };
-  await seed(query, SEED);
-  return query;
+  const handle = { read: queryOn(conn), write: queryOn(new lbug.Connection(db)), queue: Promise.resolve() };
+  await seed(handle.read, SEED);
+  return handle;
 }
 
-function connection(path: string): Promise<Query> {
-  const g = globalThis as Record<symbol, Map<string, Promise<Query>> | undefined>;
+function connection(path: string): Promise<Handle> {
+  const g = globalThis as Record<symbol, Map<string, Promise<Handle>> | undefined>;
   const handles = (g[HANDLES] ??= new Map());
   let handle = handles.get(path);
   if (!handle) {
@@ -123,16 +136,54 @@ function connection(path: string): Promise<Query> {
   return handle;
 }
 
-/** The memory graph this run's deployment keeps, as a query function. */
-export async function memoryDb(ctx?: StepContext<unknown>): Promise<Query> {
-  return connection(await dbPath(ctx as StepContext<StrutCapabilities> | undefined));
+function queryOn(conn: Connection): Query {
+  return async (cypher, params = {}) => {
+    const result = Object.keys(params).length
+      ? await conn.execute(await conn.prepare(cypher), params)
+      : await conn.query(cypher);
+    const last = Array.isArray(result) ? result[result.length - 1]! : result;
+    return (await last.getAll()) as Row[];
+  };
 }
 
-// Writes go one at a time so a remember never interleaves with another.
-let queue: Promise<unknown> = Promise.resolve();
-export function exclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const next = queue.then(fn, fn);
-  queue = next.catch(() => undefined);
+const handleFor = async (ctx?: StepContext<unknown>) => connection(await dbPath(ctx as StepContext<StrutCapabilities> | undefined));
+
+/** The memory graph this run's deployment keeps, as a query function. */
+export async function memoryDb(ctx?: StepContext<unknown>): Promise<Query> {
+  return (await handleFor(ctx)).read;
+}
+
+/** Runs `fn` as one transaction on the write connection, one write at a time:
+ *  all of it lands, or, when it throws, none of it. Must not nest: an inner
+ *  call would wait on the queue the outer one holds. */
+export async function memoryWrite<T>(ctx: StepContext<unknown> | undefined, fn: (query: Query) => Promise<T>): Promise<T> {
+  const handle = await handleFor(ctx);
+  const write = async () => {
+    // A failed statement rolls the transaction back, so every later one,
+    // and the commit, fails with it, even when `fn` caught the first.
+    let dead: { err: unknown } | undefined;
+    const tx: Query = async (cypher, params) => {
+      if (dead) throw dead.err;
+      try {
+        return await handle.write(cypher, params);
+      } catch (err) {
+        dead = { err };
+        throw err;
+      }
+    };
+    await handle.write("BEGIN TRANSACTION");
+    try {
+      const out = await fn(tx);
+      await tx("COMMIT");
+      if (wroteOntology(tx)) invalidate(handle.read);
+      return out;
+    } catch (err) {
+      await handle.write("ROLLBACK").catch(() => undefined);
+      throw err;
+    }
+  };
+  const next = handle.queue.then(write, write);
+  handle.queue = next.catch(() => undefined);
   return next;
 }
 
@@ -147,6 +198,36 @@ export function normalize(name: string): string {
 
 export function iso(ms: unknown): string | undefined {
   return typeof ms === "number" || typeof ms === "bigint" ? new Date(Number(ms)).toISOString() : undefined;
+}
+
+/** Ends the `old` facts as replaced by `by` (expired now) and links them to it. In
+ *  the world one ended when `by` began, when that is known and not before it began itself;
+ *  an end still to come is brought forward to then, or to now when that is not known. */
+export async function supersede(query: Query, by: string, valid: number | null, old: string[], now: number): Promise<void> {
+  if (!old.length) return;
+  // When `by` began, if known and not before `o` did.
+  const began = valid === null ? "false" : "(o.valid_at IS NULL OR o.valid_at <= $valid)";
+  await query(
+    `MATCH (o:Fact), (n:Fact) WHERE o.ref_id IN $old AND n.ref_id = $by
+     SET o.expired_at = $now, o.updated_at = $now,
+         o.invalid_at = CASE
+           WHEN o.invalid_at IS NULL THEN CASE WHEN ${began} THEN $valid ELSE o.invalid_at END
+           WHEN o.invalid_at <= $now THEN o.invalid_at
+           WHEN ${began} THEN CASE WHEN $valid < o.invalid_at THEN $valid ELSE o.invalid_at END
+           ELSE $now END
+     CREATE (n)-[:SUPERSEDES]->(o)`,
+    { old, by, valid, now },
+  );
+}
+
+/** Adds names to an entity's aliases, or with `remove` takes them off; normalised either way. Returns the aliases after. */
+export async function editAliases(query: Query, id: string, names: string[], now: number, remove = false): Promise<string[]> {
+  const [e] = await query("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.aliases AS aliases", { id });
+  const was: string[] = e?.aliases ?? [];
+  const keys = names.map(normalize);
+  const next = remove ? was.filter((a) => !keys.includes(a)) : [...new Set([...was, ...keys])];
+  if (e && next.length !== was.length) await query("MATCH (e:Entity) WHERE e.ref_id = $id SET e.aliases = $next, e.updated_at = $now", { id, next, now });
+  return next;
 }
 
 /** The entity a ref_id now means: itself, or, once merged away, the entity it is an alias of. */
