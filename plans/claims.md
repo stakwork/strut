@@ -17,6 +17,11 @@ epistemic layer (`jarvis-backend/docs/epistemic_layer.md`, migrations
 status rule.
 The template layer and a stored verdict stay deferred (§7).
 
+> **2026-10-14:** claims about a JOB — the instance twin of this template
+> layer: a third subject kind, the turn as the version, `manual` checks the
+> work agent fires before it reports, the screenshot as the evidence's
+> locator — are `job-claims.md` (proposed).
+
 ## Problem
 
 The builder assistant does not inspect its own work. "Done" means the last
