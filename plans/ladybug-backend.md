@@ -1,6 +1,6 @@
 # LadybugDB graph backend — one file, the whole graph layer
 
-**Status (2026-10-14): proposed, probed, nothing built.** The dialect and
+**Status (2026-10-14): decided (§7), probed, nothing built.** The dialect and
 performance facts in §2 come from two scratch probes run against
 `@ladybugdb/core` 0.21.2 on darwin-arm64 on the day of writing; everything
 else is a plan. Supersedes the "idea, not decided" sketch in
@@ -419,26 +419,24 @@ silently.
 About three weeks. Slice 2 is the first useful desktop milestone, slice 3
 the "full graph" one.
 
-## 7. Open decisions
+## 7. Decisions (Evan, 2026-10-14)
 
-1. **The desktop default.** Flip `STRUT_WORKSPACE_BACKEND` to `ladybug` in
-   the package once the import exists (my lean: a desktop with no claims
-   is the gap this plan closes), or ship it opt-in first — Peel runs fs
-   today.
-2. **One file for `memory/*` and the graph.** The handle makes it a path;
-   the tables do not collide. Two files in v1 (the 2026-10-13 ruling);
-   revisit when a memory wants to point at a Strut node.
-3. **Runs and chats in the file too.** Not here; a `LadybugRunStore`
-   (`tailFromPolling` already exists for stores without a native tail) is
-   its own plan.
-4. **Extensions required or degrade.** Lean: required — an open without
-   `vector` + `fts` fails with the install hint. One path; the packager
-   ships them; a brute-force cosine fallback would be a second search
-   implementation to keep right.
-5. **The hot-column rule for jarvis types** (§3.1) versus "everything
-   non-Strut in `attrs`". Lean: the rule — `name` / `description` /
-   `status` are read by every lookup, and type-matched routing is
-   deterministic and tested.
+1. **The desktop default flips to `ladybug` once the import exists.**
+   Slice 4 ships the one-shot boot import of an existing fs workspace, and
+   `desktop.js` defaults `STRUT_WORKSPACE_BACKEND` to `ladybug` when the
+   addon and the extensions are in the package. Peel's fs workspace
+   migrates on first boot.
+2. **Two files in v1.** `memory/*` keeps `<dataDir>/memory/graph.lbug` and
+   its Graphiti tables (the 2026-10-13 ruling); the graph is
+   `<dataDir>/graph.lbug`. The shared handle (§3.2) makes one file a path
+   change later.
+3. **Runs and chats stay file stores**, with the projector mirroring runs
+   into the graph as on swarms. No `LadybugRunStore` in this plan.
+4. **The extensions are required.** An open without `vector` + `fts` fails
+   with the install hint; the packager bundles both in `native/`, dev
+   installs them once. One search path.
+5. **The hot-column rule for jarvis types** (§3.1) stands as written — not
+   raised; the fixture test is what guards it.
 
 ## 8. Risks and gotchas (from the probes)
 
