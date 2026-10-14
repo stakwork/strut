@@ -78,6 +78,21 @@ describe("system workflows", () => {
     assert.ok(meta.versions[shippedVersionLabel(yamlV(2))], "offered as a version to restore");
   });
 
+  it("an automation still carrying a former shipped name takes the new one; a name the user chose is left alone", async () => {
+    const renamed = { ...automationJson, name: "Merge duplicates", formerNames: ["Tidy memory"] };
+    await installSystemWorkflow(ws, "sys", yamlV(1), { ...automationJson, name: "Tidy memory" });
+    const [a] = (await ws.getWorkflowMetadata("sys"))!.automations!;
+    const mine = { ...a!, enabled: true, trigger: { ...a!.trigger, at: ["08:00"] } as typeof a.trigger };
+    await ws.setWorkflowAutomations("sys", [mine]);
+
+    await installSystemWorkflow(ws, "sys", yamlV(1), renamed);
+    assert.deepEqual((await ws.getWorkflowMetadata("sys"))!.automations, [{ ...mine, name: "Merge duplicates" }]);
+
+    await ws.setWorkflowAutomations("sys", [{ ...mine, name: "My cleanup" }]);
+    await installSystemWorkflow(ws, "sys", yamlV(1), renamed);
+    assert.deepEqual((await ws.getWorkflowMetadata("sys"))!.automations, [{ ...mine, name: "My cleanup" }]);
+  });
+
   it("a deleted automation is recreated, off", async () => {
     await installSystemWorkflow(ws, "sys", yamlV(1), automationJson);
     const [before] = (await ws.getWorkflowMetadata("sys"))!.automations!;
@@ -126,7 +141,7 @@ describe("system workflows", () => {
       const res = await strut.app.request("/automations");
       const { automations } = (await res.json()) as { automations: Array<{ workflow: string; name: string; enabled: boolean; category?: string }> };
       const tidy = automations.find((a) => a.workflow === "tidy-memory")!;
-      assert.deepEqual({ name: tidy.name, enabled: tidy.enabled, category: tidy.category }, { name: "Tidy memory", enabled: false, category: "system" });
+      assert.deepEqual({ name: tidy.name, enabled: tidy.enabled, category: tidy.category }, { name: "Merge duplicates", enabled: false, category: "system" });
       assert.equal(automations.find((a) => a.workflow === "mine")!.category, undefined);
       const one = (await (await strut.app.request("/automations?workflow=tidy-memory")).json()) as { automations: Array<{ category?: string }> };
       assert.equal(one.automations[0]!.category, "system");
