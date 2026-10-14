@@ -1,13 +1,16 @@
-import { useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { jobTotals } from "../api";
 import { displayActor } from "../actor";
 import { formatTokens } from "../context-meter";
 import { statusTone } from "../helpers";
 import { isArtifactPath } from "../artifact-view";
+import { checkOutcomes, ledgerSignature, newestTurn, verifySummary } from "../claims-view";
 import type { TouchedNode } from "../accessed-nodes";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { AccessedNodes } from "./AccessedNodes";
+import { ClaimsPanel } from "./ClaimsPanel";
+import { claimsTitle, claimsTone } from "./WorkflowFlyout";
 
 // ── Job timeline (plans/jobs-sidebar.md §3) ────────────────────────────────
 //
@@ -18,6 +21,12 @@ import { AccessedNodes } from "./AccessedNodes";
 // touched. A turn's run id opens that run on the canvas you have today; a
 // thread's transcript opens in the flyout. Nothing here names a workflow:
 // the rows are what the server's fold found (`src/job-threads.ts`).
+//
+// Where the claims layer is on (the view carries `claims`), a Claims section
+// sits under the deliverables (plans/job-claims.md §6): what the work must
+// deliver, each claim's status as of the newest turn, and Verify — door two,
+// `POST /jobs/:id/verify` — which runs every check against that turn now. A
+// verdict's screenshot is one of the job's files and opens in the viewer.
 
 export function JobTimeline(props: {
   job: api.JobView;
@@ -25,12 +34,43 @@ export function JobTimeline(props: {
   onOpenRun: (workflow: string, runId: string, path?: string) => void;
   /** Open a thread's transcript — up to `turn` when given. */
   onOpenThread: (thread: api.JobThread, turn?: api.JobTurn) => void;
+  /** Re-read the job — after a verify wrote evidence (and screenshots). */
+  onRefresh?: () => void;
 }) {
   const { job } = props;
   const threads = job.threads ?? [];
   const totals = useMemo(() => jobTotals(threads), [threads]);
   const [viewing, setViewing] = useState<string | null>(null);
   const [inline, setInline] = useState<string | null>(null);
+
+  // Claims: the panel's listing (for the dot), the last Verify, and a key
+  // that makes the panel re-read when the ledger or the newest turn moves.
+  const [listing, setListing] = useState<api.ClaimsResponse | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verified, setVerified] = useState<api.JobVerifyResult | null>(null);
+  const [verifyError, setVerifyError] = useState("");
+  const [verifies, setVerifies] = useState(0);
+  useEffect(() => { setListing(null); setVerified(null); setVerifyError(""); }, [job.job]);
+  const turn = newestTurn(job.runs);
+  // A Verify's outcomes stand while its turn is the newest; then the ledger's.
+  const outcomes = useMemo(
+    () => checkOutcomes(verified && verified.runId === turn ? verified.claims : job.claims),
+    [verified, turn, job.claims],
+  );
+  const claimsKey = `${verifies}|${turn ?? ""}|${ledgerSignature(job.claims)}`;
+  const verify = async () => {
+    setVerifying(true);
+    setVerifyError("");
+    try {
+      setVerified(await api.verifyJob(job.job));
+      setVerifies((n) => n + 1);
+      props.onRefresh?.();
+    } catch (e) {
+      setVerifyError((e as Error).message.replace(/^\/[^:]+: /, ""));
+    } finally {
+      setVerifying(false);
+    }
+  };
   // Which thread rows are folded shut (open by default, at every depth).
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const toggle = (id: string) => setClosed((c) => ({ ...c, [id]: !c[id] }));
@@ -109,6 +149,34 @@ export function JobTimeline(props: {
           <pre class="flyout-json" style="margin-top:8px;max-height:280px;overflow:auto;">{typeof inlineContent.content === "string" ? inlineContent.content : JSON.stringify(inlineContent.content, null, 2)}</pre>
         )}
       </div>
+
+      {job.claims && (
+        <div class="job-section job-claims">
+          <div class="job-section-title job-claims-head">
+            <span>
+              Claims
+              {listing && listing.claims.length > 0 && <span class={`claims-dot claims-dot-${claimsTone(listing)}`} title={claimsTitle(listing)} />}
+            </span>
+            <button
+              type="button"
+              class="btn btn-sm"
+              disabled={verifying || !turn}
+              onClick={verify}
+              title={turn ? `Run every check on every claim against the newest turn, ${turn}` : "The job has no turn to verify yet"}
+            >{verifying ? "Verifying…" : "Verify"}</button>
+          </div>
+          {verified && <div class="job-verify-note">{verifySummary(verified)}</div>}
+          {verifyError && <div class="claim-error">{verifyError}</div>}
+          <ClaimsPanel
+            subject={{ kind: "job", name: job.job }}
+            onOpenRun={(workflow, runId) => props.onOpenRun(workflow, runId)}
+            onLoaded={setListing}
+            onViewFile={setViewing}
+            outcomes={outcomes}
+            reload={claimsKey}
+          />
+        </div>
+      )}
 
       <div class="job-section">
         <div class="job-section-title">Threads</div>

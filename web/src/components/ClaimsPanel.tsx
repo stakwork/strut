@@ -1,6 +1,8 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import yaml from "js-yaml";
 import * as api from "../api";
+import { lastVerifyLabel, locatorTarget, shownOutcome } from "../claims-view";
+import { EyeIcon } from "../icons";
 import { useArtifactUrl } from "../use-artifact-url";
 
 // ── Claims panel ───────────────────────────────────────────────────────────
@@ -16,6 +18,12 @@ import { useArtifactUrl } from "../use-artifact-url";
 // Rewording a claim or editing a check creates a successor (both are
 // immutable once they have evidence), so the panel always re-reads after a
 // write rather than patching local state.
+//
+// A JOB's claims (plans/job-claims.md) say what the work must deliver: the
+// version is a TURN (`latest.about` is its run id), checks fire on Verify,
+// a person's new claim is an acceptance criterion with an external check —
+// the agent may hang its instrument on it — and a verdict's screenshot is a
+// job file the caller opens in place (`onViewFile`).
 
 const STATUS_LABEL: Record<api.ClaimStatusValue, string> = {
   supported: "supported",
@@ -29,8 +37,17 @@ const STATUS_HINT: Record<api.ClaimStatusValue, string> = {
   stale: "The evidence is about an older version; a run on the current one will refresh it.",
   unknown: "Never checked on any version.",
 };
+const JOB_STATUS_HINT: Record<api.ClaimStatusValue, string> = {
+  supported: "The newest evidence, on the job's newest turn, supports it.",
+  refuted: "Evidence on the newest turn refutes it — it stands until the turn moves.",
+  stale: "The evidence is about an earlier turn; Verify checks the newest one.",
+  unknown: "Never verified on any turn.",
+};
 
 const BLANK_CHECK: CheckDraft = { kind: "step", type: "exec", config: "cmd: test\nargs: [\"{{ input.output.ok }}\", \"=\", \"true\"]\n", name: "", description: "", when: "run", policy: "" };
+/** On a job: a person's acceptance criterion, answered by a person — the
+ *  tool side ready with the endpoint instrument if they switch. */
+const BLANK_JOB_CHECK: CheckDraft = { kind: "external", type: "http/verify", config: 'url: "{{ input.urls.pod }}/"\n', name: "", description: "", when: "run", policy: "" };
 
 interface CheckDraft {
   kind: "step" | "external";
@@ -96,7 +113,7 @@ export function ago(seconds?: number): string {
   return `${Math.round(mins / 60 / 24)}d ago`;
 }
 
-function CheckEditor(props: { draft: CheckDraft; onChange: (d: CheckDraft) => void; stepTypes: string[] }) {
+function CheckEditor(props: { draft: CheckDraft; onChange: (d: CheckDraft) => void; stepTypes: string[]; job?: boolean }) {
   const d = props.draft;
   const set = (patch: Partial<CheckDraft>) => props.onChange({ ...d, ...patch });
   return (
@@ -113,26 +130,40 @@ function CheckEditor(props: { draft: CheckDraft; onChange: (d: CheckDraft) => vo
             <datalist id="claim-step-types">{props.stepTypes.map((t) => <option key={t} value={t} />)}</datalist>
           </div>
           <div class="flyout-field">
-            <label>Config (YAML) — the subject is <code>input</code>: <code>{"{{ input.output.* }}"}</code>, <code>{"{{ input.input.* }}"}</code></label>
+            {props.job
+              ? <label>Config (YAML) — the job is <code>input</code>: <code>{"{{ input.urls.pod }}"}</code>, <code>{"{{ input.dir }}"}</code>, <code>{"{{ input.artifacts }}"}</code></label>
+              : <label>Config (YAML) — the subject is <code>input</code>: <code>{"{{ input.output.* }}"}</code>, <code>{"{{ input.input.* }}"}</code></label>}
             <textarea class="mono" rows={5} value={d.config} onInput={(e) => set({ config: (e.target as HTMLTextAreaElement).value })} />
           </div>
           <div class="claim-row">
-            <div class="flyout-field">
-              <label>Fires</label>
-              <select value={d.when} onChange={(e) => set({ when: (e.target as HTMLSelectElement).value as CheckDraft["when"] })}>
-                <option value="run">on a run</option>
-                <option value="publish">at publish (a lint over the source)</option>
-              </select>
-            </div>
+            {/* A job's check fires on a turn — never at publish (a job has none). */}
+            {!props.job && (
+              <div class="flyout-field">
+                <label>Fires</label>
+                <select value={d.when} onChange={(e) => set({ when: (e.target as HTMLSelectElement).value as CheckDraft["when"] })}>
+                  <option value="run">on a run</option>
+                  <option value="publish">at publish (a lint over the source)</option>
+                </select>
+              </div>
+            )}
             <div class="flyout-field">
               <label>Policy</label>
-              <select value={d.policy} onChange={(e) => set({ policy: (e.target as HTMLSelectElement).value as CheckDraft["policy"] })}>
-                <option value="">default</option>
-                <option value="always">always — every run</option>
-                <option value="on_change">on change — once per version</option>
-                <option value="sample">sample — a fraction of runs</option>
-                <option value="manual">manual — only when asked</option>
-              </select>
+              {props.job ? (
+                <select value={d.policy} onChange={(e) => set({ policy: (e.target as HTMLSelectElement).value as CheckDraft["policy"] })}>
+                  <option value="">default — manual: fires on Verify</option>
+                  <option value="on_change">on change — once per turn</option>
+                  <option value="always">always — every turn</option>
+                  <option value="manual">manual — only on Verify</option>
+                </select>
+              ) : (
+                <select value={d.policy} onChange={(e) => set({ policy: (e.target as HTMLSelectElement).value as CheckDraft["policy"] })}>
+                  <option value="">default</option>
+                  <option value="always">always — every run</option>
+                  <option value="on_change">on change — once per version</option>
+                  <option value="sample">sample — a fraction of runs</option>
+                  <option value="manual">manual — only when asked</option>
+                </select>
+              )}
             </div>
             {d.policy === "sample" && (
               <div class="flyout-field">
@@ -145,12 +176,17 @@ function CheckEditor(props: { draft: CheckDraft; onChange: (d: CheckDraft) => vo
       ) : (
         <div class="flyout-field">
           <label>What to look at — and why code cannot check it</label>
-          <textarea rows={3} value={d.description} placeholder="Play the clip at the cut — a click is audible, not measurable here." onInput={(e) => set({ description: (e.target as HTMLTextAreaElement).value })} />
+          <textarea
+            rows={3}
+            value={d.description}
+            placeholder={props.job ? "Open the settings page on the pod and save a preference — it should still be set after a reload." : "Play the clip at the cut — a click is audible, not measurable here."}
+            onInput={(e) => set({ description: (e.target as HTMLTextAreaElement).value })}
+          />
         </div>
       )}
       <div class="flyout-field">
         <label>Label (optional)</label>
-        <input type="text" value={d.name} placeholder={d.kind === "step" ? d.type || "check" : "e.g. ear"} onInput={(e) => set({ name: (e.target as HTMLInputElement).value })} />
+        <input type="text" value={d.name} placeholder={d.kind === "step" ? d.type || "check" : props.job ? "e.g. eyes" : "e.g. ear"} onInput={(e) => set({ name: (e.target as HTMLInputElement).value })} />
       </div>
     </div>
   );
@@ -162,13 +198,47 @@ function ArtifactsLink(props: { runId: string }) {
   return <a class="claim-link" href={href} target="_blank" rel="noreferrer">artifacts</a>;
 }
 
+/** What a verdict pointed at: a served file (a job's screenshot) opens in the
+ *  caller's viewer — an image shown small here too, through the scope's file
+ *  token — and an endpoint is a link. Never the bare file URL. */
+function Locator(props: { locator?: { url?: string; file?: string }; job?: string; onView?: (path: string) => void }) {
+  const target = locatorTarget(props.locator, props.job);
+  const file = target?.kind === "file" && props.onView ? target : null;
+  const src = useArtifactUrl(file?.image ? file.path : null);
+  if (target?.kind === "url") {
+    return <a class="claim-link" href={target.url} target="_blank" rel="noreferrer noopener" title={target.url}>{target.url.replace(/^https?:\/\//i, "")}</a>;
+  }
+  if (!file) return null;
+  const name = file.path.split("/").pop() ?? file.path;
+  return (
+    <div class="claim-locator">
+      <button type="button" class="copy-btn" onClick={() => props.onView!(file.path)} aria-label={`View ${name}`} title={`View ${name}`}>
+        <EyeIcon />
+      </button>
+      {src && (
+        <button type="button" class="claim-shot" onClick={() => props.onView!(file.path)} title={`View ${name}`}>
+          <img src={src} alt={name} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ClaimsPanel(props: {
   subject: api.ClaimSubject;
   /** Open a run in the app (workflow runs only). */
   onOpenRun?: (workflow: string, runId: string) => void;
   /** Reports the listing up (the topbar badge). */
   onLoaded?: (r: api.ClaimsResponse) => void;
+  /** Open a served file in place — a verdict's screenshot (the job timeline's viewer). */
+  onViewFile?: (path: string) => void;
+  /** Each check's outcome on the latest pass, by check id (a job's Verify). */
+  outcomes?: Record<string, api.LastVerify>;
+  /** Re-read when this changes (a turn, a verify) — the open editor stays. */
+  reload?: string | number;
 }) {
+  const isJob = props.subject.kind === "job";
+  const blank = isJob ? BLANK_JOB_CHECK : BLANK_CHECK;
   const [data, setData] = useState<api.ClaimsResponse | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -176,7 +246,7 @@ export function ClaimsPanel(props: {
   // One editor open at a time: "new", `claim:<id>`, `check:<id>`, `addcheck:<claimId>`.
   const [editing, setEditing] = useState<string | null>(null);
   const [text, setText] = useState("");
-  const [drafts, setDrafts] = useState<CheckDraft[]>([BLANK_CHECK]);
+  const [drafts, setDrafts] = useState<CheckDraft[]>([blank]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
 
   const load = () =>
@@ -188,12 +258,18 @@ export function ClaimsPanel(props: {
       })
       .catch((e) => setError((e as Error).message));
 
+  // A new subject starts over; a reload of the same one keeps what is open.
+  const subjectKey = `${props.subject.kind}\n${props.subject.name}`;
+  const loadedSubject = useRef<string | null>(null);
   useEffect(() => {
-    setData(null);
-    setEditing(null);
-    setError("");
+    if (loadedSubject.current !== subjectKey) {
+      loadedSubject.current = subjectKey;
+      setData(null);
+      setEditing(null);
+      setError("");
+    }
     load();
-  }, [props.subject.kind, props.subject.name]);
+  }, [subjectKey, props.reload]);
 
   useEffect(() => {
     api.listSteps().then((r) => setStepTypes([...r.core.map((s) => s.type), ...r.workspace.map((s) => s.type)])).catch(() => {});
@@ -214,7 +290,7 @@ export function ClaimsPanel(props: {
     }
   };
 
-  const open = (key: string, claimText = "", checks: CheckDraft[] = [BLANK_CHECK]) => {
+  const open = (key: string, claimText = "", checks: CheckDraft[] = [blank]) => {
     setEditing(key);
     setText(claimText);
     setDrafts(checks);
@@ -223,18 +299,24 @@ export function ClaimsPanel(props: {
 
   if (!data) return error ? <div class="claim-error">{error}</div> : <div class="flyout-source-empty">Loading…</div>;
   if (!data.enabled) return null;
-  if (data.note && data.claims.length === 0) return <div class="flyout-source-empty">Built-in tools carry no claims — claims attach to custom tools and workflows.</div>;
+  if (data.note && data.claims.length === 0) {
+    return <div class="flyout-source-empty">{isJob ? data.note : "Built-in tools carry no claims — claims attach to custom tools and workflows."}</div>;
+  }
 
+  // A job's version is a turn: its run, opened on the canvas like a turn row
+  // in the timeline.
   const runLink = (run?: api.ClaimRunRef) => {
     if (!run?.runId) return null;
     const isWorkflow = run.name && !run.name.includes(":");
-    const label = `${run.name ?? "run"} · ${run.runId}${run.path ? ` · ${run.path}` : ""}`;
+    const label = isJob ? `turn ${run.runId}` : `${run.name ?? "run"} · ${run.runId}${run.path ? ` · ${run.path}` : ""}`;
     return isWorkflow && props.onOpenRun ? (
-      <button type="button" class="claim-link" onClick={() => props.onOpenRun!(run.name!, run.runId!)}>{label}</button>
+      <button type="button" class="claim-link" onClick={() => props.onOpenRun!(run.name!, run.runId!)} title={`Open run ${run.runId} of ${run.name}`}>{label}</button>
     ) : (
       <span class="claim-dim">{label}</span>
     );
   };
+  const jobFiles = `/jobs/${encodeURIComponent(props.subject.name)}/files/`;
+  const hints = isJob ? JOB_STATUS_HINT : STATUS_HINT;
 
   const todos = data.claims.flatMap((c) => c.slots.map((s) => ({ claim: c, slot: s })));
 
@@ -244,10 +326,12 @@ export function ClaimsPanel(props: {
       {todos.map(({ claim, slot }) => (
         <div class="claim-todo" key={slot.evidence}>
           <div class="claim-todo-title">Needs a look — {claim.text}</div>
-          <div class="claim-todo-question">{slot.question ?? "An external check is waiting on this run."}</div>
+          <div class="claim-todo-question">{slot.question ?? `An external check is waiting on this ${isJob ? "turn" : "run"}.`}</div>
           <div class="claim-todo-run">
             {runLink(slot.run)}
-            {slot.run?.runId && <ArtifactsLink runId={slot.run.runId} />}
+            {isJob
+              ? props.onViewFile && <button type="button" class="claim-link" onClick={() => props.onViewFile!(jobFiles)}>files</button>
+              : slot.run?.runId && <ArtifactsLink runId={slot.run.runId} />}
           </div>
           <textarea
             rows={2}
@@ -261,9 +345,18 @@ export function ClaimsPanel(props: {
                 key={String(supports)}
                 type="button"
                 class={`btn ${supports ? "btn-primary" : "btn-danger"}`}
-                disabled={busy || !(answers[slot.evidence] ?? "").trim() || !slot.run?.runId || !slot.run?.name}
+                disabled={busy || !(answers[slot.evidence] ?? "").trim() || !slot.run?.runId || (!isJob && !slot.run?.name)}
                 onClick={() =>
-                  act(() => api.addClaimEvidence(claim.id, { name: slot.run!.name!, runId: slot.run!.runId!, supports, content: answers[slot.evidence]!.trim(), slot: slot.evidence }))
+                  act(() =>
+                    api.addClaimEvidence(claim.id, {
+                      // A job's turn is named by the job: the server finds the run on its record.
+                      ...(isJob ? { job: props.subject.name } : { name: slot.run!.name! }),
+                      runId: slot.run!.runId!,
+                      supports,
+                      content: answers[slot.evidence]!.trim(),
+                      slot: slot.evidence,
+                    }),
+                  )
                 }
               >{supports ? "Supports" : "Refutes"}</button>
             ))}
@@ -272,13 +365,17 @@ export function ClaimsPanel(props: {
       ))}
 
       {data.claims.length === 0 && editing !== "new" && (
-        <div class="flyout-source-empty">No claims yet — nothing says how this {props.subject.kind === "step" ? "tool" : props.subject.kind} should behave, so no run can be verified.</div>
+        <div class="flyout-source-empty">
+          {isJob
+            ? "No claims yet — nothing says what this job must deliver, so Verify has nothing to check."
+            : `No claims yet — nothing says how this ${props.subject.kind === "step" ? "tool" : props.subject.kind} should behave, so no run can be verified.`}
+        </div>
       )}
 
       {data.claims.map((c) => (
         <div class="claim" key={c.id}>
           <div class="claim-head">
-            <span class={`claim-status claim-status-${c.status}`} title={STATUS_HINT[c.status]}>{STATUS_LABEL[c.status]}</span>
+            <span class={`claim-status claim-status-${c.status}`} title={hints[c.status]}>{STATUS_LABEL[c.status]}</span>
             {c.assertedOnly && <span class="claim-flag" title="No instrument observed this — only a model's or a person's word.">asserted only</span>}
             {c.unverified > 0 && c.status !== "unknown" && <span class="claim-flag" title="Active checks with no evidence about the active version.">{c.unverified} unverified</span>}
             {c.speaker && <span class="claim-dim">by {c.speaker}</span>}
@@ -286,7 +383,7 @@ export function ClaimsPanel(props: {
           {editing === `claim:${c.id}` ? (
             <div class="claim-edit">
               <textarea rows={2} value={text} onInput={(e) => setText((e.target as HTMLTextAreaElement).value)} />
-              <div class="claim-hint">Rewording creates a successor: its checks carry over, and it reads unknown until a run is verified again.</div>
+              <div class="claim-hint">Rewording creates a successor: its checks carry over, and it reads unknown until {isJob ? "the job" : "a run"} is verified again.</div>
               <div class="claim-actions">
                 <button type="button" class="btn" onClick={() => setEditing(null)}>Cancel</button>
                 <button type="button" class="btn btn-primary" disabled={busy || !text.trim()} onClick={() => act(() => api.editClaim(c.id, text.trim()))}>Save</button>
@@ -303,8 +400,10 @@ export function ClaimsPanel(props: {
               <div class="claim-dim">
                 {ago(c.latest.observedAt)}
                 {c.latest.by ? ` · by ${c.latest.by}` : ""}
-                {c.latest.checkVersion ? ` · ${c.latest.checkVersion}` : ""} {runLink(c.latest.run)}
+                {c.latest.checkVersion ? ` · ${c.latest.checkVersion}` : ""}{" "}
+                {isJob && c.latest.about ? runLink({ ...c.latest.run, runId: c.latest.about }) : runLink(c.latest.run)}
               </div>
+              <Locator locator={c.latest.locator} {...(isJob ? { job: props.subject.name } : {})} {...(props.onViewFile ? { onView: props.onViewFile } : {})} />
             </div>
           )}
 
@@ -312,7 +411,7 @@ export function ClaimsPanel(props: {
             {c.checks.map((k) =>
               editing === `check:${k.id}` ? (
                 <div class="claim-edit" key={k.id}>
-                  <CheckEditor draft={drafts[0]!} onChange={(d) => setDrafts([d])} stepTypes={stepTypes} />
+                  <CheckEditor draft={drafts[0]!} onChange={(d) => setDrafts([d])} stepTypes={stepTypes} job={isJob} />
                   <div class="claim-hint">Editing creates a successor check; this one's evidence stops counting — a changed instrument has measured nothing yet.</div>
                   <div class="claim-actions">
                     <button type="button" class="btn" onClick={() => setEditing(null)}>Cancel</button>
@@ -327,6 +426,7 @@ export function ClaimsPanel(props: {
                     {k.when === "publish" ? " · at publish" : ""}
                     {k.policy ? ` · ${k.policy.replace("_", " ")}` : ""}
                   </span>
+                  <Outcome v={shownOutcome(props.outcomes?.[k.id], c.slots.some((sl) => sl.check === k.id))} />
                   <span class="claim-check-actions">
                     <button type="button" class="claim-link" onClick={() => open(`check:${k.id}`, "", [draftOf(k)])}>edit</button>
                     <button type="button" class="claim-link" disabled={busy} onClick={() => act(() => api.retireCheck(k.id))}>retire</button>
@@ -339,7 +439,7 @@ export function ClaimsPanel(props: {
 
           {editing === `addcheck:${c.id}` ? (
             <div class="claim-edit">
-              <CheckEditor draft={drafts[0]!} onChange={(d) => setDrafts([d])} stepTypes={stepTypes} />
+              <CheckEditor draft={drafts[0]!} onChange={(d) => setDrafts([d])} stepTypes={stepTypes} job={isJob} />
               <div class="claim-actions">
                 <button type="button" class="btn" onClick={() => setEditing(null)}>Cancel</button>
                 <button type="button" class="btn btn-primary" disabled={busy} onClick={() => act(async () => api.addCheck(c.id, specOf(drafts[0]!)))}>Add check</button>
@@ -360,8 +460,13 @@ export function ClaimsPanel(props: {
       {editing === "new" ? (
         <div class="claim claim-edit">
           <div class="flyout-field">
-            <label>How should it behave? One sentence — behavior, not mechanism.</label>
-            <textarea rows={2} value={text} placeholder="The clip's audio contains the requested quote." onInput={(e) => setText((e.target as HTMLTextAreaElement).value)} />
+            <label>{isJob ? "What must the work deliver? One sentence a person could check." : "How should it behave? One sentence — behavior, not mechanism."}</label>
+            <textarea
+              rows={2}
+              value={text}
+              placeholder={isJob ? "The settings page renders and saves notification preferences." : "The clip's audio contains the requested quote."}
+              onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
+            />
           </div>
           {drafts.map((d, i) => (
             <div key={i}>
@@ -369,10 +474,10 @@ export function ClaimsPanel(props: {
                 Check {drafts.length > 1 ? i + 1 : ""}
                 {drafts.length > 1 && <button type="button" class="claim-link" onClick={() => setDrafts(drafts.filter((_, j) => j !== i))}>remove</button>}
               </div>
-              <CheckEditor draft={d} onChange={(next) => setDrafts(drafts.map((x, j) => (j === i ? next : x)))} stepTypes={stepTypes} />
+              <CheckEditor draft={d} onChange={(next) => setDrafts(drafts.map((x, j) => (j === i ? next : x)))} stepTypes={stepTypes} job={isJob} />
             </div>
           ))}
-          <button type="button" class="claim-link" onClick={() => setDrafts([...drafts, BLANK_CHECK])}>+ another check</button>
+          <button type="button" class="claim-link" onClick={() => setDrafts([...drafts, blank])}>+ another check</button>
           <div class="claim-actions">
             <button type="button" class="btn" onClick={() => setEditing(null)}>Cancel</button>
             <button type="button" class="btn btn-primary" disabled={busy || !text.trim()} onClick={() => act(async () => api.addClaim(props.subject, text.trim(), drafts.map(specOf)))}>Add claim</button>
@@ -386,6 +491,13 @@ export function ClaimsPanel(props: {
       {data.verifyCostUsd != null && <div class="claim-dim claim-cost">Paid checks have cost ${data.verifyCostUsd.toFixed(4)} so far.</div>}
     </div>
   );
+}
+
+/** One check's outcome on the latest pass — `superseded` and `planned` in words. */
+function Outcome(props: { v: api.LastVerify | undefined }) {
+  if (!props.v) return null;
+  const l = lastVerifyLabel(props.v);
+  return <span class={`claim-outcome claim-outcome-${l.tone}`} title={l.title}>{l.text}</span>;
 }
 
 /** Counts for a badge: what needs attention on a subject. */
