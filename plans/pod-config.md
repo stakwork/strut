@@ -1,8 +1,13 @@
 # Pod config — a job fixes its pod, then the pool
 
-> **Status (2026-10-14): proposed, unbuilt; rulings confirmed the same day
-> (§10).** Written after a review of staklink's `/repair` and `/agent`
-> (`staklink@2791da6`), the lab's `pod/*` steps and `Pod` Concept
+> **Status (2026-10-14): BUILT, §8 items 1–3 — stakwork/staklink#145
+> (`GET /pod-config`), stakwork/hive#5511 (`claim-pod?generation=new`),
+> stakwork/stakgraph#1784 (`pod/config`, `pod/config-set`, fresh claims,
+> the `Pod Config` page); item 4, the live run on swarm38, waits for them to
+> deploy. Rulings confirmed the same day (§10); what the build decided
+> beyond the text is §11.** Written after a review of
+> staklink's `/repair` and `/agent` (`staklink@2791da6`), the lab's
+> `pod/*` steps and `Pod` Concept
 > (`stakgraph@2cba91ef`), and hive's pool config + diagnose API
 > (`hive@5948ee29f`: #5493, #5507, `docs/pool-config-agent-api.md`), its
 > pod-repair cron and its artifact events. Rulings already made in
@@ -225,3 +230,45 @@ bill) — is a workspace-wide key always a person setting it in hive?
 6. `devcontainer.json` is never edited; a compose file is one file under
    either name.
 7. Secrets are V2 (§9).
+
+## 11. Built — what the code decided beyond the text
+
+Choices made while building, open to review:
+
+1. **A tag on the masked pm2 values.** Two different values can mask
+   alike (`http://localhost:3000` and `:4000` are both
+   `ht*****************00`), so in the pm2 files `pod/config` shows hive's
+   mask plus a six-hex keyed hash, `ht…00#3fa9c1`, the key random per read
+   and never kept: equal values diff equal, a changed port shows. `services`
+   and `env` keep hive's exact masks, since those are written back. A
+   service's own config vars (PORT, the `*_COMMAND`s) stay readable, as in
+   hive's `maskEnvVarsInPM2Config`; the compose file and the Dockerfile are
+   not masked, since they are written back whole.
+2. **`pod/config-set` sends `services` AND the env list whenever either
+   changes.** Checked against hive's route and push code: an env-only PUT
+   is accepted (a `changeId`, `infraChanged`) but never reaches a pod,
+   because the PUT does not regenerate the stored `pm2.config.js` and the
+   push lets that file's env values win over the stored list. With both
+   lists hive regenerates the file in the write and the push agrees. Masked
+   values come back as the stored ones, and a removed name stays removed.
+   The env-only behaviour is a hive bug and is not fixed here.
+3. **Refused before anything is written:** a masked value that is not the
+   stored value's own mask (hive would store the stars), a tagged one,
+   PORT or a `*_COMMAND` as an env var (they come from the service's `port`
+   and `scripts`), `pm2.config.js`, `devcontainer.json`, both compose
+   names, a removal of a name that is not stored.
+4. **A failed push stops the step.** Hive has saved the change, and
+   resending the same edits finds nothing to push (hive's infra diff), so
+   the error says to tell the person, who can retry from hive.
+5. **Every claim's response carries `generation`.** `pod/claim { fresh }`
+   gives back a pod whose generation is not `new` (an older hive ignores
+   the parameter) rather than check a change on it. `generation=new` also
+   leaves out pods flagged for recreation, which is the rollout's own
+   readiness rule (`podGeneration` in hive is now the one rule the rollout,
+   `pool/pods` and the claim share), and answers 409 while no push has
+   completed, with the push error when the last push failed.
+6. **staklink's `/pod-config`** reads the pm2 config from wherever
+   staklink found it, and the compose file as the first of
+   `docker-compose.yml` and `.yaml` in the pod-config directory.
+7. **The deliverable's `content` is the diffs as one text.** Hive shows a
+   `diff` artifact whose content is a string as highlighted code.
