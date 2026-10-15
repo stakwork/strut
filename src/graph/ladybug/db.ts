@@ -114,6 +114,40 @@ export function indexCalls(): Array<[string, string]> {
   ];
 }
 
+/** The statement that fails when `node_fts` lacks a document for a node:
+ *  a SET of an indexed column deletes the node's old document first. */
+const FTS_PROBE = "MATCH (n:Node) SET n.name = n.name";
+const FTS_BROKEN = /FTS index '[^']*' is inconsistent/;
+
+/** After an exit without `close()` (a kill, a crash) Ladybug replays its WAL
+ *  but not the FTS index: every later SET or DELETE of a node written before
+ *  fails "FTS index 'node_fts' is inconsistent". The index is derived data, so
+ *  when a write the engine would refuse is tried (and rolled back) it is
+ *  dropped and built again from the nodes. */
+async function rebuildBrokenFts(write: Query): Promise<void> {
+  await write("BEGIN TRANSACTION");
+  try {
+    await write(FTS_PROBE);
+    await write("ROLLBACK");
+    return;
+  } catch (err) {
+    await write("ROLLBACK").catch(() => undefined);
+    if (!FTS_BROKEN.test(err instanceof Error ? err.message : String(err))) throw err;
+  }
+  console.warn("[graph] the full-text index did not survive the last exit; building it again");
+  const [name, call] = indexCalls().find(([n]) => n === "node_fts")!;
+  await write(`CALL DROP_FTS_INDEX('Node', '${name}')`);
+  await write(call);
+}
+
+/** Closes every open handle: a process that exits without it leaves a WAL
+ *  Ladybug cannot recover the FTS index from. The exits of a host-owned
+ *  strut (stdin EOF, SIGTERM) call it before `process.exit`. */
+export async function closeAllLadybug(): Promise<void> {
+  const open = [...registry().values()];
+  await Promise.allSettled(open.map(async (h) => (await h).close()));
+}
+
 // ── The handle ──────────────────────────────────────────────────────────────
 
 const HANDLES = Symbol.for("strut.graph.ladybug");
@@ -257,6 +291,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
     for (const ddl of [...ddlStatements(), ...MIGRATIONS]) await write(ddl);
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
+    await rebuildBrokenFts(write);
 
     let queue: Promise<unknown> = Promise.resolve();
     const exclusive = <T>(fn: (w: Query) => Promise<T>): Promise<T> => {
@@ -343,6 +378,8 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
       close: async () => {
         registry().delete(path);
         await queue.catch(() => undefined);
+        // Folds the WAL into the file, so a restart replays nothing.
+        await write("CHECKPOINT").catch(() => undefined);
         await closeAll();
       },
     };
