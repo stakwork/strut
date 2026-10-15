@@ -107,13 +107,30 @@ dflt("STRUT_WEB_DIST", join(here, "web", "dist"));
 dflt("STRUT_API_KEY", randomBytes(24).toString("hex"));
 env["STRUT_READY_KEY"] = "1"; // put the key on the ready line for the host
 
-// A host that holds our stdin pipe open sets this so we exit with it: the
-// kernel closes the pipe when the host dies, even on a crash or force quit.
+// Every way out closes the graph file first: a process that exits with it
+// open leaves a WAL Ladybug cannot recover its full-text index from.
+let leaving = false;
+const leave = async (why) => {
+  if (leaving) return;
+  leaving = true;
+  console.error(`strut: ${why}, exiting`);
+  // A close that hangs must not keep a host waiting (it SIGKILLs after seconds).
+  setTimeout(() => process.exit(0), 1500).unref();
+  try {
+    const { closeAllLadybug } = await import("./build/graph/ladybug/db.js");
+    await closeAllLadybug();
+  } catch (err) {
+    console.error("strut: closing the graph failed:", err);
+  }
+  process.exit(0);
+};
+// A second signal while closing is the person insisting.
+for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => (leaving ? process.exit(0) : void leave(sig)));
+
 if (env["STRUT_EXIT_ON_STDIN_EOF"] === "1") {
-  const bye = () => {
-    console.error("strut: stdin closed (STRUT_EXIT_ON_STDIN_EOF=1), exiting");
-    process.exit(0);
-  };
+  // A host that holds our stdin pipe open sets this so we exit with it: the
+  // kernel closes the pipe when the host dies, even on a crash or force quit.
+  const bye = () => void leave("stdin closed (STRUT_EXIT_ON_STDIN_EOF=1)");
   process.stdin.on("end", bye);
   process.stdin.on("error", bye);
   process.stdin.resume();

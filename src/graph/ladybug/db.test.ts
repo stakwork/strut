@@ -6,8 +6,10 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { LADYBUG_EDGE_TYPES, nodeColumns } from "./registry.js";
 import { MIGRATIONS, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
 import { testBackends } from "../test-util.js";
@@ -141,5 +143,39 @@ describe("ladybug handle", { skip }, () => {
     } finally {
       await c.close();
     }
+  });
+  it("a file whose process exited without close() is writable again: the full-text index is rebuilt", async () => {
+    const file = join(dir, "unclean", "graph.lbug");
+    // A child that writes a node and exits at once, as a killed strut does.
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        `import { openLadybug } from ${JSON.stringify(fileURLToPath(new URL("./db.js", import.meta.url)))};
+         const h = await openLadybug(${JSON.stringify(file)});
+         await h.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'a', name: 'one', Data_Bank: 'some text'})"));
+         await h.withWrite((tx) => tx.run("MATCH (n:Node {ref_id: 'a'}) SET n.name = 'one again'"));
+         process.exit(0);`,
+      ],
+      { env: process.env, encoding: "utf-8" },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    const again = await openLadybug(file);
+    try {
+      await again.withWrite((tx) => tx.run("MATCH (n:Node {ref_id: 'a'}) SET n.name = 'two'"));
+      assert.equal((await again.query("MATCH (n:Node {ref_id: 'a'}) RETURN n.name AS name"))[0]!["name"], "two");
+    } finally {
+      await again.close();
+    }
+  });
+  it("close() folds the WAL into the file, so a restart replays nothing", async () => {
+    const file = join(dir, "clean", "graph.lbug");
+    const c = await openLadybug(file);
+    await c.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'a', name: 'one', Data_Bank: 'some text'})"));
+    await c.close();
+    assert.equal(existsSync(`${file}.wal`), false);
   });
 });
