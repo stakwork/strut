@@ -6,6 +6,9 @@
 // schemas with, never a second one nested under strut.
 export { z } from "zod";
 
+// YAML, for a seeded step: it resolves `strut` and no other package.
+export { dumpYaml, loadYaml } from "./yaml.js";
+
 // Core types and builders
 export {
   flow,

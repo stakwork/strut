@@ -48,83 +48,102 @@ export default defineStep({
         'An edge type, e.g. "PARENT_OF": also return the nodes this one points to along it (outgoing edges only) as `children`, ' +
           `each { ref_id, node_type, name, description }, sorted by name. At most ${CHILD_CAP}; \`children_truncated: true\` when there are more.`,
       ),
+    required: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Fail with the message instead of returning it when the node cannot be resolved (not found, an unknown type, a malformed lookup): " +
+          "for a workflow that cannot go on without the node. Leave it off when the caller reads the message and carries on.",
+      ),
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    try {
-      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
-      let raw;
-      if (cfg.ref_id) {
-        raw = await b.reader.getNode(cfg.ref_id);
-        if (!raw) return `node not found: ${cfg.ref_id}`;
-      } else {
-        if (!cfg.node_type || !cfg.name) return "graph/graph-get failed: pass ref_id, or node_type + name";
-        const schema = await b.schemas.schema(cfg.node_type);
-        if (!schema) return `graph/graph-get failed: unknown node type "${cfg.node_type}"`;
-        const keyed = schema.node_key.split("-").slice(1);
-        if (keyed.length !== 1 || keyed[0]!.toLowerCase() !== "name") {
-          return `graph/graph-get failed: ${schema.type} is keyed by ${keyed.join(" + ") || "nothing"}, not name — pass its ref_id (graph_graph_search finds it)`;
-        }
-        const { composeNodeKey } = await import("../../../graph/node-writer.js");
-        raw = await b.reader.getNodeByKey(schema.type, composeNodeKey(schema, { name: cfg.name }), cfg.namespace);
-        if (!raw) return `node not found: ${schema.type} "${cfg.name}"`;
-      }
-      const properties = (raw.properties ?? {}) as Record<string, any>;
-      // Edge-type connectivity. Best effort — never fail the whole call.
-      let edges: Record<string, number> = {};
-      try {
-        edges = edgeCountMap(await b.reader.connectionCounts(raw.ref_id, cfg.namespace));
-      } catch {
-        // edges stays {}
-      }
-      const out = {
-        ref_id: raw.ref_id,
-        node_type: raw.node_type,
-        name: deriveNodeName(raw, properties),
-        properties: raw.properties,
-        edges,
-      };
-      // Provenance: the node that was asked for — never its table of contents.
-      const read = [{ ref_id: raw.ref_id, node_type: raw.node_type, name: out.name }];
-      if (!cfg.children) return withAccessedNodes(out, read);
-
-      // The table of contents: what this node points to along one edge type.
-      const data = await b.reader.neighbors(raw.ref_id, {
-        edge_types: [cfg.children.trim().toUpperCase().replace(/ /g, "_")],
-        direction: "forward",
-        limit: CHILD_CAP + 1,
-        namespace: cfg.namespace,
-      });
-      // A child's name and description are its type's title and description
-      // fields (a StrutStep's title is its step_type, not its description).
-      const keys = new Map<string, { title?: string; description: string }>();
-      const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-      const children: Array<{ ref_id: string; node_type: string; name: string; description?: string }> = [];
-      for (const n of data.nodes ?? []) {
-        if (n.ref_id === raw.ref_id) continue;
-        const p = (n.properties ?? {}) as Record<string, any>;
-        const type = n.node_type ?? "unknown";
-        if (!keys.has(type)) {
-          const schema = await b.schemas.schema(type);
-          keys.set(type, { title: schema?.title_key, description: schema?.description_key || "description" });
-        }
-        const k = keys.get(type)!;
-        const description = text(p[k.description]);
-        children.push({
-          ref_id: n.ref_id,
-          node_type: type,
-          name: (k.title && text(p[k.title])) || deriveNodeName(n, p),
-          ...(description
-            ? { description: description.length > CHILD_DESCRIPTION_MAX ? `${description.slice(0, CHILD_DESCRIPTION_MAX)}…` : description }
-            : {}),
-        });
-      }
-      children.sort((a, c) => a.name.localeCompare(c.name) || a.ref_id.localeCompare(c.ref_id));
-      const truncated = children.length > CHILD_CAP;
-      const listed = children.slice(0, CHILD_CAP);
-      return withAccessedNodes({ ...out, children: listed, ...(truncated ? { children_truncated: true } : {}) }, read);
-    } catch (e) {
-      return errText("graph/graph-get", e);
-    }
+    // Every way this lookup fails is a string: what a model reads as the
+    // tool's answer. A workflow step that names a node it cannot do without
+    // asks for an error instead, so the run stops there with that message.
+    const out = await resolve(cfg, ctx);
+    if (cfg.required && typeof out === "string") throw new Error(out);
+    return out;
   },
 });
+
+async function resolve(
+  cfg: { ref_id?: string; node_type?: string; name?: string; namespace?: string; children?: string },
+  ctx: unknown,
+): Promise<unknown> {
+  try {
+    const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
+    let raw;
+    if (cfg.ref_id) {
+      raw = await b.reader.getNode(cfg.ref_id);
+      if (!raw) return `node not found: ${cfg.ref_id}`;
+    } else {
+      if (!cfg.node_type || !cfg.name) return "graph/graph-get failed: pass ref_id, or node_type + name";
+      const schema = await b.schemas.schema(cfg.node_type);
+      if (!schema) return `graph/graph-get failed: unknown node type "${cfg.node_type}"`;
+      const keyed = schema.node_key.split("-").slice(1);
+      if (keyed.length !== 1 || keyed[0]!.toLowerCase() !== "name") {
+        return `graph/graph-get failed: ${schema.type} is keyed by ${keyed.join(" + ") || "nothing"}, not name — pass its ref_id (graph_graph_search finds it)`;
+      }
+      const { composeNodeKey } = await import("../../../graph/node-writer.js");
+      raw = await b.reader.getNodeByKey(schema.type, composeNodeKey(schema, { name: cfg.name }), cfg.namespace);
+      if (!raw) return `node not found: ${schema.type} "${cfg.name}"`;
+    }
+    const properties = (raw.properties ?? {}) as Record<string, any>;
+    // Edge-type connectivity. Best effort — never fail the whole call.
+    let edges: Record<string, number> = {};
+    try {
+      edges = edgeCountMap(await b.reader.connectionCounts(raw.ref_id, cfg.namespace));
+    } catch {
+      // edges stays {}
+    }
+    const out = {
+      ref_id: raw.ref_id,
+      node_type: raw.node_type,
+      name: deriveNodeName(raw, properties),
+      properties: raw.properties,
+      edges,
+    };
+    // Provenance: the node that was asked for — never its table of contents.
+    const read = [{ ref_id: raw.ref_id, node_type: raw.node_type, name: out.name }];
+    if (!cfg.children) return withAccessedNodes(out, read);
+
+    // The table of contents: what this node points to along one edge type.
+    const data = await b.reader.neighbors(raw.ref_id, {
+      edge_types: [cfg.children.trim().toUpperCase().replace(/ /g, "_")],
+      direction: "forward",
+      limit: CHILD_CAP + 1,
+      namespace: cfg.namespace,
+    });
+    // A child's name and description are its type's title and description
+    // fields (a StrutStep's title is its step_type, not its description).
+    const keys = new Map<string, { title?: string; description: string }>();
+    const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+    const children: Array<{ ref_id: string; node_type: string; name: string; description?: string }> = [];
+    for (const n of data.nodes ?? []) {
+      if (n.ref_id === raw.ref_id) continue;
+      const p = (n.properties ?? {}) as Record<string, any>;
+      const type = n.node_type ?? "unknown";
+      if (!keys.has(type)) {
+        const schema = await b.schemas.schema(type);
+        keys.set(type, { title: schema?.title_key, description: schema?.description_key || "description" });
+      }
+      const k = keys.get(type)!;
+      const description = text(p[k.description]);
+      children.push({
+        ref_id: n.ref_id,
+        node_type: type,
+        name: (k.title && text(p[k.title])) || deriveNodeName(n, p),
+        ...(description
+          ? { description: description.length > CHILD_DESCRIPTION_MAX ? `${description.slice(0, CHILD_DESCRIPTION_MAX)}…` : description }
+          : {}),
+      });
+    }
+    children.sort((a, c) => a.name.localeCompare(c.name) || a.ref_id.localeCompare(c.ref_id));
+    const truncated = children.length > CHILD_CAP;
+    const listed = children.slice(0, CHILD_CAP);
+    return withAccessedNodes({ ...out, children: listed, ...(truncated ? { children_truncated: true } : {}) }, read);
+  } catch (e) {
+    return errText("graph/graph-get", e);
+  }
+}
