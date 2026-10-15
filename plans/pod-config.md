@@ -1,10 +1,11 @@
 # Pod config — a job fixes its pod, then the pool
 
-> **Status (2026-10-14): BUILT on three branches, §8 items 1–3 (staklink
-> `feature/pod-config-route`, hive `feature/claim-pod-generation-new`,
-> stakgraph `feature/pod-config-steps`); item 4, the live run on swarm38,
-> waits for them to deploy. Rulings confirmed the same day (§10); what the
-> build decided beyond the text is §11.** Written after a review of
+> **Status (2026-10-14): BUILT, §8 items 1–3 — stakwork/staklink#145
+> (`GET /pod-config`), stakwork/hive#5511 (`claim-pod?generation=new`),
+> stakwork/stakgraph#1784 (`pod/config`, `pod/config-set`, fresh claims,
+> the `Pod Config` page); item 4, the live run on swarm38, waits for them to
+> deploy. Rulings confirmed the same day (§10); what the build decided
+> beyond the text is §11.** Written after a review of
 > staklink's `/repair` and `/agent` (`staklink@2791da6`), the lab's
 > `pod/*` steps and `Pod` Concept
 > (`stakgraph@2cba91ef`), and hive's pool config + diagnose API
