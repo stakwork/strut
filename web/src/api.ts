@@ -783,6 +783,8 @@ export interface JobView extends Omit<JobListing, "runs" | "holds"> {
   text?: string;
   threads?: JobThread[];
   omittedRuns?: number;
+  /** The job's ledger, where the claims layer is on (absent otherwise). */
+  claims?: LedgerClaim[];
 }
 
 /** Every turn under `threads`, spawned ones included, each counted once. */
@@ -1286,8 +1288,8 @@ export const deleteSecret = (name: string) =>
 // otherwise, and the panel hides itself.
 
 export interface ClaimSubject {
-  kind: "step" | "workflow";
-  /** Workflow name, or custom step type. */
+  kind: "step" | "workflow" | "job";
+  /** Workflow name, custom step type, or job id. */
   name: string;
 }
 
@@ -1371,9 +1373,67 @@ export const retireClaim = (id: string) => fetchJSON<{ id: string }>(`/claims/${
 export const addCheck = (claimId: string, check: ClaimCheckSpec) => fetchJSON<{ id: string }>(`/claims/${claimId}/checks`, json("POST", { check }));
 export const editCheck = (id: string, patch: ClaimCheckSpec) => fetchJSON<{ id: string }>(`/checks/${id}`, json("PATCH", { patch }));
 export const retireCheck = (id: string) => fetchJSON<{ id: string }>(`/checks/${id}`, json("DELETE"));
-/** A person's observation on a run; with `slot`, the answer to an open question. */
-export const addClaimEvidence = (claimId: string, body: { name: string; runId: string; supports: boolean; content: string; slot?: string }) =>
+/** A person's observation on a run; with `slot`, the answer to an open
+ *  question. A job's turn is named by `job` (`name` is then optional). */
+export const addClaimEvidence = (claimId: string, body: { name?: string; job?: string; runId: string; supports: boolean; content: string; slot?: string }) =>
   fetchJSON<{ evidence: string; filled: boolean }>(`/claims/${claimId}/evidence`, json("POST", body));
+
+// ── A job's ledger (plans/job-claims.md §6) ────────────────────────────────
+// What the work must deliver and whether it does, as of the job's newest
+// turn. The mirror of `LedgerClaim` in src/ledger.ts — NOT `ClaimEntry`,
+// the `/claims` listing the panel edits: no speaker, slots or check config,
+// but each check's `lastVerify` from the latest pass.
+
+export type SkipReason = "policy" | "budget" | "cannot-launch" | "unknown-version" | "denied" | "superseded";
+export type LastVerify = { pending: true } | { ran: true } | { skipped: SkipReason; reason?: string } | { planned: string };
+
+export interface LedgerCheck {
+  id: string;
+  name: string;
+  external?: true;
+  lastVerify?: LastVerify;
+}
+
+export interface LedgerClaim {
+  id: string;
+  text: string;
+  status: ClaimStatusValue;
+  assertedOnly: boolean;
+  unverified: number;
+  latest?: {
+    content?: string;
+    observed_at?: number;
+    mode?: string;
+    check?: string;
+    checkVersion?: string;
+    /** The turn the verdict is about (a run id). */
+    about?: string;
+    /** What the check pointed at: a job file's url (a screenshot), an endpoint. */
+    locator?: { url?: string; file?: string };
+  };
+  checks: LedgerCheck[];
+}
+
+/** `POST /jobs/:id/verify`: the pass over the newest turn, and the ledger after it. */
+export interface JobVerifyResult {
+  job: string;
+  key: string;
+  /** The turn verified. */
+  runId: string;
+  skipped?: "verify-origin" | "unknown-run" | "unfinished" | "unknown-job";
+  checks: Array<{ path: string; claimId: string; checkId: string; lastVerify: LastVerify }>;
+  evidence: number;
+  slots: number;
+  costUsd: number;
+  claims: LedgerClaim[];
+}
+
+export const getJobClaims = (id: string) =>
+  fetchJSON<{ enabled: boolean; job: string; claims: LedgerClaim[] }>(`/jobs/${encodeURIComponent(id)}/claims`);
+/** Verify the job NOW against its newest turn — every check fires, `manual`
+ *  ones included; `claims` narrows to ids. */
+export const verifyJob = (id: string, claims?: string[]) =>
+  fetchJSON<JobVerifyResult>(`/jobs/${encodeURIComponent(id)}/verify`, json("POST", claims ? { claims } : {}));
 
 /** One check's verdict on one run (`RunEvidence`, src/claims-authoring.ts). */
 export interface RunEvidence {

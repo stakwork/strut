@@ -1388,7 +1388,7 @@ export function App() {
         {/* A selected job with no run open: its timeline, not a graph. */}
         {timelineOpen ? (
           job
-            ? <JobTimeline job={job} onOpenRun={openJobRun} onOpenThread={(thread, turn) => setThreadView({ thread, turn })} />
+            ? <JobTimeline job={job} onOpenRun={openJobRun} onOpenThread={(thread, turn) => setThreadView({ thread, turn })} onRefresh={refreshJob} />
             : <div class="empty">Loading job…</div>
         ) : canvas
           ? <SystemCanvas

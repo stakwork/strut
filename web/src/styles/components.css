@@ -3302,6 +3302,24 @@ body.is-resizing-flyout * {
 .claims-dot-bad { background: var(--danger); }
 .claims-dot-todo { background: var(--warning); }
 .claims-dot-open { background: var(--text-dim); }
+/* A check's outcome on the latest pass (a job's Verify). */
+.claim-outcome { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; }
+.claim-outcome-ok { color: var(--ok); }
+.claim-outcome-warn { color: var(--warning); }
+.claim-outcome-bad { color: var(--danger); }
+.claim-outcome-muted { color: var(--text-dim); }
+/* What a verdict pointed at: the eye, and a screenshot shown small. */
+.claim-locator { display: flex; align-items: flex-start; gap: var(--sp-2); margin-top: var(--sp-1); }
+.claim-shot {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  cursor: zoom-in;
+  max-width: 320px;
+  overflow: hidden;
+}
+.claim-shot img { display: block; max-width: 100%; max-height: 180px; object-fit: contain; }
 /* Claim forms are short sentences and small YAML snippets, not the config
    editor's 140px panes — and their labels read as sentences, not eyebrows. */
 .claims-panel .flyout-field { margin-bottom: 0; }
@@ -3541,6 +3559,12 @@ body.is-resizing-flyout * {
   margin-bottom: var(--sp-2);
 }
 .job-empty { color: var(--text-dim); font-size: 12px; }
+
+/* Claims (plans/job-claims.md §6): the panel under a title with Verify. */
+.job-claims-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); max-width: 760px; }
+.job-claims-head .btn { text-transform: none; letter-spacing: 0; }
+.job-claims .claims-panel { max-width: 760px; }
+.job-verify-note { font-size: 12px; color: var(--text-muted); margin-bottom: var(--sp-2); }
 
 /* Deliverables: the fold, one card each. */
 .job-arts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
