@@ -1,6 +1,6 @@
 # Live artifacts: a job tells its host what changed, as it changes
 
-> **Status (2026-10-15): proposed, mostly ruled**, from one design conversation with the
+> **Status (2026-10-15): proposed, ruled**, from one design conversation with the
 > owner. The rows in "Decided" are his. The rows marked *proposed* are
 > mine and open to a ruling. Nothing is built. Companion to `jobs.md` (the
 > job, its directory, holds and deliverables), `job-index.md` (the read
@@ -48,8 +48,9 @@ each frame is.
 | A contact sheet for the model | **No.** Tiles at model size are too small to read, and the model already saw each page while exploring. It gets the verdict, the last frame (or the one where it stopped), and the frame paths for `job/read` |
 | How the host registers | **`jobCallback` on the launch**, beside `callback` (2026-10-15). Hive already sends `callback` on every launch: one more field, no extra route, a token refreshed every turn, and on file in the same request as the run that may emit |
 | Holds and checks | **Strut emits for them on its own** (2026-10-15): a hold taken or released, evidence written, a verify pass ended. `pod/*` and the instruments need no change |
-| The kind of a walkthrough | **`kind`, the field deliverables already have** (2026-10-15). Events carry `kind: "walkthrough"`, and the step's result carries it so the model copies it into its deliverable. The filename `walkthrough.json` is the fallback only where no kind is given (*proposed*, §5) |
+| The kind of a walkthrough | **`kind`, the field deliverables already have** (2026-10-15). Events carry `kind: "walkthrough"`, and the step's result carries it so the model copies it into its deliverable. The filename `walkthrough.json` is the fallback only where no kind is given (§5) |
 | A detached verify | **Opt-in, `detach: true`** (2026-10-15). The synchronous form stays the default, so today's callers are unchanged |
+| A frame cap | **None** (2026-10-15). The list is declared up front, so a walkthrough's length is known before it starts; the browser budget bounds its time, and the step description steers it short (§4) |
 
 ## Design in one paragraph
 
@@ -190,7 +191,7 @@ On a step that fails, or an expectation that does not hold, a final frame
 of where the page got to is marked `failed` with the reason, and the
 recording ends `stopped`.
 
-No frame cap (*proposed*). The list is declared up front, so a walkthrough
+No frame cap (decided). The list is declared up front, so a walkthrough
 cannot run away: its length is known before it starts. Time is already
 bounded by the run's browser budget and the per-call timeouts, and the
 disk use of a few dozen PNGs is a few MB. A cap would only refuse long
@@ -273,7 +274,7 @@ Two small changes keep the URLs equal:
 - **The kind** (decided): `kind: "walkthrough"`, the field deliverables
   already carry. Every event names it, and the step's result carries it so
   the model copies it into the deliverable entry.
-- **The filename as the fallback** (*proposed*): `artifactKind` in
+- **The filename as the fallback** (decided): `artifactKind` in
   `artifact-refs.ts` and in `web/src/artifact-view.ts` reads a file named
   `walkthrough.json` as `walkthrough`, only where no `kind` is given.
   Strut's `ArtifactViewer` picks its renderer from the path alone
@@ -349,10 +350,3 @@ in-process set, like the chat's liveness).
 3. **hive** (after 2 deploys): the events endpoint and token, `jobCallback`
    on `launchJobTurn`, the realtime forward, the URL merge, the
    `walkthrough` renderer, Verify through the detached door.
-
-## Open for a ruling
-
-1. No frame cap (§4): the declared list bounds a walkthrough, and the step
-   description steers it short.
-2. The filename `walkthrough.json` as the kind's fallback (§5), for strut's
-   path-based viewer and an evidence locator that carries no kind.
