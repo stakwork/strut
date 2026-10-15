@@ -134,6 +134,12 @@ nobody's work to break. The alternative is §14.2.
   (not from `pool-status-widget`), and `containerFilesSetUp` set at once.
   A workspace always has a config its pods boot from: a failed job leaves
   the placeholder.
+- **One default:** `generatePM2Apps`' default for a workspace with no
+  services becomes the same placeholder (a `frontend` running `npx -y
+  hell0-w0rld`, no install). Today it is a `default-service` running `npm
+  start` with npm's install and build: it is not named `frontend`, so
+  hive's own lookups fall back to port 3000, and on a repo that isn't npm
+  it fails to boot.
 - **Start the job:** `launchJobTurn` (`strut-jobs.ts`) into a new Jamie
   conversation for the person. The prompt is fixed, e.g. `Onboard
   @<slug>: get its app running in a pod. Repositories: <urls>`; it is not
@@ -264,7 +270,8 @@ Pod Config                         (exists: Job → Code Change → Pod → Pod 
   skips a name someone else owns. Without the prefix, a workspace's own
   `Postgres` or `Web` Concept would block the page.
 - **First text = production's rules** (ruling). The root comes from
-  `FINAL_ANSWER`: repos mounted at `/workspaces/<repo>`, one `frontend`,
+  `FINAL_ANSWER`: repos mounted at `/workspaces/<repo>`, one service that
+  is the one a person opens (the pages never name it: code does, §10),
   `0.0.0.0`, dev not start, the local-only policy, the env defaults. Web
   comes from the nextjs + vite hints and the package-manager rule, each
   dependency page from its hint. Two changes on the way. The `app` block
@@ -320,8 +327,18 @@ The principle: whatever code can guarantee, code guarantees, and the model
 supplies only judgement.
 
 **The schema makes it impossible.**
-- `frontend` is its own required field, and code names it `frontend`.
-  There is always exactly one.
+- `frontend` is its own required field (the role: the service a person
+  opens), and code names it `frontend`. There is always exactly one.
+- The name is a platform contract (ruling: keep `frontend`). Hive reads it
+  by name to find the pod's URL from that service's port
+  (`lib/pods/utils.ts`, `PROCESS_NAMES.FRONTEND`, the `frontend-url`
+  route), which is what the person's iframe and the job's hold URL use, and
+  the pod-repair cron health-checks it. Staklink's `/latest` stops it
+  during a reset, and goose's system prompt tells it the person sees it.
+  So the name lives only in code (this schema's field, `pod-setup/finish`,
+  hive's generator and lookups), never in a prompt or a page. A role field
+  in place of the name would mean changing every one of those readers, for
+  no gain today.
 - A service's place is `{ repo: <enum of the checkouts>, subdir? }`, and
   code writes `cwd: /workspaces/<repo>[/<subdir>]`.
 - `port` is an integer, and `scripts.install` is required.
@@ -432,8 +449,9 @@ glob, and those two are not its tools.
    - The `pod-setup/*` namespace, and `required` + `dumpYaml` in strut.
    - Step 3 before step 4, and no ask on the first `pod/config-set`.
    - Hive starts the job itself, with a fixed prompt, rather than Jamie's
-     model; the placeholder is a `hell0-w0rld` `frontend`; the pod-repair
-     cron skips a live onboarding job.
+     model; the placeholder is a `hell0-w0rld` `frontend`, and it replaces
+     `generatePM2Apps`' `default-service`; the pod-repair cron skips a
+     live onboarding job.
    - `pod/config-apply` also serves as the job's "reset my pod".
 5. **Later:**
    - Android, including a workspace with both Android and web repos: a
