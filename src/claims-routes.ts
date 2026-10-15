@@ -166,14 +166,26 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
 
   // Door two (§5): a PERSON verifies the job now, against its newest turn —
   // `manual` checks fire, evidence on an already verified turn appends. The
-  // pass and the ledger come back together.
+  // pass and the ledger come back together. `detach: true` answers 202 at
+  // once instead (plans/live-artifacts.md §7): the job's host hears each
+  // check's evidence and the pass's end through its `jobCallback`, and reads
+  // the ledger after. A detached verify while one runs joins it.
   app.post("/jobs/:id/verify", requireApiKey, async (c) => {
     if (!deps.verifier) return off(c);
+    const verifier = deps.verifier;
     const job = decodeURIComponent(id(c));
     // No body is "every claim".
-    const body = z.object({ claims: z.array(z.string()).optional() }).safeParse((await c.req.json().catch(() => null)) ?? {});
+    const body = z
+      .object({ claims: z.array(z.string()).optional(), detach: z.boolean().optional() })
+      .safeParse((await c.req.json().catch(() => null)) ?? {});
     if (!body.success) return c.json({ error: `invalid body: ${body.error.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ")}` }, 400);
-    const result = await deps.verifier.verifyJob(job, body.data.claims ? { claims: body.data.claims } : {});
+    const opts = body.data.claims ? { claims: body.data.claims } : {};
+    if (body.data.detach) {
+      if ((await verifier.jobLedger(job)) === null) return c.json({ error: `No job "${job}"` }, 404);
+      void verifier.verifyJob(job, opts).catch((err) => console.error(`[verify] job "${job}" failed:`, err));
+      return c.json({ job, started: true }, 202);
+    }
+    const result = await verifier.verifyJob(job, opts);
     if (result.skipped === "unknown-job") return c.json({ error: `No job "${job}"` }, 404);
     return c.json(result);
   });

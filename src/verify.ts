@@ -68,7 +68,7 @@ import {
 import { boundedName } from "./graph/claims-writer.js";
 import type { EdgeInput } from "./graph/edge-writer.js";
 import { buildJobSubject, type JobCheckSubject } from "./job-subject.js";
-import { jobRoot } from "./jobs.js";
+import { jobRoot, type JobsCapability } from "./jobs.js";
 import { buildLedger, type Ledger, type LedgerClaim } from "./ledger.js";
 import { runRef } from "./graph/projector.js";
 import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
@@ -381,6 +381,10 @@ export interface AddEvidenceInput {
 }
 
 export interface VerifierDeps extends ClaimsReaderDeps {
+  /** The job index the reader needs, and `notify`: evidence written about a
+   *  job, and a job's pass ending, reach the job's host as they happen
+   *  (plans/live-artifacts.md §3). */
+  jobs?: Pick<JobsCapability, "get" | "notify">;
   graph: GraphBackend;
   store: RunStore;
   workspace: WorkspaceStore;
@@ -573,6 +577,18 @@ export function createVerifier(deps: VerifierDeps) {
       { edge: CLAIM_EDGES.EVIDENCED_BY, source_ref_id: input.claim.ref_id, target_ref_id: node.ref_id, ...(input.strength !== undefined ? { properties: { strength: input.strength } } : {}) },
     ];
     await graph.edges.writeMany(edges);
+    if (input.version.kind === "job") {
+      const planned = input.node["evidence_status"] === "planned";
+      // Keyed by the evidence's own id: two checks of one claim are two things.
+      deps.jobs?.notify?.(input.version.name, {
+        kind: "evidence",
+        id: input.id,
+        title: boundedName(input.claim.claim_text),
+        state: planned ? "planned" : input.strength === undefined ? "collected" : input.strength > 0 ? "supported" : "refuted",
+        ...(typeof loc.url === "string" ? { url: loc.url } : {}),
+        detail: { claim: input.claim.id, ...(input.check ? { check: input.check.id } : {}) },
+      });
+    }
     return "written";
   }
 
@@ -862,7 +878,14 @@ export function createVerifier(deps: VerifierDeps) {
       const path = jobSubjectPath(job);
       const o: ObservedSubject = { subject, version: turn, path, at: new Date().toISOString(), check: { runId: turn, input: undefined, path, ...(output !== undefined ? { output } : {}) } };
       await verifySubject(pass, o, opts.claims);
-      return { ...pass.result, job, claims: (await jobLedger(job, { result: pass.result, known: true })) ?? [] };
+      const claims = (await jobLedger(job, { result: pass.result, known: true })) ?? [];
+      deps.jobs?.notify?.(job, {
+        kind: "verify",
+        state: "done",
+        runId: turn,
+        detail: { evidence: pass.result.evidence, slots: pass.result.slots, claims: claims.map((c) => ({ id: c.id, status: c.status })) },
+      });
+      return { ...pass.result, job, claims };
     })().finally(() => {
       if (inflightJobs.get(job) === promise) inflightJobs.delete(job);
     });

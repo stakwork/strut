@@ -278,6 +278,8 @@ export {
   type JobRecord,
   type JobHold,
   type JobsCapability,
+  type JobUpdate,
+  type JobUpdateInput,
   type ReleaseFn,
   type SweepOptions,
   jobRoot,
@@ -292,6 +294,7 @@ export {
   deleteJob,
   listJobFiles,
   jobFilePath,
+  setJobCallback,
 } from "./jobs.js";
 // The job INDEX (plans/job-index.md) — what `GET /jobs[/:id]` and the
 // `job/*` steps read — and the thread fold it serves (plans/jobs-sidebar.md).
@@ -323,6 +326,8 @@ export {
   artifactKind,
   artifactEntriesOf,
   resolveArtifactRefs,
+  jobFileUrl,
+  WALKTHROUGH_MANIFEST,
 } from "./artifact-refs.js";
 
 // Secret store — deployment-scoped, encrypted credential persistence behind

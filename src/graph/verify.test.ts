@@ -8,6 +8,7 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,7 @@ import { CLAIMS_SECTION, buildSystem } from "../ai/prompts.js";
 import { CLAIMS_OFF } from "../claims-schemas.js";
 import { buildAuthoringCapability, type AuthoringCapability } from "../authoring.js";
 import { buildClaimsAuthoring, type ClaimActor, type ClaimsAuthoring, type CheckSpecInput } from "../claims-authoring.js";
-import { jobRoot, type JobsCapability } from "../jobs.js";
+import { jobRoot, setJobCallback, type JobsCapability } from "../jobs.js";
 import type { LedgerClaim } from "../ledger.js";
 import type { VerifyResult, Verifier } from "../verify.js";
 import { projectionsSettled } from "./projector.js";
@@ -852,6 +853,61 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     const bare = await strut.run("clipper", { start: 1, len: 2 });
     assert.equal(bare.status, "success");
     await assert.rejects(() => verifyJobStep.run({}, { runId: "r", path: "p", scope: {}, input: {}, emit: async () => {}, services: strut.services } as never), /not launched under a job/);
+  });
+
+  it("live updates (plans/live-artifacts.md §3, §7): a job's evidence and the end of its pass reach its jobCallback; `detach: true` answers 202 at once", async () => {
+    await ws.publishWorkflowByContent("jobwf", WF("jobwf", `  - id: dir\n    type: job/dir\n  - id: result\n    type: pack\n    config: { text: "{{ input.text }}", artifacts: [] }\n`));
+    const jobsCap = (strut.services as { jobs: JobsCapability }).jobs;
+    const jobClaims = buildClaimsAuthoring({ graph: backend, workspace: ws, getRegistry: async () => registry, jobs: jobsCap });
+    const t1 = await strut.run("jobwf", { text: "x" }, { job: "j-live" });
+    await jobsCap.hold("j-live", { id: "pod-1", kind: "pod", release: { type: "log", input: { message: "bye" } }, url: "https://pod.example" });
+    const c = await jobClaims.addClaim(
+      {
+        subjects: [{ kind: "job", name: "j-live" }],
+        text: "the settings page renders",
+        checks: [
+          { type: "probe/shot", name: "shot", config: { url: "{{ input.urls.pod }}/settings", dir: "{{ input.dir }}" } },
+          { description: "open the page and look", name: "eyes" },
+        ],
+      },
+      human,
+    );
+    assert.ok("ok" in c, (c as { error?: string }).error);
+    const claim = c as { id: string };
+
+    const posts: any[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => {
+        posts.push(JSON.parse(body));
+        res.writeHead(204).end();
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      await setJobCallback(jobRoot(dir, "j-live"), `http://127.0.0.1:${(server.address() as { port: number }).port}/hook`);
+      const post = (path: string, body: unknown) => strut.app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      assert.equal((await post("/jobs/nope/verify", { detach: true })).status, 404);
+      const res = await post("/jobs/j-live/verify", { detach: true });
+      assert.equal(res.status, 202);
+      assert.deepEqual(await res.json(), { job: "j-live", started: true });
+      for (let i = 0; i < 200 && !posts.some((p) => p.kind === "verify"); i++) await new Promise((r) => setTimeout(r, 25));
+      const evidence = posts.filter((p) => p.kind === "evidence");
+      assert.deepEqual(
+        evidence.map((p) => [p.job, p.state, p.url, p.detail.claim, p.title]).sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
+        [
+          ["j-live", "planned", undefined, claim.id, "the settings page renders"],
+          ["j-live", "supported", "/jobs/j-live/files/shots/j-live.png", claim.id, "the settings page renders"],
+        ],
+        "each check's evidence as it lands: the shot with its locator, the person's slot opened",
+      );
+      const end = posts.find((p) => p.kind === "verify")!;
+      assert.deepEqual([end.state, end.runId, end.detail.evidence, end.detail.slots, end.detail.claims], ["done", t1.runId, 1, 1, [{ id: claim.id, status: "supported" }]]);
+      assert.equal(posts.indexOf(end), posts.length - 1, "the pass's end comes last");
+    } finally {
+      server.close();
+    }
   });
 
   it("the switch: `claims: false` or STRUT_CLAIMS=0 turns the whole layer off on a graph workspace; on by default; the option wins", async () => {

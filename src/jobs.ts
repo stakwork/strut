@@ -24,6 +24,13 @@
  * that lets it go. The sweep and the delete run those release steps first;
  * a hold that will not release stays on the record for the next attempt.
  *
+ * A job can tell its host what changed AS it changes (plans/live-artifacts.md):
+ * a host that launched it with `jobCallback` gets a `job.update` POST when a
+ * hold is taken or let go, when a check writes evidence, and when a step
+ * calls `ctx.services.jobs.notify` (a screenshot, a walkthrough's frame).
+ * The URL is kept apart from the record (`setJobCallback`), so nothing that
+ * serves the record can serve it.
+ *
  * One run at a time per job (`holdJob`, `job_busy:`): two runs in one
  * directory would edit the same files. A child run the holder launches
  * (`meta/run-workflow`, under its controller) is the same turn and shares
@@ -31,9 +38,10 @@
  * design; a crash drops every hold.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { postCallback } from "./callback.js";
 import type { StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
@@ -143,6 +151,119 @@ export async function touchJob(
   });
 }
 
+// ── live updates (plans/live-artifacts.md) ────────────────────────────────
+
+/** What a job tells its host as it happens — a notification, never the
+ *  record: each one points at something that has a home already (a job
+ *  file, a hold, a piece of evidence), which the host re-reads when it
+ *  missed one. `kind` and `state` are passed through; strut reads neither. */
+export interface JobUpdate {
+  event: "job.update";
+  job: string;
+  /** When strut made the change. */
+  at: string;
+  /** The run that made it, when one did. */
+  runId?: string;
+  /** "walkthrough" | "image" | "pod" | "evidence" | "verify" | … */
+  kind: string;
+  /** The thing's link: a job file (`jobFileUrl`, artifact-refs.ts), a hold's `url`. */
+  url?: string;
+  /** The thing's own id where it has one: a hold's, a piece of evidence's. */
+  id?: string;
+  title?: string;
+  /** "recording" | "done" | "stopped" | "held" | "released" | "supported" | … */
+  state?: string;
+  /** Small and kind-specific: `{ frames: 3 }`, `{ claim, check }`. */
+  detail?: Record<string, unknown>;
+}
+
+export type JobUpdateInput = Omit<JobUpdate, "event" | "job" | "at">;
+
+/** Where a job's callback URL is kept: `jobs/.callbacks/<encoded id>.json`,
+ *  apart from the record, so nothing that serves the record can serve the
+ *  host's credential. A job id starts with a letter or a digit, so
+ *  `.callbacks` is never a job's, and the listings (which read `*.json`
+ *  beside the directories) never see it. */
+function callbackFile(root: string): string {
+  return join(dirname(root), ".callbacks", `${basename(root)}.json`);
+}
+
+/** Record (or, with `null`, clear) the URL a job's updates are POSTed to —
+ *  `POST …/run { job, jobCallback }`, the latest launch that carries one
+ *  winning. Owner-only, like the other files holding a credential. */
+export async function setJobCallback(root: string, url: string | null): Promise<void> {
+  const file = callbackFile(root);
+  if (url === null) {
+    await rm(file, { force: true });
+    return;
+  }
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, JSON.stringify({ url }), { mode: 0o600 });
+}
+
+/** The job's callback URL, if one is on file. Read synchronously: `notify`
+ *  queues in call order, and an update must not be overtaken by a later
+ *  one whose read finished first. A few hundred bytes, on a rare event. */
+function jobCallbackUrl(root: string): string | undefined {
+  try {
+    const url = (JSON.parse(readFileSync(callbackFile(root), "utf-8")) as { url?: unknown }).url;
+    return typeof url === "string" && url ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A live update that misses its moment is worth little, and the next one
+ *  points at the same state: two quick retries, not the run callback's three. */
+const LIVE_RETRY_MS = [1_000, 5_000];
+
+/** Per job: the updates waiting to be posted, keyed by the thing they are
+ *  about (`kind` + `url` + `id`). A newer update for the same thing
+ *  REPLACES the waiting one and moves to the back — the queue holds each
+ *  thing's latest state, in the order of the latest changes — so ten frames
+ *  recorded while one post is in flight send two. One drain per job: posts
+ *  leave in order. */
+const outboxes = new Map<string, { pending: Map<string, { url: string; update: JobUpdate }>; draining: boolean }>();
+
+/**
+ * Tell the job's host that something changed (plans/live-artifacts.md §2).
+ * Fire and forget: never throws, never waits, a no-op when no callback is
+ * on file. The URL is read here, at the call, so a sweep that removes the
+ * job right after still delivers what it reported on the way out.
+ */
+export function notifyJob(root: string, job: string, input: JobUpdateInput): void {
+  const url = jobCallbackUrl(root);
+  if (!url) return;
+  let box = outboxes.get(root);
+  if (!box) outboxes.set(root, (box = { pending: new Map(), draining: false }));
+  const key = `${input.kind}\0${input.url ?? ""}\0${input.id ?? ""}`;
+  box.pending.delete(key);
+  box.pending.set(key, { url, update: { event: "job.update", job, at: new Date().toISOString(), ...input } });
+  if (!box.draining) void drainOutbox(root, box);
+}
+
+async function drainOutbox(root: string, box: { pending: Map<string, { url: string; update: JobUpdate }>; draining: boolean }): Promise<void> {
+  box.draining = true;
+  try {
+    for (let next = box.pending.entries().next(); !next.done; next = box.pending.entries().next()) {
+      const [key, { url, update }] = next.value;
+      box.pending.delete(key);
+      await postCallback(url, update, { tag: `[job ${update.job}] callback job.update`, retryDelaysMs: LIVE_RETRY_MS });
+    }
+  } finally {
+    box.draining = false;
+    if (outboxes.get(root) === box && box.pending.size === 0) outboxes.delete(root);
+  }
+}
+
+/** A hold as the update that says it was taken or let go. */
+const holdUpdate = (hold: JobHold, state: "held" | "released"): JobUpdateInput => ({
+  kind: hold.kind,
+  id: hold.id,
+  state,
+  ...(hold.url ? { url: hold.url } : {}),
+});
+
 // ── holds (§6) ────────────────────────────────────────────────────────────
 
 /** `ctx.services.jobs`: the writes to a job's record — its holds, for the
@@ -161,6 +282,11 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  job (kept until a later launch carries another); its `actor` joins the
    *  job's `actors` (and is `createdBy` when it is the first). */
   recordRun(job: string, run: Omit<JobRun, "at"> & { title?: string; actor?: string }): Promise<void>;
+  /** Tell the job's host that something changed (plans/live-artifacts.md):
+   *  a step that wrote a file the person may want to watch — a screenshot,
+   *  a walkthrough's frame. Fire and forget: never throws, never waits, a
+   *  no-op when the job has no callback. Holds announce themselves. */
+  notify?(job: string, update: JobUpdateInput): void;
   /** The job's claims as the ledger reads them (plans/job-claims.md §6) —
    *  set by the server where the claims layer is on, so `GET /jobs/:id`
    *  and `job/get` carry the same `claims`; absent on a filesystem
@@ -180,9 +306,12 @@ export function jobsCapability(dataDir: string, index?: JobIndex): JobsCapabilit
   return {
     ...index,
     async hold(job, hold) {
-      await updateJobRecord(rootOf(job), job, (rec) => {
-        rec.holds = [...(rec.holds ?? []).filter((h) => h.id !== hold.id), { ...hold, since: hold.since ?? new Date().toISOString() }];
+      const root = rootOf(job);
+      const held: JobHold = { ...hold, since: hold.since ?? new Date().toISOString() };
+      await updateJobRecord(root, job, (rec) => {
+        rec.holds = [...(rec.holds ?? []).filter((h) => h.id !== hold.id), held];
       });
+      notifyJob(root, job, holdUpdate(held, "held"));
     },
     async recordRun(job, { title, actor, ...run }) {
       await updateJobRecord(rootOf(job), job, (rec) => {
@@ -197,16 +326,23 @@ export function jobsCapability(dataDir: string, index?: JobIndex): JobsCapabilit
     },
     async release(job, id) {
       const root = rootOf(job);
-      await withLock(`${root}.json`, async () => {
+      const gone = await withLock(`${root}.json`, async () => {
         const rec = await readJobRecord(root);
-        if (!rec?.holds?.some((h) => h.id === id)) return;
+        const hold = rec?.holds?.find((h) => h.id === id);
+        if (!rec?.holds || !hold) return undefined;
         rec.holds = rec.holds.filter((h) => h.id !== id);
         if (rec.holds.length === 0) delete rec.holds;
         await writeJobRecord(root, rec);
+        return hold;
       });
+      if (gone) notifyJob(root, job, holdUpdate(gone, "released"));
     },
     async holds(job) {
       return (await readJobRecord(rootOf(job)))?.holds ?? [];
+    },
+    notify(job, update) {
+      if (idProblem(job)) return;
+      notifyJob(jobRoot(dataDir, job), job, update);
     },
   };
 }
@@ -255,6 +391,7 @@ async function releaseHolds(
     try {
       await release(hold, rec.name);
       released.push(hold.id);
+      notifyJob(root, rec.name, holdUpdate(hold, "released"));
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       console.warn(`[jobs] could not release ${hold.kind} "${hold.id}" of job "${rec.name}":`, error);
@@ -373,6 +510,7 @@ export async function sweepJobs(shell: ShellCapability, dataDir: string, ttlMs: 
       if (left.length === 0 && !rec.holds?.length && !rec.runs?.length) {
         await rm(root, { recursive: true, force: true });
         await rm(`${root}.json`, { force: true });
+        await setJobCallback(root, null);
         swept.push(rec.name);
       } else if (repos.length || released) {
         await withLock(`${root}.json`, () => writeJobRecord(root, rec));
@@ -416,6 +554,7 @@ export async function deleteJob(
   for (const [dir, { cache }] of Object.entries(rec?.repos ?? {})) await removeJobRepo(shell, dir, cache);
   await rm(root, { recursive: true, force: true });
   await rm(`${root}.json`, { force: true });
+  await setJobCallback(root, null);
   return { released };
 }
 

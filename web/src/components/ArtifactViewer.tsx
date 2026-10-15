@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { createPortal } from "preact/compat";
 import { artifactUrl, fetchArtifactText, fileScopeOf } from "../api";
-import { artifactKind, artifactRel, directoryEntries, resolveArtifactLink, viewerKind } from "../artifact-view";
+import { artifactKind, artifactRel, directoryEntries, parseWalkthrough, resolveArtifactLink, viewerKind } from "../artifact-view";
 import { ArrowLeftIcon, CloseIcon } from "../icons";
 import { useFileScope } from "../use-artifact-url";
 import { Markdown, type MarkdownLink } from "./Markdown";
@@ -12,7 +12,9 @@ import { Markdown, type MarkdownLink } from "./Markdown";
 // markdown through the chat's renderer, images / video / audio as media,
 // pdf + html in a frame (html sandboxed, scripts allowed — a step wrote it,
 // and the one thing its URL holds is the run's file token), text in a pre,
-// a DIRECTORY as one level of folders and files. Opened from the eye beside
+// a DIRECTORY as one level of folders and files, a WALKTHROUGH (a
+// `browser/walkthrough` recording's manifest) as frames to scrub through.
+// Opened from the eye beside
 // an artifact link (`ValueFields`) — and it MOVES: a link in a markdown file
 // that names a sibling (`resolveArtifactLink`) and a row of a directory open
 // in place, with a back arrow over the trail; a link to anything else stays
@@ -32,7 +34,7 @@ export function ArtifactViewer(props: { path: string; onClose: () => void }) {
   const files = scope?.files ?? null;
   const kind = viewerKind(path, files);
   const url = scope ? artifactUrl(path, scope.token) : undefined;
-  const wantsText = kind === "markdown" || kind === "text";
+  const wantsText = kind === "markdown" || kind === "text" || kind === "walkthrough";
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState("");
 
@@ -83,6 +85,7 @@ export function ArtifactViewer(props: { path: string; onClose: () => void }) {
       case "pdf": return <iframe class="artifact-frame" src={url} title={path} />;
       case "html": return <iframe class="artifact-frame" src={url} title={path} sandbox="allow-scripts" />;
       case "directory": return <Directory files={scope.files} path={path} token={scope.token} onOpen={go} />;
+      case "walkthrough": return <WalkthroughView text={text ?? ""} path={path} token={scope.token} />;
       default: return <div class="artifact-status">No inline viewer for this file type.</div>;
     }
   };
@@ -133,5 +136,69 @@ function Directory(props: { files: string[]; path: string; token: string; onOpen
         );
       })}
     </ul>
+  );
+}
+
+/** A walkthrough: the frame large, its caption and where the page was, a
+ *  slider and a filmstrip to scrub with (← → step through). A recording that
+ *  stopped says why under the frame it stopped on. The manifest as text when
+ *  it does not parse — a half-written one is still worth reading. */
+function WalkthroughView(props: { text: string; path: string; token: string }) {
+  const w = parseWalkthrough(props.text, props.path);
+  const count = w?.frames.length ?? 0;
+  const [at, setAt] = useState(0);
+  useEffect(() => { setAt(0); }, [props.path]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") setAt((i) => Math.max(0, i - 1));
+      if (e.key === "ArrowRight") setAt((i) => Math.min(count - 1, i + 1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [count]);
+  if (!w) return <pre class="artifact-text">{props.text}</pre>;
+  if (!count) return <div class="artifact-status">{w.status === "recording" ? "Recording — no frames yet." : "No frames."}</div>;
+  const i = Math.min(at, count - 1);
+  const frame = w.frames[i]!;
+  return (
+    <div class="walkthrough">
+      {(w.title || w.status) && (
+        <div class="walkthrough-head">
+          {w.title && <span class="walkthrough-title">{w.title}</span>}
+          {w.status && <span class={`walkthrough-status is-${w.status}`}>{w.status}</span>}
+        </div>
+      )}
+      <img class={`walkthrough-frame${frame.failed ? " is-failed" : ""}`} src={artifactUrl(frame.path, props.token)} alt={frame.caption} />
+      <div class="walkthrough-caption">
+        <span class="walkthrough-count">{i + 1} / {count}</span>
+        <span class="walkthrough-text">{frame.caption}</span>
+        {frame.pageUrl && <span class="walkthrough-page" title={frame.pageUrl}>{frame.pageUrl}</span>}
+      </div>
+      {frame.failed && <div class="artifact-status tone-error">{frame.failed}</div>}
+      {i === count - 1 && !frame.failed && w.failed.length > 0 && (
+        <div class="artifact-status tone-error">{w.failed.join(" · ")}</div>
+      )}
+      <input
+        class="walkthrough-slider"
+        type="range"
+        min={0}
+        max={count - 1}
+        value={i}
+        aria-label="Frame"
+        onInput={(e) => setAt(Number((e.target as HTMLInputElement).value))}
+      />
+      <div class="walkthrough-strip">
+        {w.frames.map((f, n) => (
+          <button
+            key={f.path}
+            class={`walkthrough-thumb${n === i ? " is-current" : ""}${f.failed ? " is-failed" : ""}`}
+            onClick={() => setAt(n)}
+            title={f.caption}
+          >
+            <img src={artifactUrl(f.path, props.token)} alt={f.caption} loading="lazy" />
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
