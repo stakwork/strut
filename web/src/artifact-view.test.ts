@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   artifactKind, artifactLabel, artifactRel, directoryEntries, fileScopeOf, findArtifacts, isArtifactPath,
-  isDirectory, resolveArtifactLink, viewerKind,
+  isDirectory, parseWalkthrough, resolveArtifactLink, viewerKind,
 } from "./artifact-view";
 
 describe("artifactKind", () => {
@@ -199,5 +199,51 @@ describe("resolveArtifactLink", () => {
     assert.equal(resolveArtifactLink(readme, "/jobs/j/files/x.md"), null);
     assert.equal(resolveArtifactLink(readme, "%E0%A4%A"), null);
     assert.equal(resolveArtifactLink("plan.md", "x.md"), null);
+  });
+});
+
+describe("walkthroughs (plans/live-artifacts.md §4)", () => {
+  const M = "/jobs/j-1/files/walkthroughs/004/walkthrough.json";
+
+  it("a manifest is known by its name, not its extension", () => {
+    assert.equal(artifactKind(M), "walkthrough");
+    assert.equal(viewerKind(M, null), "walkthrough");
+    assert.equal(artifactKind("/jobs/j-1/files/walkthroughs/004/other.json"), "text");
+  });
+
+  it("parseWalkthrough: frames resolved against the manifest's directory, in order; one outside the scope or with no file is dropped", () => {
+    const w = parseWalkthrough(
+      JSON.stringify({
+        title: "Switch billing to annual",
+        url: "https://pod/settings",
+        status: "stopped",
+        frames: [
+          { file: "01.png", caption: "Open settings", pageUrl: "https://pod/settings", ms: 0 },
+          { file: "02.png", caption: "Click Billing", ms: 1840, step: { do: "click" } },
+          { file: "../../../../../../etc/passwd", caption: "escape" },
+          { caption: "no file" },
+          { file: "03.png", caption: "Switch to annual", failed: "text=Annual matched nothing" },
+        ],
+        failed: ["step 2 (click text=Annual): matched nothing"],
+      }),
+      M,
+    );
+    assert.deepEqual(w, {
+      title: "Switch billing to annual",
+      url: "https://pod/settings",
+      status: "stopped",
+      frames: [
+        { path: "/jobs/j-1/files/walkthroughs/004/01.png", caption: "Open settings", pageUrl: "https://pod/settings", ms: 0 },
+        { path: "/jobs/j-1/files/walkthroughs/004/02.png", caption: "Click Billing", ms: 1840 },
+        { path: "/jobs/j-1/files/walkthroughs/004/03.png", caption: "Switch to annual", failed: "text=Annual matched nothing" },
+      ],
+      failed: ["step 2 (click text=Annual): matched nothing"],
+    });
+  });
+
+  it("parseWalkthrough: null for text that is not a manifest; a recording with no frames yet is empty, not null", () => {
+    assert.equal(parseWalkthrough("{ half", M), null);
+    assert.equal(parseWalkthrough(JSON.stringify({ title: "x" }), M), null);
+    assert.deepEqual(parseWalkthrough(JSON.stringify({ status: "recording", frames: [] }), M), { status: "recording", frames: [], failed: [] });
   });
 });

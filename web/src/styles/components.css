@@ -791,6 +791,82 @@ body.is-resizing-rows * {
 }
 .artifact-dir-row:hover { background: var(--surface-2); }
 .artifact-dir-row.is-dir { color: var(--accent); }
+/* A walkthrough in the viewer: the frame large, its caption, then a
+   slider and a filmstrip to scrub with. A frame where the recording
+   stopped is outlined in the danger color. */
+.walkthrough {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.walkthrough-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+.walkthrough-title { font-weight: 600; color: var(--text); }
+.walkthrough-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.walkthrough-status.is-stopped { color: var(--danger); }
+.walkthrough-frame {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.walkthrough-frame.is-failed { border-color: var(--danger); }
+.walkthrough-caption {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: 13px;
+}
+.walkthrough-count {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.walkthrough-text { color: var(--text); }
+.walkthrough-page {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.walkthrough-slider { width: 100%; }
+.walkthrough-strip {
+  display: flex;
+  gap: var(--sp-1);
+  overflow-x: auto;
+  padding-bottom: var(--sp-1);
+}
+.walkthrough-thumb {
+  flex-shrink: 0;
+  width: 96px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.walkthrough-thumb img { display: block; width: 100%; height: auto; }
+.walkthrough-thumb:hover { opacity: 1; }
+.walkthrough-thumb.is-current { border-color: var(--accent); opacity: 1; }
+.walkthrough-thumb.is-failed { border-color: var(--danger); }
 /* An image a markdown file names — one of its own scope's files — fits
    the viewer. */
 .md-view img {

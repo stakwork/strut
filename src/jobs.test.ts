@@ -11,9 +11,9 @@ import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import { fileArtifactsCapability, shellCapability, standardServices, type StrutCapabilities } from "./capabilities.js";
 import { readRunStart } from "./journal.js";
-import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, sweepJobs, touchJob } from "./jobs.js";
+import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, notifyJob, readJobRecord, releaseWith, setJobCallback, sweepJobs, touchJob } from "./jobs.js";
 import { RunController } from "./run-control.js";
-import { artifactKind, resolveArtifactRefs } from "./artifact-refs.js";
+import { artifactKind, jobFileUrl, resolveArtifactRefs } from "./artifact-refs.js";
 import { mediaOf } from "./core.js";
 import { MemorySessionStore } from "./session-store.js";
 import { holdUrls } from "./job-index.js";
@@ -69,6 +69,18 @@ const holder = defineStep({
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     await ctx.services.jobs!.hold(ctx.job!, { id: cfg.id, kind: "pod", release: { type: "fake/release", input: { podId: cfg.id } } });
     return { held: cfg.id };
+  },
+});
+
+/** Test-only: a step that wrote a file the person may want to watch, and
+ *  says so (plans/live-artifacts.md §3). */
+const notifier = defineStep({
+  type: "notifier",
+  input: z.object({ path: z.string() }),
+  output: z.any(),
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
+    ctx.services.jobs?.notify?.(ctx.job!, { kind: "image", url: jobFileUrl(ctx.job!, cfg.path), state: "done", runId: ctx.runId });
+    return { told: cfg.path };
   },
 });
 
@@ -407,6 +419,17 @@ describe("jobs — artifact refs", () => {
     assert.equal(artifactKind("https://pod.example/app?x=1"), "url");
     assert.equal(artifactKind("README"), "url");
     assert.equal(artifactKind(".env"), "url");
+    // A recording's manifest is known by its name (plans/live-artifacts.md §5).
+    assert.equal(artifactKind("walkthroughs/004/walkthrough.json"), "walkthrough");
+    assert.equal(artifactKind("/jobs/j-1/files/walkthroughs/004/walkthrough.json?t=x"), "walkthrough");
+    assert.equal(artifactKind("walkthroughs/004/other.json"), "json");
+  });
+
+  it("jobFileUrl is the link a deliverable's path resolves to, so a live update and the turn's deliverable name one file", async () => {
+    assert.equal(jobFileUrl("j-1", "shots/001.png"), "/jobs/j-1/files/shots/001.png");
+    assert.equal(jobFileUrl("a/b", "/shots/001.png"), "/jobs/a%2Fb/files/shots/001.png");
+    const [ref] = (await resolveArtifactRefs({ artifacts: [{ id: "w", title: "W", path: "walkthroughs/004/walkthrough.json" }] }, { runId: "r", job: "a/b", exists: async () => true }))!;
+    assert.deepEqual(ref, { id: "w", kind: "walkthrough", title: "W", url: jobFileUrl("a/b", "walkthroughs/004/walkthrough.json") });
   });
 
   const at = (job?: string) => ({
@@ -500,7 +523,7 @@ describe("jobs — over HTTP", () => {
   const boot = async () => {
     const strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),
-      registry: await createRegistry([writer, probe, pack, holder, releaser]),
+      registry: await createRegistry([writer, probe, pack, holder, releaser, notifier]),
       store: new MemoryRunStore(),
       serveUi: false,
       enableChat: false,
@@ -645,6 +668,119 @@ describe("jobs — over HTTP", () => {
       assert.equal((await api(`/workflows/claim/runs/${run.json.runId}`)).json.job, "j-del");
     } finally {
       host.close();
+    }
+  });
+
+  it("jobCallback (plans/live-artifacts.md §1): kept on the job apart from its record; every update of the job reaches it — a step's notify, a hold taken and let go — in order; the 202 says so", async () => {
+    const { strut, api } = await boot();
+    await strut.workspace.publishWorkflow("live", "v1", {
+      steps: [
+        { id: "dir", type: "job/dir", config: {} },
+        { id: "shot", type: "notifier", config: { path: "shots/001.png" } },
+        { id: "h", type: "holder", config: { id: "pod-7" } },
+      ],
+    });
+    const host = await callbackHost();
+    try {
+      const run = await api("/workflows/live/run", { body: { job: "j-live", input: {}, jobCallback: { url: host.url } } });
+      assert.equal(run.status, 202, JSON.stringify(run.json));
+      assert.equal(run.json.jobCallback, true, "the host's proof this server honors it");
+      await until(() => host.posts.length === 2);
+      assert.deepEqual(
+        host.posts.map((p) => [p.event, p.job, p.kind, p.state, p.url ?? p.id]),
+        [
+          ["job.update", "j-live", "image", "done", "/jobs/j-live/files/shots/001.png"],
+          ["job.update", "j-live", "pod", "held", "pod-7"],
+        ],
+      );
+      assert.equal(host.posts[0].runId, run.json.runId);
+      assert.ok(!Number.isNaN(Date.parse(host.posts[0].at)));
+
+      // The URL is the host's credential: in its own owner-only file, never in the record, the index or the log.
+      const file = join(tempDir, "jobs", ".callbacks", "j-live.json");
+      assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { url: host.url });
+      assert.ok(!(await readFile(join(tempDir, "jobs", "j-live.json"), "utf8")).includes("s3cret"));
+      assert.ok(!JSON.stringify((await api("/jobs/j-live")).json).includes("s3cret"));
+      assert.ok(!JSON.stringify((await api(`/workflows/live/runs/${run.json.runId}/events`)).json).includes("s3cret"));
+      assert.deepEqual((await api("/jobs")).json.jobs.map((j: { job: string }) => j.job), ["j-live"], "the callbacks folder is never a job");
+
+      // A hold let go says so too, and so does the delete that removes the job — and the file with it.
+      await jobsCapability(tempDir).hold("j-live", { id: "pod-8", kind: "pod", url: "https://pod-8.example", release: { type: "fake/release", input: { podId: "pod-8" } } });
+      await jobsCapability(tempDir).release("j-live", "pod-7");
+      await until(() => host.posts.length === 4);
+      assert.deepEqual(host.posts.slice(2).map((p) => [p.kind, p.state, p.id, p.url]), [
+        ["pod", "held", "pod-8", "https://pod-8.example"],
+        ["pod", "released", "pod-7", undefined],
+      ]);
+      const gone = await api("/jobs/j-live", { method: "DELETE" });
+      assert.equal(gone.status, 200, JSON.stringify(gone.json));
+      await until(() => host.posts.length === 5);
+      assert.deepEqual([host.posts[4].kind, host.posts[4].state, host.posts[4].id], ["pod", "released", "pod-8"], "delivered on the way out");
+      assert.ok(!existsSync(file));
+    } finally {
+      host.close();
+    }
+  });
+
+  it("jobCallback: 400 without a job or with a bad URL; `null` clears it; a job without one posts nothing", async () => {
+    const { strut, api } = await boot();
+    await strut.workspace.publishWorkflow("live", "v1", { steps: [{ id: "h", type: "holder", config: { id: "pod-1" } }] });
+    const host = await callbackHost();
+    const done = await callbackHost();
+    try {
+      assert.equal((await api("/workflows/live/run", { body: { input: {}, jobCallback: { url: host.url } } })).status, 400);
+      assert.match((await api("/workflows/live/run", { body: { job: "j-q", input: {}, jobCallback: { url: "ftp://x" } } })).json.error, /http/);
+      const set = await api("/workflows/live/run", { body: { job: "j-q", input: {}, jobCallback: { url: host.url }, callback: { url: done.url } } });
+      await until(() => done.posts.length === 1 && host.posts.length === 1);
+      const cleared = await api("/workflows/live/run", { body: { job: "j-q", input: {}, jobCallback: null, callback: { url: done.url } } });
+      assert.equal(cleared.status, 202);
+      assert.equal("jobCallback" in cleared.json, false);
+      await until(() => done.posts.length === 2);
+      assert.equal(done.posts[1].status, "success");
+      jobsCapability(tempDir).notify!("j-q", { kind: "image", url: "/jobs/j-q/files/a.png" });
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(host.posts.length, 1, "nothing after the clear");
+      assert.ok(set.json.jobCallback);
+      jobsCapability(tempDir).notify!("../escape", { kind: "image" }); // a bad id is ignored, never thrown
+    } finally {
+      host.close();
+      done.close();
+    }
+  });
+
+  it("notify coalesces per thing while a post is in flight: each thing's latest state, in the order of the latest changes", async () => {
+    const posts: any[] = [];
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", async () => {
+        posts.push(JSON.parse(body));
+        if (posts.length === 1) await gate; // the first post is slow
+        res.writeHead(204).end();
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const root = jobRoot(tempDir, "j-co");
+      await setJobCallback(root, `http://127.0.0.1:${(server.address() as { port: number }).port}/hook`);
+      const walk = (frames: number) => notifyJob(root, "j-co", { kind: "walkthrough", url: "/jobs/j-co/files/walkthroughs/001/walkthrough.json", state: "recording", detail: { frames } });
+      walk(1);
+      await until(() => posts.length === 1);
+      walk(2);
+      notifyJob(root, "j-co", { kind: "evidence", id: "e-1", state: "supported" });
+      walk(3);
+      open();
+      await until(() => posts.length === 3);
+      await new Promise((r) => setTimeout(r, 50));
+      assert.deepEqual(
+        posts.map((p) => [p.kind, p.detail?.frames ?? p.state]),
+        [["walkthrough", 1], ["evidence", "supported"], ["walkthrough", 3]],
+        "frame 2 was replaced by frame 3, which moved behind the evidence",
+      );
+    } finally {
+      server.close();
     }
   });
 

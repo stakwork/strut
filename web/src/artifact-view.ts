@@ -19,7 +19,7 @@
 // Nothing here leaves the scope: an external URL stays a link, and another
 // run's files are not this run's.
 
-export type ArtifactKind = "markdown" | "image" | "video" | "audio" | "pdf" | "html" | "text" | "directory";
+export type ArtifactKind = "markdown" | "image" | "video" | "audio" | "pdf" | "html" | "text" | "walkthrough" | "directory";
 
 const BY_EXT: Record<string, ArtifactKind> = {
   md: "markdown", markdown: "markdown",
@@ -33,11 +33,17 @@ const BY_EXT: Record<string, ArtifactKind> = {
   patch: "text", js: "text", ts: "text", py: "text", sh: "text",
 };
 
+/** A recording's manifest (`browser/walkthrough`, plans/live-artifacts.md
+ *  §4) is known by its NAME — a `.json` that is a walkthrough. The server's
+ *  `artifactKind` reads it the same way (`src/artifact-refs.ts`). */
+const WALKTHROUGH_MANIFEST = "walkthrough.json";
+
 /** The inline viewer for an artifact path by its extension, or null when
  *  there is none (unknown extension, no extension, a dotfile). Never
  *  "directory": that takes the listing (`viewerKind`). */
 export function artifactKind(path: string): ArtifactKind | null {
   const file = path.split("/").pop() ?? "";
+  if (file === WALKTHROUGH_MANIFEST) return "walkthrough";
   const dot = file.lastIndexOf(".");
   if (dot <= 0) return null;
   return BY_EXT[file.slice(dot + 1).toLowerCase()] ?? null;
@@ -167,4 +173,65 @@ export function findArtifacts(value: unknown): string[] {
   };
   walk(value, 0);
   return found;
+}
+
+// ── Walkthroughs ───────────────────────────────────────────────────────────
+//
+// `browser/walkthrough` records a directory: one PNG per captioned step and
+// a `walkthrough.json` naming them in order (plans/live-artifacts.md §4).
+// The viewer scrubs through the frames; this reads the manifest, tolerant of
+// a half-written one (a recording in progress is rewritten after each frame).
+
+export interface WalkthroughFrame {
+  /** The frame's served path, in the manifest's scope. */
+  path: string;
+  caption: string;
+  pageUrl?: string;
+  ms?: number;
+  /** Set on the frame where the recording stopped: why. */
+  failed?: string;
+}
+
+export interface Walkthrough {
+  title?: string;
+  url?: string;
+  /** "recording" | "done" | "stopped" — passed through. */
+  status?: string;
+  frames: WalkthroughFrame[];
+  failed: string[];
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
+
+/** A manifest's text → its frames, each resolved against the manifest's
+ *  directory (`resolveArtifactLink`): a frame that names a file outside the
+ *  scope, or no file, is dropped. Null when the text is not a manifest. */
+export function parseWalkthrough(text: string, manifestPath: string): Walkthrough | null {
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { return null; }
+  if (typeof raw !== "object" || raw === null || !Array.isArray((raw as { frames?: unknown }).frames)) return null;
+  const m = raw as Record<string, unknown>;
+  const frames: WalkthroughFrame[] = [];
+  for (const f of m["frames"] as unknown[]) {
+    if (typeof f !== "object" || f === null) continue;
+    const r = f as Record<string, unknown>;
+    const file = str(r["file"]);
+    const path = file ? resolveArtifactLink(manifestPath, file) : null;
+    if (!path) continue;
+    frames.push({
+      path,
+      caption: str(r["caption"]) ?? "",
+      ...(str(r["pageUrl"]) ? { pageUrl: r["pageUrl"] as string } : {}),
+      ...(typeof r["ms"] === "number" ? { ms: r["ms"] } : {}),
+      ...(str(r["failed"]) ? { failed: r["failed"] as string } : {}),
+    });
+  }
+  const failed = Array.isArray(m["failed"]) ? (m["failed"] as unknown[]).filter((x): x is string => typeof x === "string") : [];
+  return {
+    ...(str(m["title"]) ? { title: m["title"] as string } : {}),
+    ...(str(m["url"]) ? { url: m["url"] as string } : {}),
+    ...(str(m["status"]) ? { status: m["status"] as string } : {}),
+    frames,
+    failed,
+  };
 }

@@ -63,10 +63,23 @@ const KIND_BY_EXT: Record<string, string> = {
   yaml: "code", yml: "code", toml: "code", xml: "code", csv: "code", css: "code", sql: "code",
 };
 
+/** The link strut serves a job's file at — what a deliverable's `path`
+ *  resolves to and what a step's `notify` names, so a host can tell they
+ *  are the same file (plans/live-artifacts.md §5). */
+export function jobFileUrl(job: string, rel: string): string {
+  return `/jobs/${encodeURIComponent(job)}/files/${rel.replace(/^\/+/, "")}`;
+}
+
+/** A recording's manifest (`browser/walkthrough`, plans/live-artifacts.md
+ *  §4): named, not extended — a `.json` that IS a walkthrough. The kind a
+ *  step's result already says; this is the fallback where none was given. */
+export const WALKTHROUGH_MANIFEST = "walkthrough.json";
+
 /** The renderer kind for a file path or URL, by extension; `url` when the
  *  extension says nothing (a link is always showable). */
 export function artifactKind(pathOrUrl: string): string {
   const file = pathOrUrl.split("?")[0]!.split("#")[0]!.split("/").pop() ?? "";
+  if (file === WALKTHROUGH_MANIFEST) return "walkthrough";
   const dot = file.lastIndexOf(".");
   if (dot <= 0) return "url";
   return KIND_BY_EXT[file.slice(dot + 1).toLowerCase()] ?? "url";
@@ -130,9 +143,7 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
     let error: string | undefined;
     if (path !== undefined) {
       const rel = path.replace(/^\/+/, "");
-      const resolved = at.job
-        ? `/jobs/${encodeURIComponent(at.job)}/files/${rel}`
-        : `/artifacts/${encodeURIComponent(at.runId)}/${rel}`;
+      const resolved = at.job ? jobFileUrl(at.job, rel) : `/artifacts/${encodeURIComponent(at.runId)}/${rel}`;
       if (!text(raw["kind"])) ref.kind = artifactKind(rel);
       if (rel.split("/").includes("..") || !rel) error = "bad path";
       else if (await at.exists(resolved)) ref.url = resolved;

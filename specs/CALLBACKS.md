@@ -152,6 +152,76 @@ same for every run launched with that id. Launch again with the same `job`
 files behind the same links: that is how a plan gets iterated on across
 twenty turns. `plans/jobs.md` is the design.
 
+## 5. Live updates — a job tells you what changed, as it changes
+
+`run.end` arrives when a turn is over. To see a job's work AS it happens —
+a screenshot the agent just took, a walkthrough recording frame by frame, a
+pod it claimed, a check's verdict — launch with a `jobCallback` beside
+`job`:
+
+```json
+{
+  "job": "j-123",
+  "input": { "…": "…" },
+  "callback":    { "url": "https://your-app.example/hooks/strut-run?id=…&token=…" },
+  "jobCallback": { "url": "https://your-app.example/hooks/strut-job?job=j-123&token=…" }
+}
+```
+
+- It belongs to the **job**, not the run: every run under the job reaches
+  it — later turns, the runs a turn starts, verify passes. The latest launch
+  that carries one wins (rotate your token with any turn); `jobCallback:
+  null` clears it; leaving it out keeps what is on file.
+- `400` without `job`, or when the URL is not `http(s)`. The `202` carries
+  `jobCallback: true`.
+- Like `callback.url`, it is your secret: kept apart from the job's record,
+  never returned by any endpoint.
+
+Strut then POSTs one small event per change:
+
+```json
+{
+  "event": "job.update",
+  "job": "j-123",
+  "at": "2026-10-15T18:04:11.201Z",
+  "runId": "1790179200000",
+  "kind": "walkthrough",
+  "url": "/jobs/j-123/files/walkthroughs/004/walkthrough.json",
+  "state": "recording",
+  "detail": { "frames": 3 }
+}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `kind`  | what changed, in the same vocabulary as an artifact's `kind` — passed through, strut reads neither it nor `state` |
+| `url`   | its link: a job file is `/jobs/<job>/files/<path>`, exactly what a deliverable with that `path` resolves to in `run.end` — match the two by URL |
+| `id`    | its own id where it has one: a hold's, a piece of evidence's |
+| `state`, `title`, `detail` | what happened to it, small and kind-specific |
+| `runId` | the run that made the change, when one did |
+
+What strut sends today:
+
+| `kind` | When | `state` |
+| ------ | ---- | ------- |
+| the hold's kind (`pod`) | a hold is taken, or let go (by its tool, a delete, the idle sweep) | `held` / `released` |
+| `evidence` | a check writes evidence about the job (`detail: { claim, check }`; `url` = what it pointed at, a screenshot) | `supported` / `refuted` / `planned` (a slot for a person) |
+| `verify` | a verify of the job ended (`detail: { evidence, slots, claims: [{ id, status }] }`) | `done` |
+| anything a step names | a step called `ctx.services.jobs.notify` — the lab's browser steps for a screenshot (`image`) and every frame of a walkthrough (`walkthrough`, its manifest's url) | the step's |
+
+**An event is a notification, never the record.** Each points at something
+you can read again: the job's files, `GET /jobs/:id` (holds, deliverables),
+`GET /jobs/:id/claims` (the ledger). Events for one job are posted in
+order, retried twice, and coalesced: while one post is in flight, a newer
+update about the same thing (same `kind`, `url` and `id`) replaces the one
+waiting — you get each thing's latest state, not every step on the way. A
+restart drops what was waiting. So treat an event as "look at this now",
+and read the job when you open it or think you missed one.
+
+`POST /jobs/:id/verify { detach: true }` starts a verify and answers `202 {
+job, started: true }` at once: the evidence and the `verify` event arrive
+here as they land (`API.md`). `plans/live-artifacts.md` is the design.
+
 ## Good to know
 
 - **The URL is your secret.** Put a token in it, like the example. Strut

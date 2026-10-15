@@ -80,7 +80,7 @@ import { createChatNotifier, formatRestartNotification, formatRunNotification } 
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, type JobsCapability } from "./jobs.js";
+import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -2470,6 +2470,11 @@ export async function createStrut<TServices = unknown>(
      *  describes the job and the host, not the run's subject. 400 without
      *  `job`. */
     title?: string;
+    /** Where to POST the JOB's live updates (plans/live-artifacts.md §1):
+     *  kept on the job, not the run — every run under the job reaches it,
+     *  the latest launch that carries one wins, `null` clears it. 400
+     *  without `job`. */
+    jobCallback?: { url: string } | null;
   }
 
   /**
@@ -2612,6 +2617,14 @@ export async function createStrut<TServices = unknown>(
   const runCallbackOf = (body: RunBody): { url: string } | undefined =>
     body.callback == null ? undefined : parseCallback(body.callback);
 
+  /** A run body's `jobCallback`: a URL, `null` (clear it), or absent
+   *  (leave what is on file). Belongs to a job, so it needs one. */
+  const jobCallbackOf = (body: RunBody): { url: string } | null | undefined => {
+    if (body.jobCallback === undefined) return undefined;
+    if (body.job === undefined || body.job === null) throw new Error("jobCallback belongs to a job: pass it with `job`");
+    return body.jobCallback === null ? null : parseCallback(body.jobCallback);
+  };
+
   /** A run body's `job`, validated (the session-id format); absent = none.
    *  A `title` names the job, so it needs one. */
   const runJobOf = (body: RunBody): string | undefined => {
@@ -2727,9 +2740,11 @@ export async function createStrut<TServices = unknown>(
     const name = c.req.param("name");
     const body = await c.req.json<RunBody>();
     let callback: { url: string } | undefined;
+    let jobCallback: { url: string } | null | undefined;
     try {
       callback = runCallbackOf(body);
       runJobOf(body);
+      jobCallback = jobCallbackOf(body);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -2739,21 +2754,25 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
+    // On file before the run starts, so its first update finds it.
+    if (jobCallback !== undefined) await setJobCallback(jobRoot(dataDir, body.job!), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       actor: await resolveActor(c),
       ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
     });
-    return c.json({ runId, ...(callback ? { callback: true } : {}) }, 202);
+    return c.json({ runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}) }, 202);
   });
 
   app.post("/workflows/:name/:version/run", async (c) => {
     const { name, version } = c.req.param();
     const body = await c.req.json<RunBody>();
     let callback: { url: string } | undefined;
+    let jobCallback: { url: string } | null | undefined;
     try {
       callback = runCallbackOf(body);
       runJobOf(body);
+      jobCallback = jobCallbackOf(body);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -2763,13 +2782,15 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
+    // On file before the run starts, so its first update finds it.
+    if (jobCallback !== undefined) await setJobCallback(jobRoot(dataDir, body.job!), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       version,
       actor: await resolveActor(c),
       ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
     });
-    return c.json({ runId, ...(callback ? { callback: true } : {}) }, 202);
+    return c.json({ runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}) }, 202);
   });
 
   // ── Chat (AI workflow builder) ───────────────────────────────────────────
