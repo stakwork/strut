@@ -1,6 +1,6 @@
 # Live artifacts: a job tells its host what changed, as it changes
 
-> **Status (2026-10-15): proposed**, from one design conversation with the
+> **Status (2026-10-15): proposed, mostly ruled**, from one design conversation with the
 > owner. The rows in "Decided" are his. The rows marked *proposed* are
 > mine and open to a ruling. Nothing is built. Companion to `jobs.md` (the
 > job, its directory, holds and deliverables), `job-index.md` (the read
@@ -46,6 +46,10 @@ each frame is.
 | Is an event the source of truth? | **Never.** Every event points at something that already has a home: a job file, a hold, a piece of evidence, a deliverable. A missed event costs only latency; the host re-reads `GET /jobs/:id` |
 | How a live item and a final deliverable are matched | **By URL, not by id.** The step picks the event; the model picks the deliverable's `id`. Both resolve a job file to `/jobs/<job>/files/<path>`, so the URL is what joins them. The id still names versions across turns |
 | A contact sheet for the model | **No.** Tiles at model size are too small to read, and the model already saw each page while exploring. It gets the verdict, the last frame (or the one where it stopped), and the frame paths for `job/read` |
+| How the host registers | **`jobCallback` on the launch**, beside `callback` (2026-10-15). Hive already sends `callback` on every launch: one more field, no extra route, a token refreshed every turn, and on file in the same request as the run that may emit |
+| Holds and checks | **Strut emits for them on its own** (2026-10-15): a hold taken or released, evidence written, a verify pass ended. `pod/*` and the instruments need no change |
+| The kind of a walkthrough | **`kind`, the field deliverables already have** (2026-10-15). Events carry `kind: "walkthrough"`, and the step's result carries it so the model copies it into its deliverable. The filename `walkthrough.json` is the fallback only where no kind is given (*proposed*, §5) |
+| A detached verify | **Opt-in, `detach: true`** (2026-10-15). The synchronous form stays the default, so today's callers are unchanged |
 
 ## Design in one paragraph
 
@@ -68,7 +72,7 @@ once, so hive's Verify button shows frames and verdicts as they land.
 
 ## 1. The job callback
 
-**Registration** (*proposed*): a launch field beside `job`, `title` and
+**Registration** (decided): a launch field beside `job`, `title` and
 `callback`. It is never in `input`, for the reason `title` isn't: strut
 writes it onto the job without knowing the workflow.
 
@@ -155,7 +159,7 @@ It is optional, like `claims`: a bare bag has none, and a step calls
 | lab, `browser/screenshot`, `capture`, `verify` | a shot is written on a job run | `image` / `done` | the shot's url (`shot.ts`) |
 | lab, `browser/walkthrough` | after each frame, and at the end | `walkthrough` / `recording` → `done` or `stopped` | the manifest's url; `detail: { frames }` |
 
-Strut emits for holds and evidence by itself (*proposed*), so `pod/*` and
+Strut emits for holds and evidence by itself (decided), so `pod/*` and
 the instruments need no change for those. A verify pass's check run
 carries the job (`RunStepOptions.job`), so a `browser/walkthrough` run as a
 check emits its frames like one run mid-turn.
@@ -184,8 +188,15 @@ with no caption (a `wait`, a `fill`) takes none. If the last step had no
 caption, a final frame is taken where the page got to, as `verify` does.
 On a step that fails, or an expectation that does not hold, a final frame
 of where the page got to is marked `failed` with the reason, and the
-recording ends `stopped`. Frames are capped (*proposed*: 30); a list
-asking for more is refused before anything runs.
+recording ends `stopped`.
+
+No frame cap (*proposed*). The list is declared up front, so a walkthrough
+cannot run away: its length is known before it starts. Time is already
+bounded by the run's browser budget and the per-call timeouts, and the
+disk use of a few dozen PNGs is a few MB. A cap would only refuse long
+lists, and a long list is better handled by the step's description: "a
+walkthrough is a few frames; a longer flow is several walkthroughs, one
+per claim".
 
 Settling before each frame removes loading states. Dead ends are removed
 by construction: the agent explores with the atomic `browser/*` steps,
@@ -259,10 +270,16 @@ Two small changes keep the URLs equal:
 - **One helper** (*proposed*), `jobFileUrl(job, rel)` in strut, used by
   `artifact-refs.ts` and exported for the lab's shot sink (`shot.ts`), so
   the two can never encode a path differently.
-- **The kind by filename** (*proposed*): `artifactKind` in
+- **The kind** (decided): `kind: "walkthrough"`, the field deliverables
+  already carry. Every event names it, and the step's result carries it so
+  the model copies it into the deliverable entry.
+- **The filename as the fallback** (*proposed*): `artifactKind` in
   `artifact-refs.ts` and in `web/src/artifact-view.ts` reads a file named
-  `walkthrough.json` as `walkthrough`. Otherwise `.json` is plain JSON, and
-  the model would have to remember to set `kind`.
+  `walkthrough.json` as `walkthrough`, only where no `kind` is given.
+  Strut's `ArtifactViewer` picks its renderer from the path alone
+  (`viewerKind(path, files)`), and an evidence locator or a path in a
+  step's output has no kind beside it, so without this rule the viewer
+  would show the manifest as plain JSON.
 
 The job prompt gets one line: list a file by the path the tool gave you.
 A copy or a rename only means two items, one of them progress.
@@ -295,7 +312,7 @@ No new table is needed for this: everything that outlives the moment
 
 ## 7. Detached verify
 
-`POST /jobs/:id/verify { claims?, detach: true }` (*proposed*) starts
+`POST /jobs/:id/verify { claims?, detach: true }` (decided) starts
 `verifyJob` without awaiting it and answers 202 `{ started: true }`. The
 pass emits `evidence` per check and `verify / done` at the end (§3). The
 synchronous form stays the default for strut's own UI and scripts. A
@@ -335,12 +352,7 @@ in-process set, like the chat's liveness).
 
 ## Open for a ruling
 
-1. `jobCallback` as a launch field (latest wins), or a `PUT /jobs/:id/callback`
-   of its own?
-2. Strut emitting for holds and evidence on its own (§3), or only what a
-   step asks for?
-3. The kind from the filename `walkthrough.json` (§5), or always explicit?
-4. The frame cap (30), and frame 1 always being the opened page?
-5. A detached verify as `{ detach: true }` on the existing route, or a
-   default change (202 always) once hive is the only caller that needs the
-   wait gone?
+1. No frame cap (§4): the declared list bounds a walkthrough, and the step
+   description steers it short.
+2. The filename `walkthrough.json` as the kind's fallback (§5), for strut's
+   path-based viewer and an evidence locator that carries no kind.
