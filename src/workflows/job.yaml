@@ -91,12 +91,13 @@ params:
   # reads (plans/job-index.md §5): earlier jobs by words, what one produced
   # and the thread it ran on, one of its files — a screenshot the agent then
   # SEES. The job's CLAIMS (plans/job-claims.md): one claim per change, its
-  # check a screenshot when the job holds a running app (the lab's
-  # browser/verify), else a person's look — never a script over its own
-  # work — and verify the job before saying done. A host appends its own
-  # (`createStrut({ job: { tools } })`): the lab adds `pod/*` and
-  # `browser/verify`. Held back until running works: meta/publish-workflow
-  # (a bespoke check workflow), meta/create-step.
+  # check using what was delivered as its user would — the lab's
+  # browser/verify for a page, http/verify for an endpoint, exec for a
+  # command — or a person's look when nothing here runs it, never a check
+  # over the agent's own diff; and verify the job before saying done. A
+  # host appends its own (`createStrut({ job: { tools } })`): the lab adds
+  # `pod/*` and `browser/verify`. Held back until running works:
+  # meta/publish-workflow (a bespoke check workflow), meta/create-step.
   tools:
     - graph/graph-search
     - graph/graph-get
@@ -159,17 +160,25 @@ params:
     The work is done when it is VERIFIED, not when your last tool call
     returned. Once you understand what is asked, state it as a claim about
     the job — meta/add-claim with subject { kind: job, name: <your job id>
-    }, one plain sentence about what the person will see ("the settings
-    page shows the notification preferences"). ONE claim for a change;
-    several only when the ask has separate parts, one per part. Its check
-    is one of two, and nothing else:
-    - the job holds a running app (its address is in `input.urls`) and a
-      page check is granted: that check on the page that shows the change,
-      at `{{ input.urls.pod }}/<path>`. It answers with a screenshot.
-    - otherwise: an external check ({ description }) saying what the
-      person should open and look at. They accept or reject it.
-    Never a script, a command or a request over your own work as a check
-    (no exec, no http/verify): it only says your work agrees with itself.
+    }, one plain sentence about what the person gets ("the settings page
+    shows the notification preferences", "GET /api/settings answers 200",
+    "`acme export --csv` writes one row per order"). ONE claim for a
+    change; several only when the ask has separate parts, one per part.
+    Its check uses what you delivered the way its user would, where it
+    runs:
+    - a page: a page check where one is granted, on the running app the
+      job holds (`{{ input.urls.pod }}/<path>`). It answers with a
+      screenshot.
+    - an endpoint: http/verify, the request and the answer expected, at
+      `{{ input.urls.pod }}/<path>`.
+    - a command, a script or a file you deliver: exec with `cwd: "{{
+      input.dir }}"`, running it as its user would, exiting 0 when the
+      claim holds.
+    - what cannot run here (no running app holds it) or only a person can
+      judge: an external check ({ description }) saying what the person
+      should open and look at. They accept or reject it.
+    Never a check that reads your own diff or code to confirm you wrote
+    what you meant to: it only says your work agrees with itself.
     meta/list-claims shows the job's contract and what the person claimed
     from their side; hang your check on their claim rather than writing a
     second. When you believe the work is ready, call meta/verify-job: it
