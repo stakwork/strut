@@ -894,6 +894,30 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.equal("busy" in (await api("/jobs/j-w")).json, false);
   });
 
+  it("a run in flight carries its job and the launch's title on its row and on /runs/active; the summary keeps the job only", async () => {
+    const { strut, api, settled } = await boot();
+    await strut.workspace.publishWorkflow("slow", "v1", { steps: [{ id: "z", type: "wait", config: { durationMs: 300 } }] });
+    const slow = await api("/workflows/slow/run", { body: { job: "j-t", title: "Titled", input: {} } });
+    assert.equal(slow.status, 202);
+    const active = (await api("/runs/active")).json.find((r: any) => r.runId === slow.json.runId);
+    assert.deepEqual([active.job, active.jobTitle], ["j-t", "Titled"]);
+    let row: any;
+    for (let i = 0; i < 100 && !row; i++) {
+      row = (await api("/workflows/slow/runs")).json.find((r: any) => r.runId === slow.json.runId);
+      if (!row) await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.deepEqual([row.status, row.job, row.jobTitle], ["running", "j-t", "Titled"]);
+
+    const plain = await api("/workflows/slow/run", { body: { input: {} } });
+    const bare = (await api("/runs/active")).json.find((r: any) => r.runId === plain.json.runId);
+    assert.deepEqual(["job" in bare, "jobTitle" in bare], [false, false]);
+
+    await settled("slow", slow.json.runId);
+    await settled("slow", plain.json.runId);
+    const done = (await api("/workflows/slow/runs")).json.find((r: any) => r.runId === slow.json.runId);
+    assert.deepEqual([done.status, done.job, "jobTitle" in done], ["success", "j-t", false]);
+  });
+
   it("the agent's door: job/list and job/get from inside a run; job/read as text, as an image the model sees, capped, never outside the job", async () => {
     const { strut, turn } = await boot();
     await turn("j-c", { name: "notes.md", text: "# notes", reply: "ok", artifacts: [{ id: "notes", title: "Notes", path: "notes.md" }] }, { title: "C" });

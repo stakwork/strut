@@ -626,6 +626,9 @@ export interface RunSummary {
   automation?: { id: string };
   /** The job the run was launched under (plans/jobs.md), when one was given. */
   job?: string;
+  /** A run still in flight: the launch's title for its job, if it gave one.
+   *  A finished run's summary has none — the jobs listing names the job. */
+  jobTitle?: string;
 }
 
 export interface RunEvent {
@@ -664,6 +667,9 @@ export interface ActiveRun {
   state: "running" | "pausing" | "paused" | "cancelling";
   /** Set for a nested run launched by another run. */
   parentRunId?: string;
+  /** The job the run was launched under, and the launch's title for it. */
+  job?: string;
+  jobTitle?: string;
 }
 
 export const listActiveRuns = () => fetchJSON<ActiveRun[]>("/runs/active");

@@ -55,6 +55,10 @@ export class RunController implements RunControl {
   readonly workflow: string;
   readonly parent?: RunController;
   readonly children = new Set<RunController>();
+  /** The job the run was launched under, with the launch's name for it
+   *  (`POST …/run { job, title }`) — what a listing shows of a run that has
+   *  no summary yet. Set by `trackRun`; control never reads it. */
+  job?: { id: string; title?: string };
 
   /** OWN state — the effective state additionally inherits the strictest
    *  ancestor (any ancestor cancelling → cancelling; else any ancestor
