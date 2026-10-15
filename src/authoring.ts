@@ -541,11 +541,13 @@ export interface AuthoringDeps extends StepPublishDeps {
    *  attached to the launching run's controller when `parentRunId` is given,
    *  so cancelling/pausing the parent reaches this run (RUN_CONTROL_SPEC
    *  §2.2 tree linkage). Also drives the runs listing ("running" vs
-   *  "stale"). Optional: embedders without a live server need not care. */
+   *  "stale"). Optional: embedders without a live server need not care.
+   *  `job` is the job the child shares, shown on its row while it runs. */
   trackRun?: (
     workflow: string,
     runId: string,
     parentRunId?: string,
+    job?: { id: string; title?: string },
   ) => { controller?: import("./run-control.js").RunController; untrack: () => void };
   /** The claims layer (plans/claims.md), built once by `createStrut` where
    *  it is on (a graph workspace, `StrutOptions.claims` not false). Null /
@@ -801,7 +803,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // Tree linkage: attach this nested run's controller to the launching
       // run's (opts.parentRunId = the calling step's ctx.runId), so controls
       // on the parent reach it (RUN_CONTROL_SPEC §2.2).
-      const tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId);
+      const tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined);
       try {
         const result = await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
           runId,

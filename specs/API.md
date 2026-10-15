@@ -188,8 +188,8 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 
 | Method | Path                                                   | Response |
 | ------ | ------------------------------------------------------ | -------- |
-| GET    | `/runs/active`                                         | every run executing in this server process, any workflow: `[{ workflow, runId, state, parentRunId? }]` — `state` a §5.2 live state, `parentRunId` on a nested run. A `stale` run is not listed |
-| GET    | `/workflows/:name/runs`                                | array, newest first, no paging: a summary (§5.1) per finished run, `{ runId, workflow, status }` for one still going (§5.2 states) |
+| GET    | `/runs/active`                                         | every run executing in this server process, any workflow: `[{ workflow, runId, state, parentRunId?, job?, jobTitle? }]` — `state` a §5.2 live state, `parentRunId` on a nested run, `job` + `jobTitle` the job it was launched under and the launch's `title`. A `stale` run is not listed |
+| GET    | `/workflows/:name/runs`                                | array, newest first, no paging: a summary (§5.1) per finished run, `{ runId, workflow, status, job?, jobTitle? }` for one still going (§5.2 states; `job` + `jobTitle` as on `/runs/active`) |
 | GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
 | GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |
 | GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none. For a step that continued a `session` (§9) this is its system prompt + THAT TURN; `?full=1` is the thread up to and including it (404 once the session is deleted) |

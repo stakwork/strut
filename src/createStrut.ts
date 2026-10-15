@@ -548,11 +548,13 @@ export async function createStrut<TServices = unknown>(
    *  to whole subtrees). Every launch path must register: HTTP
    *  (launchDetached), programmatic (strut.run), in-process nested runs
    *  (authoring's meta/run-workflow), and chat-detached runs. The returned
-   *  untrack fn belongs in the launcher's finally. */
-  const trackRun =(workflow: string, runId: string, parentRunId?: string) => {
+   *  untrack fn belongs in the launcher's finally. `job` is the launch's
+   *  job and title, shown on the run's row until its summary is written. */
+  const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }) => {
     const key = `${workflow}/${runId}`;
     const parent = parentRunId ? controllersByRunId.get(parentRunId) : undefined;
     const controller = new RunController(runId, workflow, parent);
+    if (job) controller.job = job;
     controllers.set(key, controller);
     controllersByRunId.set(runId, controller);
     const untrack = () => {
@@ -568,6 +570,13 @@ export async function createStrut<TServices = unknown>(
     const controller = controllers.get(`${workflow}/${runId}`);
     return controller ? controller.state : "stale";
   };
+  /** A live run's job as a listing row carries it: `job`, like the summary
+   *  it has yet to write, and `jobTitle`, the launch's name for the job —
+   *  the record only has it once the run reaches `run.start`. */
+  const liveJob = (controller: RunController | undefined) =>
+    controller?.job
+      ? { job: controller.job.id, ...(controller.job.title ? { jobTitle: controller.job.title } : {}) }
+      : {};
   /** Append a control marker (run.paused / run.resumed) to a run's log so
    *  the parked gap is visible in the record (§4 observability). */
   const appendControlEvent = async (
@@ -1076,6 +1085,7 @@ export async function createStrut<TServices = unknown>(
       runId: r.runId,
       state: r.state,
       ...(r.parent ? { parentRunId: r.parent.runId } : {}),
+      ...liveJob(r),
     }))),
   );
 
@@ -1088,7 +1098,7 @@ export async function createStrut<TServices = unknown>(
       if (summary) {
         runs.push(summary);
       } else {
-        runs.push({ runId, workflow: name, status: liveStatus(name, runId) });
+        runs.push({ runId, workflow: name, status: liveStatus(name, runId), ...liveJob(controllers.get(`${name}/${runId}`)) });
       }
     }
     return c.json(runs);
@@ -2496,7 +2506,12 @@ export async function createStrut<TServices = unknown>(
     },
   ): string {
     const runId = body.runId ?? generateRunId();
-    const { controller, untrack } = trackRun(flow.name, runId);
+    const { controller, untrack } = trackRun(
+      flow.name,
+      runId,
+      undefined,
+      body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
+    );
     if (extra?.origin === "peer") peerLaunched.add(controller);
     const launchedAt = Date.now();
     const callback = extra?.callback;
@@ -3787,7 +3802,12 @@ export async function createStrut<TServices = unknown>(
     // Tree linkage (RUN_CONTROL_SPEC §2.2): `parentRunId` (the calling
     // step's ctx.runId — set by e.g. the lab's optimizer capability) attaches
     // this run's controller under the launching run's.
-    const { controller, untrack } = trackRun(flow.name, runId, runOpts?.parentRunId);
+    const { controller, untrack } = trackRun(
+      flow.name,
+      runId,
+      runOpts?.parentRunId,
+      runOpts?.job ? { id: runOpts.job, ...(runOpts.title ? { title: runOpts.title } : {}) } : undefined,
+    );
     try {
       const workflowHash =
         typeof workflow === "string"

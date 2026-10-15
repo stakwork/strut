@@ -347,10 +347,16 @@ export function App() {
     setWorkflows(wfs);
   }, []);
 
+  // Every job title the UI has seen — the run rows' chips name a job by it.
+  // Filled by the jobs listing, and by a run in flight, whose row carries the
+  // launch's title: the listing may have been read before the job's record
+  // had it.
+  const jobTitles = useRef(new Map<string, string>());
   const refreshRuns = useCallback(async (wf?: string) => {
     const name = wf ?? selectedWf;
     if (!name) { setRuns([]); return; }
     const rs = await api.listRuns(name);
+    for (const r of rs) if (r.job && r.jobTitle) jobTitles.current.set(r.job, r.jobTitle);
     setRuns(rs);
   }, [selectedWf]);
 
@@ -409,10 +415,9 @@ export function App() {
   // may be a new job, a finished one changes a turn's row — on the same
   // signal the Runs list follows. A deployment whose jobs are an injected
   // capability without an index answers 501: the list stays empty.
-  // Every job title the UI has seen — the run rows' chips name a job by
-  // it. While the listing is narrowed (a query, only mine), the titles come
-  // from the workflow's whole listing, the jobs those rows can reference.
-  const jobTitles = useRef(new Map<string, string>());
+  // The titles come from the jobs listing (`jobTitles`, above) — while it is
+  // narrowed (a query, only mine), from the workflow's whole listing, the
+  // jobs the run rows can reference.
   const refreshJobs = useCallback(async () => {
     try {
       const r = await api.listJobs({ q: jobQuery, workflow: selectedWf, mine: jobsMine, limit: 50 });
