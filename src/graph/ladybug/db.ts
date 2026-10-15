@@ -114,38 +114,48 @@ export function indexCalls(): Array<[string, string]> {
   ];
 }
 
-/** The statement that fails when `node_fts` lacks a document for a node:
- *  a SET of an indexed column deletes the node's old document first. */
-const FTS_PROBE = "MATCH (n:Node) SET n.name = n.name";
-const FTS_BROKEN = /FTS index '[^']*' is inconsistent/;
-
-/** After an exit without `close()` (a kill, a crash) Ladybug replays its WAL
- *  but not the FTS index: every later SET or DELETE of a node written before
- *  fails "FTS index 'node_fts' is inconsistent". The index is derived data, so
- *  when a write the engine would refuse is tried (and rolled back) it is
- *  dropped and built again from the nodes. */
-async function rebuildBrokenFts(write: Query): Promise<void> {
-  await write("BEGIN TRANSACTION");
+/** After an exit without `close()` Ladybug replays its WAL but not the FTS
+ *  index: a later SET or DELETE of an older node fails "FTS index 'node_fts'
+ *  is inconsistent". A SET of every node, rolled back, finds that (a LIMIT
+ *  would miss it: only nodes written before the kill are affected), and the
+ *  index, being derived data, is dropped and built again. It costs a rewrite
+ *  of every node, so it runs when a WAL was left (an unclean exit) and once
+ *  per file otherwise, for files an older build left broken. A check that
+ *  fails any other way is skipped: it never keeps a healthy file from opening. */
+async function rebuildBrokenFts(read: Query, write: Query, unclean: boolean): Promise<void> {
+  const marker = "fts-probed";
+  const probed = (await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: marker }))[0]?.["c"];
+  if (!unclean && Number(probed) > 0) return;
+  let broken = false;
   try {
-    await write(FTS_PROBE);
-    await write("ROLLBACK");
-    return;
+    await write("BEGIN TRANSACTION");
+    await write("MATCH (n:Node) SET n.name = n.name");
   } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    if (!/FTS index '[^']*' is inconsistent/.test(why)) return console.warn(`[graph] full-text index check skipped: ${why.split("\n")[0]}`);
+    broken = true;
+  } finally {
     await write("ROLLBACK").catch(() => undefined);
-    if (!FTS_BROKEN.test(err instanceof Error ? err.message : String(err))) throw err;
   }
-  console.warn("[graph] the full-text index did not survive the last exit; building it again");
-  const [name, call] = indexCalls().find(([n]) => n === "node_fts")!;
-  await write(`CALL DROP_FTS_INDEX('Node', '${name}')`);
-  await write(call);
+  if (broken) {
+    console.warn("[graph] the full-text index did not survive the last exit; building it again");
+    const [name, call] = indexCalls().find(([n]) => n === "node_fts")!;
+    await write(`CALL DROP_FTS_INDEX('Node', '${name}')`);
+    await write(call);
+  }
+  await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: marker, now: Date.now() });
 }
 
-/** Closes every open handle: a process that exits without it leaves a WAL
- *  Ladybug cannot recover the FTS index from. The exits of a host-owned
- *  strut (stdin EOF, SIGTERM) call it before `process.exit`. */
+let shuttingDown = false;
+/** Closes in flight, so a shutdown waits for a `close()` someone else began. */
+const closing = new Set<Promise<void>>();
+
+/** Closes every open handle, and refuses new ones: what `desktop.js` calls
+ *  before it exits. */
 export async function closeAllLadybug(): Promise<void> {
+  shuttingDown = true;
   const open = [...registry().values()];
-  await Promise.allSettled(open.map(async (h) => (await h).close()));
+  await Promise.allSettled([...open.map(async (h) => (await h).close()), ...closing]);
 }
 
 // ── The handle ──────────────────────────────────────────────────────────────
@@ -254,6 +264,8 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
   // A WAL left beside a file that is gone fails every query on the new
   // file ("Database ID … does not match"): it belongs to nothing now.
   if (!existsSync(path) && existsSync(`${path}.wal`)) rmSync(`${path}.wal`, { force: true });
+  // A WAL still here means the last process did not close the file.
+  const unclean = existsSync(`${path}.wal`);
 
   const lbug = await loadLadybug();
   const db = new lbug.Database(path);
@@ -291,10 +303,12 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
     for (const ddl of [...ddlStatements(), ...MIGRATIONS]) await write(ddl);
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
-    await rebuildBrokenFts(write);
+    await rebuildBrokenFts(read, write, unclean);
 
     let queue: Promise<unknown> = Promise.resolve();
+    let closed = false;
     const exclusive = <T>(fn: (w: Query) => Promise<T>): Promise<T> => {
+      if (closed) return Promise.reject(new Error("the graph is closing"));
       const run = () => fn(write);
       const next = queue.then(run, run);
       queue = next.catch(() => undefined);
@@ -375,12 +389,18 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
           close: () => conn.close().catch(() => undefined),
         };
       },
-      close: async () => {
-        registry().delete(path);
-        await queue.catch(() => undefined);
-        // Folds the WAL into the file, so a restart replays nothing.
-        await write("CHECKPOINT").catch(() => undefined);
-        await closeAll();
+      close: () => {
+        closed = true;
+        const done = (async () => {
+          registry().delete(path);
+          await queue.catch(() => undefined);
+          // Folds the WAL into the file, so the next open replays nothing.
+          await write("CHECKPOINT").catch((err) => console.warn(`[graph] checkpoint failed: ${String(err).split("\n")[0]}`));
+          await closeAll();
+        })();
+        closing.add(done);
+        void done.finally(() => closing.delete(done));
+        return done;
       },
     };
     return handle;
@@ -393,6 +413,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
 /** The handle for `path` (made absolute): opened once per process, shared
  *  by every caller until `close()`. A failed open is not cached. */
 export function openLadybug(path: string, opts: OpenOptions = {}): Promise<LadybugHandle> {
+  if (shuttingDown) return Promise.reject(new Error("strut is shutting down"));
   const abs = resolve(path);
   const handles = registry();
   let h = handles.get(abs);

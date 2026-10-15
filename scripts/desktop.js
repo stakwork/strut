@@ -119,12 +119,13 @@ const leave = async (why) => {
   try {
     const { closeAllLadybug } = await import("./build/graph/ladybug/db.js");
     await closeAllLadybug();
-  } catch {
-    /* nothing was opened, or the build has no graph backend */
+  } catch (err) {
+    console.error("strut: closing the graph failed:", err);
   }
   process.exit(0);
 };
-for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => void leave(sig));
+// A second signal while closing is the person insisting.
+for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => (leaving ? process.exit(0) : void leave(sig)));
 
 if (env["STRUT_EXIT_ON_STDIN_EOF"] === "1") {
   // A host that holds our stdin pipe open sets this so we exit with it: the
