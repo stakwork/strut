@@ -468,14 +468,17 @@ the step has claims. 404 for an unknown type.
 Automations launch a workflow on a schedule; the trigger grammar is in
 `SPEC.md` §12.1 and `plans/automations.md`. A scheduled run is an ordinary
 run whose `run.start` and summary carry `origin: "schedule"` and
-`automation: { id }`.
+`automation: { id }`. An automation's optional `callback: { url }` gets each
+fire's `run.end`, as `POST …/run { callback }` does; the URL is the host's
+credential, kept in the secret store, so every read shows
+`callback: { origin }` only.
 
 | Method | Path                                      | Description |
 | ------ | ----------------------------------------- | ----------- |
 | GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running }]` |
 | POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
-| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled? }` |
-| PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses |
+| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback? }` |
+| PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback |
 | DELETE | `/workflows/:name/automations/:id` | remove |
 | POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going |
 

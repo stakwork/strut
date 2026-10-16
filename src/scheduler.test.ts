@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Flow, RunSummary } from "./core.js";
 import { MemoryRunStore } from "./store.js";
+import { MemorySecretStore } from "./secret-store.js";
 import { FileWorkspaceStore } from "./workspace.js";
 import { createAutomations, type Automations } from "./scheduler.js";
 import { buildTools } from "./ai/tools.js";
@@ -24,6 +25,7 @@ interface Launch {
   workflow: string;
   input: Record<string, unknown>;
   automation: { id: string };
+  callback?: { url: string };
   runId: string;
 }
 
@@ -35,6 +37,7 @@ describe("automations: policy layer + scheduler", () => {
   let launches: Launch[];
   let inFlight: Set<string>;
   let autos: Automations;
+  let secrets: MemorySecretStore;
 
   /** Settle a launched run the way the runner would. */
   const settle = async (l: Launch, status: RunSummary["status"], output?: unknown) => {
@@ -56,12 +59,13 @@ describe("automations: policy layer + scheduler", () => {
     createAutomations({
       workspace: ws,
       store,
+      secrets,
       now: () => now,
       isInFlight: (_wf, runId) => inFlight.has(runId),
-      launch: (flow: Flow, input, automation) => {
+      launch: (flow: Flow, input, automation, callback) => {
         // Run ids sort by start time, like generateRunId's.
         const runId = `${now.getTime()}-${launches.length}`;
-        launches.push({ workflow: flow.name, input, automation, runId });
+        launches.push({ workflow: flow.name, input, automation, runId, ...(callback ? { callback } : {}) });
         inFlight.add(runId);
         void store.append(flow.name, runId, { ts: now.toISOString(), runId, path: flow.name, type: "run.start", input, origin: "schedule", automation });
         return runId;
@@ -77,6 +81,7 @@ describe("automations: policy layer + scheduler", () => {
     now = new Date("2026-09-20T08:00:00Z");
     launches = [];
     inFlight = new Set();
+    secrets = new MemorySecretStore();
     autos = make();
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
@@ -125,6 +130,56 @@ describe("automations: policy layer + scheduler", () => {
     assert.equal((u.automation.trigger as { anchor: string }).anchor, anchor, "the rhythm is not restarted by an edit");
     assert.equal(u.automation.nextRunAt, "2026-09-20T08:15:00.000Z");
     assert.match(((await autos.update(WF, "a-missing", { name: "y" })) as { error: string }).error, /not found/);
+  });
+
+  it("callback: its URL in the secret store, its origin on the record, handed to every launch; kept by an edit, cleared by null", async () => {
+    const url = "http://127.0.0.1:9911/run-end?sig=s3cret";
+    const r = await created({ name: "Hive post", trigger: daily, callback: { url } });
+    assert.deepEqual(r.automation.callback, { origin: "http://127.0.0.1:9911" });
+    assert.ok(!JSON.stringify(await autos.list(WF)).includes("s3cret"), "the URL is never served");
+    assert.ok(!JSON.stringify(await ws.getWorkflowMetadata(WF)).includes("s3cret"), "nor kept in the metadata");
+    assert.equal(await secrets.get(`STRUT_AUTOMATION_CALLBACK_${r.automation.id.replace("-", "_")}`), url);
+
+    const fired = await autos.fire(WF, r.automation.id);
+    assert.ok("ok" in fired);
+    assert.deepEqual(launches.at(-1)?.callback, { url });
+
+    const renamed = await autos.update(WF, r.automation.id, { name: "Hive post at 13:03" });
+    assert.ok("ok" in renamed && renamed.automation.callback?.origin === "http://127.0.0.1:9911");
+    const cleared = await autos.update(WF, r.automation.id, { callback: null });
+    assert.ok("ok" in cleared && !("callback" in cleared.automation));
+    assert.deepEqual(await secrets.list(), [], "the secret went with it");
+    assert.ok(!("callback" in (await ws.getWorkflowMetadata(WF))!.automations![0]!));
+    await settle(launches.at(-1)!, "success");
+    await autos.fire(WF, r.automation.id);
+    assert.equal(launches.at(-1)?.callback, undefined);
+
+    for (const bad of [{ url: "ftp://x" }, { url: "not a url" }, { url: "" }]) {
+      const refused = await autos.create(WF, { name: "x", trigger: daily, callback: bad });
+      assert.ok("error" in refused && /callback\.url/.test(refused.error), JSON.stringify(refused));
+    }
+
+    // Removing the automation, or forgetting the workflow, deletes the secret.
+    const again = await created({ name: "Again", trigger: daily, callback: { url } });
+    await created({ name: "Other", trigger: daily, callback: { url } });
+    assert.equal((await secrets.list()).length, 2);
+    await autos.remove(WF, again.automation.id);
+    assert.equal((await secrets.list()).length, 1);
+    await autos.forget(WF);
+    assert.deepEqual(await secrets.list(), []);
+  });
+
+  it("without a secret store an automation takes no callback", async () => {
+    const bare = createAutomations({ workspace: ws, store, now: () => now, isInFlight: () => false, launch: () => "r" });
+    const refused = await bare.create(WF, { name: "x", trigger: daily, callback: { url: "http://127.0.0.1:1/x" } });
+    assert.ok("error" in refused && /no secret store/.test(refused.error));
+  });
+
+  it("an automation without a callback launches without one, as before", async () => {
+    const r = await created({ name: "Morning", trigger: daily });
+    assert.ok(!("callback" in r.automation));
+    await autos.fire(WF, r.automation.id);
+    assert.ok(!("callback" in launches.at(-1)!));
   });
 
   it("preview writes nothing", async () => {

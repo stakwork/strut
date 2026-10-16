@@ -888,6 +888,20 @@ export async function openSession(
   return session;
 }
 
+/** `messages` with every assistant reasoning part removed — what a thread
+ *  replays under a system prompt other than the one its thinking was made
+ *  under (`sessionSystem: latest`). The record on disk keeps them. */
+export function withoutReasoning(messages: unknown[]): unknown[] {
+  return messages.flatMap((m) => {
+    const msg = m as { role?: string; content?: unknown };
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) return [m];
+    const kept = (msg.content as Array<{ type?: string }>).filter((p) => p.type !== "reasoning" && p.type !== "redacted-reasoning");
+    if (kept.length === msg.content.length) return [m];
+    // A turn that was nothing but thinking says nothing without it.
+    return kept.length ? [{ ...msg, content: kept }] : [];
+  });
+}
+
 /** The transcript recorded for an agent session (`RunEvent.messages`): the
  *  system prompt, the task prompt as the model saw it (cwd preamble included),
  *  then every generated turn — AI SDK model messages, the shape a log store
@@ -999,7 +1013,7 @@ export default defineStep({
     `Autonomous tool-using sub-agent (AI SDK ToolLoopAgent) over a working dir: it explores and edits files with built-in tools (repo_overview, fulltext_search, bash, str_replace_based_edit_tool; web_search + web_fetch on any provider — native on anthropic, elsewhere Exa search via EXA_API_KEY plus a guarded HTTP fetch; file_summary when the \`stakgraph\` CLI is on PATH), plus any registry steps exposed through agentTools. ` +
     `Use it for open-ended work a fixed DAG can't express — diagnose and fix a codebase, drive an app, research a question — and always when a hard stop must still produce a deliverable; prefer the loop step for a fixed repeat. ` +
     `Keep arithmetic and format conversion out of its head: expose a tool step for it (e.g. timestamp hh:mm:ss / mm:ss / seconds → seconds, offsets, end times) or return a typed schema that code post-processes. ` +
-    `It returns a free-form report (finalAnswer), a structured object (schema), or the final text. Needs the provider's key (secret store or env) and git + rg on PATH. Output: { result, object?, steps, usage, cost } (+ messages when returnMessages; + session: { id, turn, offset } when session is set).\n\n` +
+    `It returns a free-form report (finalAnswer), a structured object (schema), or the final text. Needs the provider's key (secret store or env), and git + rg on PATH for the built-ins (toolFilter: ['none'] needs neither). Output: { result, object?, steps, usage, cost } (+ messages when returnMessages; + session: { id, turn, offset } when session is set; + stopped: { tool } when a tool ended the turn).\n\n` +
     EXAMPLE,
   input: z.object({
     cwd: z.string().describe("working directory the tools operate in"),
@@ -1009,7 +1023,19 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        'CONTINUE a conversation across runs: an id the CALLER supplies, usually "{{ input.session }}" (a uuid). The agent starts from that thread — its system prompt, fixed by the thread\'s first turn (this step\'s `system` is ignored after), and every earlier message — and appends this turn when it succeeds; a failed or cancelled turn appends nothing. Omit for a one-shot agent. Ids are GLOBAL: every run of every workflow naming the same id shares ONE thread, so a literal ("janitor-daily") is right only for an agent that should remember forever. Give each chained agent of a workflow its own id ("{{ input.session }}/review"); an agent without `session` starts cold every run. One turn at a time per id (a second fails with `session_busy:`). Letters, digits and ". _ -" in `/`-separated segments. Turns minutes apart want cacheTtl: 1h. To carry the FILES along too, give git/checkout a `workdir`.',
+        'CONTINUE a conversation across runs: an id the CALLER supplies, usually "{{ input.session }}" (a uuid). The agent starts from that thread — its system prompt, fixed by the thread\'s first turn (this step\'s `system` is ignored after, unless sessionSystem is "latest"), and every earlier message — and appends this turn when it succeeds; a failed or cancelled turn appends nothing. Omit for a one-shot agent. Ids are GLOBAL: every run of every workflow naming the same id shares ONE thread, so a literal ("janitor-daily") is right only for an agent that should remember forever. Give each chained agent of a workflow its own id ("{{ input.session }}/review"); an agent without `session` starts cold every run. One turn at a time per id (a second fails with `session_busy:`). Letters, digits and ". _ -" in `/`-separated segments. Turns minutes apart want cacheTtl: 1h. To carry the FILES along too, give git/checkout a `workdir`.',
+      ),
+    sessionSystem: z
+      .enum(["first", "latest"])
+      .default("first")
+      .describe(
+        'Which system prompt a `session` turn sends. "first" (default): the thread\'s first turn\'s, byte for byte, every turn. "latest": this step\'s `system`, every turn — for a thread that lives for months while its prompt is revised. While it differs from the first turn\'s, the thread replays without its thinking blocks (bound to the prompt they were made under), and a change costs a prompt-cache miss. The session store keeps the first turn\'s prompt; each turn\'s run log records the one it sent.',
+      ),
+    retain: z
+      .string()
+      .optional()
+      .describe(
+        "What a compaction's summary must keep, word for word, in place of the default (the working directory, the files by path, the commands run, what was verified). Name the caller's own references — e.g. \"the chats read, by chat id; message uuids and links, verbatim\".",
       ),
     finalAnswer: z
       .string()
@@ -1027,7 +1053,7 @@ export default defineStep({
       .array(z.string())
       .default([])
       .describe(
-        "registry step TYPES to expose as additional LLM tools (the 'tools are steps' model, e.g. ['gitsee/read-logs']). Entries may be glob patterns over step types ('jarvis/*' grants the whole namespace; new steps in it are picked up automatically). Each step's input schema becomes the tool schema and its run() is the executor, called with a nested ctx so every tool call emits a step.start/step.end run event (visible in the events panel). Merged ON TOP of the built-ins (not subject to toolFilter). Unknown types are skipped. Requires the runner-populated ctx.registry.",
+        "registry step TYPES to expose as additional LLM tools (the 'tools are steps' model, e.g. ['gitsee/read-logs']). Entries may be glob patterns over step types ('jarvis/*' grants the whole namespace; new steps in it are picked up automatically). Each step's input schema becomes the tool schema and its run() is the executor, called with a nested ctx so every tool call emits a step.start/step.end run event (visible in the events panel). Merged ON TOP of the built-ins (not subject to toolFilter). Unknown types are skipped. Requires the runner-populated ctx.registry. A step whose output is an object with `stop: true` ENDS THE TURN after that tool round: no further tool runs, and the model writes its answer from the results it has (the output gains `stopped: { tool }`).",
       ),
     secretsEnv: z
       .array(z.string())
@@ -1305,7 +1331,21 @@ export default defineStep({
     // A pinned grant (`clip/shout@v1`) is loaded once here so the sync
     // lookup below finds it (src/step-ref.ts).
     if (ctx?.registry) for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(ctx.registry, name);
-    Object.assign(tools, buildRegistryTools(cfg.agentTools, ctx?.registry, ctx, tool));
+    const registryTools = buildRegistryTools(cfg.agentTools, ctx?.registry, ctx, tool);
+    // A tool-step whose output says `stop: true` ends the turn after this
+    // tool round (a device that has not answered, an approval waiting on a
+    // person): the loop stops, and the one answer turn below runs no tool.
+    // In code, not in the prompt, so a model cannot talk past it.
+    let stoppedBy: string | undefined;
+    for (const [name, t] of Object.entries(registryTools) as [string, any][]) {
+      const run = t.execute;
+      t.execute = async (input: unknown, opts: unknown) => {
+        const out = await run(input, opts);
+        if (out && typeof out === "object" && (out as { stop?: unknown }).stop === true) stoppedBy ??= name;
+        return out;
+      };
+    }
+    Object.assign(tools, registryTools);
 
     // Output mode: schema (structured) vs finalAnswer (free text) vs plain
     // text. The first two end on the SAME terminal tool — see the header for
@@ -1382,11 +1422,14 @@ export default defineStep({
     // a time per thread. Its system prompt is the first turn's, replayed
     // verbatim — with its messages it heads every request, and the prompt
     // cache (and thinking blocks bound to the prefix) need it byte for byte.
+    // With `sessionSystem: latest` the step's own prompt heads every turn: a
+    // revised prompt reaches a long-lived thread at the cost of one cache miss.
     const session = cfg.session ? await openSession(cfg.session, ctx, resolved, compactAt) : undefined;
-    const system = session?.system ?? cfg.system;
+    const latest = cfg.sessionSystem === "latest";
+    const system = latest ? cfg.system : (session?.system ?? cfg.system);
     // What the requests send: the same text, with its own cache breakpoint.
     const instructions = cachedSystem(system, providerOptions) as any;
-    if (session?.system != null && session.system !== cfg.system) {
+    if (!latest && session?.system != null && session.system !== cfg.system) {
       console.warn(`[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`);
     }
     try {
@@ -1468,7 +1511,8 @@ export default defineStep({
        *  going on. The SDK asks only after a step that called tools, so a
        *  compaction never falls inside a tool round. */
       const overMarkStop = () => overMark({ used: contextUsed, limit: resolved.contextLimit }, compactAt);
-      const stopConditions = (budget: number) => [...(terminal ? [finalAnswered] : []), isStepCount(budget), overMarkStop];
+      const toolStopped = () => stoppedBy !== undefined;
+      const stopConditions = (budget: number) => [...(terminal ? [finalAnswered] : []), isStepCount(budget), overMarkStop, toolStopped];
       /** One tool-loop runner over this step's tools, with `budget` steps left. */
       const makeRunner = (budget: number) =>
         new ToolLoopAgent({
@@ -1500,7 +1544,11 @@ export default defineStep({
       // boundary) plus that record — until a compaction: from then on it
       // begins at the compaction message, and nothing before it is sent
       // again. The record keeps everything.
+      // Under a revised `latest` prompt the thread's thinking blocks are not
+      // replayed: each is bound to the system prompt it was made under.
+      const revised = latest && session?.system != null && session.system !== cfg.system;
       let prior = session ? (session.messages as any[]).slice(session.replayFrom) : [];
+      if (revised) prior = withoutReasoning(prior);
       const lead: any[] = [];
       let compactedAt: number | undefined;
       const conversation = (): any[] =>
@@ -1529,7 +1577,7 @@ export default defineStep({
         const startedAt = Date.now();
         if (path) await emit!({ type: "step.start", path, stepType: "compaction", input: { at: where, messages: before.length, tokens } });
         try {
-          const got = await summarize({ streamText, model, system: instructions, tools, ...callSettings, messages: before, retain: AGENT_RETAIN });
+          const got = await summarize({ streamText, model, system: instructions, tools, ...callSettings, messages: before, retain: cfg.retain ?? AGENT_RETAIN });
           bankedUsage = addUsage(bankedUsage, got.usage);
           if (got.summary === undefined) throw new Error(`the summary ended with finishReason "${got.finishReason}"`);
           const text = compactionMessage(got.summary, { messages: before.length, tokens });
@@ -1582,6 +1630,13 @@ export default defineStep({
         const attempt = await makeRunner(remaining).stream({ messages: conversation() as any });
         const failure = await streamFailure(attempt);
         if (failure !== undefined) {
+          // A stop tool already ran in the severed step: never resume into
+          // the tool loop (it would ask again) — the answer turn follows.
+          if (stoppedBy && isTransientStreamError(failure)) {
+            console.warn(`[agent] stream severed after the \`${stoppedBy}\` tool ended the turn; not resuming.`);
+            res = { text: "" };
+            break;
+          }
           if (
             !isTransientStreamError(failure) ||
             streamErrorContinuations >= MAX_STREAM_ERROR_CONTINUATIONS ||
@@ -1608,7 +1663,7 @@ export default defineStep({
         // the conversation into a summary and go on from it. A summarizer
         // that failed leaves the loop uncompacted for one more step, after
         // which it is tried again here.
-        if (overMarkStop() && midTask(bankedSteps.at(-1)) && bankedSteps.length < cfg.maxSteps) {
+        if (!stoppedBy && overMarkStop() && midTask(bankedSteps.at(-1)) && bankedSteps.length < cfg.maxSteps) {
           await compact("step", contextUsed);
           continue;
         }
@@ -1650,6 +1705,7 @@ export default defineStep({
       const finish = async (out: Record<string, unknown>) => {
         const turn = [{ role: "system", content: system }, ...lead, task, ...messages];
         if (compactions) out = { ...out, compactions };
+        if (stoppedBy) out = { ...out, stopped: { tool: stoppedBy } };
         if (session) {
           const from = replayFrom();
           const line = await session.commit({
@@ -1698,9 +1754,61 @@ export default defineStep({
       };
       noteText(steps);
 
+      /** One more request of the SAME conversation in which no tool can run:
+       *  the loop's own system and tools (their `execute` removed — see the
+       *  comment at the budget fallback below), the conversation, then
+       *  `prompt`. Returns the answer (text, or the object in schema mode),
+       *  or undefined when there is none; a tool call made anyway runs
+       *  nothing and is not recorded. */
+      const forceAnswer = async (prompt: string): Promise<unknown> => {
+        // Streamed for the same severed-connection reason as the main loop —
+        // this single turn emits the ENTIRE final answer.
+        const forcedPrompt = { role: "user" as const, content: prompt };
+        const forced = streamText({
+          model,
+          // The loop's own system prompt, as the loop sends it.
+          system: instructions,
+          tools: stripExecute(tools),
+          ...callSettings,
+          ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
+          // The conversation as the model saw it — the thread, this turn's
+          // task, what was generated; from the compaction boundary, if there
+          // was one — then the forced prompt: the nudge's shape.
+          messages: [...conversation(), forcedPrompt] as any,
+        } as any);
+        await drain(forced);
+        const fu = usageFromSteps(await forced.steps);
+        usage = addUsage(usage, fu);
+        cost += costOf(fu);
+        if (((await forced.toolCalls) as unknown[]).length) {
+          // A tool call despite the instruction: it ran nothing and answers
+          // nothing, and it is not recorded — a call without its result in
+          // the session store would fail the thread's next request.
+          console.warn("[agent] the forced final-answer turn called a tool instead of answering; nothing to salvage.");
+          return undefined;
+        }
+        // The record keeps this turn too.
+        bankedMessages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
+        const got: unknown = useSchema ? await (forced as any).output : ((await forced.text) ?? "").trim();
+        return got === "" ? undefined : got;
+      };
+      /** The prompt of the answer turn after a tool ended the turn. */
+      const stoppedPrompt = () =>
+        `The \`${stoppedBy}\` tool ended this turn — do NOT call any tools. Answer now from the results above${useSchema ? ", as the structured answer" : ""}: ` +
+        `say what was done and what is still waiting.${contract ? `\n\n${contract}` : ""}`;
+
       if (!terminal) {
+        let result = res.text || lastText;
+        if (stoppedBy) {
+          try {
+            const got = await forceAnswer(stoppedPrompt());
+            if (typeof got === "string") result = got;
+          } catch (e) {
+            giveUp("answer turn after a stop", e);
+          }
+        }
         console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps)`);
-        return await finish({ result: res.text || lastText, steps: stepsUsed, usage, cost });
+        return await finish({ result, steps: stepsUsed, usage, cost });
       }
 
       // Both answer modes end on final_answer: its text (finalAnswer) or the
@@ -1720,7 +1828,7 @@ export default defineStep({
           maxOutputTokens,
           // At least a few turns even when the stop came near the cap —
           // finishing file work takes more than one call.
-          stopWhen: [finalAnswered, isStepCount(Math.max(4, budget))],
+          stopWhen: [finalAnswered, isStepCount(Math.max(4, budget)), toolStopped],
           ...callSettings,
           prepareStep,
           onStepEnd,
@@ -1747,7 +1855,8 @@ export default defineStep({
       // continue the session ONCE with the remaining budget and a nudge to
       // either keep working or call final_answer. A second tool-less stop
       // falls through to the forced turn / last-text fallback as before.
-      if (classifyFinalAnswerStop(answer !== undefined, stepsUsed, cfg.maxSteps) === "nudge") {
+      // A tool that ended the turn is never nudged back into the tool loop.
+      if (!stoppedBy && classifyFinalAnswerStop(answer !== undefined, stepsUsed, cfg.maxSteps) === "nudge") {
         console.warn(
           `[agent] Loop ended tool-lessly at ${stepsUsed}/${cfg.maxSteps} steps without final_answer; nudging the loop once.`,
         );
@@ -1791,43 +1900,20 @@ export default defineStep({
       // misses the cache as the no-tools request always did — those models
       // have no preserved thinking to break.
       if (answer === undefined) {
-        console.warn("[agent] No final_answer tool call; forcing a final-answer turn.");
+        console.warn(
+          stoppedBy
+            ? `[agent] the \`${stoppedBy}\` tool ended the turn; one answer turn with no tools.`
+            : "[agent] No final_answer tool call; forcing a final-answer turn.",
+        );
         try {
-          // Streamed for the same severed-connection reason as the main loop —
-          // this single turn emits the ENTIRE final answer.
-          const forcedPrompt = {
-            role: "user" as const,
-            content: `You have used your entire exploration budget — do NOT call any tools. Using everything you learned above, produce the final ${useSchema ? "structured " : ""}answer NOW.\n\n${contract}`,
-          };
-          const forced = streamText({
-            model,
-            // The loop's own system prompt, as the loop sends it.
-            system: instructions,
-            tools: stripExecute(tools),
-            ...callSettings,
-            ...(useSchema ? { output: Output.object({ schema: jsonSchema(cfg.schema) }) } : {}),
-            // The conversation as the model saw it — the thread, this turn's
-            // task, what was generated; from the compaction boundary, if there
-            // was one — then the forced prompt: the nudge's shape.
-            messages: [...conversation(), forcedPrompt] as any,
-          } as any);
-          await drain(forced);
-          const fu = usageFromSteps(await forced.steps);
-          usage = addUsage(usage, fu);
-          cost += costOf(fu);
-          if (((await forced.toolCalls) as unknown[]).length) {
-            // A tool call despite the instruction: it ran nothing and answers
-            // nothing, and it is not recorded — a call without its result in
-            // the session store would fail the thread's next request.
-            console.warn("[agent] the forced final-answer turn called a tool instead of answering; nothing to salvage.");
-          } else {
-            // The record keeps this turn too.
-            bankedMessages.push(forcedPrompt, ...((((await forced.response) as any)?.messages ?? []) as any[]));
-            const got: unknown = useSchema ? await (forced as any).output : ((await forced.text) ?? "").trim();
-            if (got !== undefined && got !== "") answer = got;
-          }
+          const got = await forceAnswer(
+            stoppedBy
+              ? stoppedPrompt()
+              : `You have used your entire exploration budget — do NOT call any tools. Using everything you learned above, produce the final ${useSchema ? "structured " : ""}answer NOW.\n\n${contract}`,
+          );
+          if (got !== undefined) answer = got;
         } catch (e) {
-          giveUp("forced final-answer turn", e);
+          giveUp(stoppedBy ? "answer turn after a stop" : "forced final-answer turn", e);
         }
       }
 
@@ -1845,7 +1931,7 @@ export default defineStep({
         // demand a complete answer. A second degenerate answer is returned
         // as-is — the caller's own fallbacks take it from there.
         const bad = degenerateSchemaFields(cfg.schema, answer);
-        if (bad.length && stepsUsed < cfg.maxSteps) {
+        if (bad.length && stepsUsed < cfg.maxSteps && !stoppedBy) {
           console.warn(
             `[agent] Structured answer left required field(s) empty/filler (${bad.join(", ")}) at ${stepsUsed}/${cfg.maxSteps} steps; nudging the loop once.`,
           );

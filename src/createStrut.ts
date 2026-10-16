@@ -2671,7 +2671,9 @@ export async function createStrut<TServices = unknown>(
   const automations = createAutomations({
     workspace,
     store,
-    launch: (flow, input, automation) => launchDetached(flow, { input }, { origin: "schedule", automation }),
+    secrets: secretStore,
+    launch: (flow, input, automation, callback) =>
+      launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
   });
   // Scheduling adopts an ownerless workflow: the scheduler's runs are billed
@@ -2688,7 +2690,7 @@ export async function createStrut<TServices = unknown>(
     const live = [...controllers.keys()].filter((k) => k.startsWith(`${name}/`)).length;
     if (live) return c.json({ error: `Workflow "${name}" has ${live} run${live === 1 ? "" : "s"} in flight — cancel first` }, 409);
     if (!(await workspace.getWorkflowMetadata(name))) return c.json({ error: `Workflow "${name}" not found` }, 404);
-    automations.forget(name);
+    await automations.forget(name);
     await store.deleteRuns(name);
     await workspace.deleteWorkflow(name);
     return c.json({ ok: true, workflow: name });
