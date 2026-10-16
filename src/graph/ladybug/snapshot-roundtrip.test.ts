@@ -39,6 +39,12 @@ async function dump(q: Q) {
   return out;
 }
 
+/** Same ids in the same order; the index's own scores within rounding (they are computed, not stored, and differ in the last bits across platforms). */
+function sameHits(got: Record<string, any>[], want: Record<string, any>[], field: string) {
+  assert.deepEqual(got.map((r) => r["id"]), want.map((r) => r["id"]));
+  for (const [i, r] of got.entries()) assert.ok(Math.abs(Number(r[field]) - Number(want[i]![field])) < 1e-9, `${field} of ${r["id"]}: ${r[field]} vs ${want[i]![field]}`);
+}
+
 describe("workspace graph export → import is lossless", { skip: tb.skip }, () => {
   let backend: GraphBackend & { kind: "ladybug" };
   let dir: string;
@@ -110,7 +116,8 @@ describe("workspace graph export → import is lossless", { skip: tb.skip }, () 
     assert.ok(a["Node"]!.length >= 20, "a real workspace was written");
     for (const [table, rows] of Object.entries(a)) assert.ok(rows.length > 0, `${table} holds rows`);
     assert.ok(a["Node"]!.some((r) => r.includes("9223372036854775807")) && a["Node"]!.some((r) => r.includes("9007199254740993")));
-    assert.deepEqual(Object.keys(b), Object.keys(a));
+    // Ladybug does not promise an order for SHOW_TABLES; Linux and macOS differ.
+    assert.deepEqual(Object.keys(b).sort(), Object.keys(a).sort());
     for (const table of Object.keys(a)) assert.deepEqual(b[table], a[table], `${table} differs after the round trip`);
   });
 
@@ -119,10 +126,10 @@ describe("workspace graph export → import is lossless", { skip: tb.skip }, () 
     assert.ok(names.includes("node_vec") && names.includes("node_fts"));
     const v = JSON.stringify(vec(0));
     const near = `CALL QUERY_VECTOR_INDEX('Node', 'node_vec', CAST(${v} AS FLOAT[384]), 5) RETURN node.ref_id AS id, distance ORDER BY distance, id`;
-    assert.deepEqual(await imported(near), await backend.query(near));
+    sameHits(await imported(near), await backend.query(near), "distance");
     const text = "CALL QUERY_FTS_INDEX('Node', 'node_fts', 'step3') RETURN node.ref_id AS id, score ORDER BY id";
     const hits = await backend.query(text);
     assert.ok(hits.length > 0);
-    assert.deepEqual(await imported(text), hits);
+    sameHits(await imported(text), hits, "score");
   });
 });

@@ -31,7 +31,7 @@ async function dump(query: Query): Promise<Record<string, unknown[]>> {
   for (const t of tables.sort((a, b) => String(a.name).localeCompare(String(b.name)))) {
     const name = String(t.name);
     const info = await query(`CALL table_info('${name}') RETURN *`);
-    const columns = info.map((c) => `${c.name} ${c.type}`);
+    const columns = info.map((c) => `${c.name} ${c.type}`).sort();
     let rows: Row[];
     if (t.type === "REL") {
       rows = await query(`MATCH (a)-[r:\`${name}\`]->(b) RETURN label(a) AS from_table, a.ref_id AS from_id, label(b) AS to_table, b.ref_id AS to_id, r AS props`);
@@ -176,7 +176,7 @@ describe("memory export → import is lossless", { skip: !hasLadybug && "@ladybu
   it("every table, column, row and edge comes back exactly", async () => {
     const a = await dump(await memoryDb(A));
     const b = await dump(await memoryDb(B));
-    assert.deepEqual(Object.keys(b), Object.keys(a));
+    assert.deepEqual(Object.keys(b).sort(), Object.keys(a).sort());
     for (const table of Object.keys(a)) assert.equal(key(b[table]), key(a[table]), `${table} differs after the round trip`);
   });
 
