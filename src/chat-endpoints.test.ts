@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -1499,5 +1499,75 @@ describe("chat endpoints", () => {
     } finally {
       fake.close();
     }
+  });
+  // ── attachments (src/ai/attachments.ts) ──────────────────────────────
+
+  const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+  it("attachments: each file is saved under uploads/<chat>/ and reaches the model — an image and a PDF as blocks, text and a Word file as text", async () => {
+    const bodies: any[] = [];
+    const s = await scripted([{ text: "Got them." }], bodies);
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    try {
+      const strut = await makeStrut();
+      const docx = await readFile(new URL("./ai/fixtures/spec.docx", import.meta.url));
+      const res = await strut.app.request("/chat", JSON_({
+        message: "build this",
+        attachments: [
+          { name: "shot.png", data: `data:image/png;base64,${PNG_1PX}` },
+          { name: "brief.pdf", mediaType: "application/pdf", data: Buffer.from("%PDF-1.4\n%%EOF").toString("base64") },
+          { name: "notes.md", mediaType: "", data: Buffer.from("# Notes\nkeep chapters").toString("base64") },
+          { name: "spec.docx", data: docx.toString("base64") },
+        ],
+      }));
+      assert.equal(res.status, 202);
+      const { chatId } = (await res.json()) as { chatId: string };
+      await settled(chatId);
+
+      const dir = join(tempDir, "uploads", chatId);
+      assert.deepEqual((await readdir(dir)).sort(), ["brief.pdf", "notes.md", "shot.png", "spec.docx"]);
+      assert.equal((await readFile(join(dir, "shot.png"))).toString("base64"), PNG_1PX);
+
+      // Stored as the model saw it: the typed text first, then each file.
+      const [stored] = await chatStore.loadMessages(chatId);
+      const parts = stored!.content as any[];
+      assert.deepEqual(parts[0], { type: "text", text: "build this" });
+      assert.equal(parts[1].text, `[attachment] shot.png (image/png, 70 B) — saved at ${join(dir, "shot.png")}`);
+      assert.deepEqual(parts[2], { type: "file", data: PNG_1PX, mediaType: "image/png", filename: "shot.png" });
+      assert.equal(((await chatStore.getMeta(chatId))!).title, "build this");
+
+      const sent = bodies[0].messages[0].content as any[];
+      assert.equal(sent[0].text, "build this");
+      assert.deepEqual(sent[2].source, { type: "base64", media_type: "image/png", data: PNG_1PX });
+      assert.equal(sent[4].type, "document");
+      assert.equal(sent[4].source.media_type, "application/pdf");
+      assert.match(sent[5].text, /^\[attachment\] notes\.md \(text\/markdown, 21 B\)[^\n]*\n\n# Notes\nkeep chapters$/);
+      assert.match(sent[6].text, /Cut the video at every chapter marker\./);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("attachments: a message may be files alone; a bad or oversized file is a 400 before anything is persisted", async () => {
+    const strut = await makeStrut();
+    const tooBig = Buffer.alloc(6 * 1024 * 1024).toString("base64");
+    for (const [attachments, error] of [
+      [[{ name: "big.png", mediaType: "image/png", data: tooBig }], /big\.png is 6\.0 MB; the limit is 5\.0 MB/],
+      [[{ name: "x.txt", data: "not base64!" }], /data is not base64/],
+      [{ name: "x.txt" }, /must be an array/],
+    ] as const) {
+      const res = await strut.app.request("/chat", JSON_({ message: "hi", attachments }));
+      assert.equal(res.status, 400);
+      assert.match(((await res.json()) as { error: string }).error, error);
+    }
+    assert.deepEqual(await chatStore.listChats(), []);
+
+    const res = await strut.app.request("/chat", JSON_({ attachments: [{ name: "a.txt", data: Buffer.from("x").toString("base64") }] }));
+    assert.equal(res.status, 202);
+    const { chatId } = (await res.json()) as { chatId: string };
+    assert.equal((await chatStore.getMeta(chatId))!.title, "a.txt");
+    const [stored] = await chatStore.loadMessages(chatId);
+    assert.equal((stored!.content as any[]).length, 1, "no empty text part for a files-only message");
   });
 });

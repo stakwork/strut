@@ -3255,6 +3255,79 @@ body.is-resizing-flyout * {
   white-space: nowrap;
   flex-shrink: 0;
 }
+/* Attached files: chips (name, size) and image thumbnails — in a user
+   bubble (right-aligned, above the text) and in the composer (removable). */
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-1);
+}
+.chat-composer .chat-attachments {
+  justify-content: flex-start;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-2) 0;
+}
+.chat-attachment {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+}
+.chat-attachment > svg { flex: none; color: var(--text-muted); }
+.chat-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attachment-size { flex: none; color: var(--text-muted); }
+.chat-attachment.is-image {
+  padding: 0;
+  overflow: hidden;
+}
+.chat-attachment.is-image img {
+  display: block;
+  max-width: 240px;
+  max-height: 160px;
+  object-fit: cover;
+}
+.chat-composer .chat-attachment.is-image img { max-height: 56px; max-width: 96px; }
+.chat-attachment-remove {
+  flex: none;
+  display: inline-flex;
+  padding: 2px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.chat-attachment-remove:hover { color: var(--text); }
+.chat-attachment.is-image .chat-attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+}
+.chat-composer.is-dragover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.chat-composer-footer .chat-attach {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px;
+}
+
 .chat-mic-error {
   padding: var(--sp-1) var(--sp-4);
   color: var(--danger);

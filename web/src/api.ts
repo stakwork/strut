@@ -1092,17 +1092,24 @@ export interface ChatTranscript {
 /** Launch a chat turn (detached). Pass `chatId` to continue an existing
  *  session, or omit it to start a new one. `model` (canonical name from
  *  listLlmModels, or any aieo name) is validated server-side and recorded
- *  on the chat; omit it to keep the chat's model. Returns the ids to
- *  reattach with. */
+ *  on the chat; omit it to keep the chat's model. `attachments` are files
+ *  (`data` a data URL) the server saves and shows the model. Returns the
+ *  ids to reattach with. */
 export async function sendChat(
   message: string,
   chatId?: string,
   model?: string,
+  attachments?: { name: string; mediaType: string; data: string }[],
 ): Promise<{ chatId: string; turn: number }> {
   const res = await apiFetch(`/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, ...(chatId ? { chatId } : {}), ...(model ? { model } : {}) }),
+    body: JSON.stringify({
+      message,
+      ...(chatId ? { chatId } : {}),
+      ...(model ? { model } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+    }),
   });
   if (!res.ok) {
     // 409 = the chat already has a turn in progress (reattach instead).
