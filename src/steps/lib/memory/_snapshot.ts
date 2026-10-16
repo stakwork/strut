@@ -10,6 +10,14 @@
 // the folder it is given, never the `storage` path schema.cypher names, so a
 // snapshot moves between machines. Chosen over copying graph.lbug, which would
 // tie a snapshot to one Ladybug storage format.
+//
+// memory-roundtrip.test.ts compares every table, row, edge and column (INT64
+// extremes, list edge cases, soft deletes, duplicate edges) before and after.
+// The WORKSPACE graph (graph/ladybug) round-trips the same way, FLOAT[384]
+// vectors included, with its HNSW + FTS indexes rebuilt from index.cypher
+// (snapshot-roundtrip.test.ts) — but this reader would refuse it: its
+// index.cypher is not empty and its schema.cypher carries INSTALL / LOAD
+// EXTENSION lines. A whole-brain snapshot needs format 2 to allow both.
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import { dirname, join } from "node:path";
