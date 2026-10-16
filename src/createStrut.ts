@@ -2560,7 +2560,7 @@ export async function createStrut<TServices = unknown>(
           console.error(`[run ${runId}] launch failed:`, err);
           if (callback) {
             const message = err instanceof Error ? err.message : String(err);
-            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt);
+            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt, body.job);
           }
         },
       )
@@ -2583,6 +2583,7 @@ export async function createStrut<TServices = unknown>(
           event: "run.end",
           workflow,
           runId: res.runId,
+          ...(job ? { job } : {}),
           status: res.status,
           ...(res.output !== undefined ? { output: res.output } : {}),
           ...(res.error ? { error: { message: res.error.message } } : {}),
@@ -2593,6 +2594,42 @@ export async function createStrut<TServices = unknown>(
         { tag: `[run ${res.runId}] callback run.end` },
       );
     })();
+  }
+
+  // `job/start` / `job/continue` (ctx.services.jobs.launch): a turn hands
+  // work to the `job` workflow and ends, the job running detached as if the
+  // host had launched it. Its `run.end` goes where the launching run's
+  // would — the URL the run store keeps beside that run's log — never to a
+  // URL the model wrote.
+  // Only on the bag's own capability: an injected one is the consumer's,
+  // and may be shared with another strut.
+  const launchCap = (opts.services as Record<string, unknown> | undefined)?.["jobs"]
+    ? undefined
+    : ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined);
+  if (launchCap) {
+    launchCap.launch = async ({ job, title, input, from, actor, principal }) => {
+      const problem = idProblem(job);
+      if (problem) throw new Error(`job "${job}" ${problem}`);
+      const flow = await workspace.getWorkflow("job");
+      // The ROOT run's: only a top-level launch keeps a callback, and the
+      // turn may be a child run (meta/run-workflow) of the one the host
+      // launched.
+      let root = controllersByRunId.get(from);
+      while (root?.parent) root = root.parent;
+      const url = root ? await store.getRunCallback(root.workflow, root.runId) : null;
+      // After the awaits: from here to launchDetached's trackRun is
+      // synchronous, so two launches of one job cannot both pass.
+      const running = [...controllers.values()].find((c) => c.job?.id === job);
+      if (running) {
+        throw new Error(`job_busy: job "${job}" has a run in flight (${running.workflow} ${running.runId}); its result comes when it ends — continue it then`);
+      }
+      const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}) }, {
+        ...(actor ? { actor } : {}),
+        ...(principal ? { principal } : {}),
+        ...(url ? { callback: { url } } : {}),
+      });
+      return { runId, callback: !!url };
+    };
   }
 
   /** Every agent session a run recorded, as links to fetch — never the

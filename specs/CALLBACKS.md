@@ -55,6 +55,7 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
 | `event`      | always `"run.end"`                                           |
 | `workflow`   | the workflow name you launched                               |
 | `runId`      | the id from step 1                                           |
+| `job`        | the job the run was launched under — only for a job run      |
 | `status`     | `"success"`, `"error"` or `"cancelled"`                      |
 | `output`     | the workflow's output (its last step's) — on success only    |
 | `error`      | `{ "message": "..." }` — on error only                       |
@@ -151,6 +152,14 @@ same for every run launched with that id. Launch again with the same `job`
 (and the same `session` on the agent) and the next run revises the same
 files behind the same links: that is how a plan gets iterated on across
 twenty turns. `plans/jobs.md` is the design.
+
+**A job your run started.** A workflow whose agent is granted `job/start`
+and `job/continue` hands bigger work to strut's `job` workflow and ends
+its turn without waiting. That job's run carries YOUR run's callback, so
+your URL gets a second `run.end` when the job ends: `workflow: "job"`,
+the `job` id, and its artifacts resolved in the job's directory. Tell the
+two apart by `workflow` and `job`. A run launched with no callback starts
+jobs with none.
 
 ## 5. Live updates — a job tells you what changed, as it changes
 

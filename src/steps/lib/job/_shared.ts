@@ -1,5 +1,6 @@
 import type { JobIndex } from "../../../job-index.js";
-import type { JobsCapability } from "../../../jobs.js";
+import type { RunEvent, StepContext } from "../../../core.js";
+import type { JobLaunch, JobsCapability } from "../../../jobs.js";
 
 /**
  * The `job/list` / `job/get` / `job/read` steps are thin over the job
@@ -17,4 +18,59 @@ export function requireJobIndex(services: unknown): JobIndex {
     );
   }
   return jobs as JobIndex;
+}
+
+/** `job/start` / `job/continue` launch through `ctx.services.jobs.launch`,
+ *  which `createStrut` sets: a detached run needs the server's launcher. */
+export function requireJobLaunch(services: unknown): NonNullable<JobsCapability["launch"]> {
+  const launch = (services as { jobs?: JobsCapability } | undefined)?.jobs?.launch;
+  if (!launch) {
+    throw new Error(
+      "job/start and job/continue need a server to launch the job on (ctx.services.jobs.launch). " +
+        "The standard strut server provides it.",
+    );
+  }
+  return launch;
+}
+
+/** What a launch journals: the job and run it started. */
+interface LaunchRecord {
+  job: string;
+  runId: string;
+  callback: boolean;
+}
+
+/**
+ * Launch once, even across a resume. The handle is journaled as a synthetic
+ * `step.end` (no stepType) right after the launch, as strut/run-workflow
+ * does: at `<path>#launch` for a DAG step, and for an agent's tool call at
+ * `<agent path>#<call>` — the slice of the journal the agent step is handed
+ * and its tool calls share. A resumed turn that makes the same call again
+ * gets the job already running, not a second one. `job` narrows a record to
+ * that job (job/continue); job/start takes whatever it started.
+ */
+export async function launchOnce(
+  ctx: StepContext,
+  launch: NonNullable<JobsCapability["launch"]>,
+  opts: Omit<JobLaunch, "from" | "actor" | "principal">,
+  match?: string,
+): Promise<LaunchRecord> {
+  const cut = ctx.path.lastIndexOf("/");
+  const key = !ctx.path ? undefined : ctx.agentTool && cut > 0 ? `${ctx.path.slice(0, cut)}#${ctx.path.slice(cut + 1)}` : `${ctx.path}#launch`;
+  const prior = key ? (ctx.journal?.[key] as Partial<LaunchRecord> | undefined) : undefined;
+  if (prior && typeof prior.job === "string" && typeof prior.runId === "string" && (!match || prior.job === match)) {
+    return { job: prior.job, runId: prior.runId, callback: !!prior.callback };
+  }
+  const { runId, callback } = await launch({
+    ...opts,
+    from: ctx.runId,
+    ...(ctx.actor ? { actor: ctx.actor } : {}),
+    ...(ctx.principal ? { principal: ctx.principal } : {}),
+  });
+  const record: LaunchRecord = { job: opts.job, runId, callback };
+  if (key && ctx.emit) {
+    // The runner stamps ts/runId (strut/run-workflow's cast).
+    await (ctx.emit as unknown as (e: Partial<RunEvent> & { type: RunEvent["type"] }) => Promise<void>)({ type: "step.end", path: key, output: record });
+  }
+  return record;
 }
