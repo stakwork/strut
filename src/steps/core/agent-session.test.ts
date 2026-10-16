@@ -559,25 +559,6 @@ describe("agent sessions", () => {
     }
   });
 
-  // ── sessionSystem (opt-in) ───────────────────────────────────────────────
-
-  it('sessionSystem "latest": every turn sends this step\'s system; the thread\'s messages still replay byte for byte', async () => {
-    const s = await serve([answer("toolu_1", "one"), answer("toolu_2", "two")]);
-    try {
-      await run({ session: "abc", system: "prompt v1", prompt: "first", sessionSystem: "latest" });
-      const second = await run({ session: "abc", system: "prompt v2", prompt: "second", sessionSystem: "latest" });
-      assert.equal(systemOf(s.bodies[0]), "prompt v1");
-      assert.equal(systemOf(s.bodies[1]), "prompt v2");
-      const prefix = s.bodies[0].messages as unknown[];
-      assert.equal(JSON.stringify((s.bodies[1].messages as unknown[]).slice(0, prefix.length)), JSON.stringify(prefix));
-      // The run log records the prompt the turn sent; the store keeps the first.
-      assert.deepEqual((messagesOf(second) as any[])[0], { role: "system", content: "prompt v2" });
-      assert.equal((await store.load("abc"))!.system, "prompt v1");
-    } finally {
-      s.close();
-    }
-  });
-
   // ── a tool that ends the turn ────────────────────────────────────────────
 
   it("a tool output with stop: true ends the turn after that round: one answer turn with inert tools, no nudge", async () => {
@@ -640,30 +621,6 @@ describe("agent sessions", () => {
       assert.equal(out.result, "Waiting for your Mac.");
       assert.deepEqual(out.stopped, { tool: "dev_ask_mac" });
       assert.ok(JSON.stringify((s.bodies[2].messages as any[]).at(-1)).includes("ended this turn"));
-    } finally {
-      s.close();
-    }
-  });
-
-  it('under a revised "latest" prompt the thread\'s thinking blocks are not replayed; under the same prompt they are', async () => {
-    const thinking = { role: "assistant", content: [{ type: "reasoning", text: "hmm", providerOptions: { anthropic: { signature: "SIG-1" } } }, { type: "text", text: "done" }] };
-    const seedThinking = (id: string) =>
-      store.appendTurn(id, {
-        system: "sys",
-        messages: [{ role: "user", content: "earlier" }, thinking],
-        record: { workflow: "wf", runId: "r0", path: "wf/work", provider: "anthropic", model: "anthropic/x", routed: false },
-      });
-    const s = await serve([answer("toolu_1", "same"), answer("toolu_2", "revised")]);
-    try {
-      await seedThinking("same");
-      await run({ session: "same", system: "sys", sessionSystem: "latest", reasoning: "high" });
-      assert.ok(JSON.stringify(s.bodies[0].messages).includes("SIG-1"), "the same prompt replays them");
-      await seedThinking("revised");
-      await run({ session: "revised", system: "sys v2", sessionSystem: "latest", reasoning: "high" });
-      const sent = JSON.stringify(s.bodies[1].messages);
-      assert.ok(!sent.includes("SIG-1") && sent.includes("done") && sent.includes("earlier"));
-      // The record keeps them.
-      assert.ok(JSON.stringify((await store.load("revised"))!.messages).includes("SIG-1"));
     } finally {
       s.close();
     }

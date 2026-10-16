@@ -1517,13 +1517,7 @@ and the child env is scrubbed by construction).
   **History is append-only**, the chat's rule: the system prompt is frozen
   by the first turn (a later step's `system` is ignored, one warn line) and
   the messages are replayed as stored, so every request begins with the
-  previous one byte for byte. `sessionSystem: latest` (opt-in) sends the
-  step's own `system` every turn instead — for a thread that lives for months
-  while its prompt changes; `system.md` keeps the first turn's, the run log
-  each turn's. While the step's prompt differs from the first turn's, the
-  thread replays WITHOUT its reasoning parts (`withoutReasoning`): a thinking
-  block is bound to the system prompt it was made under. The record keeps
-  them. `retain` replaces what a
+  previous one byte for byte. `retain` replaces what a
   compaction's summary is told to keep (`AGENT_RETAIN`: files, commands) with
   the caller's own references. Tools, output mode and `maxSteps` are the
   current step's. The provider and whether calls are routed through the

@@ -888,20 +888,6 @@ export async function openSession(
   return session;
 }
 
-/** `messages` with every assistant reasoning part removed — what a thread
- *  replays under a system prompt other than the one its thinking was made
- *  under (`sessionSystem: latest`). The record on disk keeps them. */
-export function withoutReasoning(messages: unknown[]): unknown[] {
-  return messages.flatMap((m) => {
-    const msg = m as { role?: string; content?: unknown };
-    if (msg.role !== "assistant" || !Array.isArray(msg.content)) return [m];
-    const kept = (msg.content as Array<{ type?: string }>).filter((p) => p.type !== "reasoning" && p.type !== "redacted-reasoning");
-    if (kept.length === msg.content.length) return [m];
-    // A turn that was nothing but thinking says nothing without it.
-    return kept.length ? [{ ...msg, content: kept }] : [];
-  });
-}
-
 /** The transcript recorded for an agent session (`RunEvent.messages`): the
  *  system prompt, the task prompt as the model saw it (cwd preamble included),
  *  then every generated turn — AI SDK model messages, the shape a log store
@@ -1023,13 +1009,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        'CONTINUE a conversation across runs: an id the CALLER supplies, usually "{{ input.session }}" (a uuid). The agent starts from that thread — its system prompt, fixed by the thread\'s first turn (this step\'s `system` is ignored after, unless sessionSystem is "latest"), and every earlier message — and appends this turn when it succeeds; a failed or cancelled turn appends nothing. Omit for a one-shot agent. Ids are GLOBAL: every run of every workflow naming the same id shares ONE thread, so a literal ("janitor-daily") is right only for an agent that should remember forever. Give each chained agent of a workflow its own id ("{{ input.session }}/review"); an agent without `session` starts cold every run. One turn at a time per id (a second fails with `session_busy:`). Letters, digits and ". _ -" in `/`-separated segments. Turns minutes apart want cacheTtl: 1h. To carry the FILES along too, give git/checkout a `workdir`.',
-      ),
-    sessionSystem: z
-      .enum(["first", "latest"])
-      .default("first")
-      .describe(
-        'Which system prompt a `session` turn sends. "first" (default): the thread\'s first turn\'s, byte for byte, every turn. "latest": this step\'s `system`, every turn — for a thread that lives for months while its prompt is revised. While it differs from the first turn\'s, the thread replays without its thinking blocks (bound to the prompt they were made under), and a change costs a prompt-cache miss. The session store keeps the first turn\'s prompt; each turn\'s run log records the one it sent.',
+        'CONTINUE a conversation across runs: an id the CALLER supplies, usually "{{ input.session }}" (a uuid). The agent starts from that thread — its system prompt, fixed by the thread\'s first turn (this step\'s `system` is ignored after), and every earlier message — and appends this turn when it succeeds; a failed or cancelled turn appends nothing. Omit for a one-shot agent. Ids are GLOBAL: every run of every workflow naming the same id shares ONE thread, so a literal ("janitor-daily") is right only for an agent that should remember forever. Give each chained agent of a workflow its own id ("{{ input.session }}/review"); an agent without `session` starts cold every run. One turn at a time per id (a second fails with `session_busy:`). Letters, digits and ". _ -" in `/`-separated segments. Turns minutes apart want cacheTtl: 1h. To carry the FILES along too, give git/checkout a `workdir`.',
       ),
     retain: z
       .string()
@@ -1422,14 +1402,11 @@ export default defineStep({
     // a time per thread. Its system prompt is the first turn's, replayed
     // verbatim — with its messages it heads every request, and the prompt
     // cache (and thinking blocks bound to the prefix) need it byte for byte.
-    // With `sessionSystem: latest` the step's own prompt heads every turn: a
-    // revised prompt reaches a long-lived thread at the cost of one cache miss.
     const session = cfg.session ? await openSession(cfg.session, ctx, resolved, compactAt) : undefined;
-    const latest = cfg.sessionSystem === "latest";
-    const system = latest ? cfg.system : (session?.system ?? cfg.system);
+    const system = session?.system ?? cfg.system;
     // What the requests send: the same text, with its own cache breakpoint.
     const instructions = cachedSystem(system, providerOptions) as any;
-    if (!latest && session?.system != null && session.system !== cfg.system) {
+    if (session?.system != null && session.system !== cfg.system) {
       console.warn(`[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`);
     }
     try {
@@ -1544,11 +1521,7 @@ export default defineStep({
       // boundary) plus that record — until a compaction: from then on it
       // begins at the compaction message, and nothing before it is sent
       // again. The record keeps everything.
-      // Under a revised `latest` prompt the thread's thinking blocks are not
-      // replayed: each is bound to the system prompt it was made under.
-      const revised = latest && session?.system != null && session.system !== cfg.system;
       let prior = session ? (session.messages as any[]).slice(session.replayFrom) : [];
-      if (revised) prior = withoutReasoning(prior);
       const lead: any[] = [];
       let compactedAt: number | undefined;
       const conversation = (): any[] =>

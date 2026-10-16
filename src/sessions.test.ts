@@ -305,7 +305,7 @@ describe("agent sessions over HTTP", () => {
 });
 
 // The shape of Peel's orchestrator (peel docs/agent-on-strut.md §1): one
-// DM thread on `session`, the step's prompt on every turn, no built-ins,
+// DM thread on `session`, its prompt fixed by the first turn, no built-ins,
 // registry steps as tools, job's structured reply, and a run.end callback
 // per turn. Turn 1 asks a device that has not answered (`stop: true`), so
 // the turn ends waiting; turn 2 is the answer arriving, in the same thread.
@@ -393,7 +393,7 @@ describe("a peel-agent-shaped workflow: two turns in one session", () => {
     },
   });
 
-  it("turn 1 ends waiting on a tool, turn 2 continues the thread under the revised prompt; each run.end reaches the callback", async () => {
+  it("turn 1 ends waiting on a tool, turn 2 continues the thread under its first prompt; each run.end reaches the callback", async () => {
     const bodies: any[] = [];
     const replies = [
       toolUse("toolu_1", "dev_ask_mac", { kind: "chats.unseen" }),
@@ -428,7 +428,6 @@ describe("a peel-agent-shaped workflow: two turns in one session", () => {
           config: {
             cwd: join(dir, "cwd"),
             session: "{{ input.session }}",
-            sessionSystem: "latest",
             system: "{{ params.system }}",
             prompt: "{{ input.context.line }}{{ input.prompt }}",
             toolFilter: ["none"],
@@ -472,18 +471,19 @@ describe("a peel-agent-shaped workflow: two turns in one session", () => {
       assert.deepEqual(first.end.output.stopped, { tool: "dev_ask_mac" });
       assert.equal(bodies.length, 2, "the stop ended the loop: one answer turn, no more tools");
 
+      // A later prompt is ignored: the thread keeps its first turn's.
       const second = await turn("Your Mac answered: 3 unread from Sam.", { system: "prompt v2" });
       assert.equal(second.end.status, "success", JSON.stringify(second.end));
       assert.deepEqual(second.end.output.object, { text: "You missed 3 messages from Sam.", artifacts: [] });
       assert.ok(!("stopped" in second.end.output));
       assert.deepEqual(second.end.output.session, { id: "peel/agent-1/dm", turn: 1, offset: (await strut.sessionStore.load("peel/agent-1/dm"))!.turns[0]!.count });
 
-      // On the wire: no built-ins, the step's current prompt, the context line,
+      // On the wire: no built-ins, the thread's prompt, the context line,
       // and turn 1 replayed as the unchanged prefix of turn 2.
       const [loop1, answer1, loop2] = bodies;
       assert.deepEqual((loop1.tools as any[]).map((t) => t.name).sort(), ["dev_ask_mac", "dev_remember", "final_answer"]);
       assert.equal((loop1.system as any[]).map((b) => b.text).join(""), "prompt v1");
-      assert.equal((loop2.system as any[]).map((b) => b.text).join(""), "prompt v2");
+      assert.equal((loop2.system as any[]).map((b) => b.text).join(""), "prompt v1");
       assert.ok(JSON.stringify(loop1.messages).includes("Thu 16 Oct 14:02, Europe/London. what did I miss?"));
       assert.equal(loop1.cache_control?.ttl, "1h");
       const prefix = answer1.messages as unknown[];
