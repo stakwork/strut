@@ -1507,7 +1507,7 @@ and the child env is scrubbed by construction).
   one thread shared by every run that forgot an id.
   **The record** is a second store (`SessionStore`, File + Memory; the
   default follows the CHAT store's kind): `system.md` written by turn 0 and
-  never again, append-only `messages.jsonl`, and `turns.jsonl`, one line per
+  never again (but see `systemAtCompaction`), append-only `messages.jsonl`, and `turns.jsonl`, one line per
   successful turn (who, which run and step, provider, model, `offset` /
   `count`, usage, the context after it) — the turn line is the commit. The
   run log records the TURN (`step.end.messages` = the system prompt + this
@@ -1517,7 +1517,15 @@ and the child env is scrubbed by construction).
   **History is append-only**, the chat's rule: the system prompt is frozen
   by the first turn (a later step's `system` is ignored, one warn line) and
   the messages are replayed as stored, so every request begins with the
-  previous one byte for byte. `retain` replaces what a
+  previous one byte for byte. `systemAtCompaction: latest` (opt-in) lets a
+  long-lived thread take a revised prompt at the one moment the cache breaks
+  anyway: when the thread is COMPACTED (at open or between steps) the
+  summary is still written under the old prompt, and the request after it —
+  which begins at the summary, so nothing made under the old prompt, its
+  thinking blocks included, is sent again — goes out under the step's
+  current `system`. The turn line says `systemReplaced: true` and `system.md`
+  takes the new prompt; between compactions it is fixed byte for byte.
+  `retain` replaces what a
   compaction's summary is told to keep (`AGENT_RETAIN`: files, commands) with
   the caller's own references. Tools, output mode and `maxSteps` are the
   current step's. The provider and whether calls are routed through the

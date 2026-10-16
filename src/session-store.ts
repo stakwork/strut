@@ -4,7 +4,9 @@
  * store's shape:
  *
  *   sessions/<encodeURIComponent(id)>/
- *     system.md       — the system prompt, written by turn 0, never rewritten
+ *     system.md       — the system prompt, written by turn 0; rewritten only by a
+ *                       turn that compacted the thread under a new one
+ *                       (`systemReplaced`, the agent's `systemAtCompaction`)
  *     messages.jsonl  — append-only ModelMessages, as sent and generated
  *     turns.jsonl     — one line per SUCCESSFUL turn: the commit record
  *
@@ -83,6 +85,11 @@ export interface NewTurn {
    *  Absent → inherited from the previous line (0 at first); every stored
    *  line states it. Offsets stay absolute: the whole thread is still there. */
   replayFrom?: number;
+  /** This turn compacted the thread and went on under a NEW system prompt
+   *  (the agent step's `systemAtCompaction: latest`): `system.md` holds it
+   *  from this turn on. Only with `replayFrom` — the turns before the
+   *  boundary ran under the old one, and are never replayed again. */
+  systemReplaced?: true;
 }
 
 export interface SessionTurn extends NewTurn {
@@ -145,7 +152,8 @@ export function sessionInfo(id: string, turns: SessionTurn[]): SessionInfo | nul
 export interface SessionStore {
   /** The thread, or `null` when no turn was ever committed under `id`. */
   load(id: string): Promise<Session | null>;
-  /** Commit one turn. `system` is stored by turn 0 and ignored after. */
+  /** Commit one turn. `system` is stored by turn 0 and ignored after —
+   *  unless the turn says `systemReplaced`. */
   appendTurn(id: string, turn: { system: string; messages: unknown[]; record: NewTurn }): Promise<SessionTurn>;
   /** Newest first. */
   list(): Promise<SessionInfo[]>;
@@ -228,6 +236,9 @@ export class FileSessionStore implements SessionStore {
     if (lines.length > line.offset) await writeFile(file, lines.slice(0, line.offset).join("\n") + "\n", "utf-8");
     if (turn.messages.length) await appendFile(file, jsonl(turn.messages), "utf-8");
     await appendFile(join(dir, "turns.jsonl"), jsonl([line]), "utf-8");
+    // After the commit: a crash between the two leaves the old prompt over a
+    // compacted thread, which the next compaction replaces again.
+    if (turns.length && turn.record.systemReplaced) await writeFile(join(dir, "system.md"), turn.system, "utf-8");
     return line;
   }
 
@@ -276,6 +287,7 @@ export class MemorySessionStore implements SessionStore {
     // would hold.
     s.messages.push(...(JSON.parse(JSON.stringify(turn.messages)) as StoredMessage[]));
     s.turns.push(line);
+    if (turn.record.systemReplaced) s.system = turn.system;
     this.sessions.set(id, s);
     return line;
   }

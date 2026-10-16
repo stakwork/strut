@@ -42,6 +42,7 @@ type Reply =
   | { tool: [string, string, unknown]; input?: number }
   | { text: string; stop?: string; input?: number }
   | { status: number }
+  | { raw: string }
   | { hold: Promise<void>; then: Reply };
 type Server = { bodies: any[]; calls: () => number; close: () => void };
 
@@ -53,6 +54,11 @@ async function serve(replies: Reply[]): Promise<Server> {
     if ("hold" in reply) {
       await reply.hold;
       return answer(reply.then, res);
+    }
+    if ("raw" in reply) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(msgStart() + reply.raw);
+      return;
     }
     if ("status" in reply) {
       res.writeHead(reply.status, { "content-type": "application/json" });
@@ -554,6 +560,117 @@ describe("agent sessions", () => {
       const result = textOf(s.bodies[1].messages[2]);
       assert.ok(result.length < 16_000 + 600, `${result.length} chars`);
       assert.ok(result.includes("chars truncated"));
+    } finally {
+      s.close();
+    }
+  });
+
+  // ── systemAtCompaction (opt-in) ────────────────────────────────────────
+
+  /** A thinking block (signed) and then a final_answer call, in one reply. */
+  const thinkThenAnswer = (sig: string, id: string, text: string): Reply => ({
+    raw:
+      sse({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } }) +
+      sse({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: `thinking ${sig}` } }) +
+      sse({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: sig } }) +
+      sse({ type: "content_block_stop", index: 0 }) +
+      sse({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id, name: "final_answer", input: {} } }) +
+      sse({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ answer: text }) } }) +
+      sse({ type: "content_block_stop", index: 1 }) +
+      sse({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } }) +
+      sse({ type: "message_stop" }),
+  });
+  const latest = { systemAtCompaction: "latest", reasoning: "high" } as const;
+
+  it('systemAtCompaction "latest": between ordinary turns a new prompt is ignored and the system bytes are identical', async () => {
+    const s = await serve([answer("toolu_1", "one"), answer("toolu_2", "two"), answer("toolu_3", "three")]);
+    try {
+      await run({ session: "abc", system: "prompt v1", ...latest });
+      await run({ session: "abc", system: "prompt v2", ...latest });
+      await run({ session: "abc", system: "prompt v3", ...latest });
+      for (const body of s.bodies.slice(1)) assert.deepEqual(body.system, s.bodies[0].system, "byte for byte");
+      assert.equal(systemOf(s.bodies[2]), "prompt v1");
+      const thread = await store.load("abc");
+      assert.equal(thread!.system, "prompt v1");
+      assert.ok(thread!.turns.every((t) => !("systemReplaced" in t)));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("after a compaction the new prompt is used, recorded, and fixed from then on; old reasoning is not replayed, new reasoning is", async () => {
+    // A thread under v1 whose last turn left it over the mark, with a signed
+    // thinking block made under v1.
+    await store.appendTurn("dm", {
+      system: "prompt v1",
+      messages: [
+        { role: "user", content: "earlier" },
+        { role: "assistant", content: [{ type: "reasoning", text: "old thought", providerOptions: { anthropic: { signature: "SIG-OLD" } } }, { type: "text", text: "done" }] },
+      ],
+      record: { workflow: "wf", runId: "r0", path: "wf/work", provider: "anthropic", model: "anthropic/x", routed: false, context: { used: 990_000, limit: 1_000_000 } },
+    });
+    const s = await serve([summary("HANDOFF: the thread so far."), thinkThenAnswer("SIG-NEW", "toolu_1", "went on"), answer("toolu_2", "again")]);
+    try {
+      const out = await run({ session: "dm", system: "prompt v2", prompt: "carry on", ...latest }, { runId: "r1" });
+      assert.equal(out.result, "went on");
+      assert.equal(out.compactions, 1);
+      const [summarizer, turn1] = s.bodies;
+      // The summary is written under the thread's prompt (its cache, its thinking)…
+      assert.equal(systemOf(summarizer), "prompt v1");
+      assert.ok(JSON.stringify(summarizer.messages).includes("SIG-OLD"));
+      // …and the thread goes on from it under the new one, with nothing from before.
+      assert.equal(systemOf(turn1), "prompt v2");
+      assert.ok(!JSON.stringify(turn1.messages).includes("SIG-OLD"));
+      assert.ok(!JSON.stringify(turn1.messages).includes("old thought"));
+      // The record takes the new prompt.
+      const thread = await store.load("dm");
+      assert.equal(thread!.system, "prompt v2");
+      assert.equal(thread!.turns[1]!.systemReplaced, true);
+      assert.deepEqual((messagesOf(out) as any[])[0], { role: "system", content: "prompt v2" });
+
+      // The next turn: v2 is fixed (a v3 step is ignored), and the thinking
+      // made under v2 is replayed.
+      await run({ session: "dm", system: "prompt v3", prompt: "and again", ...latest }, { runId: "r2" });
+      const turn2 = s.bodies[2];
+      assert.deepEqual(turn2.system, turn1.system);
+      assert.equal(systemOf(turn2), "prompt v2");
+      assert.ok(JSON.stringify(turn2.messages).includes("SIG-NEW"), "reasoning made under the new prompt is kept");
+      assert.ok(!JSON.stringify(turn2.messages).includes("SIG-OLD"));
+      assert.equal((await store.load("dm"))!.system, "prompt v2");
+      // The thread on disk is whole: the turns before the compaction are still there.
+      assert.ok(JSON.stringify((await store.load("dm"))!.messages).includes("SIG-OLD"));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a compaction in the middle of a turn switches the rest of the turn, and the thread, to the new prompt", async () => {
+    await store.appendTurn("mid", {
+      system: "prompt v1",
+      messages: [{ role: "user", content: "earlier" }, { role: "assistant", content: [{ type: "text", text: "done" }] }],
+      record: { workflow: "wf", runId: "r0", path: "wf/work", provider: "anthropic", model: "anthropic/x", routed: false },
+    });
+    const s = await serve([bash("toolu_1", "echo one", 950_000), summary("HANDOFF: echoed one."), answer("toolu_2", "done")]);
+    try {
+      const out = await run({ session: "mid", system: "prompt v2", ...latest });
+      assert.equal(out.result, "done");
+      const [first, summarizer, after] = s.bodies;
+      assert.equal(systemOf(first), "prompt v1");
+      assert.equal(systemOf(summarizer), "prompt v1");
+      assert.equal(systemOf(after), "prompt v2");
+      assert.equal((await store.load("mid"))!.system, "prompt v2");
+    } finally {
+      s.close();
+    }
+  });
+
+  it('"keep" (the default) never changes the prompt, compaction or not', async () => {
+    await seed("kept", { context: { used: 990_000, limit: 1_000_000 } });
+    const s = await serve([summary("HANDOFF."), answer("toolu_1", "went on")]);
+    try {
+      await run({ session: "kept", system: "prompt v2" });
+      assert.equal(systemOf(s.bodies[1]), "sys");
+      assert.equal((await store.load("kept"))!.system, "sys");
     } finally {
       s.close();
     }
