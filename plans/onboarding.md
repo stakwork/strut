@@ -225,7 +225,7 @@ steps:
 file tools (`repo_overview`, `fulltext_search`, `str_replace_based_edit_tool`,
 `file_summary`; no bash and no web, both of which production had: the file
 tools cover what bash did there); `root` (`Pod Setup`); `localServices`
-(`Pod Setup: Local Services`); `profiler` and `generator`, short system
+(`Pod Setup - Local Services`); `profiler` and `generator`, short system
 prompts, since the rules live in the Concepts.
 
 - **The loads are steps, so the agent cannot skip them.** The root and the
@@ -239,6 +239,12 @@ prompts, since the rules live in the Concepts.
 - **Templated enums work as is.** Step config is resolved deeply before
   the agent runs (`resolveConfig`, `expr.ts:627`), a sole `{{ }}` keeps the
   array, and `filter`, `map` and `!=` are in the template language.
+- **The menus and the picked pages are rendered in code**, by a third
+  seeded step, `pod-setup/pages` (`{ names, text }`). A template cannot
+  hold a newline (a `{{ }}` spanning lines is not a template, and the
+  language has no escapes), so a list joined one per line, or pages
+  joined with blank lines, cannot be a `pack`. Its `names` are what the
+  profile's enums offer.
 - **No graph search tools.** A new workspace's graph has no code in it
   yet; the steps load the Concepts.
 - **The job runs it, so it stays deterministic.** The job agent decides
@@ -249,17 +255,17 @@ prompts, since the rules live in the Concepts.
 ```
 Pod Config                         (exists: Job → Code Change → Pod → Pod Config)
 └── Pod Setup                      the contract every pod's files follow
-    ├── Pod Setup: Web
-    ├── Pod Setup: Android         (later)
-    └── Pod Setup: Local Services  when a backing service gets a container, a CLI or a mock
-        ├── Pod Setup: Postgres
-        ├── Pod Setup: MySQL
-        ├── Pod Setup: Redis
-        ├── Pod Setup: RabbitMQ
-        ├── Pod Setup: Elasticsearch
-        ├── Pod Setup: Supabase
-        ├── Pod Setup: S3-compatible Storage
-        └── Pod Setup: LiveKit
+    ├── Pod Setup - Web
+    ├── Pod Setup - Android         (later)
+    └── Pod Setup - Local Services  when a backing service gets a container, a CLI or a mock
+        ├── Pod Setup - Postgres
+        ├── Pod Setup - MySQL
+        ├── Pod Setup - Redis
+        ├── Pod Setup - RabbitMQ
+        ├── Pod Setup - Elasticsearch
+        ├── Pod Setup - Supabase
+        ├── Pod Setup - S3-compatible Storage
+        └── Pod Setup - LiveKit
 ```
 
 - **Seeding.** The files go in `mcp/src/lab/pods/concepts/` and the
@@ -269,6 +275,9 @@ Pod Config                         (exists: Job → Code Change → Pod → Pod 
 - **Names are prefixed.** A Concept is keyed by its name, and the seeder
   skips a name someone else owns. Without the prefix, a workspace's own
   `Postgres` or `Web` Concept would block the page.
+  The separator is ` - `, not `: `: a Concept's name is its file's name,
+  and a colon in a file name breaks a Windows checkout (the node key is
+  the same either way: jarvis strips punctuation from it).
 - **First text = production's rules** (ruling). The root comes from
   `FINAL_ANSWER`: repos mounted at `/workspaces/<repo>`, one service that
   is the one a person opens (the pages never name it: code does, §10),
