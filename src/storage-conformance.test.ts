@@ -352,17 +352,6 @@ for (const impl of sessionImpls) {
       );
     });
 
-    it("a turn marked systemReplaced replaces the stored system prompt; the messages before it stay", async () => {
-      await store.appendTurn("s1", { system: "first", messages: [user("a"), reply("b")], record: turnOf("1") });
-      const t1 = await store.appendTurn("s1", { system: "second", messages: [user("[compaction] …"), reply("c")], record: turnOf("2", { replayFrom: 2, systemReplaced: true }) });
-      assert.equal(t1.systemReplaced, true);
-      await store.appendTurn("s1", { system: "IGNORED", messages: [user("d")], record: turnOf("3") });
-      const s = await store.load("s1");
-      assert.equal(s?.system, "second");
-      assert.equal(s?.messages.length, 5);
-      assert.equal(s?.replayFrom, 2);
-    });
-
     it("a slash is part of the id, not a hierarchy: abc and abc/review never meet", async () => {
       await store.appendTurn("abc", { system: "w", messages: [user("work")], record: turnOf("1") });
       await store.appendTurn("abc/review", { system: "r", messages: [user("review")], record: turnOf("1", { path: `${WF}/review` }) });

@@ -1011,12 +1011,6 @@ export default defineStep({
       .describe(
         'CONTINUE a conversation across runs: an id the CALLER supplies, usually "{{ input.session }}" (a uuid). The agent starts from that thread — its system prompt, fixed by the thread\'s first turn (this step\'s `system` is ignored after), and every earlier message — and appends this turn when it succeeds; a failed or cancelled turn appends nothing. Omit for a one-shot agent. Ids are GLOBAL: every run of every workflow naming the same id shares ONE thread, so a literal ("janitor-daily") is right only for an agent that should remember forever. Give each chained agent of a workflow its own id ("{{ input.session }}/review"); an agent without `session` starts cold every run. One turn at a time per id (a second fails with `session_busy:`). Letters, digits and ". _ -" in `/`-separated segments. Turns minutes apart want cacheTtl: 1h. To carry the FILES along too, give git/checkout a `workdir`.',
       ),
-    systemAtCompaction: z
-      .enum(["keep", "latest"])
-      .default("keep")
-      .describe(
-        'Which system prompt a `session` thread continues under after a COMPACTION. "keep" (default): the first turn\'s, for the life of the thread. "latest": this step\'s `system` — a revised prompt reaches a long-lived thread at the one moment the prompt cache breaks anyway; between compactions the thread\'s prompt is fixed byte for byte, as with "keep". The session\'s stored prompt becomes the new one.',
-      ),
     retain: z
       .string()
       .optional()
@@ -1409,18 +1403,11 @@ export default defineStep({
     // verbatim — with its messages it heads every request, and the prompt
     // cache (and thinking blocks bound to the prefix) need it byte for byte.
     const session = cfg.session ? await openSession(cfg.session, ctx, resolved, compactAt) : undefined;
-    // `let`: with `systemAtCompaction: latest` a compaction moves the thread
-    // onto this step's prompt (`compact` below) — never between compactions.
-    let system = session?.system ?? cfg.system;
+    const system = session?.system ?? cfg.system;
     // What the requests send: the same text, with its own cache breakpoint.
-    let instructions = cachedSystem(system, providerOptions) as any;
-    let systemReplaced = false;
+    const instructions = cachedSystem(system, providerOptions) as any;
     if (session?.system != null && session.system !== cfg.system) {
-      console.warn(
-        cfg.systemAtCompaction === "latest"
-          ? `[agent] session "${session.id}" keeps its system prompt until its next compaction; this step's \`system\` is adopted then.`
-          : `[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`,
-      );
+      console.warn(`[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`);
     }
     try {
       // Web tools — web_search + web_fetch on EVERY provider (aieo: native on
@@ -1576,15 +1563,6 @@ export default defineStep({
             compactedAt = bankedMessages.length - 1;
           }
           compactions++;
-          // The request now begins at the summary, so nothing made under
-          // the old prompt (its thinking blocks included) is sent again:
-          // the one point where the thread may take a new prompt.
-          if (cfg.systemAtCompaction === "latest" && system !== cfg.system) {
-            system = cfg.system;
-            instructions = cachedSystem(system, providerOptions) as any;
-            systemReplaced = true;
-            console.log(`[agent] the thread continues under this step's system prompt from the compaction on.`);
-          }
           console.log(`[agent] compacted ${before.length} messages (~${tokens} tokens) at ${where}; the request now begins at the summary.`);
           if (path) await emit!({ type: "step.end", path, stepType: "compaction", output: summarizeForEvent(got.summary), durationMs: Date.now() - startedAt });
           return true;
@@ -1720,7 +1698,6 @@ export default defineStep({
               cost: out["cost"] as number,
               ...(contextUsed ? { context: { used: contextUsed, limit: resolved.contextLimit } } : {}),
               ...(from !== undefined ? { replayFrom: from } : {}),
-              ...(systemReplaced ? { systemReplaced: true as const } : {}),
             },
           });
           out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
