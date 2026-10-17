@@ -57,11 +57,13 @@ npm run dev
 
 Open http://localhost:3000, and ask the AI builder for a workflow or draw one on the canvas.
 
-Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image. The compose runs the graph backend beside its own Neo4j (Browser at http://localhost:7475, `bolt://localhost:7689`, `neo4j` / `testtest`):
+Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image. The compose pulls the published images (`ghcr.io/stakwork/strut`, built from main on every merge, and its browser), and runs the graph backend beside its own Neo4j (Browser at http://localhost:7475, `bolt://localhost:7689`, `neo4j` / `testtest`):
 
 ```bash
-docker compose up --build
+docker compose up -d
 ```
+
+To run your checkout's code instead: `docker compose -f docker-compose.yml -f docker-compose.build.yml up --build`.
 
 ## Workflows
 

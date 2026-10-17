@@ -35,7 +35,8 @@ strut/
 ├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions; API.md is the client how-to for the HTTP API (every endpoint, response shapes, a worked run); CALLBACKS.md the one for `POST …/run { callback }`
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend on a bare `docker run`
-├── docker-compose.yml     # test/local compose: that image on the graph backend + a neo4j:5 container (named volumes for neo4j data, /data/workspace, /data/models, uv cache)
+├── docker-compose.yml     # the standalone compose: the PUBLISHED image (ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}, pushed from main by .github/workflows/publish-image.yml) on the graph backend + a neo4j:5 container + the browser (named volumes for neo4j data, /data/workspace, /data/models, uv cache) — nothing built
+├── docker-compose.build.yml # overlay: strut built from this checkout (`build: .`, `strut:local`) — for working on strut itself; docker-compose.gateway.yml builds it too
 ├── images/browser/        # a second image, nothing of strut's in it: a Playwright SERVER (`playwright run-server`, the package baked in, tini, non-root) for hosts whose steps drive a browser over a websocket. `.github/workflows/publish-browser.yml` pushes it to ghcr.io/stakwork/strut-browser when this directory changes on main, tagged with the Playwright version its Dockerfile pins — the connecting host's `playwright-core` must be on the same major.minor (strut's own, package.json, is pinned to it). The compose file's `browser` service
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
@@ -252,7 +253,8 @@ cd strut && npm run dev        # serves API + UI on :3000
 # The browser/* steps drive the `browser` service (ghcr.io/stakwork/strut-browser,
 # from images/browser) over BROWSER_WS_URL + BROWSER_WS_PATH; it sits on a
 # network of its own that strut joins, so a page reaches strut but not Neo4j.
-docker compose up --build      # http://localhost:3000 (STRUT_HOST_PORT=3100 when `npm run dev` has 3000)
+docker compose up -d           # http://localhost:3000 (STRUT_HOST_PORT=3100 when `npm run dev` has 3000) — pulls ghcr.io/stakwork/strut:latest (STRUT_IMAGE_TAG=<sha> pins one)
+docker compose -f docker-compose.yml -f docker-compose.build.yml up --build   # this checkout's code instead
 # Same image on the fs backend, no Neo4j (`docker compose up -d browser` first for the browser steps):
 docker compose run --rm --no-deps --service-ports -e STRUT_WORKSPACE_BACKEND=fs strut
 
