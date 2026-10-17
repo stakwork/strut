@@ -7,7 +7,7 @@
  * in the job's directory for a run launched with a job, else in the run's
  * own artifact directory — a `url` and a `content` pass through (both, when
  * both are given — the fields are not exclusive), and a missing `kind` is
- * read off the file's extension. `output` itself is
+ * read off the file's extension (or a manifest's name). `output` itself is
  * never rewritten.
  *
  * `kind` is the HOST's renderer vocabulary (hive's canvas chat:
@@ -75,11 +75,18 @@ export function jobFileUrl(job: string, rel: string): string {
  *  step's result already says; this is the fallback where none was given. */
 export const WALKTHROUGH_MANIFEST = "walkthrough.json";
 
+/** A captcha round's manifest (`browser/captcha-ask`, src/browser/captcha.ts):
+ *  `captcha-<round>.json`, which the host's captcha card reads. The same
+ *  fallback: a model that lists the round's artifact without its kind
+ *  (2026-10-17, swarm38) still hands the host a captcha, not JSON. */
+export const CAPTCHA_MANIFEST = /^captcha-\d+\.json$/;
+
 /** The renderer kind for a file path or URL, by extension; `url` when the
  *  extension says nothing (a link is always showable). */
 export function artifactKind(pathOrUrl: string): string {
   const file = pathOrUrl.split("?")[0]!.split("#")[0]!.split("/").pop() ?? "";
   if (file === WALKTHROUGH_MANIFEST) return "walkthrough";
+  if (CAPTCHA_MANIFEST.test(file)) return "captcha";
   const dot = file.lastIndexOf(".");
   if (dot <= 0) return "url";
   return KIND_BY_EXT[file.slice(dot + 1).toLowerCase()] ?? "url";

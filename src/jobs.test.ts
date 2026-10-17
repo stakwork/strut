@@ -14,6 +14,7 @@ import { readRunStart } from "./journal.js";
 import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, notifyJob, readJobRecord, releaseWith, setJobCallback, sweepJobs, touchJob } from "./jobs.js";
 import { RunController } from "./run-control.js";
 import { artifactKind, jobFileUrl, resolveArtifactRefs } from "./artifact-refs.js";
+import { captchaFiles } from "./browser/captcha.js";
 import { mediaOf } from "./core.js";
 import { MemorySessionStore } from "./session-store.js";
 import { holdUrls } from "./job-index.js";
@@ -402,6 +403,25 @@ describe("jobs — the directory", () => {
     assert.deepEqual(await listJobFiles(r, await readJobRecord(r)), [join("notes", "a.md"), "plan.md"]);
     assert.deepEqual(await listJobFiles(jobRoot(dataDir, "never"), null), []);
   });
+
+  it("a record is never read half-written: the readers take no lock, so every write is whole", async () => {
+    const r = jobRoot(dataDir, "busy");
+    await touchJob(r, "busy");
+    let writing = true;
+    const writes = (async () => {
+      for (let i = 0; i < 300; i++) await touchJob(r, "busy", { dir: join(r, `repo-${i}`), cache: "/nowhere", ref: "main" });
+      writing = false;
+    })();
+    let reads = 0;
+    let misses = 0;
+    while (writing) {
+      reads++;
+      if (!(await readJobRecord(r))) misses++;
+    }
+    await writes;
+    assert.ok(reads > 0);
+    assert.equal(misses, 0, `${misses} of ${reads} reads found no record while it was being written`);
+  });
 });
 
 // ── deliverables (§3) ────────────────────────────────────────────────────
@@ -423,6 +443,11 @@ describe("jobs — artifact refs", () => {
     assert.equal(artifactKind("walkthroughs/004/walkthrough.json"), "walkthrough");
     assert.equal(artifactKind("/jobs/j-1/files/walkthroughs/004/walkthrough.json?t=x"), "walkthrough");
     assert.equal(artifactKind("walkthroughs/004/other.json"), "json");
+    // So is a captcha round's, whatever round it is.
+    assert.equal(artifactKind(captchaFiles(1).path), "captcha");
+    assert.equal(artifactKind(`/jobs/j-1/files/${captchaFiles(12).path}?t=x`), "captcha");
+    assert.equal(artifactKind("shots/captcha.json"), "json");
+    assert.equal(artifactKind(captchaFiles(1).image), "image");
   });
 
   it("jobFileUrl is the link a deliverable's path resolves to, so a live update and the turn's deliverable name one file", async () => {

@@ -126,7 +126,7 @@ pull request, a pod. Each entry names one:
 | Field     | Meaning |
 | --------- | ------- |
 | `id`      | stable across runs: the same `id` from a later run is a newer version of the same thing (turn 12's `plan` replaces turn 3's) |
-| `kind`    | how to show it — the host's renderer names (`markdown`, `html`, `image`, `video`, `audio`, `pdf`, `url`, `diff`, `pull_request`, `code`, `log`, `json`). Read off the file's extension when omitted (`url` when that says nothing) |
+| `kind`    | how to show it — the host's renderer names (`markdown`, `html`, `image`, `video`, `audio`, `pdf`, `url`, `diff`, `pull_request`, `code`, `log`, `json`). Read off the file's extension when omitted (`url` when that says nothing) — or a manifest's name: `walkthrough.json` → `walkthrough`, `captcha-<round>.json` → `captcha` |
 | `title`   | shown on the card |
 | `label`, `summary` | optional: what it is to the reader ("Plan", "Screenshot"), and a sentence about it |
 | `path`    | a file, relative to the run's directory — the **job's** for a run launched with `job` (see below), else the run's own artifact directory |
