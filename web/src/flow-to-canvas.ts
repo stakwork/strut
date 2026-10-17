@@ -67,6 +67,12 @@ const STEP_COLORS: Record<string, { fill: string; stroke: string }> = {
   "x/mentions":         { fill: "rgba(12, 74, 110, 0.4)", stroke: "#38bdf8" },
   "gdrive/export-file": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
   "gdrive/list-files":  { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
+  "sheets/create-spreadsheet": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
+  "sheets/update-values": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
+  "sheets/batch-update-values": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
+  "sheets/get-values": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
+  "sheets/add-sheet": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
+  "sheets/import-spreadsheet": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
   "strut/run-workflow": { fill: "rgba(21, 94, 117, 0.4)", stroke: "#22d3ee" },
   default:  { fill: "rgba(38, 38, 38, 0.6)",  stroke: "#737373" },
 };
