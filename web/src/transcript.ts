@@ -12,8 +12,12 @@ export type ToolResult = { output: unknown; isError: boolean };
 export type ToolCall = { name: string; input: any; toolCallId?: string; result?: ToolResult; progress?: unknown[] };
 export type ToolGroup = { name: string; calls: ToolCall[] };
 
+/** A file a person attached to a message (`src/ai/attachments.ts`): its
+ *  announcing line, plus the image itself when the model was shown one. */
+export type AttachmentView = { name: string; mediaType: string; size: string; src?: string };
+
 export type ChatEntry =
-  | { kind: "user"; content: string }
+  | { kind: "user"; content: string; attachments?: AttachmentView[] }
   | { kind: "notice"; content: string }
   | { kind: "text"; content: string }
   | { kind: "tool"; groups: ToolGroup[] }
@@ -99,6 +103,28 @@ export function extractText(content: unknown): string {
   return "";
 }
 
+const ATTACHMENT_RE = /^\[attachment\] (.+) \(([^,()]+), ([^()]+)\) — saved at /;
+
+/** A user message's content split into what the person typed and the files
+ *  they attached: an `[attachment] <name> (<type>, <size>) — saved at …`
+ *  text part announces each file, the image part after it is its picture. */
+export function userContent(content: unknown): { text: string; attachments: AttachmentView[] } {
+  if (!Array.isArray(content)) return { text: extractText(content), attachments: [] };
+  const texts: string[] = [];
+  const attachments: AttachmentView[] = [];
+  for (const p of content as any[]) {
+    if (p?.type === "text" && typeof p.text === "string") {
+      const m = ATTACHMENT_RE.exec(p.text);
+      if (m) attachments.push({ name: m[1]!, mediaType: m[2]!, size: m[3]! });
+      else texts.push(p.text);
+    } else if (p?.type === "file" && typeof p.data === "string" && String(p.mediaType).startsWith("image/")) {
+      const a = attachments[attachments.length - 1];
+      if (a) a.src = `data:${p.mediaType};base64,${p.data}`;
+    }
+  }
+  return { text: texts.join(""), attachments };
+}
+
 /** Render stored ModelMessages (the transcript) into display entries. Tool
  *  RESULT messages (role "tool") aren't bubbles — each result is attached to
  *  its call (by toolCallId) so the call's chip can disclose it. A system
@@ -122,8 +148,9 @@ export function transcriptToEntries(messages: { role: string; content: unknown }
       continue;
     }
     if (m.role === "user") {
-      const text = extractText(m.content);
-      if (text) {
+      const { text, attachments } = userContent(m.content);
+      if (attachments.length) entries.push({ kind: "user", content: text, attachments });
+      else if (text) {
         entries.push(
           isNotice(text)
             ? { kind: "notice", content: text }
@@ -158,7 +185,8 @@ export function transcriptText(entries: ChatEntry[]): string {
   const blocks: string[] = [];
   for (const e of entries) {
     if (e.kind === "user") {
-      blocks.push(`### User\n${e.content}`);
+      const files = (e.attachments ?? []).map((a) => `\n[attachment] ${a.name} (${a.mediaType}, ${a.size})`).join("");
+      blocks.push(`### User\n${e.content}${files}`);
     } else if (e.kind === "notice") {
       blocks.push(`### Notice\n${e.content}`);
     } else if (e.kind === "text") {

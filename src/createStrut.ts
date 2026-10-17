@@ -55,6 +55,7 @@ import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
 import { automationsRoutes } from "./automations-routes.js";
 import { createAutomations, type Automations } from "./scheduler.js";
+import { AUTOMATION_CALLBACKS_FILE } from "./automations.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
@@ -78,6 +79,7 @@ import { attachAudioWebSocket } from "./audio/ws.js";
 // SDK (which stays lazy-loaded inside launchChatTurn).
 import { createChatNotifier, formatRestartNotification, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
+import { attachmentParts, parseAttachments, saveAttachments, type Attachment } from "./ai/attachments.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, type JobsCapability } from "./jobs.js";
@@ -625,6 +627,12 @@ export async function createStrut<TServices = unknown>(
     await peerRecords.set(peer);
   }
   const peersCap = peersCapability(peerRecords);
+  // Automation callbacks (plans/automations.md): each URL is a host's
+  // credential, kept in a fifth encrypted file beside the deployment's
+  // secrets — never in `secrets.json`, which every step reads through
+  // `ctx.services.secrets` and `GET /secrets` lists.
+  const automationCallbacks: SecretStore =
+    secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, AUTOMATION_CALLBACKS_FILE) : new MemorySecretStore();
   // Agent sessions follow the chat store's kind: both are conversations a
   // host expects to find again after a restart.
   const sessionStore: SessionStore =
@@ -2708,7 +2716,9 @@ export async function createStrut<TServices = unknown>(
   const automations = createAutomations({
     workspace,
     store,
-    launch: (flow, input, automation) => launchDetached(flow, { input }, { origin: "schedule", automation }),
+    secrets: automationCallbacks,
+    launch: (flow, input, automation, callback) =>
+      launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
   });
   // Scheduling adopts an ownerless workflow: the scheduler's runs are billed
@@ -2725,7 +2735,7 @@ export async function createStrut<TServices = unknown>(
     const live = [...controllers.keys()].filter((k) => k.startsWith(`${name}/`)).length;
     if (live) return c.json({ error: `Workflow "${name}" has ${live} run${live === 1 ? "" : "s"} in flight — cancel first` }, 409);
     if (!(await workspace.getWorkflowMetadata(name))) return c.json({ error: `Workflow "${name}" not found` }, 404);
-    automations.forget(name);
+    await automations.forget(name);
     await store.deleteRuns(name);
     await workspace.deleteWorkflow(name);
     return c.json({ ok: true, workflow: name });
@@ -3492,8 +3502,21 @@ export async function createStrut<TServices = unknown>(
         title?: string;
         model?: string;
         callback?: { url?: string } | null;
+        attachments?: unknown;
       }>();
-      if (!body.message || typeof body.message !== "string") {
+      // Files ride beside the text (ai/attachments.ts), validated before
+      // anything is persisted. With them, the text may be empty.
+      let attachments: Attachment[];
+      try {
+        attachments = parseAttachments(body.attachments);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (body.message !== undefined && typeof body.message !== "string") {
+        return c.json({ error: "message must be a string" }, 400);
+      }
+      const message = body.message?.trim() ? body.message : "";
+      if (!message && !attachments.length) {
         return c.json({ error: "message (string) is required" }, 400);
       }
       // Whoever speaks to the chat is its actor from here on (§2).
@@ -3556,7 +3579,7 @@ export async function createStrut<TServices = unknown>(
         chatId = generateChatId();
         meta = await chatStore.createChat({
           id: chatId,
-          title: body.title ?? body.message.slice(0, 80),
+          title: body.title ?? (message || attachments.map((a) => a.name).join(", ")).slice(0, 80),
           model: pickedModel ?? chatModel,
         });
       }
@@ -3564,7 +3587,14 @@ export async function createStrut<TServices = unknown>(
       // From the chat's compaction boundary (plans/compaction.md §5): the
       // whole history stays on disk; the model replays from the summary.
       const prior = (await chatStore.loadMessages(chatId)).slice(meta!.replayFrom ?? 0);
-      const userMsg = { role: "user", content: body.message };
+      // Text first, then each file (saved where bash and a run can read it).
+      let content: unknown = message;
+      if (attachments.length) {
+        const paths = await saveAttachments(dataDir, chatId, attachments);
+        const parts = await Promise.all(attachments.map((a, i) => attachmentParts(a, paths[i]!)));
+        content = [...(message ? [{ type: "text", text: message }] : []), ...parts.flat()];
+      }
+      const userMsg = { role: "user", content };
       await chatStore.appendMessages(chatId, [userMsg]);
 
       const turn = (meta!.currentTurn ?? -1) + 1;

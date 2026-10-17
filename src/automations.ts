@@ -12,6 +12,7 @@
  * of the versioned YAML: editing or pausing one publishes no version.
  */
 import { z } from "zod";
+import { parseCallback } from "./callback.js";
 import { exprRoots, resolveConfig, templateExprs } from "./expr.js";
 
 // ── Grammar ────────────────────────────────────────────────────────────────
@@ -127,11 +128,28 @@ export const automationInputSchema = z
       "resolving to undefined is dropped. Defaults use `||` (`{{ last.output.id || \"0\" }}`); `??` is not supported.",
   );
 
+/** Where each fire's `run.end` is POSTed — the `callback` of `POST …/run`
+ *  (src/callback.ts). The URL is the host's credential: it goes to a store
+ *  of its own (`AUTOMATION_CALLBACKS_FILE`, under `automationCallbackSecret`),
+ *  and the record keeps its origin only, so no read of workflow metadata can
+ *  serve it. */
+export const automationCallbackSchema = z
+  .object({ url: z.string() })
+  .superRefine((cb, ctx) => {
+    try {
+      parseCallback(cb);
+    } catch (err) {
+      ctx.addIssue({ code: "custom", path: ["url"], message: (err as Error).message });
+    }
+  })
+  .describe("Where each fire's run.end is POSTed, as for POST /workflows/:name/run { callback }. null clears it.");
+
 export const automationDraftSchema = z.object({
   name: z.string().trim().min(1).describe("Short human label, e.g. 'Morning mentions digest'."),
   trigger: triggerSchema,
   input: automationInputSchema.optional(),
   enabled: z.boolean().optional().describe("false = paused. Default true."),
+  callback: automationCallbackSchema.nullable().optional(),
 });
 export type AutomationDraft = z.infer<typeof automationDraftSchema>;
 
@@ -146,6 +164,19 @@ export interface Automation {
   enabled: boolean;
   trigger: Trigger;
   input: Record<string, unknown>;
+  /** Each fire's `run.end` goes to a callback (`automationCallbackSchema`):
+   *  its origin here, its URL in the secret store. */
+  callback?: { origin: string };
+}
+
+/** The file an automation's callback URLs are kept in: a fifth encrypted
+ *  store beside `secrets.json`, never in it — every step reads that one
+ *  through `ctx.services.secrets`, and `GET /secrets` lists it. */
+export const AUTOMATION_CALLBACKS_FILE = "automation-callbacks.json";
+
+/** The key an automation's callback URL is kept under in that store. */
+export function automationCallbackSecret(id: string): string {
+  return id.replace(/[^A-Za-z0-9_]/g, "_");
 }
 
 /** Fill what a draft may omit (zone, interval anchor) and canonicalize the

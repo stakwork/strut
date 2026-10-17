@@ -2,12 +2,13 @@ import { useState, useCallback, useEffect, useRef } from "preact/hooks";
 import * as api from "../api";
 import { displayActor } from "../actor";
 import * as storage from "../storage";
-import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon } from "../icons";
+import { CloseIcon, HistoryIcon, CopyIcon, CheckIcon, MicIcon, StopIcon, PaperclipIcon } from "../icons";
 import { startDictation, dictationSupported, type Dictation } from "../dictation";
 import { contextMeter } from "../context-meter";
 import { ElicitationForm } from "./ElicitationForm";
 import { FlyoutResizer } from "./FlyoutResizer";
-import { Transcript } from "./Transcript";
+import { AttachmentList, Transcript } from "./Transcript";
+import { readAttachment, type PendingAttachment } from "../attachments";
 import { attachResult, groupCalls, updateCall, storedOutputToResult, transcriptToEntries, transcriptText, type ChatEntry, type ToolCall, type ToolResult } from "../transcript";
 import { replaceUrl } from "../embed";
 
@@ -78,6 +79,25 @@ export function ChatFlyout(props: {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // ── Attachments ────────────────────────────────────────────────────────
+  // Files picked, dropped or pasted wait in the composer as chips and go
+  // with the next message (api.sendChat → POST /chat { attachments }).
+  const [files, setFiles] = useState<PendingAttachment[]>([]);
+  const [fileError, setFileError] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const addFiles = useCallback(async (list: FileList | File[]) => {
+    setFileError("");
+    for (const file of Array.from(list)) {
+      try {
+        const a = await readAttachment(file);
+        setFiles((prev) => [...prev, a]);
+      } catch (err) {
+        setFileError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }, []);
 
   // ── Dictation ──────────────────────────────────────────────────────────
   // Finals accumulate into `dictBase`; the live partial is appended after it
@@ -499,18 +519,29 @@ export function ChatFlyout(props: {
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && !files.length) || loading) return;
     if (dictRef.current) stopDictation();
 
+    const sent = files;
     pinned.current = true;
-    setEntries((prev) => [...prev, { kind: "user", content: text }]);
+    setEntries((prev) => [
+      ...prev,
+      { kind: "user", content: text, ...(sent.length ? { attachments: sent.map(({ name, mediaType, size, src }) => ({ name, mediaType, size, src })) } : {}) },
+    ]);
     setInput("");
+    setFiles([]);
+    setFileError("");
     setLoading(true);
     // A typed message closes the open question server-side.
     setElicitation(null);
 
     try {
-      const { chatId: id, turn } = await api.sendChat(text, chatId ?? undefined, model ?? undefined);
+      const { chatId: id, turn } = await api.sendChat(
+        text,
+        chatId ?? undefined,
+        model ?? undefined,
+        sent.map(({ name, mediaType, data }) => ({ name, mediaType, data })),
+      );
       if (!chatId) {
         setChatId(id);
         storage.save(CHAT_ID_KEY, id);
@@ -522,6 +553,7 @@ export function ChatFlyout(props: {
         // The chat is still working on an earlier message (we were
         // detached, e.g. after switching away) — reattach, keep the draft.
         setInput(text);
+        setFiles(sent);
         await loadChat(chatId);
         return;
       }
@@ -530,9 +562,10 @@ export function ChatFlyout(props: {
       const message = err instanceof Error ? err.message : String(err);
       setEntries((prev) => [...prev.slice(0, -1), { kind: "text", content: `Error: ${message}` }]);
       setInput(text);
+      setFiles(sent);
       setLoading(false);
     }
-  }, [input, loading, chatId, model, attach, loadChat, stopDictation]);
+  }, [input, files, loading, chatId, model, attach, loadChat, stopDictation]);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -542,7 +575,24 @@ export function ChatFlyout(props: {
   };
 
   return (
-    <div class="flyout chat-flyout">
+    <div
+      class="flyout chat-flyout"
+      // A file dropped anywhere on the flyout is attached to the draft.
+      onDragOver={(e) => {
+        if (loading || !e.dataTransfer?.types.includes("Files")) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer?.files.length) return;
+        e.preventDefault();
+        setDragging(false);
+        if (!loading) addFiles(e.dataTransfer.files);
+      }}
+    >
       <FlyoutResizer />
       <div class="flyout-header">
         <div>
@@ -661,10 +711,15 @@ export function ChatFlyout(props: {
         </div>
       )}
       {micError && <div class="chat-mic-error">{micError}</div>}
+      {fileError && <div class="chat-mic-error">{fileError}</div>}
       <div class="chat-input-row">
-        {/* One bordered box: the textarea over a footer toolbar with the
-            model picker on the left and mic + Send on the right. */}
-        <div class="chat-composer">
+        {/* One bordered box: pending files over the textarea over a footer
+            toolbar with the model picker on the left and attach + mic +
+            Send on the right. */}
+        <div class={`chat-composer${dragging ? " is-dragover" : ""}`}>
+          {files.length > 0 && (
+            <AttachmentList items={files} onRemove={(i) => setFiles((prev) => prev.filter((_, j) => j !== i))} />
+          )}
           <textarea
             ref={inputRef}
             rows={1}
@@ -675,6 +730,14 @@ export function ChatFlyout(props: {
               setInput(v);
             }}
             onKeyDown={handleKeyDown}
+            onPaste={(e) => {
+              // A pasted screenshot is a file; text with a picture of itself
+              // (copied from an office app) stays text.
+              const pasted = e.clipboardData?.files;
+              if (!pasted?.length || e.clipboardData!.getData("text/plain")) return;
+              e.preventDefault();
+              addFiles(pasted);
+            }}
             placeholder={listening === "on" ? "Listening…" : "Describe your workflow..."}
             disabled={loading}
           />
@@ -724,6 +787,27 @@ export function ChatFlyout(props: {
               )
             )}
             <div class="chat-composer-actions">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                onChange={(e) => {
+                  const el = e.target as HTMLInputElement;
+                  if (el.files?.length) addFiles(el.files);
+                  el.value = "";
+                }}
+              />
+              <button
+                type="button"
+                class="chat-attach"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
+                aria-label="Attach files"
+                title="Attach files — images, PDFs, Word, text"
+              >
+                <PaperclipIcon size={14} />
+              </button>
               {micReady && (
                 <button
                   class={`btn chat-mic${listening ? " is-listening" : ""}`}

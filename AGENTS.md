@@ -38,7 +38,7 @@ strut/
 ├── images/browser/        # a second image, nothing of strut's in it: a Playwright SERVER (`playwright run-server`, the package baked in, tini, non-root) for hosts whose steps drive a browser over a websocket. `.github/workflows/publish-browser.yml` pushes it to ghcr.io/stakwork/strut-browser when this directory changes on main, tagged with the Playwright version its Dockerfile pins — the connecting host's `playwright-core` must be on the same major.minor
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
-│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the three output markers — withAccessedNodes / withMessages / withMedia (readers accessedNodesOf / messagesOf / mediaOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
+│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the four output markers — withAccessedNodes / withMessages / withMedia / withStop (readers accessedNodesOf / messagesOf / mediaOf / stopOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
 │   ├── search.ts          # searchSteps / searchWorkflows: the one matcher behind the sidebar filters, the Add Step picker and `GET /workflows?q=` — every word must hit the name (or the category / description), name hits rank first. The web UI imports it from here
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
@@ -112,6 +112,7 @@ strut/
 │   │   │                  #                   ask_user / request_secret (the builder asks the user — plans/elicitation.md; when deps.openElicitation is wired)
 │   │   ├── walk-tool.ts   # graph_walk (OFF for now: `GRAPH_WALK_TOOL_ENABLED` in prompts.ts): an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
+│   │   ├── attachments.ts # files on a chat message (`POST /chat { attachments }`): validated + capped, saved under `<dataDir>/uploads/<chatId>/`, turned into the user message's parts — an image or a PDF as a `file` part the model sees, text and Word (.docx/.doc via `word-extractor`, lazy) as inline text, anything else announced with its path for bash
 │   │   ├── elicitation.ts # the builder asks the user (plans/elicitation.md), the PURE half: ACP's flat schema subset + validator (model schema, submitted content), the secret-looking-field guard, crypto-random ids, `stepAsked` (the chat's stop condition), the `[elicitation-response]` formatter, the question as callback text
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
 │   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)
@@ -159,6 +160,7 @@ strut/
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
+        ├── attachments.ts # the chat composer's files read for `POST /chat` (a PNG/JPEG past 1568 px scaled down first; the server's limits checked early)
         ├── transcript.ts  # a transcript (stored model messages) folded into display entries — user / text / tool groups with results attached by toolCallId / notice / `mark` (a thread's turn boundary, placed by message index) — lifted out of ChatFlyout so the job timeline's thread view renders through the same fold (pure; tested)
         ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render; viewerKind adds `directory` for a path the scope's LISTING has files under (`isDirectory`, `directoryEntries`: one level, folders then files); resolveArtifactLink: where a link in a served file leads — a relative href against the file's directory, `..` folded, never out of the scope (an external URL, another run's files → null, left a plain link); findArtifacts: every such path INSIDE a value (object fields, arrays, `[{ link }]`) — a block holding several gets one eye with a pop-down to pick from (pure; tested)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
@@ -1235,6 +1237,21 @@ and the child env is scrubbed by construction).
   `error` on first read, nothing appended. The UI shows the notice as a
   "Server restarted" card.
 
+- **Attachments — files on a builder message** (`src/ai/attachments.ts`).
+  `POST /chat { attachments: [{ name, mediaType?, data }] }` (`data` base64
+  or a data URL; the message may then be empty) — at most 10, 10 MB each, 5
+  MB an image, 15 MB together, refused with a 400 before anything is
+  persisted. Each file is written to `<dataDir>/uploads/<chatId>/` (never
+  over an earlier one of the same name) and becomes parts of the user
+  message after the typed text: an `[attachment] <name> (<type>, <size>) —
+  saved at <absolute path>` line, then the image or PDF as a `file` part (the
+  model sees it; verified direct and through the gateway), or the text
+  inline — anything UTF-8, or a .docx / .doc's extracted text, cut at 200k
+  chars — or nothing more (the builder reads it with bash). The bytes stay in
+  `messages.jsonl` like any content, so they are replayed every turn until a
+  compaction: hence the caps (Anthropic refuses a request over 32 MB). The
+  flyout attaches by the paperclip, a drop on the flyout or a pasted
+  screenshot, and shows the files as chips (`transcript.ts` `userContent`).
 - **Claims, checks, evidence — the truth layer** (`plans/claims.md`; graph
   workspaces only, on by default there — on `STRUT_WORKSPACE_BACKEND=fs`,
   or with `STRUT_CLAIMS=0` / `createStrut({ claims: false })`, no claim
@@ -1320,7 +1337,7 @@ and the child env is scrubbed by construction).
 
 - **Automations — run a workflow on a schedule** (`plans/automations.md`;
   `src/automations.ts` pure, `src/scheduler.ts` stateful). An automation is
-  `{ id, name, enabled, trigger, input }`, stored as **workflow-level
+  `{ id, name, enabled, trigger, input, callback? }`, stored as **workflow-level
   metadata beside `category`** (`WorkflowMetadata.automations`:
   `_metadata.json` on the filesystem, one JSON-string `automations`
   property on the `StrutWorkflow` node in the graph;
@@ -1340,7 +1357,16 @@ and the child env is scrubbed by construction).
   `nextRunAt` BEFORE launching. A fire goes through `launchDetached` like
   `POST /run`, stamped `origin: "schedule"` + `automation: { id }` on
   `run.start` AND on the `RunSummary` — scheduled runs are verified like
-  any other. **Dynamic inputs**: `input` is resolved per fire against
+  any other. An automation's `callback: { url }` (opt-in, set over HTTP
+  only — the chat tool never sees it) is handed to every fire, so its
+  `run.end` reaches the host like a `POST /run { callback }` launch's. The
+  URL is a credential, so it lives in a fifth encrypted file beside
+  `secrets.json` — `automation-callbacks.json` (`AUTOMATION_CALLBACKS_FILE`),
+  keyed by the automation id — never in the deployment's secrets, which
+  every step reads through `ctx.services.secrets` and `GET /secrets` lists;
+  the record keeps `callback: { origin }` — no read of workflow metadata (the
+  routes, the graph node) can serve it. Removing the automation, clearing
+  the callback (`null`) or deleting the workflow deletes the entry. **Dynamic inputs**: `input` is resolved per fire against
   `{ now, today, last }`, `last` being this automation's latest SUCCESSFUL
   run (a newest-first scan of summaries, ≤100) — so a failed run never
   advances a cursor. `last` is never null (before the first success its
@@ -1510,7 +1536,9 @@ and the child env is scrubbed by construction).
   **History is append-only**, the chat's rule: the system prompt is frozen
   by the first turn (a later step's `system` is ignored, one warn line) and
   the messages are replayed as stored, so every request begins with the
-  previous one byte for byte. Tools, output mode and `maxSteps` are the
+  previous one byte for byte. `retain` replaces what a
+  compaction's summary is told to keep (`AGENT_RETAIN`: files, commands) with
+  the caller's own references. Tools, output mode and `maxSteps` are the
   current step's. The provider and whether calls are routed through the
   gateway are fixed by the first turn (`session_mismatch:`). A thread the
   last turn left past the compaction mark (`STRUT_COMPACT_AT`, 0.9 of the
@@ -1754,6 +1782,18 @@ and the child env is scrubbed by construction).
     matching nothing warns). `"agent"` itself is grantable — that's the
     sub-agent primitive: recursion depth is controlled by whether the child's
     own `agentTools` list includes `"agent"` again, not by a numeric cap.
+    **A tool-step can end the turn**: an output marked `withStop(output)`
+    (core.ts, the fourth marker — a device that has not answered, an
+    approval waiting on a person) stops the loop after that tool round —
+    never a nudge back into it — and one answer turn follows on the loop's
+    own prefix with every tool inert (the forced final-answer turn's
+    request, its own prompt), so the model says what it is waiting for and
+    nothing more runs (a nudge's loop stops the same way; a stream severed
+    after the stop is not resumed). A marker, not a field: the model sees
+    the plain output, and a step's own `stop` field means nothing. A
+    sub-agent's stop ends only its own turn. The output
+    gains `stopped: { tool }`. With `toolFilter: ['none']` the step needs
+    neither `git` nor `rg` (only the built-ins use them).
   - **Every tool call emits a nested run event** (`wrapToolsWithEmit`, applied
     to built-ins AND `agentTools` with one shared counter): a
     `step.start`/`step.end` (or `step.error`) at `<agentPath>/NNN-<tool>` with
