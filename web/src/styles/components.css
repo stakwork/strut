@@ -3322,11 +3322,19 @@ body.is-resizing-flyout * {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
 }
-.chat-composer-footer .chat-attach {
+/* The paperclip: a bare icon, not a button box. */
+.chat-attach {
   display: inline-flex;
   align-items: center;
-  padding: 6px;
+  padding: 4px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
 }
+.chat-attach:hover:not(:disabled) { color: var(--text); }
+.chat-attach:disabled { opacity: 0.4; cursor: default; }
 
 .chat-mic-error {
   padding: var(--sp-1) var(--sp-4);

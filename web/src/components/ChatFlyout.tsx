@@ -799,13 +799,14 @@ export function ChatFlyout(props: {
                 }}
               />
               <button
-                class="btn chat-attach"
+                type="button"
+                class="chat-attach"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={loading}
                 aria-label="Attach files"
                 title="Attach files — images, PDFs, Word, text"
               >
-                <PaperclipIcon />
+                <PaperclipIcon size={14} />
               </button>
               {micReady && (
                 <button
