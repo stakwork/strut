@@ -32,6 +32,10 @@ services:
       - strut-gateway-data:/app/data   # config.db (VKs) + logs.db
 
   strut:
+    # This checkout's code, not the published image: the smoke test is how a
+    # change to what reaches the model is validated before it merges.
+    build: .
+    image: strut:local
     depends_on:
       gateway:
         condition: service_healthy

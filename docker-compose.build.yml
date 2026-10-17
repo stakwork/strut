@@ -1,0 +1,11 @@
+# Overlay: strut built from this checkout instead of the published image —
+# for working on strut itself.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+#
+# The browser service stays the published Playwright server; `build:
+# images/browser` there builds it too.
+services:
+  strut:
+    build: .
+    image: strut:local

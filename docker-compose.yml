@@ -1,8 +1,14 @@
-# Test / local compose for the standalone strut server on the graph backend:
-# strut + its own Neo4j. Workflows/steps live in Neo4j; runs, chats, secrets,
-# artifacts stay under /data/workspace (see src/graph/wiring.ts).
+# The standalone strut server on the graph backend: strut + its own Neo4j +
+# a browser. Workflows/steps live in Neo4j; runs, chats, secrets, artifacts
+# stay under /data/workspace (see src/graph/wiring.ts).
 #
-#   docker compose up --build        # then open http://localhost:3000
+#   docker compose up -d             # then open http://localhost:3000
+#
+# Nothing is built: strut is the published image, ghcr.io/stakwork/strut,
+# pushed from main on every merge (`latest`, and the short commit sha — pin
+# one with STRUT_IMAGE_TAG=<sha>; `docker compose pull` fetches a newer
+# latest). To run THIS checkout's code instead (working on strut itself):
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
 #
 # Neo4j Browser: http://localhost:7475 — connect to bolt://localhost:7689,
 # neo4j / testtest. Host ports are offset so they don't collide with a local
@@ -54,8 +60,8 @@ services:
       - browser
 
   strut:
-    build: .
-    image: strut:local
+    # Published by .github/workflows/publish-image.yml (amd64 + arm64).
+    image: ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}
     depends_on:
       neo4j:
         condition: service_healthy   # bolt.verify() fails the boot when nothing is listening

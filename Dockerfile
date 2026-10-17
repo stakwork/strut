@@ -1,4 +1,7 @@
-# docker build -t strut .      — or —      docker compose up --build
+# docker build -t strut .      — or —      docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+#
+# Published from main as ghcr.io/stakwork/strut (.github/workflows/publish-image.yml),
+# which is what a plain `docker compose up` runs.
 #
 # The standalone strut server: engine + web UI, plus the tools workflows call
 # through the `exec` step and the agent step's bash — ffmpeg, yt-dlp, tesseract,
