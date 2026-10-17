@@ -648,7 +648,9 @@ every request — the runs launched and the workflows published through the
 door carry that actor.
 
 What the door adds for a caller that is not the UI. `instructions`
-(`InitializeResult`) are the builder's procedure and the web UI's URL; the
+(`InitializeResult`) are the builder's procedure, the web UI's URL and where
+a missing credential is added — `<base>/?secrets=1` opens the UI's Secrets
+dialog, since `ask_user` / `request_secret` are not offered over MCP; the
 full system prompt — the YAML rules, every tool's use, the deployment's own
 section (`createStrut({ chatSystem })`; on a graph, the `Workflow Builder`
 Concept's page), the step catalog — is the `workflow-builder` prompt

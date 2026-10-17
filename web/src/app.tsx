@@ -81,7 +81,8 @@ export function App() {
   // Deep-links: ?wf=<workflow>&run=<runId>&v=<version> select on load and are
   // kept in sync (replaceState) as the selection changes, so the address bar
   // is always a shareable link to what's on screen. (?chat is read below and
-  // preserved by the sync.)
+  // preserved by the sync.) ?secrets=1 opens the Secrets dialog — the link an
+  // agent outside the UI (the MCP door) sends the user to add a credential.
   const [initialUrl] = useState(() => new URLSearchParams(location.search));
   const [workflows, setWorkflows] = useState<api.WorkflowEntry[]>([]);
   const [runs, setRuns] = useState<api.RunSummary[]>([]);
@@ -120,7 +121,7 @@ export function App() {
   // name, and that workflow's steps. Empty = viewing the root.
   const [runDrill, setRunDrill] = useState<DrillFrame[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const [showSecrets, setShowSecrets] = useState(false);
+  const [showSecrets, setShowSecrets] = useState(initialUrl.get("secrets") === "1");
   const [showSettings, setShowSettings] = useState(false);
   const [sttSettings, setSttSettings] = useState<SttSettings>(() => sttStore.get());
   const updateStt = (next: SttSettings) => { sttStore.set(next); setSttSettings(next); };
@@ -219,12 +220,13 @@ export function App() {
     put("run", selectedRun);
     put("v", viewVersion);
     put("job", selectedJob);
+    put("secrets", showSecrets ? "1" : null);
     const qs = p.toString();
     const next = `${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`;
     if (next !== `${location.pathname}${location.search}${location.hash}`) {
       replaceUrl(next);
     }
-  }, [selectedWf, selectedRun, viewVersion, selectedJob]);
+  }, [selectedWf, selectedRun, viewVersion, selectedJob, showSecrets]);
 
   // ── Sidebar grouping ─────────────────────────────────────────────────────
   // Workflows grouped by category; groups (and workflows within them) are
