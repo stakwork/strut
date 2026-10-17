@@ -1126,7 +1126,7 @@ export function App() {
                 ) : (
                   <>
                     {filteredRuns.length === 0 && <div class="empty-sidebar">{selectedWf ? "No runs for this workflow" : "No runs yet"}</div>}
-                    {/* The time (the id is its tooltip; a click copies it),
+                    {/* The time (the id is its tooltip; a click opens the run and copies its id),
                         the status at the row's end, the job it ran under
                         across the bottom — a click on the chip opens the
                         job's timeline. */}
