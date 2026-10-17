@@ -292,6 +292,27 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  and `job/get` carry the same `claims`; absent on a filesystem
    *  workspace. Null for a job not on file. */
   claims?(job: string): Promise<LedgerClaim[] | null>;
+  /** Launch the `job` workflow DETACHED under `job` (`job/start`,
+   *  `job/continue`): returns once the run is launched, never waits for
+   *  it. The run's `run.end` goes to the launching run's own `callback`
+   *  (`from`), so the host that asked for the turn hears the job end; no
+   *  callback there, none here. `job_busy:` while a run of the job is in
+   *  flight. Set by the server; absent on a bare bag. */
+  launch?(opts: JobLaunch): Promise<{ runId: string; callback: boolean }>;
+}
+
+/** What `JobsCapability.launch` takes. */
+export interface JobLaunch {
+  job: string;
+  /** Names the job (`POST …/run { title }`). */
+  title?: string;
+  /** The `job` workflow's input: `prompt`, and `session`, `repos`, `workspace`. */
+  input: Record<string, unknown>;
+  /** The launching run (`ctx.runId`): whose callback the job's run.end goes to. */
+  from: string;
+  /** Billed like the launching run. */
+  actor?: string;
+  principal?: string;
 }
 
 /** The record's own writer, index or not. `index` (a server's stores) adds
