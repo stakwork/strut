@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { defineStep, messagesOf } from "../../core.js";
+import { defineStep, messagesOf, withStop } from "../../core.js";
 import { MemorySessionStore, sessionsCapability, type NewTurn, type SessionsCapability } from "../../session-store.js";
 import agent from "./agent.js";
 
@@ -88,14 +88,15 @@ const systemOf = (body: any): string => (body.system as any[]).map((b) => b.text
 const textOf = (m: any): string => JSON.stringify(m.content);
 
 // Tool-steps for `agentTools`: one that ends the turn (a device that has not
-// answered), one that does not.
+// answered), one that does not — its output's `stop` field is a field, not
+// the marker.
 const askMac = defineStep({
   type: "dev/ask-mac",
   description: "Ask the Mac.",
   input: z.object({ kind: z.string() }),
   output: z.any(),
   async run() {
-    return { status: "pending", stop: true };
+    return withStop({ status: "pending" });
   },
 });
 const recall = defineStep({
@@ -104,7 +105,7 @@ const recall = defineStep({
   input: z.object({ q: z.string() }),
   output: z.any(),
   async run({ q }) {
-    return { facts: [`${q}: 12 May`], stop: false };
+    return { facts: [`${q}: 12 May`], stop: true };
   },
 });
 const registry = { "dev/ask-mac": askMac, "dev/recall": recall };
@@ -561,7 +562,7 @@ describe("agent sessions", () => {
 
   // ── a tool that ends the turn ────────────────────────────────────────────
 
-  it("a tool output with stop: true ends the turn after that round: one answer turn with inert tools, no nudge", async () => {
+  it("a tool output marked withStop ends the turn after that round: one answer turn with inert tools, no nudge", async () => {
     const s = await serve([call("toolu_1", "dev_ask_mac", { kind: "chats.unseen" }), text("Waiting for your Mac.")]);
     const events: any[] = [];
     try {
@@ -579,6 +580,7 @@ describe("agent sessions", () => {
       const last = JSON.stringify((answerTurn.messages as any[]).at(-1));
       assert.ok(last.includes("toolu_1") && last.includes("ended this turn") && last.includes("do NOT call any tools"));
       assert.ok(last.includes("pending"), "the tool's result is in");
+      assert.ok(!last.includes("\"stop\"") && !last.includes("_stop"), "the marker is not in what the model sees");
       // The tool ran once and shows as a run event; the thread is committed.
       assert.deepEqual(events.filter((e) => e.type === "step.start").map((e) => e.stepType), ["tool:dev_ask_mac"]);
       assert.equal((await store.load("abc"))!.turns.length, 1);
@@ -589,7 +591,7 @@ describe("agent sessions", () => {
 
   it("after a stop, a tool the model calls anyway runs nothing; plain-text mode answers the same way", async () => {
     let ran = 0;
-    const counted = { ...askMac, async run() { ran++; return { status: "pending", stop: true }; } };
+    const counted = { ...askMac, async run() { ran++; return withStop({ status: "pending" }); } };
     const s = await serve([
       call("toolu_1", "dev_ask_mac", { kind: "chats.unseen" }),
       call("toolu_2", "dev_ask_mac", { kind: "chats.unseen" }),
@@ -626,7 +628,7 @@ describe("agent sessions", () => {
     }
   });
 
-  it("an output without stop: true (stop: false, or none) leaves the loop alone", async () => {
+  it("an unmarked output leaves the loop alone, a `stop: true` field of its own included", async () => {
     const s = await serve([call("toolu_1", "dev_recall", { q: "Kate" }), answer("toolu_2", "12 May")]);
     try {
       const out = await run({ toolFilter: ["none"], agentTools: ["dev/recall"] }, { registry });

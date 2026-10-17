@@ -35,6 +35,8 @@ export {
   type MediaPart,
   withMedia,
   mediaOf,
+  withStop,
+  stopOf,
 } from "./core.js";
 
 // Runner

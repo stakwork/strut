@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
-import { defineStep } from "./core.js";
+import { defineStep, withStop } from "./core.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import { MemoryChatStore } from "./chat-store.js";
@@ -307,7 +307,7 @@ describe("agent sessions over HTTP", () => {
 // The shape of Peel's orchestrator (peel docs/agent-on-strut.md §1): one
 // DM thread on `session`, its prompt fixed by the first turn, no built-ins,
 // registry steps as tools, job's structured reply, and a run.end callback
-// per turn. Turn 1 asks a device that has not answered (`stop: true`), so
+// per turn. Turn 1 asks a device that has not answered (`withStop`), so
 // the turn ends waiting; turn 2 is the answer arriving, in the same thread.
 describe("a peel-agent-shaped workflow: two turns in one session", () => {
   let dir = "";
@@ -380,7 +380,7 @@ describe("a peel-agent-shaped workflow: two turns in one session", () => {
     input: z.object({ kind: z.string() }),
     output: z.any(),
     async run({ kind }) {
-      return { request: kind, status: "pending", stop: true };
+      return withStop({ request: kind, status: "pending" });
     },
   });
   const remember = defineStep({

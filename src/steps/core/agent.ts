@@ -3,7 +3,7 @@ import type { SecretsCapability } from "../../capabilities.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import { accessedNodesOf, defineStep, mediaOf, messagesOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages } from "../../core.js";
+import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
@@ -1033,7 +1033,7 @@ export default defineStep({
       .array(z.string())
       .default([])
       .describe(
-        "registry step TYPES to expose as additional LLM tools (the 'tools are steps' model, e.g. ['gitsee/read-logs']). Entries may be glob patterns over step types ('jarvis/*' grants the whole namespace; new steps in it are picked up automatically). Each step's input schema becomes the tool schema and its run() is the executor, called with a nested ctx so every tool call emits a step.start/step.end run event (visible in the events panel). Merged ON TOP of the built-ins (not subject to toolFilter). Unknown types are skipped. Requires the runner-populated ctx.registry. A step whose output is an object with `stop: true` ENDS THE TURN after that tool round: no further tool runs, and the model writes its answer from the results it has (the output gains `stopped: { tool }`).",
+        "registry step TYPES to expose as additional LLM tools (the 'tools are steps' model, e.g. ['gitsee/read-logs']). Entries may be glob patterns over step types ('jarvis/*' grants the whole namespace; new steps in it are picked up automatically). Each step's input schema becomes the tool schema and its run() is the executor, called with a nested ctx so every tool call emits a step.start/step.end run event (visible in the events panel). Merged ON TOP of the built-ins (not subject to toolFilter). Unknown types are skipped. Requires the runner-populated ctx.registry. A step whose output is marked withStop() (core.ts) ENDS THE TURN after that tool round: no further tool runs, and the model writes its answer from the results it has (the output gains `stopped: { tool }`).",
       ),
     secretsEnv: z
       .array(z.string())
@@ -1312,16 +1312,18 @@ export default defineStep({
     // lookup below finds it (src/step-ref.ts).
     if (ctx?.registry) for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(ctx.registry, name);
     const registryTools = buildRegistryTools(cfg.agentTools, ctx?.registry, ctx, tool);
-    // A tool-step whose output says `stop: true` ends the turn after this
-    // tool round (a device that has not answered, an approval waiting on a
-    // person): the loop stops, and the one answer turn below runs no tool.
-    // In code, not in the prompt, so a model cannot talk past it.
+    // A tool-step whose output is marked `withStop` (core.ts) ends the turn
+    // after this tool round (a device that has not answered, an approval
+    // waiting on a person): the loop stops, and the one answer turn below
+    // runs no tool. In code, not in the prompt, so a model cannot talk past
+    // it; a marker, not a field, so the model never sees it and a step's own
+    // `stop` field means nothing here.
     let stoppedBy: string | undefined;
     for (const [name, t] of Object.entries(registryTools) as [string, any][]) {
       const run = t.execute;
       t.execute = async (input: unknown, opts: unknown) => {
         const out = await run(input, opts);
-        if (out && typeof out === "object" && (out as { stop?: unknown }).stop === true) stoppedBy ??= name;
+        if (stopOf(out)) stoppedBy ??= name;
         return out;
       };
     }
