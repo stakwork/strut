@@ -1,5 +1,6 @@
 import { formatJson } from "../helpers";
-import { groupStatus, STATUS_TITLE, type ChatEntry } from "../transcript";
+import { groupStatus, STATUS_TITLE, type AttachmentView, type ChatEntry } from "../transcript";
+import { CloseIcon, FileIcon } from "../icons";
 import { ToolResultView } from "./ToolResultView";
 import { NoticeView } from "./NoticeView";
 import { Markdown } from "./Markdown";
@@ -14,6 +15,43 @@ import { WalkView } from "./WalkView";
 // agent session read back from a run. `live` = the last entry may still be
 // streaming (plain text, pending dots). `expanded` is the caller's: the
 // chat keeps chips open across re-renders of a streaming turn.
+
+/** A message's attached files: an image as its thumbnail, anything else as
+ *  a chip (name, size). `onRemove` makes them removable — the composer's
+ *  pending files. */
+export function AttachmentList(props: {
+  items: AttachmentView[];
+  onRemove?: (index: number) => void;
+}) {
+  return (
+    <div class="chat-attachments">
+      {props.items.map((a, i) => (
+        <div key={i} class={`chat-attachment${a.src ? " is-image" : ""}`} title={`${a.name} (${a.mediaType}, ${a.size})`}>
+          {a.src ? (
+            <img src={a.src} alt={a.name} />
+          ) : (
+            <>
+              <FileIcon size={14} />
+              <span class="chat-attachment-name">{a.name}</span>
+              <span class="chat-attachment-size">{a.size}</span>
+            </>
+          )}
+          {props.onRemove && (
+            <button
+              type="button"
+              class="chat-attachment-remove"
+              onClick={() => props.onRemove!(i)}
+              aria-label={`Remove ${a.name}`}
+              title="Remove"
+            >
+              <CloseIcon size={10} />
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function Transcript(props: {
   entries: ChatEntry[];
@@ -32,7 +70,8 @@ export function Transcript(props: {
         if (entry.kind === "user") {
           return (
             <div key={i} class="chat-msg chat-msg-user">
-              <div class="chat-msg-text">{entry.content}</div>
+              {entry.attachments?.length ? <AttachmentList items={entry.attachments} /> : null}
+              {entry.content && <div class="chat-msg-text">{entry.content}</div>}
             </div>
           );
         }

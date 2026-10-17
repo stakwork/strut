@@ -112,6 +112,7 @@ strut/
 │   │   │                  #                   ask_user / request_secret (the builder asks the user — plans/elicitation.md; when deps.openElicitation is wired)
 │   │   ├── walk-tool.ts   # graph_walk (OFF for now: `GRAPH_WALK_TOOL_ENABLED` in prompts.ts): an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
+│   │   ├── attachments.ts # files on a chat message (`POST /chat { attachments }`): validated + capped, saved under `<dataDir>/uploads/<chatId>/`, turned into the user message's parts — an image or a PDF as a `file` part the model sees, text and Word (.docx/.doc via `word-extractor`, lazy) as inline text, anything else announced with its path for bash
 │   │   ├── elicitation.ts # the builder asks the user (plans/elicitation.md), the PURE half: ACP's flat schema subset + validator (model schema, submitted content), the secret-looking-field guard, crypto-random ids, `stepAsked` (the chat's stop condition), the `[elicitation-response]` formatter, the question as callback text
 │   │   ├── stepHelpers.ts # lsSteps / searchSteps / readStepSource (filesystem-style browser)
 │   │   └── schemaHelpers.ts # zodToFields: Zod → FieldDesc[] (the UI config form); stepSchemas: Zod → JSON Schema (get_step's input/output for the builder)
@@ -159,6 +160,7 @@ strut/
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
+        ├── attachments.ts # the chat composer's files read for `POST /chat` (a PNG/JPEG past 1568 px scaled down first; the server's limits checked early)
         ├── transcript.ts  # a transcript (stored model messages) folded into display entries — user / text / tool groups with results attached by toolCallId / notice / `mark` (a thread's turn boundary, placed by message index) — lifted out of ChatFlyout so the job timeline's thread view renders through the same fold (pure; tested)
         ├── artifact-view.ts # artifactKind: which `/artifacts/<runId>/…` paths get an eye (markdown / image / video / audio / pdf / html / text, by extension) — what ArtifactViewer can render; viewerKind adds `directory` for a path the scope's LISTING has files under (`isDirectory`, `directoryEntries`: one level, folders then files); resolveArtifactLink: where a link in a served file leads — a relative href against the file's directory, `..` folded, never out of the scope (an external URL, another run's files → null, left a plain link); findArtifacts: every such path INSIDE a value (object fields, arrays, `[{ link }]`) — a block holding several gets one eye with a pop-down to pick from (pure; tested)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
@@ -1235,6 +1237,21 @@ and the child env is scrubbed by construction).
   `error` on first read, nothing appended. The UI shows the notice as a
   "Server restarted" card.
 
+- **Attachments — files on a builder message** (`src/ai/attachments.ts`).
+  `POST /chat { attachments: [{ name, mediaType?, data }] }` (`data` base64
+  or a data URL; the message may then be empty) — at most 10, 10 MB each, 5
+  MB an image, 15 MB together, refused with a 400 before anything is
+  persisted. Each file is written to `<dataDir>/uploads/<chatId>/` (never
+  over an earlier one of the same name) and becomes parts of the user
+  message after the typed text: an `[attachment] <name> (<type>, <size>) —
+  saved at <absolute path>` line, then the image or PDF as a `file` part (the
+  model sees it; verified direct and through the gateway), or the text
+  inline — anything UTF-8, or a .docx / .doc's extracted text, cut at 200k
+  chars — or nothing more (the builder reads it with bash). The bytes stay in
+  `messages.jsonl` like any content, so they are replayed every turn until a
+  compaction: hence the caps (Anthropic refuses a request over 32 MB). The
+  flyout attaches by the paperclip, a drop on the flyout or a pasted
+  screenshot, and shows the files as chips (`transcript.ts` `userContent`).
 - **Claims, checks, evidence — the truth layer** (`plans/claims.md`; graph
   workspaces only, on by default there — on `STRUT_WORKSPACE_BACKEND=fs`,
   or with `STRUT_CLAIMS=0` / `createStrut({ claims: false })`, no claim

@@ -60,6 +60,30 @@ describe("transcript", () => {
     assert.match(transcriptText(entries), /---\nturn 1 · run 2 · \$0\.10/);
   });
 
+  it("a user message's attachments become chips — the image with its picture — apart from the typed text", () => {
+    const content = [
+      { type: "text", text: "build this" },
+      { type: "text", text: "[attachment] shot (1).png (image/png, 70 B) — saved at /d/uploads/c/shot (1).png" },
+      { type: "file", data: "AAAA", mediaType: "image/png", filename: "shot (1).png" },
+      { type: "text", text: "[attachment] spec.docx (application/msword, 3 KB) — saved at /d/uploads/c/spec.docx\n\nClip Spec" },
+    ];
+    const [entry] = transcriptToEntries([{ role: "user", content }]);
+    assert.deepEqual(entry, {
+      kind: "user",
+      content: "build this",
+      attachments: [
+        { name: "shot (1).png", mediaType: "image/png", size: "70 B", src: "data:image/png;base64,AAAA" },
+        { name: "spec.docx", mediaType: "application/msword", size: "3 KB" },
+      ],
+    });
+    assert.equal(
+      transcriptText([entry!]),
+      "### User\nbuild this\n[attachment] shot (1).png (image/png, 70 B)\n[attachment] spec.docx (application/msword, 3 KB)",
+    );
+    // Files alone: still a user bubble, never a notice.
+    assert.deepEqual(transcriptToEntries([{ role: "user", content: content.slice(3) }])[0]?.kind, "user");
+  });
+
   it("attachResult finds the call from the end and leaves other entries alone", () => {
     const entries = transcriptToEntries(messages.slice(0, 3));
     const { entries: next, call } = attachResult(entries, "c3", { output: 1, isError: false });
