@@ -4,6 +4,7 @@ import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+import type { BrowserService } from "./browser/service.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -383,6 +384,12 @@ export interface StrutCapabilities {
    *  and falls back to `NEO4J_*` when it is absent). A Neo4j or a LadybugDB
    *  file (plans/ladybug-backend.md). */
   graph?: GraphBackend;
+  /** The browser the `browser/*` steps drive (src/browser/service.ts): one
+   *  Playwright connection, a context per run, closed when the run ends.
+   *  Built by the standard server from `BROWSER_*`; a host's own wins.
+   *  Optional because a bare in-code bag may not carry one (the steps then
+   *  fail naming it). */
+  browser?: BrowserService;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local

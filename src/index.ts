@@ -613,3 +613,8 @@ export {
 // The `job` workflow strut ships (plans/jobs.md §5): seeded at boot by
 // createStrut; a host's delta rides on `createStrut({ job })`.
 export { seedJobWorkflow, jobWorkflowYaml, JOB_WORKFLOW, JOB_CATEGORY, JOB_DESCRIPTION, type JobSeedOptions } from "./job-seed.js";
+// The browser the browser/* lib steps drive (src/browser/service.ts):
+// createStrut builds one from BROWSER_* as `services.browser` unless the
+// host passes its own; and the browser workflows it seeds beside them.
+export { BrowserService, type BrowserServiceOptions } from "./browser/service.js";
+export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./browser/seed.js";

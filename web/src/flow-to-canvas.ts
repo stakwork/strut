@@ -68,6 +68,12 @@ const STEP_COLORS: Record<string, { fill: string; stroke: string }> = {
   "gdrive/export-file": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
   "gdrive/list-files":  { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
   "strut/run-workflow": { fill: "rgba(21, 94, 117, 0.4)", stroke: "#22d3ee" },
+  // The browser/* steps (src/steps/lib/browser) share one color.
+  ...Object.fromEntries(
+    ["open", "goto", "back", "close", "snapshot", "text", "evaluate", "observe", "click", "fill", "type", "press", "select", "hover", "scroll", "wait", "screenshot", "capture", "verify", "walkthrough", "state"].map(
+      (n) => [`browser/${n}`, { fill: "rgba(19, 78, 74, 0.4)", stroke: "#2dd4bf" }],
+    ),
+  ),
   default:  { fill: "rgba(38, 38, 38, 0.6)",  stroke: "#737373" },
 };
 

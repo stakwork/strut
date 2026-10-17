@@ -91,12 +91,12 @@ params:
   # reads (plans/job-index.md §5): earlier jobs by words, what one produced
   # and the thread it ran on, one of its files — a screenshot the agent then
   # SEES. The job's CLAIMS (plans/job-claims.md): one claim per change, its
-  # check using what was delivered as its user would — the lab's
-  # browser/verify for a page, http/verify for an endpoint, exec for a
-  # command — or a person's look when nothing here runs it, never a check
-  # over the agent's own diff; and verify the job before saying done. A
-  # host appends its own (`createStrut({ job: { tools } })`): the lab adds
-  # `pod/*` and `browser/verify`. Held back until running works:
+  # check using what was delivered as its user would — browser/verify for
+  # a page (browser/walkthrough for a flow, a frame per step), http/verify
+  # for an endpoint, exec for a command — or a person's look when nothing
+  # here runs it, never a check over the agent's own diff; and verify the
+  # job before saying done. A host appends its own (`createStrut({ job: {
+  # tools } })`): the lab adds `pod/*`. Held back until running works:
   # meta/publish-workflow (a bespoke check workflow), meta/create-step.
   tools:
     - graph/graph-search
@@ -113,6 +113,8 @@ params:
     - meta/edit-check
     - meta/verify-job
     - http/verify
+    - browser/verify
+    - browser/walkthrough
     - strut/run-workflow
     - job/list
     - job/get
@@ -166,9 +168,10 @@ params:
     change; several only when the ask has separate parts, one per part.
     Its check uses what you delivered the way its user would, where it
     runs:
-    - a page: a page check where one is granted, on the running app the
-      job holds (`{{ input.urls.pod }}/<path>`). It answers with a
-      screenshot.
+    - a page: browser/verify (browser/walkthrough for a flow, a frame
+      per step), on the running app the job holds
+      (`{{ input.urls.pod }}/<path>`) or the page as its user opens it.
+      It answers with a screenshot.
     - an endpoint: http/verify, the request and the answer expected, at
       `{{ input.urls.pod }}/<path>`.
     - a command, a script or a file you deliver: exec with `cwd: "{{

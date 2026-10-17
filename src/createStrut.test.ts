@@ -413,7 +413,7 @@ describe("createStrut", () => {
     );
     await ws.publishWorkflow("shouter", "v1", { steps: [{ id: "s", type: "clip/shout", config: { text: "{{ input.text }}" } }] });
     const store = new MemoryRunStore();
-    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false, systemWorkflows: false });
+    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, stt: false, systemWorkflows: false, browserWorkflows: false });
     const hash = (await ws.getActiveStepHashes())["clip/shout"]!;
     assert.equal(strut.claims, null, "a filesystem workspace has no claims layer");
 
@@ -998,7 +998,7 @@ describe("createStrut", () => {
     await ws.publishWorkflow("daily-digest", "v1", { steps }, "Summarize the day");
     await ws.publishWorkflow("slack-backfill", "v1", { steps });
     await ws.publishWorkflow("clip", "v1", { steps });
-    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false, job: false, systemWorkflows: false });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false, job: false, systemWorkflows: false, browserWorkflows: false });
     const names = async (q: string) =>
       ((await (await strut.app.request(`/workflows?q=${encodeURIComponent(q)}`)).json()) as { name: string }[]).map((w) => w.name);
     assert.deepEqual(await names("slack"), ["slack-backfill"]);
@@ -1500,6 +1500,7 @@ describe("actors and the principal rule", () => {
       scheduler: false,
       job: false, // the suite is about the workflows IT publishes
       systemWorkflows: false,
+      browserWorkflows: false,
       ...(o.resolveActor ? { resolveActor: o.resolveActor } : {}),
     });
     await strut.workspace.publishWorkflow("wf", "v1", { steps: STEPS });
