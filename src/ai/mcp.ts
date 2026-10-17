@@ -47,7 +47,8 @@ export function builderInstructions(publicUrl: string): string {
     `The "${PROMPT_NAME}" prompt (prompts/get) is that chat's full system prompt — the YAML rules, every tool's use, this deployment's own notes on what is built here and how, and the step catalog; read it before building anything. ` +
     `The web UI is at ${publicUrl}/ — a \`ui\` link in a result opens that workflow or run there, and an artifact link in a result opens the file (it carries its own read token).\n\n` +
     `${BUILDER_PROCEDURE}\n\n` +
-    `Over MCP, "this prompt" above means the ${PROMPT_NAME} prompt (its step catalog is as of its read; list_steps re-lists), and no notification ever arrives: a run_workflow that detached is finished by calling get_run with \`wait\` until its status is terminal.`
+    `Over MCP, "this prompt" above means the ${PROMPT_NAME} prompt (its step catalog is as of its read; list_steps re-lists), and no notification ever arrives: a run_workflow that detached is finished by calling get_run with \`wait\` until its status is terminal. ` +
+    `The prompt's ask_user and request_secret are not offered here: ask the user yourself, and NEVER collect a credential's value — call list_secrets, and when the NAME a step needs is missing send the user to add it under Secrets in the UI, ${publicUrl}/?secrets=1 (the name, then the value; it never passes through you), then call list_secrets again.`
   );
 }
 

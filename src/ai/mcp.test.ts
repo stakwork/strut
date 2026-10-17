@@ -105,6 +105,7 @@ describe("the builder over MCP", () => {
     const instructions = client.getInstructions()!;
     assert.ok(instructions.includes("Workflow:\n1. Call list_workflows FIRST"), "the procedure");
     assert.ok(instructions.includes("https://strut.test/"), "the UI");
+    assert.ok(instructions.includes("https://strut.test/?secrets=1"), "where a missing credential is added");
     assert.ok(instructions.includes(PROMPT_NAME));
   });
 
