@@ -14,6 +14,7 @@ import { MemoryRunStore } from "./store.js";
 import { MemorySecretStore } from "./secret-store.js";
 import { FileWorkspaceStore } from "./workspace.js";
 import { createAutomations, type Automations } from "./scheduler.js";
+import { automationCallbackSecret } from "./automations.js";
 import { buildTools } from "./ai/tools.js";
 import { z } from "zod";
 
@@ -138,7 +139,7 @@ describe("automations: policy layer + scheduler", () => {
     assert.deepEqual(r.automation.callback, { origin: "http://127.0.0.1:9911" });
     assert.ok(!JSON.stringify(await autos.list(WF)).includes("s3cret"), "the URL is never served");
     assert.ok(!JSON.stringify(await ws.getWorkflowMetadata(WF)).includes("s3cret"), "nor kept in the metadata");
-    assert.equal(await secrets.get(`STRUT_AUTOMATION_CALLBACK_${r.automation.id.replace("-", "_")}`), url);
+    assert.equal(await secrets.get(automationCallbackSecret(r.automation.id)), url);
 
     const fired = await autos.fire(WF, r.automation.id);
     assert.ok("ok" in fired);

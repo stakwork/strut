@@ -7,6 +7,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { createStrut, type Strut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
+import { AUTOMATION_CALLBACKS_FILE, automationCallbackSecret } from "./automations.js";
 
 const WF = "echo";
 // The run's output is its last step's: `pack` returns its resolved config.
@@ -149,6 +151,10 @@ describe("automations endpoints", () => {
         assert.ok(!JSON.stringify(got.json).includes("s3cret"), `${path} serves the URL`);
         if (path !== "/secrets") assert.ok(JSON.stringify(got.json).includes(origin), `${path} shows the origin`);
       }
+      // A file of its own, not the deployment's secrets: no step can read it.
+      assert.deepEqual((await call("GET", "/secrets")).json, { secrets: [] });
+      assert.equal(await (strut.services as any).secrets.get(automationCallbackSecret(made.json.automation.id)), undefined);
+      assert.ok(existsSync(join(dir, AUTOMATION_CALLBACKS_FILE)));
       const bad = await call("POST", `/workflows/${WF}/automations`, { name: "x", trigger: { every: "day", at: ["09:00"] }, callback: { url: "file:///etc/passwd" } });
       assert.equal(bad.status, 400);
       assert.match(bad.json.error, /callback\.url must be http\(s\)/);

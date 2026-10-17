@@ -470,8 +470,8 @@ Automations launch a workflow on a schedule; the trigger grammar is in
 run whose `run.start` and summary carry `origin: "schedule"` and
 `automation: { id }`. An automation's optional `callback: { url }` gets each
 fire's `run.end`, as `POST …/run { callback }` does; the URL is the host's
-credential, kept in the secret store, so every read shows
-`callback: { origin }` only.
+credential, kept in a file of its own (never the deployment's secrets, which
+steps read), so every read shows `callback: { origin }` only.
 
 | Method | Path                                      | Description |
 | ------ | ----------------------------------------- | ----------- |

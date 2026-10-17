@@ -44,7 +44,9 @@ export interface AutomationsDeps {
    *  `callback` is the automation's, when it has one: `run.end` goes there. */
   launch: (flow: Flow, input: Record<string, unknown>, automation: { id: string }, callback?: { url: string }) => string;
   /** Where an automation's callback URL is kept — a credential, never in
-   *  the workflow metadata. Without it, an automation cannot take one. */
+   *  the workflow metadata, and a store of its own (`AUTOMATION_CALLBACKS_FILE`),
+   *  never the deployment's secrets, which every step can read. Without it,
+   *  an automation cannot take one. */
   secrets?: Pick<SecretStore, "get" | "set" | "delete">;
   /** Is this run executing in THIS process right now? */
   isInFlight: (workflow: string, runId: string) => boolean;

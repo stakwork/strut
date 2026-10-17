@@ -129,9 +129,10 @@ export const automationInputSchema = z
   );
 
 /** Where each fire's `run.end` is POSTed — the `callback` of `POST …/run`
- *  (src/callback.ts). The URL is the host's credential: it goes to the
- *  secret store (`automationCallbackSecret`), and the record keeps its
- *  origin only, so no read of workflow metadata can serve it. */
+ *  (src/callback.ts). The URL is the host's credential: it goes to a store
+ *  of its own (`AUTOMATION_CALLBACKS_FILE`, under `automationCallbackSecret`),
+ *  and the record keeps its origin only, so no read of workflow metadata can
+ *  serve it. */
 export const automationCallbackSchema = z
   .object({ url: z.string() })
   .superRefine((cb, ctx) => {
@@ -168,9 +169,14 @@ export interface Automation {
   callback?: { origin: string };
 }
 
-/** The secret holding an automation's callback URL. */
+/** The file an automation's callback URLs are kept in: a fifth encrypted
+ *  store beside `secrets.json`, never in it — every step reads that one
+ *  through `ctx.services.secrets`, and `GET /secrets` lists it. */
+export const AUTOMATION_CALLBACKS_FILE = "automation-callbacks.json";
+
+/** The key an automation's callback URL is kept under in that store. */
 export function automationCallbackSecret(id: string): string {
-  return `STRUT_AUTOMATION_CALLBACK_${id.replace(/[^A-Za-z0-9_]/g, "_")}`;
+  return id.replace(/[^A-Za-z0-9_]/g, "_");
 }
 
 /** Fill what a draft may omit (zone, interval anchor) and canonicalize the
