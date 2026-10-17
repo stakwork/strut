@@ -631,3 +631,13 @@ export { builderSystem, renderBuilderSystem, BUILDER_ENTRY, type ConceptPage } f
 // host passes its own; and the browser workflows it seeds beside them.
 export { BrowserService, type BrowserServiceOptions } from "./browser/service.js";
 export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./browser/seed.js";
+// The `orchestrator` workflow strut ships, seeded the same way; a host's
+// delta rides on `createStrut({ orchestrator })`.
+export {
+  seedOrchestratorWorkflow,
+  orchestratorWorkflowYaml,
+  ORCHESTRATOR_WORKFLOW,
+  ORCHESTRATOR_CATEGORY,
+  ORCHESTRATOR_DESCRIPTION,
+  type OrchestratorSeedOptions,
+} from "./orchestrator-seed.js";
