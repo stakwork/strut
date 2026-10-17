@@ -2984,16 +2984,33 @@ export async function createStrut<TServices = unknown>(
     app.post("/mcp", async (c) => {
       // The SDK loads on the first MCP request, never at boot.
       const { createBuilderMcp, builderInstructions, MCP_DETACH_HINT } = await import("./ai/mcp.js");
+      const { buildSystem } = await import("./ai/prompts.js");
       const publicUrl = publicUrlOf(c);
+      const actor = await resolveActor(c);
       const deps = {
-        ...builderDeps(await resolveActor(c)),
+        ...builderDeps(actor),
         publicUrl,
         artifactRefs,
         // A run that outlives the wait window goes on detached, tracked like
         // any launch; nothing can notify an MCP client, so it polls get_run.
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl) }).handle(c.req.raw);
+      // The `workflow-builder` prompt is the chat's whole system prompt, the
+      // host's section included (StrutOptions.chatSystem — on a graph, the
+      // `Workflow Builder` Concept's page), read at each prompts/get: there
+      // is no chat to freeze it for, so an edit to the page shows at once.
+      // The hook takes a chat id; `mcp` stands in. A throw is one warning,
+      // and the prompt is strut's alone, as for a chat turn.
+      const prompt = async () => {
+        const hostSystem = await Promise.resolve()
+          .then(() => chatSystem?.({ chatId: "mcp", turn: 0, ...(actor ? { actor } : {}) }))
+          .catch((err) => {
+            console.warn(`[mcp] chatSystem hook failed:`, err instanceof Error ? err.message : err);
+            return undefined;
+          });
+        return buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
+      };
+      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt }).handle(c.req.raw);
     });
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);

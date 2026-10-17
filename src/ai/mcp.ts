@@ -32,7 +32,7 @@ const VERSION: string = createRequire(import.meta.url)("../../package.json").ver
 /** The one prompt: the builder chat's full system prompt (`buildSystem`). */
 export const PROMPT_NAME = "workflow-builder";
 const PROMPT_DESCRIPTION =
-  "The workflow builder's full system prompt: the YAML rules, how each tool is used, and the step catalog as of now. Read it before building anything.";
+  "The workflow builder's full system prompt: the YAML rules, how each tool is used, this deployment's own notes on what is built here, and the step catalog as of now. Read it before building anything.";
 
 /** What run_workflow says about a detached run here — no notification can
  *  reach an MCP client, so it polls (`AiDeps.detach.hint`). */
@@ -44,7 +44,7 @@ export const MCP_DETACH_HINT =
 export function builderInstructions(publicUrl: string): string {
   return (
     `Strut's workflow builder over MCP: the tools its builder chat's model uses, with the same descriptions and result caps. ` +
-    `The "${PROMPT_NAME}" prompt (prompts/get) is that chat's full system prompt — the YAML rules, every tool's use, and the step catalog; read it before building anything. ` +
+    `The "${PROMPT_NAME}" prompt (prompts/get) is that chat's full system prompt — the YAML rules, every tool's use, this deployment's own notes on what is built here and how, and the step catalog; read it before building anything. ` +
     `The web UI is at ${publicUrl}/ — a \`ui\` link in a result opens that workflow or run there, and an artifact link in a result opens the file (it carries its own read token).\n\n` +
     `${BUILDER_PROCEDURE}\n\n` +
     `Over MCP, "this prompt" above means the ${PROMPT_NAME} prompt (its step catalog is as of its read; list_steps re-lists), and no notification ever arrives: a run_workflow that detached is finished by calling get_run with \`wait\` until its status is terminal.`

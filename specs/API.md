@@ -649,8 +649,11 @@ door carry that actor.
 
 What the door adds for a caller that is not the UI. `instructions`
 (`InitializeResult`) are the builder's procedure and the web UI's URL; the
-full system prompt — the YAML rules, every tool's use, the step catalog as
-of the read — is the `workflow-builder` prompt (`prompts/get`). The results
+full system prompt — the YAML rules, every tool's use, the deployment's own
+section (`createStrut({ chatSystem })`; on a graph, the `Workflow Builder`
+Concept's page), the step catalog — is the `workflow-builder` prompt
+(`prompts/get`), built at each read, so an edit to that page shows at once
+(a chat freezes its prompt on its first turn). The results
 of `create_workflow` / `edit_workflow` / `run_workflow` / `get_run` carry
 `ui`, a deep link into the web UI (`<base>/?wf=<name>` or
 `…&run=<runId>`). A run's declared deliverables (§5, `CALLBACKS.md` §4)

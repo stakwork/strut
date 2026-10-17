@@ -2045,15 +2045,32 @@ steps:
     }
   });
 
-  it("publicUrl names the base for every link; the door mounts without the chat", async () => {
-    const strut = await boot({ enableChat: false, enableMcp: true, publicUrl: "https://public.example/" });
+  it("publicUrl names the base for every link; the door mounts without the chat; the host's section is in the prompt", async () => {
+    let notes = "Deployment notes: everything built here is a newsletter.";
+    const strut = await boot({
+      enableChat: false,
+      enableMcp: true,
+      publicUrl: "https://public.example/",
+      chatSystem: ({ chatId, actor }) => `${notes} (chat ${chatId}, actor ${actor ?? "none"})`,
+    });
     const port = await strut.listen(0, "127.0.0.1");
     const client = new Client({ name: "test", version: "0" });
     await client.connect(
-      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { authorization: `Bearer ${KEY}` } } }),
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${KEY}`, "x-strut-actor": "evan" } },
+      }),
     );
     try {
       assert.ok(client.getInstructions()!.includes("https://public.example/"));
+      assert.ok(client.getInstructions()!.includes("deployment's own notes"), "instructions say the prompt holds them");
+      // The chat's host section, between strut's rules and the step catalog
+      // — read at each prompts/get, so an edit shows at once.
+      const text = () => client.getPrompt({ name: "workflow-builder" }).then((p) => (p.messages[0]!.content as { text: string }).text);
+      const first = await text();
+      assert.ok(first.includes("Deployment notes: everything built here is a newsletter. (chat mcp, actor evan)"), first.slice(-400));
+      assert.ok(first.indexOf("Deployment notes") < first.indexOf("Available steps:"), "before the catalog");
+      notes = "Deployment notes: now podcasts.";
+      assert.ok((await text()).includes("now podcasts"));
       await client.callTool({ name: "create_workflow", arguments: { name: "deliver", yaml: YAML } });
       const run = json(await client.callTool({ name: "run_workflow", arguments: { name: "deliver", input: {} } }));
       assert.equal(run.ui, `https://public.example/?wf=deliver&run=${run.runId}`);
