@@ -60,6 +60,8 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
+import { STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
+import { builderSystem } from "./ai/builder-system.js";
 import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerStore, peersCapability, type Peer } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
@@ -211,7 +213,10 @@ export interface StrutOptions<TServices = unknown> {
    *  an edit reaches new chats only. For what the DEPLOYMENT knows and strut
    *  does not — the kinds of thing built here and their conventions; mcp
    *  renders it from its knowledge graph. Nothing returned, or a throw
-   *  (logged) → the prompt is strut's alone: a turn never fails on it. */
+   *  (logged) → the prompt is strut's alone: a turn never fails on it.
+   *  Default, with a graph: the `Workflow Builder` Concept's page and the
+   *  kinds under it (src/ai/builder-system.ts); a hook passed here replaces
+   *  it. */
   chatSystem?: (ctx: { chatId: string; turn: number; actor?: string }) => string | undefined | Promise<string | undefined>;
 
   /** How long the chat agent's `run_workflow` tool waits before a still-
@@ -260,6 +265,13 @@ export interface StrutOptions<TServices = unknown> {
    *  appended to the agent's system prompt after strut's — the twin of
    *  `chatSystem`; the merged text is what is hashed. `false` seeds nothing. */
   job?: false | JobSeedOptions;
+  /** The Concept pages strut ships (src/concepts/; `src/concept-seed.ts`):
+   *  `Workflow Builder`, which the builder's prompt reads, and `Job`, which
+   *  the job agent opens first — seeded at boot on a graph, each
+   *  reconciled by its source stamp, so an edit made in the graph stays
+   *  until strut's file changes. A host seeds its own pages under them with
+   *  `seedConcepts` once this returned. `false` seeds nothing. */
+  concepts?: false;
   /** The built-in automations strut ships (src/system-workflows.ts),
    *  installed at boot with their automations off. `false` installs none. */
   systemWorkflows?: false;
@@ -793,6 +805,10 @@ export async function createStrut<TServices = unknown>(
   let stepSources: StepSources = {};
   // `type@vN` pins load through the workspace's version archive (src/step-ref.ts).
   const loadStepVersion = (name: string, version: string) => workspace.materializeStepVersion(name, version);
+  // The host's section of the builder's prompt; by default, on a graph, the
+  // `Workflow Builder` page read through the registry in force at the time.
+  const chatSystem: StrutOptions["chatSystem"] =
+    opts.chatSystem ?? (graph ? () => builderSystem({ graph, registry, services }) : undefined);
 
   async function rebuildRegistry(): Promise<void> {
     if (registryWasInjected) return; // consumer owns the registry
@@ -816,6 +832,17 @@ export async function createStrut<TServices = unknown>(
       if (changed) console.log(`[job] seeded workflow: job @ ${version}`);
     } catch (err) {
       console.warn(`[job] could not seed the job workflow:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  // The Concept pages strut ships (src/concepts/): the `Workflow Builder`
+  // page the builder's prompt reads and the `Job` page the job agent opens
+  // first. On a graph only; a page that will not seed is a warning.
+  if (graph && opts.concepts !== false) {
+    try {
+      await seedConcepts(graph, [STRUT_CONCEPTS]);
+    } catch (err) {
+      console.warn(`[concepts] could not seed strut's Concept pages:`, err instanceof Error ? err.message : err);
     }
   }
 
@@ -3122,7 +3149,7 @@ export async function createStrut<TServices = unknown>(
           let system = await chatStore.getSystem(chatId);
           if (system == null) {
             const hostSystem = await Promise.resolve()
-              .then(() => opts.chatSystem?.({ chatId, turn, ...(actor ? { actor } : {}) }))
+              .then(() => chatSystem?.({ chatId, turn, ...(actor ? { actor } : {}) }))
               .catch((err) => {
                 console.warn(`[chat ${chatId}] chatSystem hook failed:`, err instanceof Error ? err.message : err);
                 return undefined;
