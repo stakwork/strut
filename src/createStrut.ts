@@ -89,6 +89,8 @@ import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
+import { BrowserService } from "./browser/service.js";
+import { seedBrowserWorkflows } from "./browser/seed.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -273,6 +275,10 @@ export interface StrutOptions<TServices = unknown> {
   /** The built-in automations strut ships (src/system-workflows.ts),
    *  installed at boot with their automations off. `false` installs none. */
   systemWorkflows?: false;
+  /** The browser workflows strut ships beside the `browser/*` steps
+   *  (src/browser/seed.ts: browser-capture, browser-explore, browser-watch),
+   *  seeded at boot by content hash like `job`. `false` seeds none. */
+  browserWorkflows?: false;
 
   /** The strut graph backend, when the deployment has one. Default: the one
    *  behind a graph-backed workspace (`workspace.graph`), so the default
@@ -704,6 +710,30 @@ export async function createStrut<TServices = unknown>(
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
     ...((opts.services ?? {}) as Record<string, unknown>),
   } as TServices;
+  // The browser the browser/* steps drive (src/browser/service.ts), unless
+  // the host brought its own — whose teardown is then the host's too.
+  // Building it touches nothing: the first step that opens a page connects.
+  // Each run's contexts close when the run ends; a bad BROWSER_* value is a
+  // warning here and an error in those steps, never a failed boot.
+  let ownBrowser: BrowserService | undefined;
+  if (!(services as Record<string, unknown>)["browser"]) {
+    try {
+      const browser = BrowserService.fromEnv();
+      const bag = services as Record<string, unknown>;
+      const prior = (bag["onRunEnd"] as ((id: string, info?: RunEndInfo) => unknown) | undefined)?.bind(bag);
+      bag["browser"] = browser;
+      bag["onRunEnd"] = async (runId: string, info?: RunEndInfo) => {
+        try {
+          await prior?.(runId, info);
+        } finally {
+          await browser.dispose(runId);
+        }
+      };
+      ownBrowser = browser;
+    } catch (err) {
+      console.warn("[browser] no browser service:", err instanceof Error ? err.message : err);
+    }
+  }
   const artifacts = (services as Record<string, unknown>)["artifacts"] as
     | ArtifactsCapability
     | undefined;
@@ -813,6 +843,15 @@ export async function createStrut<TServices = unknown>(
       await seedConcepts(graph, [STRUT_CONCEPTS]);
     } catch (err) {
       console.warn(`[concepts] could not seed strut's Concept pages:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  // The browser workflows strut ships beside the browser/* steps
+  // (src/browser/seed.ts): browser-capture, browser-explore, browser-watch.
+  // Seeded like `job`, by content hash; one that will not take is a warning.
+  if (opts.browserWorkflows !== false) {
+    for (const w of await seedBrowserWorkflows(workspace)) {
+      if (w.changed) console.log(`[browser] seeded workflow: ${w.name} @ ${w.version}`);
     }
   }
 
@@ -3992,6 +4031,8 @@ export async function createStrut<TServices = unknown>(
 
   async function close(): Promise<void> {
     automations.stop();
+    // The browser connection, when strut built it: every run's context goes with it.
+    await ownBrowser?.close();
     const s = httpServer;
     if (!s) return;
     httpServer = null;

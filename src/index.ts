@@ -626,3 +626,8 @@ export {
   type SeedAction,
 } from "./concept-seed.js";
 export { builderSystem, renderBuilderSystem, BUILDER_ENTRY, type ConceptPage } from "./ai/builder-system.js";
+// The browser the browser/* lib steps drive (src/browser/service.ts):
+// createStrut builds one from BROWSER_* as `services.browser` unless the
+// host passes its own; and the browser workflows it seeds beside them.
+export { BrowserService, type BrowserServiceOptions } from "./browser/service.js";
+export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./browser/seed.js";
