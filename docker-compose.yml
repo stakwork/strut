@@ -34,6 +34,7 @@ services:
     # Stock community image: the graph backend needs fulltext + vector indexes
     # (5.13+), no APOC/GDS. Same image test:graph runs against.
     image: neo4j:5
+    restart: unless-stopped
     ports:
       - "${STRUT_NEO4J_HTTP_PORT:-7475}:7474"
       - "${STRUT_NEO4J_BOLT_PORT:-7689}:7687"
@@ -54,6 +55,7 @@ services:
 
   browser:
     image: ghcr.io/stakwork/strut-browser:1.63.0   # or `build: images/browser`
+    restart: unless-stopped
     environment:
       BROWSER_WS_PATH: "${BROWSER_WS_PATH:-strut-browser}"
     networks:
@@ -62,6 +64,11 @@ services:
   strut:
     # Published by .github/workflows/publish-image.yml (amd64 + arm64).
     image: ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}
+    # Back up after a crash, and after a host reboot — where Docker starts the
+    # containers itself and ignores depends_on, so strut may come up before
+    # Neo4j answers, fail its boot, and retry until it does. Runs cut off are
+    # resumed at boot (STRUT_AUTO_RESUME). `docker compose stop` keeps it down.
+    restart: unless-stopped
     depends_on:
       neo4j:
         condition: service_healthy   # bolt.verify() fails the boot when nothing is listening
