@@ -62,6 +62,7 @@ import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./a
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
 import { STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
+import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerStore, peersCapability, type Peer } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
@@ -284,6 +285,11 @@ export interface StrutOptions<TServices = unknown> {
    *  until strut's file changes. A host seeds its own pages under them with
    *  `seedConcepts` once this returned. `false` seeds nothing. */
   concepts?: false;
+  /** The `orchestrator` workflow strut ships (`src/orchestrator-seed.ts`):
+   *  one conversation turn that answers with its tools and starts jobs
+   *  detached. Seeded as `job` is, with the same host delta (`{ tools,
+   *  system }`, appended after strut's). `false` seeds nothing. */
+  orchestrator?: false | OrchestratorSeedOptions;
   /** The built-in automations strut ships (src/system-workflows.ts),
    *  installed at boot with their automations off. `false` installs none. */
   systemWorkflows?: false;
@@ -834,7 +840,8 @@ export async function createStrut<TServices = unknown>(
     await rebuildRegistry();
   }
 
-  // The one workflow strut ships: `job` (plans/jobs.md §5; src/job-seed.ts).
+  // The workflows strut ships: `job` (plans/jobs.md §5; src/job-seed.ts) and
+  // `orchestrator` (src/orchestrator-seed.ts).
   // Content-hash seeded, so a boot is a no-op unless the template or the
   // host's delta changed; before the claims reconcile below, which records
   // a seeded workflow's `claims:` block. A workspace that will not take it
@@ -845,6 +852,14 @@ export async function createStrut<TServices = unknown>(
       if (changed) console.log(`[job] seeded workflow: job @ ${version}`);
     } catch (err) {
       console.warn(`[job] could not seed the job workflow:`, err instanceof Error ? err.message : err);
+    }
+  }
+  if (opts.orchestrator !== false) {
+    try {
+      const { version, changed } = await seedOrchestratorWorkflow(workspace, opts.orchestrator);
+      if (changed) console.log(`[orchestrator] seeded workflow: orchestrator @ ${version}`);
+    } catch (err) {
+      console.warn(`[orchestrator] could not seed the orchestrator workflow:`, err instanceof Error ? err.message : err);
     }
   }
 

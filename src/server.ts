@@ -6,7 +6,11 @@
 // and blobs stay under STRUT_WORKSPACE either way. Set
 // STRUT_WORKSPACE_BACKEND=fs to boot with the filesystem-backed defaults
 // instead (FileRunStore, workspace loaded from STRUT_WORKSPACE, registry
-// built by scanning steps/) — no graph at all.
+// built by scanning steps/) — no graph at all. STRUT_HOST_CONFIG names a
+// JSON file with the host's delta for the workflows strut ships —
+// `{ job?, orchestrator? }`, each `{ tools?, system? }` as createStrut takes
+// it — for a host that runs this server rather than embedding createStrut
+// (Peel writes it at launch).
 //
 // This file is the canonical "library usage" example: anything you
 // see here, your own consumer code can do too. Pass your own
@@ -14,7 +18,7 @@
 // the returned `app` wherever you like (under another Hono router,
 // behind Express, or just call `strut.listen(port)`).
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createStrut, type Strut, type StrutOptions } from "./createStrut.js";
@@ -24,6 +28,33 @@ import { FileSecretStore } from "./secret-store.js";
 import { workspaceBackendFromEnv } from "./graph/wiring.js";
 
 let strutInstance: Strut | null = null;
+
+/** The host's delta for the shipped workflows, from the JSON file
+ *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator? }`, each `{ tools?,
+ *  system? }`. Nothing when unset. A file that cannot be read or parsed
+ *  fails the boot, rather than seeding the workflows without the host's
+ *  tools. */
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<StrutOptions, "job" | "orchestrator"> {
+  const file = env["STRUT_HOST_CONFIG"];
+  if (!file) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf-8"));
+  } catch (err) {
+    throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
+  }
+  const out: Pick<StrutOptions, "job" | "orchestrator"> = {};
+  for (const key of ["job", "orchestrator"] as const) {
+    const delta = (raw as Record<string, unknown> | null)?.[key];
+    if (delta === undefined) continue;
+    const { tools, system } = (delta ?? {}) as { tools?: unknown; system?: unknown };
+    if ((tools !== undefined && !(Array.isArray(tools) && tools.every((t) => typeof t === "string"))) || (system !== undefined && typeof system !== "string")) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], system?: string }`);
+    }
+    out[key] = { ...(tools ? { tools: tools as string[] } : {}), ...(system !== undefined ? { system: system as string } : {}) };
+  }
+  return out;
+}
 
 /** Lazily build the default Strut instance. Kept lazy so importing this
  *  module doesn't kick off filesystem I/O at module-load time. */
@@ -37,11 +68,13 @@ async function getDefault(): Promise<Strut> {
       process.env["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "job" | "orchestrator"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.
       ...(process.env["STRUT_PUBLIC_URL"] ? { publicUrl: process.env["STRUT_PUBLIC_URL"] } : {}),
+      // The host's delta for the shipped workflows (STRUT_HOST_CONFIG).
+      ...hostConfigFromEnv(),
     };
     // dataDir keeps its file default (STRUT_WORKSPACE / ./workspace) on a
     // graph workspace: runs, chats, secrets, artifacts, cassettes, and the
