@@ -307,19 +307,66 @@ describe("agent sessions", () => {
     }
   });
 
-  it("session_mismatch: the provider and the routing are the first turn's", async () => {
-    const s = await serve([]);
+  it("a thread may change provider: the next turn replays it on the new one", async () => {
+    const s = await serve([answer("toolu_1", "carried on")]);
     try {
-      await seed("other-provider", { provider: "openai" });
-      await assert.rejects(
-        run({ session: "other-provider" }),
-        /session_mismatch: session "other-provider" began on openai \(direct\); this turn resolved to anthropic \(direct\)/,
-      );
+      await store.appendTurn("switch", {
+        system: "sys",
+        messages: [
+          { role: "user", content: "earlier" },
+          { role: "assistant", content: [{ type: "reasoning", text: "openai's thinking" }, { type: "text", text: "done" }] },
+        ],
+        record: { workflow: "wf", runId: "r0", path: "wf/work", provider: "openai", model: "openai/x", routed: false },
+      });
+      const out = await run({ session: "switch" });
+      assert.equal(out.result, "carried on");
+      const sent = JSON.stringify(s.bodies[0].messages);
+      assert.ok(sent.includes("earlier") && sent.includes("done"));
+      assert.ok(!sent.includes("openai's thinking"), "thinking another provider wrote, without its signature, is not sent");
+      const thread = await store.load("switch");
+      assert.deepEqual(thread!.turns.map((t) => t.provider), ["openai", "anthropic"]);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("session_mismatch: the routing is the first turn's, and another provider's server-run tool calls stay with it", async () => {
+    const s = await serve([answer("toolu_1", "past it")]);
+    try {
       await seed("routed", { routed: true });
-      await assert.rejects(run({ session: "routed" }), /session_mismatch: .* began on anthropic \(through the gateway\)/);
-      assert.equal(s.calls(), 0);
-      assert.equal(sessions.holder("other-provider"), undefined);
+      await assert.rejects(run({ session: "routed" }), /session_mismatch: session "routed" began through the gateway; this turn goes direct/);
       assert.equal(sessions.holder("routed"), undefined);
+
+      const native = {
+        system: "sys",
+        messages: [
+          { role: "user", content: "search" },
+          {
+            role: "assistant",
+            content: [
+              { type: "tool-call", toolCallId: "ws_1", toolName: "web_search", input: { query: "q" }, providerExecuted: true },
+              { type: "tool-result", toolCallId: "ws_1", toolName: "web_search", output: { type: "json", value: [] } },
+            ],
+          },
+        ],
+        record: { workflow: "wf", runId: "r0", path: "wf/work", provider: "openai" as const, model: "openai/x", routed: false },
+      };
+      await store.appendTurn("native", native);
+      await assert.rejects(
+        run({ session: "native" }),
+        /session_mismatch: session "native" holds openai's own server-run tool calls \(turn 0\), which anthropic cannot read/,
+      );
+      assert.equal(s.calls(), 0);
+      assert.equal(sessions.holder("native"), undefined);
+
+      // A compaction left them behind the replay boundary: never sent again.
+      await store.appendTurn("compacted", native);
+      await store.appendTurn("compacted", {
+        system: "sys",
+        messages: [{ role: "user", content: "[compaction] it searched" }],
+        record: { workflow: "wf", runId: "r1", path: "wf/work", provider: "openai", model: "openai/x", routed: false, replayFrom: 2 },
+      });
+      assert.equal((await run({ session: "compacted" })).result, "past it");
     } finally {
       s.close();
     }

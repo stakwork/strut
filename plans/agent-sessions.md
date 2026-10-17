@@ -41,7 +41,7 @@ workflow or another one — has to be able to join.
 | The record | **A session store**, one append-only thread per id: the chat's `system.md` + `messages.jsonl`. The run log records the TURN, not the thread, so logs grow linearly |
 | System prompt | **Frozen by the first turn** and replayed verbatim, the chat's rule. A later step's `system` is ignored (one warn line) |
 | Tools, output mode, `maxSteps` | The current step's, every turn |
-| Provider and routing | **Fixed by the first turn.** A turn that resolves to another provider, or to the gateway when the thread started direct (or the reverse), fails. The model may change within a provider |
+| Provider and routing | **Routing is fixed by the first turn**: a turn that goes through the gateway when the thread started direct (or the reverse) fails. **The model and the provider may change** (2026-10-17): each provider's converter drops the thinking it cannot verify, and the thread keeps it for its own. Refused only while the replayed thread holds another provider's own server-run tool calls (Anthropic's web tools, direct only) |
 | A busy session | **The step fails** (`session_busy:`). No waiting |
 | A failed or cancelled turn | **Appends nothing.** The thread is as it was before the turn |
 | Working directory | **Its own name**: `workdir` on `git/checkout`. Kept after the run, reused by the next run that names it, swept when idle |
@@ -186,8 +186,10 @@ With `session` set, in order:
 1. Check the id's format. Refuse when `ctx.agentTool` is set (§8).
 2. Resolve the model, then `open` the session. Everything after is inside
    a `try … finally { release() }`.
-3. **Binding.** On turn 0 nothing to check. Later: the resolved provider
-   and `routed` must equal the first turn's, else `session_mismatch:`.
+3. **Binding.** On turn 0 nothing to check. Later: `routed` must equal
+   the first turn's, and no turn on another provider may have left
+   provider-executed tool calls in the replayed thread, else
+   `session_mismatch:`.
 4. **Room.** When the last turn left the thread past the compaction mark
    (`STRUT_COMPACT_AT`, 0.9 of the resolved model's `contextLimit`), the
    thread is summarized before any model call and the summary leads this
@@ -406,6 +408,9 @@ now crosses it on every turn: a two-turn session whose first turn searches
 the web and runs bash, so turn 1 replays those blocks through Bifrost, and
 must name the command turn 0 ran and read its prefix from the cache.
 
-Not yet run: the same check across a model change within one provider. It
-decides whether "the model may change" stands or the binding tightens to
-the model.
+A model change within one provider ran on swarm38 (a job's thread, Opus
+then Sonnet, five turns). A provider change was refused until 2026-10-17
+(run 1792248833454: a job begun on Opus, a turn on `xai/grok-4.7`); it is
+allowed since, checked through the gateway by smoke check b3: a thread
+begun on Anthropic whose tool returned an image, continued on xai (which
+names the image's colour), then on Anthropic again.

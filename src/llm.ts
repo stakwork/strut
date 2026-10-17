@@ -114,12 +114,15 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
     ...(grant?.baseUrl ? { baseUrl: grant.baseUrl } : {}),
     ...(grant?.headers ? { headers: grant.headers } : {}),
   });
+  let model: any = r.model;
+  if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
+  if (grant?.explainError) model = await explaining(model, grant.explainError);
   return {
     provider: r.provider,
     modelId: r.modelId,
     name: r.name,
     apiKey: r.apiKey,
-    model: grant?.explainError ? await explaining(r.model, grant.explainError) : r.model,
+    model,
     contextLimit: r.contextLimit,
     maxOutputTokens: strutOutputCap() ?? r.maxOutputTokens,
     routed: !!grant?.baseUrl,
@@ -235,6 +238,60 @@ async function explaining(model: any, explain: (err: unknown) => string | undefi
           return rethrow(err);
         }
       },
+    },
+  });
+}
+
+/**
+ * Images a TOOL returned (`withMedia`), moved to where a chat-completions
+ * API can see them. The AI SDK's `openai.chat` converter — what aieo builds
+ * for xai and google routed through a gateway — sends a tool result
+ * as one string, so an image in it reached the model as base64 TEXT (a
+ * screenshot is ~300k characters). Each one now goes to a user message right
+ * after the tool results, which that API reads as an image, and the result
+ * says so. Every other converter takes them in the result as they are. A
+ * pure function of the prompt, so a thread's prompt cache holds.
+ */
+export function moveToolResultImages(prompt: any[]): any[] {
+  const out: any[] = [];
+  let moved: any[] = [];
+  const flush = () => {
+    if (moved.length) out.push({ role: "user", content: moved });
+    moved = [];
+  };
+  for (const message of prompt) {
+    // After the last of a run of tool messages: every result of the
+    // assistant's calls must come before anything else.
+    if (message.role !== "tool") {
+      flush();
+      out.push(message);
+      continue;
+    }
+    const content = message.content.map((part: any) => {
+      const value: any[] | undefined = part.type === "tool-result" && part.output?.type === "content" ? part.output.value : undefined;
+      const images = value?.filter((v) => v.type === "file" && String(v.mediaType).startsWith("image/")) ?? [];
+      if (!value || !images.length) return part;
+      const n = images.length === 1 ? "1 image" : `${images.length} images`;
+      const rest = [...value.filter((v) => !images.includes(v)), { type: "text", text: `[${n} in the next message]` }];
+      moved.push({ type: "text", text: `[${n} from ${part.toolName} (${part.toolCallId})]` }, ...images);
+      // Text alone is sent as text; a content list would be sent as its JSON.
+      const output = rest.every((v) => v.type === "text")
+        ? { type: "text", value: rest.map((v) => v.text).join("\n") }
+        : { type: "content", value: rest };
+      return { ...part, output };
+    });
+    out.push({ ...message, content });
+  }
+  flush();
+  return out;
+}
+
+async function imagesBesideToolResults(model: any): Promise<any> {
+  const { wrapLanguageModel } = await import("ai");
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      transformParams: async ({ params }) => ({ ...params, prompt: moveToolResultImages(params.prompt) }),
     },
   });
 }
