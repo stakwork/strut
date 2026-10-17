@@ -624,3 +624,47 @@ right after the launch, as a `step.end` at `<step path>#launch` with
 durable resume of the caller's run (§6, boot-time auto-resume included)
 re-executes the step, which REATTACHES to that run instead of launching a
 second one.
+
+## 11. MCP — the builder's tools for an external agent
+
+`POST /mcp` serves the AI workflow builder's tools over the Model Context
+Protocol (Streamable HTTP, stateless): the SAME tools the builder chat's
+model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`,
+with their descriptions, input schemas and capped results (`src/ai/mcp.ts`
+adapts `buildTools`; nothing is reimplemented). Claude Code:
+
+```bash
+claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY"
+```
+
+| Method | Path | Response |
+| ------ | ---- | -------- |
+| POST   | `/mcp` | JSON-RPC — `initialize`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`; the response is an SSE stream carrying the result (and a `notifications/progress` per preliminary result of a tool that yields them — `run_workflow` — when the request carried a `progressToken`); 406 without `Accept: application/json, text/event-stream` |
+| GET, DELETE | `/mcp` | 405 — no standalone stream, no session: every POST stands alone |
+
+Auth is the gate's (Auth): `Authorization: Bearer <STRUT_API_KEY>`; a
+peer's key is a `403`; dev mode is open. `x-strut-actor` is honored as on
+every request — the runs launched and the workflows published through the
+door carry that actor.
+
+What the door adds for a caller that is not the UI. `instructions`
+(`InitializeResult`) are the builder's procedure and the web UI's URL; the
+full system prompt — the YAML rules, every tool's use, the step catalog as
+of the read — is the `workflow-builder` prompt (`prompts/get`). The results
+of `create_workflow` / `edit_workflow` / `run_workflow` / `get_run` carry
+`ui`, a deep link into the web UI (`<base>/?wf=<name>` or
+`…&run=<runId>`). A run's declared deliverables (§5, `CALLBACKS.md` §4)
+come back on `run_workflow`'s result and `get_run`'s `summary` as
+`artifacts`, resolved like the run callback's — a strut-relative link made
+ABSOLUTE and carrying the file's read token (`?t=`, Auth), so the link
+opens the file by itself and the key never rides in one. The base is
+`STRUT_PUBLIC_URL` (`createStrut({ publicUrl })`), else the request's own
+origin (`x-forwarded-proto` / `x-forwarded-host` honored).
+
+Long runs: a `run_workflow` still going after the wait window
+(`STRUT_CHAT_RUN_WAIT_MS`, a minute) returns `{ status: "running",
+detached: true, runId }` and the run goes on; nothing can notify an MCP
+client, so `get_run` takes `wait` (ms, at most 55000) — it holds until the
+run settles or the wait is up, then reads the run as it stands, and the
+caller calls again until `status` is terminal. `createStrut({ enableMcp:
+false })` mounts nothing; the default follows `enableChat`.

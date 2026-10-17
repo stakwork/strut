@@ -6,10 +6,13 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { z } from "zod";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
-import { defineStep, flow, step, withAccessedNodes, withMessages } from "./core.js";
+import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext } from "./core.js";
+import { fileToken } from "./auth.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
@@ -1904,6 +1907,159 @@ describe("run callbacks", () => {
     assert.equal(res.json.callback, undefined);
     for (let i = 0; i < 200 && !(await store.getRunSummary("ok", res.json.runId)); i++) {
       await new Promise((r) => setTimeout(r, 10));
+    }
+  });
+});
+
+// ── The MCP door ───────────────────────────────────────────────────────────
+//
+// `POST /mcp` (src/ai/mcp.ts) over a real listener with the SDK's HTTP
+// client: the gate in front of it, and what the door adds for a caller that
+// is not the UI — absolute artifact links carrying the file token, `ui`
+// deep links, the actor stamped. The protocol itself is src/ai/mcp.test.ts.
+
+describe("the MCP door (POST /mcp)", () => {
+  const KEY = "mcp-key";
+  let tempDir: string;
+  let savedKey: string | undefined;
+  let savedPeerKey: string | undefined;
+  beforeEach(async () => {
+    savedKey = process.env["STRUT_API_KEY"];
+    savedPeerKey = process.env["STRUT_PEER_KEY"];
+    process.env["STRUT_API_KEY"] = KEY;
+    delete process.env["STRUT_PEER_KEY"];
+    tempDir = join(tmpdir(), `strut-mcp-door-${randomUUID()}`);
+    await mkdir(tempDir, { recursive: true });
+  });
+  afterEach(async () => {
+    if (savedKey === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = savedKey;
+    if (savedPeerKey === undefined) delete process.env["STRUT_PEER_KEY"];
+    else process.env["STRUT_PEER_KEY"] = savedPeerKey;
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  /** Writes a file into the run's artifact directory — what a workflow's
+   *  `artifacts: [{ path }]` points at. */
+  const writer = defineStep({
+    type: "writer",
+    input: z.object({ name: z.string(), text: z.string() }),
+    output: z.any(),
+    async run(cfg, ctx: StepContext<StrutCapabilities>) {
+      await ctx.services.artifacts.write(ctx.runId, cfg.name, cfg.text);
+      return { wrote: cfg.name };
+    },
+  });
+  const YAML = `name: deliver
+steps:
+  - id: w
+    type: writer
+    config: { name: plan.md, text: "# plan" }
+  - id: result
+    type: pack
+    config:
+      text: wrote the plan
+      artifacts: [{ id: plan, title: Plan, path: plan.md }]
+`;
+  const boot = async (extra: Record<string, unknown> = {}) =>
+    createStrut({
+      workspace: new WorkspaceManager(join(tempDir, `ws-${randomUUID()}`)),
+      registry: await createRegistry([writer]),
+      store: new MemoryRunStore(),
+      serveUi: false,
+      scheduler: false,
+      ...extra,
+    });
+  const json = (r: { content: unknown }) => JSON.parse((r.content as Array<{ text: string }>)[0]!.text);
+  const rpc = (strut: Awaited<ReturnType<typeof boot>>, headers: Record<string, string>) =>
+    strut.app.request("/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+
+  it("is behind the gate: 401 without the key, 403 for a peer, 405 for GET and DELETE; off with enableMcp: false", async () => {
+    process.env["STRUT_PEER_KEY"] = "peer-key";
+    const strut = await boot();
+    assert.equal((await rpc(strut, {})).status, 401);
+    assert.equal((await rpc(strut, { authorization: "Bearer peer-key" })).status, 403);
+    const ok = await rpc(strut, { authorization: `Bearer ${KEY}` });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get("content-type"), "text/event-stream");
+    assert.ok((await ok.text()).includes('"name":"create_workflow"'));
+    for (const method of ["GET", "DELETE"]) {
+      assert.equal((await strut.app.request("/mcp", { method, headers: { authorization: `Bearer ${KEY}` } })).status, 405, method);
+    }
+    const off = await boot({ enableMcp: false });
+    assert.equal((await rpc(off, { authorization: `Bearer ${KEY}` })).status, 404);
+  });
+
+  it("serves the builder's tools over HTTP: artifact links absolute with the file token, ui deep links, the actor stamped", async () => {
+    const strut = await boot();
+    const port = await strut.listen(0, "127.0.0.1");
+    const base = `http://127.0.0.1:${port}`;
+    const clientFor = async (headers: Record<string, string>) => {
+      const client = new Client({ name: "test", version: "0" });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${KEY}`, ...headers } } }),
+      );
+      return client;
+    };
+    const client = await clientFor({ "x-strut-actor": "evan" });
+    try {
+      const { tools } = await client.listTools();
+      assert.ok(tools.map((t) => t.name).includes("create_workflow"));
+      assert.ok(client.getInstructions()!.includes(`${base}/`), "the UI's URL is the request's origin");
+
+      const created = json(await client.callTool({ name: "create_workflow", arguments: { name: "deliver", yaml: YAML } }));
+      assert.equal(created.ok, true, JSON.stringify(created));
+      assert.equal(created.ui, `${base}/?wf=deliver`);
+
+      const run = json(await client.callTool({ name: "run_workflow", arguments: { name: "deliver", input: {} } }));
+      assert.equal(run.status, "success", JSON.stringify(run));
+      const token = fileToken({ kind: "run", id: run.runId })!;
+      assert.deepEqual(run.artifacts, [{ id: "plan", kind: "markdown", title: "Plan", url: `${base}/artifacts/${run.runId}/plan.md?t=${token}` }]);
+      assert.equal(run.ui, `${base}/?wf=deliver&run=${run.runId}`);
+      // The link opens the file by its token alone; without it the file is behind the key.
+      const file = await fetch(run.artifacts[0].url);
+      assert.equal(file.status, 200);
+      assert.equal(await file.text(), "# plan");
+      assert.equal((await fetch(`${base}/artifacts/${run.runId}/plan.md`)).status, 401);
+
+      // get_run carries the same links; the run is the actor's.
+      const read = json(await client.callTool({ name: "get_run", arguments: { name: "deliver", runId: run.runId, wait: 1000 } }));
+      assert.deepEqual(read.summary.artifacts, run.artifacts);
+      assert.equal(read.summary.actor, "evan");
+      assert.equal(read.ui, run.ui);
+
+      // Behind a proxy the links are what the proxy says.
+      const proxied = await clientFor({ "x-forwarded-proto": "https", "x-forwarded-host": "strut.example" });
+      const viaProxy = json(await proxied.callTool({ name: "get_run", arguments: { name: "deliver", runId: run.runId } }));
+      assert.equal(viaProxy.ui, `https://strut.example/?wf=deliver&run=${run.runId}`);
+      assert.ok(viaProxy.summary.artifacts[0].url.startsWith(`https://strut.example/artifacts/${run.runId}/plan.md?t=`), viaProxy.summary.artifacts[0].url);
+      await proxied.close();
+    } finally {
+      await client.close();
+      await strut.close();
+    }
+  });
+
+  it("publicUrl names the base for every link; the door mounts without the chat", async () => {
+    const strut = await boot({ enableChat: false, enableMcp: true, publicUrl: "https://public.example/" });
+    const port = await strut.listen(0, "127.0.0.1");
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { authorization: `Bearer ${KEY}` } } }),
+    );
+    try {
+      assert.ok(client.getInstructions()!.includes("https://public.example/"));
+      await client.callTool({ name: "create_workflow", arguments: { name: "deliver", yaml: YAML } });
+      const run = json(await client.callTool({ name: "run_workflow", arguments: { name: "deliver", input: {} } }));
+      assert.equal(run.ui, `https://public.example/?wf=deliver&run=${run.runId}`);
+      assert.ok(run.artifacts[0].url.startsWith(`https://public.example/artifacts/${run.runId}/plan.md?t=`), run.artifacts[0].url);
+    } finally {
+      await client.close();
+      await strut.close();
     }
   });
 });
