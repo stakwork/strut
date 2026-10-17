@@ -1621,8 +1621,11 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   previous one byte for byte. `retain` replaces what a
   compaction's summary is told to keep (`AGENT_RETAIN`: files, commands) with
   the caller's own references. Tools, output mode and `maxSteps` are the
-  current step's. The provider and whether calls are routed through the
-  gateway are fixed by the first turn (`session_mismatch:`). A thread the
+  current step's. Whether calls are routed through the gateway is fixed
+  by the first turn (`session_mismatch:`); the model and the provider may
+  change — each provider's converter drops thinking it cannot verify —
+  unless the replayed thread holds another provider's server-run tool calls
+  (Anthropic's web tools, direct only; `session_mismatch:` too). A thread the
   last turn left past the compaction mark (`STRUT_COMPACT_AT`, 0.9 of the
   resolved model's window) is summarized AT OPEN: the `[compaction]`
   message leads this turn, the committed line's `replayFrom` points at it,
@@ -1860,7 +1863,12 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
     plus one file part per entry, while templates, the event log and
     `run.json` see only the plain output (non-enumerable; `maskDeep` carries
     it). The recorded session (`step.end.messages`, the transcript endpoint)
-    keeps what the model saw, file parts included.
+    keeps what the model saw, file parts included. On a chat-completions
+    model (`openai.chat`: xai and google routed through the gateway) the
+    AI SDK would send a tool result as one string, the image as base64 text,
+    so `resolveModel` wraps that model to move the images to a user message
+    right after the results (`moveToolResultImages`, `src/llm.ts`) — what
+    is sent, never what is stored.
     Entries may be **glob patterns** (`expandAgentTools`): `"jarvis/*"` grants
     every registry step in that namespace (matches sorted, deduped; a pattern
     matching nothing warns). `"agent"` itself is grantable — that's the

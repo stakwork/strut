@@ -843,14 +843,21 @@ function carryMarkers<T>(rebuilt: T, original: unknown, values: string[]): T {
 /** The share of the model's window past which a thread takes no more turns. */
 const SESSION_FULL_AT = 0.9;
 
+/** A tool call the provider ran itself (Anthropic's native web tools). */
+const hasProviderExecutedCall = (m: any): boolean =>
+  m?.role === "assistant" && Array.isArray(m.content) && m.content.some((p: any) => p?.type === "tool-call" && p.providerExecuted);
+
 /**
  * Open `id` for one turn: take its lock, read the thread, and refuse a turn
  * the thread cannot take. Every refusal releases the lock.
  *
- *  - `session_mismatch:` — the provider, and whether calls go through a
- *    gateway, are fixed by the first turn: another provider cannot read the
- *    thread's thinking and provider-executed tool blocks, and the gateway
- *    cannot round-trip the native web tools a direct turn may have used.
+ *  - `session_mismatch:` — whether calls go through a gateway is fixed by
+ *    the first turn: the gateway cannot round-trip the native web tools a
+ *    direct turn may have used. The provider may change: each provider's
+ *    converter drops the thinking it cannot verify, and the thread keeps it
+ *    for its own. Not when a turn on another provider left that provider's
+ *    own server-run tool blocks (Anthropic's web tools, direct only): no
+ *    other provider can send them back.
  *  - `session_full:` — with compaction OFF (`STRUT_COMPACT_AT=1`): the last
  *    turn left the thread over `SESSION_FULL_AT` of the model's window, and
  *    the next one would outgrow it mid-loop. Said before any model call, not
@@ -871,11 +878,19 @@ export async function openSession(
   const first = session.turns[0];
   const last = session.turns[session.turns.length - 1];
   let refusal = "";
-  if (first && (first.provider !== resolved.provider || first.routed !== resolved.routed)) {
+  // Only what is still replayed counts: a compaction leaves the rest behind.
+  const native = session.turns.find(
+    (t) =>
+      t.provider !== resolved.provider &&
+      session.messages.slice(Math.max(t.offset, session.replayFrom), t.offset + t.count).some(hasProviderExecutedCall),
+  );
+  if (first && first.routed !== resolved.routed) {
     const how = (routed: boolean) => (routed ? "through the gateway" : "direct");
+    refusal = `session_mismatch: session "${id}" began ${how(first.routed)}; this turn goes ${how(resolved.routed)}`;
+  } else if (native) {
     refusal =
-      `session_mismatch: session "${id}" began on ${first.provider} (${how(first.routed)}); ` +
-      `this turn resolved to ${resolved.provider} (${how(resolved.routed)})`;
+      `session_mismatch: session "${id}" holds ${native.provider}'s own server-run tool calls (turn ${native.turn}), ` +
+      `which ${resolved.provider} cannot read`;
   } else if (compactAt >= 1 && last?.context && last.context.used > SESSION_FULL_AT * resolved.contextLimit) {
     refusal =
       `session_full: session "${id}" holds ${last.context.used} tokens of a ${resolved.contextLimit}-token window ` +

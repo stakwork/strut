@@ -9,7 +9,9 @@
  * carries the search in its history, (b) a workflow run with an agent step
  * (web_fetch + bash) and an llm step, (b2) two runs on one agent `session` —
  * the second request replays the first turn's search, tool calls and
- * thinking through the gateway (plans/agent-sessions.md), (e) an agent run
+ * thinking through the gateway (plans/agent-sessions.md), (b3) a session that
+ * changes provider (anthropic → xai → anthropic), xai naming the colour of an
+ * image a tool returned on the Anthropic turn, (e) an agent run
  * that compacts (plans/compaction.md; the overlay's STRUT_COMPACT_AT), (c) an
  * xai chat turn (OpenAI-compatible route), (d) the gateway's log has the calls
  * under their session dims (the workflow name, the chat id).
@@ -31,6 +33,7 @@
  * compose overlay hands it to strut.
  */
 import { randomBytes } from "node:crypto";
+import { crc32, deflateSync } from "node:zlib";
 import { mintDelegation } from "../src/test-util/mint-delegation.js";
 
 if (process.env["STRUT_TEST_GATEWAY"] !== "1") {
@@ -102,6 +105,32 @@ async function chatTurn(model: string, message: string) {
     `POST /chat (${model})`,
   );
   return { chatId: chatId as string, events: await sse(`${STRUT}/chat/${chatId}/stream?turn=${turn}`) };
+}
+
+/** A `size`×`size` PNG of one colour, base64 — a picture only a model that
+ *  SEES it can describe. */
+function solidPng(size: number, [r, g, b]: [number, number, number]): string {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: size }, () => [r, g, b]).flat())]);
+  const pixels = deflateSync(Buffer.concat(Array.from({ length: size }, () => row)));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", pixels),
+    chunk("IEND", Buffer.alloc(0)),
+  ]).toString("base64");
 }
 
 const errorsOf = (events: Ev[]) =>
@@ -272,6 +301,83 @@ steps:
   check("(b2) session turn 1: is turn 1", t1.end?.output?.session?.turn === 1, JSON.stringify(t1.end?.output?.session));
   check("(b2) session turn 1: remembers turn 0", String(t1.end?.output?.result ?? "").includes(marker), JSON.stringify(t1.end?.output?.result).slice(0, 160));
   check("(b2) session turn 1: read the prefix from the cache", (t1.end?.output?.usage?.cacheReadTokens ?? 0) > 0, JSON.stringify(t1.end?.output?.usage));
+}
+
+// ── (b3) a session that changes provider: anthropic → xai → anthropic ─────
+//
+// The swarm38 job of 2026-10-17: a thread begun on Anthropic, a turn on
+// grok. Turn 0 calls a tool that returns a colour swatch (`withMedia`) and
+// does not name the colour; turn 1, on xai, must name it from the image —
+// which reaches grok only if the tool result's image was moved to a user
+// message (`moveToolResultImages`: the `openai.chat` route would send it as
+// base64 text). Turn 2 goes back to Anthropic over xai's turn.
+
+if (XAI_MODEL !== "off") {
+  const name = `${WORKFLOW}-switch`;
+  const session = `smoke/${tag}-switch`;
+  await json(
+    await fetch(`${STRUT}/steps`, {
+      method: "POST",
+      headers: strutHeaders,
+      body: JSON.stringify({
+        name: "smoke/swatch",
+        code: `import { z, defineStep, withMedia } from "strut";
+export default defineStep({
+  type: "smoke/swatch",
+  description: "Show the swatch.",
+  input: z.object({}),
+  output: z.any(),
+  async run() {
+    return withMedia({ swatch: "swatch.png" }, [{ mediaType: "image/png", data: ${JSON.stringify(solidPng(64, [220, 20, 20]))} }]);
+  },
+});
+`,
+      }),
+    }),
+    "publish smoke/swatch",
+  );
+  const switchYaml = `name: ${name}
+input:
+  prompt: { type: string }
+  model: { type: string }
+  session: { type: string }
+steps:
+  - id: work
+    type: agent
+    config:
+      cwd: /tmp
+      model: "{{ input.model }}"
+      session: "{{ input.session }}"
+      toolFilter: [none]
+      agentTools: [smoke/swatch]
+      maxSteps: 6
+      system: You are a terse test agent. Use exactly the tools you are told to.
+      prompt: "{{ input.prompt }}"
+`;
+  await json(await fetch(`${STRUT}/workflows`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ name, yaml: switchYaml }) }), "publish switch workflow");
+  const turn = async (model: string, prompt: string) => {
+    const launched = await json(
+      await fetch(`${STRUT}/workflows/${name}/run`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ input: { prompt, model, session } }) }),
+      "launch switch run",
+    );
+    const events = await sse(`${STRUT}/workflows/${name}/runs/${launched.runId}/stream`);
+    return { events, end: events.find((e) => e.type === "step.end" && e.path === `${name}/work`) };
+  };
+  const turns = [
+    await turn(MODEL, "Call smoke_swatch once. Then answer with the word done only — do not describe the image."),
+    await turn(XAI_MODEL, "Without calling any tool: what colour fills the image smoke_swatch returned earlier? Answer with one word."),
+    await turn(MODEL, "Without calling any tool: what colour did you name in your last answer? Answer with one word."),
+  ];
+  turns.forEach((t, i) => {
+    const errs = errorsOf(t.events);
+    check(`(b3) switch turn ${i}: run.end, no errors`, t.events.some((e) => e.type === "run.end") && !errs.length, errs.join(" | "));
+    check(`(b3) switch turn ${i}: is turn ${i}`, t.end?.output?.session?.turn === i, JSON.stringify(t.end?.output?.session));
+  });
+  check("(b3) switch turn 0: called the swatch", turns[0]!.events.some((e) => e.type === "step.end" && e.stepType === "tool:smoke_swatch"));
+  for (const i of [1, 2]) {
+    const said = String(turns[i]!.end?.output?.result ?? "");
+    check(`(b3) switch turn ${i}: names the colour`, /red/i.test(said), JSON.stringify(said).slice(0, 160));
+  }
 }
 
 // ── (e) an agent run that compacts (plans/compaction.md) ──────────────────

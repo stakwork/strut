@@ -274,6 +274,88 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     }
   });
 
+  it("routed to a chat-completions API (xai, google), a tool's images reach the model as images, not base64 text", async () => {
+    const { createServer } = await import("node:http");
+    const bodies: any[] = [];
+    const server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "recorded" } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    try {
+      const r = await resolveModel({ model: "grok", llmAuth: async () => ({ apiKey: "vk", baseUrl: `http://127.0.0.1:${port}` }), auth: { kind: "step" } });
+      assert.equal(r.model.provider, "openai.chat");
+      const { generateText } = await import("ai");
+      await assert.rejects(() =>
+        generateText({
+          model: r.model,
+          maxRetries: 0,
+          messages: [
+            { role: "user", content: "look" },
+            {
+              role: "assistant",
+              content: [
+                { type: "tool-call", toolCallId: "c1", toolName: "shot", input: {} },
+                { type: "tool-call", toolCallId: "c2", toolName: "note", input: {} },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result", toolCallId: "c1", toolName: "shot",
+                  output: { type: "content", value: [{ type: "text", text: '{"path":"a.png"}' }, { type: "file", data: { type: "data", data: png }, mediaType: "image/png" }] },
+                },
+                { type: "tool-result", toolCallId: "c2", toolName: "note", output: { type: "json", value: { ok: true } } },
+              ],
+            },
+          ] as any,
+        }),
+      );
+      const sent = bodies[0].messages as any[];
+      assert.deepEqual(sent.map((m) => m.role), ["user", "assistant", "tool", "tool", "user"], "the image after EVERY result of the step");
+      assert.equal(sent[2].content, '{"path":"a.png"}\n[1 image in the next message]');
+      assert.equal(sent[3].content, '{"ok":true}');
+      assert.deepEqual(sent[4].content, [
+        { type: "text", text: "[1 image from shot (c1)]" },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
+      ]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("moveToolResultImages: images only, the rest of the prompt untouched, the same prompt the same way every time", async () => {
+    const { moveToolResultImages } = await import("./llm.js");
+    const pdf = { type: "file", data: { type: "data", data: "JVBER" }, mediaType: "application/pdf" };
+    const img = { type: "file", data: { type: "data", data: "iVBOR" }, mediaType: "image/jpeg" };
+    const result = (id: string, value: unknown[]) => ({ type: "tool-result", toolCallId: id, toolName: "read", output: { type: "content", value } });
+    const prompt = [
+      { role: "system", content: "s" },
+      { role: "tool", content: [result("a", [{ type: "text", text: "doc" }, pdf])] },
+      { role: "tool", content: [result("b", [img, img])] },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    ];
+    const out = moveToolResultImages(prompt);
+    assert.deepEqual(out, moveToolResultImages(prompt));
+    assert.equal(out[0], prompt[0]);
+    assert.equal(out[1].content[0], prompt[1]!.content[0], "a result with no image is left as it is");
+    assert.deepEqual(out[2].content[0].output, { type: "text", value: "[2 images in the next message]" });
+    assert.deepEqual(out[3], { role: "user", content: [{ type: "text", text: "[2 images from read (b)]" }, img, img] });
+    assert.equal(out[4], prompt[3]);
+    // A file that is not an image stays in its result, beside the note.
+    const mixed = moveToolResultImages([{ role: "tool", content: [result("c", [pdf, img])] }]);
+    assert.deepEqual(mixed[0].content[0].output, { type: "content", value: [pdf, { type: "text", text: "[1 image in the next message]" }] });
+    assert.deepEqual(moveToolResultImages([{ role: "user", content: "hi" }]), [{ role: "user", content: "hi" }]);
+  });
+
   it("the agent step asks Anthropic for automatic prompt caching, with `cacheTtl` as the lifetime", async () => {
     // A stand-in Anthropic endpoint: record each request body, refuse it (400
     // is not retried), so the step fails right after the request we inspect.

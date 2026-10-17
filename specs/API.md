@@ -542,7 +542,7 @@ error message:
 | ------ | ------- |
 | `session_busy:` | another run holds the session; one turn at a time |
 | `session_full:` | compaction is off (`STRUT_COMPACT_AT=1`) and the thread has no room left in the model's window — start a new session. With compaction on (the default), a thread past the mark is summarized at open instead and the turn goes ahead (plans/compaction.md) |
-| `session_mismatch:` | the thread began on another provider, or on the other side of the LLM gateway |
+| `session_mismatch:` | the thread began on the other side of the LLM gateway, or still replays another provider's own server-run tool calls (Anthropic's web tools, called direct). The model and the provider may otherwise change between turns |
 | `workdir_busy:` | another run holds the working copy |
 
 | Method | Path | Response |
