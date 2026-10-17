@@ -213,10 +213,10 @@ What strut sends today:
 
 | `kind` | When | `state` |
 | ------ | ---- | ------- |
-| the hold's kind (`pod`) | a hold is taken, or let go (by its tool, a delete, the idle sweep) | `held` / `released` |
+| the hold's kind (`pod`, `browser` — a page the job keeps, `id: browser:<session>`) | a hold is taken, or let go (by its tool, a delete, the idle sweep; a kept page also when it goes idle) | `held` / `released` |
 | `evidence` | a check writes evidence about the job (`detail: { claim, check }`; `url` = what it pointed at, a screenshot) | `supported` / `refuted` / `planned` (a slot for a person) |
 | `verify` | a verify of the job ended (`detail: { evidence, slots, claims: [{ id, status }] }`) | `done` |
-| anything a step names | a step called `ctx.services.jobs.notify` — the lab's browser steps for a screenshot (`image`) and every frame of a walkthrough (`walkthrough`, its manifest's url) | the step's |
+| anything a step names | a step called `ctx.services.jobs.notify` — the lab's browser steps for a screenshot (`image`) and every frame of a walkthrough (`walkthrough`, its manifest's url); never a captcha's crop, which its own card shows | the step's |
 
 **An event is a notification, never the record.** Each points at something
 you can read again: the job's files, `GET /jobs/:id` (holds, deliverables),

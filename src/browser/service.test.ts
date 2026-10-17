@@ -32,20 +32,46 @@ test("a strict-mode violation keeps the matches, drops the call log and names th
 
 class FakePage {
   closed = false;
+  /** Every click a locator on this page made: its selector and position. */
+  clicks: Array<{ selector: string; position?: { x: number; y: number } }> = [];
+  /** What a locator's boundingBox answers. */
+  box = { x: 10, y: 20, width: 400, height: 300 };
+  /** `evaluate` never answers: a page whose main thread is wedged. */
+  hang = false;
   isClosed() { return this.closed; }
   setDefaultTimeout() {}
   on() {}
+  url() { return "about:blank"; }
+  async title() { return ""; }
+  async waitForLoadState() {}
+  async evaluate() {
+    if (this.hang) await new Promise(() => {});
+    return null;
+  }
+  locator(selector: string) {
+    return {
+      boundingBox: async () => this.box,
+      click: async (o: { position?: { x: number; y: number } } = {}) => void this.clicks.push({ selector, position: o.position }),
+    };
+  }
   async close() { this.closed = true; }
 }
 
 class FakeContext {
   closed = false;
+  pages: FakePage[] = [];
   constructor(private readonly pw: FakePlaywright) {}
   async newPage() {
     if (this.pw.newPageFails) throw new Error("Target page, context or browser has been closed");
-    return new FakePage();
+    const page = new FakePage();
+    this.pages.push(page);
+    return page;
   }
-  async close() { this.closed = true; }
+  /** Like Playwright's: the context's pages go with it. */
+  async close() {
+    this.closed = true;
+    for (const p of this.pages) p.closed = true;
+  }
   browser() { return this.pw.browser; }
 }
 
@@ -69,8 +95,9 @@ class FakePlaywright {
 }
 
 class Service extends BrowserService {
-  constructor(readonly pw: FakePlaywright, runBudgetMs?: number) {
-    super({ wsUrl: "ws://fake:3000", ...(runBudgetMs ? { runBudgetMs } : {}) });
+  protected override settleSlackMs = 10;
+  constructor(readonly pw: FakePlaywright, runBudgetMs?: number, opts: { sessionIdleMs?: number; sessionsMax?: number } = {}) {
+    super({ wsUrl: "ws://fake:3000", ...(runBudgetMs ? { runBudgetMs } : {}), ...opts });
   }
   protected override async launch(): Promise<Browser> {
     return this.pw.browser;
@@ -209,4 +236,138 @@ test("checkSteps: each step is given what its verb needs, named by its place in 
   assert.throws(() => checkSteps([{ do: "fill", selector: "input" }], "capture"), /step 1 \(fill\): needs `value`/);
   assert.throws(() => checkSteps([{ do: "text", ref: "e1", selector: "p" }], "capture"), /step 1 \(text\): give ref or selector, not both/);
   assert.throws(() => checkSteps([{ do: "goto", url: "https://x" }, { do: "explode" }], "capture"), /^Error: capture: step 2: unknown verb "explode" \(one of goto, /);
+});
+
+// ── A page the JOB keeps ─────────────────────────────────────────────────────
+// `job:<job>/<session>`: outlives the run that opened it, reached by every
+// run attached to it, closed by its idle clock, a timeout, or closeKept.
+
+/** onEnd calls, by session name — where the step lets the job's hold go. */
+function ended() {
+  const calls: string[] = [];
+  return { calls, kept: (name: string, job = "job-1") => ({ job, name, onEnd: () => void calls.push(name) }) };
+}
+
+test("two runs share one kept page; the first run ending does not close it, closeKept does", async () => {
+  const pw = new FakePlaywright();
+  const svc = new Service(pw);
+  const e = ended();
+  const a = await svc.openKept("rA", e.kept("captcha"));
+  assert.equal(a.resumed, false);
+  const b = await svc.openKept("rB", e.kept("captcha"));
+  assert.equal(b.resumed, true, "the second run resumes the job's page");
+  assert.equal(b.page, a.page);
+  assert.equal(pw.contexts.length, 1);
+  assert.equal(await svc.page("rB"), a.page, "every verb the run calls reaches the kept page");
+
+  await svc.dispose("rA");
+  assert.equal(a.page.isClosed(), false, "run A ended; the job's page stays");
+  assert.equal(await svc.page("rB"), a.page);
+  await svc.dispose("rB");
+  assert.equal(a.page.isClosed(), false);
+  assert.deepEqual(svc.kept(), [{ job: "job-1", name: "captcha" }]);
+
+  const c = await svc.openKept("rC", e.kept("captcha"));
+  assert.equal(c.resumed, true, "a later run finds it where the last one left it");
+  await svc.closeKept("job-1", "captcha");
+  assert.equal(a.page.isClosed(), true);
+  assert.equal(leaked(pw), 0);
+  assert.deepEqual(svc.kept(), []);
+  assert.deepEqual(e.calls, [], "an explicit close leaves the hold to its caller");
+  // The run that was attached falls back to a page of its own.
+  assert.notEqual(await svc.page("rC"), a.page);
+  await svc.dispose("rC");
+  assert.equal(leaked(pw), 0);
+});
+
+test("a kept page closes after its idle time and lets the job's hold go; a call in flight holds the clock", async () => {
+  const pw = new FakePlaywright();
+  const svc = new Service(pw, undefined, { sessionIdleMs: 40 });
+  const e = ended();
+  const { page } = await svc.openKept("r1", e.kept("captcha"));
+  await svc.dispose("r1");
+  await sleep(20);
+  await svc.openKept("r2", e.kept("captcha")); // a use starts the clock over
+  await sleep(30);
+  assert.equal(page.isClosed(), false, "used 30 ms ago, idle for 40");
+  await sleep(40);
+  assert.equal(page.isClosed(), true);
+  assert.deepEqual(e.calls, ["captcha"], "the hold goes with it, once");
+  assert.deepEqual(svc.kept(), []);
+  assert.equal(leaked(pw), 0);
+  await assert.rejects(svc.snapshot("r2"), /no page for this run/, "the run that was attached is told");
+  await svc.dispose("r2");
+});
+
+test("at most sessionsMax kept pages: open and keep past it are refused; a run's own page is not counted", async () => {
+  const pw = new FakePlaywright();
+  const svc = new Service(pw, undefined, { sessionsMax: 4 });
+  const e = ended();
+  for (const n of ["a", "b", "c", "d"]) await svc.openKept(`r-${n}`, e.kept(n));
+  await assert.rejects(svc.openKept("r-e", e.kept("e")), /4 kept pages are open \(BROWSER_SESSIONS_MAX\)/);
+  await svc.page("r-own");
+  await assert.rejects(svc.keep("r-own", e.kept("e")), /4 kept pages are open/);
+  assert.equal((await svc.openKept("r-again", e.kept("a"))).resumed, true, "an open one is still reachable");
+  await svc.closeKept("job-1", "a");
+  await svc.openKept("r-e", e.kept("e"));
+  assert.equal(svc.kept().length, 4);
+  await svc.close();
+  assert.equal(leaked(pw), 0);
+});
+
+test("keep moves the run's page onto the job; the run ending leaves it open; a timeout closes it and lets the hold go", async () => {
+  const pw = new FakePlaywright();
+  const svc = new Service(pw);
+  const e = ended();
+  const page = await svc.page("r1");
+  await svc.keep("r1", e.kept("captcha"));
+  await svc.dispose("r1");
+  assert.equal(page.isClosed(), false, "kept: not the run's to close");
+  assert.equal(leaked(pw), 1);
+  const again = await svc.openKept("r2", e.kept("captcha"));
+  assert.equal(again.page, page);
+  assert.equal(again.resumed, true);
+
+  (page as unknown as FakePage).hang = true;
+  await assert.rejects(svc.evaluate("r2", { expression: "1", timeoutMs: 5 }), /browser\/evaluate: timed out after 5 ms/);
+  assert.equal(page.isClosed(), true, "a timeout still closes the page");
+  assert.deepEqual(e.calls, ["captcha"]);
+  assert.deepEqual(svc.kept(), []);
+  assert.equal(leaked(pw), 0);
+  await svc.dispose("r2");
+});
+
+test("keep under a name the job already keeps replaces that page without letting its hold go", async () => {
+  const pw = new FakePlaywright();
+  const svc = new Service(pw);
+  const e = ended();
+  const first = await svc.openKept("r1", e.kept("captcha"));
+  const own = await svc.page("r2");
+  await svc.keep("r2", e.kept("captcha"));
+  assert.equal(first.page.isClosed(), true);
+  assert.equal((await svc.openKept("r3", e.kept("captcha"))).page, own);
+  assert.deepEqual(e.calls, [], "the same hold is taken again by the keep");
+  await assert.rejects(svc.keep("r3", e.kept("other")), /already kept as "captcha"/);
+  await svc.close();
+});
+
+test("a kept page is refused over CDP (v1)", async () => {
+  const svc = new BrowserService({ cdpUrl: "http://127.0.0.1:9222" });
+  await assert.rejects(svc.openKept("r1", { job: "job-1", name: "captcha" }), /does not apply over CDP/);
+  await assert.rejects(svc.keep("r1", { job: "job-1", name: "captcha" }), /does not apply over CDP/);
+});
+
+test("tap: each point is a click at that fraction of the element's box, kept inside it", async () => {
+  const pw = new FakePlaywright();
+  const svc = new Service(pw);
+  const page = (await svc.page("r1")) as unknown as FakePage;
+  page.box = { x: 85, y: 208, width: 390, height: 300 };
+  const out = await svc.tap("r1", { selector: "iframe >> table", points: [{ nx: 0.5, ny: 0.25 }, { nx: 1 / 6, ny: 5 / 6 }, { nx: 1, ny: 1 }], delayMs: 0 });
+  assert.deepEqual(out, { url: "about:blank", taps: 3 });
+  assert.deepEqual(page.clicks, [
+    { selector: "iframe >> table", position: { x: 195, y: 75 } },
+    { selector: "iframe >> table", position: { x: 65, y: 250 } },
+    { selector: "iframe >> table", position: { x: 389, y: 299 } },
+  ]);
+  await svc.dispose("r1");
 });

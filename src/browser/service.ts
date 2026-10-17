@@ -41,6 +41,17 @@
  * run of its own: what the agent sees mid-turn is what the pass will see.
  * The run's page is left where it was.
  *
+ * A KEPT page is the JOB's, not a run's (`open { session }`, `keep`): kept
+ * under `job:<job>/<session>`, it outlives the run that opened it, so a
+ * later turn — a person's answer to a captcha, say — finds the page where
+ * the last one left it. A run that opens or keeps one is ATTACHED to it:
+ * every verb the run calls reaches that page, and `dispose(runId)` only
+ * detaches. A kept page has no run budget; it closes after
+ * `sessionIdleMs` without a call (`BROWSER_SESSION_IDLE_MS`, 12 min), when
+ * a call times out, or on `closeKept`, and at most `sessionsMax`
+ * (`BROWSER_SESSIONS_MAX`, 4) are open at once. Not over CDP (v1): there the
+ * pages are the human's profile's.
+ *
  * `playwright-core` is imported lazily, on the first connection, so a strut
  * that never opens a browser never loads it (the lib step convention).
  */
@@ -51,6 +62,7 @@ import { saveShot, type Shot, type ShotSink } from "./shot.js";
 import { Recording, type WalkthroughFrame } from "./walkthrough.js";
 import { parseDenyList, denyReason, type DenyRule } from "./deny.js";
 import { judgeVerify, urlMatches, type Expectation, type StoppedAt, type Verdict } from "./verdict.js";
+import { captchaFiles, captchaManifest, siteOf, writeCaptcha, type CaptchaManifest, type CaptchaMode } from "./captcha.js";
 
 export interface Observations {
   console: string[];
@@ -87,8 +99,27 @@ export interface BrowserServiceOptions {
   stepTimeoutMs?: number;
   /** Per-run browser budget, default 10 min. */
   runBudgetMs?: number;
+  /** A kept page closes after this long without a call, default 12 min. */
+  sessionIdleMs?: number;
+  /** At most this many kept pages at once, default 4. */
+  sessionsMax?: number;
   /** `BROWSER_URL_DENY` (see deny.ts). */
   deny?: string;
+}
+
+/** A page the JOB keeps (the file comment): which job, its name, and what
+ *  to call when it ends on its own (idle, a timeout) — the step that kept
+ *  it lets the job's hold go there. */
+export interface KeptSession {
+  job: string;
+  name: string;
+  onEnd?: () => void;
+}
+
+/** The key a kept page lives under. A session name has no `/`, so the
+ *  last segment is always the name. */
+export function keptKey(job: string, name: string): string {
+  return `job:${job}/${name}`;
 }
 
 export interface Navigated {
@@ -189,23 +220,36 @@ interface Session {
 
 interface Run {
   startedAt: number;
+  /** The budget timer — on a kept page, the idle timer. */
   timer?: NodeJS.Timeout;
   exhausted: boolean;
   session?: Session;
   /** An open in flight: a second `page()` call joins it instead of making
    *  a context of its own. */
   opening?: Promise<Page>;
+  /** Set on a kept page: no budget, an idle timer that waits while a call
+   *  is `busy`. */
+  kept?: KeptSession & { busy: number };
 }
+
+/** The pause between two taps: a tile that fades as it is selected. */
+const TAP_DELAY_MS = 300;
 
 export class BrowserService {
   readonly viewport: Viewport;
   readonly stepTimeoutMs: number;
   readonly runBudgetMs: number;
+  readonly sessionIdleMs: number;
+  readonly sessionsMax: number;
   private readonly rules: DenyRule[];
   private readonly opts: BrowserServiceOptions;
   private browser?: Browser;
   private connecting?: Promise<Browser>;
   private readonly runs = new Map<string, Run>();
+  /** The hard race's slack over a call's cap — `protected` so an offline test can shorten it. */
+  protected settleSlackMs = SETTLE_SLACK_MS;
+  /** A run attached to a kept page → that page's key (`keptKey`). */
+  private readonly attached = new Map<string, string>();
   private checkSeq = 0;
 
   constructor(opts: BrowserServiceOptions = {}) {
@@ -214,6 +258,8 @@ export class BrowserService {
     this.viewport = opts.viewport ?? { width: 1280, height: 800 };
     this.stepTimeoutMs = opts.stepTimeoutMs ?? 10_000;
     this.runBudgetMs = opts.runBudgetMs ?? 600_000;
+    this.sessionIdleMs = opts.sessionIdleMs ?? 720_000;
+    this.sessionsMax = opts.sessionsMax ?? 4;
     this.rules = parseDenyList(opts.deny);
   }
 
@@ -230,6 +276,8 @@ export class BrowserService {
       viewport: { width, height },
       stepTimeoutMs: num(env["BROWSER_STEP_TIMEOUT_MS"], 10_000),
       runBudgetMs: num(env["BROWSER_RUN_BUDGET_MS"], 600_000),
+      sessionIdleMs: num(env["BROWSER_SESSION_IDLE_MS"], 720_000),
+      sessionsMax: num(env["BROWSER_SESSIONS_MAX"], 4),
       deny: env["BROWSER_URL_DENY"],
     });
   }
@@ -248,15 +296,151 @@ export class BrowserService {
    *  two `browser_open`s in one turn arrive together, and each making a
    *  context would orphan the first (`dispose` closes only `run.session`). */
   async page(runId: string, opts: { viewport?: Viewport; storageState?: unknown } = {}): Promise<Page> {
-    const run = this.runOf(runId);
+    const key = this.keyOf(runId);
+    const run = key === runId ? this.runOf(runId) : this.runs.get(key)!;
     if (run.exhausted) throw new Error(this.spent());
     const live = run.session;
     if (live && !live.page.isClosed()) return live.page;
     if (run.opening) return run.opening;
     const r = run;
-    const opening = this.openSession(runId, r, opts).finally(() => (r.opening = undefined));
+    const opening = this.openSession(key, r, opts).finally(() => (r.opening = undefined));
     r.opening = opening;
     return opening;
+  }
+
+  /** Whether the run already has a live page (its own, or the kept one it is attached to). */
+  private hasPage(runId: string): boolean {
+    const s = this.runs.get(this.keyOf(runId))?.session;
+    return Boolean(s && !s.page.isClosed());
+  }
+
+  /** Where the run's calls go: the kept page it is attached to, else its own key. */
+  private keyOf(runId: string): string {
+    const key = this.attached.get(runId);
+    if (key && this.runs.has(key)) return key;
+    if (key) this.attached.delete(runId);
+    return runId;
+  }
+
+  /**
+   * The job's page named `session`, the run attached to it: the page the
+   * job already keeps (`resumed: true`), else a new one, counted against
+   * `sessionsMax`. Its idle clock starts over.
+   */
+  async openKept(
+    runId: string,
+    session: KeptSession & { viewport?: Viewport; storageState?: unknown },
+  ): Promise<{ page: Page; resumed: boolean }> {
+    this.refuseCdp();
+    const key = keptKey(session.job, session.name);
+    let run = this.runs.get(key);
+    if (run?.kept && !run.opening && !this.alive(run.session)) {
+      await this.endKept(key, true);
+      run = undefined;
+    }
+    if (run?.kept) {
+      if (session.onEnd) run.kept.onEnd = session.onEnd;
+      this.attached.set(runId, key);
+      const page = run.opening ? await run.opening : run.session!.page;
+      this.idle(key, run);
+      return { page, resumed: true };
+    }
+    this.roomForOneMore();
+    const r: Run = { startedAt: Date.now(), exhausted: false, kept: { job: session.job, name: session.name, onEnd: session.onEnd, busy: 0 } };
+    this.runs.set(key, r);
+    this.attached.set(runId, key);
+    const opening = this.openSession(key, r, session).finally(() => (r.opening = undefined));
+    r.opening = opening;
+    try {
+      const page = await opening;
+      this.idle(key, r);
+      return { page, resumed: false };
+    } catch (err) {
+      // Nothing was kept: forget the entry so it does not count, and no hold was taken to let go.
+      if (this.runs.get(key) === r) await this.endKept(key, false);
+      throw err;
+    }
+  }
+
+  /**
+   * Move the page the run is on onto the job, as `session`: it outlives
+   * the run from here, and the run stays attached to it. A page the job
+   * already keeps under that name is replaced (closed, its hold left for
+   * the caller to take again).
+   */
+  async keep(runId: string, session: KeptSession): Promise<{ url: string; title: string }> {
+    this.refuseCdp();
+    const key = keptKey(session.job, session.name);
+    const s = this.live(runId);
+    const fromKey = this.keyOf(runId);
+    const from = this.runs.get(fromKey)!;
+    if (fromKey !== key) {
+      if (from.kept) throw new Error(`browser/keep: this page is already kept as "${from.kept.name}" — open that session instead`);
+      if (this.runs.has(key)) await this.endKept(key, false);
+      else this.roomForOneMore();
+      from.session = undefined;
+      this.runs.set(key, { startedAt: Date.now(), exhausted: false, session: s, kept: { ...session, busy: 0 } });
+      this.attached.set(runId, key);
+    } else if (session.onEnd) {
+      from.kept!.onEnd = session.onEnd;
+    }
+    this.idle(key, this.runs.get(key)!);
+    return { url: s.page.url(), title: await s.page.title() };
+  }
+
+  /** Close the job's page named `session`, if it is open. Its hold is the
+   *  caller's to let go (`browser/close`); `onEnd` is not called. */
+  async closeKept(job: string, name: string): Promise<{ ok: true }> {
+    await this.endKept(keptKey(job, name), false);
+    return { ok: true };
+  }
+
+  /** The kept pages open now, by job and name. */
+  kept(): Array<{ job: string; name: string }> {
+    return [...this.runs.values()].flatMap((r) => (r.kept ? [{ job: r.kept.job, name: r.kept.name }] : []));
+  }
+
+  private refuseCdp(): void {
+    if (this.cdp) throw new Error("browser: a kept page (`session`, browser/keep) does not apply over CDP — the profile's pages are the human's");
+  }
+
+  private roomForOneMore(): void {
+    if (this.kept().length >= this.sessionsMax) {
+      throw new Error(`browser: ${this.sessionsMax} kept pages are open (BROWSER_SESSIONS_MAX) — close one (browser/close { session }) or wait for one to go idle`);
+    }
+  }
+
+  private alive(s: Session | undefined): boolean {
+    return Boolean(s && !s.page.isClosed() && s.context.browser()?.isConnected());
+  }
+
+  /** (Re)start a kept page's idle clock — held while a call is in flight. */
+  private idle(key: string, run: Run): void {
+    if (!run.kept) return;
+    clearTimeout(run.timer);
+    run.timer = undefined;
+    if (run.kept.busy > 0 || this.runs.get(key) !== run) return;
+    run.timer = setTimeout(() => void this.endKept(key, true), this.sessionIdleMs);
+    run.timer.unref();
+  }
+
+  /** A kept page ends: forgotten, every run detached from it, closed.
+   *  `ended` = it ended on its own (idle, a timeout, the browser dropped),
+   *  so the job's hold is let go through `onEnd`. */
+  private async endKept(key: string, ended: boolean): Promise<void> {
+    const run = this.runs.get(key);
+    if (!run?.kept) return;
+    this.runs.delete(key);
+    clearTimeout(run.timer);
+    for (const [id, k] of this.attached) if (k === key) this.attached.delete(id);
+    if (ended) {
+      try {
+        run.kept.onEnd?.();
+      } catch {
+        /* the hold stays for the job's sweep */
+      }
+    }
+    await closeQuietly(run.session);
   }
 
   /** The run, started on first use: its budget clock runs from here. */
@@ -291,7 +475,7 @@ export class BrowserService {
     const key = `${runId}${CHECK_KEY}${++this.checkSeq}`;
     const run: Run = { startedAt: parent.startedAt, exhausted: false };
     this.runs.set(key, run);
-    this.arm(key, run, this.remaining(runId));
+    this.arm(key, run, Math.max(0, this.runBudgetMs - (Date.now() - parent.startedAt)));
     try {
       return await fn(key);
     } finally {
@@ -299,7 +483,7 @@ export class BrowserService {
     }
   }
 
-  private async openSession(runId: string, run: Run, opts: { viewport?: Viewport; storageState?: unknown }): Promise<Page> {
+  private async openSession(key: string, run: Run, opts: { viewport?: Viewport; storageState?: unknown }): Promise<Page> {
     const stale = run.session;
     run.session = undefined;
     await closeQuietly(stale);
@@ -326,9 +510,9 @@ export class BrowserService {
     const session: Session = { context, own: !this.cdp, page, pages: [page], refs: new Set(), replaced: false, obs: emptyObs() };
     // The run was disposed, or its budget ran out, while this was opening:
     // `dispose` / `closeSession` saw no session, so this one is ours to close.
-    if (this.runs.get(runId) !== run || run.exhausted) {
+    if (this.runs.get(key) !== run || run.exhausted) {
       await closeQuietly(session);
-      throw new Error(run.exhausted ? this.spent() : "browser: the run ended while its page was opening");
+      throw new Error(run.exhausted ? this.spent() : run.kept ? "browser: the kept page was closed while it was opening" : "browser: the run ended while its page was opening");
     }
     this.watch(session, page);
     run.session = session;
@@ -390,7 +574,8 @@ export class BrowserService {
   async snapshot(runId: string): Promise<{ url: string; title: string; tree: string }> {
     return this.call(runId, "snapshot", undefined, async (s, ms) => {
       const tree = await s.page.ariaSnapshot({ mode: "ai", timeout: ms });
-      s.refs = new Set([...tree.matchAll(/\[ref=(e\d+)\]/g)].map((m) => m[1]!));
+      // `f1e7`: an element inside an iframe (a captcha's challenge).
+      s.refs = new Set([...tree.matchAll(/\[ref=((?:f\d+)?e\d+)\]/g)].map((m) => m[1]!));
       const note = s.replaced ? "# a popup / new tab replaced the page; this is the newest page\n" : "";
       s.replaced = false;
       return { url: s.page.url(), title: await s.page.title(), tree: cap(note + tree, TREE_CAP) };
@@ -405,7 +590,7 @@ export class BrowserService {
   /** Drain the observations accumulated since the last call. Empty
    *  when the run has no page. */
   observe(runId: string): Observations {
-    const s = this.runs.get(runId)?.session;
+    const s = this.runs.get(this.keyOf(runId))?.session;
     if (!s) return emptyObs();
     const out = s.obs;
     s.obs = emptyObs();
@@ -413,9 +598,11 @@ export class BrowserService {
   }
 
   /** Close the run's context (over CDP: only its pages) and any check's
-   *  still open under it, and forget the run. Idempotent; the
+   *  still open under it, and forget the run. A kept page the run is
+   *  attached to stays open: the run only lets go of it. Idempotent; the
    *  `services.onRunEnd` hook. */
   async dispose(runId: string): Promise<void> {
+    this.attached.delete(runId);
     const keys = [...this.runs.keys()].filter((k) => k === runId || k.startsWith(`${runId}${CHECK_KEY}`));
     for (const key of keys) {
       const run = this.runs.get(key);
@@ -429,8 +616,9 @@ export class BrowserService {
   /** Milliseconds of browser budget the run has left (the whole budget
    *  before its first `open`). */
   remaining(runId: string): number {
-    const run = this.runs.get(runId);
+    const run = this.runs.get(this.keyOf(runId));
     if (!run) return this.runBudgetMs;
+    if (run.kept) return this.sessionIdleMs;
     if (run.exhausted) return 0;
     return Math.max(0, this.runBudgetMs - (Date.now() - run.startedAt));
   }
@@ -445,6 +633,7 @@ export class BrowserService {
    *  with it; a CDP Chrome is only disconnected from, never closed. */
   async close(): Promise<void> {
     for (const id of [...this.runs.keys()]) await this.dispose(id);
+    this.attached.clear();
     const b = this.browser;
     this.browser = undefined;
     await b?.close().catch(() => {});
@@ -452,14 +641,24 @@ export class BrowserService {
 
   // ── The verbs — one per browser/* step ───────────────────────────────────
 
+  /** The run's page — or, with `session`, the job's kept page of that name
+   *  (`openKept`). `resumed`: the page was already open. A resumed KEPT
+   *  page stays where it is: `url` is opened only on a new one. */
   async open(
     runId: string,
-    input: { url?: string; viewport?: Viewport; storageState?: unknown; timeoutMs?: number } = {},
-  ): Promise<Navigated> {
+    input: { url?: string; viewport?: Viewport; storageState?: unknown; timeoutMs?: number; session?: KeptSession } = {},
+  ): Promise<Navigated & { resumed: boolean }> {
     if (input.url) this.check(input.url);
-    const page = await this.page(runId, { viewport: input.viewport, storageState: input.storageState });
-    if (input.url) return this.goto(runId, { url: input.url, timeoutMs: input.timeoutMs });
-    return { url: page.url(), title: await page.title(), status: 0 };
+    const opts = { viewport: input.viewport, storageState: input.storageState };
+    let page: Page;
+    let resumed: boolean;
+    if (input.session) ({ page, resumed } = await this.openKept(runId, { ...input.session, ...opts }));
+    else {
+      resumed = this.hasPage(runId);
+      page = await this.page(runId, opts);
+    }
+    if (input.url && !(input.session && resumed)) return { ...(await this.goto(runId, { url: input.url, timeoutMs: input.timeoutMs })), resumed };
+    return { url: page.url(), title: await page.title(), status: 0, resumed };
   }
 
   async goto(runId: string, input: { url: string; wait?: number; timeoutMs?: number }): Promise<Navigated> {
@@ -482,6 +681,36 @@ export class BrowserService {
       await this.landed(s);
       return { url: s.page.url() };
     });
+  }
+
+  /**
+   * Click points ON an element, each given as fractions (0–1) of its box —
+   * a person's taps on a picture of it (a captcha's crop). Each point is a
+   * click at that offset in the element's box as it is NOW, with a pause
+   * between two (a tile fades as it is picked); one settle at the end. On
+   * an iframe the click lands on what the frame shows there, its own
+   * document included.
+   */
+  async tap(runId: string, input: Target & { points: Array<{ nx: number; ny: number }>; delayMs?: number; timeoutMs?: number }): Promise<{ url: string; taps: number }> {
+    const delay = input.delayMs ?? TAP_DELAY_MS;
+    return this.call(
+      runId,
+      "tap",
+      input.timeoutMs,
+      async (s, ms) => {
+        const loc = this.locate(runId, input);
+        for (const [i, p] of input.points.entries()) {
+          if (i) await sleep(delay);
+          const box = await loc.boundingBox({ timeout: ms });
+          if (!box) throw new Error("the element is not visible");
+          await loc.click({ position: { x: within(p.nx * box.width, box.width), y: within(p.ny * box.height, box.height) }, timeout: ms });
+        }
+        await settlePage(s.page);
+        await this.landed(s);
+        return { url: s.page.url(), taps: input.points.length };
+      },
+      delay * Math.max(0, input.points.length - 1),
+    );
   }
 
   async fill(runId: string, input: Target & { value: string; timeoutMs?: number }): Promise<{ ok: true }> {
@@ -579,6 +808,28 @@ export class BrowserService {
     });
   }
 
+  /**
+   * Ask a person to solve a captcha (captcha.ts): the challenge element
+   * cropped to `shots/captcha-<round>.png` and the manifest beside it,
+   * `site` read off the page. The crop is not announced as an image (no
+   * `notify`): the host shows it on the captcha's own card.
+   */
+  async captcha(
+    runId: string,
+    input: Target & { round: number; mode: CaptchaMode; grid?: { rows: number; cols: number }; instruction?: string; maxRounds?: number; expiresInMs?: number; timeoutMs?: number },
+    sink: ShotSink,
+  ): Promise<{ manifest: CaptchaManifest; path: string; url: string; image: Shot; small: Buffer }> {
+    const maxRounds = input.maxRounds ?? 5;
+    if (input.round > maxRounds) throw new Error(`browser/captcha-ask: round ${input.round} is past maxRounds (${maxRounds}) — the captcha is not solved`);
+    return this.call(runId, "captcha-ask", input.timeoutMs, async (s, ms) => {
+      const site = siteOf(s.page.url());
+      const png = await this.locate(runId, input).screenshot({ type: "png", scale: "css", timeout: ms });
+      const { small, ...image } = await saveShot({ ...sink, notify: undefined }, png, captchaFiles(input.round).name);
+      const manifest = captchaManifest({ ...input, site, maxRounds, expiresInMs: input.expiresInMs ?? 600_000 });
+      return { manifest, ...(await writeCaptcha(sink, manifest)), image, small };
+    });
+  }
+
   /** JavaScript IN THE PAGE, never in this host; the JSON result, capped. */
   async evaluate(runId: string, input: { expression: string; timeoutMs?: number }): Promise<{ result: unknown; truncated?: true }> {
     return this.call(runId, "evaluate", input.timeoutMs, async (s) => {
@@ -614,8 +865,10 @@ export class BrowserService {
   }
 
   /** Explicit teardown of the run's context (over CDP: its pages); the
-   *  budget clock keeps running. */
+   *  budget clock keeps running. A kept page the run is attached to is the
+   *  job's: the run lets go of it, and it stays open (`closeKept` closes it). */
   async closeRun(runId: string): Promise<{ ok: true }> {
+    this.attached.delete(runId);
     await this.closeSession(runId);
     return { ok: true };
   }
@@ -789,12 +1042,14 @@ export class BrowserService {
   }
 
   private live(runId: string): Session {
-    const run = this.runs.get(runId);
+    const key = this.keyOf(runId);
+    const run = this.runs.get(key);
     if (run?.exhausted) throw new Error(`browser: this run's browser budget (${this.runBudgetMs} ms) is spent`);
     const s = run?.session;
     if (!s) throw new Error("browser: no page for this run — call browser/open first");
-    if (s.page.isClosed() || !s.context.browser()?.isConnected()) {
-      run!.session = undefined;
+    if (!this.alive(s)) {
+      if (run!.kept) void this.endKept(key, true);
+      else run!.session = undefined;
       throw new Error("browser: the run's page was closed (a timeout, the budget, or the browser dropped) — call browser/open to start again");
     }
     return s;
@@ -812,16 +1067,23 @@ export class BrowserService {
     extraMs = 0,
   ): Promise<T> {
     const s = this.live(runId);
+    const key = this.keyOf(runId);
+    const run = this.runs.get(key)!;
+    // A kept page's idle clock waits while a call is in flight.
+    if (run.kept) {
+      run.kept.busy++;
+      this.idle(key, run);
+    }
     const ms = timeoutMs ?? this.stepTimeoutMs;
     const lost = Symbol("timeout");
     let timer: NodeJS.Timeout | undefined;
-    const race = new Promise<typeof lost>((r) => (timer = setTimeout(() => r(lost), ms + SETTLE_SLACK_MS + Math.max(0, extraMs))));
+    const race = new Promise<typeof lost>((r) => (timer = setTimeout(() => r(lost), ms + this.settleSlackMs + Math.max(0, extraMs))));
     const work = fn(s, ms);
     work.catch(() => {}); // the loser of the race must not surface as unhandled
     try {
       const out = await Promise.race([work, race]);
       if (out === lost) {
-        await this.closeSession(runId);
+        await this.closeSession(key);
         throw new Error(`browser/${verb}: timed out after ${ms} ms; the run's browser context was closed — call browser/open to start again`);
       }
       return out as T;
@@ -830,6 +1092,10 @@ export class BrowserService {
       throw new Error(m.startsWith("browser") || m.startsWith("capture:") ? m : `browser/${verb}: ${m}`);
     } finally {
       clearTimeout(timer);
+      if (run.kept) {
+        run.kept.busy--;
+        this.idle(key, run);
+      }
     }
   }
 
@@ -842,8 +1108,11 @@ export class BrowserService {
     throw new Error(`browser: refused, the page landed on ${url}: ${reason}`);
   }
 
-  private async closeSession(runId: string): Promise<void> {
-    const run = this.runs.get(runId);
+  /** Close the session under `key`: a run's (it stays known, its budget
+   *  clock running) or a kept page's, which ends (`endKept`). */
+  private async closeSession(key: string): Promise<void> {
+    const run = this.runs.get(key);
+    if (run?.kept) return this.endKept(key, true);
     const s = run?.session;
     if (!s) return;
     run!.session = undefined;
@@ -914,6 +1183,12 @@ async function closeQuietly(s: Session | undefined): Promise<void> {
 
 function fail(msg: string): never {
   throw new Error(msg);
+}
+
+/** An offset into a box `size` long, kept off its far edge (a click AT the
+ *  edge is outside the element). */
+function within(at: number, size: number): number {
+  return Math.min(Math.max(0, at), Math.max(0, size - 1));
 }
 
 function cap(s: string, n: number): string {
