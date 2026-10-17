@@ -55,8 +55,7 @@ export async function launchOnce(
   opts: Omit<JobLaunch, "from" | "actor" | "principal">,
   match?: string,
 ): Promise<LaunchRecord> {
-  const cut = ctx.path.lastIndexOf("/");
-  const key = !ctx.path ? undefined : ctx.agentTool && cut > 0 ? `${ctx.path.slice(0, cut)}#${ctx.path.slice(cut + 1)}` : `${ctx.path}#launch`;
+  const key = journalKey(ctx, "launch");
   const prior = key ? (ctx.journal?.[key] as Partial<LaunchRecord> | undefined) : undefined;
   if (prior && typeof prior.job === "string" && typeof prior.runId === "string" && (!match || prior.job === match)) {
     return { job: prior.job, runId: prior.runId, callback: !!prior.callback };
@@ -68,9 +67,26 @@ export async function launchOnce(
     ...(ctx.principal ? { principal: ctx.principal } : {}),
   });
   const record: LaunchRecord = { job: opts.job, runId, callback };
-  if (key && ctx.emit) {
-    // The runner stamps ts/runId (strut/run-workflow's cast).
-    await (ctx.emit as unknown as (e: Partial<RunEvent> & { type: RunEvent["type"] }) => Promise<void>)({ type: "step.end", path: key, output: record });
-  }
+  await journal(ctx, key, record);
   return record;
+}
+
+/**
+ * Where a step journals what it did, so a resumed run that makes the same
+ * call again finds it rather than doing it twice: a synthetic `step.end`
+ * (no stepType) at `<path>#<suffix>` for a DAG step, and for an agent's
+ * tool call at `<agent path>#<call>` — the slice of the journal the agent
+ * step is handed and its tool calls share (`ctx.journal`). Undefined
+ * outside a run.
+ */
+export function journalKey(ctx: StepContext, suffix: string): string | undefined {
+  const cut = ctx.path.lastIndexOf("/");
+  return !ctx.path ? undefined : ctx.agentTool && cut > 0 ? `${ctx.path.slice(0, cut)}#${ctx.path.slice(cut + 1)}` : `${ctx.path}#${suffix}`;
+}
+
+/** Journal `record` at `key` (`journalKey`). */
+export async function journal(ctx: StepContext, key: string | undefined, record: unknown): Promise<void> {
+  if (!key || !ctx.emit) return;
+  // The runner stamps ts/runId (strut/run-workflow's cast).
+  await (ctx.emit as unknown as (e: Partial<RunEvent> & { type: RunEvent["type"] }) => Promise<void>)({ type: "step.end", path: key, output: record });
 }

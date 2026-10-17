@@ -14,6 +14,10 @@ name: orchestrator
 # are the evolvable surface, and a host appends its own grants and prompt
 # section through `createStrut({ orchestrator })`. Every step here is strut's
 # own.
+# Sealed: the meta surface (a job's meta/run-workflow) never runs it or reads
+# its runs. Its tools are a host's private ones (a person's chats, sends as
+# them), which only the host's own launches may reach.
+sealed: true
 input:
   prompt: { type: string, description: "The person's message, or an automation's prompt" }
   session: { type: string, required: false, description: "The conversation's thread (a session id), the same every turn. None for a one-shot (an automation)" }
