@@ -1,0 +1,277 @@
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import http from "node:http";
+import { parseConceptFile, planConceptSeed, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
+import { builderSystem, renderBuilderSystem } from "./ai/builder-system.js";
+import { createRegistry } from "./steps/registry.js";
+import { createStrut } from "./createStrut.js";
+import { WorkspaceManager } from "./workspace.js";
+import { MemoryRunStore } from "./store.js";
+import { MemoryChatStore } from "./chat-store.js";
+import type { GraphBackend } from "./graph/backend.js";
+import { seedStrutDomain } from "./graph/schema-seed.js";
+import { seedConceptSchema, testBackends } from "./graph/test-util.js";
+
+describe("concept files (pure)", () => {
+  it("parses front matter into description + parent, the body into docs, and stamps the file", () => {
+    const text = "---\ndescription: What it is.\nparent: Root\n---\nThe page.\n";
+    assert.deepEqual(parseConceptFile("Child.md", text, "p/"), {
+      name: "Child",
+      description: "What it is.",
+      parent: "Root",
+      docs: "The page.",
+      stamp: stampOf("Child.md", text, "p/"),
+    });
+    assert.match(stampOf("Child.md", text, "p/"), /^p\/Child\.md@[0-9a-f]{12}$/);
+    assert.deepEqual(parseConceptFile("Bare.md", "just docs", "p/"), { name: "Bare", docs: "just docs", stamp: stampOf("Bare.md", "just docs", "p/") });
+  });
+
+  it("plans create / keep / update / skip by the stamp, a legacy path counting as ours", () => {
+    const stamp = "strut/concepts/Job.md@aaaaaaaaaaaa";
+    const legacy = ["lab/job/concepts/Job.md@"];
+    assert.equal(planConceptSeed(null, stamp), "create");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: stamp }, stamp), "keep");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "strut/concepts/Job.md@bbbbbbbbbbbb" }, stamp), "update");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: stamp, deleted: true }, stamp), "update", "a deleted page of ours comes back");
+    assert.equal(planConceptSeed({ ref_id: "r" }, stamp), "skip", "no stamp: a person's page");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "other/Job.md@aaaaaaaaaaaa" }, stamp), "skip");
+    assert.equal(planConceptSeed({ ref_id: "r", deleted: true }, stamp), "skip", "a person's deleted page stays deleted");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@aaaaaaaaaaaa" }, stamp), "skip", "a legacy path counts only when the set names it");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@aaaaaaaaaaaa" }, stamp, legacy), "keep", "same text: kept, stamp and all");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@cccccccccccc" }, stamp, legacy), "update");
+  });
+
+  it("ships Workflow Builder and Job: roots, workspace-general, the legacy lab stamps named", async () => {
+    const wb = parseConceptFile("Workflow Builder.md", await readFile(join(STRUT_CONCEPTS.dir, "Workflow Builder.md"), "utf-8"), STRUT_CONCEPTS.prefix);
+    const job = parseConceptFile("Job.md", await readFile(join(STRUT_CONCEPTS.dir, "Job.md"), "utf-8"), STRUT_CONCEPTS.prefix);
+    for (const c of [wb, job]) {
+      assert.equal(c.parent, undefined, `${c.name} is a root`);
+      assert.ok(c.description && c.docs?.includes("PARENT_OF"), c.name);
+      assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
+    }
+    assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
+  });
+
+  it("renders the builder's section: the page, its kinds, and how to open one", () => {
+    const text = renderBuilderSystem({ name: "Workflow Builder", docs: "The notes.", children: [{ name: "Janitor", description: "Cleans up." }], more: true });
+    assert.match(text, /^Workspace knowledge — the "Workflow Builder" Concept/);
+    assert.ok(text.includes("The notes.") && text.includes("- Janitor — Cleans up.") && text.includes("… and more"));
+    assert.ok(text.includes('graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'));
+    assert.ok(!renderBuilderSystem({ name: "Workflow Builder", children: [] }).includes("Kinds recorded"));
+    assert.ok(renderBuilderSystem({ name: "W", docs: "x".repeat(7000), children: [] }).includes(`${"x".repeat(6000)}…`), "docs are capped");
+  });
+});
+
+for (const tb of testBackends()) {
+  describe(`seedConcepts (${tb.name})`, { skip: tb.skip }, () => {
+    let b: GraphBackend;
+    let dir: string;
+    const set = (extra: Partial<ConceptSet> = {}): ConceptSet => ({ dir, prefix: "test/concepts/", ...extra });
+    const page = (name: string, body: string, front: Record<string, string> = {}) => {
+      const fm = Object.entries(front).map(([k, v]) => `${k}: ${v}`);
+      return writeFile(join(dir, `${name}.md`), `${fm.length ? `---\n${fm.join("\n")}\n---\n` : ""}${body}\n`);
+    };
+    const props = async (ref_id: string) => (await b.tx((tx) => b.nodeEngine.readRaw(tx, ref_id)))!.props;
+    const children = async (ref_id: string) => {
+      const out = await b.tx((tx) => b.edgeEngine.liveEdgesOf(tx, ref_id, "PARENT_OF", true));
+      return (out?.edges ?? []).map((e) => e.other).sort();
+    };
+    const concept = async (name: string, data: Record<string, unknown> = {}) => (await b.nodes.write({ type: "Concept", data: { name, ...data } })).ref_id;
+    const byName = (outcomes: Awaited<ReturnType<typeof seedConcepts>>) => Object.fromEntries(outcomes.map((o) => [o.name, o]));
+
+    before(async () => {
+      b = await tb.open();
+    });
+    after(async () => {
+      await tb.close(b);
+    });
+    beforeEach(async () => {
+      await tb.wipe(b);
+      if (b.kind === "neo4j") await seedStrutDomain(b);
+      await seedConceptSchema(b);
+      dir = await mkdtemp(join(tmpdir(), "strut-concepts-"));
+    });
+    afterEach(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it("creates the pages and their tree, then keeps them — a graph-side edit survives until the file changes", async () => {
+      await page("Root", "The root page.", { description: "The root." });
+      await page("Child", "A kind.", { description: "One kind.", parent: "Root" });
+      const first = byName(await seedConcepts(b, [set()]));
+      assert.equal(first["Root"]!.action, "create");
+      assert.equal(first["Child"]!.action, "create");
+      const root = first["Root"]!.ref_id!;
+      const child = first["Child"]!.ref_id!;
+      assert.deepEqual(await children(root), [child]);
+      const p = await props(root);
+      assert.equal(p["docs"], "The root page.");
+      assert.equal(p["description"], "The root.");
+      assert.match(String(p["unique_source_id"]), /^test\/concepts\/Root\.md@[0-9a-f]{12}$/);
+
+      await b.nodes.update(root, { set: { docs: "Edited in the graph." } });
+      const second = byName(await seedConcepts(b, [set()]));
+      assert.deepEqual([second["Root"]!.action, second["Child"]!.action], ["keep", "keep"]);
+      assert.equal((await props(root))["docs"], "Edited in the graph.");
+      assert.deepEqual(await children(root), [child], "the edge is merged, never duplicated");
+
+      await page("Root", "The root page, revised.", { description: "The root." });
+      const third = byName(await seedConcepts(b, [set()]));
+      assert.equal(third["Root"]!.action, "update");
+      assert.equal(third["Root"]!.ref_id, root, "same node");
+      assert.equal((await props(root))["docs"], "The root page, revised.");
+    });
+
+    it("brings back a deleted page of its own, and leaves a person's page alone while parenting under it", async () => {
+      await page("Root", "The root page.");
+      const root = byName(await seedConcepts(b, [set()]))["Root"]!.ref_id!;
+      assert.ok(await b.nodeEngine.softDelete(root, b.namespace, { type: "Concept" }));
+      assert.ok((await props(root))["deleted_at"] != null);
+      assert.equal(byName(await seedConcepts(b, [set()]))["Root"]!.action, "update");
+      assert.equal((await props(root))["deleted_at"] ?? null, null, "restored in place");
+
+      const theirs = await concept("Theirs", { docs: "A person wrote this." });
+      await page("Theirs", "The file's version.");
+      await page("Under", "Hangs under a person's page.", { parent: "Theirs" });
+      const out = byName(await seedConcepts(b, [set()]));
+      assert.equal(out["Theirs"]!.action, "skip");
+      assert.equal((await props(theirs))["docs"], "A person wrote this.");
+      assert.equal((await props(theirs))["unique_source_id"] ?? null, null);
+      assert.deepEqual(await children(theirs), [out["Under"]!.ref_id]);
+    });
+
+    it("counts a legacy stamp as its own: the same text kept as it is, a changed one taken over", async () => {
+      const text = "---\ndescription: Same.\n---\nSame text.\n";
+      await writeFile(join(dir, "Same.md"), text);
+      await page("Moved", "New text.");
+      const same = await concept("Same", { docs: "Same text.", unique_source_id: stampOf("Same.md", text, "old/") });
+      const moved = await concept("Moved", { docs: "Old text.", unique_source_id: "old/Moved.md@000000000000" });
+      const out = byName(await seedConcepts(b, [set({ legacyPrefixes: ["old/"] })]));
+      assert.equal(out["Same"]!.action, "keep");
+      assert.equal((await props(same))["unique_source_id"], stampOf("Same.md", text, "old/"), "nothing written");
+      assert.equal(out["Moved"]!.action, "update");
+      assert.equal(out["Moved"]!.ref_id, moved);
+      assert.equal((await props(moved))["docs"], "New text.");
+      assert.match(String((await props(moved))["unique_source_id"]), /^test\/concepts\/Moved\.md@/);
+    });
+
+    it("removes a PARENT_OF between its own pages that no file declares, and no other", async () => {
+      await page("Root", "r");
+      await page("Child", "c", { parent: "Root" });
+      await page("Loose", "l");
+      const out = byName(await seedConcepts(b, [set()]));
+      const [root, child, loose] = [out["Root"]!.ref_id!, out["Child"]!.ref_id!, out["Loose"]!.ref_id!];
+      const foreign = await concept("Foreign");
+      await b.edges.write({ edge: "PARENT_OF", source_ref_id: root, target_ref_id: loose });
+      await b.edges.write({ edge: "PARENT_OF", source_ref_id: root, target_ref_id: foreign });
+      await seedConcepts(b, [set()]);
+      assert.deepEqual(await children(root), [child, foreign].sort());
+    });
+
+    it("retires a file's page only while it still carries that file's stamp", async () => {
+      await page("Old", "o");
+      await page("Taken", "t");
+      const out = byName(await seedConcepts(b, [set()]));
+      await b.nodes.update(out["Taken"]!.ref_id!, { remove: ["unique_source_id"] });
+      await rm(join(dir, "Old.md"));
+      await rm(join(dir, "Taken.md"));
+      await seedConcepts(b, [set({ retired: ["Old.md", "Taken.md"] })]);
+      assert.ok((await props(out["Old"]!.ref_id!))["deleted_at"] != null);
+      assert.equal((await props(out["Taken"]!.ref_id!))["deleted_at"] ?? null, null);
+    });
+
+    it("strut's pages seed, a host's page hangs under one, and the builder's section reads them", async () => {
+      const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
+      assert.deepEqual([strut["Workflow Builder"]!.action, strut["Job"]!.action], ["create", "create"]);
+      await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
+      const host = byName(await seedConcepts(b, [set()]));
+      const wb = strut["Workflow Builder"]!.ref_id!;
+      assert.deepEqual(await children(wb), [host["Janitor"]!.ref_id]);
+      const again = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
+      assert.deepEqual([again["Workflow Builder"]!.action, again["Job"]!.action], ["keep", "keep"]);
+      assert.deepEqual(await children(wb), [host["Janitor"]!.ref_id], "a page another call owns is not strut's to unlink");
+
+      const text = await builderSystem({ graph: b, registry: await createRegistry([]), services: { graph: b } });
+      assert.ok(text?.startsWith('Workspace knowledge — the "Workflow Builder" Concept'), text);
+      assert.ok(text!.includes("To record a new kind, add a child Concept here"));
+      assert.ok(text!.includes("- Janitor — Cleans something up."));
+      assert.equal(await builderSystem({ registry: await createRegistry([]), services: {} }), undefined, "no graph, no section");
+    });
+  });
+}
+
+// createStrut on a graph: the pages at boot, the builder's prompt from them.
+const ladybug = testBackends().find((t) => t.kind === "ladybug")!;
+describe("createStrut with a graph", { skip: ladybug.skip }, () => {
+  let b: GraphBackend;
+  let workspaceDir: string;
+  const ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"];
+  let saved: Record<string, string | undefined> = {};
+  before(async () => {
+    b = await ladybug.open();
+  });
+  after(async () => {
+    await ladybug.close(b);
+  });
+  beforeEach(async () => {
+    await ladybug.wipe(b);
+    workspaceDir = await mkdtemp(join(tmpdir(), "strut-concepts-ws-"));
+    saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+  });
+  afterEach(async () => {
+    await rm(workspaceDir, { recursive: true, force: true });
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k]!;
+    }
+  });
+  let chats = new MemoryChatStore();
+  const make = (extra: Partial<Parameters<typeof createStrut>[0]> = {}) => {
+    chats = new MemoryChatStore();
+    return createStrut({ workspace: new WorkspaceManager(workspaceDir), graph: b, store: new MemoryRunStore(), chatStore: chats, serveUi: false, scheduler: false, ...extra });
+  };
+  // Both names have an "o"; namesLike answers nothing for an empty query.
+  const names = async () => (await b.reader.namesLike("Concept", "o", 10)).map((n) => n.name).sort();
+
+  it("seeds Workflow Builder and Job at boot; concepts: false seeds nothing", async () => {
+    await make({ concepts: false });
+    assert.deepEqual(await names(), []);
+    await make();
+    assert.deepEqual(await names(), ["Job", "Workflow Builder"]);
+  });
+
+  it("puts the Workflow Builder page in a chat's system prompt unless the host passes its own", async () => {
+    const bodies: Array<{ system: unknown }> = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const systemOf = (body: { system: unknown }): string =>
+      typeof body.system === "string" ? body.system : (body.system as Array<{ text: string }>).map((s) => s.text).join("");
+    const turn = async (strut: Awaited<ReturnType<typeof make>>) => {
+      const res = await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: "hi" }) });
+      const { chatId } = (await res.json()) as { chatId: string };
+      for (let i = 0; i < 200 && (await chats.getMeta(chatId))?.status === "live"; i++) await new Promise((r) => setTimeout(r, 25));
+    };
+    try {
+      await turn(await make());
+      assert.ok(systemOf(bodies[0]!).includes('Workspace knowledge — the "Workflow Builder" Concept'));
+      await turn(await make({ chatSystem: () => "HOST-SECTION" }));
+      assert.ok(systemOf(bodies[1]!).includes("HOST-SECTION"));
+      assert.ok(!systemOf(bodies[1]!).includes("Workspace knowledge"), "the host's hook replaces the default");
+    } finally {
+      server.close();
+    }
+  });
+});

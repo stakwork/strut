@@ -52,7 +52,7 @@ const release = () => {
   } catch {}
 };
 // `npm run test:graph -- src/graph/claims.test.ts` runs just that file, under the same lock.
-const files = process.argv.length > 2 ? process.argv.slice(2) : ["src/graph/*.test.ts", "src/steps/lib/graph/*.test.ts"];
+const files = process.argv.length > 2 ? process.argv.slice(2) : ["src/graph/*.test.ts", "src/steps/lib/graph/*.test.ts", "src/concept-seed.test.ts"];
 const child = spawn("tsx", ["--test", "--test-concurrency=1", ...files], { stdio: "inherit" });
 for (const s of ["SIGINT", "SIGTERM"]) process.on(s, () => child.kill(s));
 child.on("exit", (code, signal) => {
