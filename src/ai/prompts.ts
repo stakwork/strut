@@ -5,6 +5,7 @@ import type { SecretInfo } from "../secret-store.js";
 import type { PeersCapability } from "../peers.js";
 import type { ElicitationRequest } from "./elicitation.js";
 import type { GraphBackend } from "../graph/backend.js";
+import type { ArtifactRef } from "../artifact-refs.js";
 import { lsSteps } from "./stepHelpers.js";
 
 /** Offer the builder chat the `graph_walk` tool (walk-tool.ts). Off for now —
@@ -98,13 +99,28 @@ export interface AiDeps {
    *  Appended verbatim after strut's own rules. Optional: absent → the
    *  prompt is strut's alone. */
   hostSystem?: string;
+  /** A run's declared deliverables (src/artifact-refs.ts) resolved to the
+   *  links the run callback carries — createStrut's `artifactRefs`. With it,
+   *  run_workflow's result and get_run's summary carry `artifacts`. Optional:
+   *  absent → neither does. */
+  artifactRefs?: (runId: string, output: unknown, job?: string) => Promise<ArtifactRef[] | undefined>;
+  /** This server's public base URL (no trailing slash), for a caller OUTSIDE
+   *  the UI — the MCP door (src/ai/mcp.ts): a strut-relative artifact link
+   *  in a result is made absolute and carries the scope's read token
+   *  (`?t=`, auth.ts), and create_workflow / edit_workflow / run_workflow /
+   *  get_run results carry a `ui` deep link. Absent (the chat, whose flyout
+   *  opens runs itself): links stay relative and there is no `ui`. */
+  publicUrl?: string;
   /** Dispatch-mode `run_workflow` (see `plans/dispatch-run-notifications.md`).
    *  When present, a run still executing after `waitMs` converts to detached:
    *  the tool returns a `{ status: "running", runId }` stub immediately and
    *  hands the pending promise to `onDetach` — the host (createStrut's chat
    *  block) tracks it and wakes the chat with a `[run-notification]` message
    *  when it settles. Absent (tests / non-chat embedders) → the tool awaits
-   *  the run to completion, exactly as before. */
+   *  the run to completion, exactly as before. `hint` is what the tool tells
+   *  the model to do about a detached run — in its description and the
+   *  stub's `note`: the chat's default says a [run-notification] will come;
+   *  the MCP door says to poll get_run with `wait`. */
   detach?: {
     waitMs: number;
     onDetach: (info: {
@@ -113,6 +129,7 @@ export interface AiDeps {
       startedAt: number;
       promise: Promise<RunResult>;
     }) => void;
+    hint?: string;
   };
   /** Register a chat-launched run with the host's controller registry
    *  (RUN_CONTROL_SPEC §2.2) so it is cancellable/pausable and listed as
@@ -143,6 +160,22 @@ export interface AiDeps {
 }
 
 // ── System prompt ──────────────────────────────────────────────────────────
+
+/** The builder's PROCEDURE — the "Workflow:" steps that end BASE_SYSTEM
+ *  (how a session goes: reuse first, read a step before using it, validate,
+ *  publish, run, debug). Also the MCP door's `instructions` (src/ai/mcp.ts),
+ *  where the whole prompt would be too long; the prompt itself is served
+ *  there as the `workflow-builder` prompt. */
+export const BUILDER_PROCEDURE = `Workflow:
+1. Call list_workflows FIRST (when its result says the list was cut, call it again with a query for what the user asked). If an existing workflow already does what the user asks, REUSE it — run it with the right input, or schedule it with set_automation — instead of building a new one, and do what its description says to set it up (get_workflow for the full YAML). Build a new workflow only when none fits.
+2. Available step types are listed at the end of this prompt, as they were when this chat started — a step created since, by you or anyone, is not in that list. Use search_steps only if you need to find something by keyword; use list_steps only to re-list after new custom steps.
+3. Call get_step for EVERY step type you will use. It returns the config's JSON Schema (each field's meaning and default), the output shape, and a description with a YAML example — you MUST read it before writing. Do not guess config fields.
+4. If a needed step doesn't exist, author it with create_step (or edit_step to revise one), then it's available by its type. For a step that hits an external API, test it in isolation with run_step BEFORE wiring it into a workflow: run_step(type, config, cassette:"record") once to capture a fixture, then run_step(..., cassette:"replay") + edit_step to iterate offline until the output is right.
+5. Call validate_workflow on the YAML and fix every error (warnings are judgment calls) — create_workflow / edit_workflow refuse to publish while errors remain. Then call create_workflow with the final YAML (or edit_workflow to publish a new version of an existing workflow — get_workflow to read it first).
+6. Call run_workflow with a sample input to test it — pass "input" as a JSON OBJECT (e.g. { "owner": "vercel", "repo": "next.js", "pull_number": 1 }), NOT a JSON string. Report the result (success/error, output, or which step failed) to the user. If the run auto-detaches (see run_workflow above), report the launch and end your turn — the [run-notification] will bring you back.
+7. To debug a failure or inspect prior behavior, use list_runs + get_run. After running a workflow that writes to the graph (graph/create-node, graph/create-triplet, …), verify the result with graph_query (when offered) — count the nodes/edges you expected and read back a sample's properties — rather than trusting the step's status alone.
+
+Be concise. Don't over-explain.`;
 
 const BASE_SYSTEM = `You are a workflow builder. Users describe what they want and you create workflows.
 
@@ -293,16 +326,7 @@ ${GRAPH_WALK_TOOL_ENABLED ? `- graph_walk(goal, query) (when offered): walk the 
 - get_run("<name>", "<runId>", path?, fullEvents?): one run as a TREE — summary, "errors" (deepest first, the failure chain on top, each with the siblings that ran before it), and "steps" with everything below each rolled up (an agent's tool calls are a histogram, not a list). Zoom with path (any event path from errors/steps/search_runs — "wf/agent", "wf/items#3", "wf/agent/042-bash"): that node is "focus" with its payloads, its children listed. fullEvents:true adds payload previews to every listed node. Read the errors first; zoom only when they are not enough.
 - search_runs("<name>", "<pattern>", runIds?/runLimit?/maxMatches?/ignoreCase?): grep a regex across recent runs' event logs (inputs/outputs/errors) → matching (runId, path, snippet) tuples + per-run counts — for cross-run questions ("which runs hit this error, and how often?"); then get_run on a hit.
 
-Workflow:
-1. Call list_workflows FIRST (when its result says the list was cut, call it again with a query for what the user asked). If an existing workflow already does what the user asks, REUSE it — run it with the right input, or schedule it with set_automation — instead of building a new one, and do what its description says to set it up (get_workflow for the full YAML). Build a new workflow only when none fits.
-2. Available step types are listed at the end of this prompt, as they were when this chat started — a step created since, by you or anyone, is not in that list. Use search_steps only if you need to find something by keyword; use list_steps only to re-list after new custom steps.
-3. Call get_step for EVERY step type you will use. It returns the config's JSON Schema (each field's meaning and default), the output shape, and a description with a YAML example — you MUST read it before writing. Do not guess config fields.
-4. If a needed step doesn't exist, author it with create_step (or edit_step to revise one), then it's available by its type. For a step that hits an external API, test it in isolation with run_step BEFORE wiring it into a workflow: run_step(type, config, cassette:"record") once to capture a fixture, then run_step(..., cassette:"replay") + edit_step to iterate offline until the output is right.
-5. Call validate_workflow on the YAML and fix every error (warnings are judgment calls) — create_workflow / edit_workflow refuse to publish while errors remain. Then call create_workflow with the final YAML (or edit_workflow to publish a new version of an existing workflow — get_workflow to read it first).
-6. Call run_workflow with a sample input to test it — pass "input" as a JSON OBJECT (e.g. { "owner": "vercel", "repo": "next.js", "pull_number": 1 }), NOT a JSON string. Report the result (success/error, output, or which step failed) to the user. If the run auto-detaches (see run_workflow above), report the launch and end your turn — the [run-notification] will bring you back.
-7. To debug a failure or inspect prior behavior, use list_runs + get_run. After running a workflow that writes to the graph (graph/create-node, graph/create-triplet, …), verify the result with graph_query (when offered) — count the nodes/edges you expected and read back a sample's properties — rather than trusting the step's status alone.
-
-Be concise. Don't over-explain.`;
+${BUILDER_PROCEDURE}`;
 
 /** Strip the trailing "/" from a directory entry, if present. */
 function stripSlash(s: string): string {

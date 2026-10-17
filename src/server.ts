@@ -37,7 +37,12 @@ async function getDefault(): Promise<Strut> {
       process.env["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const llmAuth: Pick<StrutOptions, "llmAuth"> = mothership ? { llmAuth: mothership.llmAuth } : {};
+    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl"> = {
+      ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
+      // Where a caller outside the UI (the MCP door) is told this server
+      // is; else each request's own origin.
+      ...(process.env["STRUT_PUBLIC_URL"] ? { publicUrl: process.env["STRUT_PUBLIC_URL"] } : {}),
+    };
     // dataDir keeps its file default (STRUT_WORKSPACE / ./workspace) on a
     // graph workspace: runs, chats, secrets, artifacts, cassettes, and the
     // materialized custom steps stay local. Explicit file stores, since a
@@ -61,16 +66,16 @@ async function getDefault(): Promise<Strut> {
             `[graph] booting on the filesystem workspace instead (nothing was moved); the import runs again at the next boot`,
         );
         await backend.close();
-        strutInstance = await createStrut(llmAuth);
+        strutInstance = await createStrut(shared);
       } else {
-        strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...llmAuth });
+        strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...shared });
       }
     } else if (kind === "neo4j") {
       const { graphWorkspaceFromEnv } = await import("./graph/wiring.js");
       const { backend, workspace } = await graphWorkspaceFromEnv(process.env, { dataDir });
-      strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...llmAuth });
+      strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...shared });
     } else {
-      strutInstance = await createStrut(llmAuth);
+      strutInstance = await createStrut(shared);
     }
     mothership?.mount(strutInstance);
   }

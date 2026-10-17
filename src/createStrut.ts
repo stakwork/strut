@@ -153,6 +153,18 @@ export interface StrutOptions<TServices = unknown> {
    *  true; disable to avoid pulling in the `ai`/`@ai-sdk/anthropic` deps. */
   enableChat?: boolean;
 
+  /** Mount `POST /mcp` (src/ai/mcp.ts): the builder's tools — the same ones
+   *  the chat's model gets — as an MCP server for an external agent (Claude
+   *  Code). Behind the gate like every route. Defaults to `enableChat`. */
+  enableMcp?: boolean;
+
+  /** This server's public base URL, for links handed to a caller OUTSIDE
+   *  the UI — the MCP door's artifact links (absolute, with their read
+   *  token) and `ui` deep links. Defaults to the request's own origin
+   *  (`x-forwarded-proto` / `x-forwarded-host` honored). `STRUT_PUBLIC_URL`
+   *  on the default server. */
+  publicUrl?: string;
+
   /** Where to persist chat sessions (the detached AI-builder background jobs:
    *  `messages.jsonl` + `events.jsonl` + `meta.json`). Defaults to a
    *  `FileChatStore` rooted at the workspace path (or `MemoryChatStore` when
@@ -771,6 +783,7 @@ export async function createStrut<TServices = unknown>(
   };
   const serveUi = opts.serveUi ?? true;
   const enableChat = opts.enableChat ?? true;
+  const enableMcp = opts.enableMcp ?? enableChat;
   // Boot-time auto-resume (RUN_CONTROL_SPEC §5.3), the setting: on by default
   // whenever the store in question outlives the process — the run store for
   // runs, the chat store for the builder's chats — off with
@@ -2906,6 +2919,105 @@ export async function createStrut<TServices = unknown>(
     return c.json({ runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}) }, 202);
   });
 
+  // ── The builder's tools: what every door shares ──────────────────────────
+
+  /** The `AiDeps` the chat turn and the MCP door (`POST /mcp`) both spread,
+   *  then add their own to: the chat its per-turn caps, web tools, model
+   *  catalog, verify watch, elicitation and the notifying detach; MCP its
+   *  public links and the polling detach. Read per turn / per request, so
+   *  `registry` is the current one. */
+  const builderDeps = (actor: string | undefined) => ({
+    workspace,
+    dataDir,
+    registry,
+    store,
+    services,
+    ...(actor ? { actor } : {}),
+    secrets: secretsInjected ? undefined : secretStore,
+    // The other struts this one may call: list_peers + `peer` on
+    // list_workflows / get_workflow / run_workflow.
+    peers: peersCap,
+    // Build-time bash for the builder, cwd'd at the local data dir
+    // (scrubbed env — see shell.ts).
+    shell: { cwd: dataDir },
+    // Read-only graph_query (+ graph_get), when there is a graph backend.
+    graph,
+    // The claim tools + `claims` arg, and verify_run / add_evidence +
+    // the verify triggers — where the claims layer is on.
+    claims: claimsAuthoring,
+    verifier,
+    // list_automations / set_automation / delete_automation.
+    automations,
+    // cancel_run / pause_run / resume_run over the live controllers.
+    controlRun: controlRunForChat,
+    publishingEnabled: !registryWasInjected,
+    getRegistry: async () => {
+      if (registryWasInjected) return registry;
+      const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
+      registry = bundle.registry;
+      stepSources = bundle.sources;
+      return bundle.registry;
+    },
+    // Controller registration for builder-launched runs — cancellable/
+    // pausable like any other launch path (tracked from launch inside
+    // the run_workflow tool, not only on detach).
+    trackRun,
+  });
+
+  // ── MCP (the builder's tools for an external agent) ──────────────────────
+  //
+  // `POST /mcp` (src/ai/mcp.ts): the SAME tools the chat's model gets, over
+  // the Model Context Protocol — stateless, a fresh server per request,
+  // behind the gate like every route (the deployment key; a peer is 403).
+  // The caller is not the UI, so an artifact link in a result is absolute
+  // (`publicUrl`, else the request's origin) and carries its file token,
+  // and a `ui` link opens the workflow or run in the UI.
+
+  if (enableMcp) {
+    const publicUrlOf = (c: Context) => {
+      if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
+      const url = new URL(c.req.url);
+      const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
+      const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
+      return `${proto}://${host}`;
+    };
+    app.post("/mcp", async (c) => {
+      // The SDK loads on the first MCP request, never at boot.
+      const { createBuilderMcp, builderInstructions, MCP_DETACH_HINT } = await import("./ai/mcp.js");
+      const { buildSystem } = await import("./ai/prompts.js");
+      const publicUrl = publicUrlOf(c);
+      const actor = await resolveActor(c);
+      const deps = {
+        ...builderDeps(actor),
+        publicUrl,
+        artifactRefs,
+        // A run that outlives the wait window goes on detached, tracked like
+        // any launch; nothing can notify an MCP client, so it polls get_run.
+        detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
+      };
+      // The `workflow-builder` prompt is the chat's whole system prompt, the
+      // host's section included (StrutOptions.chatSystem — on a graph, the
+      // `Workflow Builder` Concept's page), read at each prompts/get: there
+      // is no chat to freeze it for, so an edit to the page shows at once.
+      // The hook takes a chat id; `mcp` stands in. A throw is one warning,
+      // and the prompt is strut's alone, as for a chat turn.
+      const prompt = async () => {
+        const hostSystem = await Promise.resolve()
+          .then(() => chatSystem?.({ chatId: "mcp", turn: 0, ...(actor ? { actor } : {}) }))
+          .catch((err) => {
+            console.warn(`[mcp] chatSystem hook failed:`, err instanceof Error ? err.message : err);
+            return undefined;
+          });
+        return buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
+      };
+      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt }).handle(c.req.raw);
+    });
+    // Stateless: no SSE stream to open, no session to end.
+    const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
+    app.get("/mcp", notAllowed);
+    app.delete("/mcp", notAllowed);
+  }
+
   // ── Chat (AI workflow builder) ───────────────────────────────────────────
   //
   // A chat is a DETACHED background job (EVAL_SPEC §8), mirroring workflow
@@ -3019,23 +3131,11 @@ export async function createStrut<TServices = unknown>(
           });
 
           const deps = {
-            workspace,
-            dataDir,
-            registry,
-            store,
-            services,
+            ...builderDeps(actor),
             toolResultMaxChars: resultCapChars(toolResultMaxCharsFromEnv(), llm.contextLimit, compactAt),
             // A document read (get_workflow / get_step) is bound by the
             // window alone — no env ceiling; uncapped with compaction off.
             documentMaxChars: resultCapChars(0, llm.contextLimit, compactAt),
-            ...(actor ? { actor } : {}),
-            secrets: secretsInjected ? undefined : secretStore,
-            // The other struts this one may call: list_peers + `peer` on
-            // list_workflows / get_workflow / run_workflow.
-            peers: peersCap,
-            // Build-time bash for the chat builder, cwd'd at the local data
-            // dir (scrubbed env — see shell.ts).
-            shell: { cwd: dataDir },
             webTools: web.tools,
             // So the builder only authors `model:` values this deployment can run.
             models: {
@@ -3043,17 +3143,7 @@ export async function createStrut<TServices = unknown>(
               available: [...new Set(catalog.models.filter((m) => m.available).map((m) => m.provider))],
               keyNames: catalog.keyNames,
             },
-            // Read-only graph_query (+ graph_get), when there is a graph backend.
-            graph,
-            // The claim tools + `claims` arg, and verify_run / add_evidence +
-            // the verify triggers — where the claims layer is on.
-            claims: claimsAuthoring,
-            verifier,
             watchVerify: (runId: string) => verifyWaker?.watch(runId, chatId),
-            // list_automations / set_automation / delete_automation.
-            automations,
-            // cancel_run / pause_run / resume_run over the live controllers.
-            controlRun: controlRunForChat,
             // ask_user / request_secret (plans/elicitation.md): record the
             // question on the chat — one open at a time, the newest replaces
             // — with the secret page's RELATIVE link when it asks for one.
@@ -3072,18 +3162,6 @@ export async function createStrut<TServices = unknown>(
                 ...(prev ? { replaced: prev.elicitationId } : {}),
               };
             },
-            publishingEnabled: !registryWasInjected,
-            getRegistry: async () => {
-              if (registryWasInjected) return registry;
-              const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
-              registry = bundle.registry;
-              stepSources = bundle.sources;
-              return bundle.registry;
-            },
-            // Controller registration for chat-launched runs — cancellable/
-            // pausable like any other launch path (tracked from launch inside
-            // the run_workflow tool, not only on detach).
-            trackRun,
             // Dispatch-mode run_workflow: a run that outlives the wait window
             // converts to detached — wake this chat with a [run-notification]
             // when it settles.

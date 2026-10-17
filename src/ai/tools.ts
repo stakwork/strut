@@ -20,6 +20,8 @@ import { secretLikeProperty, validateRequestedSchema } from "./elicitation.js";
 import { isValidSecretName } from "../secret-store.js";
 import { DOCUMENT_TOOLS, capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
 import { listPeerWorkflows, readPeerWorkflow, runOnPeer } from "../peers.js";
+import { fileScopeOf, fileToken } from "../auth.js";
+import type { ArtifactRef } from "../artifact-refs.js";
 // The shared authoring core — the same mechanism the meta/* steps' capability
 // sits on (see authoring.ts): publish checks + strict load-verification, and
 // the run-history reads. The chat tools layer their own policy on top (no
@@ -40,6 +42,30 @@ import {
 
 /** The step behind the builder's `graph_get` tool. */
 const GRAPH_GET_STEP = "graph/graph-get";
+
+/** What run_workflow tells the model about a run that outlives the wait
+ *  window — the chat's wording; the MCP door passes its own
+ *  (`deps.detach.hint`, src/ai/mcp.ts). Read after "… continues in the
+ *  background —". */
+const CHAT_DETACH_HINT =
+  "when it finishes, a [run-notification] user message starts your next turn with the outcome. Do NOT poll get_run in a loop while waiting; finish your turn normally (note anything you'll need when the result arrives).";
+
+/** The most get_run's `wait` may hold a call: under a typical client's
+ *  60 s request timeout. */
+export const MAX_RUN_WAIT_MS = 55_000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** A strut-relative artifact link (`/artifacts/<runId>/…`,
+ *  `/jobs/<id>/files/…`) made absolute for a caller outside the UI, with the
+ *  scope's read token (`?t=`, auth.ts) — the key never rides in a link.
+ *  Anything else (an external URL, inline content) is left alone. */
+function publicRef(ref: ArtifactRef, base: string): ArtifactRef {
+  if (!ref.url?.startsWith("/")) return ref;
+  const scope = fileScopeOf(ref.url);
+  const token = scope ? fileToken(scope) : undefined;
+  return { ...ref, url: `${base}${ref.url}${token ? `?t=${token}` : ""}` };
+}
 
 // ── Run control ────────────────────────────────────────────────────────────
 
@@ -282,6 +308,24 @@ export function buildTools(deps: AiDeps): ToolSet {
   const principalFor = async (name: string) =>
     deps.actor ?? (await deps.workspace.getWorkflowMetadata(name).catch(() => null))?.owner;
 
+  // Links for a caller OUTSIDE the UI (`deps.publicUrl`: the MCP door) — a
+  // `ui` deep link, and artifact links made absolute with their read token.
+  // The chat gets neither: its flyout opens the run, and relative links
+  // are what the UI resolves.
+  const ui = (name: string, runId?: string) =>
+    deps.publicUrl
+      ? { ui: `${deps.publicUrl}/?wf=${encodeURIComponent(name)}${runId ? `&run=${encodeURIComponent(runId)}` : ""}` }
+      : {};
+  /** A run's declared deliverables as the run callback resolves them
+   *  (`deps.artifactRefs`), plus the `ui` link; nothing when the output
+   *  declares none. */
+  const links = async (name: string, runId: string, output: unknown, job?: string) => {
+    const refs = await deps.artifactRefs?.(runId, output, job).catch(() => undefined);
+    const base = deps.publicUrl;
+    return { ...(refs ? { artifacts: base ? refs.map((r) => publicRef(r, base)) : refs } : {}), ...ui(name, runId) };
+  };
+  const detachHint = deps.detach?.hint ?? CHAT_DETACH_HINT;
+
   return capToolResults({
     list_steps: tool({
       description:
@@ -497,6 +541,7 @@ export function buildTools(deps: AiDeps): ToolSet {
             version,
             renamed: finalName !== name,
             requested: name,
+            ...ui(finalName),
             ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name: finalName }, contract, actor), ...(await publishChecks("workflow", finalName)) } : {}),
           },
           v,
@@ -575,6 +620,7 @@ export function buildTools(deps: AiDeps): ToolSet {
             name,
             version: result.version,
             changed: result.changed,
+            ...ui(name),
             ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor), ...(await publishChecks("workflow", name)) } : {}),
           },
           v,
@@ -857,7 +903,7 @@ export function buildTools(deps: AiDeps): ToolSet {
     run_workflow: tool({
       description:
         "Run a published workflow with a given input and return the result. Use this to test workflows you just created. Returns status (success/error), output (on success), error details (on failure), and the runId. " +
-        "Long runs AUTO-DETACH: if the run is still executing after the wait window, this returns { status: 'running', detached: true, runId } and the run continues in the background — when it finishes, a [run-notification] user message starts your next turn with the outcome. Do NOT poll get_run in a loop while waiting; finish your turn normally. " +
+        `Long runs AUTO-DETACH: if the run is still executing after the wait window, this returns { status: 'running', detached: true, runId } and the run continues in the background — ${detachHint} ` +
         "With `peer` the workflow runs on THAT strut (list_peers) and this call waits for its result — never detached; the run, its files and artifacts stay on the peer.",
       inputSchema: z.object({
         name: z.string().describe("Workflow name to run"),
@@ -951,7 +997,8 @@ export function buildTools(deps: AiDeps): ToolSet {
         // No detach seam (tests / non-chat embedders) → await as before.
         const detach = deps.detach;
         if (!detach) {
-          yield { ...(await promise), ...contract };
+          const result = await promise;
+          yield { ...result, ...contract, ...(await links(name, runId, result.output)) };
           return;
         }
 
@@ -968,7 +1015,7 @@ export function buildTools(deps: AiDeps): ToolSet {
           }),
         ]).finally(() => clearTimeout(timer));
         if (winner !== pending) {
-          yield { ...winner, ...contract };
+          yield { ...winner, ...contract, ...(await links(name, runId, winner.output)) };
           return;
         }
 
@@ -979,10 +1026,8 @@ export function buildTools(deps: AiDeps): ToolSet {
           runId,
           ...contract,
           workflow: name,
-          note:
-            `Run still executing after ${Math.round(detach.waitMs / 1000)}s — it continues detached in the background. ` +
-            "When it finishes, a [run-notification] message will start your next turn with the result. " +
-            "Do NOT poll get_run in a loop; finish this turn normally (note anything you'll need when the result arrives).",
+          ...ui(name, runId),
+          note: `Run still executing after ${Math.round(detach.waitMs / 1000)}s — it continues detached in the background: ${detachHint}`,
         };
       },
     }),
@@ -1091,9 +1136,27 @@ export function buildTools(deps: AiDeps): ToolSet {
           .boolean()
           .default(false)
           .describe("Also put input/output previews on every listed node (default false: only the focus node carries payloads)."),
+        wait: z
+          .number()
+          .int()
+          .min(0)
+          .max(MAX_RUN_WAIT_MS)
+          .optional()
+          .describe(
+            `Milliseconds to wait for the run to FINISH before reading it (max ${MAX_RUN_WAIT_MS}). For a run that detached: call this with wait until \`status\` is terminal (success | error | cancelled); a run still going when the wait is up is read as it stands.`,
+          ),
       }),
-      execute: async ({ name, runId, path, fullEvents }) => {
-        return readRun(deps.store, name, runId, { path, fullEvents });
+      execute: async ({ name, runId, path, fullEvents, wait }) => {
+        // The summary is written when the run finalizes — its absence is "still going".
+        if (wait) {
+          const deadline = Date.now() + wait;
+          while (!(await deps.store.getRunSummary(name, runId)) && Date.now() < deadline) await sleep(Math.min(500, deadline - Date.now()));
+        }
+        const view = await readRun(deps.store, name, runId, { path, fullEvents });
+        if ("error" in view) return view;
+        const summary = await deps.store.getRunSummary(name, runId);
+        const l = await links(name, runId, summary?.output, summary?.job);
+        return { ...view, ...(l.artifacts ? { summary: { ...view.summary, artifacts: l.artifacts } } : {}), ...(l.ui ? { ui: l.ui } : {}) };
       },
     }),
 
