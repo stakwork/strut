@@ -403,6 +403,25 @@ describe("jobs — the directory", () => {
     assert.deepEqual(await listJobFiles(r, await readJobRecord(r)), [join("notes", "a.md"), "plan.md"]);
     assert.deepEqual(await listJobFiles(jobRoot(dataDir, "never"), null), []);
   });
+
+  it("a record is never read half-written: the readers take no lock, so every write is whole", async () => {
+    const r = jobRoot(dataDir, "busy");
+    await touchJob(r, "busy");
+    let writing = true;
+    const writes = (async () => {
+      for (let i = 0; i < 300; i++) await touchJob(r, "busy", { dir: join(r, `repo-${i}`), cache: "/nowhere", ref: "main" });
+      writing = false;
+    })();
+    let reads = 0;
+    let misses = 0;
+    while (writing) {
+      reads++;
+      if (!(await readJobRecord(r))) misses++;
+    }
+    await writes;
+    assert.ok(reads > 0);
+    assert.equal(misses, 0, `${misses} of ${reads} reads found no record while it was being written`);
+  });
 });
 
 // ── deliverables (§3) ────────────────────────────────────────────────────

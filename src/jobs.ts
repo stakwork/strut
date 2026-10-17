@@ -39,7 +39,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { postCallback } from "./callback.js";
 import type { StepContext, StepRegistry } from "./core.js";
@@ -122,9 +122,14 @@ export async function readJobRecord(root: string): Promise<JobRecord | null> {
   }
 }
 
+/** Whole, through a temp file and a rename: the readers (the index, a
+ *  host's GET /jobs/:id) take no lock, and a plain writeFile truncates
+ *  first — a read in that moment found no record and showed the job with
+ *  no runs. Writers hold the record's lock, so one temp name is enough. */
 async function writeJobRecord(root: string, rec: JobRecord): Promise<void> {
   await mkdir(join(root, ".."), { recursive: true });
-  await writeFile(`${root}.json`, JSON.stringify(rec, null, 2), "utf-8");
+  await writeFile(`${root}.json.tmp`, JSON.stringify(rec, null, 2), "utf-8");
+  await rename(`${root}.json.tmp`, `${root}.json`);
 }
 
 /** Every write to a record: under its lock, the record (created now when
