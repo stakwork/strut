@@ -38,7 +38,7 @@ strut/
 ├── images/browser/        # a second image, nothing of strut's in it: a Playwright SERVER (`playwright run-server`, the package baked in, tini, non-root) for hosts whose steps drive a browser over a websocket. `.github/workflows/publish-browser.yml` pushes it to ghcr.io/stakwork/strut-browser when this directory changes on main, tagged with the Playwright version its Dockerfile pins — the connecting host's `playwright-core` must be on the same major.minor
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
-│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the three output markers — withAccessedNodes / withMessages / withMedia (readers accessedNodesOf / messagesOf / mediaOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
+│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the four output markers — withAccessedNodes / withMessages / withMedia / withStop (readers accessedNodesOf / messagesOf / mediaOf / stopOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
 │   ├── search.ts          # searchSteps / searchWorkflows: the one matcher behind the sidebar filters, the Add Step picker and `GET /workflows?q=` — every word must hit the name (or the category / description), name hits rank first. The web UI imports it from here
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
@@ -1337,7 +1337,7 @@ and the child env is scrubbed by construction).
 
 - **Automations — run a workflow on a schedule** (`plans/automations.md`;
   `src/automations.ts` pure, `src/scheduler.ts` stateful). An automation is
-  `{ id, name, enabled, trigger, input }`, stored as **workflow-level
+  `{ id, name, enabled, trigger, input, callback? }`, stored as **workflow-level
   metadata beside `category`** (`WorkflowMetadata.automations`:
   `_metadata.json` on the filesystem, one JSON-string `automations`
   property on the `StrutWorkflow` node in the graph;
@@ -1357,7 +1357,16 @@ and the child env is scrubbed by construction).
   `nextRunAt` BEFORE launching. A fire goes through `launchDetached` like
   `POST /run`, stamped `origin: "schedule"` + `automation: { id }` on
   `run.start` AND on the `RunSummary` — scheduled runs are verified like
-  any other. **Dynamic inputs**: `input` is resolved per fire against
+  any other. An automation's `callback: { url }` (opt-in, set over HTTP
+  only — the chat tool never sees it) is handed to every fire, so its
+  `run.end` reaches the host like a `POST /run { callback }` launch's. The
+  URL is a credential, so it lives in a fifth encrypted file beside
+  `secrets.json` — `automation-callbacks.json` (`AUTOMATION_CALLBACKS_FILE`),
+  keyed by the automation id — never in the deployment's secrets, which
+  every step reads through `ctx.services.secrets` and `GET /secrets` lists;
+  the record keeps `callback: { origin }` — no read of workflow metadata (the
+  routes, the graph node) can serve it. Removing the automation, clearing
+  the callback (`null`) or deleting the workflow deletes the entry. **Dynamic inputs**: `input` is resolved per fire against
   `{ now, today, last }`, `last` being this automation's latest SUCCESSFUL
   run (a newest-first scan of summaries, ≤100) — so a failed run never
   advances a cursor. `last` is never null (before the first success its
@@ -1527,7 +1536,9 @@ and the child env is scrubbed by construction).
   **History is append-only**, the chat's rule: the system prompt is frozen
   by the first turn (a later step's `system` is ignored, one warn line) and
   the messages are replayed as stored, so every request begins with the
-  previous one byte for byte. Tools, output mode and `maxSteps` are the
+  previous one byte for byte. `retain` replaces what a
+  compaction's summary is told to keep (`AGENT_RETAIN`: files, commands) with
+  the caller's own references. Tools, output mode and `maxSteps` are the
   current step's. The provider and whether calls are routed through the
   gateway are fixed by the first turn (`session_mismatch:`). A thread the
   last turn left past the compaction mark (`STRUT_COMPACT_AT`, 0.9 of the
@@ -1771,6 +1782,18 @@ and the child env is scrubbed by construction).
     matching nothing warns). `"agent"` itself is grantable — that's the
     sub-agent primitive: recursion depth is controlled by whether the child's
     own `agentTools` list includes `"agent"` again, not by a numeric cap.
+    **A tool-step can end the turn**: an output marked `withStop(output)`
+    (core.ts, the fourth marker — a device that has not answered, an
+    approval waiting on a person) stops the loop after that tool round —
+    never a nudge back into it — and one answer turn follows on the loop's
+    own prefix with every tool inert (the forced final-answer turn's
+    request, its own prompt), so the model says what it is waiting for and
+    nothing more runs (a nudge's loop stops the same way; a stream severed
+    after the stop is not resumed). A marker, not a field: the model sees
+    the plain output, and a step's own `stop` field means nothing. A
+    sub-agent's stop ends only its own turn. The output
+    gains `stopped: { tool }`. With `toolFilter: ['none']` the step needs
+    neither `git` nor `rg` (only the built-ins use them).
   - **Every tool call emits a nested run event** (`wrapToolsWithEmit`, applied
     to built-ins AND `agentTools` with one shared counter): a
     `step.start`/`step.end` (or `step.error`) at `<agentPath>/NNN-<tool>` with

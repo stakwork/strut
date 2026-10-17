@@ -21,6 +21,7 @@ import {
   describeTrigger,
   nextFire,
   nextFires,
+  automationCallbackSecret,
   normalizeTrigger,
   resolveAutomationInput,
   triggerSchema,
@@ -29,7 +30,9 @@ import {
   type Trigger,
   type TriggerDraft,
 } from "./automations.js";
+import { callbackOrigin } from "./callback.js";
 import type { Flow } from "./core.js";
+import type { SecretStore } from "./secret-store.js";
 import type { RunStore } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import { principalRequired } from "./auth.js";
@@ -37,8 +40,14 @@ import { principalRequired } from "./auth.js";
 export interface AutomationsDeps {
   workspace: WorkspaceStore;
   store: RunStore;
-  /** Launch a run detached, stamped as this automation's; returns its id. */
-  launch: (flow: Flow, input: Record<string, unknown>, automation: { id: string }) => string;
+  /** Launch a run detached, stamped as this automation's; returns its id.
+   *  `callback` is the automation's, when it has one: `run.end` goes there. */
+  launch: (flow: Flow, input: Record<string, unknown>, automation: { id: string }, callback?: { url: string }) => string;
+  /** Where an automation's callback URL is kept — a credential, never in
+   *  the workflow metadata, and a store of its own (`AUTOMATION_CALLBACKS_FILE`),
+   *  never the deployment's secrets, which every step can read. Without it,
+   *  an automation cannot take one. */
+  secrets?: Pick<SecretStore, "get" | "set" | "delete">;
   /** Is this run executing in THIS process right now? */
   isInFlight: (workflow: string, runId: string) => boolean;
   /** Injectable clock (tests). */
@@ -77,15 +86,17 @@ export interface Automations {
   preview(trigger: unknown): AutomationsResult<{ summary: string; next: string[] }>;
   /** "Run now": the scheduler's fire path, off-schedule. */
   fire(workflow: string, id: string): Promise<AutomationsResult<{ runId: string }>>;
-  /** Drop a workflow's schedules from the tick loop (the workflow is being
-   *  deleted; its metadata goes with it). */
-  forget(workflow: string): void;
+  /** Drop a workflow's schedules from the tick loop and their callback
+   *  secrets (the workflow is being deleted; its metadata goes with it). */
+  forget(workflow: string): Promise<void>;
   /** Begin ticking (idempotent). The timer is unref'd. */
   start(): void;
   stop(): void;
   /** One pass over what is due — the timer's body, callable from tests. */
   tick(): Promise<void>;
 }
+
+const NO_SECRETS = "callback: this strut has no secret store to keep its URL in";
 
 /** How many of a workflow's newest runs a lookup reads before giving up. */
 const SCAN_LIMIT = 100;
@@ -210,7 +221,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       if (unowned) throw new Error(unowned);
       const flow = await workspace.getWorkflow(workflow);
       const input = resolveAutomationInput(automation, at, facts.last);
-      const runId = deps.launch(flow, input, { id: automation.id });
+      const runId = deps.launch(flow, input, { id: automation.id }, await callbackOf(automation));
       fireErrors.delete(k);
       return { ok: true, runId };
     } catch (err) {
@@ -269,6 +280,31 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     return automations.map((a) => view(workflow, a, facts.get(a.id), category));
   }
 
+  // ── Callbacks ────────────────────────────────────────────────────────────
+
+  /** The URL a fire posts `run.end` to. One whose secret has gone fires
+   *  without it, loudly: the run still happens and is on record. */
+  async function callbackOf(automation: Automation): Promise<{ url: string } | undefined> {
+    if (!automation.callback) return undefined;
+    const url = await deps.secrets?.get(automationCallbackSecret(automation.id));
+    if (url) return { url };
+    console.warn(`[automations] "${automation.name}": its callback URL is not in the secret store; this fire posts no run.end.`);
+    return undefined;
+  }
+
+  /** Store a draft's callback (`{ url }`), or clear it (`null`); the record
+   *  keeps the origin. `undefined` leaves `current` as it is. */
+  async function saveCallback(id: string, cb: { url: string } | null | undefined, current?: Automation["callback"]): Promise<Automation["callback"]> {
+    if (cb === undefined) return current;
+    const name = automationCallbackSecret(id);
+    if (cb === null) {
+      if (current) await deps.secrets?.delete(name);
+      return undefined;
+    }
+    await deps.secrets!.set(name, cb.url);
+    return { origin: callbackOrigin(cb.url) };
+  }
+
   // ── Mutations ────────────────────────────────────────────────────────────
 
   /** Every mutation is a read-modify-write of one short list: run them one
@@ -309,7 +345,11 @@ export function createAutomations(deps: AutomationsDeps): Automations {
   }
 
   return {
-    forget: (workflow) => setEntries(workflow, []),
+    async forget(workflow) {
+      setEntries(workflow, []);
+      const list = (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.automations ?? [];
+      for (const a of list) await saveCallback(a.id, null, a.callback);
+    },
 
     async list(workflow) {
       if (workflow !== undefined) {
@@ -334,12 +374,17 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         const list = meta.automations ?? [];
         const unowned = await ownerGate(workflow, parsed.data.enabled ?? true);
         if (unowned) return { error: unowned };
+        if (parsed.data.callback && !deps.secrets) return { error: NO_SECRETS };
+        const id = `a-${randomUUID().slice(0, 8)}`;
+        const trigger = triggerFrom(parsed.data.trigger);
+        const callback = await saveCallback(id, parsed.data.callback ?? undefined);
         const automation: Automation = {
-          id: `a-${randomUUID().slice(0, 8)}`,
+          id,
           name: parsed.data.name,
           enabled: parsed.data.enabled ?? true,
-          trigger: triggerFrom(parsed.data.trigger),
+          trigger,
           input: parsed.data.input ?? {},
+          ...(callback ? { callback } : {}),
         };
         return save(workflow, [...list, automation], automation, meta.category);
       }),
@@ -358,12 +403,17 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         const p = parsed.data;
         const unowned = await ownerGate(workflow, p.enabled ?? current.enabled);
         if (unowned) return { error: unowned };
+        if (p.callback && !deps.secrets) return { error: NO_SECRETS };
+        // `callback`: absent keeps it, null clears it.
+        const trigger = p.trigger ? triggerFrom(p.trigger, current.trigger) : current.trigger;
+        const callback = await saveCallback(id, p.callback, current.callback);
         const automation: Automation = {
           id,
           name: p.name ?? current.name,
           enabled: p.enabled ?? current.enabled,
-          trigger: p.trigger ? triggerFrom(p.trigger, current.trigger) : current.trigger,
+          trigger,
           input: p.input ?? current.input,
+          ...(callback ? { callback } : {}),
         };
         return save(workflow, list.map((a) => (a.id === id ? automation : a)), automation, meta.category);
       }),
@@ -376,6 +426,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         if (!list.some((a) => a.id === id)) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
         const rest = list.filter((a) => a.id !== id);
         await workspace.setWorkflowAutomations(workflow, rest);
+        await saveCallback(id, null, list.find((a) => a.id === id)?.callback);
         fireErrors.delete(key(workflow, id));
         setEntries(workflow, rest);
         return { ok: true, id };

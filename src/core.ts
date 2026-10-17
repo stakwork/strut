@@ -447,6 +447,31 @@ export function mediaOf(output: unknown): MediaPart[] | undefined {
   return Array.isArray(v) && v.length > 0 ? (v as MediaPart[]) : undefined;
 }
 
+// ── Stop marker: a tool-step that ends the agent's turn ─────────────────────
+
+const STOP_KEY = "_stop";
+
+/**
+ * Mark a step's output as ENDING THE TURN of the agent that ran it as a tool
+ * (`agentTools`): a device that has not answered, an approval waiting on a
+ * person. The loop runs no further tool round; one answer turn follows
+ * (`src/steps/core/agent.ts`). Same mechanism as the markers above: a
+ * NON-enumerable own property, so the model, `{{ }}` templates, the event
+ * log and `run.json` see the plain output — and a step whose output happens
+ * to carry a `stop` field means nothing by it. Non-object outputs are left
+ * unmarked. Returns `output` for chaining: `return withStop({ status: "pending" })`.
+ */
+export function withStop<T>(output: T): T {
+  if (output === null || typeof output !== "object") return output;
+  Object.defineProperty(output, STOP_KEY, { value: true, enumerable: false, configurable: true, writable: true });
+  return output;
+}
+
+/** Whether a step output was marked with `withStop`. */
+export function stopOf(output: unknown): boolean {
+  return output !== null && typeof output === "object" && (output as Record<string, unknown>)[STOP_KEY] === true;
+}
+
 /** Result of running a workflow. */
 export interface RunResult {
   runId: string;

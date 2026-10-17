@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { messagesOf } from "../../core.js";
+import { z } from "zod";
+import { defineStep, messagesOf, withStop } from "../../core.js";
 import { MemorySessionStore, sessionsCapability, type NewTurn, type SessionsCapability } from "../../session-store.js";
 import agent from "./agent.js";
 
@@ -82,8 +83,32 @@ const bash = (id: string, command: string, input?: number): Reply => ({ tool: [i
 const answer = (id: string, text: string): Reply => ({ tool: [id, "final_answer", { answer: text }] });
 const summary = (text: string, stop?: string): Reply => ({ text, ...(stop ? { stop } : {}) });
 const text = (t: string): Reply => ({ text: t });
+const call = (id: string, name: string, input: unknown): Reply => ({ tool: [id, name, input] });
 const systemOf = (body: any): string => (body.system as any[]).map((b) => b.text).join("");
 const textOf = (m: any): string => JSON.stringify(m.content);
+
+// Tool-steps for `agentTools`: one that ends the turn (a device that has not
+// answered), one that does not — its output's `stop` field is a field, not
+// the marker.
+const askMac = defineStep({
+  type: "dev/ask-mac",
+  description: "Ask the Mac.",
+  input: z.object({ kind: z.string() }),
+  output: z.any(),
+  async run() {
+    return withStop({ status: "pending" });
+  },
+});
+const recall = defineStep({
+  type: "dev/recall",
+  description: "Recall a fact.",
+  input: z.object({ q: z.string() }),
+  output: z.any(),
+  async run({ q }) {
+    return { facts: [`${q}: 12 May`], stop: true };
+  },
+});
+const registry = { "dev/ask-mac": askMac, "dev/recall": recall };
 
 describe("agent sessions", () => {
   let cwd = "";
@@ -531,6 +556,127 @@ describe("agent sessions", () => {
       assert.ok(result.length < 16_000 + 600, `${result.length} chars`);
       assert.ok(result.includes("chars truncated"));
     } finally {
+      s.close();
+    }
+  });
+
+  // ── a tool that ends the turn ────────────────────────────────────────────
+
+  it("a tool output marked withStop ends the turn after that round: one answer turn with inert tools, no nudge", async () => {
+    const s = await serve([call("toolu_1", "dev_ask_mac", { kind: "chats.unseen" }), text("Waiting for your Mac.")]);
+    const events: any[] = [];
+    try {
+      const out = await run(
+        { session: "abc", toolFilter: ["none"], agentTools: ["dev/ask-mac"] },
+        { registry, emit: async (e: any) => void events.push(e) },
+      );
+      assert.equal(out.result, "Waiting for your Mac.");
+      assert.deepEqual(out.stopped, { tool: "dev_ask_mac" });
+      assert.equal(s.calls(), 2, "the loop stopped; nothing was nudged");
+      const [loop, answerTurn] = s.bodies;
+      // The answer turn is the loop's own prefix (tools inert), then the stop prompt.
+      assert.deepEqual(answerTurn.tools, loop.tools);
+      assert.deepEqual(answerTurn.system, loop.system);
+      const last = JSON.stringify((answerTurn.messages as any[]).at(-1));
+      assert.ok(last.includes("toolu_1") && last.includes("ended this turn") && last.includes("do NOT call any tools"));
+      assert.ok(last.includes("pending"), "the tool's result is in");
+      assert.ok(!last.includes("\"stop\"") && !last.includes("_stop"), "the marker is not in what the model sees");
+      // The tool ran once and shows as a run event; the thread is committed.
+      assert.deepEqual(events.filter((e) => e.type === "step.start").map((e) => e.stepType), ["tool:dev_ask_mac"]);
+      assert.equal((await store.load("abc"))!.turns.length, 1);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("after a stop, a tool the model calls anyway runs nothing; plain-text mode answers the same way", async () => {
+    let ran = 0;
+    const counted = { ...askMac, async run() { ran++; return withStop({ status: "pending" }); } };
+    const s = await serve([
+      call("toolu_1", "dev_ask_mac", { kind: "chats.unseen" }),
+      call("toolu_2", "dev_ask_mac", { kind: "chats.unseen" }),
+      call("toolu_3", "dev_ask_mac", { kind: "chats.list" }),
+      text("Still waiting."),
+    ]);
+    try {
+      const cfg = { toolFilter: ["none"], agentTools: ["dev/ask-mac"] };
+      const ctx = { registry: { "dev/ask-mac": counted } };
+      const out = await run(cfg, ctx);
+      assert.equal(s.calls(), 2);
+      assert.equal(ran, 1, "the call in the answer turn never executed");
+      assert.equal(out.result, "");
+      // Plain-text mode (no finalAnswer, no schema).
+      const plain = await run({ ...cfg, finalAnswer: undefined }, ctx);
+      assert.equal(plain.result, "Still waiting.");
+      assert.deepEqual(plain.stopped, { tool: "dev_ask_mac" });
+      assert.equal(s.calls(), 4);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a stop inside the premature-stop nudge ends that loop too", async () => {
+    const s = await serve([text("Let me check your chats."), call("toolu_2", "dev_ask_mac", { kind: "chats.unseen" }), text("Waiting for your Mac.")]);
+    try {
+      const out = await run({ toolFilter: ["none"], agentTools: ["dev/ask-mac"] }, { registry });
+      assert.equal(s.calls(), 3, "the nudge's loop stopped at the stop; the answer turn followed");
+      assert.equal(out.result, "Waiting for your Mac.");
+      assert.deepEqual(out.stopped, { tool: "dev_ask_mac" });
+      assert.ok(JSON.stringify((s.bodies[2].messages as any[]).at(-1)).includes("ended this turn"));
+    } finally {
+      s.close();
+    }
+  });
+
+  it("an unmarked output leaves the loop alone, a `stop: true` field of its own included", async () => {
+    const s = await serve([call("toolu_1", "dev_recall", { q: "Kate" }), answer("toolu_2", "12 May")]);
+    try {
+      const out = await run({ toolFilter: ["none"], agentTools: ["dev/recall"] }, { registry });
+      assert.equal(out.result, "12 May");
+      assert.ok(!("stopped" in out));
+      assert.equal(s.calls(), 2);
+    } finally {
+      s.close();
+    }
+  });
+
+  // ── retain (compaction) ──────────────────────────────────────────────────
+
+  it("retain replaces what the summary is told to keep", async () => {
+    const s = await serve([bash("toolu_1", "echo one", 950_000), summary("HANDOFF."), answer("toolu_2", "done")]);
+    try {
+      const retain = "the chats read, by chat id; message uuids and View links, word for word";
+      await run({ prompt: "catch me up", retain });
+      const instruction = textOf((s.bodies[1].messages as any[]).at(-1));
+      assert.ok(instruction.includes(retain));
+      assert.ok(!instruction.includes("the commands run"), "not the default's");
+      // Without it, the default.
+      const s2 = await serve([bash("toolu_1", "echo one", 950_000), summary("HANDOFF."), answer("toolu_2", "done")]);
+      try {
+        await run({ prompt: "catch me up" });
+        assert.ok(textOf((s2.bodies[1].messages as any[]).at(-1)).includes("the commands run"));
+      } finally {
+        s2.close();
+      }
+    } finally {
+      s.close();
+    }
+  });
+
+  // ── no built-ins ─────────────────────────────────────────────────────────
+
+  it("toolFilter: ['none'] needs neither git nor rg: an agent with only agentTools runs on an empty PATH", async () => {
+    const s = await serve([call("toolu_1", "dev_recall", { q: "Kate" }), answer("toolu_2", "12 May")]);
+    const path = process.env["PATH"];
+    const empty = mkdtempSync(join(tmpdir(), "strut-nopath-"));
+    process.env["PATH"] = empty;
+    try {
+      const out = await run({ session: "abc", toolFilter: ["none"], agentTools: ["dev/recall"] }, { registry });
+      assert.equal(out.result, "12 May");
+      assert.deepEqual((s.bodies[0].tools as any[]).map((t) => t.name).sort(), ["dev_recall", "final_answer"]);
+    } finally {
+      process.env["PATH"] = path;
+      rmSync(empty, { recursive: true, force: true });
       s.close();
     }
   });

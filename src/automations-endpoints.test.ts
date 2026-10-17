@@ -6,6 +6,8 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { createStrut, type Strut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
+import { AUTOMATION_CALLBACKS_FILE, automationCallbackSecret } from "./automations.js";
 
 const WF = "echo";
 // The run's output is its last step's: `pack` returns its resolved config.
@@ -113,6 +116,51 @@ describe("automations endpoints", () => {
 
     const second = await call("POST", `/workflows/${WF}/automations/${id}/fire`);
     assert.deepEqual((await finished(second.json.runId)).output, { newest_id: "first-next-next" }, "the cursor came from the first run's output");
+  });
+
+  it("a callback on the automation gets each fire's run.end; no read route serves its URL", async () => {
+    const ends: any[] = [];
+    const host = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        ends.push({ path: req.url, body: JSON.parse(raw) });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((r) => host.listen(0, "127.0.0.1", r));
+    const origin = `http://127.0.0.1:${(host.address() as any).port}`;
+    try {
+      const made = await call("POST", `/workflows/${WF}/automations`, {
+        name: "Post", trigger: { every: "day", at: ["09:00"], tz: "UTC" }, callback: { url: `${origin}/run-end?sig=s3cret` },
+      });
+      assert.equal(made.status, 201, JSON.stringify(made.json));
+      assert.deepEqual(made.json.automation.callback, { origin });
+      const fired = await call("POST", `/workflows/${WF}/automations/${made.json.automation.id}/fire`);
+      await finished(fired.json.runId);
+      for (let i = 0; i < 200 && !ends.length; i++) await new Promise((r) => setTimeout(r, 10));
+      assert.equal(ends.length, 1);
+      assert.equal(ends[0].path, "/run-end?sig=s3cret");
+      assert.deepEqual([ends[0].body.event, ends[0].body.runId, ends[0].body.status], ["run.end", fired.json.runId, "success"]);
+      assert.deepEqual(ends[0].body.output, { newest_id: "first-next" });
+
+      assert.ok(!JSON.stringify(await strut.workspace.getWorkflowMetadata(WF)).includes("s3cret"), "the metadata holds the origin only");
+      for (const path of ["/automations", `/automations?workflow=${WF}`, "/workflows", `/workflows/${WF}`, "/secrets"]) {
+        const got = await call("GET", path);
+        assert.equal(got.status, 200, path);
+        assert.ok(!JSON.stringify(got.json).includes("s3cret"), `${path} serves the URL`);
+        if (path !== "/secrets") assert.ok(JSON.stringify(got.json).includes(origin), `${path} shows the origin`);
+      }
+      // A file of its own, not the deployment's secrets: no step can read it.
+      assert.deepEqual((await call("GET", "/secrets")).json, { secrets: [] });
+      assert.equal(await (strut.services as any).secrets.get(automationCallbackSecret(made.json.automation.id)), undefined);
+      assert.ok(existsSync(join(dir, AUTOMATION_CALLBACKS_FILE)));
+      const bad = await call("POST", `/workflows/${WF}/automations`, { name: "x", trigger: { every: "day", at: ["09:00"] }, callback: { url: "file:///etc/passwd" } });
+      assert.equal(bad.status, 400);
+      assert.match(bad.json.error, /callback\.url must be http\(s\)/);
+    } finally {
+      host.close();
+    }
   });
 
   it("every route needs the API key when one is configured, reads included", async () => {

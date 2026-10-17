@@ -55,6 +55,7 @@ import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
 import { automationsRoutes } from "./automations-routes.js";
 import { createAutomations, type Automations } from "./scheduler.js";
+import { AUTOMATION_CALLBACKS_FILE } from "./automations.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
@@ -626,6 +627,12 @@ export async function createStrut<TServices = unknown>(
     await peerRecords.set(peer);
   }
   const peersCap = peersCapability(peerRecords);
+  // Automation callbacks (plans/automations.md): each URL is a host's
+  // credential, kept in a fifth encrypted file beside the deployment's
+  // secrets — never in `secrets.json`, which every step reads through
+  // `ctx.services.secrets` and `GET /secrets` lists.
+  const automationCallbacks: SecretStore =
+    secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, AUTOMATION_CALLBACKS_FILE) : new MemorySecretStore();
   // Agent sessions follow the chat store's kind: both are conversations a
   // host expects to find again after a restart.
   const sessionStore: SessionStore =
@@ -2672,7 +2679,9 @@ export async function createStrut<TServices = unknown>(
   const automations = createAutomations({
     workspace,
     store,
-    launch: (flow, input, automation) => launchDetached(flow, { input }, { origin: "schedule", automation }),
+    secrets: automationCallbacks,
+    launch: (flow, input, automation, callback) =>
+      launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
   });
   // Scheduling adopts an ownerless workflow: the scheduler's runs are billed
@@ -2689,7 +2698,7 @@ export async function createStrut<TServices = unknown>(
     const live = [...controllers.keys()].filter((k) => k.startsWith(`${name}/`)).length;
     if (live) return c.json({ error: `Workflow "${name}" has ${live} run${live === 1 ? "" : "s"} in flight — cancel first` }, 409);
     if (!(await workspace.getWorkflowMetadata(name))) return c.json({ error: `Workflow "${name}" not found` }, 404);
-    automations.forget(name);
+    await automations.forget(name);
     await store.deleteRuns(name);
     await workspace.deleteWorkflow(name);
     return c.json({ ok: true, workflow: name });
