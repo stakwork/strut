@@ -11,10 +11,10 @@ import { z } from "zod";
 import type { StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { jobRoot } from "../../../jobs.js";
-import type { BrowserService } from "../../../browser/service.js";
+import type { BrowserService, KeptSession } from "../../../browser/service.js";
 import type { ShotSink } from "../../../browser/shot.js";
 
-export type { BrowserService, ShotSink };
+export type { BrowserService, KeptSession, ShotSink };
 
 export type Ctx = StepContext<StrutCapabilities>;
 
@@ -56,6 +56,33 @@ export const ok = z.object({ ok: z.literal(true) });
 
 /** The verbs a `capture` list may name — must match the service's CAPTURE_VERBS. */
 export const CAPTURE_VERBS = ["goto", "click", "fill", "type", "press", "select", "hover", "scroll", "wait", "text", "evaluate", "back"] as const;
+
+/** A kept page's name: the job's, so a later run can open it again. */
+export const session = z
+  .string()
+  .regex(/^[\w.-]{1,64}$/, "a session name is letters, digits, `_`, `.` or `-` (at most 64)")
+  .describe("the name of a page the JOB keeps across runs, e.g. \"captcha\"");
+
+/**
+ * A page the job keeps as `name` (BrowserService `openKept` / `keep`), and
+ * the job's HOLD on it (plans/jobs.md §6): `browser:<name>`, let go by
+ * `browser/close { session }` — which strut runs when the job is deleted
+ * or swept — or by the page itself ending (idle, a timeout: `onEnd`).
+ * Needs a job: a run without one has no one to keep a page for.
+ */
+export function keptOf(ctx: Ctx, name: string, verb: string): { session: KeptSession; hold: () => Promise<void> } {
+  const job = ctx.job;
+  if (!job) throw new Error(`browser/${verb}: \`session\` keeps the page for the JOB, and this run has no job — launch it under one, or leave session out`);
+  const jobs = ctx.services?.jobs;
+  if (!jobs) throw new Error(`browser/${verb}: no \`jobs\` capability on ctx.services to hold the page with`);
+  const id = holdId(name);
+  return {
+    session: { job, name, onEnd: () => void jobs.release(job, id).catch(() => {}) },
+    hold: () => jobs.hold(job, { id, kind: "browser", release: { type: "browser/close", input: { session: name } } }),
+  };
+}
+
+export const holdId = (name: string) => `browser:${name}`;
 
 export function browserOf(ctx: Ctx): BrowserService {
   const browser = ctx.services?.browser;

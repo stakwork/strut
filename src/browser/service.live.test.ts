@@ -361,3 +361,67 @@ test("budget expiry closes the context and refuses the run; dispose is idempoten
     await browser.close();
   }
 });
+
+// ── A page the JOB keeps, on a real challenge ────────────────────────────────
+// Google's own reCAPTCHA demo. Nothing here solves it: the taps are at fixed
+// fractions, whatever the images show, and Verify is never pressed — what is
+// asserted is that a later run finds the open challenge where an earlier one
+// left it, that the crop is the tile grid, and that a tap by fraction lands
+// on the tile it names.
+
+const DEMO = "https://www.google.com/recaptcha/api2/demo";
+const CHALLENGE = 'iframe[title*="challenge"]';
+const TILES = `${CHALLENGE} >> internal:control=enter-frame >> table td`;
+
+test("a kept page outlives its run: run A opens the challenge, run B finds it open, crops the grid and taps tiles by fraction", opts, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "strut-browser-live-"));
+  const browser = BrowserService.fromEnv(env);
+  const kept = { job: "job-live", name: "captcha" };
+  const sink = { artifacts: fileArtifactsCapability(dir), runId: "capB", job: { name: "job-live", root: join(dir, "jobs", "job-live") } };
+  try {
+    const a = await browser.open("capA", { url: DEMO, session: kept });
+    assert.equal(a.resumed, false);
+    const checkbox = /checkbox "I'm not a robot" \[ref=(f\d+e\d+)\]/.exec((await browser.snapshot("capA")).tree)?.[1];
+    assert.ok(checkbox, "the checkbox inside the anchor iframe has a ref");
+    await browser.click("capA", { ref: checkbox });
+    await browser.wait("capA", { selector: CHALLENGE, timeoutMs: 15_000 });
+    await browser.dispose("capA");
+    assert.deepEqual(browser.kept(), [kept], "run A ended; the job's page did not");
+
+    const b = await browser.open("capB", { url: "https://example.com/", session: kept });
+    assert.equal(b.resumed, true);
+    assert.equal(b.url, DEMO, "resumed where run A left it, url not reopened");
+    await browser.wait("capB", { ms: 2_000 }); // the tiles fade in
+    const tree = (await browser.snapshot("capB")).tree;
+    const table = /table \[ref=(f\d+e\d+)\]/.exec(tree)?.[1];
+    assert.ok(table, `the challenge's tile table has a ref:\n${tree}`);
+    const rows = (await browser.locate("capB", { selector: `${CHALLENGE} >> internal:control=enter-frame >> table tr` }).count());
+    const cols = (await browser.locate("capB", { selector: TILES }).count()) / rows;
+
+    const asked = await browser.captcha("capB", { ref: table, round: 1, mode: "tap", grid: { rows, cols }, instruction: "the demo's challenge" }, sink);
+    assert.equal(asked.manifest.site, "www.google.com");
+    assert.equal(asked.manifest.image, "captcha-1.png");
+    assert.ok(asked.image.width > 200 && Math.abs(asked.image.width - asked.image.height) < 10, `the crop is the square grid: ${asked.image.width}×${asked.image.height}`);
+    const png = await readFile(join(sink.job.root, "shots", "captcha-1.png"));
+    assert.equal(png.subarray(1, 4).toString(), "PNG");
+    assert.equal(JSON.parse(await readFile(join(sink.job.root, "shots", "captcha-1.json"), "utf-8")).grid.rows, rows);
+
+    // Two cell centres, as the person's card would send them: the first and the last tile.
+    const centre = (i: number) => ({ nx: ((i % cols) + 0.5) / cols, ny: (Math.floor(i / cols) + 0.5) / rows });
+    const last = rows * cols - 1;
+    const tapped = await browser.tap("capB", { ref: table, points: [centre(0), centre(last)] });
+    assert.equal(tapped.taps, 2);
+    await browser.wait("capB", { ms: 500 });
+    const classes = await browser.locate("capB", { selector: TILES }).evaluateAll((tds) => tds.map((td) => td.className));
+    const picked = classes.flatMap((c, i) => (/selected/.test(c) ? [i] : []));
+    assert.deepEqual(picked, [0, last], `the tapped tiles, and only those: ${JSON.stringify(classes)}`);
+
+    await browser.dispose("capB");
+    assert.deepEqual(browser.kept(), [kept]);
+    await browser.closeKept(kept.job, kept.name);
+    assert.deepEqual(browser.kept(), []);
+  } finally {
+    await browser.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

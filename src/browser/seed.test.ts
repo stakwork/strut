@@ -47,7 +47,7 @@ const NAMES = Object.keys(BROWSER_WORKFLOWS);
 describe("the browser workflows strut ships", () => {
   it("each is a valid workflow over strut's own registry, and every step it names is a strut step", async () => {
     const registry = await createRegistry([]);
-    assert.deepEqual(NAMES, ["browser-capture", "browser-explore", "browser-watch"]);
+    assert.deepEqual(NAMES, ["browser-capture", "browser-explore", "browser-captcha", "browser-watch"]);
     for (const name of NAMES) {
       const text = await readFile(new URL(`../workflows/${name}.yaml`, import.meta.url), "utf-8");
       const v = validateWorkflowYaml(text, { registry });

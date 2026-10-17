@@ -1,0 +1,115 @@
+name: browser-captcha
+# A captcha a PERSON solves — one round per run, on a page the JOB keeps
+# (browser/keep, browser/open { session }), so the run that asks and the run
+# that brings the answer back drive the same challenge. browser-explore
+# keeps the page and stops when it meets a captcha; the job runs this with
+# that `session`; it crops the challenge and writes the manifest the
+# person's card reads (browser/captcha-ask, in code); the job lists the
+# artifact and ends its turn with `ask`. The person's answer comes back as
+# the job's next turn, `[captcha-answer] { round, site, taps | text | skip }`,
+# and the job runs this again with it as `answer`: it taps (or types),
+# verifies and looks — solved, another round, or failed. Its own run, so
+# each round's snapshots and screenshots stay out of the job agent's context.
+#
+# The agent never solves a captcha itself: only the person's answer goes in.
+#
+# Input:  { session, answer? }
+# Output: { status: ask | solved | failed, artifact?, round, note }
+#         artifact (with ask) is the round's manifest, shots/captcha-<round>.json
+#         in the job's directory: `{ id: "captcha", kind: "captcha", title,
+#         path }`, for the job to list as given. How the round ended is
+#         written on that manifest in code (browser/captcha-state).
+input:
+  session: { type: string, description: "the page the job keeps with the captcha on it (browser-explore's captcha.session)" }
+  answer: { type: json, required: false, description: "the person's answer: the JSON of a [captcha-answer] line, { round, site, taps | text | skip }" }
+params:
+  # Any aieo model name the deployment has a key for; it must read images.
+  model: claude-sonnet-5-5
+  maxSteps: 15
+steps:
+  - id: dir
+    type: exec
+    config: { cmd: "true" }
+
+  - id: agent
+    type: agent
+    config:
+      cwd: "{{ dir.cwd }}"
+      model: "{{ params.model }}"
+      maxSteps: "{{ params.maxSteps }}"
+      agentTools: ["browser/*"]
+      toolFilter: ["none"]
+      schema:
+        type: object
+        additionalProperties: false
+        required: [status, round, note]
+        properties:
+          status: { type: string, enum: [ask, solved, failed], description: "ask: the person must answer a round; solved; failed: it cannot be solved here" }
+          round: { type: integer, description: "the round you asked (ask), else the round the answer was for; 0 when none was" }
+          note: { type: string, description: "one line for the job: what you saw and did" }
+      system: |
+        You handle ONE round of a captcha that a PERSON solves, on a page the
+        job keeps open. You never solve the captcha yourself — not by picking
+        tiles, reading the text, an audio or other challenge, or any solving
+        service. Only the person's answer goes in.
+
+        1. browser_open { session } FIRST: it resumes the kept page.
+           resumed: false means the page is gone (idle too long, or a
+           restart): answer failed and say so.
+        2. browser_snapshot. A challenge usually sits in an iframe; its
+           elements carry refs like f5e12, used like any ref.
+
+        No answer yet — ask:
+        3. A checkbox ("I'm not a robot") with no challenge open: click it,
+           wait a moment, snapshot again. It may pass with no challenge:
+           then answer solved, round 0.
+        4. An image grid (reCAPTCHA: the dialog's `table` of tile buttons):
+           browser_captcha_ask { ref: the table, round, mode: "tap", grid:
+           { rows, cols } counted from the snapshot, instruction: the
+           challenge's words }. Anything else: crop the whole challenge
+           (its iframe), mode "tap" for points or "text" for characters to
+           type, no grid. Round 1, or the answered round + 1.
+        5. Look at the crop you get back; if it is wrong or cut off, ask
+           again (same round). Then answer ask, with that round.
+
+        An answer ({ round, site, taps | text | skip }):
+        - skip: browser_close { session }, answer failed ("the person
+          skipped").
+        - taps: browser_tap { the SAME element that was cropped for that
+          round — snapshot and find it the same way — points: the taps }.
+          The fractions are of that crop. No taps means "none (left)".
+        - text: browser_click the challenge's input, then browser_type the
+          text EXACTLY as given (case and spaces kept, never trimmed).
+        Then look (browser_screenshot of the challenge) before pressing its
+        Verify / Submit button: when tapped tiles were replaced by new
+        images ("click verify once there are none left") and the person
+        tapped some, ask again for the new ones (round + 1), no Verify yet.
+        Otherwise press it and look again:
+        - the challenge is gone and the checkbox ticked: solved. Leave the
+          page open — the job goes on there, and the pass expires in about
+          two minutes.
+        - a new challenge, or "try again" / "please also check the new
+          images": ask again, round + 1.
+        - the challenge expired: open it again and ask, round + 1.
+        Past round 5 there is no next round: browser_close { session } and
+        answer failed.
+      prompt: |
+        Session: {{ input.session }}
+
+        {{ input.answer ? 'The person answered: ' : 'No answer yet: find the challenge and ask the person.' }}{{ input.answer }}
+
+  # Where the round stands goes on its manifest in code, so the person's
+  # card says so; with `ask` it also hands back the round's artifact.
+  - id: state
+    type: browser/captcha-state
+    config:
+      round: "{{ agent.object.round }}"
+      state: "{{ agent.object.status == 'ask' ? 'waiting' : agent.object.status }}"
+
+  - id: result
+    type: pack
+    config:
+      status: "{{ agent.object.status }}"
+      artifact: "{{ agent.object.status == 'ask' ? state.artifact : null }}"
+      round: "{{ agent.object.round }}"
+      note: "{{ agent.object.note }}"

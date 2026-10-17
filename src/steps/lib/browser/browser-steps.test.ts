@@ -7,12 +7,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdir } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mediaOf, type AnyStepDef } from "../../../core.js";
-import { jobRoot } from "../../../jobs.js";
+import { deleteJob, jobRoot, jobsCapability, readJobRecord, releaseWith } from "../../../jobs.js";
+import { captchaManifest, writeCaptcha } from "../../../browser/captcha.js";
 import { mapCheckResult } from "../../../verify.js";
 import { buildRegistry } from "../../registry.js";
 import { CAPTURE_VERBS as SERVICE_VERBS } from "../../../browser/service.js";
@@ -41,8 +42,12 @@ import close from "./close.js";
 import capture from "./capture.js";
 import verify from "./verify.js";
 import walkthrough from "./walkthrough.js";
+import keep from "./keep.js";
+import tap from "./tap.js";
+import captchaAsk from "./captcha-ask.js";
+import captchaState from "./captcha-state.js";
 
-const STEPS = { open, goto, snapshot, click, fill, type: type_, press, select, hover, scroll, wait, text, screenshot, evaluate, observe, back, state, close, capture, verify, walkthrough };
+const STEPS = { open, goto, snapshot, click, fill, type: type_, press, select, hover, scroll, wait, text, screenshot, evaluate, observe, back, state, close, capture, verify, walkthrough, keep, tap, "captcha-ask": captchaAsk, "captcha-state": captchaState };
 
 const NAV = { url: "https://example.com/", title: "Example Domain", status: 200 };
 const SHOT = { path: "shots/001.png", dir: "/art/r1", url: "/artifacts/r1/shots/001.png", width: 1280, height: 800, bytes: 4321, small: Buffer.from("png") };
@@ -73,12 +78,21 @@ const WALKED = {
 class FakeBrowser {
   calls: Array<{ verb: string; runId: string; args: unknown[] }> = [];
   fail?: string;
+  /** What `open` answers for `resumed`. */
+  resumed = false;
   private rec<T>(verb: string, runId: string, args: unknown[], out: T): T {
     this.calls.push({ verb, runId, args });
     if (this.fail === verb) throw new Error(`browser/${verb}: nope`);
     return out;
   }
-  async open(runId: string, input: unknown) { return this.rec("open", runId, [input], NAV); }
+  async open(runId: string, input: unknown) { return this.rec("open", runId, [input], { ...NAV, resumed: this.resumed }); }
+  async keep(runId: string, session: unknown) { return this.rec("keep", runId, [session], { url: NAV.url, title: NAV.title }); }
+  async closeKept(job: string, name: string) { return this.rec("closeKept", "", [job, name], { ok: true as const }); }
+  async tap(runId: string, input: unknown) { return this.rec("tap", runId, [input], { url: NAV.url, taps: 2 }); }
+  async captcha(runId: string, input: unknown, sink: unknown) {
+    const manifest = captchaManifest({ round: 1, mode: "tap", site: "www.google.com", grid: { rows: 3, cols: 3 }, maxRounds: 5, expiresInMs: 600_000, now: 0 });
+    return this.rec("captcha", runId, [input, sink], { manifest, path: "shots/captcha-1.json", url: "/jobs/job-1/files/shots/captcha-1.json", image: { ...SHOT, path: "shots/captcha-1.png", url: "/jobs/job-1/files/shots/captcha-1.png" }, small: Buffer.from("png") });
+  }
   async goto(runId: string, input: unknown) { return this.rec("goto", runId, [input], NAV); }
   async snapshot(runId: string) { return this.rec("snapshot", runId, [], { ...NAV, tree: '- link "x" [ref=e1]' }); }
   async click(runId: string, input: unknown) { return this.rec("click", runId, [input], { url: NAV.url }); }
@@ -198,6 +212,7 @@ test("open passes the viewport through and loads a storage state from the named 
   const plain = new FakeBrowser();
   await run(open, { url: "https://example.com", viewport: { width: 800, height: 600 } }, plain);
   assert.deepEqual(plain.calls[0]!.args[0], { url: "https://example.com", viewport: { width: 800, height: 600 }, storageState: undefined, timeoutMs: undefined });
+  assert.deepEqual(await run(open, {}, plain), { ...NAV, resumed: false });
 
   const withState = new FakeBrowser();
   const stateJson = JSON.stringify({ cookies: [{ name: "sid", value: "s3cret" }], origins: [] });
@@ -361,4 +376,137 @@ test("the lib files load through strut's registry: every step, as lib; the helpe
     assert.equal(sources[type], "lib");
   }
   assert.ok(!registry["browser/_shared"]);
+});
+
+// ── A page the JOB keeps: open { session }, keep, close { session } ─────────
+
+/** A ctx under a job whose `jobs` capability is a real one over `dataDir`. */
+function jobCtx(browser: FakeBrowser, dataDir: string): Ctx {
+  const base = ctxFor(browser);
+  return { ...base, job: "job-1", services: { ...base.services, dataDir, jobs: jobsCapability(dataDir) } };
+}
+
+async function withDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "strut-browser-steps-"));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("`session` with no job is refused before the browser is touched; a bad name is refused by the schema", async () => {
+  const browser = new FakeBrowser();
+  const ctx = ctxFor(browser);
+  await assert.rejects(open.run(open.input.parse({ session: "captcha" }), ctx), /`session` keeps the page for the JOB, and this run has no job/);
+  await assert.rejects(keep.run(keep.input.parse({ session: "captcha" }), ctx), /this run has no job/);
+  await assert.rejects(close.run(close.input.parse({ session: "captcha" }), ctx), /this run has no job/);
+  assert.deepEqual(browser.calls, []);
+  assert.equal(keep.input.safeParse({ session: "a/b" }).success, false);
+  assert.equal(keep.input.safeParse({}).success, false);
+});
+
+test("open { session } keeps the page for the job and takes the job's hold on a new page — url opened only then; a resumed page is left where it is", async () => {
+  await withDataDir(async (dir) => {
+    const browser = new FakeBrowser();
+    const ctx = jobCtx(browser, dir);
+    const out = await open.run(open.input.parse({ session: "captcha", url: "https://example.com" }), ctx);
+    assert.deepEqual(out, { ...NAV, resumed: false });
+    assert.deepEqual(browser.calls.map((c) => c.verb), ["open", "goto"]);
+    const session = (browser.calls[0]!.args[0] as { session: { job: string; name: string; onEnd: unknown } }).session;
+    assert.deepEqual({ job: session.job, name: session.name }, { job: "job-1", name: "captcha" });
+    assert.equal(typeof session.onEnd, "function");
+    const hold = (await readJobRecord(jobRoot(dir, "job-1")))?.holds?.[0];
+    assert.deepEqual({ ...hold, since: undefined }, { id: "browser:captcha", kind: "browser", release: { type: "browser/close", input: { session: "captcha" } }, since: undefined });
+
+    // The page ending on its own (idle, a timeout) lets the hold go.
+    (session.onEnd as () => void)();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal((await readJobRecord(jobRoot(dir, "job-1")))?.holds, undefined);
+
+    browser.calls = [];
+    browser.resumed = true;
+    assert.deepEqual(await open.run(open.input.parse({ session: "captcha", url: "https://example.com" }), ctx), { ...NAV, resumed: true });
+    assert.deepEqual(browser.calls.map((c) => c.verb), ["open"], "resumed: no navigation");
+    assert.equal((await readJobRecord(jobRoot(dir, "job-1")))?.holds, undefined, "and no hold taken again");
+  });
+});
+
+test("keep takes the hold; close { session } is its release step — deleting the job closes the page and lets the hold go", async () => {
+  await withDataDir(async (dir) => {
+    const browser = new FakeBrowser();
+    const ctx = jobCtx(browser, dir);
+    const kept = await keep.run(keep.input.parse({ session: "captcha" }), ctx);
+    assert.deepEqual(kept, { session: "captcha", url: NAV.url, title: NAV.title });
+    assert.equal(browser.calls.at(-1)!.verb, "keep");
+    const root = jobRoot(dir, "job-1");
+    assert.equal((await readJobRecord(root))?.holds?.[0]?.id, "browser:captcha");
+
+    // What strut runs on DELETE /jobs/:id (and the idle sweep): the hold's
+    // release step, outside any run — runId "jobs", the job set.
+    browser.calls = [];
+    const services = jobCtx(browser, dir).services;
+    const { released } = await deleteJob({} as never, root, "job-1", releaseWith({ "browser/close": close } as never, services));
+    assert.deepEqual(released, ["browser:captcha"]);
+    assert.deepEqual(browser.calls, [{ verb: "closeKept", runId: "", args: ["job-1", "captcha"] }]);
+    assert.equal(await readJobRecord(root), null, "the job is gone");
+  });
+});
+
+test("close { session } with no browser left (a restart, a host without one) still lets the hold go", async () => {
+  await withDataDir(async (dir) => {
+    const ctx = jobCtx(new FakeBrowser(), dir);
+    await keep.run(keep.input.parse({ session: "captcha" }), ctx);
+    delete (ctx.services as { browser?: unknown }).browser;
+    assert.deepEqual(await close.run(close.input.parse({ session: "captcha" }), ctx), { ok: true });
+    assert.equal((await readJobRecord(jobRoot(dir, "job-1")))?.holds, undefined);
+  });
+});
+
+test("tap forwards the points to the service; one of ref / selector, fractions within 0–1", async () => {
+  const browser = new FakeBrowser();
+  const input = { ref: "f5e12", points: [{ nx: 0.5, ny: 0.5 }, { nx: 0.17, ny: 0.83 }] };
+  assert.deepEqual(await run(tap, input, browser), { url: NAV.url, taps: 2 });
+  assert.deepEqual(browser.calls[0], { verb: "tap", runId: "r1", args: [input] });
+  assert.equal(tap.input.safeParse({ points: [{ nx: 0.5, ny: 0.5 }] }).success, false, "no target");
+  assert.equal(tap.input.safeParse({ ref: "e1", points: [] }).success, false, "no points");
+  assert.equal(tap.input.safeParse({ ref: "e1", points: [{ nx: 1.2, ny: 0 }] }).success, false, "out of the box");
+});
+
+test("captcha-ask hands the service the job's sink, answers with the artifact to list, and shows the model the crop", async () => {
+  const browser = new FakeBrowser();
+  const base = ctxFor(browser);
+  const ctx: Ctx = { ...base, job: "job-1", services: { ...base.services, dataDir: "/data" } };
+  const input = { ref: "f5e12", round: 1, mode: "tap", grid: { rows: 3, cols: 3 }, instruction: "Select all images with a bus" };
+  const raw = await captchaAsk.run(captchaAsk.input.parse(input), ctx);
+  assert.deepEqual(browser.calls[0]!.args, [{ ...input, maxRounds: 5, expiresInMs: 600_000 }, { artifacts, runId: "r1", job: { name: "job-1", root: jobRoot("/data", "job-1") } }]);
+  assert.deepEqual(mediaOf(raw)?.map((m) => [m.mediaType, m.filename]), [["image/png", "shots/captcha-1.png"]]);
+  assert.deepEqual(captchaAsk.output.parse(raw), {
+    artifact: { id: "captcha", kind: "captcha", title: "Captcha on www.google.com", path: "shots/captcha-1.json" },
+    round: 1,
+    site: "www.google.com",
+    expiresAt: "1970-01-01T00:10:00.000Z",
+    image: { path: "shots/captcha-1.png", url: "/jobs/job-1/files/shots/captcha-1.png" },
+  });
+  assert.ok(!JSON.stringify(raw).includes("small"));
+  assert.equal(captchaAsk.input.safeParse({ ref: "e1", round: 1, mode: "audio" }).success, false, "tap, text or either");
+  assert.equal(captchaAsk.input.safeParse({ ref: "e1", round: 1, mode: "tap", grid: { rows: 21, cols: 3 } }).success, false, "hive caps a grid at 20");
+  assert.equal(captchaAsk.input.safeParse({ round: 1, mode: "tap" }).success, false, "the element to crop");
+});
+
+test("captcha-state sets a round's state on its manifest in the job's directory and returns its artifact; round 0 marks nothing", async () => {
+  await withDataDir(async (dir) => {
+    const browser = new FakeBrowser();
+    const ctx = jobCtx(browser, dir);
+    const root = jobRoot(dir, "job-1");
+    await writeCaptcha({ artifacts: artifacts as never, runId: "r1", job: { name: "job-1", root } }, captchaManifest({ round: 2, mode: "tap", site: "a.example", maxRounds: 5, expiresInMs: 1, now: 0 }));
+    assert.deepEqual(await captchaState.run(captchaState.input.parse({ round: 2, state: "solved" }), ctx), {
+      marked: true,
+      artifact: { id: "captcha", kind: "captcha", title: "Captcha on a.example", path: "shots/captcha-2.json" },
+    });
+    const { readFile } = await import("node:fs/promises");
+    assert.equal(JSON.parse(await readFile(join(root, "shots", "captcha-2.json"), "utf-8")).state, "solved");
+    assert.deepEqual(await captchaState.run(captchaState.input.parse({ round: 0, state: "failed" }), ctx), { marked: false });
+    assert.deepEqual(await captchaState.run(captchaState.input.parse({ round: 3, state: "failed" }), ctx), { marked: false });
+  });
 });

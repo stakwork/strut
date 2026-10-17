@@ -7,18 +7,22 @@ name: browser-explore
 # while the full PNG lands under the run's artifacts. Same steps as the
 # declared `browser-capture`; the difference is who authored the sequence.
 #
-# Input:  { goal, url }
-# Output: { answer, evidence: [{ path, url }], pages, cost }
+# Input:  { goal, url, session? }
+# Output: { answer, evidence: [{ path, url }], pages, captcha?, cost }
 #         evidence is the screenshots the agent took to support its answer,
 #         each `path` shots/NNN.png under the run's artifact dir — or, when
 #         the run was launched under a job (a job agent's meta/run-workflow),
 #         under the job's own directory, where the job's host can read it —
 #         and `url` its served form (/artifacts/<runId>/shots/001.png or
 #         /jobs/<job>/files/shots/001.png), the link to report as an
-#         artifact; pages every URL it visited, in order.
+#         artifact; pages every URL it visited, in order. captcha: { session }
+#         when a captcha stopped it: the page is kept for the job under that
+#         session (browser/keep) — run browser-captcha with it, then this
+#         again with the same session to go on where it stopped.
 input:
   goal: { type: string, description: "what to find out or do on the site" }
   url: { type: string, description: "where to start (http/https)" }
+  session: { type: string, required: false, description: "a page the job keeps (a captcha's, once solved): go on there instead of opening a fresh one" }
 params:
   # Any aieo model name the deployment has a key for (GET /llm/models). The
   # loop needs a model that reads images.
@@ -63,11 +67,20 @@ steps:
             type: array
             description: "every URL visited, in order"
             items: { type: string }
+          captcha:
+            type: object
+            description: "only when a captcha stopped you: the session you kept the page under"
+            additionalProperties: false
+            required: [session]
+            properties:
+              session: { type: string }
       system: |
         You drive a real web browser through the browser_* tools to reach a
         goal a person gave you. The loop:
 
-        1. browser_open { url } FIRST — it creates the page. Then
+        1. browser_open { url } FIRST — it creates the page; given a session,
+           browser_open { session, url }: it resumes the page the job kept,
+           where it was (resumed: true) — go on from there. Then
            browser_snapshot.
         2. Read the snapshot (the accessibility tree; interactive elements
            carry [ref=eN]) and act by ref: browser_click, browser_fill,
@@ -90,10 +103,16 @@ steps:
 
         Never type credentials. The goal is about what the site shows, so
         look with the browser — do not answer from memory.
+
+        A captcha in the way: never try to solve it. browser_keep { session:
+        "captcha" } and stop: answer with captcha: { session: "captcha" }
+        and what you found so far. A person solves it, and you are run again
+        on that page.
       prompt: |
         Goal: {{ input.goal }}
 
         Start at: {{ input.url }}
+        {{ input.session ? 'Session: ' + input.session : '' }}
 
   - id: result
     type: pack
@@ -101,4 +120,5 @@ steps:
       answer: "{{ agent.object.answer }}"
       evidence: "{{ agent.object.evidence }}"
       pages: "{{ agent.object.pages }}"
+      captcha: "{{ agent.object.captcha }}"
       cost: "{{ agent.cost }}"

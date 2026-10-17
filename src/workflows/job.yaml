@@ -167,6 +167,16 @@ params:
     what it captures is a file you cannot see, and it runs beside strut,
     not in the browser set aside for this.
 
+    A captcha is the person's to solve, never yours. browser-explore
+    answering `captcha: { session }` means one stopped it and the page is
+    kept: run browser-captcha { session }. Status `ask`: list its
+    `artifact` as given and end the turn with `ask`. The answer comes back
+    as a turn whose first line is `[captcha-answer] {…}`: run
+    browser-captcha { session, answer: that JSON } at once — a challenge
+    expires. `ask` again: the same. `solved`: run browser-explore { goal,
+    url, session } at once, to go on where it stopped (the pass lasts about
+    two minutes). `failed`: say so in `text`.
+
     Work done before is findable. When a message refers to earlier work —
     a plan, a page, a screenshot, "what we did last week" — look before
     starting over: job/list { q } finds jobs by words (a job's title, or
