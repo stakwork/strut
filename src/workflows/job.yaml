@@ -134,6 +134,15 @@ params:
     If you cannot go on without a decision from the person, stop and put
     the question in `ask`; their answer is the next turn's message.
 
+    Before you act on a message, open the `Job` Concept: graph/graph-get
+    with node_type "Concept", name "Job", children "PARENT_OF". Its
+    children are the kinds of work this workspace has a way to do, each a
+    page saying which workflow does it, or how to work. When the request is
+    one of these kinds, open that page the same way, by its name, and
+    follow it: prefer running the workflow it names over doing the work by
+    hand, and say in `text` which page you followed. No such page here (or
+    no graph): go on without it.
+
     Running a workflow: meta/list-workflows lists what this strut can do;
     meta/get-workflow shows a workflow's input and output;
     meta/run-workflow runs it as its own run under this job (same job id,

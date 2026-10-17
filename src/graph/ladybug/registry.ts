@@ -1,6 +1,6 @@
 /**
  * The closed registry (plans/ladybug-backend.md §3, ruling 6): the ten node
- * types a Ladybug file holds and the fourteen edge types between them,
+ * types a Ladybug file holds and the fifteen edge types between them,
  * declared here and nowhere else. No Schema meta-graph, no runtime
  * registration: on Ladybug the `SchemaResolver` resolves from this module
  * (`SchemaSource.registry`), and the table's columns are derived from it.
@@ -95,6 +95,9 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     file: "?string",
     pr_numbers: "?string",
     commit_shas: "?string",
+    // The source stamp a seeded page carries (src/concept-seed.ts): whose
+    // file it came from, and which version of it.
+    unique_source_id: "?string",
   }),
 ];
 
@@ -136,6 +139,10 @@ export const LADYBUG_EDGES: readonly LadybugEdgeDef[] = [
   { edge: "SUPERSEDES", source: CLAIM_TYPE, target: CLAIM_TYPE },
   { edge: "SUPERSEDES", source: CHECK_TYPE, target: CHECK_TYPE },
   { edge: "CHILD_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },
+  // The tree as jarvis keeps it and every reader walks it — a parent points
+  // at its children (graph/graph-get `children: "PARENT_OF"`, the seeded
+  // pages).
+  { edge: "PARENT_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },
 ];
 
 /** The rel tables, sorted. */

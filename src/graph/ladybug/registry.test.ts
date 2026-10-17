@@ -49,15 +49,16 @@ describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
     }
     for (const edge of Object.values(CLAIM_EDGES)) assert.ok(LADYBUG_EDGE_TYPES.includes(edge), edge);
     assert.ok(ladybugEdge("CHILD_OF", "Concept", "Concept"));
+    assert.ok(ladybugEdge("PARENT_OF", "Concept", "Concept"), "the tree the seeded pages and graph-get's `children` walk");
     for (const t of ["StrutRun", "StrutWorkflowVersion", "StrutStepVersion"]) assert.ok(ladybugEdge("HAS_SOURCE", "Evidence", t), `a publish check's evidence has the version as its source: ${t}`);
     assert.equal(ladybugEdge("CHILD_OF", "Concept", "StrutRun"), null);
     assert.equal(ladybugEdge("ACCESSED", "StrutToolCall", "Concept"), null);
     assert.equal(ladybugEdge("PUBLISHED_BY", "StrutStepVersion", "Person"), null);
     assert.equal(ladybugEdge("RELATED_TO", "Concept", "Concept"), null, "no jarvis allowlist");
-    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACTIVE_VERSION", "CHILD_OF", "DEPENDS_ON", "EVIDENCED_BY", "EXECUTED", "HAS_SOURCE", "IN_JOB", "PRODUCED_BY", "PROMOTED_FROM", "SUPERSEDES", "TESTS", "USES_STEP", "VERSION_OF"]);
+    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACTIVE_VERSION", "CHILD_OF", "DEPENDS_ON", "EVIDENCED_BY", "EXECUTED", "HAS_SOURCE", "IN_JOB", "PARENT_OF", "PRODUCED_BY", "PROMOTED_FROM", "SUPERSEDES", "TESTS", "USES_STEP", "VERSION_OF"]);
   });
 
-  it("columns: one per attribute, no conflicts, no jarvis stamps", () => {
+  it("columns: one per attribute, no conflicts, no jarvis stamps but a seeded Concept's source", () => {
     const cols = nodeColumns();
     for (const s of LADYBUG_SCHEMAS) for (const k of Object.keys(s.attributes)) assert.ok(cols[k], `${s.type}.${k}`);
     assert.equal(cols["created_at"], "INT64");
@@ -65,7 +66,8 @@ describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
     assert.equal(cols["freshness_days"], "INT64");
     assert.equal(cols["sample_rate"], "DOUBLE");
     assert.equal(cols["max_run_cost_usd"], "DOUBLE");
-    for (const k of ["is_deleted", "is_muted", "relevancy_score", "weight", "unique_source_id", "_search_fields_used", "input_embeddings", "attrs", "domain"]) assert.ok(!(k in cols), k);
+    assert.equal(cols["unique_source_id"], "STRING", "a seeded Concept's stamp (concept-seed.ts)");
+    for (const k of ["is_deleted", "is_muted", "relevancy_score", "weight", "_search_fields_used", "input_embeddings", "attrs", "domain"]) assert.ok(!(k in cols), k);
     for (const k of Object.keys(GENERIC_COLUMNS)) assert.ok(cols[k], k);
     assert.ok(Object.keys(cols).length > 60 && Object.keys(cols).length < 100, `${Object.keys(cols).length} columns`);
     assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "date_added_to_graph", "weight", "importance", "strength", "context", "start_time", "end_time", "post_url"]);

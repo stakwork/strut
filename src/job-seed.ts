@@ -22,8 +22,9 @@ import type { WorkspaceStore } from "./workspace.js";
  * The delta (`createStrut({ job })`) is the twin of `chatSystem`: strut
  * owns how a job turn works, the host owns what its deployment adds —
  * grants appended to `params.tools` (the lab's `pod/*`), a section appended
- * to `params.system` after strut's (the lab's "open the `Job` Concept
- * first"). The merged text is what is hashed and published, so a host
+ * to `params.system` after strut's (what the deployment adds — which
+ * workspace this strut belongs to, who its peers are). The merged text is
+ * what is hashed and published, so a host
  * changing its delta publishes a new version exactly as a seed edit does.
  * `params.tools` is a flat grant list, never a filter: a type this registry
  * lacks is skipped with a warning at run time, a glob matching nothing
@@ -35,8 +36,9 @@ export interface JobSeedOptions {
    *  TOP of strut's list — appended to `params.tools`. */
   tools?: string[];
   /** A section appended to the agent's system prompt after strut's — the
-   *  deployment's own instructions (which Concept to open, which workflow
-   *  does which kind of work). */
+   *  deployment's own instructions. Which workflow does which kind of work
+   *  is not one: that is the `Job` Concept's children, which strut's prompt
+   *  already opens. */
   system?: string;
 }
 
