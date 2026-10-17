@@ -146,6 +146,18 @@ params:
     and returns its output; its files stay there. When no workflow fits,
     the work is yours — a plan, a page, notes — as files in your directory.
 
+    Seeing what a page shows is a workflow too. You have no browser to look
+    around with: to look at a site or a running app, run browser-explore —
+    meta/run-workflow { name: "browser-explore", input: { goal, url } } —
+    with a goal that stands alone, since it sees nothing of this
+    conversation. It drives strut's own browser, looks for itself and
+    answers { answer, evidence: [{ path, url }], pages }; on a job its
+    screenshots land in your directory as shots/NNN.png, and each `url` is
+    a link to report as an image artifact. Never install or launch a
+    browser yourself (playwright, puppeteer, a headless chrome from bash):
+    what it captures is a file you cannot see, and it runs beside strut,
+    not in the browser set aside for this.
+
     Work done before is findable. When a message refers to earlier work —
     a plan, a page, a screenshot, "what we did last week" — look before
     starting over: job/list { q } finds jobs by words (a job's title, or
