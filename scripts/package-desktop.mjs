@@ -59,6 +59,9 @@
  *
  * Not a single-file build on purpose: the step loader scans directories and
  * the sherpa addon must be a real file beside the binary either way (§2.4).
+ *
+ * On darwin targets sharp's addon + libvips (the browser screenshot's downscale)
+ * move into native/ too (`relocateSharp`).
  */
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
@@ -229,9 +232,13 @@ async function writeManifest() {
 // resolved): the installed tree is the one yarn made from this lockfile.
 // verifyLocked() then refuses any staged package whose version differs from
 // the installed tree's at the same path.
+// sharp (the browser screenshot's downscale) ships its addon and libvips as two
+// @img packages per platform; only darwin targets relocate them (relocateSharp).
+const sharpPkgs = platform.startsWith("darwin-") ? [`@img/sharp-${platform}`, `@img/sharp-libvips-${platform}`] : [];
 const OTHER_PLATFORM_PKG = (name) =>
   (/^sherpa-onnx-(darwin|linux|win)-/.test(name) && name !== `sherpa-onnx-${platform}`) ||
-  (/^@ladybugdb\/core-/.test(name) && name !== ladybugPlatformPkg);
+  (/^@ladybugdb\/core-/.test(name) && name !== ladybugPlatformPkg) ||
+  (sharpPkgs.length > 0 && /^@img\/sharp-(libvips-)?(darwin|linux|linuxmusl|win32|freebsd|webcontainers|wasm32)/.test(name) && !sharpPkgs.includes(name));
 
 async function resolveFrom(dir, name) {
   for (let d = dir; d.startsWith(ROOT); d = dirname(d)) {
@@ -405,6 +412,15 @@ async function installDeps() {
         ),
       );
     } else if (got !== version) throw new Error(`${name} is ${got} in the root tree, expected ${version}`);
+  }
+  // sharp's wrapper pins both @img packages for each platform; a cross-stage has
+  // the host's in the root tree, so the target's come from npm at those versions.
+  const sharpOptional = JSON.parse(await readFile(join(nm, "sharp", "package.json"), "utf-8")).optionalDependencies ?? {};
+  for (const name of sharpPkgs) {
+    if (!sharpOptional[name]) throw new Error(`sharp pins no ${name}; its platform packages changed — update relocateSharp`);
+    const got = await installedVersion(join(nm, name));
+    if (!got) added.push(await fetchExact(name, sharpOptional[name]));
+    else if (got !== sharpOptional[name]) throw new Error(`${name} is ${got} in the root tree, sharp pins ${sharpOptional[name]}`);
   }
   if (!stt) stubs.push("sherpa-onnx-node");
   if (!ladybug) stubs.push("@ladybugdb/core");
@@ -634,6 +650,45 @@ console.log(JSON.stringify(rows));
   log(`staged Ladybug's ${LADYBUG_EXTENSIONS.join(" + ")} extensions (${version}, ${targetDir}) → native/:\n    ${from.join("\n    ")}`);
 }
 
+// sharp's addon goes into native/ with libvips, the same way. The platform
+// package's index.cjs (the "./sharp.node" export sharp requires) is rewritten to
+// ../../../native/sharp.node; the addon links @rpath/libvips-cpp.<v>.dylib and
+// carries rpaths into node_modules/@img only, so its rpaths are replaced by
+// @loader_path and both files are ad-hoc re-signed (the host re-signs with its
+// identity). Both packages stay as shells (license, package.json) without lib/.
+async function relocateSharp() {
+  if (!sharpPkgs.length) return;
+  const [addonPkg, vipsPkg] = sharpPkgs.map((n) => join(stage, "node_modules", n));
+  const addonLib = join(addonPkg, "lib");
+  const vipsLib = join(vipsPkg, "lib");
+  const addons = (await readdir(addonLib)).filter((f) => f.endsWith(".node"));
+  const dylibs = (await readdir(vipsLib)).filter((f) => f.endsWith(".dylib"));
+  if (addons.length !== 1 || dylibs.length !== 1) {
+    throw new Error(`${sharpPkgs.join(" + ")}: expected one .node and one .dylib, found ${addons.join(", ") || "no .node"} and ${dylibs.join(", ") || "no .dylib"}; their layout changed — update relocateSharp`);
+  }
+  const index = join(addonPkg, "index.cjs");
+  if (!/require\('\.\/lib\/sharp-[^']+\.node'\)/.test(await readFile(index, "utf-8"))) {
+    throw new Error(`${sharpPkgs[0]}/index.cjs no longer requires ./lib/sharp-*.node; its addon lookup changed — update relocateSharp`);
+  }
+  await writeFile(index, "// strut's package-desktop.mjs (relocateSharp): the addon and libvips live in <stage>/native.\nmodule.exports = require('../../../native/sharp.node');\n");
+  await rename(join(addonLib, addons[0]), join(native, "sharp.node"));
+  await rename(join(vipsLib, dylibs[0]), join(native, dylibs[0]));
+  await rm(addonLib, { recursive: true, force: true });
+  await rm(vipsLib, { recursive: true, force: true });
+  const addon = join(native, "sharp.node");
+  const vips = join(native, dylibs[0]);
+  if (!linked(addon).includes(`@rpath/${dylibs[0]}`)) throw new Error(`sharp.node doesn't link @rpath/${dylibs[0]}: ${linked(addon).join(", ")}`);
+  for (const f of [addon, vips]) {
+    await chmod(f, 0o644);
+    const drop = rpaths(f).filter((r) => r !== "@loader_path");
+    const needs = f === addon && !rpaths(f).includes("@loader_path");
+    const edits = [...drop.flatMap((r) => ["-delete_rpath", r]), ...(needs ? ["-add_rpath", "@loader_path"] : [])];
+    if (edits.length) tool("install_name_tool", [...edits, f]);
+    tool("codesign", ["-f", "-s", "-", f]);
+  }
+  log(`moved sharp.node + ${dylibs[0]} → native/ (rpath @loader_path, ad-hoc signed); ${sharpPkgs[0]} loads ../../../native/sharp.node. Minimum macOS: addon ${minos(addon)}, libvips ${minos(vips)}`);
+}
+
 // Every Mach-O in native/: no load command may name a build-machine path,
 // every @rpath dependency must be in native/, and every signature present must verify.
 function checkMachO(files) {
@@ -713,7 +768,7 @@ async function report() {
   // and notarized inside the app bundle, not just the .node. Nothing else in
   // the package is a binary — enforced here, because the host's signing step
   // is "sign native/". --embeddings is the one exception: onnxruntime-node
-  // and sharp keep their addons in node_modules, where their loaders look.
+  // keeps its addons in node_modules, where its loader looks.
   const inNative = (await readdir(native)).filter((f) => NATIVE_EXT.test(f));
   const stray = [];
   const walk = async (d) => {
@@ -843,6 +898,7 @@ export default defineStep({
   }
   if (/Warning: failed to load step/.test(output)) failures.push(`step load warning:\n${output}`);
   if (ladybug) failures.push(...(await smokeLadybug(app, tmp)));
+  if (sharpPkgs.length) failures.push(...(await smokeSharp(app)));
   failures.push(...(await smokeStubs(app)));
   await rm(tmp, { recursive: true, force: true });
   if (failures.length) {
@@ -902,6 +958,40 @@ console.log(JSON.stringify({ rows, loaded }));
   return failures;
 }
 
+// Resize a generated image with sharp from the copy, DYLD_* cleared; the images
+// it loads must be in native/ and include sharp.node and libvips.
+async function smokeSharp(app) {
+  const script = `
+const before = new Set(process.report.getReport().sharedObjects);
+const sharp = (await import("sharp")).default;
+const png = await sharp({ create: { width: 20, height: 10, channels: 3, background: "#fff" } }).png().toBuffer();
+const small = await sharp(png).resize({ width: 12 }).png().toBuffer();
+const meta = await sharp(small).metadata();
+const loaded = process.report.getReport().sharedObjects.filter((p) => !before.has(p));
+console.log(JSON.stringify({ width: meta.width, loaded }));
+`;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DYLD_") && !k.startsWith("STRUT_")));
+  log("smoke: sharp — resize an image from the copy (DYLD_* cleared)");
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: app, env, encoding: "utf-8" });
+  if (r.status !== 0) return [`sharp load/resize failed (${r.status}):\n${r.stdout}${r.stderr}`];
+  let res;
+  try {
+    res = JSON.parse(r.stdout.trim().split("\n").pop());
+  } catch {
+    return [`sharp smoke printed no result:\n${r.stdout}`];
+  }
+  const failures = [];
+  if (res.width !== 12) failures.push(`sharp resized to width ${res.width}, expected 12`);
+  const dirs = [join(app, "native") + "/", (await realpath(join(app, "native"))) + "/"];
+  // libvips links macOS's own frameworks (ImageIO and what they pull in); anything else must be in native/.
+  for (const p of res.loaded) if (!/^\/(System|usr\/lib)\//.test(p) && !dirs.some((d) => p.startsWith(d))) failures.push(`importing sharp loaded ${p}, outside the copy's native/`);
+  for (const want of ["sharp.node", "libvips-cpp"]) {
+    if (!res.loaded.some((p) => p.includes(`/${want}`))) failures.push(`${want} not among the images sharp loaded: ${res.loaded.join(", ") || "none"}`);
+  }
+  if (!failures.length) log(`smoke: sharp OK — resized; loaded from native/:\n    ${res.loaded.filter((p) => dirs.some((d) => p.startsWith(d))).join("\n    ")}`);
+  return failures;
+}
+
 // Each stub answers an import with its own error, from the app root (where
 // build/ resolves from) — proof resolution stops inside the stage.
 async function smokeStubs(app) {
@@ -930,6 +1020,7 @@ if (ladybug) {
   await relocateLadybug();
   await stageLadybugExtensions();
 }
+await relocateSharp();
 await report();
 if (smoke) await smokeTest();
 if (tar) await tarball();
