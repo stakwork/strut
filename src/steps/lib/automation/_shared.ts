@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { stopOf, withStop, type StepContext } from "../../../core.js";
 import { triggerSchema } from "../../../automations.js";
@@ -20,6 +21,15 @@ import { journal, journalKey } from "../job/_shared.js";
  * nobody has answered yet, which the automation step passes up so the turn
  * ends with nothing changed. Without an approval step the acting steps
  * refuse: an agent never schedules unattended runs on its own say.
+ *
+ * A host whose approval step can grant an automation more than its prompt
+ * (Peel: posting as the person to chats it names, up to a price) says so
+ * with `grants`. Then create and update take a `grant`, which strut never
+ * reads: it goes to the approval step with the automation's grant KEY and
+ * name, and the key is kept in the run's input (`input.grant`), where the
+ * host's own steps read it at each fire. The key is strut's, never the
+ * model's: a run's step that acts on a grant names it from `ctx.input`, and
+ * the model cannot write that.
  */
 export interface AutomationStepsOptions {
   /** The workflow the steps schedule. */
@@ -27,6 +37,9 @@ export interface AutomationStepsOptions {
   /** The registry step that asks the person (`{ intent }` →
    *  `{ approved, status?, error? }`). Absent: the acting steps refuse. */
   approve?: string;
+  /** The approval step takes a `grant` (`{ intent, grant }`, the grant with
+   *  `automation` (its key) and `name` added): create and update offer one. */
+  grants?: boolean;
 }
 
 /** `ctx.services.automations`, which `createStrut` sets. */
@@ -58,13 +71,18 @@ export interface Intent {
  * otherwise the output the acting step returns as it is: a `withStop`
  * pending (no answer yet), or the refusal. Nothing is changed either way.
  */
-export async function approval(ctx: StepContext, cap: AutomationStepsCapability, intent: Intent): Promise<{ ok: true } | { output: unknown }> {
+export async function approval(
+  ctx: StepContext,
+  cap: AutomationStepsCapability,
+  intent: Intent,
+  grant?: Record<string, unknown>,
+): Promise<{ ok: true } | { output: unknown }> {
   if (!cap.approve) {
     throw new Error("automation/* steps: this strut has no approval step (automation.approve), so they cannot change automations.");
   }
   const def = ctx.registry?.[cap.approve];
   if (!def) throw new Error(`automation/* steps: the approval step "${cap.approve}" is not in this strut's registry.`);
-  const out = await def.run(def.input.parse({ intent }), { ...ctx, path: `${ctx.path}/approve` });
+  const out = await def.run(def.input.parse({ intent, ...(grant ? { grant } : {}) }), { ...ctx, path: `${ctx.path}/approve` });
   if (stopOf(out)) return { output: withStop({ changed: false, waiting: out }) };
   const answer = (out ?? {}) as { approved?: unknown; status?: unknown; error?: unknown };
   if (answer.approved === true) return { ok: true };
@@ -89,11 +107,12 @@ export async function approvedOnce<T extends object>(
   cap: AutomationStepsCapability,
   intent: Intent,
   act: () => Promise<T>,
+  grant?: Record<string, unknown>,
 ): Promise<unknown> {
   const key = journalKey(ctx, "act");
   const prior = key ? ctx.journal?.[key] : undefined;
   if (prior && typeof prior === "object") return prior;
-  const asked = await approval(ctx, cap, intent);
+  const asked = await approval(ctx, cap, intent, grant);
   if (!("ok" in asked)) return asked.output;
   const done = await act();
   await journal(ctx, key, done);
@@ -124,9 +143,28 @@ export function unescaped(text: string): string {
 }
 
 /** What the run is handed, resolved at each fire: `since`, when its last
- *  successful run finished (null before the first), and `now`, the fire. */
-export function runInput(name: string, prompt: string): Record<string, unknown> {
-  return { name: escaped(name), prompt: escaped(prompt), since: "{{ last.finishedAt }}", now: "{{ now }}" };
+ *  successful run finished (null before the first), `now`, the fire, and
+ *  its grant's key when it has one. */
+export function runInput(name: string, prompt: string, grant?: string): Record<string, unknown> {
+  return { name: escaped(name), prompt: escaped(prompt), since: "{{ last.finishedAt }}", now: "{{ now }}", ...(grant ? { grant } : {}) };
+}
+
+/** An automation's grant key, kept in its input. */
+export function grantOf(a: AutomationView): string | undefined {
+  const key = (a.input as { grant?: unknown }).grant;
+  return typeof key === "string" && key ? key : undefined;
+}
+
+/** A new grant's key: the same for the same call (a resumed one asks the
+ *  same question), and another for any other. */
+export function grantKey(ctx: StepContext): string {
+  return "g-" + createHash("sha256").update(`${ctx.runId}\n${ctx.path}`).digest("hex").slice(0, 24);
+}
+
+/** The `grant` a host that takes one checks; any other host refuses it. */
+export function grantFor(cap: AutomationStepsCapability, grant: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (grant && !cap.grants) throw new Error("automation/* steps: this strut's approval step takes no grant; leave grant out.");
+  return grant;
 }
 
 /** An automation as the agent reads it. */
@@ -141,6 +179,7 @@ export function brief(a: AutomationView) {
     lastRun: a.lastRun,
     running: a.running,
     prompt: typeof input.prompt === "string" ? unescaped(input.prompt) : "",
+    ...(grantOf(a) ? { grant: true } : {}),
     ...(a.lastFireError ? { lastFireError: a.lastFireError } : {}),
   };
 }
@@ -183,4 +222,8 @@ export const promptField = z
   .min(1)
   .max(4000)
   .describe("The standalone instruction each run carries out. It runs with nobody watching and does not see this conversation.");
+export const grantField = z
+  .record(z.string(), z.unknown())
+  .optional()
+  .describe("Only when your instructions say this strut takes one: what the automation may do beyond its prompt, shown to the person to allow with it. Leave out otherwise.");
 export { triggerSchema };

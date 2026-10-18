@@ -30,13 +30,13 @@ const OTHER = "other";
 
 /** The host's approval step: answers as the test says, and records what it was asked. */
 let answer: "allow" | "deny" | "pending" = "allow";
-let asked: { intent: any; path: string }[] = [];
+let asked: { intent: any; grant?: any; path: string }[] = [];
 const approve = defineStep({
   type: "test/approve",
-  input: z.object({ intent: z.object({ action: z.string(), content: z.string().optional(), details: z.array(z.string()).optional() }) }),
+  input: z.object({ intent: z.object({ action: z.string(), content: z.string().optional(), details: z.array(z.string()).optional() }), grant: z.any().optional() }),
   output: z.any(),
   async run(cfg, ctx) {
-    asked.push({ intent: cfg.intent, path: ctx.path });
+    asked.push({ intent: cfg.intent, path: ctx.path, ...(cfg.grant ? { grant: cfg.grant } : {}) });
     if (answer === "pending") return withStop({ status: "pending", note: "Waiting for your Mac" });
     return answer === "allow" ? { approved: true } : { approved: false, status: "denied" };
   },
@@ -57,7 +57,7 @@ describe("automation/* steps", () => {
   let registry: StepRegistry;
   let saved: string | undefined;
 
-  const boot = async (automation?: { workflow: string; approve?: string }) => {
+  const boot = async (automation?: { workflow: string; approve?: string; grants?: boolean }) => {
     store = new MemoryRunStore();
     registry = await createRegistry([approve]);
     strut = await createStrut({
@@ -142,6 +142,49 @@ describe("automation/* steps", () => {
     await assert.rejects(run(create, { name: "Long", prompt: "p".repeat(4001), trigger: weekly }));
   });
 
+  it("a grant goes on the same card with strut's key, which the automation keeps in its input", async () => {
+    await boot({ workflow: WF, approve: "test/approve" });
+    const posts = { chats: ["Hive"], max_price_sats: 10 };
+    await assert.rejects(run(create, { name: "Hive test", prompt: "Post hi", trigger: weekly, grant: posts }), /takes no grant/);
+    assert.equal(asked.length, 0, "a host without grants asks nothing");
+    await strut.close();
+
+    await boot({ workflow: WF, approve: "test/approve", grants: true });
+    const c = ctx();
+    answer = "pending";
+    await run(create, { name: "Hive test", prompt: "Post hi", trigger: weekly, grant: posts }, c);
+    const first = asked.at(-1)!.grant;
+    assert.match(first.automation, /^g-[0-9a-f]{24}$/);
+    assert.deepEqual(first, { ...posts, automation: first.automation, name: "Hive test" });
+    answer = "allow";
+    const made = await run(create, { name: "Hive test", prompt: "Post hi", trigger: weekly, grant: posts }, c);
+    assert.equal(asked.at(-1)!.grant.automation, first.automation, "the same call asks the same question");
+    assert.equal(made.created.grant, true);
+    const [stored] = await strut.automations.list(WF);
+    assert.equal((stored!.input as any).grant, first.automation);
+
+    // Another call is another key; a model-written key is never read.
+    await run(create, { name: "Other", prompt: "p", trigger: weekly, grant: { ...posts, automation: first.automation } });
+    const other = asked.at(-1)!.grant.automation;
+    assert.notEqual(other, first.automation, "strut's key wins over one in the grant");
+
+    // An update keeps the key: without a grant it asks nothing about one, with one under the same key.
+    await run(update, { id: stored!.id, prompt: "Post hello" });
+    assert.equal(asked.at(-1)!.grant, undefined);
+    assert.equal(((await strut.automations.list(WF))[0]!.input as any).grant, first.automation);
+    const regranted = await run(update, { id: stored!.id, grant: { chats: ["Hive", "Kate"], max_price_sats: 0 } });
+    assert.equal(asked.at(-1)!.intent.action, "Change “Hive test”");
+    assert.deepEqual(asked.at(-1)!.grant, { chats: ["Hive", "Kate"], max_price_sats: 0, automation: first.automation, name: "Hive test" });
+    assert.equal(regranted.changed.prompt, "Post hello");
+    assert.equal(((await strut.automations.list(WF))[0]!.input as any).grant, first.automation);
+    // One that had none gets a key with its first grant.
+    const plain = (await strut.automations.create(WF, { name: "Plain", trigger: weekly, input: { name: "Plain", prompt: "p" } })) as any;
+    await run(update, { id: plain.automation.id, grant: posts });
+    const minted = asked.at(-1)!.grant.automation;
+    assert.match(minted, /^g-/);
+    assert.equal(((await strut.automations.list(WF)).find((a) => a.name === "Plain")!.input as any).grant, minted);
+  });
+
   it("list and preview read only the steps' workflow and never ask", async () => {
     await boot({ workflow: WF, approve: "test/approve" });
     await strut.automations.create(OTHER, { name: "Not yours", trigger: weekly, input: { prompt: "x" } });
@@ -224,6 +267,10 @@ describe("automation/* steps", () => {
     const file = join(dir, "host.json");
     await writeFile(file, JSON.stringify({ automation: { workflow: "peel-automation-run", approve: "sphinx/approve" } }));
     assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { automation: { workflow: "peel-automation-run", approve: "sphinx/approve" } });
+    await writeFile(file, JSON.stringify({ automation: { workflow: "w", approve: "a", grants: true } }));
+    assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { automation: { workflow: "w", approve: "a", grants: true } });
+    await writeFile(file, JSON.stringify({ automation: { workflow: "w", grants: "yes" } }));
+    assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"automation" must be/);
     await writeFile(file, JSON.stringify({ automation: { approve: "sphinx/approve" } }));
     assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"automation" must be/);
   });

@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { approvedOnce, brief, find, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
+import { approvedOnce, brief, find, grantField, grantFor, grantKey, grantOf, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
 
-/** Change an automation's name, prompt or schedule, or pause or resume it,
- *  once the person allows it. */
+/** Change an automation's name, prompt, schedule or grant, or pause or
+ *  resume it, once the person allows it. Its grant's key stays with it:
+ *  a new grant replaces the old one under the same key. */
 export default defineStep({
   type: "automation/update",
   description:
@@ -15,11 +16,14 @@ export default defineStep({
     prompt: promptField.optional(),
     trigger: triggerSchema.optional(),
     enabled: z.boolean().optional().describe("false pauses it; true resumes it."),
+    grant: grantField,
   }),
   output: z.any(),
   async run(cfg, ctx) {
     const cap = requireAutomations(ctx.services);
     const current = await find(cap, cfg.id);
+    const grant = grantFor(cap, cfg.grant);
+    const key = grantOf(current) ?? (grant ? grantKey(ctx) : undefined);
     const details: string[] = [];
     if (cfg.name !== undefined && cfg.name !== current.name) details.push(`Name: “${cfg.name}”`);
     if (cfg.trigger) {
@@ -33,7 +37,7 @@ export default defineStep({
     let action: string;
     if (cfg.enabled === false && current.enabled) action = `Pause “${current.name}”`;
     else if (cfg.enabled === true && !current.enabled) action = `Resume “${current.name}”`;
-    else if (details.length || cfg.prompt !== undefined) action = `Change “${current.name}”`;
+    else if (details.length || cfg.prompt !== undefined || grant) action = `Change “${current.name}”`;
     else return { changed: false, error: "Nothing to change." };
     // A new prompt is the card's content, shown whole.
     return approvedOnce(ctx, cap, { action, ...(cfg.prompt !== undefined ? { content: cfg.prompt } : {}), details }, async () => {
@@ -43,11 +47,11 @@ export default defineStep({
           ...(cfg.name !== undefined ? { name: cfg.name } : {}),
           ...(cfg.trigger ? { trigger: cfg.trigger } : {}),
           ...(cfg.enabled !== undefined ? { enabled: cfg.enabled } : {}),
-          // The name and prompt travel together in the run's input.
-          ...(cfg.name !== undefined || cfg.prompt !== undefined ? { input: runInput(cfg.name ?? current.name, prompt) } : {}),
+          // The name, prompt and grant key travel together in the run's input.
+          ...(cfg.name !== undefined || cfg.prompt !== undefined || grant ? { input: runInput(cfg.name ?? current.name, prompt, key) } : {}),
         }),
       );
       return { changed: brief(saved.automation) };
-    });
+    }, grant && { ...grant, automation: key, name: cfg.name ?? current.name });
   },
 });
