@@ -35,6 +35,8 @@ export default defineStep({
       // Under the same job (plans/jobs.md §4): the child's `{{ $job }}` and
       // `job/dir` are this run's, and it shares the directory this run holds.
       ...(ctx.job ? { job: ctx.job } : {}),
+      // Its agents reach the same caller (`ctx.mcp`), as this run's do.
+      ...(ctx.mcp?.length ? { mcp: ctx.mcp } : {}),
     });
   },
 });

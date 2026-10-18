@@ -52,7 +52,7 @@ interface LaunchRecord {
 export async function launchOnce(
   ctx: StepContext,
   launch: NonNullable<JobsCapability["launch"]>,
-  opts: Omit<JobLaunch, "from" | "actor" | "principal">,
+  opts: Omit<JobLaunch, "from" | "actor" | "principal" | "mcp">,
   match?: string,
 ): Promise<LaunchRecord> {
   const key = journalKey(ctx, "launch");
@@ -65,6 +65,9 @@ export async function launchOnce(
     from: ctx.runId,
     ...(ctx.actor ? { actor: ctx.actor } : {}),
     ...(ctx.principal ? { principal: ctx.principal } : {}),
+    // The caller this turn can reach, the job can reach — unless the agent
+    // that called this has `mcp: false` (its tools' ctx has none).
+    ...(ctx.mcp?.length ? { mcp: ctx.mcp } : {}),
   });
   const record: LaunchRecord = { job: opts.job, runId, callback };
   await journal(ctx, key, record);

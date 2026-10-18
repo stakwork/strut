@@ -15,6 +15,7 @@ import { MemoryRunStore } from "./store.js";
 import type { JobLaunch, JobsCapability } from "./jobs.js";
 import jobStart from "./steps/lib/job/start.js";
 import jobContinue from "./steps/lib/job/continue.js";
+import { standInMcp } from "./test-util/mcp-server.js";
 
 // job/start and job/continue through a whole strut: an orchestrator
 // workflow whose agent is granted them, a stand-in `job` workflow, a
@@ -169,12 +170,14 @@ describe("job/start and job/continue", () => {
         pack,
       ],
     });
-    const launch = async (input: unknown, withCallback = true) => {
-      const res = await strut.app.request("/workflows/orch/run", {
+    const post = (body: Record<string, unknown>) =>
+      strut.app.request("/workflows/orch/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input, ...(withCallback ? { callback: { url: hostUrl } } : {}) }),
+        body: JSON.stringify(body),
       });
+    const launch = async (input: unknown, withCallback = true) => {
+      const res = await post({ input, ...(withCallback ? { callback: { url: hostUrl } } : {}) });
       assert.equal(res.status, 202);
       return ((await res.json()) as any).runId as string;
     };
@@ -201,7 +204,7 @@ describe("job/start and job/continue", () => {
       return end ? JSON.parse((end as any).output) : undefined;
     };
     const jobs = (strut.services as { jobs: JobsCapability }).jobs;
-    return { store, launch, settle, until, toolOutput, jobs };
+    return { store, post, launch, settle, until, toolOutput, jobs };
   };
 
   it("start: the turn ends at once, the job runs detached, and its run.end reaches the turn's callback with resolved artifacts", async () => {
@@ -280,6 +283,45 @@ describe("job/start and job/continue", () => {
     assert.equal(ends[1].output.text, "Found 2");
     const view = await jobs.get!(job, { threads: false });
     assert.equal(view?.runs.length, 2, "two turns of one job; the refused ones launched nothing");
+  });
+
+  it("the caller's MCP servers reach the turn's agent and the job it starts; the logs name them by origin only", async () => {
+    const TOKEN = "caller-t0ken-5678";
+    const caller = await standInMcp([{ name: "lookup", call: () => ({ content: [{ type: "text", text: "x" }] }) }], { token: TOKEN });
+    try {
+      const { store, post, settle, until, toolOutput } = await boot();
+      const mcp = [{ name: "caller", url: caller.url, token: TOKEN }];
+
+      // Refused before anything launches, saying which entry.
+      const bad = await post({ input: { prompt: "x" }, mcp: [{ name: "has space", url: caller.url }] });
+      assert.equal(bad.status, 400);
+      assert.match(((await bad.json()) as any).error, /mcp\[0\]\.name/);
+      assert.equal(seen.orch.length, 0);
+
+      orchTool = { name: "job_start", input: { prompt: "Do it", title: "It" } };
+      const res = await post({ input: { prompt: "do it" }, callback: { url: hostUrl }, mcp });
+      assert.equal(res.status, 202);
+      const launched = (await res.json()) as any;
+      assert.equal(launched.mcp, true, "the host's proof this server honors it");
+      await settle("orch", launched.runId);
+      const { runId: jobRun } = await toolOutput(launched.runId);
+      await until(() => posts.find((p) => p.workflow === "job"));
+
+      // Both agents had the caller's tool: the turn's, and the job's.
+      assert.ok(seen.orch[0]!.includes('"name":"caller_lookup"'));
+      assert.ok(seen.job[0]!.includes('"name":"caller_lookup"'));
+      const origin = new URL(caller.url).origin;
+      for (const [workflow, runId] of [["orch", launched.runId], ["job", jobRun]] as const) {
+        const events = await store.getRunEvents(workflow, runId);
+        assert.deepEqual(events.find((e) => e.type === "run.start")!.mcp, [{ name: "caller", origin }]);
+        assert.ok(!JSON.stringify(events).includes(TOKEN), `${workflow}'s log holds no credential`);
+        // Kept beside the log for a resume.
+        assert.deepEqual(await store.getRunMcp(workflow, runId), mcp);
+      }
+      assert.ok(!JSON.stringify(posts).includes(TOKEN));
+    } finally {
+      await caller.close();
+    }
   });
 
   it("a turn launched without a callback starts a job without one", async () => {
