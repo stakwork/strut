@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineStep, type StepContext } from "../../core.js";
+import { defineStep, withUsage, type StepContext } from "../../core.js";
 import type { StrutCapabilities } from "../../capabilities.js";
 import { resolveModel, stepAuth } from "../../llm.js";
 import { usageFromSteps, usageForCost } from "../../pricing.js";
@@ -77,6 +77,7 @@ export default defineStep({
     const usage = usageFromSteps(result.steps);
     const cost = computeSessionCost(provider, usageForCost(usage), modelId);
     // Structured: the object's own fields win a name clash with usage/cost.
-    return cfg.schema ? { usage, cost, ...(result.output as object) } : { text: result.text, usage, cost };
+    const out = cfg.schema ? { usage, cost, ...(result.output as object) } : { text: result.text, usage, cost };
+    return withUsage(out, { modelCalls: result.steps.length || 1, usage, cost });
   },
 });

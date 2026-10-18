@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { flow, step, defineStep, withAccessedNodes, withMessages, type Step, type StepRegistry, type RunEvent } from "./core.js";
+import { flow, step, defineStep, withAccessedNodes, withMessages, withUsage, type Step, type StepRegistry, type RunEvent } from "./core.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import foreachStep from "./steps/core/foreach.js";
@@ -684,6 +684,59 @@ describe("step.end carries a step's session marker as `messages`", () => {
     assert.equal(ends.length, 2);
     for (const e of ends) assert.deepEqual(e.messages, session);
     assert.deepEqual(result.output, [{ result: "done 1" }, { result: "done 2" }]);
+  });
+});
+
+// ── Usage marker (withUsage → step.end.modelCalls / usage / cost) ──────────
+
+describe("step.end carries a step's spend; the summary sums it once", () => {
+  const usage = { inputTokens: 10, cacheReadTokens: 100, cacheWriteTokens: 0, outputTokens: 5, totalTokens: 115 };
+  /** A model-calling step: a slim output marked with what its calls spent. */
+  const spender = defineStep({
+    type: "spender",
+    input: z.object({ n: z.any().optional() }),
+    output: z.any(),
+    async run(cfg) {
+      return withUsage({ text: `said ${cfg.n ?? ""}`.trim() }, { modelCalls: 2, usage, cost: 0.25 });
+    },
+  });
+
+  it("lifts the marker onto step.end, never onto a step that hands the same object on", async () => {
+    const wf = flow("spend", {
+      input: z.object({}),
+      // `value` returns `{{ t }}` itself — the same object, marker and all.
+      steps: [step("t", "spender", {}), step("again", "value", { result: "{{ t }}" })],
+    });
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(wf, {}, makeRegistry({ spender }), { store });
+    assert.equal(result.status, "success");
+    const events = await store.getRunEvents("spend", result.runId);
+    const end = events.find((e) => e.type === "step.end" && e.path === "spend/t")!;
+    assert.equal(end.modelCalls, 2);
+    assert.equal(end.cost, 0.25);
+    assert.deepEqual(end.usage, usage);
+    assert.equal(JSON.stringify(end.output), '{"text":"said"}');
+    const again = events.find((e) => e.type === "step.end" && e.path === "spend/again")!;
+    assert.ok(!("cost" in again), "the marker was taken by the step that spent it");
+    const summary = await store.getRunSummary("spend", result.runId);
+    assert.deepEqual(summary!.totals, { modelCalls: 2, usage, cost: 0.25 });
+  });
+
+  it("sums foreach iterations, and writes no totals when nothing called a model", async () => {
+    const wf = flow("spend-each", {
+      input: z.object({ items: z.array(z.number()) }),
+      steps: [step("each", "foreach", { items: "{{ input.items }}", body: step("t", "spender", { n: "{{ $current }}" }) })],
+    });
+    const store = new MemoryRunStore();
+    const result = await runWorkflow(wf, { items: [1, 2, 3] }, makeRegistry({ spender, foreach: foreachStep }), { store });
+    const totals = (await store.getRunSummary("spend-each", result.runId))!.totals!;
+    assert.equal(totals.modelCalls, 6);
+    assert.equal(totals.cost, 0.75);
+    assert.equal(totals.usage.cacheReadTokens, 300);
+
+    const plain = flow("no-spend", { input: z.object({}), steps: [step("e", "echo", { a: 1 })] });
+    const r2 = await runWorkflow(plain, {}, makeRegistry(), { store });
+    assert.ok(!("totals" in (await store.getRunSummary("no-spend", r2.runId))!));
   });
 });
 
