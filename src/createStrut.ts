@@ -9,7 +9,7 @@ import { access, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, StepRegistry, RunEvent, RunResult } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, StepRegistry, RunEvent, RunResult } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -84,6 +84,7 @@ import { createChatNotifier, formatRestartNotification, formatRunNotification } 
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { attachmentParts, parseAttachments, saveAttachments, type Attachment } from "./ai/attachments.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
+import { parseMcpServers } from "./mcp-servers.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
@@ -507,6 +508,10 @@ export interface StrutRunOptions<TServices = unknown> {
   /** The job's name, recorded on the job (plans/job-index.md §1) — the twin
    *  of `POST …/run { title }`. Ignored without `job`. */
   title?: string;
+  /** The caller's MCP servers — the in-process twin of `POST …/run { mcp }`
+   *  (src/mcp-servers.ts), handed to the run's steps as `ctx.mcp`. Not
+   *  validated here, as the route's is. */
+  mcp?: McpServer[];
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -1354,6 +1359,8 @@ export async function createStrut<TServices = unknown>(
     events: RunEvent[];
     /** The callback the launch recorded (`RunStore.setRunCallback`). */
     callback?: { url: string };
+    /** The caller's MCP servers the launch recorded (`RunStore.setRunMcp`). */
+    mcp?: McpServer[];
   };
   type ResumeRefusal = { ok: false; status: 400 | 404 | 409; error: string };
 
@@ -1429,7 +1436,19 @@ export async function createStrut<TServices = unknown>(
     // The resumed run posts `run.end` the way the launch would have: the
     // URL is the store's, beside the log, never in it.
     const url = await store.getRunCallback(name, runId);
-    return { ok: true, name, runId, flow, version, journal, runStart, events, ...(url ? { callback: { url } } : {}) };
+    const mcp = await store.getRunMcp(name, runId);
+    return {
+      ok: true,
+      name,
+      runId,
+      flow,
+      version,
+      journal,
+      runStart,
+      events,
+      ...(url ? { callback: { url } } : {}),
+      ...(mcp?.length ? { mcp } : {}),
+    };
   };
 
   /** Relaunch a prepared durable resume under its ORIGINAL runId (§5). */
@@ -1454,6 +1473,7 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
         ...(p.runStart.principal ? { principal: p.runStart.principal } : {}),
         ...(p.callback ? { callback: p.callback } : {}),
+        ...(p.mcp ? { mcp: p.mcp } : {}),
       },
     );
   };
@@ -2584,6 +2604,10 @@ export async function createStrut<TServices = unknown>(
      *  the latest launch that carries one wins, `null` clears it. 400
      *  without `job`. */
     jobCallback?: { url: string } | null;
+    /** The caller's MCP servers (src/mcp-servers.ts): its door back into
+     *  itself for this run's agents, the pull-direction twin of `callback`.
+     *  Kept beside the log like the callback URL, never in it. */
+    mcp?: McpServer[] | null;
   }
 
   /**
@@ -2617,6 +2641,11 @@ export async function createStrut<TServices = unknown>(
        *  (`setRunCallback`, served by no endpoint) so a durable resume
        *  posts `run.end` the way the launch would have. */
       callback?: { url: string };
+      /** The caller's MCP servers (`POST …/run { mcp }`), validated: kept
+       *  by the run store beside the log (`setRunMcp`) for a resume, handed
+       *  to the run's steps as `ctx.mcp`; the log records names and
+       *  origins only. */
+      mcp?: McpServer[];
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -2629,10 +2658,13 @@ export async function createStrut<TServices = unknown>(
     if (extra?.origin === "peer") peerLaunched.add(controller);
     const launchedAt = Date.now();
     const callback = extra?.callback;
+    const mcp = extra?.mcp?.length ? extra.mcp : undefined;
     void (async () => {
       // Recorded before the first event, so a run cut off at any point is
-      // resumed WITH its callback. A resume read it from there already.
+      // resumed WITH its callback and its caller's MCP servers. A resume
+      // read them from there already.
       if (callback && !extra?.resume) await store.setRunCallback(flow.name, runId, callback.url);
+      if (mcp && !extra?.resume) await store.setRunMcp(flow.name, runId, mcp);
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
@@ -2656,6 +2688,7 @@ export async function createStrut<TServices = unknown>(
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
         ...(callback ? { callback: { origin: callbackOrigin(callback.url) } } : {}),
+        ...(mcp ? { mcp } : {}),
       });
     })()
       .then(
@@ -2724,7 +2757,7 @@ export async function createStrut<TServices = unknown>(
     return root ? store.getRunCallback(root.workflow, root.runId) : null;
   }
   if (launchCap) {
-    launchCap.launch = async ({ job, title, input, from, actor, principal }) => {
+    launchCap.launch = async ({ job, title, input, from, actor, principal, mcp }) => {
       const problem = idProblem(job);
       if (problem) throw new Error(`job "${job}" ${problem}`);
       const flow = await workspace.getWorkflow("job");
@@ -2739,6 +2772,8 @@ export async function createStrut<TServices = unknown>(
         ...(actor ? { actor } : {}),
         ...(principal ? { principal } : {}),
         ...(url ? { callback: { url } } : {}),
+        // The launching turn's caller, reachable from the job's agents too.
+        ...(mcp?.length ? { mcp } : {}),
       });
       return { runId, callback: !!url };
     };
@@ -2906,10 +2941,12 @@ export async function createStrut<TServices = unknown>(
     const body = await c.req.json<RunBody>();
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
+    let mcp: McpServer[] | undefined;
     try {
       callback = runCallbackOf(body);
       runJobOf(body);
       jobCallback = jobCallbackOf(body);
+      mcp = parseMcpServers(body.mcp);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -2925,8 +2962,12 @@ export async function createStrut<TServices = unknown>(
       actor: await resolveActor(c),
       ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
+      ...(mcp?.length ? { mcp } : {}),
     });
-    return c.json({ runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}) }, 202);
+    return c.json(
+      { runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}), ...(mcp?.length ? { mcp: true } : {}) },
+      202,
+    );
   });
 
   app.post("/workflows/:name/:version/run", async (c) => {
@@ -2934,10 +2975,12 @@ export async function createStrut<TServices = unknown>(
     const body = await c.req.json<RunBody>();
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
+    let mcp: McpServer[] | undefined;
     try {
       callback = runCallbackOf(body);
       runJobOf(body);
       jobCallback = jobCallbackOf(body);
+      mcp = parseMcpServers(body.mcp);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -2954,8 +2997,12 @@ export async function createStrut<TServices = unknown>(
       actor: await resolveActor(c),
       ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
+      ...(mcp?.length ? { mcp } : {}),
     });
-    return c.json({ runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}) }, 202);
+    return c.json(
+      { runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}), ...(mcp?.length ? { mcp: true } : {}) },
+      202,
+    );
   });
 
   // ── The builder's tools: what every door shares ──────────────────────────
@@ -4101,6 +4148,7 @@ export async function createStrut<TServices = unknown>(
         ...(principal ? { principal } : {}),
         ...(runOpts?.job ? { job: runOpts.job } : {}),
         ...(runOpts?.job && runOpts.title ? { title: runOpts.title } : {}),
+        ...(runOpts?.mcp?.length ? { mcp: runOpts.mcp } : {}),
       });
     } finally {
       untrack();

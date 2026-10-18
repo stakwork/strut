@@ -1,5 +1,6 @@
 import type {
   Flow,
+  McpServer,
   Step,
   StepContext,
   StepRegistry,
@@ -18,6 +19,7 @@ import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tallyUsage } from "./store.js";
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
+import { mcpOrigins } from "./mcp-servers.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -108,6 +110,11 @@ export interface RunOptions<TServices = unknown> {
    *  { callback }`). The runner records the URL's ORIGIN on `run.start` / `run.resumed` and
    *  nothing more; the launcher keeps the URL and does the posting. */
   callback?: { origin: string };
+  /** The caller's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts),
+   *  credentials included: handed to every step as `ctx.mcp`, recorded on
+   *  `run.start` / `run.resumed` by name and origin only. The launcher keeps
+   *  the entries for a resume (`RunStore.setRunMcp`). */
+  mcp?: McpServer[];
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -173,6 +180,7 @@ interface Exec {
   actor?: string;
   principal?: string;
   job?: string;
+  mcp?: McpServer[];
   /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
@@ -260,6 +268,7 @@ export async function runWorkflow<TServices = unknown>(
       // Steps load at (re)launch: what runs from here on is what is active NOW.
       ...(opts.stepHashes ? { stepHashes: opts.stepHashes } : {}),
       ...(opts.callback ? { callback: opts.callback } : {}),
+      ...(opts.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
     });
   } else {
     await emit({
@@ -276,6 +285,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.principal ? { principal: opts.principal } : {}),
       ...(opts?.job ? { job: opts.job } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
+      ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
@@ -315,6 +325,7 @@ export async function runWorkflow<TServices = unknown>(
     actor: opts?.actor,
     principal: opts?.principal,
     job: opts?.job,
+    ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     disposers: [],
   };
 
@@ -793,6 +804,7 @@ async function dispatchStep(
         ...(exec.actor ? { actor: exec.actor } : {}),
         ...(exec.principal ? { principal: exec.principal } : {}),
         ...(exec.job ? { job: exec.job } : {}),
+        ...(exec.mcp ? { mcp: exec.mcp } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),

@@ -68,6 +68,7 @@ strut/
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — the default server, on the backend `STRUT_WORKSPACE_BACKEND` names (graph/wiring.ts): Neo4j by default, `ladybug` one LadybugDB file + the fs import (a failed import boots the fs workspace, loudly), `fs` the file stores. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either) — a host whose own entry is called `server.js` and imports the barrel never starts it (server.test.ts spawns that host)
+│   ├── mcp-servers.ts     # the CALLER's MCP servers (`POST …/run { mcp }`): parseMcpServers (the launch field, Hive's `McpServerConfig` shape: name, url, token?, headers?, toolFilter?; HTTP only), mcpOrigins (what `run.start` records), connectMcpTools (the agent step's client: the SDK's Streamable HTTP client, lazy, one per server for the step; `<server>_<tool>` in name order, a server that fails skipped with a warning, a failed call an `Error:` text, results capped, images as `withMedia`)
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (holds released, repositories removed, files kept), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use, and LIVE UPDATES (plans/live-artifacts.md: `setJobCallback` keeps a launch's `jobCallback` in `jobs/.callbacks/`, never in the record; `notifyJob` / `ctx.services.jobs.notify` POST `job.update` there, ordered per job and coalesced per thing; holds and the verify pass announce themselves)
 │   ├── job-index.ts       # the job INDEX (plans/job-index.md), the read side of jobs.ts: createJobIndex({ dataDir, store, sessions, sealed }) → list (every job newest-used first, `q` through src/search.ts over the title + current deliverables, `workflow` keeps the jobs with a recorded run of it — the sidebar's filter; `actor` the jobs that actor launched a run of — the record's `actors`, `GET /jobs?mine=1`, the sidebar's user icon) / get (runs with status from the run store, threads from the session store — a turn line's `job`, or a thread named after the job — holds, files, and the ARTIFACT FOLD: the successful top-level runs' `artifacts[]` newest first, the first of each id winning, resolved like …/runs/:runId/artifacts; a sealed workflow's run shows its status and nothing more) / read (one file: text head+tail-capped, an image as bytes for withMedia). createStrut builds it into `ctx.services.jobs` beside the record's writes; `GET /jobs[/:id]` and the job/* steps are thin over it; the projector builds `StrutJob` from `get`
@@ -1082,6 +1083,27 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   restart still drops a post in flight; the host's fallback is `GET
   /workflows/:name/runs/:runId`. The web UI never sends one.
 
+- **The caller's MCP servers — a host's way back into itself**
+  (`src/mcp-servers.ts`). The pull-direction twin of `callback`: `POST
+  …/run { mcp: [{ name, url, token?, headers?, toolFilter? }] }` (Hive's
+  `McpServerConfig`, field for field; HTTP only — a caller names a URL,
+  never a process for strut to start) hands this run's agents the caller's
+  tools — Hive its org's MCP, any other caller its own. Kept exactly as the
+  callback is: validated before anything launches (400), the 202 carries
+  `mcp: true`, `run.start` / `run.resumed` record `mcp: [{ name, origin }]`
+  only, and the entries — credentials included — are kept by the run store
+  beside the log (`RunStore.setRunMcp` / `getRunMcp`, `mcp.json` on files,
+  owner-only), served by nothing, so a durable resume reconnects. Every step
+  sees them as `ctx.mcp` (beside `ctx.job`); the `agent` step's `mcp`
+  (default `true`) turns them into tools, and `job/start` / `job/continue`
+  / `meta/run-workflow` hand them on to the runs they launch, so a job
+  started from a Hive turn reaches the same Hive. `strut/run-workflow`
+  never forwards them: they are this caller's, for this strut. An agent
+  with `mcp: false` keeps to its own tools and hands its tools a `ctx`
+  without them — its sub-agents and the jobs it starts get none. A token
+  that expires mid-run (Hive's are 4 h JWTs) makes the call an `Error:`
+  text; the host mints for the run's length.
+
 - **Run control** (`RUN_CONTROL_SPEC.md`, `src/run-control.ts` +
   `src/journal.ts`). Every launch site registers a `RunController`
   (createStrut's `trackRun` — superseding the old `activeRuns` set); nested
@@ -1891,6 +1913,21 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
     sub-agent's stop ends only its own turn. The output
     gains `stopped: { tool }`. With `toolFilter: ['none']` the step needs
     neither `git` nor `rg` (only the built-ins use them).
+  - **The caller's MCP servers are tools too** (`mcp`, default `true`;
+    `connectMcpTools`, src/mcp-servers.ts). A run launched with `POST …/run
+    { mcp }` hands every agent step its caller's servers as `ctx.mcp`; the
+    step connects one client per server when it starts (inside the same
+    `try` as the web tools, closed in its `finally`), adds their tools as
+    `<server>_<tool>` after everything else in name order (the tool list is
+    part of the cached prefix), not subject to `toolFilter`, masked of the
+    credentials (`wrapToolsWithMask`) and emitting a run event per call like
+    any tool. A tool whose name another tool holds is skipped; a server that
+    cannot be reached, refuses the credential or does not answer in 15 s is
+    skipped with a warning — the turn goes on without it. A call that fails
+    is an `Error:` text the model reads; a result is capped like `bash`'s,
+    and an image rides as `withMedia`. `mcp: false` keeps an agent (a judge,
+    a narrow researcher) and everything it launches through its tools off
+    them.
   - **Every tool call emits a nested run event** (`wrapToolsWithEmit`, applied
     to built-ins AND `agentTools` with one shared counter): a
     `step.start`/`step.end` (or `step.error`) at `<agentPath>/NNN-<tool>` with

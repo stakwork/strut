@@ -41,6 +41,24 @@ export interface StepDef<
   ) => Promise<z.infer<TOutput>>;
 }
 
+/** One of the caller's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts)
+ *  — Hive's `McpServerConfig`, field for field. HTTP only: a caller names a
+ *  URL to reach it at, never a process for strut to start. */
+export interface McpServer {
+  /** Prefixes its tools for the model (`<name>_<tool>`): letters, digits,
+   *  `_` and `-`, unique per launch. */
+  name: string;
+  /** The server's Streamable HTTP endpoint, http(s). */
+  url: string;
+  /** Shorthand for `Authorization: Bearer <token>`. */
+  token?: string;
+  /** Request headers, for any other scheme; `token` wins on Authorization. */
+  headers?: Record<string, string>;
+  /** Only these of its tools (exact names, or globs: `get_*`); absent or
+   *  empty = all. */
+  toolFilter?: string[];
+}
+
 /** Context passed to every step's `run` function.
  *
  * `services` is the consumer-defined capabilities bag — typically a
@@ -90,6 +108,13 @@ export interface StepContext<TServices = unknown> {
   /** Who this run's spend is billed to: the actor, else the workflow's
    *  owner (§2, the principal rule). What `llmAuth` receives. */
   principal?: string;
+  /** The CALLER's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts):
+   *  what the launch handed strut to reach back into the caller — credentials
+   *  included, so it is read by the `agent` step (its tools) and the launch
+   *  steps that pass it on (job/start, job/continue, meta/run-workflow), and
+   *  never logged. An agent with `mcp: false` hands its tools a context
+   *  without it. Absent on a run launched without. */
+  mcp?: McpServer[];
   /** Register a run-scoped disposer: the runner calls every registered `fn`
    *  in its `finally` when the run settles — success, error AND cancel —
    *  newest first, each guarded, BEFORE the services bag's own `onRunEnd`.
@@ -261,6 +286,11 @@ export interface RunEvent {
    *  result POSTed to (`POST …/run { callback }`, src/callback.ts). The URL
    *  itself is the host's credential and never leaves the launch site. */
   callback?: { origin: string };
+  /** On `run.start` / `run.resumed`: the caller's MCP servers
+   *  (`POST …/run { mcp }`), by name and ORIGIN only — the URL's path and
+   *  the credentials are the caller's, kept by the run store beside the log
+   *  (`RunStore.setRunMcp`) and read by nothing that serves a request. */
+  mcp?: Array<{ name: string; origin: string }>;
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its

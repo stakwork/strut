@@ -8,6 +8,7 @@ import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
+import { connectMcpTools } from "../../mcp-servers.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
 import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
@@ -743,6 +744,13 @@ export function buildRegistryTools(
   return out;
 }
 
+/** `ctx` without the caller's MCP servers — what an agent with `mcp: false`
+ *  hands its tools. */
+function withoutMcp(ctx: StepContext): StepContext {
+  const { mcp: _mcp, ...rest } = ctx;
+  return rest;
+}
+
 /** The `created_by` an agent tool's write is stamped with: the run's
  *  top-level workflow, or "janitor" for one strut ships. "agent" outside a
  *  workflow. */
@@ -1018,7 +1026,7 @@ export function bashResult(res: ProcessResult, timeoutMs: number, cancelled: boo
 export default defineStep({
   type: "agent",
   description:
-    `Autonomous tool-using sub-agent (AI SDK ToolLoopAgent) over a working dir: it explores and edits files with built-in tools (repo_overview, fulltext_search, bash, str_replace_based_edit_tool; web_search + web_fetch on any provider — native on anthropic, elsewhere Exa search via EXA_API_KEY plus a guarded HTTP fetch; file_summary when the \`stakgraph\` CLI is on PATH), plus any registry steps exposed through agentTools. ` +
+    `Autonomous tool-using sub-agent (AI SDK ToolLoopAgent) over a working dir: it explores and edits files with built-in tools (repo_overview, fulltext_search, bash, str_replace_based_edit_tool; web_search + web_fetch on any provider — native on anthropic, elsewhere Exa search via EXA_API_KEY plus a guarded HTTP fetch; file_summary when the \`stakgraph\` CLI is on PATH), plus any registry steps exposed through agentTools, and the tools of the MCP servers the run was launched with (\`mcp\`, on by default). ` +
     `Use it for open-ended work a fixed DAG can't express — diagnose and fix a codebase, drive an app, research a question — and always when a hard stop must still produce a deliverable; prefer the loop step for a fixed repeat. ` +
     `Keep arithmetic and format conversion out of its head: expose a tool step for it (e.g. timestamp hh:mm:ss / mm:ss / seconds → seconds, offsets, end times) or return a typed schema that code post-processes. ` +
     `It returns a free-form report (finalAnswer), a structured object (schema), or the final text. Needs the provider's key (secret store or env), and git + rg on PATH for the built-ins (toolFilter: ['none'] needs neither). Output: { result, object?, steps, usage, cost } (+ messages when returnMessages; + session: { id, turn, offset } when session is set; + stopped: { tool } when a tool ended the turn).\n\n` +
@@ -1062,6 +1070,12 @@ export default defineStep({
       .default([])
       .describe(
         "secret NAMES (from the deployment's secret store) to inject as env vars into the bash tool's subprocess — the agent writes `$NAME` in commands (e.g. curl auth headers) and the shell expands it at exec time. The VALUE never enters the prompt, the model's context, or the event log: bash gets it via env only, and every tool output is masked before the model sees it. Grant narrowly (a dedicated research sub-agent), never to a drafting/producing agent. Residual risk (accepted): a prompt-injected agent can still SEND $NAME somewhere — masking stops leakage into context/logs, not egress.",
+      ),
+    mcp: z
+      .boolean()
+      .default(true)
+      .describe(
+        "give this agent the CALLER's MCP servers as tools — the ones its run was launched with (`POST …/run { mcp }`), named `<server>_<tool>`; a run launched without any has none, whatever this says. `false` keeps an agent to its own tools (a judge, a narrow researcher), and the sub-agents and jobs it launches get none either.",
       ),
     model: z
       .string()
@@ -1333,7 +1347,10 @@ export default defineStep({
     // A pinned grant (`clip/shout@v1`) is loaded once here so the sync
     // lookup below finds it (src/step-ref.ts).
     if (ctx?.registry) for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(ctx.registry, name);
-    const registryTools = buildRegistryTools(cfg.agentTools, ctx?.registry, ctx, tool);
+    // `mcp: false`: the caller's servers stop here — a sub-agent, a job or a
+    // child run this agent launches through its tools gets none.
+    const toolCtx = !cfg.mcp && ctx?.mcp ? withoutMcp(ctx) : ctx;
+    const registryTools = buildRegistryTools(cfg.agentTools, ctx?.registry, toolCtx, tool);
     // A tool-step whose output is marked `withStop` (core.ts) ends the turn
     // after this tool round (a device that has not answered, an approval
     // waiting on a person): the loop stops, and the one answer turn below
@@ -1433,6 +1450,7 @@ export default defineStep({
     if (session?.system != null && session.system !== cfg.system) {
       console.warn(`[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`);
     }
+    let closeMcp: (() => Promise<void>) | undefined;
     try {
       // Web tools — web_search + web_fetch on EVERY provider (aieo: native on
       // anthropic; Exa search + guarded HTTP fetch elsewhere — and everywhere
@@ -1455,6 +1473,23 @@ export default defineStep({
       wrapToolsWithMask(webTools, secretValues);
       wrapToolsWithEmit(webTools, ctx, calls);
       Object.assign(tools, webTools);
+      // The caller's MCP servers (`ctx.mcp`, src/mcp-servers.ts): one client
+      // each for this step, their tools after everything else and in name
+      // order, masked of the credentials, a run event per call like any tool.
+      // Not subject to toolFilter: the caller granted them.
+      if (cfg.mcp && ctx?.mcp?.length) {
+        const mcp = await connectMcpTools(ctx.mcp, {
+          tool,
+          jsonSchema,
+          toModelOutput: registryToolModelOutput,
+          taken: Object.keys(tools),
+          maxChars: () => resultCap,
+        });
+        closeMcp = mcp.close;
+        wrapToolsWithMask(mcp.tools, [...secretValues, ...mcp.secretValues]);
+        wrapToolsWithEmit(mcp.tools, ctx, calls);
+        Object.assign(tools, mcp.tools);
+      }
       // Steps that completed BEFORE a mid-stream failure are unreachable through
       // the stream's result promises — `steps`, `responseMessages`, `usage` and
       // `text` all reject with the stream error — so the only way to keep that
@@ -1971,6 +2006,7 @@ export default defineStep({
       return await finish({ result: final, steps: stepsUsed, usage, cost });
     } finally {
       session?.release();
+      await closeMcp?.();
     }
   },
 });
