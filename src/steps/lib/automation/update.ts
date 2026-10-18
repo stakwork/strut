@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { approvedOnce, brief, find, grantField, grantFor, grantKey, grantOf, keptGrant, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
+import { approvedOnce, brief, comingFires, find, grantField, grantFor, grantKey, grantOf, keptGrant, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
 
 /** Change an automation's name, prompt, schedule or grant, or pause or
  *  resume it, once the person allows it. Its grant's key stays with it:
@@ -27,7 +27,7 @@ export default defineStep({
     const details: string[] = [];
     if (cfg.name !== undefined && cfg.name !== current.name) details.push(`Name: “${cfg.name}”`);
     if (cfg.trigger) {
-      const { summary, next } = unwrap(cap.api.preview(cfg.trigger));
+      const { summary, next } = comingFires(unwrap(cap.api.preview(cfg.trigger)));
       details.push(`Runs: ${schedule(summary, next, cfg.trigger.tz)}`);
     }
     if (cfg.name !== undefined && cfg.name.toLowerCase() !== current.name.toLowerCase()) {

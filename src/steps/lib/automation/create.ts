@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { approvedOnce, brief, grantField, grantFor, grantKey, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unwrap } from "./_shared.js";
+import { approvedOnce, brief, comingFires, grantField, grantFor, grantKey, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unwrap } from "./_shared.js";
 
 /**
  * Set up an automation on the steps' workflow, once the person allows it
@@ -22,7 +22,7 @@ export default defineStep({
     if (existing) throw new Error(`An automation named "${existing.name}" exists already (id ${existing.id}): change it with automation/update, or pick another name.`);
     const grant = grantFor(cap, cfg.grant);
     const key = grant ? grantKey(ctx) : undefined;
-    const { summary, next } = unwrap(cap.api.preview(cfg.trigger));
+    const { summary, next } = comingFires(unwrap(cap.api.preview(cfg.trigger)));
     const intent = { action: `Create the automation “${cfg.name}”`, content: cfg.prompt, details: [`Runs: ${schedule(summary, next, cfg.trigger.tz)}`] };
     return approvedOnce(ctx, cap, intent, async () => {
       const callback = await cap.callbackOf(ctx.runId);

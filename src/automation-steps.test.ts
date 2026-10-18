@@ -136,6 +136,10 @@ describe("automation/* steps", () => {
     assert.equal(stored!.callback, undefined, "a call outside a launched run has no callback to inherit");
 
     await assert.rejects(run(create, { name: "friday LIST", prompt: "again", trigger: weekly }), /exists already/);
+    // A one-off already past (a wrong year) is refused before any card.
+    const asks = asked.length;
+    await assert.rejects(run(create, { name: "Sand the tops", prompt: "p", trigger: { every: "once", at: "2025-10-18T13:00", tz: "Europe/London" } }), /no runs to come/);
+    assert.equal(asked.length, asks);
     // What the card shows whole: a one-line name, a prompt within a page.
     await assert.rejects(run(create, { name: "A\nRuns: never", prompt: "p", trigger: weekly }), /one line/);
     await assert.rejects(run(create, { name: "x".repeat(101), prompt: "p", trigger: weekly }));

@@ -213,6 +213,15 @@ export function schedule(summary: string, next: string[], tz: string | undefined
   return summary + (fires.length ? `; next ${fires.join(", ")}` : " (no runs to come)");
 }
 
+/** A schedule with no fire to come is refused before anyone is asked: a
+ *  one-off set in the past (a wrong year, a time gone) would be allowed dead. */
+export function comingFires<T extends { summary: string; next: string[] }>(preview: T): T {
+  if (!preview.next.length) {
+    throw new Error(`"${preview.summary}" has no runs to come: its time has passed. Check today's date and time, then set it again.`);
+  }
+  return preview;
+}
+
 /** A policy result's error as the step's failure. */
 export function unwrap<T>(result: ({ ok: true } & T) | { error: string }): T {
   if ("error" in result) throw new Error(result.error);
