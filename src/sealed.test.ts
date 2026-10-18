@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { z } from "zod";
 import { defineStep, type Flow, type Step, type StepRegistry } from "./core.js";
 import { flowClosure } from "./closure.js";
-import { DEFAULT_SEALED_STEPS, isSealedStep, sealedInClosure, sealedStepPatterns } from "./sealed.js";
+import { DEFAULT_SEALED_STEPS, grantWidenedBy, isSealedStep, sealedInClosure, sealedStepPatterns } from "./sealed.js";
 
 const def = (type: string, sealed?: boolean) =>
   defineStep({ type, input: z.any(), output: z.any(), ...(sealed ? { sealed } : {}), run: async () => ({}) });
@@ -23,6 +23,15 @@ const resolver = (flows: Record<string, Flow>) => ({
 });
 
 describe("sealed (pure)", () => {
+  it("a run's params may narrow a grant, never widen it", () => {
+    const defaults = { tools: ["log", "clip/trim"], system: "You trim clips." };
+    assert.equal(grantWidenedBy(defaults, { tools: ["log"], system: "Trim exec output." }, registry), null, "fewer tools, any prompt");
+    assert.equal(grantWidenedBy(defaults, { tools: ["log", "exec"] }, registry), '"exec"');
+    assert.equal(grantWidenedBy(defaults, { tools: ["gaia/evaluate@v2"] }, registry), '"gaia/evaluate@v2"', "a versioned ref is its step");
+    assert.equal(grantWidenedBy(defaults, { extra: { deep: ["gaia/*"] } }, registry), '"gaia/*" (reaches "gaia/get-task")', "anywhere, as a glob");
+    assert.equal(grantWidenedBy({}, { tools: ["not-a-step"], n: 3 }, registry), null, "words that name no step are knobs");
+  });
+
   it("the namespace list: the defaults plus STRUT_SEALED", () => {
     assert.deepEqual(sealedStepPatterns({}), DEFAULT_SEALED_STEPS);
     assert.deepEqual(sealedStepPatterns({ STRUT_SEALED: " secret/*, meta/* ,," }), [...DEFAULT_SEALED_STEPS, "secret/*"]);

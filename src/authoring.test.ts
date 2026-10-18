@@ -190,6 +190,10 @@ describe("authoring capability (the meta surface)", () => {
     const seededRuns = (await authoring.listRuns("pod-pr")) as any;
     assert.deepEqual(seededRuns.runs.map((r: any) => r.runId), [seeded.runId]);
 
+    // Its params are knobs: they grant no step it does not grant itself.
+    const widened = (await authoring.runWorkflow("cand-flow", {}, { tools: ["log"] })) as any;
+    assert.match(String(widened.error), /params may not grant a step the workflow "cand-flow" does not already: "log"/);
+
     // The stamped candidate runs, and its run history reads back.
     const result = (await authoring.runWorkflow("cand-flow", {})) as any;
     assert.equal(result.status, "success", JSON.stringify(result.error));

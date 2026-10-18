@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { approvedOnce, brief, find, grantField, grantFor, grantKey, grantOf, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
+import { approvedOnce, brief, find, grantField, grantFor, grantKey, grantOf, keptGrant, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
 
 /** Change an automation's name, prompt, schedule or grant, or pause or
  *  resume it, once the person allows it. Its grant's key stays with it:
@@ -52,6 +52,6 @@ export default defineStep({
         }),
       );
       return { changed: brief(saved.automation) };
-    }, grant && { ...grant, automation: key, name: cfg.name ?? current.name });
+    }, grant ? { ...grant, automation: key, name: cfg.name ?? current.name } : keptGrant(cap, current, cfg.name ?? current.name));
   },
 });

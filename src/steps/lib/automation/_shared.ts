@@ -29,7 +29,9 @@ import { journal, journalKey } from "../job/_shared.js";
  * name, and the key is kept in the run's input (`input.grant`), where the
  * host's own steps read it at each fire. The key is strut's, never the
  * model's: a run's step that acts on a grant names it from `ctx.input`, and
- * the model cannot write that.
+ * the model cannot write that. A change or a run of an automation that has
+ * one, with no new grant, hands the card its key and name alone
+ * (`keptGrant`), so the person sees what it may already do.
  */
 export interface AutomationStepsOptions {
   /** The workflow the steps schedule. */
@@ -159,6 +161,15 @@ export function grantOf(a: AutomationView): string | undefined {
  *  same question), and another for any other. */
 export function grantKey(ctx: StepContext): string {
   return "g-" + createHash("sha256").update(`${ctx.runId}\n${ctx.path}`).digest("hex").slice(0, 24);
+}
+
+/** What the card is handed about `current`'s grant when the call names no
+ *  new one: its key and name alone, so the host says what it already may
+ *  do (a changed prompt posts where the old one did). Nothing on a host
+ *  without grants, or for an automation without one. */
+export function keptGrant(cap: AutomationStepsCapability, current: AutomationView, name = current.name): Record<string, unknown> | undefined {
+  const key = grantOf(current);
+  return cap.grants && key ? { automation: key, name } : undefined;
 }
 
 /** The `grant` a host that takes one checks; any other host refuses it. */

@@ -170,7 +170,9 @@ describe("automation/* steps", () => {
 
     // An update keeps the key: without a grant it asks nothing about one, with one under the same key.
     await run(update, { id: stored!.id, prompt: "Post hello" });
-    assert.equal(asked.at(-1)!.grant, undefined);
+    assert.deepEqual(asked.at(-1)!.grant, { automation: first.automation, name: "Hive test" }, "the card names the grant it keeps");
+    await run(runNow, { id: stored!.id });
+    assert.deepEqual(asked.at(-1)!.grant, { automation: first.automation, name: "Hive test" });
     assert.equal(((await strut.automations.list(WF))[0]!.input as any).grant, first.automation);
     const regranted = await run(update, { id: stored!.id, grant: { chats: ["Hive", "Kate"], max_price_sats: 0 } });
     assert.equal(asked.at(-1)!.intent.action, "Change “Hive test”");
@@ -179,6 +181,8 @@ describe("automation/* steps", () => {
     assert.equal(((await strut.automations.list(WF))[0]!.input as any).grant, first.automation);
     // One that had none gets a key with its first grant.
     const plain = (await strut.automations.create(WF, { name: "Plain", trigger: weekly, input: { name: "Plain", prompt: "p" } })) as any;
+    await run(update, { id: plain.automation.id, enabled: false });
+    assert.equal(asked.at(-1)!.grant, undefined, "one with no grant names none");
     await run(update, { id: plain.automation.id, grant: posts });
     const minted = asked.at(-1)!.grant.automation;
     assert.match(minted, /^g-/);
