@@ -47,6 +47,13 @@ STRUT_WORKSPACE_BACKEND=fs      # keep workflows on disk, no Neo4j needed
 ANTHROPIC_API_KEY=sk-ant-...    # for llm/agent steps and the AI builder — or OPENAI_API_KEY,
                                 # GOOGLE_API_KEY, OPENROUTER_API_KEY, XAI_API_KEY; pick the model in
                                 # the AI chat. Keys can also be pasted under Secrets in the UI.
+# STRUT_API_KEY=…               # shared secret every request must carry (Bearer, or ?key= — the UI
+                                # asks for it once). Unset, every endpoint is open: fine on your
+                                # laptop, set it before anyone else can reach the port.
+# STRUT_SECRET_KEY=…            # passphrase encrypting the secret store (what you paste under
+                                # Secrets). Unset, a fixed dev passphrase is used. Any long random
+                                # string (`openssl rand -hex 32`); set it before the first secret is
+                                # stored — changing it later locks the stored ones out.
 ```
 
 Then:
@@ -57,7 +64,7 @@ npm run dev
 
 Open http://localhost:3000, and ask the AI builder for a workflow or draw one on the canvas.
 
-Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image. The compose pulls the published images (`ghcr.io/stakwork/strut`, built from main on every merge, and its browser), and runs the graph backend beside its own Neo4j (Browser at http://localhost:7475, `bolt://localhost:7689`, `neo4j` / `testtest`):
+Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image. The compose pulls the published images (`ghcr.io/stakwork/strut`, built from main on every merge, and its browser), and runs the graph backend beside its own Neo4j (Browser at http://localhost:7475, `bolt://localhost:7689`, `neo4j` / `testtest`). It reads the same `.env`, so put `STRUT_API_KEY` and `STRUT_SECRET_KEY` there before the port is reachable by anyone but you:
 
 ```bash
 docker compose up -d
