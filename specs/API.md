@@ -231,6 +231,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | `error`        | `{ message, stack? }`; error only. A cancelled run has neither |
 | `workflowHash` | content hash of the version that ran — what `GET …/versions` counts by |
 | `stepCounts`   | executions per step type across the whole tree; a tool an agent called is `tool:<type>` |
+| `totals`       | `{ modelCalls, usage, cost }` — what the run's model calls spent: the sum of its `step.end` events' fields of the same names (§5.3), sub-agents included, and a run a `meta/run-workflow` step waited on (so summing summaries counts such a child twice). `cost` is dollars at aieo's list prices, an estimate — not the gateway's bill. Absent when nothing called a model |
 | `actor`, `principal` | who launched it and who is billed, when known |
 | `automation`   | `{ id }` when a schedule fired it |
 | `job`          | the job it was launched under (§3), when one was given |
@@ -283,6 +284,7 @@ One object per line of the run's append-only log. Common fields:
 | `transcript` | on an agent step's `step.end`: the URL of its session (the `messages` never ride in this response) |
 | `nodes`      | on `step.end`: the graph nodes the step read or wrote, `[{ ref_id, node_type?, name? }]`, never truncated — on a graph step the workflow ran (`graph/graph-get`) and on one an agent called (`tool:graph_graph_get`) alike. Only nodes the caller NAMED (fetched, expanded, created, edited, moved): a search's hits and the neighbors or children a call listed are not in it. `name` is the node's label when it was touched. Absent when the step touched none |
 | `toolCallId` | on a tool call's `step.start` / `step.end` / `step.error` (`stepType: tool:<name>`): the AI SDK's id for that call — the key to the same call's `tool-result` part in the agent's transcript (§5), which holds the full result where `output` here is a 1,500-char preview |
+| `modelCalls`, `usage`, `cost` | on the `step.end` of a step that called a model — an `agent`, an `llm`, a sub-agent's or an llm's tool call (whose `output` here is a preview string) — or waited on a run that did (`meta/run-workflow`: that run's totals): how many calls, their tokens `{ inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, totalTokens }`, and their cost in dollars. Each spend is on exactly one event — an agent's own fields never include its sub-agents' — so a run's spend is their sum (the summary's `totals`). Absent on a step that called none |
 
 | Type              | Meaning |
 | ----------------- | ------- |

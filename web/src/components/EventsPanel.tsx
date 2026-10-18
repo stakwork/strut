@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import type { ComponentChildren } from "preact";
 import * as api from "../api";
 import { eventTone, statusTone } from "../helpers";
 import { ValueFields } from "./ValueFields";
@@ -38,6 +39,8 @@ export function EventsPanel(props: {
   events: api.RunEvent[];
   /** Navigate to another workflow's run (used by run-ref links). */
   onOpenRun?: (workflow: string, runId: string) => void;
+  /** A column beside the log — the run overview. */
+  aside?: ComponentChildren;
 }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -76,60 +79,63 @@ export function EventsPanel(props: {
   };
 
   return (
-    <div class="shell-events" ref={scrollRef} onScroll={onScroll}>
-      {!atBottom && (
-        <div class="events-jump-anchor">
-          <button class="events-jump" onClick={jumpToBottom} title="Jump to the latest event">↓ Latest</button>
-        </div>
-      )}
-      <div class="events-header">Events ({props.events.length})</div>
-      <EvolveChart events={props.events} onOpenRun={props.onOpenRun} />
-      {props.events.map((evt, i) => {
-        const hasData = evt.input != null || evt.output != null || evt.error != null;
-        const isOpen = expanded === i;
-        const refs = props.onOpenRun ? runRefs(evt) : [];
-        return (
-          <div key={i} class="event-row">
-            <div class="event-row-summary" onClick={() => hasData && setExpanded(isOpen ? null : i)}>
-              <span class={`event-type event-type-${eventTone(evt.type)}`}>{evt.type}</span>
-              <span class="event-path">{evt.path}</span>
-              {refs.map((r, j) => (
-                <button
-                  key={j}
-                  class="event-run-link"
-                  title={`Open ${r.workflow} / ${r.runId}`}
-                  onClick={(e) => { e.stopPropagation(); props.onOpenRun!(r.workflow, r.runId); }}
-                >
-                  ↗ {r.label ?? "open run"}
-                </button>
-              ))}
-              <span class="event-duration">{evt.durationMs != null ? `${evt.durationMs}ms` : ""}</span>
-            </div>
-            {isOpen && (
-              <div class="event-detail">
-                {evt.input != null && (
-                  <>
-                    <div class="event-detail-label">Input</div>
-                    <ValueFields value={evt.input} blockClass="event-detail-block" />
-                  </>
-                )}
-                {evt.output != null && (
-                  <>
-                    <div class="event-detail-label">Output</div>
-                    <ValueFields value={evt.output} blockClass="event-detail-block" />
-                  </>
-                )}
-                {evt.error != null && (
-                  <>
-                    <div class="event-detail-label">Error</div>
-                    <ValueFields value={evt.error} blockClass="event-detail-block tone-error" />
-                  </>
-                )}
-              </div>
-            )}
+    <div class="shell-events">
+      <div class="events-log" ref={scrollRef} onScroll={onScroll}>
+        {!atBottom && (
+          <div class="events-jump-anchor">
+            <button class="events-jump" onClick={jumpToBottom} title="Jump to the latest event">↓ Latest</button>
           </div>
-        );
-      })}
+        )}
+        <div class="events-header">Events ({props.events.length})</div>
+        <EvolveChart events={props.events} onOpenRun={props.onOpenRun} />
+        {props.events.map((evt, i) => {
+          const hasData = evt.input != null || evt.output != null || evt.error != null;
+          const isOpen = expanded === i;
+          const refs = props.onOpenRun ? runRefs(evt) : [];
+          return (
+            <div key={i} class="event-row">
+              <div class="event-row-summary" onClick={() => hasData && setExpanded(isOpen ? null : i)}>
+                <span class={`event-type event-type-${eventTone(evt.type)}`}>{evt.type}</span>
+                <span class="event-path">{evt.path}</span>
+                {refs.map((r, j) => (
+                  <button
+                    key={j}
+                    class="event-run-link"
+                    title={`Open ${r.workflow} / ${r.runId}`}
+                    onClick={(e) => { e.stopPropagation(); props.onOpenRun!(r.workflow, r.runId); }}
+                  >
+                    ↗ {r.label ?? "open run"}
+                  </button>
+                ))}
+                <span class="event-duration">{evt.durationMs != null ? `${evt.durationMs}ms` : ""}</span>
+              </div>
+              {isOpen && (
+                <div class="event-detail">
+                  {evt.input != null && (
+                    <>
+                      <div class="event-detail-label">Input</div>
+                      <ValueFields value={evt.input} blockClass="event-detail-block" />
+                    </>
+                  )}
+                  {evt.output != null && (
+                    <>
+                      <div class="event-detail-label">Output</div>
+                      <ValueFields value={evt.output} blockClass="event-detail-block" />
+                    </>
+                  )}
+                  {evt.error != null && (
+                    <>
+                      <div class="event-detail-label">Error</div>
+                      <ValueFields value={evt.error} blockClass="event-detail-block tone-error" />
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {props.aside}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import type { SecretsCapability } from "../../capabilities.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages } from "../../core.js";
+import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
@@ -826,17 +826,21 @@ export function maskDeep(value: unknown, values: string[]): unknown {
   return value;
 }
 
-/** Re-attach the markers a rebuilt container lost: node refs and media as
- *  they are (ids and image bytes, not secrets); a session masked like
- *  everything else — a tool result echoing `$KEY` sits inside it too. */
+/** Re-attach the markers a rebuilt container lost: node refs, media and
+ *  spend as they are (ids, image bytes and counts, not secrets); a session
+ *  masked like everything else — a tool result echoing `$KEY` sits inside
+ *  it too. */
 function carryMarkers<T>(rebuilt: T, original: unknown, values: string[]): T {
   const session = messagesOf(original);
-  return withMedia(
-    withMessages(
-      withAccessedNodes(rebuilt, accessedNodesOf(original) ?? []),
-      session ? (maskDeep(session, values) as unknown[]) : undefined,
+  return withUsage(
+    withMedia(
+      withMessages(
+        withAccessedNodes(rebuilt, accessedNodesOf(original) ?? []),
+        session ? (maskDeep(session, values) as unknown[]) : undefined,
+      ),
+      mediaOf(original),
     ),
-    mediaOf(original),
+    usageOf(original),
   );
 }
 
@@ -970,6 +974,9 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
           ...idField,
           ...(nodes ? { nodes } : {}),
           ...(messages ? { messages } : {}),
+          // A sub-agent's spend (or a waited-on run's): the output above is
+          // a string cut at 1500 chars, so it rides as fields of its own.
+          ...takeUsage(out),
         });
         return out;
       } catch (e) {
@@ -1719,7 +1726,8 @@ export default defineStep({
           });
           out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
         }
-        return withMessages(cfg.returnMessages ? { ...out, messages: turn } : out, turn);
+        const spent = { modelCalls: out["steps"] as number, usage: out["usage"] as TokenUsage, cost: out["cost"] as number };
+        return withUsage(withMessages(cfg.returnMessages ? { ...out, messages: turn } : out, turn), spent);
       };
 
       // Token usage + cost across the WHOLE agent loop: the per-step sum banked
