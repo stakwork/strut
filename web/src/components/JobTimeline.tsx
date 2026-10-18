@@ -299,7 +299,7 @@ function findTurnArtifact(threads: api.JobThread[], id: string, runId: string): 
 
 /** Where a deliverable opens: its url, or a url inside small inline JSON
  *  (a pull request ref carries `{ url, number, state }`). */
-function linkOf(ref: { url?: string; content?: unknown }): string | null {
+export function linkOf(ref: { url?: string; content?: unknown }): string | null {
   if (ref.url) return ref.url;
   const c = ref.content;
   if (typeof c === "string" && c.startsWith("{")) {

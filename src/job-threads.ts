@@ -267,8 +267,10 @@ export function foldJobThreads(runs: ThreadRun[], turnLines: SessionTurn[] = [],
         ...(turnNo !== undefined ? { turn: turnNo } : {}),
         ...(offset !== undefined ? { offset } : {}),
         ...(sessionId ? { session: sessionId } : {}),
-        ...(out?.["usage"] !== undefined ? { usage: coerceUsage(out["usage"]) } : {}),
-        ...(typeof out?.["cost"] === "number" ? { cost: out["cost"] } : {}),
+        // The event's own fields (`withUsage`) first: a sub-agent's output in
+        // the log is a cut string. A log from before them: the output's.
+        ...((p.last?.usage ?? out?.["usage"]) !== undefined ? { usage: coerceUsage(p.last?.usage ?? out!["usage"]) } : {}),
+        ...(typeof (p.last?.cost ?? out?.["cost"]) === "number" ? { cost: (p.last?.cost ?? out!["cost"]) as number } : {}),
         ...(context ? { context } : {}),
         toolCalls,
         ...(p.messages ? { transcript: transcriptUrl(run.workflow, run.runId, path) + (sessionId ? "?full=1" : "") } : {}),

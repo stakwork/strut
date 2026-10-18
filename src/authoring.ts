@@ -1,9 +1,9 @@
 import { join } from "node:path";
-import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, type AccessedNode, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
+import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
-import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
+import { countUsage, generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { flowClosure, stepHashesFor } from "./closure.js";
@@ -827,13 +827,20 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
         // flyout, hive's run graph) sees what the whole tree read or wrote.
         // A ref the child got from a peer keeps its peer tag. A log that
         // cannot be read leaves the result unmarked.
+        // What the child's model calls spent rides the same way
+        // (`withUsage`), so the launching step's `step.end` carries it and
+        // this run's totals include the run it waited on.
         const touched = new Map<string, AccessedNode>();
+        let spent: ModelUsage | undefined;
         try {
-          for (const e of await store.getRunEvents(flow.name, runId)) foldAccessedNodes(touched, e);
+          const events = await store.getRunEvents(flow.name, runId);
+          for (const e of events) foldAccessedNodes(touched, e);
+          const totals = countUsage(events);
+          if (totals.modelCalls || totals.cost) spent = totals;
         } catch {
           // the result stands without them
         }
-        return withAccessedNodes(result, [...touched.values()]);
+        return withUsage(withAccessedNodes(result, [...touched.values()]), spent);
       } finally {
         tracked?.untrack();
       }

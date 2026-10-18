@@ -9,7 +9,7 @@ import { coreRegistry } from "../registry.js";
 import { CancelledError, RunController, isCancelledError } from "../../run-control.js";
 import { runWorkflow } from "../../runner.js";
 import { MemoryRunStore } from "../../store.js";
-import { withAccessedNodes, withMessages, withMedia, messagesOf, accessedNodesOf, mediaOf, defineStep, flow, step, type StepContext, type StepRegistry } from "../../core.js";
+import { withAccessedNodes, withMessages, withMedia, withUsage, usageOf, messagesOf, accessedNodesOf, mediaOf, defineStep, flow, step, type StepContext, type StepRegistry } from "../../core.js";
 import agent, {
   repoTree,
   textEdit,
@@ -386,6 +386,21 @@ describe("wrapToolsWithEmit (per-call nested run events)", () => {
     await tools.plain.execute({});
     const plainEnd = events.find((e) => e.type === "step.end" && e.path.endsWith("-plain"));
     assert.ok(!("nodes" in plainEnd), "unmarked results emit no nodes field");
+  });
+
+  it("moves a sub-agent's spend onto step.end — through secret masking — and takes it off the result", async () => {
+    const events: any[] = [];
+    const spent = { modelCalls: 3, usage: { inputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 0, outputTokens: 4, totalTokens: 7 }, cost: 0.12 };
+    const tools: Record<string, any> = {
+      agent: { execute: async () => withUsage({ result: "x".repeat(3000) + " sk-secret" }, spent) },
+    };
+    wrapToolsWithMask(tools, ["sk-secret"]);
+    wrapToolsWithEmit(tools, makeCtx(events));
+    const out = await tools.agent.execute({});
+    const end = events.find((e) => e.type === "step.end")!;
+    assert.equal(typeof end.output, "string", "the output itself is the cut string");
+    assert.deepEqual([end.modelCalls, end.usage, end.cost], [spent.modelCalls, spent.usage, spent.cost]);
+    assert.equal(usageOf(out), undefined, "taken, so nothing downstream reports it again");
   });
 
   it("carries the SDK's toolCallId on step.start / step.end / step.error, and nothing when the call has none", async () => {

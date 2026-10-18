@@ -629,6 +629,8 @@ export interface RunSummary {
   /** A run still in flight: the launch's title for its job, if it gave one.
    *  A finished run's summary has none — the jobs listing names the job. */
   jobTitle?: string;
+  /** What the run's model calls spent (absent when none did). */
+  totals?: { modelCalls: number; usage: TokenUsage; cost: number };
 }
 
 export interface RunEvent {
@@ -645,6 +647,14 @@ export interface RunEvent {
   /** Graph nodes the step named — read, expanded, written (never a search
    *  hit). On a `step.end`; an agent's are on its tool calls'. */
   nodes?: AccessedNode[];
+  /** On `run.start`: who launched the run, and the job it was launched under. */
+  actor?: string;
+  job?: string;
+  /** On a `step.end` whose step called a model (or waited on a run that
+   *  did): what it spent (`withUsage`, src/core.ts). */
+  modelCalls?: number;
+  usage?: TokenUsage;
+  cost?: number;
 }
 
 /** One graph node as the graph holds it now (`GET /graph/nodes/:ref_id`). */
@@ -659,6 +669,11 @@ export const getGraphNode = (refId: string) => fetchJSON<GraphNode>(`/graph/node
 
 export const listRuns = (workflow: string) =>
   fetchJSON<RunSummary[]>(`/workflows/${workflow}/runs`);
+
+/** The deliverables a finished run's output declared, resolved to links
+ *  (404 until the run has a summary). */
+export const getRunArtifacts = (workflow: string, runId: string) =>
+  fetchJSON<{ artifacts: ArtifactRef[] }>(`/workflows/${encodeURIComponent(workflow)}/runs/${runId}/artifacts`);
 
 /** A run executing right now in the server process (`GET /runs/active`). */
 export interface ActiveRun {

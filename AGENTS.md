@@ -40,7 +40,7 @@ strut/
 ├── images/browser/        # a second image, nothing of strut's in it: a Playwright SERVER (`playwright run-server`, the package baked in, tini, non-root) for hosts whose steps drive a browser over a websocket. `.github/workflows/publish-browser.yml` pushes it to ghcr.io/stakwork/strut-browser when this directory changes on main, tagged with the Playwright version its Dockerfile pins — the connecting host's `playwright-core` must be on the same major.minor (strut's own, package.json, is pinned to it). The compose file's `browser` service
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
-│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the four output markers — withAccessedNodes / withMessages / withMedia / withStop (readers accessedNodesOf / messagesOf / mediaOf / stopOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
+│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the five output markers — withAccessedNodes / withMessages / withMedia / withStop / withUsage (readers accessedNodesOf / messagesOf / mediaOf / stopOf / usageOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json. withUsage (what a step's model calls spent) is TAKEN off the output by whoever lifts it onto `step.end` as `modelCalls` / `usage` / `cost` (`takeUsage`), so a pack or subflow handing the same object on never reports it twice; `RunSummary.totals` is their sum (`tallyUsage`, store.ts)
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
 │   ├── search.ts          # searchSteps / searchWorkflows: the one matcher behind the sidebar filters, the Add Step picker and `GET /workflows?q=` — every word must hit the name (or the category / description), name hits rank first. The web UI imports it from here
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
@@ -180,6 +180,7 @@ strut/
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── step-depends.ts # dependsForSave: what the step editor saves as `depends` — a checked list, `[]` when the step had an explicit `depends` and nothing is checked (a parallel step stays parallel; unchecking every dep means none), omitted when it never had one (still implicitly sequential)
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
+        ├── run-overview.ts # foldRunOverview: a run's events → the run at a glance — status, duration, cost / model calls / tokens / tool calls (each `step.end`'s `withUsage` fields, an older log's agent / llm output), the failing step, and the TIMELINE rows: one per top-level step (a foreach's iterations folded in, ×N), under each what it started that a person opens — an agent, a sub-agent, an llm call, a child run (the launcher steps' `runId`) — with its span, cost and calls (pure; tested)
         ├── accessed-nodes.ts # foldAccessedNodes: a run's events → the graph nodes one step read or wrote (an agent's, through its tool calls), with the calls that touched each; type counts + filter (pure; tested)
         ├── elicitation.ts # the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[] for ConfigField + form helpers (pure; tested)
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat to the host named by ?embed_origin
@@ -199,7 +200,8 @@ strut/
         │   ├── ElicitationForm.tsx   # the builder's question at the end of the transcript: a form (Submit / Decline / ✕) or, for a secret, a password field posting to the /secret endpoint — the page a host's link opens (?chat=&elicit=)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc (+ the node-name typeahead for a field with `nodeType`, via graph-search)
         │   ├── CreateDialog.tsx      # new-workflow dialog
-        │   ├── EventsPanel.tsx       # bottom run-events panel
+        │   ├── EventsPanel.tsx       # bottom run-events panel: the log, and beside it an `aside` column (RunOverview)
+        │   ├── RunOverview.tsx       # the run at a glance, right of the event log: status + job chip, Cost and Model calls tiles, the spend split by who spent it, the run's time, the declared artifacts (`GET …/runs/:runId/artifacts`, the viewer) + its file listing, the timeline (hover card: time range, cost, calls; a click opens the step's flyout or the child run), then Claims (`GET /workflows/:name/evidence?runId=`) and the output, folded
         │   ├── EventsResizer.tsx     # drag handle for events panel height
         │   ├── Markdown.tsx          # tiny markdown renderer for chat output; `resolveLink` (the viewer's) turns a link whose target the caller can show into an in-place open, and is the only way an image renders — nothing but the scope's own files is loaded
         │   ├── RunInputPopover.tsx   # input-payload editor when triggering a run

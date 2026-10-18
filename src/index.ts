@@ -37,6 +37,8 @@ export {
   mediaOf,
   withStop,
   stopOf,
+  type ModelUsage,
+  withUsage,
 } from "./core.js";
 
 // Runner

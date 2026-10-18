@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { InputBlock } from "./input-block.js";
+import type { TokenUsage } from "./pricing.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -329,6 +330,13 @@ export interface RunEvent {
    *  (`step.end.messages`), where the full result lives. Absent outside a
    *  tool call. */
   toolCallId?: string;
+  /** On the `step.end` of a step that called a model — an `agent`, an
+   *  `llm`, a sub-agent's tool call — or waited on a run that did
+   *  (`meta/run-workflow`): what it spent, lifted from the output's
+   *  `withUsage` marker. A run's spend is the sum of these. */
+  modelCalls?: number;
+  usage?: TokenUsage;
+  cost?: number;
 }
 
 // ── Provenance convention: which graph nodes did a step touch? ─────────────
@@ -502,6 +510,49 @@ export function stopOf(output: unknown): boolean {
   return output !== null && typeof output === "object" && (output as Record<string, unknown>)[STOP_KEY] === true;
 }
 
+// ── Usage marker: what did a step's model calls spend? ──────────────────────
+
+/** What model calls spent: how many, their tokens, and their cost in dollars
+ *  at aieo's list prices (an estimate, not the gateway's bill). */
+export interface ModelUsage {
+  modelCalls: number;
+  usage: TokenUsage;
+  cost: number;
+}
+
+const USAGE_KEY = "_usage";
+
+/**
+ * Mark a step's output with what its model calls spent. The runner and
+ * `wrapToolsWithEmit` move it onto the step's `step.end` as `modelCalls`,
+ * `usage` and `cost` — fields of their own, never cut with the output — and
+ * TAKE it off the output as they do (`takeUsage`): a `pack`, a subflow or
+ * `run.end` handing the same object on reports nothing a second time, so a
+ * run's spend is the sum of its `step.end` events. The `agent` and `llm`
+ * steps mark their outputs, and `meta/run-workflow` marks its result with
+ * the totals of the run it waited on. Non-object outputs are left unmarked.
+ */
+export function withUsage<T>(output: T, spent: ModelUsage | undefined): T {
+  if (output === null || typeof output !== "object" || !spent) return output;
+  Object.defineProperty(output, USAGE_KEY, { value: spent, enumerable: false, configurable: true, writable: true });
+  return output;
+}
+
+/** The spend a step output was marked with (see `withUsage`), else undefined. */
+export function usageOf(output: unknown): ModelUsage | undefined {
+  if (output === null || typeof output !== "object") return undefined;
+  return (output as Record<string, unknown>)[USAGE_KEY] as ModelUsage | undefined;
+}
+
+/** The spend a step output was marked with, as `step.end` fields, taken
+ *  off the output; `{}` when it carries none. */
+export function takeUsage(output: unknown): Partial<ModelUsage> {
+  const v = usageOf(output);
+  if (!v) return {};
+  delete (output as Record<string, unknown>)[USAGE_KEY];
+  return { modelCalls: v.modelCalls, usage: v.usage, cost: v.cost };
+}
+
 /** Result of running a workflow. */
 export interface RunResult {
   runId: string;
@@ -539,6 +590,11 @@ export interface RunSummary {
    *  logs (`step-stats.ts`). Always written by the runner; absent only on
    *  summaries written before it existed. See `countSteps`. */
   stepCounts?: StepCounts;
+  /** What the run's model calls spent: the sum of its `step.end` events'
+   *  `modelCalls` / `usage` / `cost` — sub-agents included, and a run it
+   *  waited on (`meta/run-workflow`), so summing summaries counts such a
+   *  child twice. Absent when nothing called a model. See `countUsage`. */
+  totals?: ModelUsage;
 }
 
 /** Keyed by `stepType` as emitted — a step an agent called as a tool is

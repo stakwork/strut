@@ -1,6 +1,7 @@
 import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { McpServer, RunEvent, RunSummary, StepCounts } from "./core.js";
+import type { McpServer, ModelUsage, RunEvent, RunSummary, StepCounts } from "./core.js";
+import { addUsage, emptyUsage } from "./pricing.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -330,6 +331,23 @@ export function countSteps(events: RunEvent[]): StepCounts {
   const counts: StepCounts = {};
   for (const e of events) tallyStep(counts, e);
   return counts;
+}
+
+/** Add one event's spend to `RunSummary.totals`: a `step.end` carrying the
+ *  fields `withUsage` puts there (core.ts). */
+export function tallyUsage(totals: ModelUsage, event: RunEvent): void {
+  if (event.type !== "step.end") return;
+  if (event.modelCalls === undefined && event.cost === undefined && event.usage === undefined) return;
+  totals.modelCalls += event.modelCalls ?? 0;
+  totals.cost += event.cost ?? 0;
+  if (event.usage) totals.usage = addUsage(totals.usage, event.usage);
+}
+
+/** `RunSummary.totals` for a whole log. */
+export function countUsage(events: RunEvent[]): ModelUsage {
+  const totals: ModelUsage = { modelCalls: 0, usage: emptyUsage(), cost: 0 };
+  for (const e of events) tallyUsage(totals, e);
+  return totals;
 }
 
 export function summarizeFromEvents(
