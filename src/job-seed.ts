@@ -40,6 +40,10 @@ export interface JobSeedOptions {
    *  is not one: that is the `Job` Concept's children, which strut's prompt
    *  already opens. */
   system?: string;
+  /** The model the agent runs on, in place of the template's. `null`: none
+   *  pinned, so it runs on the deployment's connected model
+   *  (`STRUT_DEFAULT_MODEL`), which a desktop host changes at run time. */
+  model?: string | null;
 }
 
 export const JOB_WORKFLOW = "job";
@@ -59,8 +63,10 @@ const JOB_YAML = new URL("./workflows/job.yaml", import.meta.url);
  *  hashed and published. Pure over the file: no workspace. Shared with the
  *  `orchestrator` seed (src/orchestrator-seed.ts), whose delta is the same. */
 export async function templateWithDelta(template: URL, opts?: JobSeedOptions): Promise<string> {
-  const doc = yaml.load(await readFile(template, "utf-8")) as { params: { tools: string[]; system: string } };
+  const doc = yaml.load(await readFile(template, "utf-8")) as { params: { tools: string[]; system: string; model?: string } };
   if (opts?.tools?.length) doc.params.tools.push(...opts.tools);
+  if (opts?.model === null) delete doc.params.model;
+  else if (opts?.model) doc.params.model = opts.model;
   if (opts?.system?.trim()) doc.params.system = `${doc.params.system.trimEnd()}\n\n${opts.system.trim()}\n`;
   return yaml.dump(doc, { lineWidth: -1, noRefs: true });
 }

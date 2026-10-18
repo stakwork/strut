@@ -54,6 +54,16 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(contentHash(await orchestratorWorkflowYaml({ tools: [], system: " " })), contentHash(plain));
   });
 
+  it("is sealed: a job's meta/run-workflow never reaches a host's private tools through it", async () => {
+    assert.equal((yaml.load(await orchestratorWorkflowYaml()) as { sealed?: boolean }).sealed, true);
+  });
+
+  it("the host's delta may name the model, or none (null), so the turn runs on the connected model", async () => {
+    assert.equal(paramsOf(await orchestratorWorkflowYaml({ model: "openai/gpt-5" })).model, "openai/gpt-5");
+    assert.ok(!("model" in paramsOf(await orchestratorWorkflowYaml({ model: null }))));
+    assert.equal(paramsOf(await orchestratorWorkflowYaml()).model, paramsOf(await orchestratorWorkflowYaml({ tools: [] })).model);
+  });
+
   it("createStrut seeds it by content hash beside job: once, as a seed; a reboot is a no-op; a changed delta publishes; `orchestrator: false` seeds nothing", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orch-seed-"));
     const fresh = await mkdtemp(join(tmpdir(), "orch-seed-off-"));

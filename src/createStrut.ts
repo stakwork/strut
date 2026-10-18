@@ -90,6 +90,7 @@ import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
+import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -290,6 +291,12 @@ export interface StrutOptions<TServices = unknown> {
    *  detached. Seeded as `job` is, with the same host delta (`{ tools,
    *  system }`, appended after strut's). `false` seeds nothing. */
   orchestrator?: false | OrchestratorSeedOptions;
+  /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
+   *  door onto the automations: the one workflow they schedule, and the
+   *  registry step that asks the person before one is made, changed,
+   *  deleted or run (`{ intent }` → `{ approved }`, or a `withStop`
+   *  output while nobody has answered). Absent: the steps refuse. */
+  automation?: AutomationStepsOptions;
   /** The built-in automations strut ships (src/system-workflows.ts),
    *  installed at boot with their automations off. `false` installs none. */
   systemWorkflows?: false;
@@ -2708,17 +2715,20 @@ export async function createStrut<TServices = unknown>(
   const launchCap = (opts.services as Record<string, unknown> | undefined)?.["jobs"]
     ? undefined
     : ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined);
+  /** The callback URL of the run `runId` belongs to: the ROOT run's, since
+   *  only a top-level launch keeps one, and a turn may be a child run
+   *  (meta/run-workflow) of the one the host launched. */
+  async function rootCallbackOf(runId: string): Promise<string | null> {
+    let root = controllersByRunId.get(runId);
+    while (root?.parent) root = root.parent;
+    return root ? store.getRunCallback(root.workflow, root.runId) : null;
+  }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal }) => {
       const problem = idProblem(job);
       if (problem) throw new Error(`job "${job}" ${problem}`);
       const flow = await workspace.getWorkflow("job");
-      // The ROOT run's: only a top-level launch keeps a callback, and the
-      // turn may be a child run (meta/run-workflow) of the one the host
-      // launched.
-      let root = controllersByRunId.get(from);
-      while (root?.parent) root = root.parent;
-      const url = root ? await store.getRunCallback(root.workflow, root.runId) : null;
+      const url = await rootCallbackOf(from);
       // After the awaits: from here to launchDetached's trackRun is
       // synchronous, so two launches of one job cannot both pass.
       const running = [...controllers.values()].find((c) => c.job?.id === job);
@@ -2815,6 +2825,20 @@ export async function createStrut<TServices = unknown>(
       launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
   });
+  // The `automation/*` steps' door (src/steps/lib/automation/), unless the
+  // consumer's bag brought its own: an automation made from a turn reports
+  // where that turn does.
+  const bag = services as Record<string, unknown>;
+  if (!bag["automations"]) {
+    bag["automations"] = {
+      api: automations,
+      ...(opts.automation ?? {}),
+      callbackOf: async (runId: string) => {
+        const url = await rootCallbackOf(runId);
+        return url ? { url } : undefined;
+      },
+    } satisfies AutomationStepsCapability;
+  }
   // Scheduling adopts an ownerless workflow: the scheduler's runs are billed
   // to the owner, and whoever schedules it just made it spend (§2).
   automationsRoutes(app, automations, { adopt: async (name, c) => adoptWorkflow(name, await resolveActor(c)) });

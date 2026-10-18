@@ -9,8 +9,9 @@
 // built by scanning steps/) — no graph at all. STRUT_HOST_CONFIG names a
 // JSON file with the host's delta for the workflows strut ships —
 // `{ job?, orchestrator? }`, each `{ tools?, system? }` as createStrut takes
-// it — for a host that runs this server rather than embedding createStrut
-// (Peel writes it at launch).
+// it, and `automation?: { workflow, approve? }` for the automation/* steps —
+// for a host that runs this server rather than embedding createStrut (Peel
+// writes it at launch).
 //
 // This file is the canonical "library usage" example: anything you
 // see here, your own consumer code can do too. Pass your own
@@ -31,10 +32,10 @@ let strutInstance: Strut | null = null;
 
 /** The host's delta for the shipped workflows, from the JSON file
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator? }`, each `{ tools?,
- *  system? }`. Nothing when unset. A file that cannot be read or parsed
+ *  system? }`, and `automation?: { workflow, approve? }`. Nothing when unset. A file that cannot be read or parsed
  *  fails the boot, rather than seeding the workflows without the host's
  *  tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<StrutOptions, "job" | "orchestrator"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<StrutOptions, "job" | "orchestrator" | "automation"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -43,15 +44,31 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<St
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "automation"> = {};
   for (const key of ["job", "orchestrator"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
-    const { tools, system } = (delta ?? {}) as { tools?: unknown; system?: unknown };
-    if ((tools !== undefined && !(Array.isArray(tools) && tools.every((t) => typeof t === "string"))) || (system !== undefined && typeof system !== "string")) {
-      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], system?: string }`);
+    const { tools, system, model } = (delta ?? {}) as { tools?: unknown; system?: unknown; model?: unknown };
+    if (
+      (tools !== undefined && !(Array.isArray(tools) && tools.every((t) => typeof t === "string"))) ||
+      (system !== undefined && typeof system !== "string") ||
+      (model !== undefined && model !== null && typeof model !== "string")
+    ) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], system?: string, model?: string | null }`);
     }
-    out[key] = { ...(tools ? { tools: tools as string[] } : {}), ...(system !== undefined ? { system: system as string } : {}) };
+    out[key] = {
+      ...(tools ? { tools: tools as string[] } : {}),
+      ...(system !== undefined ? { system: system as string } : {}),
+      ...(model !== undefined ? { model: model as string | null } : {}),
+    };
+  }
+  const automation = (raw as Record<string, unknown> | null)?.["automation"];
+  if (automation !== undefined) {
+    const { workflow, approve } = (automation ?? {}) as { workflow?: unknown; approve?: unknown };
+    if (typeof workflow !== "string" || !workflow || (approve !== undefined && typeof approve !== "string")) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "automation" must be { workflow: string, approve?: string }`);
+    }
+    out.automation = { workflow, ...(approve !== undefined ? { approve: approve as string } : {}) };
   }
   return out;
 }
@@ -68,7 +85,7 @@ async function getDefault(): Promise<Strut> {
       process.env["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "job" | "orchestrator"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "job" | "orchestrator" | "automation"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.
