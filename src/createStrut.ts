@@ -85,6 +85,7 @@ import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { attachmentParts, parseAttachments, saveAttachments, type Attachment } from "./ai/attachments.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { parseMcpServers } from "./mcp-servers.js";
+import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
@@ -156,9 +157,12 @@ export interface StrutOptions<TServices = unknown> {
    *  true; disable to avoid pulling in the `ai`/`@ai-sdk/anthropic` deps. */
   enableChat?: boolean;
 
-  /** Mount `POST /mcp` (src/ai/mcp.ts): the builder's tools — the same ones
-   *  the chat's model gets — as an MCP server for an external agent (Claude
-   *  Code). Behind the gate like every route. Defaults to `enableChat`. */
+  /** Mount strut's MCP doors (src/ai/mcp.ts) for an external agent (Claude
+   *  Code, Hermes): `POST /mcp`, the ASSISTANT set (src/ai/assistant-tools.ts
+   *  — talk to the workflow builder, read its chats, list and run workflows,
+   *  read runs), and `POST /mcp/builder`, the builder's own tools — the same
+   *  ones the chat's model gets. Behind the gate like every route. Defaults
+   *  to `enableChat`; with the chat off, `/mcp` serves the builder set. */
   enableMcp?: boolean;
 
   /** This server's public base URL, for links handed to a caller OUTSIDE
@@ -713,6 +717,9 @@ export async function createStrut<TServices = unknown>(
       return false;
     }
   };
+  // The job INDEX (plans/job-index.md): what `GET /jobs[/:id]`, the job/*
+  // steps and the assistant MCP door's get_run { files } read through.
+  const jobIndex = createJobIndex({ dataDir, store, sessions: sessionStore, sessionHolder: sessions.holder, sealed: isSealedWorkflow });
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -727,10 +734,7 @@ export async function createStrut<TServices = unknown>(
     // each run's status, the session store for the job's threads, the
     // workspace for what is sealed. What `GET /jobs[/:id]` and the
     // `job/*` steps read through.
-    jobs: jobsCapability(
-      dataDir,
-      createJobIndex({ dataDir, store, sessions: sessionStore, sessionHolder: sessions.holder, sealed: isSealedWorkflow }),
-    ),
+    jobs: jobsCapability(dataDir, jobIndex),
     peers: peersCap,
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env).
@@ -3050,59 +3054,9 @@ export async function createStrut<TServices = unknown>(
     trackRun,
   });
 
-  // ── MCP (the builder's tools for an external agent) ──────────────────────
-  //
-  // `POST /mcp` (src/ai/mcp.ts): the SAME tools the chat's model gets, over
-  // the Model Context Protocol — stateless, a fresh server per request,
-  // behind the gate like every route (the deployment key; a peer is 403).
-  // The caller is not the UI, so an artifact link in a result is absolute
-  // (`publicUrl`, else the request's origin) and carries its file token,
-  // and a `ui` link opens the workflow or run in the UI.
-
-  if (enableMcp) {
-    const publicUrlOf = (c: Context) => {
-      if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
-      const url = new URL(c.req.url);
-      const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
-      const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
-      return `${proto}://${host}`;
-    };
-    app.post("/mcp", async (c) => {
-      // The SDK loads on the first MCP request, never at boot.
-      const { createBuilderMcp, builderInstructions, MCP_DETACH_HINT } = await import("./ai/mcp.js");
-      const { buildSystem } = await import("./ai/prompts.js");
-      const publicUrl = publicUrlOf(c);
-      const actor = await resolveActor(c);
-      const deps = {
-        ...builderDeps(actor),
-        publicUrl,
-        artifactRefs,
-        // A run that outlives the wait window goes on detached, tracked like
-        // any launch; nothing can notify an MCP client, so it polls get_run.
-        detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
-      };
-      // The `workflow-builder` prompt is the chat's whole system prompt, the
-      // host's section included (StrutOptions.chatSystem — on a graph, the
-      // `Workflow Builder` Concept's page), read at each prompts/get: there
-      // is no chat to freeze it for, so an edit to the page shows at once.
-      // The hook takes a chat id; `mcp` stands in. A throw is one warning,
-      // and the prompt is strut's alone, as for a chat turn.
-      const prompt = async () => {
-        const hostSystem = await Promise.resolve()
-          .then(() => chatSystem?.({ chatId: "mcp", turn: 0, ...(actor ? { actor } : {}) }))
-          .catch((err) => {
-            console.warn(`[mcp] chatSystem hook failed:`, err instanceof Error ? err.message : err);
-            return undefined;
-          });
-        return buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
-      };
-      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt }).handle(c.req.raw);
-    });
-    // Stateless: no SSE stream to open, no session to end.
-    const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
-    app.get("/mcp", notAllowed);
-    app.delete("/mcp", notAllowed);
-  }
+  /** The assistant MCP door's way into the chat (set inside the chat block;
+   *  absent with the chat off). */
+  let assistantDoor: AssistantChatDoor | undefined;
 
   // ── Chat (AI workflow builder) ───────────────────────────────────────────
   //
@@ -3218,6 +3172,10 @@ export async function createStrut<TServices = unknown>(
 
           const deps = {
             ...builderDeps(actor),
+            // A chat started over the assistant MCP door: its tool results
+            // carry absolute links (an artifact's with its read token), so
+            // the reply text the caller reads can be shared as it is.
+            ...(meta?.publicUrl ? { publicUrl: meta.publicUrl, artifactRefs } : {}),
             toolResultMaxChars: resultCapChars(toolResultMaxCharsFromEnv(), llm.contextLimit, compactAt),
             // A document read (get_workflow / get_step) is bound by the
             // window alone — no env ceiling; uncapped with compaction off.
@@ -3724,6 +3682,98 @@ export async function createStrut<TServices = unknown>(
     const publicMeta = (meta: ChatMeta) =>
       meta.callback ? { ...meta, callback: { origin: callbackOrigin(meta.callback.url) } } : meta;
 
+    /**
+     * `POST /chat`'s core, shared with the assistant MCP door
+     * (ask_workflow_builder): look the chat up — or make one — append the
+     * caller's message and launch its turn detached. One turn per chat at a
+     * time: two agents appending to the same transcript would interleave
+     * (different chats run concurrently). `at` is the appended message's
+     * index — where a read of THIS turn starts.
+     */
+    async function sendChatMessage(args: {
+      chatId?: string;
+      /** The user message's content, given the chat's id (an attachment is
+       *  saved under it first): text, or text + file parts. */
+      content: (chatId: string) => Promise<unknown>;
+      /** A NEW chat's title. */
+      title?: string;
+      /** A validated model pick, canonical. */
+      model?: string;
+      callback?: { url: string } | null;
+      actor?: string;
+      /** A chat started over MCP: links in its builder's tool results are
+       *  absolute on this base (`ChatMeta.publicUrl`, stamped once). */
+      publicUrl?: string;
+    }): Promise<{ chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" }> {
+      let chatId = args.chatId;
+      let meta = chatId ? await chatStore.getMeta(chatId) : null;
+      if (chatId && !meta) return { error: `Chat "${chatId}" not found`, code: "not_found" };
+      if (meta) {
+        // A chat cut off by a restart: its dead turn is finalized and the
+        // restart notice appended, but no wake-up turn — this message's turn
+        // follows at once and reads the notice ahead of it.
+        meta = await reconcileStaleChat(meta, { launch: false });
+        if (notifier.isLive(meta.id)) return { error: `Chat "${meta.id}" has a turn in progress`, code: "busy" };
+      }
+      if (!chatId) {
+        chatId = generateChatId();
+        meta = await chatStore.createChat({ id: chatId, ...(args.title ? { title: args.title } : {}), model: args.model ?? chatModel });
+      }
+      // From the chat's compaction boundary (plans/compaction.md §5): the
+      // whole history stays on disk; the model replays from the summary.
+      const all = await chatStore.loadMessages(chatId);
+      const prior = all.slice(meta!.replayFrom ?? 0);
+      const userMsg = { role: "user", content: await args.content(chatId) };
+      await chatStore.appendMessages(chatId, [userMsg]);
+
+      const turn = (meta!.currentTurn ?? -1) + 1;
+      // A human message resets the consecutive-auto-turn counter (the
+      // notification runaway guard) — see `ai/notifier.ts` — and closes the
+      // builder's open question, if any: the model reads the typed text
+      // instead, and a late answer to that question is a 404.
+      await chatStore.setMeta(chatId, {
+        status: "live",
+        currentTurn: turn,
+        autoTurns: 0,
+        elicitation: undefined,
+        ...(args.model ? { model: args.model } : {}),
+        ...(args.callback !== undefined ? { callback: args.callback ?? undefined } : {}),
+        ...(args.actor ? { actor: args.actor } : {}),
+        // The first identified speaker started the chat; nobody re-stamps it.
+        ...(args.actor && !meta!.createdBy ? { createdBy: args.actor } : {}),
+        ...(args.publicUrl && !meta!.publicUrl ? { publicUrl: args.publicUrl } : {}),
+      });
+
+      // Tool results are capped where they are made, so this is a no-op on
+      // anything recent; it holds a history recorded before then at the size
+      // the model has been reading.
+      launchChatTurn(chatId, turn, truncateToolMessages([...prior, userMsg]));
+      return { chatId, turn, at: all.length };
+    }
+
+    // The assistant MCP door's way into the chat (src/ai/assistant-tools.ts):
+    // the same send as `POST /chat`, the notifier's liveness, the callbacks'
+    // settledness, the turn's recorded error.
+    assistantDoor = {
+      send: ({ chatId, message, title, actor, publicUrl }) =>
+        sendChatMessage({
+          ...(chatId ? { chatId } : {}),
+          title: title ?? message.split("\n")[0]!.slice(0, 80),
+          content: async () => message,
+          ...(actor ? { actor } : {}),
+          ...(publicUrl ? { publicUrl } : {}),
+        }),
+      isLive: (id) => notifier.isLive(id),
+      isSettled: (id) => callbacks.isSettled(id),
+      reconcile: (m) => reconcileStaleChat(m),
+      turnError: async (chatId, turn) => {
+        if (notifier.isLive(chatId)) return undefined;
+        for await (const e of chatStore.tailEvents(chatId, turn)) if (e.type === "chat.error") return e.error?.message;
+        return undefined;
+      },
+      maxAutoTurns: chatMaxAutoTurns,
+    };
+
     // Send a message: append it, launch the turn detached, return ids (202).
     app.post("/chat", async (c) => {
       const body = await c.req.json<{
@@ -3751,23 +3801,7 @@ export async function createStrut<TServices = unknown>(
       }
       // Whoever speaks to the chat is its actor from here on (§2).
       const actor = await resolveActor(c);
-
-      let chatId = body.chatId;
-      let meta = chatId ? await chatStore.getMeta(chatId) : null;
-      if (chatId && !meta) {
-        return c.json({ error: `Chat "${chatId}" not found` }, 404);
-      }
-      if (meta) {
-        // A chat cut off by a restart: its dead turn is finalized and the
-        // restart notice appended, but no wake-up turn — this message's turn
-        // follows at once and reads the notice ahead of it.
-        meta = await reconcileStaleChat(meta, { launch: false });
-        // One turn per chat at a time — two agents appending to the same
-        // transcript would interleave. (Different chats run concurrently.)
-        if (notifier.isLive(meta.id)) {
-          return c.json({ error: `Chat "${meta.id}" has a turn in progress` }, 409);
-        }
-      }
+      const chatId = body.chatId;
       // An explicit model pick is validated (provider known, key configured)
       // BEFORE anything is persisted — a bad pick is a 400 here, not a dead
       // chat — and recorded on the chat in canonical "provider/id" form.
@@ -3805,55 +3839,26 @@ export async function createStrut<TServices = unknown>(
           return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
         }
       }
-      if (!chatId) {
-        chatId = generateChatId();
-        meta = await chatStore.createChat({
-          id: chatId,
-          title: body.title ?? (message || attachments.map((a) => a.name).join(", ")).slice(0, 80),
-          model: pickedModel ?? chatModel,
-        });
-      }
-
-      // From the chat's compaction boundary (plans/compaction.md §5): the
-      // whole history stays on disk; the model replays from the summary.
-      const prior = (await chatStore.loadMessages(chatId)).slice(meta!.replayFrom ?? 0);
-      // Text first, then each file (saved where bash and a run can read it).
-      let content: unknown = message;
-      if (attachments.length) {
-        const paths = await saveAttachments(dataDir, chatId, attachments);
-        const parts = await Promise.all(attachments.map((a, i) => attachmentParts(a, paths[i]!)));
-        content = [...(message ? [{ type: "text", text: message }] : []), ...parts.flat()];
-      }
-      const userMsg = { role: "user", content };
-      await chatStore.appendMessages(chatId, [userMsg]);
-
-      const turn = (meta!.currentTurn ?? -1) + 1;
-      // A human message resets the consecutive-auto-turn counter (the
-      // notification runaway guard) — see `ai/notifier.ts` — and closes the
-      // builder's open question, if any: the model reads the typed text
-      // instead, and a late answer to that question is a 404.
-      await chatStore.setMeta(chatId, {
-        status: "live",
-        currentTurn: turn,
-        autoTurns: 0,
-        elicitation: undefined,
+      const sent = await sendChatMessage({
+        ...(chatId ? { chatId } : {}),
+        title: body.title ?? (message || attachments.map((a) => a.name).join(", ")).slice(0, 80),
+        // Text first, then each file (saved where bash and a run can read it).
+        content: async (id) => {
+          if (!attachments.length) return message;
+          const paths = await saveAttachments(dataDir, id, attachments);
+          const parts = await Promise.all(attachments.map((a, i) => attachmentParts(a, paths[i]!)));
+          return [...(message ? [{ type: "text", text: message }] : []), ...parts.flat()];
+        },
         ...(pickedModel ? { model: pickedModel } : {}),
-        ...(callback !== undefined ? { callback: callback ?? undefined } : {}),
+        ...(callback !== undefined ? { callback } : {}),
         ...(actor ? { actor } : {}),
-        // The first identified speaker started the chat; nobody re-stamps it.
-        ...(actor && !meta!.createdBy ? { createdBy: actor } : {}),
       });
-
-      // Tool results are capped where they are made, so this is a no-op on
-      // anything recent; it holds a history recorded before then at the size
-      // the model has been reading.
-      const modelMessages = truncateToolMessages([...prior, userMsg]);
-      launchChatTurn(chatId, turn, modelMessages);
+      if ("error" in sent) return c.json({ error: sent.error }, sent.code === "not_found" ? 404 : 409);
 
       // `callback: true` is the host's proof this server honors callbacks (an
       // older one ignores the field and would never call back).
-      const hasCallback = callback !== undefined ? callback !== null : !!meta!.callback;
-      return c.json({ chatId, turn, ...(hasCallback ? { callback: true } : {}) }, 202);
+      const hasCallback = callback !== undefined ? callback !== null : !!(await chatStore.getMeta(sent.chatId))?.callback;
+      return c.json({ chatId: sent.chatId, turn: sent.turn, ...(hasCallback ? { callback: true } : {}) }, 202);
     });
 
     // List chat sessions (newest first).
@@ -4032,6 +4037,95 @@ export async function createStrut<TServices = unknown>(
       const messages = await chatStore.loadMessages(chatId);
       return c.json({ meta: publicMeta(meta), messages });
     });
+  }
+
+  // ── MCP (strut for an external agent) ────────────────────────────────────
+  //
+  // Two tool sets over the Model Context Protocol (src/ai/mcp.ts) — stateless,
+  // a fresh server per request, behind the gate like every route (the
+  // deployment key; a peer is 403). `POST /mcp` is the ASSISTANT set
+  // (src/ai/assistant-tools.ts): talk to the workflow builder, read its
+  // chats, list and run workflows, read runs — seven tools, for an agent with
+  // forty others that should not learn strut's YAML. `POST /mcp/builder` is
+  // the BUILDER set: the SAME tools the chat's model gets, for an agent that
+  // authors workflows itself. With the chat off there is no builder to talk
+  // to, so `/mcp` serves the builder set then. The caller is not the UI, so
+  // every link is absolute (`publicUrl`, else the request's origin) and an
+  // artifact link carries its file token; a `ui` link opens the workflow,
+  // run or chat in the UI.
+
+  if (enableMcp) {
+    const publicUrlOf = (c: Context) => {
+      if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
+      const url = new URL(c.req.url);
+      const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
+      const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
+      return `${proto}://${host}`;
+    };
+    /** The builder deps both doors spread: public links, and a run that
+     *  outlives the wait window goes on detached, tracked like any launch —
+     *  nothing can notify an MCP client, so it polls get_run. */
+    const mcpDeps = async (c: Context) => {
+      const { MCP_DETACH_HINT } = await import("./ai/mcp.js");
+      const publicUrl = publicUrlOf(c);
+      const actor = await resolveActor(c);
+      const deps = {
+        ...builderDeps(actor),
+        publicUrl,
+        artifactRefs,
+        detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
+      };
+      return { publicUrl, actor, deps };
+    };
+    const builderHandler = async (c: Context) => {
+      // The SDK loads on the first MCP request, never at boot.
+      const { createBuilderMcp, builderInstructions } = await import("./ai/mcp.js");
+      const { buildSystem } = await import("./ai/prompts.js");
+      const { publicUrl, actor, deps } = await mcpDeps(c);
+      // The `workflow-builder` prompt is the chat's whole system prompt, the
+      // host's section included (StrutOptions.chatSystem — on a graph, the
+      // `Workflow Builder` Concept's page), read at each prompts/get: there
+      // is no chat to freeze it for, so an edit to the page shows at once.
+      // The hook takes a chat id; `mcp` stands in. A throw is one warning,
+      // and the prompt is strut's alone, as for a chat turn.
+      const prompt = async () => {
+        const hostSystem = await Promise.resolve()
+          .then(() => chatSystem?.({ chatId: "mcp", turn: 0, ...(actor ? { actor } : {}) }))
+          .catch((err) => {
+            console.warn(`[mcp] chatSystem hook failed:`, err instanceof Error ? err.message : err);
+            return undefined;
+          });
+        return buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
+      };
+      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt }).handle(c.req.raw);
+    };
+    const assistantHandler = async (c: Context) => {
+      const { createMcpDoor, toolsetServer, assistantInstructions } = await import("./ai/mcp.js");
+      const { buildAssistantTools } = await import("./ai/assistant-tools.js");
+      const { buildTools } = await import("./ai/tools.js");
+      const { publicUrl, actor, deps } = await mcpDeps(c);
+      const tools = buildAssistantTools({
+        workspace,
+        store,
+        chatStore,
+        chat: assistantDoor!,
+        automations,
+        publicUrl,
+        artifactRefs,
+        listFiles: async (runId, job) => (job ? ((await jobIndex.get(job))?.files ?? []) : artifacts ? artifacts.list(runId) : []),
+        runWorkflow: buildTools(deps)["run_workflow"]!,
+        ...(actor ? { actor } : {}),
+      });
+      return createMcpDoor(() => toolsetServer({ tools, instructions: assistantInstructions(publicUrl) })).handle(c.req.raw);
+    };
+    app.post("/mcp/builder", builderHandler);
+    app.post("/mcp", assistantDoor ? assistantHandler : builderHandler);
+    // Stateless: no SSE stream to open, no session to end.
+    const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
+    for (const path of ["/mcp", "/mcp/builder"]) {
+      app.get(path, notAllowed);
+      app.delete(path, notAllowed);
+    }
   }
 
   // ── LLM model catalog ────────────────────────────────────────────────────

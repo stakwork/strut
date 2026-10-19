@@ -84,6 +84,10 @@ export interface TurnCallbacks {
     stopped?: true;
     elicitation?: ElicitationCallback;
   }): Promise<void>;
+  /** Nothing this process knows of will start another turn: no `expect()`
+   *  outstanding and no turn live — what `turn.end` reports as `settled`,
+   *  readable by the assistant MCP door between turns. */
+  isSettled(chatId: string): boolean;
 }
 
 /** The final assistant text of a turn's response messages. */
@@ -165,6 +169,7 @@ export function createTurnCallbacks(opts: {
   }
 
   return {
+    isSettled,
     expect(chatId) {
       pending.set(chatId, (pending.get(chatId) ?? 0) + 1);
       let released = false;

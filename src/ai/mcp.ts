@@ -1,11 +1,21 @@
 /**
- * The workflow builder as an MCP server — `POST /mcp` in createStrut, one
- * stateless server + transport per request. An external agent (Claude Code:
- * `claude mcp add --transport http strut <url>/mcp --header "Authorization:
- * Bearer <key>"`) gets the SAME tools the builder chat's model gets —
- * `buildTools(deps)`: their names, descriptions, input schemas and CAPPED
- * results (`capToolResults`) — adapted generically here, so no tool exists
- * twice. tools/list reads each tool's JSON Schema through the AI SDK's own
+ * Strut over MCP — one stateless server + transport per request, serving an
+ * AI SDK ToolSet to an external agent (Claude Code: `claude mcp add
+ * --transport http strut <url>/mcp --header "Authorization: Bearer <key>"`).
+ * Two tool sets ride on it (createStrut mounts both):
+ *
+ *   `POST /mcp`          the ASSISTANT set (ai/assistant-tools.ts): seven
+ *                        tools — talk to the workflow builder, read a chat,
+ *                        list workflows / runs, read a run, run a workflow —
+ *                        for an agent that has forty other tools and should
+ *                        not learn strut's YAML. The default.
+ *   `POST /mcp/builder`  the BUILDER set: the SAME tools the builder chat's
+ *                        model gets — `buildTools(deps)`: their names,
+ *                        descriptions, input schemas and CAPPED results
+ *                        (`capToolResults`) — for an agent that authors
+ *                        workflows itself.
+ *
+ * Either set is adapted generically here, so no tool exists twice. tools/list reads each tool's JSON Schema through the AI SDK's own
  * `asSchema`; tools/call validates the arguments with it (defaults applied),
  * runs `execute`, drains a generator tool to its last yield (the earlier
  * ones become `notifications/progress` when the client asked for them), and
@@ -49,6 +59,21 @@ export function builderInstructions(publicUrl: string): string {
     `${BUILDER_PROCEDURE}\n\n` +
     `Over MCP, "this prompt" above means the ${PROMPT_NAME} prompt (its step catalog is as of its read; list_steps re-lists), and no notification ever arrives: a run_workflow that detached is finished by calling get_run with \`wait\` until its status is terminal. ` +
     `The prompt's ask_user and request_secret are not offered here: ask the user yourself, and NEVER collect a credential's value — call list_secrets, and when the NAME a step needs is missing send the user to add it under Secrets in the UI, ${publicUrl}/?secrets=1 (the name, then the value; it never passes through you), then call list_secrets again.`
+  );
+}
+
+/** `InitializeResult.instructions` for the ASSISTANT set: short on purpose
+ *  — the caller's context is the point of this surface. */
+export function assistantInstructions(publicUrl: string): string {
+  return (
+    `Strut runs workflows — automations built from steps (HTTP, shell, LLM and agent calls, browser, git, …), scheduled or run on demand, each run keeping its output and the files it wrote. ` +
+    `You do not author them: strut's own WORKFLOW BUILDER does. ask_workflow_builder with what you want in plain words (what it should do, its inputs, a schedule, what the deliverable is); the reply is its text plus \`did\` — what it published, ran and scheduled, with links. ` +
+    `Continue the same chat for changes, debugging ("why did run X fail?") and questions; it remembers. The call holds up to \`wait\` for the reply; status "working" means read_workflow_builder_chat with wait until it is not; "asked" means it has a question in \`question\` — answer it in your next message on that chat, or for a secret send YOUR USER to the link (never collect a credential's value). ` +
+    `Lost the chat id? list_workflow_builder_chats. ` +
+    `For a workflow that exists: list_workflows (schedules, last run), run_workflow (now), list_runs (each run's deliverables as links), get_run (the result; large output fields are held back until you name them in \`fields\`). ` +
+    `Ask the builder to declare a workflow's deliverables as \`artifacts\` (a file, a URL): then every run hands you links instead of big blobs. ` +
+    `Every link is absolute on ${publicUrl} and an artifact link carries its own read token — anyone with the link reads that one run's files, nothing else, with no expiry — so share it with your other connectors as it is. ` +
+    `The web UI is at ${publicUrl}/; a \`ui\` link opens that workflow, run or chat there. Nothing notifies you over MCP: poll with \`wait\`, or check list_runs with \`since\`.`
   );
 }
 
@@ -190,25 +215,34 @@ export function mcpToolsFrom(tools: ToolSet): McpTools {
 
 // ── The server ─────────────────────────────────────────────────────────────
 
-export interface BuilderMcpOptions {
-  deps: AiDeps;
-  /** `InitializeResult.instructions` (`builderInstructions`). */
-  instructions: string;
-  /** The `workflow-builder` prompt's text: `buildSystem(deps)` by default. */
-  prompt?: () => Promise<string>;
+export interface McpPrompt {
+  name: string;
+  description: string;
+  /** The prompt's text, read at each prompts/get. */
+  read: () => Promise<string>;
 }
 
-/** One SDK `Server` over the builder's tools and prompt — what `handle`
+export interface ToolsetServerOptions {
+  tools: ToolSet;
+  /** `InitializeResult.instructions`. */
+  instructions: string;
+  /** Prompts served; none → no prompts capability. */
+  prompts?: McpPrompt[];
+}
+
+/** One SDK `Server` over a tool set (and prompts) — what `createMcpDoor`
  *  connects to a transport per request, and what a test connects to an
  *  `InMemoryTransport`. */
-export async function builderServer({ deps, instructions, prompt }: BuilderMcpOptions): Promise<Server> {
+export async function toolsetServer({ tools: toolSet, instructions, prompts = [] }: ToolsetServerOptions): Promise<Server> {
   const [{ Server }, types] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/index.js"),
     import("@modelcontextprotocol/sdk/types.js"),
   ]);
-  const tools = mcpToolsFrom(buildTools(deps));
-  const readPrompt = prompt ?? (() => buildSystem(deps));
-  const server = new Server({ name: "strut", version: VERSION }, { capabilities: { tools: {}, prompts: {} }, instructions });
+  const tools = mcpToolsFrom(toolSet);
+  const server = new Server(
+    { name: "strut", version: VERSION },
+    { capabilities: { tools: {}, ...(prompts.length ? { prompts: {} } : {}) }, instructions },
+  );
 
   server.setRequestHandler(types.ListToolsRequestSchema, async () => ({ tools: await tools.list() }));
   server.setRequestHandler(types.CallToolRequestSchema, async ({ params }, extra) => {
@@ -223,14 +257,34 @@ export async function builderServer({ deps, instructions, prompt }: BuilderMcpOp
           }),
     });
   });
-  server.setRequestHandler(types.ListPromptsRequestSchema, async () => ({
-    prompts: [{ name: PROMPT_NAME, description: PROMPT_DESCRIPTION }],
-  }));
-  server.setRequestHandler(types.GetPromptRequestSchema, async ({ params }) => {
-    if (params.name !== PROMPT_NAME) throw new types.McpError(types.ErrorCode.InvalidParams, `Unknown prompt: ${params.name}`);
-    return { description: PROMPT_DESCRIPTION, messages: [{ role: "user", content: { type: "text", text: await readPrompt() } }] };
-  });
+  if (prompts.length) {
+    server.setRequestHandler(types.ListPromptsRequestSchema, async () => ({
+      prompts: prompts.map(({ name, description }) => ({ name, description })),
+    }));
+    server.setRequestHandler(types.GetPromptRequestSchema, async ({ params }) => {
+      const p = prompts.find((x) => x.name === params.name);
+      if (!p) throw new types.McpError(types.ErrorCode.InvalidParams, `Unknown prompt: ${params.name}`);
+      return { description: p.description, messages: [{ role: "user", content: { type: "text", text: await p.read() } }] };
+    });
+  }
   return server;
+}
+
+export interface BuilderMcpOptions {
+  deps: AiDeps;
+  /** `InitializeResult.instructions` (`builderInstructions`). */
+  instructions: string;
+  /** The `workflow-builder` prompt's text: `buildSystem(deps)` by default. */
+  prompt?: () => Promise<string>;
+}
+
+/** The BUILDER set: `buildTools(deps)` + the `workflow-builder` prompt. */
+export function builderServer({ deps, instructions, prompt }: BuilderMcpOptions): Promise<Server> {
+  return toolsetServer({
+    tools: buildTools(deps),
+    instructions,
+    prompts: [{ name: PROMPT_NAME, description: PROMPT_DESCRIPTION, read: prompt ?? (() => buildSystem(deps)) }],
+  });
 }
 
 /**
@@ -240,14 +294,19 @@ export async function builderServer({ deps, instructions, prompt }: BuilderMcpOp
  * the transport's: an SSE stream carrying the result (and any progress
  * notification), or a JSON error.
  */
-export function createBuilderMcp(opts: BuilderMcpOptions): { handle(req: Request): Promise<Response> } {
+export function createMcpDoor(server: () => Promise<Server>): { handle(req: Request): Promise<Response> } {
   return {
     async handle(req) {
       const { WebStandardStreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js");
-      const server = await builderServer(opts);
+      const s = await server();
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      await server.connect(transport);
+      await s.connect(transport);
       return transport.handleRequest(req);
     },
   };
+}
+
+/** The builder set's door (`POST /mcp/builder`). */
+export function createBuilderMcp(opts: BuilderMcpOptions): { handle(req: Request): Promise<Response> } {
+  return createMcpDoor(() => builderServer(opts));
 }
