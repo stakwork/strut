@@ -1229,7 +1229,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "GET /health");
+    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session");
     assert.ok(routes.length > 80, `swept ${routes.length} routes`);
     assert.ok(routes.includes("GET /workflows/x/runs/x/transcripts/x"));
     assert.ok(routes.includes("GET /host/mounted"));
@@ -1251,7 +1251,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )];
+    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session"); // the login, open to anyone
     const peerPost = /^POST \/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))$/;
     const allowed = routes.filter((r) => r.startsWith("GET ") || peerPost.test(r));
     assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 5, allowed.join(", "));
@@ -1294,6 +1294,80 @@ describe("the API key gate", () => {
     assert.equal((await put(peer)).status, 403);
     assert.equal((await strut.app.request("/workflows/nope/run", { method: "POST", headers: peer, body: "{}" })).status, 404);
     assert.equal((await put({ "content-type": "application/json" })).status, 200, "undefined is full");
+  });
+
+  it("a session: the key buys a cookie at POST /auth/session, which then opens the gate as the key does, until it expires or DELETE ends it", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    process.env["STRUT_PEER_KEY"] = PEER;
+    const json = { "content-type": "application/json" };
+    const login = (body: unknown, headers: Record<string, string> = {}) =>
+      strut.app.request("/auth/session", { method: "POST", headers: { ...json, ...headers }, body: JSON.stringify(body) });
+
+    // The login takes no credential and refuses a wrong key (slowly), a bad body, a long actor.
+    const t0 = Date.now();
+    assert.equal((await login({ key: "nope" })).status, 401);
+    assert.ok(Date.now() - t0 >= 400, "a wrong key waits");
+    assert.equal((await strut.app.request("/auth/session", { method: "POST" })).status, 401, "no body");
+    assert.equal((await login({ key: KEY, actor: "x".repeat(121) })).status, 400);
+    assert.equal((await login({ key: KEY, actor: 7 })).status, 400);
+
+    // The right key: a session naming its actor, as an HttpOnly cookie.
+    const res = await login({ key: KEY, actor: " evan-1 " });
+    assert.equal(res.status, 200);
+    const session = (await res.json()) as { actor?: string; exp: number };
+    assert.equal(session.actor, "evan-1");
+    assert.ok(session.exp > Date.now() + 11 * 3_600_000);
+    const setCookie = res.headers.get("set-cookie")!;
+    assert.match(setCookie, /^strut_session=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax$/);
+    assert.ok(!/Secure/.test(setCookie), "plain http: no Secure");
+    assert.match((await login({ key: KEY }, { "x-forwarded-proto": "https" })).headers.get("set-cookie")!, /; Secure$/);
+    const cookie = setCookie.split(";")[0]!;
+    const ui = { cookie, "x-strut-ui": "1" };
+
+    // It opens the gate: a read bare, a write with the UI header, a file
+    // read only with the header; /health tells it everything.
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie } })).status, 200);
+    assert.equal((await strut.app.request("/host/mounted", { headers: { cookie } })).status, 200);
+    assert.ok("dataDir" in ((await (await strut.app.request("/health", { headers: { cookie } })).json()) as object));
+    assert.deepEqual(await (await strut.app.request("/auth/session", { headers: { cookie } })).json(), session);
+    assert.equal((await strut.app.request("/auth/session", { headers: auth.headers })).status, 404, "the key has no session");
+    const put = (headers: Record<string, string>) =>
+      strut.app.request("/secrets/X", { method: "PUT", headers: { ...json, ...headers }, body: JSON.stringify({ value: "v" }) });
+    assert.equal((await put({ cookie })).status, 401, "a write without the UI header");
+    assert.equal((await put(ui)).status, 200);
+    assert.equal((await strut.app.request("/host/mounted", { method: "POST", headers: ui })).status, 200);
+    assert.equal((await strut.app.request("/artifacts/r1", { headers: { cookie } })).status, 401, "a file read on the cookie alone");
+    assert.equal((await strut.app.request("/artifacts/r1/page.html", { headers: { cookie } })).status, 401);
+    assert.equal((await strut.app.request("/artifacts/r1", { headers: ui })).status, 200, "the listing fetch, which mints the token");
+    assert.equal((await strut.app.request("/secrets/X", { method: "PUT", headers: { ...json, cookie: "strut_session=forged.forged", "x-strut-ui": "1" }, body: "{}" })).status, 401);
+
+    // A session is the key's equal and no more: the peer key beside it does
+    // not narrow it, and nothing it does is `peer`.
+    assert.equal((await strut.app.request("/host/mounted", { method: "POST", headers: { ...ui, authorization: `Bearer ${PEER}` } })).status, 200);
+
+    // Sign out: the cookie is cleared; needs no credential (the peer key, nothing).
+    const out = await strut.app.request("/auth/session", { method: "DELETE", headers: { cookie } });
+    assert.equal(out.status, 204);
+    assert.equal(out.headers.get("set-cookie"), "strut_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
+    assert.equal((await strut.app.request("/auth/session", { method: "DELETE" })).status, 204);
+    assert.equal((await strut.app.request("/auth/session", { method: "DELETE", headers: { authorization: `Bearer ${PEER}` } })).status, 204);
+
+    // Expiry: a short-lived session runs out; a rotated key ends every one.
+    process.env["STRUT_SESSION_HOURS"] = String(20 / 3_600_000); // 20 ms
+    const brief = (await login({ key: KEY })).headers.get("set-cookie")!.split(";")[0]!;
+    delete process.env["STRUT_SESSION_HOURS"];
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie: brief } })).status, 200);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie: brief } })).status, 401, "expired");
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie } })).status, 200, "the long one still holds");
+    process.env["STRUT_API_KEY"] = "rotated";
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie } })).status, 401, "rotated: signed under the old key");
+
+    // No key configured: nothing to sign in to, and nothing to open — everything is.
+    delete process.env["STRUT_API_KEY"];
+    assert.equal((await login({ key: KEY })).status, 400);
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie } })).status, 200);
   });
 
   it("the key opens them, as a Bearer header or as ?key=; unset, everything is open", async () => {
@@ -1565,6 +1639,29 @@ describe("actors and the principal rule", () => {
     assert.equal((await call("POST", "/workflows/wf/run", { input: {} }, { "x-strut-actor": "mallory-9", authorization: "Bearer nope" })).status, 401);
     const right = (await call("POST", "/workflows/wf/run", { input: {} }, { "x-strut-actor": "hive-user-1", authorization: "Bearer deploy-key" })).json.runId as string;
     assert.deepEqual((await finished("wf", right)).output, { actor: "hive-user-1", principal: "hive-user-1" });
+  });
+
+  it("a session stamps its actor on what it launches and publishes; x-strut-actor beside it is ignored", async () => {
+    const { strut, call, finished } = await boot();
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    const res = await call("POST", "/auth/session", { key: "deploy-key", actor: "evan-1" });
+    assert.equal(res.status, 200);
+    // `call` reads the body; the cookie is on the raw response, so log in once more for it.
+    const raw = await strut.app.request("/auth/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "deploy-key", actor: "evan-1" }) });
+    const cookie = raw.headers.get("set-cookie")!.split(";")[0]!;
+    const ui = { cookie, "x-strut-ui": "1" };
+    assert.equal((await call("POST", "/workflows/wf/run", { input: {} }, { cookie })).status, 401, "a launch is a write: the UI header or nothing");
+    const mine = (await call("POST", "/workflows/wf/run", { input: {} }, ui)).json.runId as string;
+    assert.deepEqual((await finished("wf", mine)).output, { actor: "evan-1", principal: "evan-1" });
+    const spoofed = (await call("POST", "/workflows/wf/run", { input: {} }, { ...ui, "x-strut-actor": "mallory-9" })).json.runId as string;
+    assert.deepEqual((await finished("wf", spoofed)).output, { actor: "evan-1", principal: "evan-1" }, "the session's actor, not the header's");
+    const yaml = "steps:\n  - id: who\n    type: whoami\n";
+    assert.equal((await call("POST", "/workflows", { name: "signed", yaml }, ui)).status, 201);
+    assert.equal((await strut.workspace.getWorkflowMetadata("signed"))!.owner, "evan-1");
+    // A session with no actor stamps nothing.
+    const anon = (await strut.app.request("/auth/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "deploy-key" }) })).headers.get("set-cookie")!.split(";")[0]!;
+    const nobody = (await call("POST", "/workflows/wf/run", { input: {} }, { cookie: anon, "x-strut-ui": "1" })).json.runId as string;
+    assert.deepEqual((await finished("wf", nobody)).output, { actor: null, principal: null });
   });
 
   it("a single-step run is the actor's own; a subflow inherits its parent's principal", async () => {

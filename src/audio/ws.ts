@@ -54,7 +54,7 @@ export function createAudioUpgradeHandler(stt: SttService, opts: AttachOptions =
   const path = (opts.basePath ?? "") + (opts.path ?? AUDIO_STREAM_PATH);
   const wss = new WebSocketServer({ noServer: true });
   const authorize =
-    opts.authorize ?? ((req: IncomingMessage, url: URL) => apiKeyMatches(req.headers.authorization, url.searchParams.get("key")));
+    opts.authorize ?? ((req: IncomingMessage, url: URL) => apiKeyMatches(req.headers.authorization, url.searchParams.get("key"), req.headers.cookie));
   return {
     path,
     handle(req, socket, head) {

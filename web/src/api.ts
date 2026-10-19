@@ -135,9 +135,73 @@ export function apiKeySource(): "url" | "settings" | null {
   return null;
 }
 
+// ── Session ────────────────────────────────────────────────────────────────
+// The other way in, for a strut facing the internet with no host in front:
+// `signIn` posts the key ONCE to `POST /auth/session` and gets back an
+// HttpOnly cookie the page cannot read — the browser sends it by itself
+// from then on, and nothing here holds the key. What is kept is a marker of
+// the session (who, until when) so the UI knows it is signed in: the
+// credential is the cookie, and a 401 while the marker is set means it ran
+// out. Every request carries `x-strut-ui: 1`, the header the server's
+// CSRF rule wants beside the cookie on anything but a read (auth.ts).
+const SESSION_STORAGE = "strut/session";
+
+export interface SessionInfo {
+  actor?: string;
+  /** When the session ends (ms since the epoch). */
+  exp: number;
+}
+
+/** The session this browser signed into, if it has not run out. */
+export function getSession(): SessionInfo | null {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as SessionInfo;
+    if (typeof s?.exp !== "number" || s.exp <= Date.now()) {
+      localStorage.removeItem(SESSION_STORAGE);
+      return null;
+    }
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+function setSession(s: SessionInfo | null): void {
+  try {
+    if (s) localStorage.setItem(SESSION_STORAGE, JSON.stringify(s));
+    else localStorage.removeItem(SESSION_STORAGE);
+  } catch {}
+}
+
+/** Trade the key for a session: the cookie is set by the response, any key
+ *  this browser kept is forgotten, and the marker is stored. Rejects with
+ *  the server's message on a wrong key. */
+export async function signIn(key: string, actor?: string): Promise<SessionInfo> {
+  const res = await fetch(`${BASE}/auth/session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-strut-ui": "1" },
+    body: JSON.stringify({ key, ...(actor ? { actor } : {}) }),
+  });
+  const body = (await res.json().catch(() => null)) as (SessionInfo & { error?: string }) | null;
+  if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+  setApiKey("");
+  setSession({ ...(body?.actor ? { actor: body.actor } : {}), exp: body!.exp });
+  return getSession()!;
+}
+
+/** End the session: the cookie is cleared by the response. */
+export async function signOut(): Promise<void> {
+  await fetch(`${BASE}/auth/session`, { method: "DELETE", headers: { "x-strut-ui": "1" } }).catch(() => {});
+  setSession(null);
+  refused = false;
+  fileScopes.clear();
+}
+
 function authHeaders(): Record<string, string> {
-  const key = getApiKey();
-  return key ? { Authorization: `Bearer ${key}` } : {};
+  const key = getSession() ? "" : getApiKey();
+  return { "x-strut-ui": "1", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
 }
 
 // The server refused the key (or the lack of one). The app is told once per
@@ -148,14 +212,17 @@ export function onUnauthorized(fn: (() => void) | null): void {
   onRefused = fn;
 }
 
-/** `fetch` against the API base with the key attached. Every call goes
- *  through here so a gated deployment works without per-call plumbing. */
+/** `fetch` against the API base with the key attached — or, signed in,
+ *  nothing but the UI header: the session cookie rides by itself. Every
+ *  call goes through here so a gated deployment works without per-call
+ *  plumbing. */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers ?? {});
   for (const [k, v] of Object.entries(authHeaders())) if (!headers.has(k)) headers.set(k, v);
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (res.status === 401 && !refused) {
     refused = true;
+    setSession(null); // a session the server refused has run out
     onRefused?.();
   }
   return res;
@@ -237,11 +304,12 @@ export async function downloadSttModel(
 }
 
 /** WebSocket URL for `/audio/stream` on the same origin + mount path. A
- *  browser WebSocket can't set headers, so the key rides as `?key=`. */
+ *  browser WebSocket can't set headers, so the key rides as `?key=` —
+ *  signed in, the session cookie rides on the upgrade instead. */
 export function sttStreamUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL(`${proto}//${location.host}${BASE}/audio/stream`);
-  const key = getApiKey();
+  const key = getSession() ? "" : getApiKey();
   if (key) url.searchParams.set("key", key);
   return url.toString();
 }
