@@ -190,9 +190,15 @@ describe("authoring capability (the meta surface)", () => {
     const seededRuns = (await authoring.listRuns("pod-pr")) as any;
     assert.deepEqual(seededRuns.runs.map((r: any) => r.runId), [seeded.runId]);
 
-    // Its params are knobs: they grant no step it does not grant itself.
-    const widened = (await authoring.runWorkflow("cand-flow", {}, { tools: ["log"] })) as any;
-    assert.match(String(widened.error), /params may not grant a step the workflow "cand-flow" does not already: "log"/);
+    // A params key its agents read as a grant may be narrowed, never widened;
+    // one nothing reads as a grant is a knob.
+    await strut.workspace.createWorkflow(
+      "pod-agent",
+      "name: pod-agent\nparams:\n  tools: []\nsteps:\n  - id: a\n    type: agent\n    config:\n      prompt: hi\n      agentTools: \"{{ params.tools }}\"\n",
+    );
+    const widened = (await authoring.runWorkflow("pod-agent", {}, { tools: ["log"] })) as any;
+    assert.match(String(widened.error), /params may not grant a step the workflow "pod-agent" does not already: "log" \(params\.tools\)/);
+    assert.equal(((await authoring.runWorkflow("cand-flow", {}, { tools: ["log"] })) as any).status, "success", "cand-flow reads no grant from params.tools");
 
     // The stamped candidate runs, and its run history reads back.
     const result = (await authoring.runWorkflow("cand-flow", {})) as any;

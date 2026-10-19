@@ -6,8 +6,8 @@ import type { RunStore } from "./store.js";
 import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
-import { flowClosure, stepHashesFor } from "./closure.js";
-import { grantWidenedBy, isSealedStep, sealedInClosure } from "./sealed.js";
+import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
+import { isSealedStep, sealedInClosure } from "./sealed.js";
 import {
   mergeClaimSpecs,
   toSubjectRef,
@@ -800,7 +800,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // invisible to the enclosing run's registry snapshot.
       const registry = await deps.getRegistry();
       // Its params may narrow what its agents are granted, never widen it.
-      const widened = grantWidenedBy(flow.params ?? {}, coerceJsonArg(params) ?? {}, registry);
+      const widened = grantWidenedBy(flow, (coerceJsonArg(params) ?? {}) as Record<string, unknown>, registry);
       if (widened) {
         return { error: `params may not grant a step the workflow "${name}" does not already: ${widened}. Run it with its own tools, or fewer.` };
       }

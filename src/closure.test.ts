@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { z } from "zod";
 import type { Flow, Step, RunEvent } from "./core.js";
 import { defineStep } from "./core.js";
-import { closureIncludes, flowClosure, globToRegExp, stepHashesFor, walkSteps } from "./closure.js";
+import { closureIncludes, flowClosure, globToRegExp, grantParams, grantWidenedBy, stepHashesFor, walkSteps } from "./closure.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 
@@ -68,6 +68,40 @@ describe("flowClosure", () => {
     assert.equal((await flowClosure(flow("f", [step("s", "subflow", { workflow: "child" })]))).resolvable, false, "no workspace to resolve through");
     assert.equal((await flowClosure(flow("f", [step("a", "agent", { agentTools: "{{ params.tools }}" })]))).resolvable, false);
     assert.equal((await flowClosure(flow("f", [step("a", "agent", { agentTools: ["{{ params.ns }}/*"] })]))).resolvable, false);
+  });
+});
+
+describe("grantWidenedBy", () => {
+  const reg = Object.fromEntries(
+    ["log", "exec", "agent", "clip/trim", "browser/open", "browser/screenshot", "gaia/evaluate", "gaia/get-task"].map((t) => [
+      t,
+      defineStep({ type: t, input: z.any(), output: z.any(), run: async () => ({}) }),
+    ]),
+  );
+  const agentFlow = (params: Record<string, unknown>, tools: unknown = "{{ params.tools }}") => ({
+    params,
+    steps: [step("a", "agent", { agentTools: tools, system: "{{ params.system }}" })],
+  });
+
+  it("the keys a flow's agentTools read are its grants; every other key is a knob", () => {
+    assert.deepEqual([...grantParams(agentFlow({}))], ["tools"]);
+    assert.deepEqual([...grantParams(agentFlow({}, ["log", "{{ params.ns }}/*", "{{ params.more.concat(params.extra) }}"]))], ["ns", "more", "extra"]);
+    assert.deepEqual([...grantParams({ steps: [step("l", "log", { message: "{{ params.tools }}" })] })], []);
+    const flow = agentFlow({ tools: ["log", "clip/trim"], system: "You trim clips." });
+    assert.equal(grantWidenedBy(flow, { tools: ["log"], system: "Say exec and gaia/* all you like." }, reg), null, "fewer tools, any prompt");
+    assert.equal(grantWidenedBy(flow, { prompt: ["exec", "*"] }, reg), null, "a key no agentTools reads is a knob, whatever it says");
+    assert.equal(grantWidenedBy(flow, { tools: ["log", "exec"] }, reg), '"exec" (params.tools)');
+    assert.equal(grantWidenedBy(flow, { tools: ["gaia/evaluate@v2"] }, reg), '"gaia/evaluate" (params.tools)', "a pinned ref is its step");
+    assert.equal(grantWidenedBy(flow, { tools: ["gaia/*"] }, reg), '"gaia/evaluate" (params.tools)', "a glob reaches what it matches");
+    assert.equal(grantWidenedBy(flow, { tools: ["not-a-step", "clip/trim"] }, reg), null, "a word that names no step reaches nothing");
+  });
+
+  it("both sides expand through the registry: a glob narrowed to one of its members is narrower", () => {
+    const flow = agentFlow({ tools: ["browser/*"] });
+    assert.equal(grantWidenedBy(flow, { tools: ["browser/screenshot"] }, reg), null);
+    assert.equal(grantWidenedBy(flow, { tools: ["browser/*", "log"] }, reg), '"log" (params.tools)');
+    assert.equal(grantWidenedBy(agentFlow({}), { tools: ["log"] }, reg), '"log" (params.tools)', "no default grants nothing");
+    assert.equal(grantWidenedBy(agentFlow({ tools: "{{ input.tools }}" }), { tools: ["log"] }, reg), '"log" (params.tools)', "an unreadable default grants nothing");
   });
 });
 

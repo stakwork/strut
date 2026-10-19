@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { stopOf, withStop, type StepContext } from "../../../core.js";
-import { triggerSchema } from "../../../automations.js";
+import { noRunsToCome, triggerSchema } from "../../../automations.js";
 import type { AutomationView, Automations } from "../../../scheduler.js";
 import { journal, journalKey } from "../job/_shared.js";
 
@@ -25,13 +25,16 @@ import { journal, journalKey } from "../job/_shared.js";
  * A host whose approval step can grant an automation more than its prompt
  * (Peel: posting as the person to chats it names, up to a price) says so
  * with `grants`. Then create and update take a `grant`, which strut never
- * reads: it goes to the approval step with the automation's grant KEY and
- * name, and the key is kept in the run's input (`input.grant`), where the
- * host's own steps read it at each fire. The key is strut's, never the
- * model's: a run's step that acts on a grant names it from `ctx.input`, and
- * the model cannot write that. A change or a run of an automation that has
- * one, with no new grant, hands the card its key and name alone
- * (`keptGrant`), so the person sees what it may already do.
+ * reads: it goes to the approval step with the automation's ID and name
+ * (`automation`, `name`), and the host keeps what it allowed under that id.
+ * At each fire the runner hands every step `ctx.automation` — set by the
+ * scheduler's launch alone, never by a caller or a model — so a host step
+ * that acts on the grant names the automation from there. Nothing rides in
+ * the run's input. The id exists before the card: the step mints it
+ * (`automationId`: the same for the same call, so a resumed call asks the
+ * same question) and hands it to `create`. A change or a run of an
+ * automation with no new grant hands the card its id and name alone, and
+ * the host says what it already may do.
  */
 export interface AutomationStepsOptions {
   /** The workflow the steps schedule. */
@@ -40,7 +43,9 @@ export interface AutomationStepsOptions {
    *  `{ approved, status?, error? }`). Absent: the acting steps refuse. */
   approve?: string;
   /** The approval step takes a `grant` (`{ intent, grant }`, the grant with
-   *  `automation` (its key) and `name` added): create and update offer one. */
+   *  the automation's `automation` (its id) and `name` added): create and
+   *  update offer one, and every change, run-now or delete card names the
+   *  automation the same way. */
   grants?: boolean;
 }
 
@@ -145,37 +150,32 @@ export function unescaped(text: string): string {
 }
 
 /** What the run is handed, resolved at each fire: `since`, when its last
- *  successful run finished (null before the first), `now`, the fire, and
- *  its grant's key when it has one. */
-export function runInput(name: string, prompt: string, grant?: string): Record<string, unknown> {
-  return { name: escaped(name), prompt: escaped(prompt), since: "{{ last.finishedAt }}", now: "{{ now }}", ...(grant ? { grant } : {}) };
+ *  successful run finished (null before the first), and `now`, the fire. */
+export function runInput(name: string, prompt: string): Record<string, unknown> {
+  return { name: escaped(name), prompt: escaped(prompt), since: "{{ last.finishedAt }}", now: "{{ now }}" };
 }
 
-/** An automation's grant key, kept in its input. */
-export function grantOf(a: AutomationView): string | undefined {
-  const key = (a.input as { grant?: unknown }).grant;
-  return typeof key === "string" && key ? key : undefined;
+/** The id a new automation gets, minted before its card: the same for the
+ *  same call (a resumed one asks the same question), another for any
+ *  other. The scheduler's own format. */
+export function automationId(ctx: StepContext): string {
+  return "a-" + createHash("sha256").update(`${ctx.runId}\n${ctx.path}`).digest("hex").slice(0, 8);
 }
 
-/** A new grant's key: the same for the same call (a resumed one asks the
- *  same question), and another for any other. */
-export function grantKey(ctx: StepContext): string {
-  return "g-" + createHash("sha256").update(`${ctx.runId}\n${ctx.path}`).digest("hex").slice(0, 24);
-}
-
-/** What the card is handed about `current`'s grant when the call names no
- *  new one: its key and name alone, so the host says what it already may
- *  do (a changed prompt posts where the old one did). Nothing on a host
- *  without grants, or for an automation without one. */
-export function keptGrant(cap: AutomationStepsCapability, current: AutomationView, name = current.name): Record<string, unknown> | undefined {
-  const key = grantOf(current);
-  return cap.grants && key ? { automation: key, name } : undefined;
-}
-
-/** The `grant` a host that takes one checks; any other host refuses it. */
-export function grantFor(cap: AutomationStepsCapability, grant: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+/** What the card is handed beside the intent on a host that takes grants:
+ *  the `grant` the call names with the automation's id and name added, or
+ *  — a change or a run of one with no new grant — the id and name alone,
+ *  so the host says what it already may do (a changed prompt posts where
+ *  the old one did). Nothing on a host without grants; a grant on one is
+ *  refused. */
+export function cardGrant(
+  cap: AutomationStepsCapability,
+  grant: Record<string, unknown> | undefined,
+  automation: string,
+  name: string,
+): Record<string, unknown> | undefined {
   if (grant && !cap.grants) throw new Error("automation/* steps: this strut's approval step takes no grant; leave grant out.");
-  return grant;
+  return cap.grants ? { ...grant, automation, name } : undefined;
 }
 
 /** An automation as the agent reads it. */
@@ -190,7 +190,6 @@ export function brief(a: AutomationView) {
     lastRun: a.lastRun,
     running: a.running,
     prompt: typeof input.prompt === "string" ? unescaped(input.prompt) : "",
-    ...(grantOf(a) ? { grant: true } : {}),
     ...(a.lastFireError ? { lastFireError: a.lastFireError } : {}),
   };
 }
@@ -213,12 +212,11 @@ export function schedule(summary: string, next: string[], tz: string | undefined
   return summary + (fires.length ? `; next ${fires.join(", ")}` : " (no runs to come)");
 }
 
-/** A schedule with no fire to come is refused before anyone is asked: a
- *  one-off set in the past (a wrong year, a time gone) would be allowed dead. */
+/** The scheduler refuses a schedule with no fire to come (a one-off set
+ *  in the past); the step asks the same of the preview first, so nobody
+ *  is shown a card for it. */
 export function comingFires<T extends { summary: string; next: string[] }>(preview: T): T {
-  if (!preview.next.length) {
-    throw new Error(`"${preview.summary}" has no runs to come: its time has passed. Check today's date and time, then set it again.`);
-  }
+  if (!preview.next.length) throw new Error(noRunsToCome(preview.summary));
   return preview;
 }
 

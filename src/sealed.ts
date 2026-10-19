@@ -45,36 +45,6 @@ export function isSealedStep(type: string, registry?: StepRegistry, patterns: re
   return patterns.some((p) => globToRegExp(p).test(type)) || registry?.[type]?.sealed === true;
 }
 
-/** Every string in `value`, however deep. */
-function stringsIn(value: unknown, out: string[] = []): string[] {
-  if (typeof value === "string") out.push(value);
-  else if (Array.isArray(value)) for (const v of value) stringsIn(v, out);
-  else if (value && typeof value === "object") for (const v of Object.values(value)) stringsIn(v, out);
-  return out;
-}
-
-/**
- * The first step a run's `params` override names that the workflow's own
- * params do not, as a phrase for an error, or null: a step type (or a
- * versioned ref to one), or a glob that reaches one. `params` are knobs
- * (prompts, thresholds); a grant (`agentTools: "{{ params.tools }}"`) read
- * from them must not be widened by whoever launches the run, or a child of
- * a job would hold tools its parent was never given, sealed or not.
- */
-export function grantWidenedBy(defaults: unknown, override: unknown, registry: StepRegistry): string | null {
-  const own = new Set(stringsIn(defaults));
-  for (const s of stringsIn(override)) {
-    if (own.has(s)) continue;
-    const base = s.split("@")[0]!;
-    if (registry[base]) return `"${s}"`;
-    if (!s.includes("*")) continue;
-    const re = globToRegExp(s);
-    const reached = Object.keys(registry).find((t) => re.test(t));
-    if (reached) return `"${s}" (reaches "${reached}")`;
-  }
-  return null;
-}
-
 /**
  * The first sealed thing a closure reaches, as a phrase for an error, or
  * null: `workflow "gaia-run"` (through a subflow), `step "gaia/evaluate"`

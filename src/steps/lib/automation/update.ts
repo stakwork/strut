@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { approvedOnce, brief, comingFires, find, grantField, grantFor, grantKey, grantOf, keptGrant, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
+import { approvedOnce, brief, cardGrant, comingFires, find, grantField, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
 
 /** Change an automation's name, prompt, schedule or grant, or pause or
- *  resume it, once the person allows it. Its grant's key stays with it:
- *  a new grant replaces the old one under the same key. */
+ *  resume it, once the person allows it. The card names the automation,
+ *  so a new grant replaces what the host holds under its id, and a change
+ *  with none shows what it already may do. */
 export default defineStep({
   type: "automation/update",
   description:
@@ -22,8 +23,7 @@ export default defineStep({
   async run(cfg, ctx) {
     const cap = requireAutomations(ctx.services);
     const current = await find(cap, cfg.id);
-    const grant = grantFor(cap, cfg.grant);
-    const key = grantOf(current) ?? (grant ? grantKey(ctx) : undefined);
+    const grant = cfg.grant && cardGrant(cap, cfg.grant, current.id, cfg.name ?? current.name);
     const details: string[] = [];
     if (cfg.name !== undefined && cfg.name !== current.name) details.push(`Name: “${cfg.name}”`);
     if (cfg.trigger) {
@@ -47,11 +47,11 @@ export default defineStep({
           ...(cfg.name !== undefined ? { name: cfg.name } : {}),
           ...(cfg.trigger ? { trigger: cfg.trigger } : {}),
           ...(cfg.enabled !== undefined ? { enabled: cfg.enabled } : {}),
-          // The name, prompt and grant key travel together in the run's input.
-          ...(cfg.name !== undefined || cfg.prompt !== undefined || grant ? { input: runInput(cfg.name ?? current.name, prompt, key) } : {}),
+          // The name and prompt travel together in the run's input.
+          ...(cfg.name !== undefined || cfg.prompt !== undefined ? { input: runInput(cfg.name ?? current.name, prompt) } : {}),
         }),
       );
       return { changed: brief(saved.automation) };
-    }, grant ? { ...grant, automation: key, name: cfg.name ?? current.name } : keptGrant(cap, current, cfg.name ?? current.name));
+    }, grant ?? cardGrant(cap, undefined, current.id, cfg.name ?? current.name));
   },
 });

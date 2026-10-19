@@ -144,7 +144,13 @@ export const automationCallbackSchema = z
   })
   .describe("Where each fire's run.end is POSTed, as for POST /workflows/:name/run { callback }. null clears it.");
 
+/** An automation's id: `a-` + 8 hex. Minted at create, or given by a caller
+ *  that must name the automation before it exists — the automation/create
+ *  step, whose card is shown first. */
+export const automationIdSchema = z.string().regex(/^a-[0-9a-f]{8}$/, "must be a-<8 hex>");
+
 export const automationDraftSchema = z.object({
+  id: automationIdSchema.optional().describe("Normally minted. A caller that must name the automation before it exists may give one, in strut's format; a taken one is refused."),
   name: z.string().trim().min(1).describe("Short human label, e.g. 'Morning mentions digest'."),
   trigger: triggerSchema,
   input: automationInputSchema.optional(),
@@ -153,7 +159,7 @@ export const automationDraftSchema = z.object({
 });
 export type AutomationDraft = z.infer<typeof automationDraftSchema>;
 
-export const automationPatchSchema = automationDraftSchema.partial();
+export const automationPatchSchema = automationDraftSchema.omit({ id: true }).partial();
 export type AutomationPatch = z.infer<typeof automationPatchSchema>;
 
 /** The stored record — one entry of `WorkflowMetadata.automations`. */
@@ -428,6 +434,13 @@ function ordinal(n: number): string {
 function zoneLabel(zone: string): string {
   if (zone === "UTC" || zone === "Etc/UTC") return "UTC";
   return `${zone.split("/").pop()!.replace(/_/g, " ")} time`;
+}
+
+/** A trigger with no fire to come (a one-off set in the past — a wrong
+ *  year, a time gone) is refused wherever a schedule is set, rather than
+ *  kept dead. */
+export function noRunsToCome(summary: string): string {
+  return `"${summary}" has no runs to come: its time has passed. Check today's date and time, then set it again.`;
 }
 
 /** The trigger as one plain sentence — what a person checks the rule against. */
