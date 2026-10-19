@@ -28,9 +28,13 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(JOB_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "foreach", "agent", "pack"], "job/dir → checkouts → agent → pack");
+    assert.deepEqual(
+      flow.steps.map((s) => s.type),
+      ["job/dir", "foreach", "if", "agent", "acp/prompt", "pack"],
+      "job/dir → checkouts → strut's agent, or a local one over ACP → pack",
+    );
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
-    for (const k of ["workspace", "session", "repos"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
+    for (const k of ["workspace", "session", "repos", "agent", "mode", "model", "cwd"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
 
     const { tools } = paramsOf(text);
     assert.ok(tools.length > 0);
