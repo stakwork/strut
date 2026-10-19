@@ -26,6 +26,7 @@ import { lsSteps, searchSteps, readStepSource } from "./ai/stepHelpers.js";
 import { stepSchemas } from "./ai/schemaHelpers.js";
 import { validateWorkflowYaml, type ValidationResult } from "./validate.js";
 import { searchWorkflows } from "./search.js";
+import { formatStepLint, lintStepSource } from "./step-lint.js";
 
 /**
  * The AUTHORING core — the workspace's author/test/inspect operations, shared
@@ -371,6 +372,8 @@ export async function publishNewStep(
   if ((await deps.getRegistry())[name]) {
     return { error: `"${name}" conflicts with a built-in (core/lib) step. Choose another name.` };
   }
+  const leaks = lintStepSource(code);
+  if (leaks.length) return { error: `Nothing was published — the step reaches past ctx.services (src/step-lint.ts):\n${formatStepLint(leaks)}` };
   let result;
   try {
     result = await deps.workspace.publishStep(name, code, description, publisher);
@@ -410,6 +413,8 @@ export async function publishStepVersion(
         `Author a new step under a different name instead.`,
     };
   }
+  const leaks = lintStepSource(code);
+  if (leaks.length) return { error: `Nothing was published — the step reaches past ctx.services (src/step-lint.ts):\n${formatStepLint(leaks)}` };
   let result;
   try {
     result = await deps.workspace.publishStep(type, code, description);

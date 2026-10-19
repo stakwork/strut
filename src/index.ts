@@ -8,6 +8,10 @@ export { z } from "zod";
 
 // YAML, for a seeded step: it resolves `strut` and no other package.
 export { dumpYaml, loadYaml } from "./yaml.js";
+// The env boundary (src/env.ts): a host that embeds strut scrubs its own env
+// with scrubProcessEnv() once its steps read through ctx.services.
+export { bootEnv, scrubProcessEnv, KEEP_ENV } from "./env.js";
+export { lintStepSource, formatStepLint, type StepLintFinding } from "./step-lint.js";
 
 // Core types and builders
 export {

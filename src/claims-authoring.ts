@@ -68,6 +68,7 @@ import { ClaimsError, ClaimsWriter, boundedName, type CheckData } from "./graph/
 import { ensureJobNode } from "./graph/projector.js";
 import { claimsBlockOf, type WorkspaceStore } from "./workspace.js";
 import { latestRefs, type EvidenceLocator } from "./ledger.js";
+import { bootEnv } from "./env.js";
 
 // ── Inputs (the tool-facing shapes) ─────────────────────────────────────────
 
@@ -228,7 +229,7 @@ export type ClaimsAuthoring = ReturnType<typeof buildClaimsAuthoring>;
 export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
   const reader = new ClaimsReader(deps.graph, { jobs: deps.jobs });
   const writer = new ClaimsWriter(deps.graph, reader);
-  const sealedPatterns = () => sealedStepPatterns(deps.env ?? process.env);
+  const sealedPatterns = () => sealedStepPatterns(deps.env ?? bootEnv());
 
   /** Is the job on file? (A record with a run: `recordRun` writes it at
    *  `run.start`.) Without an index no job is. */

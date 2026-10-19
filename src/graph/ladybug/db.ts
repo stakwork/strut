@@ -29,6 +29,7 @@ import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { GraphTx, Params, Row } from "../engine.js";
 import { EDGE_COLUMNS, LADYBUG_EDGE_TYPES, nodeColumns, type ColumnType } from "./registry.js";
+import { bootEnv } from "../../env.js";
 
 export type Query = (cypher: string, params?: Params) => Promise<Row[]>;
 
@@ -281,7 +282,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
 
   try {
     // Extensions: by path from the given folder, else the ladybug download.
-    const dir = opts.extensionDir ?? process.env["STRUT_LADYBUG_EXTENSION_DIR"];
+    const dir = opts.extensionDir ?? bootEnv()["STRUT_LADYBUG_EXTENSION_DIR"];
     const load = async (query: Query, name: string) => {
       if (dir) await query(`LOAD EXTENSION '${extensionPath(dir, name).replace(/'/g, "''")}'`);
       else {

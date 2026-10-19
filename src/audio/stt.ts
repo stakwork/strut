@@ -35,6 +35,7 @@ import {
   type SttModel,
 } from "./models.js";
 import { SessionStore } from "./sessions.js";
+import { bootEnv } from "../env.js";
 
 // ── Engine surface (what we use of sherpa-onnx-node; fakeable) ────────────
 
@@ -185,7 +186,7 @@ interface Loaded {
 }
 
 export function createStt(opts: SttServiceOptions): SttService {
-  const env = opts.env ?? process.env;
+  const env = opts.env ?? bootEnv();
   const modelDir = opts.modelDir ?? modelDirFromEnv(env);
   const loadEngine = opts.engine ?? loadSherpaEngine;
   const fetchImpl = opts.fetchImpl ?? fetch;

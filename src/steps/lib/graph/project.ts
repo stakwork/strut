@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
+import { bootEnv } from "../../../env.js";
 
 export default defineStep({
   type: "graph/project",
@@ -29,7 +30,7 @@ export default defineStep({
   async run(cfg, ctx) {
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
-      const dataDir = cfg.dataDir ?? process.env["STRUT_WORKSPACE"] ?? "./workspace";
+      const dataDir = cfg.dataDir ?? bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
       const [{ FileRunStore }, { FileChatStore }, { FileWorkspaceStore }, { GraphWorkspaceStore }, { projectAll }, { graphWorkspaceRequested }, { createJobIndex }] =
         await Promise.all([
           import("../../../store.js"),

@@ -17,6 +17,7 @@
 import type { Provider } from "aieo";
 import type { SecretsCapability } from "./capabilities.js";
 import type { StepContext } from "./core.js";
+import { bootEnv } from "./env.js";
 
 // ── The auth seam (plans/mothership-cost-control.md §1) ────────────────────
 //
@@ -167,7 +168,7 @@ export async function resolveEvaluationModel(
   opts: ResolveModelOptions & { fallback?: { model?: string; provider?: string } } = {},
 ): Promise<ResolvedEvaluationModel> {
   const getKey = async () =>
-    (await opts.secrets?.get(TYPESAFE_KEY_NAME))?.trim() || process.env[TYPESAFE_KEY_NAME]?.trim() || undefined;
+    (await opts.secrets?.get(TYPESAFE_KEY_NAME))?.trim() || bootEnv()[TYPESAFE_KEY_NAME]?.trim() || undefined;
   let jevId = opts.provider ? undefined : typesafeModelId(opts.model);
   let apiKey: string | undefined;
   if (jevId) {
@@ -375,7 +376,7 @@ export async function createWebTools(opts: {
 
 /** `STRUT_MAX_OUTPUT_TOKENS`, when set to a positive number. */
 function strutOutputCap(): number | undefined {
-  const n = Number(process.env["STRUT_MAX_OUTPUT_TOKENS"]);
+  const n = Number(bootEnv()["STRUT_MAX_OUTPUT_TOKENS"]);
   return n > 0 ? n : undefined;
 }
 

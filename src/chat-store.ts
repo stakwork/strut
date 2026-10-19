@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { tailJsonl } from "./store.js";
 import type { ElicitationRecord } from "./ai/elicitation.js";
+import { bootEnv } from "./env.js";
 
 /**
  * Chat persistence — the server-side store that makes the AI builder a
@@ -183,7 +184,7 @@ export const DEFAULT_TOOL_RESULT_MAX_CHARS = 50_000;
 
 /** Resolve the tool-result cap from the environment (see above). */
 export function toolResultMaxCharsFromEnv(): number {
-  const raw = process.env["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
+  const raw = bootEnv()["STRUT_CHAT_TOOL_RESULT_MAX_CHARS"];
   if (raw === undefined || raw === "") return DEFAULT_TOOL_RESULT_MAX_CHARS;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_TOOL_RESULT_MAX_CHARS;
