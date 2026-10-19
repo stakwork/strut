@@ -25,17 +25,24 @@ describe("the env boundary (src/env.ts)", () => {
   // touches nothing else. Order matters within this file: the read-only
   // cases first, the scrub last.
   it("strut's own code reads the env through bootEnv(), never process.env", () => {
+    // A read (`process.env.X`, `process.env["X"]`), or the object handed on
+    // whole (`...process.env`, `env: process.env`, `?? process.env`) — what a
+    // spawn with the server's env looks like. The builder's prompt text names
+    // it in prose; that file is read, never a source of env.
     const read = /process\.env\s*(\[|\.[A-Za-z_])/;
+    const handedOn = /\.\.\.process\.env\b|[=?(,:]\s*process\.env\b/;
+    const proseOnly = new Set(["ai/prompts.ts"]);
     const offenders = sources()
       .filter((p) => relative(SRC, p) !== "env.ts")
       .flatMap((p) =>
         readFileSync(p, "utf8")
           .split("\n")
           .map((line, i) => ({ line, i }))
-          .filter(({ line }) => read.test(line) && !/^\s*(\*|\/\/|\/\*)/.test(line))
+          .filter(({ line }) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+          .filter(({ line }) => read.test(line) || (!proseOnly.has(relative(SRC, p)) && handedOn.test(line)))
           .map(({ i }) => `${relative(SRC, p)}:${i + 1}`),
       );
-    assert.deepEqual(offenders, [], "a process.env read outside env.ts: use bootEnv() (see src/env.ts)");
+    assert.deepEqual(offenders, [], "a process.env read or hand-off outside env.ts: use bootEnv() / minimalEnv() (see src/env.ts)");
   });
 
   it("only shell.ts and the STT model unpack spawn a child directly", () => {

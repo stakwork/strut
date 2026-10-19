@@ -117,7 +117,7 @@ async function getDefault(): Promise<Strut> {
     const kind = workspaceBackendFromEnv();
     if (kind === "ladybug") {
       const { ladybugWorkspaceFromEnv } = await import("./graph/wiring.js");
-      const { backend, workspace, imported } = await ladybugWorkspaceFromEnv(process.env, { dataDir });
+      const { backend, workspace, imported } = await ladybugWorkspaceFromEnv(bootEnv(), { dataDir });
       if (imported.status === "failed") {
         // The flip to the file happens only once the import succeeds
         // (plans/ladybug-backend.md §7.1): until then the filesystem
@@ -133,7 +133,7 @@ async function getDefault(): Promise<Strut> {
       }
     } else if (kind === "neo4j") {
       const { graphWorkspaceFromEnv } = await import("./graph/wiring.js");
-      const { backend, workspace } = await graphWorkspaceFromEnv(process.env, { dataDir });
+      const { backend, workspace } = await graphWorkspaceFromEnv(bootEnv(), { dataDir });
       strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...shared });
     } else {
       strutInstance = await createStrut(shared);
