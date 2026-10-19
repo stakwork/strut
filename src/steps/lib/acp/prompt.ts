@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { encodeId, idProblem } from "../../../session-store.js";
+import { minimalEnv } from "../../../shell.js";
 import { AcpClient, type AcpUpdate, type PermissionOutcome, type PermissionRequest } from "./_client.js";
 
 /**
@@ -121,7 +122,10 @@ export default defineStep({
     session: z.string().optional().describe("strut's name for the thread; the same name next turn continues it"),
     mode: z.enum(["plan", "edit", "auto"]).default("edit").describe("plan: look only. edit: edit files; commands only inside the agent's own sandbox. auto: anything"),
     model: z.string().optional().describe("a model id the agent offers (session/set_model); ignored when it doesn't"),
-    env: z.record(z.string(), z.string()).optional().describe("extra environment for the agent process"),
+    env: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe("the agent process's whole environment beyond the shell basics (PATH, HOME, TMPDIR, the locale): nothing of the server's reaches it, so a key the agent needs goes here"),
   }),
   output: z.object({
     text: z.string(),
@@ -252,12 +256,16 @@ export default defineStep({
       return outcome as PermissionOutcome;
     };
 
-    const client = new AcpClient(cmd, args, { cwd: cfg.cwd, env: { ...process.env, ...cfg.env } }, { update: onUpdate, permission: onPermission });
+    // The scrubbed shell env plus the step's own: never the server's (STRUT_* keys, provider keys).
+    const client = new AcpClient(cmd, args, { cwd: cfg.cwd, env: { ...minimalEnv(), ...cfg.env } }, { update: onUpdate, permission: onPermission });
 
-    // Cancel: the runner flips control to "cancelling"; tell the agent, then stop waiting.
+    // Cancel: the runner flips control to "cancelling"; tell the agent once, then stop waiting.
     let sessionId = "";
+    let cancelSent = false;
     const watch = setInterval(() => {
-      if (ctx.control?.state === "cancelling" && sessionId) client.notify("session/cancel", { sessionId });
+      if (cancelSent || ctx.control?.state !== "cancelling" || !sessionId) return;
+      cancelSent = true;
+      client.notify("session/cancel", { sessionId });
     }, 300);
 
     try {
@@ -309,6 +317,10 @@ export default defineStep({
       const result = await client.request("session/prompt", { sessionId, prompt: [{ type: "text", text: cfg.prompt }] });
       await queue;
       await flush();
+      // A turn the run cancelled is not a result: checkpoint() raises the
+      // canonical CancelledError, so the partial reply is never journaled as
+      // a success (the exec step does the same after an aborted child).
+      if (result?.stopReason === "cancelled" && ctx.control?.state === "cancelling") await ctx.control.checkpoint();
       if (cost !== undefined) await save(cost);
       const turnCost = cost === undefined ? undefined : Math.round(Math.max(0, cost - priorCost) * 1e6) / 1e6;
 

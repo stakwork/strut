@@ -7,6 +7,12 @@ import { createInterface } from "node:readline";
  * `acp/prompt` step needs — initialize, session/new|load|set_mode|set_model|
  * prompt|cancel, and answering the agent's session/request_permission. It
  * advertises no fs or terminal capability, so the agent uses its own tools.
+ *
+ * This is the one spawn outside shell.ts (src/env.test.ts allows it): the
+ * agent is a long-lived child spoken to over stdin and stdout for the whole
+ * turn, which `runProcess` (run to completion, output captured) cannot be.
+ * The env is the caller's to build — `env` is REQUIRED, never defaulted to
+ * the server's — and acp/prompt hands over `minimalEnv()` plus its own.
  */
 
 export interface AcpUpdate {
@@ -36,8 +42,8 @@ export class AcpClient {
   private stderr = "";
   private exited: Promise<number | null>;
 
-  constructor(cmd: string, args: string[], opts: { cwd: string; env?: NodeJS.ProcessEnv }, private handlers: AcpHandlers) {
-    this.child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
+  constructor(cmd: string, args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }, private handlers: AcpHandlers) {
+    this.child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
     this.child.stderr?.on("data", (d) => (this.stderr = (this.stderr + String(d)).slice(-8000)));
     createInterface({ input: this.child.stdout! }).on("line", (line) => this.onLine(line));
     this.exited = new Promise((resolve) => {
