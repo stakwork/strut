@@ -1,9 +1,9 @@
 import { join } from "node:path";
-import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, type AccessedNode, type AnyStepDef, type Flow, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
+import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
-import { generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
+import { countUsage, generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
@@ -481,8 +481,9 @@ export interface AuthoringCapability {
      *  like the run that launched it. `job`: the launching run's job
      *  (plans/jobs.md §4) — stamped on the child, so its `{{ $job }}`,
      *  `job/dir` and `workdir` resolve to the directory the parent holds,
-     *  which it shares (`holdJob`). */
-    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string },
+     *  which it shares (`holdJob`). `mcp`: the launching run's caller's MCP
+     *  servers (`ctx.mcp`), so the child's agents reach the same caller. */
+    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[] },
   ): Promise<RunResult | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
@@ -823,6 +824,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.actor ? { actor: opts.actor } : {}),
           ...(opts?.principal ? { principal: opts.principal } : {}),
           ...(opts?.job ? { job: opts.job } : {}),
+          ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
         });
         // The graph nodes the child run touched, off its log — what its
         // steps and agents' tool calls reported (`step.end.nodes`), so the
@@ -830,13 +832,20 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
         // flyout, hive's run graph) sees what the whole tree read or wrote.
         // A ref the child got from a peer keeps its peer tag. A log that
         // cannot be read leaves the result unmarked.
+        // What the child's model calls spent rides the same way
+        // (`withUsage`), so the launching step's `step.end` carries it and
+        // this run's totals include the run it waited on.
         const touched = new Map<string, AccessedNode>();
+        let spent: ModelUsage | undefined;
         try {
-          for (const e of await store.getRunEvents(flow.name, runId)) foldAccessedNodes(touched, e);
+          const events = await store.getRunEvents(flow.name, runId);
+          for (const e of events) foldAccessedNodes(touched, e);
+          const totals = countUsage(events);
+          if (totals.modelCalls || totals.cost) spent = totals;
         } catch {
           // the result stands without them
         }
-        return withAccessedNodes(result, [...touched.values()]);
+        return withUsage(withAccessedNodes(result, [...touched.values()]), spent);
       } finally {
         tracked?.untrack();
       }

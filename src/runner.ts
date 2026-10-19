@@ -1,5 +1,6 @@
 import type {
   Flow,
+  McpServer,
   Step,
   StepContext,
   StepRegistry,
@@ -10,14 +11,15 @@ import type {
   StepCounts,
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
-import { accessedNodesOf, messagesOf, type AccessedNode } from "./core.js";
+import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
 import type { RunStore } from "./store.js";
-import { MemoryRunStore, countSteps, generateRunId, tallyStep } from "./store.js";
+import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tallyUsage } from "./store.js";
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
+import { mcpOrigins } from "./mcp-servers.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -109,6 +111,11 @@ export interface RunOptions<TServices = unknown> {
    *  { callback }`). The runner records the URL's ORIGIN on `run.start` / `run.resumed` and
    *  nothing more; the launcher keeps the URL and does the posting. */
   callback?: { origin: string };
+  /** The caller's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts),
+   *  credentials included: handed to every step as `ctx.mcp`, recorded on
+   *  `run.start` / `run.resumed` by name and origin only. The launcher keeps
+   *  the entries for a resume (`RunStore.setRunMcp`). */
+  mcp?: McpServer[];
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -119,14 +126,16 @@ function isSkipped(v: unknown): boolean {
 }
 
 /** What a step's output markers put on its `step.end`, the output itself
- *  staying slim: the model session (`withMessages`) as `messages`, and the
+ *  staying slim: the model session (`withMessages`) as `messages`, the
  *  graph nodes the step touched (`withAccessedNodes`) as `nodes` — the same
  *  field an agent's tool call carries, so a graph step reads the same in the
- *  log whether the workflow ran it or an agent called it. */
-function markersOf(output: unknown): { messages?: unknown[]; nodes?: AccessedNode[] } {
+ *  log whether the workflow ran it or an agent called it — and what its
+ *  model calls spent (`withUsage`, taken off the output so a container
+ *  handing the same object on never reports it twice). */
+function markersOf(output: unknown): { messages?: unknown[]; nodes?: AccessedNode[] } & Partial<ModelUsage> {
   const messages = messagesOf(output);
   const nodes = accessedNodesOf(output);
-  return { ...(messages ? { messages } : {}), ...(nodes ? { nodes } : {}) };
+  return { ...(messages ? { messages } : {}), ...(nodes ? { nodes } : {}), ...takeUsage(output) };
 }
 
 /** Flatten an Error's `cause` chain into one readable string (`""` when there
@@ -173,6 +182,7 @@ interface Exec {
   principal?: string;
   job?: string;
   automation?: { id: string };
+  mcp?: McpServer[];
   /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
@@ -205,9 +215,12 @@ export async function runWorkflow<TServices = unknown>(
   const services = bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal);
 
   const onEvent = opts?.onEvent;
-  // `RunSummary.stepCounts`, kept as events are emitted. A resume continues
-  // the same log, so it starts from what that log already counted.
-  const stepCounts: StepCounts = opts?.resume ? countSteps(await store.getRunEvents(wfName, runId)) : {};
+  // `RunSummary.stepCounts` and `totals`, kept as events are emitted. A
+  // resume continues the same log, so it starts from what that log counted.
+  const before = opts?.resume ? await store.getRunEvents(wfName, runId) : [];
+  const stepCounts: StepCounts = countSteps(before);
+  const totals = countUsage(before);
+  const spent = () => (totals.modelCalls || totals.cost ? { totals } : {});
   const emit = async (event: Partial<RunEvent> & { type: RunEvent["type"] }) => {
     const full: RunEvent = {
       ts: new Date().toISOString(),
@@ -217,6 +230,7 @@ export async function runWorkflow<TServices = unknown>(
     };
     await store.append(wfName, runId, full);
     tallyStep(stepCounts, full);
+    tallyUsage(totals, full);
     await onEvent?.(full);
   };
 
@@ -242,6 +256,7 @@ export async function runWorkflow<TServices = unknown>(
       error,
       ...summaryStamp,
       stepCounts,
+      ...spent(),
     });
     return { runId, status: "error", error };
   }
@@ -255,6 +270,7 @@ export async function runWorkflow<TServices = unknown>(
       // Steps load at (re)launch: what runs from here on is what is active NOW.
       ...(opts.stepHashes ? { stepHashes: opts.stepHashes } : {}),
       ...(opts.callback ? { callback: opts.callback } : {}),
+      ...(opts.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
     });
   } else {
     await emit({
@@ -271,6 +287,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.principal ? { principal: opts.principal } : {}),
       ...(opts?.job ? { job: opts.job } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
+      ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
@@ -311,6 +328,7 @@ export async function runWorkflow<TServices = unknown>(
     principal: opts?.principal,
     job: opts?.job,
     automation: opts?.automation,
+    ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     disposers: [],
   };
 
@@ -330,6 +348,7 @@ export async function runWorkflow<TServices = unknown>(
       output,
       ...summaryStamp,
       stepCounts,
+      ...spent(),
     });
     return { runId, status: "success", output };
   } catch (err) {
@@ -358,6 +377,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(cancelled ? {} : { error }),
       ...summaryStamp,
       stepCounts,
+      ...spent(),
     });
     return cancelled ? { runId, status: "cancelled" } : { runId, status: "error", error };
   } finally {
@@ -788,6 +808,7 @@ async function dispatchStep(
         ...(exec.principal ? { principal: exec.principal } : {}),
         ...(exec.job ? { job: exec.job } : {}),
         ...(exec.automation ? { automation: exec.automation } : {}),
+        ...(exec.mcp ? { mcp: exec.mcp } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),

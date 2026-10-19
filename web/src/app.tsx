@@ -27,6 +27,7 @@ import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
 import { StepEditFlyout } from "./components/StepEditFlyout";
 import { StepInfoFlyout } from "./components/StepInfoFlyout";
 import { EventsPanel } from "./components/EventsPanel";
+import { RunOverview } from "./components/RunOverview";
 import { EventsResizer } from "./components/EventsResizer";
 import { SidebarResizer } from "./components/SidebarResizer";
 import { StepRunFlyout } from "./components/StepRunFlyout";
@@ -689,6 +690,12 @@ export function App() {
     openRun(workflow, runId);
     setPendingFlyout(path ?? null);
   }, [openRun]);
+  // A row of the run overview: the open run's own canvas, the flyout on the
+  // row's top-level step (`wf/each#2/x` opens on `each`).
+  const openRunStep = useCallback((path: string) => {
+    setRunDrill([]);
+    setPendingFlyout(path.replace(/#\d+/g, ""));
+  }, []);
   useEffect(() => {
     if (!pendingFlyout || !localSteps || loadedWf !== selectedWf || events.length === 0) return;
     // `wf/work/004-agent` opens on `work`: the step the canvas has.
@@ -1430,7 +1437,22 @@ export function App() {
 
       {/* Events panel + resize handle */}
       {events.length > 0 && <EventsResizer />}
-      {events.length > 0 && <EventsPanel events={events} onOpenRun={openRun} />}
+      {events.length > 0 && (
+        <EventsPanel
+          events={events}
+          onOpenRun={openRun}
+          aside={
+            <RunOverview
+              events={events}
+              status={runControlStatus}
+              cap={selectedEntry?.maxRunCostUsd}
+              onOpenRun={openRun}
+              onOpenStep={openRunStep}
+              onOpenJob={selectJob}
+            />
+          }
+        />
+      )}
 
       {/* Create dialog */}
       {showCreate && <CreateDialog onClose={() => setShowCreate(false)} onCreate={handleCreate} categories={categories} />}

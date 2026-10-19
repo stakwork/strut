@@ -104,7 +104,7 @@ returns everything.
 
 | Method | Path                            | Body | Response |
 | ------ | ------------------------------- | ---- | -------- |
-| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback?, job?, title?, jobCallback? }` | 202 `{ runId, callback?: true, jobCallback?: true }` |
+| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback?, job?, title?, jobCallback?, mcp? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true }` |
 | POST   | `/workflows/:name/:version/run` | same | same |
 
 | Field            | Meaning |
@@ -117,6 +117,7 @@ returns everything.
 | `job`            | the job to launch under (`plans/jobs.md`): an id you mint, the format of a session id (§9); a bad one is a 400 and nothing launches. Recorded on the run, handed to steps as `ctx.job` and to templates as `{{ $job }}`; `job/dir` gives the run the job's directory, and the callback resolves the output's `artifacts[]` into it (`CALLBACKS.md` §4). The run is also recorded on the job — `GET /jobs/:id` (§5) lists it |
 | `title`          | the job's name (`plans/job-index.md`), recorded on the JOB, never on the run: the host's label for it, kept until a later launch carries another. 400 without `job` |
 | `jobCallback`    | `{ url }` (http/https) — the JOB's live updates (`job.update`: a hold taken or let go, a check's evidence, a verify ended, a step's screenshot or walkthrough frame) are POSTed there as they happen, from every run under the job; see `CALLBACKS.md` §5. Kept on the job, never returned; the latest launch that carries one wins, `null` clears it, absent keeps it. 400 without `job` or for another scheme |
+| `mcp`            | `[{ name, url, token?, headers?, toolFilter? }]` (`McpServer`, `src/core.ts`; at most 10) — YOUR MCP servers, the way back into you for this run's agents: every `agent` step gets their tools as `<name>_<tool>` unless it says `mcp: false`, and so do the jobs a turn starts (`job/start`, `job/continue`) and the runs it launches (`meta/run-workflow`) — never a peer. `url` is a Streamable HTTP endpoint (http/https); `token` is sent as `Authorization: Bearer <token>`, `headers` for any other scheme; `toolFilter` keeps those tools only (names or globs). `name`: letters, digits, `_`, `-`, unique. A bad entry is a 400 and nothing launches. The log records `mcp: [{ name, origin }]` only; the entries are kept beside it for a resume and returned by nothing. A server that cannot be reached when an agent starts is skipped, the agent going on without its tools |
 
 The run is **detached**: the 202 comes back before anything executes, the
 run keeps going whether or not you stay connected, and every event is
@@ -231,6 +232,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | `error`        | `{ message, stack? }`; error only. A cancelled run has neither |
 | `workflowHash` | content hash of the version that ran — what `GET …/versions` counts by |
 | `stepCounts`   | executions per step type across the whole tree; a tool an agent called is `tool:<type>` |
+| `totals`       | `{ modelCalls, usage, cost }` — what the run's model calls spent: the sum of its `step.end` events' fields of the same names (§5.3), sub-agents included, and a run a `meta/run-workflow` step waited on (so summing summaries counts such a child twice). `cost` is dollars at aieo's list prices, an estimate — not the gateway's bill. Absent when nothing called a model |
 | `actor`, `principal` | who launched it and who is billed, when known |
 | `automation`   | `{ id }` when a schedule fired it |
 | `job`          | the job it was launched under (§3), when one was given |
@@ -283,17 +285,18 @@ One object per line of the run's append-only log. Common fields:
 | `transcript` | on an agent step's `step.end`: the URL of its session (the `messages` never ride in this response) |
 | `nodes`      | on `step.end`: the graph nodes the step read or wrote, `[{ ref_id, node_type?, name? }]`, never truncated — on a graph step the workflow ran (`graph/graph-get`) and on one an agent called (`tool:graph_graph_get`) alike. Only nodes the caller NAMED (fetched, expanded, created, edited, moved): a search's hits and the neighbors or children a call listed are not in it. `name` is the node's label when it was touched. Absent when the step touched none |
 | `toolCallId` | on a tool call's `step.start` / `step.end` / `step.error` (`stepType: tool:<name>`): the AI SDK's id for that call — the key to the same call's `tool-result` part in the agent's transcript (§5), which holds the full result where `output` here is a 1,500-char preview |
+| `modelCalls`, `usage`, `cost` | on the `step.end` of a step that called a model — an `agent`, an `llm`, a sub-agent's or an llm's tool call (whose `output` here is a preview string) — or waited on a run that did (`meta/run-workflow`: that run's totals): how many calls, their tokens `{ inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, totalTokens }`, and their cost in dollars. Each spend is on exactly one event — an agent's own fields never include its sub-agents' — so a run's spend is their sum (the summary's `totals`). Absent on a step that called none |
 
 | Type              | Meaning |
 | ----------------- | ------- |
-| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `automation`, `callback: { origin }`, `parentRunId` when nested |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `parentRunId` when nested |
 | `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
 | `step.retry`      | an attempt failed and another follows |
 | `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |
 | `run.end`         | terminal, success; `output` |
 | `run.error`       | terminal, failure; `error` |
 | `run.cancelled`   | terminal, cancelled |
-| `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event and carries `stepHashes` + `callback: { origin }` like `run.start` |
+| `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event and carries `stepHashes`, `callback: { origin }` and `mcp` like `run.start` |
 | `step.replayed`   | on resume: a finished step's journaled `output`, not re-executed |
 
 `step.start.stepVersion: { version, hash }` records a pinned custom step's

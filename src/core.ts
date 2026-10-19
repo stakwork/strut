@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { InputBlock } from "./input-block.js";
+import type { TokenUsage } from "./pricing.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,24 @@ export interface StepDef<
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
   ) => Promise<z.infer<TOutput>>;
+}
+
+/** One of the caller's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts)
+ *  — Hive's `McpServerConfig`, field for field. HTTP only: a caller names a
+ *  URL to reach it at, never a process for strut to start. */
+export interface McpServer {
+  /** Prefixes its tools for the model (`<name>_<tool>`): letters, digits,
+   *  `_` and `-`, unique per launch. */
+  name: string;
+  /** The server's Streamable HTTP endpoint, http(s). */
+  url: string;
+  /** Shorthand for `Authorization: Bearer <token>`. */
+  token?: string;
+  /** Request headers, for any other scheme; `token` wins on Authorization. */
+  headers?: Record<string, string>;
+  /** Only these of its tools (exact names, or globs: `get_*`); absent or
+   *  empty = all. */
+  toolFilter?: string[];
 }
 
 /** Context passed to every step's `run` function.
@@ -95,6 +114,13 @@ export interface StepContext<TServices = unknown> {
   /** Who this run's spend is billed to: the actor, else the workflow's
    *  owner (§2, the principal rule). What `llmAuth` receives. */
   principal?: string;
+  /** The CALLER's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts):
+   *  what the launch handed strut to reach back into the caller — credentials
+   *  included, so it is read by the `agent` step (its tools) and the launch
+   *  steps that pass it on (job/start, job/continue, meta/run-workflow), and
+   *  never logged. An agent with `mcp: false` hands its tools a context
+   *  without it. Absent on a run launched without. */
+  mcp?: McpServer[];
   /** Register a run-scoped disposer: the runner calls every registered `fn`
    *  in its `finally` when the run settles — success, error AND cancel —
    *  newest first, each guarded, BEFORE the services bag's own `onRunEnd`.
@@ -266,6 +292,11 @@ export interface RunEvent {
    *  result POSTed to (`POST …/run { callback }`, src/callback.ts). The URL
    *  itself is the host's credential and never leaves the launch site. */
   callback?: { origin: string };
+  /** On `run.start` / `run.resumed`: the caller's MCP servers
+   *  (`POST …/run { mcp }`), by name and ORIGIN only — the URL's path and
+   *  the credentials are the caller's, kept by the run store beside the log
+   *  (`RunStore.setRunMcp`) and read by nothing that serves a request. */
+  mcp?: Array<{ name: string; origin: string }>;
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its
@@ -305,6 +336,13 @@ export interface RunEvent {
    *  (`step.end.messages`), where the full result lives. Absent outside a
    *  tool call. */
   toolCallId?: string;
+  /** On the `step.end` of a step that called a model — an `agent`, an
+   *  `llm`, a sub-agent's tool call — or waited on a run that did
+   *  (`meta/run-workflow`): what it spent, lifted from the output's
+   *  `withUsage` marker. A run's spend is the sum of these. */
+  modelCalls?: number;
+  usage?: TokenUsage;
+  cost?: number;
 }
 
 // ── Provenance convention: which graph nodes did a step touch? ─────────────
@@ -478,6 +516,49 @@ export function stopOf(output: unknown): boolean {
   return output !== null && typeof output === "object" && (output as Record<string, unknown>)[STOP_KEY] === true;
 }
 
+// ── Usage marker: what did a step's model calls spend? ──────────────────────
+
+/** What model calls spent: how many, their tokens, and their cost in dollars
+ *  at aieo's list prices (an estimate, not the gateway's bill). */
+export interface ModelUsage {
+  modelCalls: number;
+  usage: TokenUsage;
+  cost: number;
+}
+
+const USAGE_KEY = "_usage";
+
+/**
+ * Mark a step's output with what its model calls spent. The runner and
+ * `wrapToolsWithEmit` move it onto the step's `step.end` as `modelCalls`,
+ * `usage` and `cost` — fields of their own, never cut with the output — and
+ * TAKE it off the output as they do (`takeUsage`): a `pack`, a subflow or
+ * `run.end` handing the same object on reports nothing a second time, so a
+ * run's spend is the sum of its `step.end` events. The `agent` and `llm`
+ * steps mark their outputs, and `meta/run-workflow` marks its result with
+ * the totals of the run it waited on. Non-object outputs are left unmarked.
+ */
+export function withUsage<T>(output: T, spent: ModelUsage | undefined): T {
+  if (output === null || typeof output !== "object" || !spent) return output;
+  Object.defineProperty(output, USAGE_KEY, { value: spent, enumerable: false, configurable: true, writable: true });
+  return output;
+}
+
+/** The spend a step output was marked with (see `withUsage`), else undefined. */
+export function usageOf(output: unknown): ModelUsage | undefined {
+  if (output === null || typeof output !== "object") return undefined;
+  return (output as Record<string, unknown>)[USAGE_KEY] as ModelUsage | undefined;
+}
+
+/** The spend a step output was marked with, as `step.end` fields, taken
+ *  off the output; `{}` when it carries none. */
+export function takeUsage(output: unknown): Partial<ModelUsage> {
+  const v = usageOf(output);
+  if (!v) return {};
+  delete (output as Record<string, unknown>)[USAGE_KEY];
+  return { modelCalls: v.modelCalls, usage: v.usage, cost: v.cost };
+}
+
 /** Result of running a workflow. */
 export interface RunResult {
   runId: string;
@@ -515,6 +596,11 @@ export interface RunSummary {
    *  logs (`step-stats.ts`). Always written by the runner; absent only on
    *  summaries written before it existed. See `countSteps`. */
   stepCounts?: StepCounts;
+  /** What the run's model calls spent: the sum of its `step.end` events'
+   *  `modelCalls` / `usage` / `cost` — sub-agents included, and a run it
+   *  waited on (`meta/run-workflow`), so summing summaries counts such a
+   *  child twice. Absent when nothing called a model. See `countUsage`. */
+  totals?: ModelUsage;
 }
 
 /** Keyed by `stepType` as emitted — a step an agent called as a tool is

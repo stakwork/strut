@@ -1693,6 +1693,22 @@ describe("run control endpoints", () => {
       }
     });
 
+    it("a cut-off run launched with the caller's MCP servers resumes with them, named by origin only", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      try {
+        await writeCutOffLog(workspace, store, "1000");
+        await store.setRunMcp("boot", "1000", [{ name: "hive", url: "https://hive.test/mcp", token: "s3cret-token" }]);
+        const report = await strut.autoResumeStaleRuns();
+        assert.equal(report[0]!.action, "resumed");
+        await waitForSummary(store, "boot", "1000");
+        const events = await store.getRunEvents("boot", "1000");
+        assert.deepEqual(events.find((e) => e.type === "run.resumed")!.mcp, [{ name: "hive", origin: "https://hive.test" }]);
+        assert.ok(!JSON.stringify(events).includes("s3cret"));
+      } finally {
+        await cleanup();
+      }
+    });
+
     it("is on by default whenever the run store outlives the process, whatever the workspace kind", async () => {
       // The lab host: a GRAPH workspace (stood in for by a pathless one) with
       // an explicit FileRunStore. The gate is the run store, not the

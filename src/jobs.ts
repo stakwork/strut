@@ -42,7 +42,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { postCallback } from "./callback.js";
-import type { StepContext, StepRegistry } from "./core.js";
+import type { McpServer, StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
 import { encodeId, idProblem } from "./session-store.js";
@@ -318,6 +318,9 @@ export interface JobLaunch {
   /** Billed like the launching run. */
   actor?: string;
   principal?: string;
+  /** The launching run's caller's MCP servers (`ctx.mcp`): the job's agents
+   *  reach the same caller. */
+  mcp?: McpServer[];
 }
 
 /** The record's own writer, index or not. `index` (a server's stores) adds

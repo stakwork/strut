@@ -1,6 +1,7 @@
 import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { RunEvent, RunSummary, StepCounts } from "./core.js";
+import type { McpServer, ModelUsage, RunEvent, RunSummary, StepCounts } from "./core.js";
+import { addUsage, emptyUsage } from "./pricing.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -211,6 +212,13 @@ export interface RunStore {
    *  launch would have. Null for a run launched without one. */
   setRunCallback(workflow: string, runId: string, url: string): Promise<void>;
   getRunCallback(workflow: string, runId: string): Promise<string | null>;
+  /** The caller's MCP servers (`POST …/run { mcp }`), credentials included:
+   *  kept here for the same reason and on the same terms as the callback —
+   *  the log records names and origins only, no endpoint reads this — so a
+   *  durable resume reconnects the agent the way the launch did. Null for a
+   *  run launched without. */
+  setRunMcp(workflow: string, runId: string, servers: McpServer[]): Promise<void>;
+  getRunMcp(workflow: string, runId: string): Promise<McpServer[] | null>;
   /** Heal a log left torn by a crash mid-append (a truncated final line with
    *  no newline) so the next append starts on a fresh line instead of being
    *  glued onto the fragment. Called before a durable resume; returns true
@@ -323,6 +331,23 @@ export function countSteps(events: RunEvent[]): StepCounts {
   const counts: StepCounts = {};
   for (const e of events) tallyStep(counts, e);
   return counts;
+}
+
+/** Add one event's spend to `RunSummary.totals`: a `step.end` carrying the
+ *  fields `withUsage` puts there (core.ts). */
+export function tallyUsage(totals: ModelUsage, event: RunEvent): void {
+  if (event.type !== "step.end") return;
+  if (event.modelCalls === undefined && event.cost === undefined && event.usage === undefined) return;
+  totals.modelCalls += event.modelCalls ?? 0;
+  totals.cost += event.cost ?? 0;
+  if (event.usage) totals.usage = addUsage(totals.usage, event.usage);
+}
+
+/** `RunSummary.totals` for a whole log. */
+export function countUsage(events: RunEvent[]): ModelUsage {
+  const totals: ModelUsage = { modelCalls: 0, usage: emptyUsage(), cost: 0 };
+  for (const e of events) tallyUsage(totals, e);
+  return totals;
 }
 
 export function summarizeFromEvents(
@@ -445,6 +470,21 @@ export class FileRunStore implements RunStore {
     try {
       const { url } = JSON.parse(await readFile(join(this.runDir(workflow, runId), "callback.json"), "utf-8")) as { url?: unknown };
       return typeof url === "string" ? url : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async setRunMcp(workflow: string, runId: string, servers: McpServer[]): Promise<void> {
+    const dir = this.runDir(workflow, runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "mcp.json"), JSON.stringify({ servers }), { encoding: "utf-8", mode: 0o600 });
+  }
+
+  async getRunMcp(workflow: string, runId: string): Promise<McpServer[] | null> {
+    try {
+      const { servers } = JSON.parse(await readFile(join(this.runDir(workflow, runId), "mcp.json"), "utf-8")) as { servers?: unknown };
+      return Array.isArray(servers) ? (servers as McpServer[]) : null;
     } catch {
       return null;
     }
@@ -605,6 +645,7 @@ export class MemoryRunStore implements RunStore {
   events: Map<string, RunEvent[]> = new Map();
   summaries: Map<string, RunSummary> = new Map();
   callbacks: Map<string, string> = new Map();
+  mcp: Map<string, McpServer[]> = new Map();
 
   private key(workflow: string, runId: string): string {
     return `${workflow}/${runId}`;
@@ -631,6 +672,7 @@ export class MemoryRunStore implements RunStore {
       this.events.delete(this.key(workflow, id));
       this.summaries.delete(this.key(workflow, id));
       this.callbacks.delete(this.key(workflow, id));
+      this.mcp.delete(this.key(workflow, id));
     }
   }
 
@@ -640,6 +682,14 @@ export class MemoryRunStore implements RunStore {
 
   async getRunCallback(workflow: string, runId: string): Promise<string | null> {
     return this.callbacks.get(this.key(workflow, runId)) ?? null;
+  }
+
+  async setRunMcp(workflow: string, runId: string, servers: McpServer[]): Promise<void> {
+    this.mcp.set(this.key(workflow, runId), servers);
+  }
+
+  async getRunMcp(workflow: string, runId: string): Promise<McpServer[] | null> {
+    return this.mcp.get(this.key(workflow, runId)) ?? null;
   }
 
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {

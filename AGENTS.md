@@ -40,7 +40,7 @@ strut/
 ├── images/browser/        # a second image, nothing of strut's in it: a Playwright SERVER (`playwright run-server`, the package baked in, tini, non-root) for hosts whose steps drive a browser over a websocket. `.github/workflows/publish-browser.yml` pushes it to ghcr.io/stakwork/strut-browser when this directory changes on main, tagged with the Playwright version its Dockerfile pins — the connecting host's `playwright-core` must be on the same major.minor (strut's own, package.json, is pinned to it). The compose file's `browser` service
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
-│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the four output markers — withAccessedNodes / withMessages / withMedia / withStop (readers accessedNodesOf / messagesOf / mediaOf / stopOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json
+│   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the five output markers — withAccessedNodes / withMessages / withMedia / withStop / withUsage (readers accessedNodesOf / messagesOf / mediaOf / stopOf / usageOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json. withUsage (what a step's model calls spent) is TAKEN off the output by whoever lifts it onto `step.end` as `modelCalls` / `usage` / `cost` (`takeUsage`), so a pack or subflow handing the same object on never reports it twice; `RunSummary.totals` is their sum (`tallyUsage`, store.ts)
 │   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
 │   ├── search.ts          # searchSteps / searchWorkflows: the one matcher behind the sidebar filters, the Add Step picker and `GET /workflows?q=` — every word must hit the name (or the category / description), name hits rank first. The web UI imports it from here
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
@@ -68,6 +68,7 @@ strut/
 │   ├── storage-conformance.test.ts  # the storage boundary's spec: one suite per layer, run over every impl
 │   ├── createStrut.ts      # createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (tail) + detached /chat (launch+reattach) + static serving; injectable registry/store/chatStore/services
 │   ├── server.ts          # thin wrapper over createStrut() (getApp/startServer) — the default server, on the backend `STRUT_WORKSPACE_BACKEND` names (graph/wiring.ts): Neo4j by default, `ladybug` one LadybugDB file + the fs import (a failed import boots the fs workspace, loudly), `fs` the file stores. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either) — a host whose own entry is called `server.js` and imports the barrel never starts it (server.test.ts spawns that host)
+│   ├── mcp-servers.ts     # the CALLER's MCP servers (`POST …/run { mcp }`): parseMcpServers (the launch field, Hive's `McpServerConfig` shape: name, url, token?, headers?, toolFilter?; HTTP only), mcpOrigins (what `run.start` records), connectMcpTools (the agent step's client: the SDK's Streamable HTTP client, lazy, one per server for the step; `<server>_<tool>` in name order, a server that fails skipped with a warning, a failed call an `Error:` text, results capped, images as `withMedia`)
 │   ├── callback.ts        # host callbacks, shared by `POST …/run { callback }` and `POST /chat { callback }`: parseCallback (http(s) only), callbackOrigin (the loggable part), postCallback (one JSON POST, a few retries, never throws, never awaited by the work it reports on)
 │   ├── jobs.ts            # the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's), the idle sweep (holds released, repositories removed, files kept), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use, and LIVE UPDATES (plans/live-artifacts.md: `setJobCallback` keeps a launch's `jobCallback` in `jobs/.callbacks/`, never in the record; `notifyJob` / `ctx.services.jobs.notify` POST `job.update` there, ordered per job and coalesced per thing; holds and the verify pass announce themselves)
 │   ├── job-index.ts       # the job INDEX (plans/job-index.md), the read side of jobs.ts: createJobIndex({ dataDir, store, sessions, sealed }) → list (every job newest-used first, `q` through src/search.ts over the title + current deliverables, `workflow` keeps the jobs with a recorded run of it — the sidebar's filter; `actor` the jobs that actor launched a run of — the record's `actors`, `GET /jobs?mine=1`, the sidebar's user icon) / get (runs with status from the run store, threads from the session store — a turn line's `job`, or a thread named after the job — holds, files, and the ARTIFACT FOLD: the successful top-level runs' `artifacts[]` newest first, the first of each id winning, resolved like …/runs/:runId/artifacts; a sealed workflow's run shows its status and nothing more) / read (one file: text head+tail-capped, an image as bytes for withMedia). createStrut builds it into `ctx.services.jobs` beside the record's writes; `GET /jobs[/:id]` and the job/* steps are thin over it; the projector builds `StrutJob` from `get`
@@ -167,8 +168,9 @@ strut/
         ├── main.tsx       # entry: renders <App/>
         ├── app.tsx        # shell: sidebar, topbar, canvas, events panel, dialog/flyout orchestration
         ├── api.ts         # typed fetch wrapper for all API endpoints (+ run SSE tail; chat: sendChat/streamChat/getChat reattach)
-        ├── flow-to-canvas.ts  # Flow → CanvasData; STEP_COLORS → categories; childRefForStep/stepWorkflow (container nav)
+        ├── flow-to-canvas.ts  # Flow → CanvasData; one theme category per palette entry; childRefForStep/stepWorkflow (container nav)
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
+        ├── step-colors.ts # the step palette: PALETTE + paletteKey(type) — the ONE place a step's color is decided; the canvas nodes and the run overview's bars both read it
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
         ├── attachments.ts # the chat composer's files read for `POST /chat` (a PNG/JPEG past 1568 px scaled down first; the server's limits checked early)
@@ -179,6 +181,7 @@ strut/
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── step-depends.ts # dependsForSave: what the step editor saves as `depends` — a checked list, `[]` when the step had an explicit `depends` and nothing is checked (a parallel step stays parallel; unchecking every dep means none), omitted when it never had one (still implicitly sequential)
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
+        ├── run-overview.ts # foldRunOverview: a run's events → the run at a glance — status, duration, cost / model calls / tokens / tool calls (each `step.end`'s `withUsage` fields, an older log's agent / llm output), the failing step, and the TIMELINE rows: one per top-level step (a foreach's iterations folded in, ×N), under each what it started that a person opens — an agent, a sub-agent, an llm call, a child run (the launcher steps' `runId`) — with its span, cost and calls (pure; tested)
         ├── accessed-nodes.ts # foldAccessedNodes: a run's events → the graph nodes one step read or wrote (an agent's, through its tool calls), with the calls that touched each; type counts + filter (pure; tested)
         ├── elicitation.ts # the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[] for ConfigField + form helpers (pure; tested)
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat to the host named by ?embed_origin
@@ -198,7 +201,8 @@ strut/
         │   ├── ElicitationForm.tsx   # the builder's question at the end of the transcript: a form (Submit / Decline / ✕) or, for a secret, a password field posting to the /secret endpoint — the page a host's link opens (?chat=&elicit=)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc (+ the node-name typeahead for a field with `nodeType`, via graph-search)
         │   ├── CreateDialog.tsx      # new-workflow dialog
-        │   ├── EventsPanel.tsx       # bottom run-events panel
+        │   ├── EventsPanel.tsx       # bottom run-events panel: the log, and beside it an `aside` column (RunOverview)
+        │   ├── RunOverview.tsx       # the run at a glance, right of the event log: status + job chip, Cost and Model calls tiles, the spend split by who spent it, the run's time, the declared artifacts (`GET …/runs/:runId/artifacts`, the viewer) + its file listing, the timeline (hover card: time range, cost, calls; a click opens the step's flyout or the child run), then Claims (`GET /workflows/:name/evidence?runId=`) and the output, folded
         │   ├── EventsResizer.tsx     # drag handle for events panel height
         │   ├── Markdown.tsx          # tiny markdown renderer for chat output; `resolveLink` (the viewer's) turns a link whose target the caller can show into an in-place open, and is the only way an image renders — nothing but the scope's own files is loaded
         │   ├── RunInputPopover.tsx   # input-payload editor when triggering a run
@@ -1080,6 +1084,27 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   restart still drops a post in flight; the host's fallback is `GET
   /workflows/:name/runs/:runId`. The web UI never sends one.
 
+- **The caller's MCP servers — a host's way back into itself**
+  (`src/mcp-servers.ts`). The pull-direction twin of `callback`: `POST
+  …/run { mcp: [{ name, url, token?, headers?, toolFilter? }] }` (Hive's
+  `McpServerConfig`, field for field; HTTP only — a caller names a URL,
+  never a process for strut to start) hands this run's agents the caller's
+  tools — Hive its org's MCP, any other caller its own. Kept exactly as the
+  callback is: validated before anything launches (400), the 202 carries
+  `mcp: true`, `run.start` / `run.resumed` record `mcp: [{ name, origin }]`
+  only, and the entries — credentials included — are kept by the run store
+  beside the log (`RunStore.setRunMcp` / `getRunMcp`, `mcp.json` on files,
+  owner-only), served by nothing, so a durable resume reconnects. Every step
+  sees them as `ctx.mcp` (beside `ctx.job`); the `agent` step's `mcp`
+  (default `true`) turns them into tools, and `job/start` / `job/continue`
+  / `meta/run-workflow` hand them on to the runs they launch, so a job
+  started from a Hive turn reaches the same Hive. `strut/run-workflow`
+  never forwards them: they are this caller's, for this strut. An agent
+  with `mcp: false` keeps to its own tools and hands its tools a `ctx`
+  without them — its sub-agents and the jobs it starts get none. A token
+  that expires mid-run (Hive's are 4 h JWTs) makes the call an `Error:`
+  text; the host mints for the run's length.
+
 - **Run control** (`RUN_CONTROL_SPEC.md`, `src/run-control.ts` +
   `src/journal.ts`). Every launch site registers a `RunController`
   (createStrut's `trackRun` — superseding the old `activeRuns` set); nested
@@ -1889,6 +1914,21 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
     sub-agent's stop ends only its own turn. The output
     gains `stopped: { tool }`. With `toolFilter: ['none']` the step needs
     neither `git` nor `rg` (only the built-ins use them).
+  - **The caller's MCP servers are tools too** (`mcp`, default `true`;
+    `connectMcpTools`, src/mcp-servers.ts). A run launched with `POST …/run
+    { mcp }` hands every agent step its caller's servers as `ctx.mcp`; the
+    step connects one client per server when it starts (inside the same
+    `try` as the web tools, closed in its `finally`), adds their tools as
+    `<server>_<tool>` after everything else in name order (the tool list is
+    part of the cached prefix), not subject to `toolFilter`, masked of the
+    credentials (`wrapToolsWithMask`) and emitting a run event per call like
+    any tool. A tool whose name another tool holds is skipped; a server that
+    cannot be reached, refuses the credential or does not answer in 15 s is
+    skipped with a warning — the turn goes on without it. A call that fails
+    is an `Error:` text the model reads; a result is capped like `bash`'s,
+    and an image rides as `withMedia`. `mcp: false` keeps an agent (a judge,
+    a narrow researcher) and everything it launches through its tools off
+    them.
   - **Every tool call emits a nested run event** (`wrapToolsWithEmit`, applied
     to built-ins AND `agentTools` with one shared counter): a
     `step.start`/`step.end` (or `step.error`) at `<agentPath>/NNN-<tool>` with
@@ -1997,7 +2037,7 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
 2. Import it in `src/steps/registry.ts` and add to `CORE_STEPS`.
 3. If it's control flow, add to `SELF_RESOLVING_STEPS` in `runner.ts`
    and handle it in `dispatchStep`.
-4. Add a color entry in `STEP_COLORS` in `web/src/flow-to-canvas.ts`
+4. Add a color entry in `PALETTE` in `web/src/step-colors.ts`
    (categories are auto-generated from this map via `buildCategories()`;
    the Add Step dialog discovers types via the `/steps` API).
 5. Write tests in the appropriate test file.
@@ -2060,7 +2100,7 @@ with that move.
    directly. See "Lib step credentials".
 5. Shared helpers go in a leading-underscore file (`lib/<ns>/_shared.ts`) —
    imported by siblings, skipped by registry discovery.
-6. Add a `STEP_COLORS` entry in `web/src/flow-to-canvas.ts` if you want a
+6. Map the type or its namespace to a `PALETTE` entry in `web/src/step-colors.ts` if you want a
    distinct node color (optional; the Add Step dialog discovers the type
    regardless via `/steps`).
 7. Write tests; run `npm test` and `cd web && npx tsc --noEmit && npx vite build`.

@@ -8,6 +8,7 @@ import type {
   SlotContext,
 } from "system-canvas";
 import { midnightTheme, resolveTheme } from "system-canvas";
+import { PALETTE, paletteKey } from "./step-colors";
 
 /**
  * Step data as returned by the API (serialized from the Flow object).
@@ -48,44 +49,7 @@ const NODE_H = 60;
 const GAP_Y = 50;
 const GAP_X = 40;
 
-// ── Step type colors (each becomes a theme category) ───────────────────────
-
-const STEP_COLORS: Record<string, { fill: string; stroke: string }> = {
-  http:     { fill: "rgba(6, 78, 59, 0.4)",   stroke: "#34d399" },
-  log:      { fill: "rgba(30, 58, 138, 0.4)", stroke: "#60a5fa" },
-  if:       { fill: "rgba(120, 53, 15, 0.4)", stroke: "#f59e0b" },
-  loop:     { fill: "rgba(88, 28, 135, 0.4)", stroke: "#a78bfa" },
-  foreach:  { fill: "rgba(67, 20, 102, 0.4)", stroke: "#8b5cf6" },
-  subflow:  { fill: "rgba(21, 94, 117, 0.4)", stroke: "#22d3ee" },
-  llm:      { fill: "rgba(76, 29, 149, 0.4)", stroke: "#c084fc" },
-  agent:    { fill: "rgba(124, 45, 18, 0.4)", stroke: "#fb923c" },
-  wait:     { fill: "rgba(71, 85, 105, 0.4)", stroke: "#94a3b8" },
-  exec:     { fill: "rgba(63, 63, 70, 0.5)",  stroke: "#a1a1aa" },
-  "slack/post-message": { fill: "rgba(74, 21, 75, 0.4)",  stroke: "#e879f9" },
-  "slack/read-channel": { fill: "rgba(74, 21, 75, 0.4)",  stroke: "#e879f9" },
-  "x/search-posts":     { fill: "rgba(12, 74, 110, 0.4)", stroke: "#38bdf8" },
-  "x/mentions":         { fill: "rgba(12, 74, 110, 0.4)", stroke: "#38bdf8" },
-  "gdrive/export-file": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "gdrive/list-files":  { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "sheets/create-spreadsheet": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "sheets/update-values": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "sheets/batch-update-values": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "sheets/get-values": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "sheets/add-sheet": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "sheets/import-spreadsheet": { fill: "rgba(20, 83, 45, 0.4)",  stroke: "#4ade80" },
-  "strut/run-workflow": { fill: "rgba(21, 94, 117, 0.4)", stroke: "#22d3ee" },
-  // The browser/* steps (src/steps/lib/browser) share one color.
-  ...Object.fromEntries(
-    ["open", "goto", "back", "close", "snapshot", "text", "evaluate", "observe", "click", "fill", "type", "press", "select", "hover", "scroll", "wait", "screenshot", "capture", "verify", "walkthrough", "state"].map(
-      (n) => [`browser/${n}`, { fill: "rgba(19, 78, 74, 0.4)", stroke: "#2dd4bf" }],
-    ),
-  ),
-  default:  { fill: "rgba(38, 38, 38, 0.6)",  stroke: "#737373" },
-};
-
-function colorsFor(type: string) {
-  return STEP_COLORS[type] ?? STEP_COLORS["default"]!;
-}
+// ── Step colors: one theme category per palette entry (step-colors.ts) ─────
 
 // ── Status indicator (topRight custom slot) ────────────────────────────────
 
@@ -304,8 +268,8 @@ function buildStepCategory(type: string, colors: { fill: string; stroke: string 
 
 function buildCategories(): Record<string, any> {
   const categories: Record<string, any> = {};
-  for (const [type, colors] of Object.entries(STEP_COLORS)) {
-    categories[`step-${type}`] = buildStepCategory(type, colors);
+  for (const [key, colors] of Object.entries(PALETTE)) {
+    categories[`step-${key}`] = buildStepCategory(key, colors);
   }
   return categories;
 }
@@ -465,7 +429,7 @@ export function flowToCanvas(
     const pos = nodePositions.get(s.id)!;
     const stepPath = `${flow.name}/${s.id}`;
     const bare = baseType(s.type); // a pinned `type@vN` keeps its type's color; the header shows the pin
-    const category = `step-${STEP_COLORS[bare] ? bare : "default"}`;
+    const category = `step-${paletteKey(bare)}`;
     const status = stepStatus(stepPath, runEvents);
 
     const w = s.type === "loop" ? NODE_W + 40 : NODE_W;

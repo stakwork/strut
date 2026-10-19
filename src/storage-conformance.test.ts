@@ -110,6 +110,20 @@ for (const impl of runImpls) {
       assert.equal(await store.getRunCallback(WF, "1000"), null);
     });
 
+    it("setRunMcp → getRunMcp: null until set, kept beside the log, gone with deleteRuns", async () => {
+      const servers = [{ name: "hive", url: "https://hive.test/mcp", token: "s3cret-token", toolFilter: ["get_*"] }];
+      assert.equal(await store.getRunMcp(WF, "1000"), null);
+      await store.setRunMcp(WF, "1000", servers);
+      await store.append(WF, "1000", ev("1000", "run.start"));
+      await store.finalize(WF, "1000", summaryFor("1000"));
+      assert.deepEqual(await store.getRunMcp(WF, "1000"), servers);
+      assert.equal(await store.getRunMcp(WF, "1001"), null);
+      assert.ok(!JSON.stringify(await store.getRunEvents(WF, "1000")).includes("s3cret"));
+      assert.ok(!JSON.stringify(await store.getRunSummary(WF, "1000")).includes("s3cret"));
+      await store.deleteRuns(WF);
+      assert.equal(await store.getRunMcp(WF, "1000"), null);
+    });
+
     it("a finalize-less log yields a partial summary (crash / in-flight)", async () => {
       await store.append(WF, "1", ev("1", "run.start", { input: { q: 1 } }));
       await store.append(WF, "1", ev("1", "step.end", { path: `${WF}/a`, output: "A" }));
