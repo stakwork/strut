@@ -80,6 +80,7 @@ export function EventsPanel(props: {
 
   return (
     <div class="shell-events">
+      {props.aside}
       <div class="events-log" ref={scrollRef} onScroll={onScroll}>
         {!atBottom && (
           <div class="events-jump-anchor">
@@ -135,7 +136,6 @@ export function EventsPanel(props: {
           );
         })}
       </div>
-      {props.aside}
     </div>
   );
 }
