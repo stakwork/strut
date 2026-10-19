@@ -39,6 +39,7 @@ import {
   readWorkflow,
   searchRunEvents,
 } from "../authoring.js";
+import { bootEnv } from "../env.js";
 
 /** The step behind the builder's `graph_get` tool. */
 const GRAPH_GET_STEP = "graph/graph-get";
@@ -1326,7 +1327,7 @@ export function buildTools(deps: AiDeps): ToolSet {
                 const em = await resolveEvaluationModel({
                   model,
                   secrets: (deps.services as { secrets?: NonNullable<Parameters<typeof resolveEvaluationModel>[0]>["secrets"] } | undefined)?.secrets,
-                  fallback: { model: process.env["STRUT_LLM_MODEL"], provider: process.env["STRUT_LLM_PROVIDER"] },
+                  fallback: { model: bootEnv()["STRUT_LLM_MODEL"], provider: bootEnv()["STRUT_LLM_PROVIDER"] },
                 });
                 return { evaluate: modelEvaluate(em.model, { abortSignal }), name: em.name };
               }),

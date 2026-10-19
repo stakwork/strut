@@ -3,6 +3,7 @@ import { defineStep, withUsage, type StepContext } from "../../core.js";
 import type { StrutCapabilities } from "../../capabilities.js";
 import { resolveModel, stepAuth } from "../../llm.js";
 import { usageFromSteps, usageForCost } from "../../pricing.js";
+import { bootEnv } from "../../env.js";
 
 const EXAMPLE = `- id: summarize
   type: llm
@@ -59,8 +60,8 @@ export default defineStep({
     // cap is a provider-derived infra constant (pricing.ts) — without it the
     // SDK's 4096 default truncates a long answer.
     const { model, maxOutputTokens, provider, modelId } = await resolveModel({
-      model: cfg.model ?? process.env["STRUT_LLM_MODEL"],
-      provider: cfg.provider ?? process.env["STRUT_LLM_PROVIDER"],
+      model: cfg.model ?? bootEnv()["STRUT_LLM_MODEL"],
+      provider: cfg.provider ?? bootEnv()["STRUT_LLM_PROVIDER"],
       secrets: ctx?.services?.secrets,
       // Where to send the call and how to attribute it (plans/mothership-cost-control.md §1).
       ...stepAuth(ctx),

@@ -34,6 +34,7 @@ import { principalRequired, requireApiKey } from "./auth.js";
 import { FileSecretStore, type SecretStore } from "./secret-store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { LlmAuth, LlmAuthContext, LlmAuthResult } from "./llm.js";
+import { bootEnv } from "./env.js";
 
 /** The one agent name hive authorizes for strut; every lineage starts here. */
 export const STRUT_AGENT = "strut-agent";
@@ -190,7 +191,7 @@ export function stepAgentName(stepPath: string): string {
  */
 export function resolveRunCap(
   workflowCap: number | undefined,
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = bootEnv(),
   fallback = DEFAULT_RUN_CAP_USD,
 ): number {
   const raw = env["STRUT_RUN_MAX_COST_USD"];
@@ -261,7 +262,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
   /** The cap for a run, checked against the delegation's ceiling — a link
    *  above it would be rejected by the gateway, so fail here, loudly. */
   const capOrThrow = (workflowCap: number | undefined, ceiling: number, principal: string) => {
-    const cap = resolveRunCap(workflowCap, process.env, opts.runCapDefault);
+    const cap = resolveRunCap(workflowCap, bootEnv(), opts.runCapDefault);
     if (cap > ceiling) {
       throw new Error(`workflow cap $${cap} exceeds the delegation ceiling $${ceiling} for ${principal} — lower the cap or re-authorize with a higher ceiling`);
     }

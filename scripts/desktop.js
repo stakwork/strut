@@ -138,9 +138,12 @@ if (env["STRUT_EXIT_ON_STDIN_EOF"] === "1") {
 
 await mkdir(env["STRUT_WORKSPACE"], { recursive: true });
 
+// startServer empties process.env (src/env.ts: the key must not be readable
+// by a step), so read what the URL needs first.
+const { STRUT_HOST: uiHost, STRUT_API_KEY: uiKey } = env;
 const { startServer } = await import("./build/server.js");
 const port = await startServer();
-const url = `http://${env["STRUT_HOST"]}:${port}/?key=${env["STRUT_API_KEY"]}`;
+const url = `http://${uiHost}:${port}/?key=${uiKey}`;
 console.error(`strut ui: ${url}`);
 if (args.includes("--open")) {
   const [cmd, cmdArgs] =

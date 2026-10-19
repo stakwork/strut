@@ -6,6 +6,7 @@ import { modelEvaluate, type Evaluate, type EvalQuestion, type EvalAnswer } from
 import { addUsage, emptyUsage, type TokenUsage } from "../../../pricing.js";
 import { resolveEvaluationModel, stepAuth } from "../../../llm.js";
 import { graphCtx, errText, deriveNodeName } from "./_shared.js";
+import { bootEnv } from "../../../env.js";
 
 /**
  * `graph/walk` — gather context for a goal by walking the graph.
@@ -571,7 +572,7 @@ export default defineStep({
         model: cfg.model,
         provider: cfg.provider,
         secrets: ctx?.services?.secrets,
-        fallback: { model: process.env["STRUT_LLM_MODEL"], provider: process.env["STRUT_LLM_PROVIDER"] },
+        fallback: { model: bootEnv()["STRUT_LLM_MODEL"], provider: bootEnv()["STRUT_LLM_PROVIDER"] },
         ...stepAuth(ctx),
       });
       return await runWalk(cfg, { reader: b.reader, evaluate: modelEvaluate(em.model), ctx });

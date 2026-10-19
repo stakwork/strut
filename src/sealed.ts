@@ -25,6 +25,7 @@
  */
 import type { StepRegistry } from "./core.js";
 import { globToRegExp, type FlowClosure } from "./closure.js";
+import { bootEnv } from "./env.js";
 
 /** Sealed on every deployment: the eval primitives and the meta surface
  *  itself (no authoring one hop away). A deployment's graders seal
@@ -35,7 +36,7 @@ import { globToRegExp, type FlowClosure } from "./closure.js";
 export const DEFAULT_SEALED_STEPS: readonly string[] = ["eval/*", "meta/*"];
 
 /** The deployment's sealed step globs: the defaults plus `STRUT_SEALED`. */
-export function sealedStepPatterns(env: Record<string, string | undefined> = process.env): string[] {
+export function sealedStepPatterns(env: Record<string, string | undefined> = bootEnv()): string[] {
   const extra = (env["STRUT_SEALED"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   return [...new Set([...DEFAULT_SEALED_STEPS, ...extra])];
 }

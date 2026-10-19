@@ -10,7 +10,10 @@ import acpStep, { decidePermission, parseAgent } from "./prompt.js";
  * two prose chunks, one shell call that asks for permission, then a closing
  * chunk. It supports session/load and remembers how many prompts a session
  * has had, so a test can see a thread continue. Its cost is the session
- * total, as real agents report it.
+ * total, as real agents report it. With ACP_TEST_LEAK in its env the closing
+ * chunk echoes it (what an agent in auto mode could do with `env`); with
+ * FAKE_HOLD it holds the prompt until session/cancel, counts the cancels it
+ * gets, and answers "cancelled" a little later.
  */
 const FAKE_AGENT = `
 const rl = require("node:readline").createInterface({ input: process.stdin });
@@ -19,8 +22,18 @@ const update = (sessionId, u) => send({ method: "session/update", params: { sess
 const turns = {};
 let pendingPerm = null;
 const modes = { currentModeId: "default", availableModes: [{ id: "default" }, { id: "plan" }, { id: "acceptEdits" }, { id: "bypassPermissions" }] };
+let held = null;
+let cancels = 0;
 rl.on("line", (line) => {
   const m = JSON.parse(line);
+  if (m.method === "session/cancel") {
+    cancels++;
+    if (held && cancels === 1) setTimeout(() => {
+      update(held.sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "cancels=" + cancels } });
+      send({ id: held.prompt, result: { stopReason: "cancelled" } });
+    }, 700);
+    return;
+  }
   if (m.method === "initialize") return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
   if (m.method === "session/new") { const id = "s-" + Date.now(); turns[id] = 0; return send({ id: m.id, result: { sessionId: id, modes } }); }
   if (m.method === "session/load") {
@@ -32,6 +45,7 @@ rl.on("line", (line) => {
   if (m.method === "session/set_mode") { process.stderr.write("mode=" + m.params.modeId + "\\n"); return send({ id: m.id, result: {} }); }
   if (m.method === "session/prompt") {
     const sid = m.params.sessionId;
+    if (process.env.FAKE_HOLD) { held = { prompt: m.id, sid }; return; }
     turns[sid] = (turns[sid] || 0) + 1;
     update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Turn " + turns[sid] + ": " } });
     update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "looking." } });
@@ -51,7 +65,8 @@ rl.on("line", (line) => {
     const ok = m.result.outcome.optionId === "yes";
     const { sid, prompt } = pendingPerm;
     update(sid, { sessionUpdate: "tool_call_update", toolCallId: "t1", status: ok ? "completed" : "failed", content: [{ type: "content", content: { type: "text", text: ok ? "3 passed" : "denied" } }] });
-    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: ok ? "All good." : "Could not run tests." } });
+    const leak = process.env.ACP_TEST_LEAK ? " leak=" + process.env.ACP_TEST_LEAK : "";
+    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: (ok ? "All good." : "Could not run tests.") + leak } });
     update(sid, { sessionUpdate: "usage_update", used: 10, size: 100, cost: { amount: 0.01 * turns[sid], currency: "USD" } });
     pendingPerm = null;
     return send({ id: prompt, result: { stopReason: "end_turn" } });
@@ -59,7 +74,7 @@ rl.on("line", (line) => {
 });
 `;
 
-function setup() {
+function setup(control?: { state: string; checkpoint: () => Promise<void> }) {
   const dir = mkdtempSync(join(tmpdir(), "acp-test-"));
   const agent = join(dir, "fake-agent.cjs");
   writeFileSync(agent, FAKE_AGENT);
@@ -71,6 +86,7 @@ function setup() {
     input: {},
     services: { dataDir: dir },
     emit: async (e: Record<string, any>) => void events.push(e),
+    ...(control ? { control } : {}),
   } as any;
   const run = (cfg: Record<string, unknown>, env?: Record<string, string>) =>
     acpStep.run(acpStep.input.parse({ agent: `${process.execPath} ${agent}`, cwd: dir, env, ...cfg }) as any, ctx) as Promise<any>;
@@ -127,6 +143,35 @@ describe("acp/prompt", () => {
     assert.doesNotMatch(second.text, /replayed/);
     assert.equal(first.cost, 0.01);
     assert.equal(Number(second.cost.toFixed(6)), 0.01, "the turn's own spend, not the session total");
+  });
+
+  it("hands the agent the scrubbed shell env plus the step's own, nothing of the server's", async () => {
+    const { run } = setup();
+    process.env["ACP_TEST_LEAK"] = "server-secret";
+    try {
+      const out = await run({ prompt: "check it", mode: "auto" });
+      assert.equal(out.text, "Turn 1: looking.\n\nAll good.", "the server's env never reaches the agent");
+      const seen = await run({ prompt: "check it", mode: "auto" }, { ACP_TEST_LEAK: "1" });
+      assert.match(seen.text, /All good\. leak=1$/, "the step's own env does");
+    } finally {
+      delete process.env["ACP_TEST_LEAK"];
+    }
+  });
+
+  it("on cancel tells the agent once and lets checkpoint() raise, so the cut-off turn is no result", async () => {
+    let checkpoints = 0;
+    const control = {
+      state: "cancelling",
+      checkpoint: async () => {
+        checkpoints++;
+        throw new Error("cancelled");
+      },
+    };
+    const { events, run } = setup(control);
+    await assert.rejects(run({ prompt: "long task", mode: "auto" }, { FAKE_HOLD: "1" }), /^Error: cancelled$/);
+    assert.equal(checkpoints, 1);
+    const last = events.filter((e) => e.type === "step.end" && e.stepType === "message").pop();
+    assert.equal(last?.output, "cancels=1", "session/cancel went out once, not every 300 ms");
   });
 
   it("fails with the agent's own words when it cannot start", async () => {

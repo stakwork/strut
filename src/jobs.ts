@@ -48,6 +48,7 @@ import { isAncestorRun } from "./run-control.js";
 import { encodeId, idProblem } from "./session-store.js";
 import type { JobIndex } from "./job-index.js";
 import type { LedgerClaim } from "./ledger.js";
+import { bootEnv } from "./env.js";
 
 export interface JobRecord {
   name: string;
@@ -466,7 +467,7 @@ export function jobHolder(root: string): string | undefined {
 /** How long a job may sit unused before its repositories are removed
  *  (`STRUT_WORKDIR_TTL_DAYS`, default 7). `0` keeps them forever. */
 export function jobTtlMs(): number {
-  const raw = process.env["STRUT_WORKDIR_TTL_DAYS"];
+  const raw = bootEnv()["STRUT_WORKDIR_TTL_DAYS"];
   const days = raw === undefined || raw === "" ? 7 : Number(raw);
   return Number.isFinite(days) && days > 0 ? days * 86_400_000 : 0;
 }

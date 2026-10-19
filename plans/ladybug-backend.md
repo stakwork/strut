@@ -554,14 +554,16 @@ skips and says so, never silently.
   needs it.
 - **A stale `.wal`** beside a missing file fails every query; the handle
   checks before open, the test helper removes both.
-- **A `Database` reserves 8 TB of address space** (its VM region) on open,
-  read-only or not, and `close()` does not return it: a process can open
-  about seven. One handle per file per process (the registry on
+- **A `Database` reserves `maxDBSize` of address space** (its VM region) on
+  open, read-only or not, and `close()` does not return it: at the addon's
+  default 8 TB a process fits eight to ten, so both handles pass 1 TB
+  (`MAX_DB_SIZE`, 2026-10-19: memory-steps.test.ts opened nine and failed on
+  the ninth two runs in three). One handle per file per process (the registry on
   `globalThis`) is the rule; the model's Cypher runs in a READ ONLY
-  transaction, never on a second `Database`. `npm test` runs its files in
-  separate processes, but many Ladybug-opening files in parallel beside
-  another Ladybug process (the desktop smoke) once tripped the limit
-  system-wide; alone, the suite is clean.
+  transaction, never on a second `Database`. The limit is per process
+  (four processes side by side each fit the same eight to ten at 8 TB),
+  and where it lands varies run to run, so a file that opens as many as
+  fit passes alone and fails in the suite.
 - **The extensions are versioned with the core** (`0.21.0`), not the npm
   package (`0.21.2`): read the version from `SHOW_LOADED_EXTENSIONS()`'s
   path, never from `Database.getVersion()`.

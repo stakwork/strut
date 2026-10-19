@@ -14,6 +14,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { bootEnv } from "./env.js";
 
 /** Allowlisted env vars a shell needs to behave normally (run tools from
  *  PATH, resolve ~, write temp files, keep git/locale sane). Everything
@@ -36,7 +37,7 @@ const ENV_ALLOWLIST = [
 export function minimalEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const k of ENV_ALLOWLIST) {
-    if (process.env[k] !== undefined) env[k] = process.env[k];
+    if (bootEnv()[k] !== undefined) env[k] = bootEnv()[k];
   }
   return env;
 }

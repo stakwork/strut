@@ -45,7 +45,7 @@ export const DEFAULT_NAMESPACE = "default";
  * opt-in for embedders (the `graph/*` steps default to localhost instead).
  */
 export function graphConfigFromEnv(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = bootEnv(),
 ): Neo4jConfig | null {
   const uri = env["NEO4J_URI"] || (env["NEO4J_HOST"] ? `bolt://${env["NEO4J_HOST"]}` : undefined);
   if (!uri) return null;
@@ -63,6 +63,7 @@ export const int = (n: number) => neo4j.int(Math.trunc(n));
 
 export type { Params, Row } from "./engine.js";
 import type { Params, Row } from "./engine.js";
+import { bootEnv } from "../env.js";
 
 /** Convert a driver Record to a plain object, unwrapping Node/Relationship
  *  values to their property maps (labels/type exposed alongside). */

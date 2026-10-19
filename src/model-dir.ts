@@ -12,8 +12,9 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { bootEnv } from "./env.js";
 
-export function modelDirFromEnv(env: Record<string, string | undefined> = process.env): string {
+export function modelDirFromEnv(env: Record<string, string | undefined> = bootEnv()): string {
   const explicit = env["STRUT_MODEL_DIR"] ?? env["STRUT_MODEL_CACHE"];
   if (explicit) return explicit;
   const root = env["STRUT_CACHE_DIR"] ?? env["XDG_CACHE_HOME"];

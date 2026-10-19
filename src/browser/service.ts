@@ -63,6 +63,7 @@ import { Recording, type WalkthroughFrame } from "./walkthrough.js";
 import { parseDenyList, denyReason, type DenyRule } from "./deny.js";
 import { judgeVerify, urlMatches, type Expectation, type StoppedAt, type Verdict } from "./verdict.js";
 import { captchaFiles, captchaManifest, siteOf, writeCaptcha, type CaptchaManifest, type CaptchaMode } from "./captcha.js";
+import { bootEnv } from "../env.js";
 
 export interface Observations {
   console: string[];
@@ -264,7 +265,7 @@ export class BrowserService {
   }
 
   /** The service the environment describes (see the file comment). */
-  static fromEnv(env: Record<string, string | undefined> = process.env): BrowserService {
+  static fromEnv(env: Record<string, string | undefined> = bootEnv()): BrowserService {
     const [width, height] = (env["BROWSER_VIEWPORT"] ?? "1280x800").split("x").map(Number);
     if (!width || !height) throw new Error(`BROWSER_VIEWPORT must be WIDTHxHEIGHT, got "${env["BROWSER_VIEWPORT"]}"`);
     return new BrowserService({
