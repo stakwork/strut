@@ -7,6 +7,7 @@ import { formatTokens } from "../context-meter";
 import { foldRunOverview, type OverviewRow, type RowKind } from "../run-overview";
 import { AgentIcon, ExternalIcon, EyeIcon, FileIcon, ImageIcon, LoopIcon, RunLinkIcon, SparkIcon, StepIcon, SubflowIcon } from "../icons";
 import { ArtifactViewer } from "./ArtifactViewer";
+import { ProposalList } from "./ProposalList";
 import { fmtCost, fmtDuration, fmtTime, linkOf } from "./JobTimeline";
 import { ValueFields } from "./ValueFields";
 import { PALETTE, paletteKey } from "../step-colors";
@@ -109,6 +110,18 @@ export function RunOverview(props: {
     return () => { alive = false; clearTimeout(again); };
   }, [done, runId, o.workflow]);
 
+  // What the run proposed (plans/proposals.md §6): from the records, so a
+  // run still going lists them too; read again after a decision.
+  const [proposals, setProposals] = useState<api.ProposalBrief[]>([]);
+  const [proposalsKey, setProposalsKey] = useState(0);
+  useEffect(() => {
+    setProposals([]);
+    if (!runId || !o.workflow) return;
+    let alive = true;
+    api.getRunProposals(o.workflow, runId).then((r) => alive && setProposals(r.proposals), () => {});
+    return () => { alive = false; };
+  }, [done, runId, o.workflow, proposalsKey]);
+
   const [viewing, setViewing] = useState<string | null>(null);
   const [inline, setInline] = useState<string | null>(null);
   const [showOutput, setShowOutput] = useState(false);
@@ -194,6 +207,13 @@ export function RunOverview(props: {
           )}
         </div>
       </div>
+
+      {proposals.length > 0 && (
+        <div class="ov-sec">
+          <div class="ov-sec-title">Proposals</div>
+          <ProposalList proposals={proposals} onDecided={() => setProposalsKey((k) => k + 1)} />
+        </div>
+      )}
 
       {(artifacts.length > 0 || files > 0) && (
         <div class="ov-sec">

@@ -35,6 +35,10 @@ export interface JobSeedOptions {
   /** Registry step types, or globs (`pod/*`), granted to the job agent ON
    *  TOP of strut's list — appended to `params.tools`. */
   tools?: string[];
+  /** Step types among the grants that need the person's approval
+   *  (plans/proposals.md): appended to `params.approve`, the agent step's
+   *  gate — a call records a proposal instead of running the step. */
+  approve?: string[];
   /** A section appended to the agent's system prompt after strut's — the
    *  deployment's own instructions. Which workflow does which kind of work
    *  is not one: that is the `Job` Concept's children, which strut's prompt
@@ -63,8 +67,9 @@ const JOB_YAML = new URL("./workflows/job.yaml", import.meta.url);
  *  hashed and published. Pure over the file: no workspace. Shared with the
  *  `orchestrator` seed (src/orchestrator-seed.ts), whose delta is the same. */
 export async function templateWithDelta(template: URL, opts?: JobSeedOptions): Promise<string> {
-  const doc = yaml.load(await readFile(template, "utf-8")) as { params: { tools: string[]; system: string; model?: string } };
+  const doc = yaml.load(await readFile(template, "utf-8")) as { params: { tools: string[]; approve?: string[]; system: string; model?: string } };
   if (opts?.tools?.length) doc.params.tools.push(...opts.tools);
+  if (opts?.approve?.length) (doc.params.approve ??= []).push(...opts.approve);
   if (opts?.model === null) delete doc.params.model;
   else if (opts?.model) doc.params.model = opts.model;
   if (opts?.system?.trim()) doc.params.system = `${doc.params.system.trimEnd()}\n\n${opts.system.trim()}\n`;

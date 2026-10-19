@@ -231,6 +231,36 @@ and read the job when you open it or think you missed one.
 job, started: true }` at once: the evidence and the `verify` event arrive
 here as they land (`API.md`). `plans/live-artifacts.md` is the design.
 
+## 6. Proposals — what the run asked the person to approve
+
+A run whose agent has tools in `approve:` (`plans/proposals.md`) may have
+PROPOSED changes it did not make: a tool call recorded for a person to
+accept or reject. `run.end` lists them, resolved by strut from its records
+(never from the model's output):
+
+```json
+"proposals": [
+  { "id": "p3f9aKq2", "step": "graph/create-node", "title": "Create a node in the strut knowledge graph.",
+    "status": "pending", "url": "/proposals/p3f9aKq2", "rationale": "The Rate limits page is missing.", "createdAt": "…" }
+]
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `step` | the registry step the proposal will run — what picks your card |
+| `status` | `pending` → `applied` (accepted and run) \| `rejected` \| `failed` (accepted, the step failed; may be accepted again) |
+| `url` | the record: `GET /proposals/:id` gives the step's `input` (what will run), the rationale, who proposed it, the decision and the result |
+
+A person decides at `POST /proposals/:id/decide { action: "accept" | "reject",
+input?, reason? }` — `input` is edits merged onto the proposal's input and
+re-validated by the step's schema (400 when they do not fit); the response is
+the record after the decision, the step already run on accept. A decided
+proposal answers `409` with its record. `x-strut-actor` on the request is
+recorded as who decided. On a job run each change is also a `job.update {
+kind: "proposal", id, url, state }` (§5). Absent when the run proposed
+nothing; `GET …/runs/:runId/proposals` is the same list for a host that
+missed the callback.
+
 ## Good to know
 
 - **The URL is your secret.** Put a token in it, like the example. Strut

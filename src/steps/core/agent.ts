@@ -4,6 +4,7 @@ import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../.
 import { idProblem, type OpenSession, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
+import { GATE_NOTE, gatedSchema, proposalResultLines, proposalsOf, proposeCall } from "../../proposals.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
@@ -698,6 +699,10 @@ export function buildRegistryTools(
   // The AI SDK `tool()` factory. Typed loosely (like the built-in tools, which
   // cast `inputSchema` to any) — the SDK's Tool generics over-constrain here.
   toolFactory: (def: any) => unknown,
+  // The gate (plans/proposals.md §1): a type in `approve` is built with the
+  // same name and schema (plus `rationale`), but a call records a proposal
+  // instead of running the step — `proposeCall`.
+  gate?: { approve: ReadonlySet<string>; session?: string },
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!names?.length || !registry) return out;
@@ -715,10 +720,18 @@ export function buildRegistryTools(
     // from its tool schema and is stamped with the run's workflow instead —
     // "janitor" for a system workflow (src/system-workflows.ts).
     const stamp = def.input instanceof z.ZodObject && "created_by" in def.input.shape ? writerOf(ctx) : undefined;
+    const gated = !!gate?.approve.has(stepType);
+    const schema = stamp ? (def.input as z.ZodObject).omit({ created_by: true }) : def.input;
     out[toolNameFor(stepType)] = toolFactory({
-      description: def.description ?? `Run the "${stepType}" step.`,
-      inputSchema: stamp ? (def.input as z.ZodObject).omit({ created_by: true }) : def.input,
+      description: (def.description ?? `Run the "${stepType}" step.`) + (gated ? GATE_NOTE : ""),
+      inputSchema: gated ? gatedSchema(schema) : schema,
       execute: async (input: unknown, options?: { strutToolPath?: string }) => {
+        let rationale: string | undefined;
+        if (gated && input && typeof input === "object" && "rationale" in input) {
+          const { rationale: r, ...rest } = input as { rationale?: unknown };
+          rationale = typeof r === "string" && r.trim() ? r.trim() : undefined;
+          input = rest;
+        }
         let parsed: unknown;
         try {
           parsed = def.input.parse(stamp ? { ...(input as object), created_by: stamp } : (input ?? {}));
@@ -736,6 +749,7 @@ export function buildRegistryTools(
         const childCtx: StepContext = options?.strutToolPath
           ? { ...base, agentTool: true, path: options.strutToolPath }
           : { ...base, agentTool: true };
+        if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
         return def.run(parsed, childCtx);
       },
       toModelOutput: ({ output }: { output: unknown }) => registryToolModelOutput(output),
@@ -1065,6 +1079,12 @@ export default defineStep({
       .describe(
         "registry step TYPES to expose as additional LLM tools (the 'tools are steps' model, e.g. ['gitsee/read-logs']). Entries may be glob patterns over step types ('jarvis/*' grants the whole namespace; new steps in it are picked up automatically). Each step's input schema becomes the tool schema and its run() is the executor, called with a nested ctx so every tool call emits a step.start/step.end run event (visible in the events panel). Merged ON TOP of the built-ins (not subject to toolFilter). Unknown types are skipped. Requires the runner-populated ctx.registry. A step whose output is marked withStop() (core.ts) ENDS THE TURN after that tool round: no further tool runs, and the model writes its answer from the results it has (the output gains `stopped: { tool }`).",
       ),
+    approve: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "registry step types among agentTools (globs as there) that need the PERSON's approval (plans/proposals.md): a call to one does not run the step — it is recorded as a proposal, the model gets { proposal, status: 'pending' } and goes on, and strut runs the step when the person accepts (POST /proposals/:id/decide), in code, never a model turn. The gated tool's schema gains `rationale`. The decisions reach a `session` agent as [proposal-result] lines before its next prompt.",
+      ),
     secretsEnv: z
       .array(z.string())
       .default([])
@@ -1350,7 +1370,20 @@ export default defineStep({
     // `mcp: false`: the caller's servers stop here — a sub-agent, a job or a
     // child run this agent launches through its tools gets none.
     const toolCtx = !cfg.mcp && ctx?.mcp ? withoutMcp(ctx) : ctx;
-    const registryTools = buildRegistryTools(cfg.agentTools, ctx?.registry, toolCtx, tool);
+    // The gate (plans/proposals.md §1): `approve` names types among the
+    // grants; one that is not granted has nothing to gate (a warning).
+    const approve = new Set<string>();
+    if (cfg.approve.length && ctx?.registry) {
+      const granted = new Set(expandAgentTools(cfg.agentTools, ctx.registry));
+      for (const t of expandAgentTools(cfg.approve, ctx.registry)) {
+        if (granted.has(t)) approve.add(t);
+        else console.warn(`[agent] approve: "${t}" is not in agentTools — nothing to gate`);
+      }
+      if (approve.size && !proposalsOf(ctx.services)) {
+        throw new Error("agent: `approve` needs strut's proposals (ctx.services.proposals); the standard strut server provides them.");
+      }
+    }
+    const registryTools = buildRegistryTools(cfg.agentTools, ctx?.registry, toolCtx, tool, approve.size ? { approve, session: cfg.session } : undefined);
     // A tool-step whose output is marked `withStop` (core.ts) ends the turn
     // after this tool round (a device that has not answered, an approval
     // waiting on a person): the loop stops, and the one answer turn below
@@ -1562,7 +1595,12 @@ export default defineStep({
           onStepEnd,
         });
 
-      const preamble = buildPreamble(cfg.cwd);
+      // What the thread has not been told (plans/proposals.md §5): the
+      // decisions on its proposals, one line each before the prompt, in
+      // code — never a turn of their own. Stamped told once the turn commits.
+      const toTell = session ? await proposalsOf(ctx?.services)?.unreported(session.id).catch(() => []) ?? [] : [];
+      const told = proposalResultLines(toTell);
+      const preamble = [buildPreamble(cfg.cwd), ...told].filter(Boolean).join("\n");
       const startTime = Date.now();
       // STREAM, don't generate: a long drafting turn (multi-minute, many
       // thousands of output tokens) produces zero bytes on a non-streaming
@@ -1760,6 +1798,7 @@ export default defineStep({
             },
           });
           out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
+          if (toTell.length) await proposalsOf(ctx?.services)?.markReported(toTell.map((p) => p.id)).catch(() => {});
         }
         const spent = { modelCalls: out["steps"] as number, usage: out["usage"] as TokenUsage, cost: out["cost"] as number };
         return withUsage(withMessages(cfg.returnMessages ? { ...out, messages: turn } : out, turn), spent);

@@ -10,6 +10,7 @@ import type { TouchedNode } from "../accessed-nodes";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { AccessedNodes } from "./AccessedNodes";
 import { ClaimsPanel } from "./ClaimsPanel";
+import { ProposalList } from "./ProposalList";
 import { claimsTitle, claimsTone } from "./WorkflowFlyout";
 
 // ── Job timeline (plans/jobs-sidebar.md §3) ────────────────────────────────
@@ -41,6 +42,15 @@ export function JobTimeline(props: {
   const threads = job.threads ?? [];
   const totals = useMemo(() => jobTotals(threads), [threads]);
   const [viewing, setViewing] = useState<string | null>(null);
+  // The job's proposals (plans/proposals.md): what waits on the person,
+  // what they decided; read again after a decision.
+  const [proposals, setProposals] = useState<api.Proposal[]>([]);
+  const [proposalsKey, setProposalsKey] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    api.getProposals({ job: job.job }).then((r) => alive && setProposals(r.proposals), () => {});
+    return () => { alive = false; };
+  }, [job.job, job.usedAt, proposalsKey]);
   const [inline, setInline] = useState<string | null>(null);
 
   // Claims: the panel's listing (for the dot), the last Verify, and a key
@@ -149,6 +159,13 @@ export function JobTimeline(props: {
           <pre class="flyout-json" style="margin-top:8px;max-height:280px;overflow:auto;">{typeof inlineContent.content === "string" ? inlineContent.content : JSON.stringify(inlineContent.content, null, 2)}</pre>
         )}
       </div>
+
+      {proposals.length > 0 && (
+        <div class="job-section">
+          <div class="job-section-title">Proposals</div>
+          <ProposalList proposals={proposals} onDecided={() => setProposalsKey((k) => k + 1)} />
+        </div>
+      )}
 
       {job.claims && (
         <div class="job-section job-claims">

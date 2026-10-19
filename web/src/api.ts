@@ -1632,3 +1632,47 @@ export const deleteAutomation = (workflow: string, id: string) =>
 /** Run now, off-schedule. */
 export const fireAutomation = (workflow: string, id: string) =>
   fetchJSON<{ runId: string }>(`${automationsPath(workflow)}/${id}/fire`, json("POST"));
+
+// ── Proposals (plans/proposals.md) ──────────────────────────────────────────
+// A tool call a person approves before it runs: the record a gated agent
+// tool wrote, and the decision that applies the step in code.
+
+export type ProposalStatus = "pending" | "accepted" | "rejected" | "applied" | "failed";
+
+export interface ProposalBrief {
+  id: string;
+  step: string;
+  title: string;
+  status: ProposalStatus;
+  url: string;
+  rationale?: string;
+  createdAt: string;
+  decidedAt?: string;
+}
+
+export interface Proposal extends Omit<ProposalBrief, "url" | "decidedAt"> {
+  input: unknown;
+  by: { workflow: string; runId: string; path: string; job?: string; session?: string; actor?: string; principal?: string };
+  decision?: { action: "accept" | "reject"; by?: string; at: string; input?: unknown; reason?: string };
+  result?: { output?: unknown; error?: string; cost?: number; at: string };
+}
+
+export const getRunProposals = (workflow: string, runId: string) =>
+  fetchJSON<{ proposals: ProposalBrief[] }>(`/workflows/${encodeURIComponent(workflow)}/runs/${runId}/proposals`);
+
+export const getProposals = (filter: { job?: string; session?: string; runId?: string; status?: ProposalStatus } = {}) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) if (v !== undefined) q.set(k, v);
+  const qs = q.toString();
+  return fetchJSON<{ proposals: Proposal[] }>(`/proposals${qs ? `?${qs}` : ""}`);
+};
+
+export const getProposal = (id: string) => fetchJSON<Proposal>(`/proposals/${encodeURIComponent(id)}`);
+
+/** Accept (the step runs now) or reject a proposal; the record after. */
+export const decideProposal = (id: string, action: "accept" | "reject", reason?: string) =>
+  fetchJSON<Proposal>(`/proposals/${encodeURIComponent(id)}/decide`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...(reason ? { reason } : {}) }),
+  });

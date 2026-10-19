@@ -236,14 +236,23 @@ for (const tb of testBackends()) {
       }
     });
 
-    it("delete removes the edge; an unknown ref_id is a miss", async () => {
+    it("delete removes the edge by ref_id or by triple, returning it as it was; an unknown ref_id is a miss", async () => {
       const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
-      assert.equal(await edges.delete(a.ref_id), true);
+      assert.deepEqual(await edges.delete(a.ref_id), { ref_id: a.ref_id, edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
       assert.equal(await rawEdge(backend, a.ref_id), null);
-      assert.equal(await edges.delete(a.ref_id), false);
-      assert.equal(await edges.delete("nope"), false);
+      assert.equal(await edges.delete(a.ref_id), null);
+      assert.equal(await edges.delete("nope"), null);
       const again = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
       assert.equal(again.created, true, "a re-write after a delete is a new edge");
+      // By the triple, like update: the type is normalized; none is NOT_FOUND; the nodes stay.
+      assert.deepEqual(await edges.delete({ edge: "in job", source_ref_id: run, target_ref_id: job }), { ref_id: again.ref_id, edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
+      assert.equal(await edgeCount(backend, "IN_JOB"), 0);
+      await assert.rejects(
+        edges.delete({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job }),
+        (e: unknown) => e instanceof GraphValidationError && e.code === "NOT_FOUND",
+      );
+      await assert.rejects(edges.delete({ ref_id: "" }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
+      assert.equal((await backend.reader.getNode(run))?.ref_id, run, "the endpoints are untouched");
     });
 
     it("the claim edges: TESTS, ABOUT, EVIDENCED_BY with strength, HAS_SOURCE with context", async () => {
