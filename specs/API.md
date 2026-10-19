@@ -628,51 +628,90 @@ durable resume of the caller's run (§6, boot-time auto-resume included)
 re-executes the step, which REATTACHES to that run instead of launching a
 second one.
 
-## 11. MCP — the builder's tools for an external agent
+## 11. MCP — strut for an external agent
 
-`POST /mcp` serves the AI workflow builder's tools over the Model Context
-Protocol (Streamable HTTP, stateless): the SAME tools the builder chat's
-model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`,
-with their descriptions, input schemas and capped results (`src/ai/mcp.ts`
-adapts `buildTools`; nothing is reimplemented). Claude Code:
+Strut serves two tool sets over the Model Context Protocol (Streamable HTTP,
+stateless; `src/ai/mcp.ts`), for an agent outside strut — Claude Code, Hermes,
+any MCP client:
+
+| Door | Tool set | For |
+| ---- | -------- | --- |
+| `POST /mcp` | **assistant** (`src/ai/assistant-tools.ts`): seven tools — talk to the workflow builder, read its chats, list workflows and runs, read a run, run a workflow | an agent with its own connectors that wants workflows built, run and shared, and should not learn strut's YAML; the default |
+| `POST /mcp/builder` | **builder**: the SAME tools the builder chat's model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`, with their descriptions, input schemas and capped results (`buildTools`, nothing reimplemented) | an agent that authors workflows itself |
 
 ```bash
-claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY"
+claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY" --header "x-strut-actor: hermes"
+claude mcp add --transport http strut-builder http://localhost:3000/mcp/builder --header "Authorization: Bearer $STRUT_API_KEY"
 ```
 
 | Method | Path | Response |
 | ------ | ---- | -------- |
-| POST   | `/mcp` | JSON-RPC — `initialize`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`; the response is an SSE stream carrying the result (and a `notifications/progress` per preliminary result of a tool that yields them — `run_workflow` — when the request carried a `progressToken`); 406 without `Accept: application/json, text/event-stream` |
-| GET, DELETE | `/mcp` | 405 — no standalone stream, no session: every POST stands alone |
+| POST   | `/mcp`, `/mcp/builder` | JSON-RPC — `initialize`, `tools/list`, `tools/call` (+ `prompts/list`, `prompts/get` on the builder door); the response is an SSE stream carrying the result (and a `notifications/progress` per preliminary result of a tool that yields them — `run_workflow` — when the request carried a `progressToken`); 406 without `Accept: application/json, text/event-stream` |
+| GET, DELETE | `/mcp`, `/mcp/builder` | 405 — no standalone stream, no session: every POST stands alone |
 
 Auth is the gate's (Auth): `Authorization: Bearer <STRUT_API_KEY>`; a
-peer's key is a `403`; dev mode is open. `x-strut-actor` is honored as on
-every request — the runs launched and the workflows published through the
-door carry that actor.
+peer's key is a `403`; dev mode is open. **The caller's identity is a
+header**, `x-strut-actor`, set where the server is added (MCP has none of
+its own; `clientInfo` is a client's name, the same for every instance):
+honored as on every request, it stamps the chats the caller starts
+(`createdBy`), the runs it launches and the workflows it publishes, and it is
+what `list_workflow_builder_chats` filters by. Without it nothing is scoped.
+`createStrut({ enableMcp: false })` mounts neither door; the default follows
+`enableChat`, and with the chat off `/mcp` serves the builder set (there is
+no builder to talk to).
 
-What the door adds for a caller that is not the UI. `instructions`
-(`InitializeResult`) are the builder's procedure, the web UI's URL and where
-a missing credential is added — `<base>/?secrets=1` opens the UI's Secrets
-dialog, since `ask_user` / `request_secret` are not offered over MCP; the
-full system prompt — the YAML rules, every tool's use, the deployment's own
-section (`createStrut({ chatSystem })`; on a graph, the `Workflow Builder`
-Concept's page), the step catalog — is the `workflow-builder` prompt
-(`prompts/get`), built at each read, so an edit to that page shows at once
-(a chat freezes its prompt on its first turn). The results
-of `create_workflow` / `edit_workflow` / `run_workflow` / `get_run` carry
-`ui`, a deep link into the web UI (`<base>/?wf=<name>` or
-`…&run=<runId>`). A run's declared deliverables (§5, `CALLBACKS.md` §4)
-come back on `run_workflow`'s result and `get_run`'s `summary` as
-`artifacts`, resolved like the run callback's — a strut-relative link made
-ABSOLUTE and carrying the file's read token (`?t=`, Auth), so the link
-opens the file by itself and the key never rides in one. The base is
-`STRUT_PUBLIC_URL` (`createStrut({ publicUrl })`), else the request's own
-origin (`x-forwarded-proto` / `x-forwarded-host` honored).
+**Links.** Every link in a result is ABSOLUTE: `ui` opens the workflow, run
+or chat in the web UI (`<base>/?wf=<name>`, `…&run=<runId>`,
+`<base>/?chat=<id>`); an artifact link (a run's declared deliverables, §5,
+`CALLBACKS.md` §4, resolved like the run callback's) carries the file's read
+token (`?t=`, Auth), so it opens the file by itself and the key never rides
+in one — a caller shares it with its own connectors as it is (anyone with the
+link reads that one run's files, nothing else; it does not expire). The base
+is `STRUT_PUBLIC_URL` (`createStrut({ publicUrl })`), else the request's own
+origin (`x-forwarded-proto` / `x-forwarded-host` honored). A chat started
+over the assistant door is stamped with that base (`ChatMeta.publicUrl`), so
+the builder's own tool results in it — and the reply text that copies them —
+carry absolute links too.
+
+### 11.1 The assistant set
+
+| Tool | Arguments | Result |
+| ---- | --------- | ------ |
+| `ask_workflow_builder` | `message`, `chat?` (continue), `title?` (a new chat's), `wait?` (ms, default 45000, max 55000) | `{ chat, turn, status, at?, text?, did?, toolCalls?, asked?, turns?, cursor, question?, settled, hint?, ui }` — the builder's reply for the turn it waited on: `text` (its final text), `did` (below). `status`: `done`; `working` (the turn outlived `wait` — `read_workflow_builder_chat` with `wait`); `asked` (a question for the caller in `question`: a form's `requestedSchema`, or for a secret the absolute `url` the caller's USER opens — the value never passes through the caller; the next message on the chat answers); `parked` (the auto-turn cap); `error` (+ `error`). `settled: false` = a detached run will wake the chat again. A chat with a turn in progress is refused: `{ error, status: "working", hint }` |
+| `read_workflow_builder_chat` | `chat`, `since?` (a message index: the previous read's `cursor`, or a turn's `at`), `limit?` (turns, newest kept, default 20), `detail?` (`effects` \| `tools` \| `full`), `wait?` (ms, default 0) | `{ chat, turn, status, turns: [...], cursor, omitted?, hint?, question?, settled, ui }`. A **turn** is `{ at, you? \| notices?, text?, did?, toolCalls?, tools?, asked?, compacted? }`: what the caller said (or the server notice that woke the builder — a run finishing, a verdict), the builder's final text, and `did`; `tools` only with `detail`. Cut to ~20k chars (text first, then the oldest turns), `hint` saying so |
+| `list_workflow_builder_chats` | `q?` (title words), `limit?`, `mine?` (default true) | `{ chats: [{ chat, title?, status, updatedAt, turns, createdBy?, asked?, ui }], total, hint? }` — newest first; `mine` keeps the connection's actor's chats (nothing is filtered without an actor) |
+| `list_workflows` | `query?`, `limit?` | §2's slim list + per workflow `schedules?: [{ id, summary, enabled, next }]`, `lastRun?: { runId, at, status }`, `ui` |
+| `list_runs` | `workflow`, `limit?`, `status?`, `since?` (ISO) | `{ workflow, runs: [{ runId, status, startedAt, durationMs?, cost?, modelCalls?, origin? \| actor?, error?, job?, artifacts?, ui }], total }` — `artifacts` on a successful run, as absolute links |
+| `get_run` | `workflow`, `runId`, `fields?`, `files?`, `wait?` | `{ workflow, runId, status, startedAt, finishedAt, durationMs, cost?, error?, artifacts?, input, output, omitted?, files?, hint?, ui }`. Every top-level `output` field over 2 000 chars is HELD BACK in place as `{ $omitted: { chars, kind, preview } }` and named in `omitted`; `fields` includes the named ones whole (cut at 50 000 with a note; a non-object output is the one field `output`). `files: true` lists every file under the run's artifact directory (or its job's) with a tokened link. A run still going is `{ status: "running", hint }` — `wait` holds for it. No step tree: a failing run is debugged by asking the builder |
+| `run_workflow` | `name`, `input?`, `params?`, `version?` | the builder's own `run_workflow` — its launch, detach and links — with `output` trimmed like `get_run`'s (+ `omitted`, `hint`). A run still going after the wait window (`STRUT_CHAT_RUN_WAIT_MS`) is `{ status: "running", detached: true, runId }`: poll `get_run` with `wait` |
+
+`did` — what a turn changed, folded from the builder's tool calls by tool
+name (`src/chat-view.ts`; never inferred from prose): `workflows: [{ name,
+version?, action: created | edited | activated, ui? }]`, `steps: [...]`,
+`runs: [{ workflow, runId, status, error?, artifacts?, ui? }]` (a detached run
+and its later result are one entry), `automations: [{ workflow, id?,
+summary?, next?, action: set | deleted }]`. The `instructions` the door hands
+a client at `initialize` are ten lines: what strut is, ask for building and
+debugging, read for status and links, how `wait` and polling work, that links
+are shareable, never collect a secret's value. Nothing notifies an MCP
+client: a caller polls with `wait`, or `list_runs` with `since`.
+
+### 11.2 The builder set
+
+What the door adds for a caller that is not the UI. `instructions` are the
+builder's procedure, the web UI's URL and where a missing credential is added
+— `<base>/?secrets=1` opens the UI's Secrets dialog, since `ask_user` /
+`request_secret` are not offered on this door; the full system prompt — the
+YAML rules, every tool's use, the deployment's own section (`createStrut({
+chatSystem })`; on a graph, the `Workflow Builder` Concept's page), the step
+catalog — is the `workflow-builder` prompt (`prompts/get`), built at each
+read, so an edit to that page shows at once (a chat freezes its prompt on its
+first turn). The results of `create_workflow` / `edit_workflow` /
+`run_workflow` / `get_run` carry `ui` and `artifacts` as above.
 
 Long runs: a `run_workflow` still going after the wait window
 (`STRUT_CHAT_RUN_WAIT_MS`, a minute) returns `{ status: "running",
 detached: true, runId }` and the run goes on; nothing can notify an MCP
 client, so `get_run` takes `wait` (ms, at most 55000) — it holds until the
 run settles or the wait is up, then reads the run as it stands, and the
-caller calls again until `status` is terminal. `createStrut({ enableMcp:
-false })` mounts nothing; the default follows `enableChat`.
+caller calls again until `status` is terminal.
