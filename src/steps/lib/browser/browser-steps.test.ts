@@ -386,6 +386,15 @@ function jobCtx(browser: FakeBrowser, dataDir: string): Ctx {
   return { ...base, job: "job-1", services: { ...base.services, dataDir, jobs: jobsCapability(dataDir) } };
 }
 
+/** A hold let go by a DETACHED write (a kept page's `onEnd`): poll for it. */
+async function waitForNoHolds(dir: string): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while ((await readJobRecord(jobRoot(dir, "job-1")))?.holds !== undefined) {
+    if (Date.now() > deadline) throw new Error("the job's hold was never released");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 async function withDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "strut-browser-steps-"));
   try {
@@ -421,8 +430,7 @@ test("open { session } keeps the page for the job and takes the job's hold on a 
 
     // The page ending on its own (idle, a timeout) lets the hold go.
     (session.onEnd as () => void)();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal((await readJobRecord(jobRoot(dir, "job-1")))?.holds, undefined);
+    await waitForNoHolds(dir);
 
     browser.calls = [];
     browser.resumed = true;
