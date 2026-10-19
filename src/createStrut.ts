@@ -85,6 +85,7 @@ import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { attachmentParts, parseAttachments, saveAttachments, type Attachment } from "./ai/attachments.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { parseMcpServers } from "./mcp-servers.js";
+import { briefOf, decideProposal, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, type JobsCapability } from "./jobs.js";
@@ -736,6 +737,13 @@ export async function createStrut<TServices = unknown>(
     // `job/*` steps read through.
     jobs: jobsCapability(dataDir, jobIndex),
     peers: peersCap,
+    // Proposals (plans/proposals.md): the record a gated tool call writes
+    // and the proposal/* steps read; a job's host hears each as a
+    // `job.update` through the jobs capability's notify (read lazily: the
+    // bag is being built).
+    proposals: proposalsCapability(dataDir, {
+      notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+    }),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env).
     ...(graph ? { graph } : {}),
@@ -1268,6 +1276,15 @@ export async function createStrut<TServices = unknown>(
     if (!summary) return c.json({ error: `Run "${runId}" of "${name}" has no summary yet` }, 404);
     const refs = (await artifactRefs(runId, summary.output, summary.job)) ?? [];
     return c.json({ workflow: name, runId, ...(summary.job ? { job: summary.job } : {}), artifacts: refs });
+  });
+
+  // What one run proposed (plans/proposals.md §6) — the `run.end` field's
+  // twin, for a host that missed the callback. Read from the records, so a
+  // run still going lists what it has proposed so far.
+  app.get("/workflows/:name/runs/:runId/proposals", async (c) => {
+    const { name, runId } = c.req.param();
+    const proposals = (await listProposals(proposalsRoot(dataDir), { runId })).filter((p) => p.by.workflow === name).map(briefOf);
+    return c.json({ workflow: name, runId, proposals });
   });
 
   app.get("/workflows/:name/runs/:runId/transcripts/:path{.+}", async (c) => {
@@ -2189,6 +2206,65 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
+  // ── Proposals (plans/proposals.md §3) ──────────────────────────────────
+  //
+  // A gated tool call's record, and the person's door onto it. Reads list
+  // the records; `decide` applies the step in code (never a model turn).
+  // The actor of the decide request is recorded as who decided.
+
+  const proposalsDir = proposalsRoot(dataDir);
+  const STATUSES: ReadonlySet<string> = new Set(["pending", "accepted", "rejected", "applied", "failed"]);
+
+  app.get("/proposals", async (c) => {
+    const status = c.req.query("status");
+    if (status !== undefined && !STATUSES.has(status)) return c.json({ error: `status must be one of ${[...STATUSES].join(", ")}` }, 400);
+    const proposals = await listProposals(proposalsDir, {
+      ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
+      ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
+      ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
+      ...(status !== undefined ? { status: status as ProposalStatus } : {}),
+    });
+    return c.json({ proposals });
+  });
+
+  app.get("/proposals/:id", async (c) => {
+    const p = await readProposal(proposalsDir, c.req.param("id"));
+    return p ? c.json(p) : c.json({ error: `No proposal "${c.req.param("id")}"` }, 404);
+  });
+
+  app.post("/proposals/:id/decide", async (c) => {
+    const id = c.req.param("id");
+    let body: { action?: unknown; input?: unknown; reason?: unknown };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "JSON body required: { action: 'accept' | 'reject', input?, reason? }" }, 400);
+    }
+    if (body.action !== "accept" && body.action !== "reject") return c.json({ error: "action must be 'accept' or 'reject'" }, 400);
+    if (body.input !== undefined && (typeof body.input !== "object" || body.input === null || Array.isArray(body.input))) {
+      return c.json({ error: "input must be an object: the edits merged onto the proposal's input" }, 400);
+    }
+    if (body.reason !== undefined && typeof body.reason !== "string") return c.json({ error: "reason must be a string" }, 400);
+    const actor = await resolveActor(c);
+    const outcome = await decideProposal(
+      proposalsDir,
+      id,
+      {
+        action: body.action,
+        ...(body.input ? { input: body.input as Record<string, unknown> } : {}),
+        ...(body.reason ? { reason: body.reason } : {}),
+        ...(actor ? { by: actor } : {}),
+      },
+      {
+        registry,
+        services,
+        mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
+        notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+      },
+    );
+    return c.json(outcome.body, outcome.status);
+  });
+
   // ── Agent sessions (plans/agent-sessions.md §4) ───────────────────────
   //
   // The threads `agent` steps with `session` set continue. The id is a query
@@ -2723,6 +2799,9 @@ export async function createStrut<TServices = unknown>(
     void (async () => {
       const transcripts = await transcriptLinks(workflow, res.runId).catch(() => []);
       const artifacts = await artifactRefs(res.runId, res.output, job).catch(() => undefined);
+      // What the run proposed (plans/proposals.md §6): from the records,
+      // never from the model's output.
+      const proposals = (await listProposals(proposalsRoot(dataDir), { runId: res.runId }).catch(() => [])).map(briefOf);
       await postCallback(
         url,
         {
@@ -2735,6 +2814,7 @@ export async function createStrut<TServices = unknown>(
           ...(res.error ? { error: { message: res.error.message } } : {}),
           ...(transcripts.length ? { transcripts } : {}),
           ...(artifacts ? { artifacts } : {}),
+          ...(proposals.length ? { proposals } : {}),
           durationMs,
         },
         { tag: `[run ${res.runId}] callback run.end` },

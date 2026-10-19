@@ -97,11 +97,27 @@ export interface RawNode {
 }
 
 /** What a soft delete must match besides the ref_id: Strut's own nodes
- *  (`domainLabel`), or a node of one type with given property values. */
+ *  (`domainLabel`), or a node of one type with given property values. An
+ *  EMPTY guard matches any content node in the namespace — `graph/delete-node`,
+ *  a delete on a caller's say-so. */
 export interface NodeGuard {
   domainLabel?: string;
   type?: string;
   props?: Record<string, unknown>;
+}
+
+/** What a soft delete took with it. */
+export interface SoftDeleteResult {
+  /** The node's in-scope edges hard-deleted with it. */
+  edges: number;
+}
+
+/** What an edge delete removed: the edge as it was, by its endpoints. */
+export interface EdgeDeleteResult {
+  ref_id: string;
+  edge: string;
+  source_ref_id: string;
+  target_ref_id: string;
 }
 
 export interface NodeEngine {
@@ -117,8 +133,8 @@ export interface NodeEngine {
    *  values) and remove `remove` on one node. */
   update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void>;
   /** `deletion.ts`: stamp `deleted_at` (first delete kept) + `is_deleted`
-   *  and hard-delete the node's in-scope edges. False when nothing matched. */
-  softDelete(ref_id: string, namespace: string, guard: NodeGuard): Promise<boolean>;
+   *  and hard-delete the node's in-scope edges, counted. Null when nothing matched. */
+  softDelete(ref_id: string, namespace: string, guard: NodeGuard): Promise<SoftDeleteResult | null>;
 }
 
 // ── Edges ───────────────────────────────────────────────────────────────────
@@ -162,7 +178,8 @@ export interface EdgeEngine {
   setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<{ ref_id: string; edge: string; source_ref_id: string; target_ref_id: string } | null>;
   /** The live `edge` edges from `src` to `tgt` (alias-rewritten), by ref_id. */
   findByTriple(tx: GraphTx, edge: string, src: string, tgt: string): Promise<string[]>;
-  delete(ref_id: string, tx?: GraphTx): Promise<boolean>;
+  /** `DELETE r` by ref_id: the edge as it was, or null when there is none. */
+  delete(ref_id: string, tx?: GraphTx): Promise<EdgeDeleteResult | null>;
   /** The node `ref_id` names (its canonical ref after the alias rewrite)
    *  and its live `edge` edges that way — `forward` = `(node)-[edge]->(other)`.
    *  Null when there is no such node. */

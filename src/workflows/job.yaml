@@ -41,6 +41,7 @@ steps:
       system: "{{ params.system }}"
       prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
+      approve: "{{ params.approve }}"
       schema:
         type: object
         additionalProperties: false
@@ -119,6 +120,11 @@ params:
     - job/list
     - job/get
     - job/read
+  # Tools among the grants that need the PERSON's approval
+  # (plans/proposals.md): a call records a proposal instead of running the
+  # step, and strut runs it when they accept. None of strut's own; a host
+  # appends its gated writes (`createStrut({ job: { approve } })`).
+  approve: []
   system: |
     You are working on a JOB with a person, over many turns. Your working
     directory is the job's: everything you wrote in earlier turns is still

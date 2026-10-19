@@ -38,7 +38,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { int } from "./bolt.js";
 import { EVIDENCE_TYPE } from "./claims.js";
-import type { EngineLike, GraphEngine, PreparedNode, WriteMode, WriteOutcome } from "./engine.js";
+import type { EngineLike, GraphEngine, PreparedNode, SoftDeleteResult, WriteMode, WriteOutcome } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
 import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
@@ -544,7 +544,16 @@ export class NodeWriter {
    *  time is kept) + `is_deleted`, and hard-deletes the node's in-scope edges
    *  in the same statement. Scoped to Strut's own nodes in this namespace. */
   async softDelete(ref_id: string): Promise<boolean> {
-    return this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { domainLabel: STRUT_DOMAIN_LABEL });
+    return (await this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { domainLabel: STRUT_DOMAIN_LABEL })) !== null;
+  }
+
+  /** `softDelete` for a node of ANY type in the namespace, on a caller's
+   *  say-so (`graph/delete-node`, the twin of hive's graphNodeDelete):
+   *  `deleted_at` stamped, its in-scope edges hard-deleted and counted.
+   *  Null when there is no such node there. The `Domain_strut` guard stays
+   *  on `softDelete` for strut's own rows. */
+  async deleteNode(ref_id: string, opts: { namespace?: string } = {}): Promise<SoftDeleteResult | null> {
+    return this.engine.nodeEngine.softDelete(ref_id, opts.namespace ?? this.engine.namespace, {});
   }
 
   /** `softDelete` for the one non-Strut node strut retires: a stale
@@ -552,6 +561,6 @@ export class NodeWriter {
    *  domain, so `softDelete`'s `Domain_strut` guard stays; this matches only
    *  a planned slot in this namespace. */
   async retirePlannedEvidence(ref_id: string): Promise<boolean> {
-    return this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { type: EVIDENCE_TYPE, props: { evidence_status: "planned" } });
+    return (await this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { type: EVIDENCE_TYPE, props: { evidence_status: "planned" } })) !== null;
   }
 }

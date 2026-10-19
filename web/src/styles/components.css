@@ -3998,3 +3998,22 @@ body.is-resizing-flyout * {
 .ov-card-line { display: flex; justify-content: space-between; gap: var(--sp-2); padding: 1px 0; color: var(--text); font-variant-numeric: tabular-nums; }
 .ov-card-line > span:first-child { color: var(--text-muted); }
 .ov-card-foot { margin-top: 4px; font-size: 11px; color: var(--accent); }
+
+/* ── Proposals (plans/proposals.md §6): a tool call waiting on a person ─── */
+.props { display: flex; flex-direction: column; gap: 6px; }
+.prop { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); padding: 6px var(--sp-2); font-size: 12px; }
+.prop-pending { border-color: var(--warning); }
+.prop-head { display: flex; align-items: center; gap: var(--sp-2); width: 100%; background: none; border: none; padding: 0; text-align: left; color: var(--text); cursor: pointer; min-width: 0; }
+.prop-step { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.prop-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.02em; }
+.prop-badge-pending { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.prop-badge-applied { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.prop-badge-rejected, .prop-badge-failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.prop-badge-accepted { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.prop-why { color: var(--text-muted); margin-top: 4px; }
+.prop-body { margin-top: 6px; }
+.prop-body .flyout-json { max-height: 220px; overflow: auto; margin: 0 0 6px; }
+.prop-meta { font-size: 11px; color: var(--text-dim); }
+.prop-error { font-size: 11px; color: var(--danger); margin-top: 4px; white-space: pre-wrap; }
+.prop-actions { display: flex; gap: 6px; margin-top: 6px; }

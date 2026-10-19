@@ -715,3 +715,27 @@ detached: true, runId }` and the run goes on; nothing can notify an MCP
 client, so `get_run` takes `wait` (ms, at most 55000) — it holds until the
 run settles or the wait is up, then reads the run as it stands, and the
 caller calls again until `status` is terminal.
+
+## 12. Proposals — a tool call a person approves before it runs
+
+`plans/proposals.md`. An `agent` step's `approve:` list gates registry
+steps: a call to one is RECORDED (`<dataDir>/proposals/<id>.json`) rather
+than run, and the person's accept runs it in code. The record (`Proposal`,
+`src/proposals.ts`): `{ id, step, input, rationale?, title, status: pending
+| accepted | rejected | applied | failed, createdAt, by: { workflow, runId,
+path, job?, session?, actor?, principal? }, decision?: { action, by?, at,
+input?, reason? }, result?: { output?, error?, cost?, nodes?, at },
+reportedAt? }`. `input` is what the step's schema parsed at proposal time;
+on accept it runs with `decision.input` merged over it. `reportedAt` is
+when the proposing session was told (its next turn's `[proposal-result]`
+lines).
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/proposals?job=&session=&runId=&status=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five |
+| GET    | `/proposals/:id` | one record; 404 |
+| GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
+| POST   | `/proposals/:id/decide` | `{ action: "accept" \| "reject", input?: object, reason?: string }` → the record after the decision. `accept` merges `input` (one level) onto the proposal's, re-parses with the step's schema (400, still pending, when it does not fit), records the decision, runs the step under a minimal context (the decider — the request's actor — as `ctx.actor`, the proposing run's principal binding its secrets, its job, the registry), and records `result`. `reject` records `reason`, runs nothing. 409 with the record once decided (`failed` may be accepted again); 400 for a step no longer in the registry; 404 |
+
+The steps `proposal/list` ({ job?, session?, status?, limit? } → the briefs)
+and `proposal/get` ({ id } → the record) are the same reads for an agent.

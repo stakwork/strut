@@ -291,6 +291,41 @@ for (const tb of testBackends()) {
       assert.equal(await writer.softDelete(job.ref_id), true, "any Strut node");
     });
 
+    it("deleteNode: any type in the namespace, the edges counted; a miss is null; the Strut guard stays on softDelete", async () => {
+      const run = await writer.write({ type: "StrutRun", data: RUN });
+      const job = await writer.write({ type: "StrutJob", data: JOB });
+      const wf = await writer.write({ type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", created_at: 1 } });
+      await backend.edges.writeMany([
+        { edge: "IN_JOB", source_ref_id: run.ref_id, target_ref_id: job.ref_id },
+        { edge: "EXECUTED", source_ref_id: run.ref_id, target_ref_id: wf.ref_id },
+      ]);
+      const t0 = Date.now();
+      assert.deepEqual(await writer.deleteNode(run.ref_id), { edges: 2 }, "both edges went with it, counted");
+      const p = await props(run.ref_id);
+      assert.ok(typeof p["deleted_at"] === "number" && p["deleted_at"] >= t0, `deleted_at in ms, got ${p["deleted_at"]}`);
+      assert.equal(await edgeCount(backend), 0);
+      assert.equal(await nodeCount(backend, "StrutRun"), 0, "hidden from live reads");
+      assert.equal(await nodeCount(backend, "StrutJob"), 1, "the other ends stay");
+      assert.equal(await writer.deleteNode("not-a-ref"), null);
+      assert.deepEqual(await writer.deleteNode(job.ref_id), { edges: 0 }, "a node with no edges");
+      if (neo) {
+        assert.equal(await writer.deleteNode(wf.ref_id, { namespace: "elsewhere" }), null, "scoped to the namespace");
+        assert.equal(await nodeCount(backend, "StrutWorkflowVersion"), 1);
+      }
+      // Not a Strut type: softDelete's Domain_strut guard refuses it, deleteNode takes it.
+      if (!neo) return; // the file's registry has no Concept Schema row to seed here; the step suite covers it
+      const bolt = (backend as { bolt: Bolt }).bolt;
+      await bolt.run(
+        `MATCH (w:Data_Bank {ref_id: $w})
+         CREATE (c:Concept:Node:Data_Bank {ref_id: "concept-1", node_key: "concept-1", namespace: $ns})
+         CREATE (c)-[:PARENT_OF {ref_id: "e-c"}]->(w)`,
+        { w: wf.ref_id, ns: backend.namespace },
+      );
+      assert.equal(await writer.softDelete("concept-1"), false, "not a Strut node");
+      assert.deepEqual(await writer.deleteNode("concept-1"), { edges: 1 });
+      assert.equal(await edgeCount(backend, "PARENT_OF"), 0);
+    });
+
     it("soft delete scope: only in-scope edges go (Schema and other-namespace ends stay)", neoOnly("Schema nodes and namespaces exist only on Neo4j"), async () => {
       const bolt = (backend as { bolt: Bolt }).bolt;
       const a = await writer.write({ type: "StrutRun", data: RUN });

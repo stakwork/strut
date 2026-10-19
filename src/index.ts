@@ -303,6 +303,23 @@ export {
   jobFilePath,
   setJobCallback,
 } from "./jobs.js";
+// Proposals (plans/proposals.md) — a tool call a person approves before it
+// runs: the record a gated `agent` tool writes, the decision that applies it.
+export {
+  type Proposal,
+  type ProposalBrief,
+  type ProposalStatus,
+  type ProposalsCapability,
+  type Decision,
+  proposalsCapability,
+  proposalsRoot,
+  listProposals,
+  readProposal,
+  decideProposal,
+  briefOf,
+  proposalUrl,
+  PROPOSAL_RESULT_PREFIX,
+} from "./proposals.js";
 // The job INDEX (plans/job-index.md) — what `GET /jobs[/:id]` and the
 // `job/*` steps read — and the thread fold it serves (plans/jobs-sidebar.md).
 export {
