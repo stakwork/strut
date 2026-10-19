@@ -133,6 +133,25 @@ describe("authoring capability (the meta surface)", () => {
     assert.equal(ran2.output.rev, 2);
   });
 
+  it("createStep refuses source that reaches past ctx.services — process.env, child_process, the global fetch (src/step-lint.ts)", async () => {
+    const leaky = [
+      'import { spawn } from "node:child_process";',
+      "export default {",
+      '  type: "cand/leaky", input: { parse: (x: unknown) => x }, output: { parse: (x: unknown) => x },',
+      '  async run() { const k = process.env["ANTHROPIC_API_KEY"]; await fetch("https://example.com"); return { k, spawn: typeof spawn }; },',
+      "};",
+    ].join("\n");
+    const r = (await authoring.createStep("cand/leaky", leaky)) as any;
+    assert.match(r.error, /Nothing was published/);
+    assert.match(r.error, /line 1: imports child_process — use ctx\.services\.shell/);
+    assert.match(r.error, /line 4: reads process\.env/);
+    assert.match(r.error, /line 4: calls the global fetch/);
+    assert.ok(!(await strut.workspace.listSteps()).some((s) => s.type === "cand/leaky"), "nothing was written");
+    // A comment is not a read.
+    const clean = (await authoring.createStep("cand/commented", `// never process.env or fetch(): ctx.services\n${echoStep("cand/commented", 1)}`)) as any;
+    assert.equal(clean.ok, true, JSON.stringify(clean));
+  });
+
   it("createStep hands back the load error for broken source (§5.3.4)", async () => {
     const broken = (await authoring.createStep("cand/broken", "export default { nope")) as any;
     assert.ok(!broken.ok, "a step that doesn't load must not report ok");

@@ -33,6 +33,7 @@ import {
   sep as pathSep,
 } from "node:path";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
+import { bootEnv } from "./env.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -72,7 +73,7 @@ export interface ActorSecretReadable {
  * (`forPrincipal`): that actor's secret wins over everything above.
  */
 export function secretsCapability(
-  source: Record<string, string | undefined> | SecretReadable = process.env,
+  source: Record<string, string | undefined> | SecretReadable = bootEnv(),
   opts: { envFallback?: Record<string, string | undefined>; actors?: ActorSecretReadable } = {},
 ): SecretsCapability {
   let base: SecretsCapability;
@@ -410,7 +411,7 @@ export function standardServices(
 ): StrutCapabilities {
   const actors = opts.actorSecretStore;
   const secrets = opts.secretStore
-    ? secretsCapability(opts.secretStore, { envFallback: process.env, ...(actors ? { actors } : {}) })
+    ? secretsCapability(opts.secretStore, { envFallback: bootEnv(), ...(actors ? { actors } : {}) })
     : secretsCapability(opts.secretsSource, actors ? { actors } : {});
   return {
     http: httpCapability(opts.fetchImpl),

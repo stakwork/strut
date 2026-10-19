@@ -74,6 +74,7 @@ import os from "node:os";
 // shared with the chat builder's bash tool.
 
 import { runCmd, runShellProcess, killGroups, maskSecretValues, type ProcessResult } from "../../shell.js";
+import { bootEnv } from "../../env.js";
 
 /** Immediate subdirs of `cwd` that are git repos. */
 function listRepos(cwd: string): string[] {
@@ -222,7 +223,7 @@ const BASH_MAX_CHARS = 500_000;
  *  assume a unix env (git/rg/bash). Used to skip a tool whose CLI isn't present
  *  (e.g. `file_summary` when `stakgraph` isn't installed). */
 function isOnPath(bin: string): boolean {
-  const dirs = (process.env.PATH ?? "").split(":");
+  const dirs = (bootEnv().PATH ?? "").split(":");
   return dirs.some((d) => d && existsSync(join(d, bin)));
 }
 
@@ -1165,9 +1166,9 @@ export default defineStep({
     if (!cfg.model && !defaultModel && writerOf(ctx) === SYSTEM_WRITER) {
       throw new Error("agent: no model connected (STRUT_DEFAULT_MODEL is not set)");
     }
-    const modelName = cfg.model ?? defaultModel ?? process.env["STRUT_LLM_MODEL"];
+    const modelName = cfg.model ?? defaultModel ?? bootEnv()["STRUT_LLM_MODEL"];
     // STRUT_LLM_PROVIDER goes with STRUT_LLM_MODEL; a default model names its own provider.
-    const providerHint = defaultModel ? undefined : (cfg.provider ?? process.env["STRUT_LLM_PROVIDER"]);
+    const providerHint = defaultModel ? undefined : (cfg.provider ?? bootEnv()["STRUT_LLM_PROVIDER"]);
     const { provider } = canonicalModelName(modelName, providerHint);
 
     // Anthropic-only extras: the provider-defined text

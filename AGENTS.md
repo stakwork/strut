@@ -87,6 +87,8 @@ strut/
 │   ├── peers.ts           # PEERS (plans/federation.md §2.2, §3): the other struts this one may call — `{ id, baseUrl, token, label? }` in a fourth encrypted file, peers.json (`P_<hex(id)>`), behind PUT/DELETE/GET /peers (GET: ids, labels, base URLs — never a token) + `STRUT_PEERS` / `createStrut({ peers })`, the paste door for a strut nobody pushes to. `ctx.services.peers` names a peer and makes a request with its token injected (readable by nothing; what a step can do through it is the token's scope on the peer). The client the step and the builder's `peer` tools share: launchOnPeer (POST …/run, `x-strut-actor: ctx.principal`), tailPeerRun (the peer's SSE tail, reattached with `?skip=N` after a drop — reader-initiated, so a strut behind NAT can call a cloud one), cancelOnPeer, runOnPeer, listPeerWorkflows / readPeerWorkflow
 │   ├── actor-secrets.ts   # per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses), jobs (a job's holds, jobs.ts) — every one recordable by cassette.ts + secret-safe
+│   ├── env.ts             # the ENV BOUNDARY: `bootEnv()` is the one way strut's own code reads the environment (env.test.ts fails on a `process.env[…]` read anywhere else under src/), and `scrubProcessEnv()` — called by the default server's entry (`startServer`: server.ts, desktop.js), never by createStrut — copies the env into that snapshot and empties `process.env` down to `KEEP_ENV` (the shell allowlist + what Node reads lazily + what Windows needs to spawn), so a step's `process.env.X`, or a child it spawns with `process.env`, finds nothing while `ctx.services.secrets` still resolves a key the deployment set in env. `STRUT_ENV_SCRUB=0` / `STRUT_ENV_KEEP`. A host that embeds strut calls it itself once its steps read through ctx.services
+│   ├── step-lint.ts       # the static check on a custom step's SOURCE — imports of child_process / fs / net / http (RISKY_MODULES), a `process.env` read, the global `fetch` — each with what to use instead. The builder's create_step / edit_step (+ meta/* twins) REFUSE on a finding (authoring.ts); `POST /steps` publishes and answers with `warnings`; the module loader (strut-resolve-hook.ts) WARNS at import time for a workspace step on disk (`steps/custom`, `_history`, `_graph*`) whoever wrote it — the place a later strut refuses
 │   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
 │   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models. Also the `llmAuth` seam (plans/mothership-cost-control.md §1): a host hook that returns {apiKey, baseUrl, headers} per call, consulted before the client is built; `stepAuth(ctx)` builds a step's call context
 │   ├── mothership.ts      # OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir }) → { llmAuth, mount }. Hive pushes one standing macaroon per user (PUT /llm/delegations/:actor); strut appends keyless HMAC links per run and per step (gatekey `attenuate`) so the gateway bills user × workflow × step and caps the run. Delegations live in a second encrypted file (mothership.json), never on the services bag. Core never imports it
@@ -359,6 +361,8 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_VERIFY_BUDGET_USD` | `10` | Verify-pass spend cap PER VERIFIED RUN: once the pass's checks have reported this much, remaining checks presumed paid (an `agent`/`llm` step anywhere in the check closure, or an unresolvable one) are skipped (`lastVerify: { skipped: "budget" }`) and the claim stays `unknown` — never `supported`. Checks that report no cost never count. |
 | `STRUT_VERIFY_BUDGET_USD_PER_DAY` | `100` | The same cap PER SUBJECT PER (UTC) DAY, computed from the run store alone: the cost of today's runs under `check:<id>` tagged with that subject. A harness that verifies many candidates raises it, or sets its paid checks to `manual`. |
 | `STRUT_SEALED` | (none) | Comma-separated step-type globs sealed in addition to the defaults (`eval/*`, `meta/*`) — `src/sealed.ts`. A sealed step (by namespace, or `sealed: true` on its def — the lab's graders) or workflow (`sealed: true` in its YAML — a grading harness) is what the meta surface may never run, read the runs of, verify, or reach from a publish, and what an `ai`-stamped check may never reach — by name, through a subflow, or via an `agentTools` grant (plans/claims.md §4.1, fixed point 2). |
+| `STRUT_ENV_SCRUB` | `1` (the default server) | `startServer` (server.ts, desktop.js) empties `process.env` down to `KEEP_ENV` after taking the boot snapshot every read of strut's own goes through (`src/env.ts`): the deployment's keys stop being readable by a step or a child spawned with `process.env`, while `ctx.services.secrets` still resolves them from the snapshot. `0` leaves the env as it is. Nothing happens in a host that embeds `createStrut` unless it calls `scrubProcessEnv()` itself. Known limit: on Linux `/proc/<pid>/environ` keeps the exec-time env readable by the same user. |
+| `STRUT_ENV_KEEP` | (none) | Comma-separated names kept in `process.env` through the scrub, for a library strut loads that reads the env itself (a proxy, a browsers path). Widens the server's env only — a child still gets `minimalEnv`. |
 | `STRUT_MODEL_DIR`    | `~/.cache/strut-models` | Local model files: MiniLM's ONNX cache and STT models under `stt/<id>/`. `STRUT_MODEL_CACHE` is the older alias. |
 | `STRUT_STT_MODEL`    | `zipformer-en-kroko` | Finals recognizer for `/audio/stream` + `/audio/transcribe` (hotword-capable) |
 | `STRUT_STT_PARTIAL_MODEL` | `nemo-fast-conformer-en-80ms` | Fast greedy recognizer whose output is shown as live partials; `off` for single-recognizer streams |
@@ -475,6 +479,27 @@ Steps reach credentials through one boundary — `ctx.services.secrets.get("NAME
 — never `process.env` directly. That boundary is backed by a **deployment-scoped
 secret store** (`src/secret-store.ts`) so credentials can be managed from the UI
 instead of baked into env at deploy time.
+
+- **The boundary is enforced, in stages** (`src/env.ts`, `src/step-lint.ts`,
+  `src/strut-resolve-hook.ts`). A step is TypeScript in the server process,
+  so "never `process.env`" was a convention until 2026-10-19: any step — in-tree,
+  custom, or installed — could read the server's env (STRUT_SECRET_KEY, the
+  key to every encrypted store, among it) or spawn a child with it. Now (1)
+  strut's own code reads the env only through `bootEnv()` (a test fails on
+  any other `process.env[…]` read under src/), and the default server's entry
+  scrubs `process.env` down to the shell allowlist at boot — the snapshot
+  behind `bootEnv()` still feeds the secrets capability's env fallback, so a
+  key set in env resolves as before, and a step or its child sees nothing
+  (`STRUT_ENV_SCRUB`, `STRUT_ENV_KEEP`); (2) the builder's `create_step` /
+  `edit_step` refuse a source that imports `child_process` / `fs` / `net` /
+  `http`, reads `process.env` or calls the global `fetch`, naming the line and
+  the `ctx.services` door to use, `POST /steps` publishes it with `warnings`,
+  and the module loader warns at import time for any workspace step on disk
+  that does — warn-only, the place a later strut refuses. A host that embeds
+  strut (mcp's lab, whose gitsee/harvey steps still read env and spawn) is
+  untouched until it calls `scrubProcessEnv()` itself. Not isolation: a step
+  that legitimately holds a value can still send it anywhere; a credential
+  by NAME on the `http` capability is the later piece.
 
 - **Store:** `SecretStore` interface (parallel to `RunStore`/`ChatStore`).
   Default `FileSecretStore` persists `<workspace>/secrets.json`, **encrypted at

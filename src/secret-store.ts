@@ -26,6 +26,7 @@ import {
 } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { bootEnv } from "./env.js";
 
 /** Metadata about a stored secret. Deliberately never includes the value —
  *  `list()` and the `GET /secrets` endpoint return only this shape. */
@@ -77,7 +78,7 @@ const DEV_PASSPHRASE = "strut-insecure-dev-key";
 let warnedNoKey = false;
 
 function passphrase(): string {
-  const v = process.env[ENV_KEY];
+  const v = bootEnv()[ENV_KEY];
   if (v && v.length > 0) return v;
   if (!warnedNoKey) {
     warnedNoKey = true;

@@ -16,13 +16,14 @@ import type { GraphBackend, GraphBackendOptions, LadybugBackend, LadybugConfig }
 import { embeddingsOn, openGraphBackend, openGraphBackendFromEnv } from "./backend.js";
 import { importFileWorkspace, type FileImportReport } from "./fs-import.js";
 import { GraphWorkspaceStore, type GraphWorkspaceStoreOptions } from "./workspace-store.js";
+import { bootEnv } from "../env.js";
 
 export type WorkspaceBackend = "neo4j" | "ladybug" | "fs";
 
 /** `STRUT_WORKSPACE_BACKEND`, case-insensitive: `fs` (or `file` /
  *  `filesystem`) is the filesystem workspace, `ladybug` a LadybugDB file;
  *  anything else — unset, the legacy `graph`, `neo4j` — is Neo4j. */
-export function workspaceBackendFromEnv(env: Record<string, string | undefined> = process.env): WorkspaceBackend {
+export function workspaceBackendFromEnv(env: Record<string, string | undefined> = bootEnv()): WorkspaceBackend {
   const v = (env["STRUT_WORKSPACE_BACKEND"] ?? "").toLowerCase();
   if (v === "fs" || v === "file" || v === "filesystem") return "fs";
   if (v === "ladybug") return "ladybug";
@@ -30,7 +31,7 @@ export function workspaceBackendFromEnv(env: Record<string, string | undefined> 
 }
 
 /** Graph (Neo4j or Ladybug) unless `STRUT_WORKSPACE_BACKEND=fs`. */
-export function graphWorkspaceRequested(env: Record<string, string | undefined> = process.env): boolean {
+export function graphWorkspaceRequested(env: Record<string, string | undefined> = bootEnv()): boolean {
   return workspaceBackendFromEnv(env) !== "fs";
 }
 
@@ -60,7 +61,7 @@ export function graphMaterializeDir(dataDir: string): string {
  * `STRUT_WORKSPACE` / `./workspace`) is where custom steps are materialized.
  */
 export async function graphWorkspaceFromEnv(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = bootEnv(),
   opts: { dataDir?: string; backend?: GraphBackendOptions; store?: GraphWorkspaceStoreOptions } = {},
 ): Promise<{ backend: GraphBackend; workspace: GraphWorkspaceStore }> {
   const backend = await openGraphBackendFromEnv({ NEO4J_HOST: DEFAULT_NEO4J_HOST, ...env }, opts.backend)!;
@@ -106,7 +107,7 @@ export function ladybugConfigFromEnv(env: Record<string, string | undefined>, da
  * and the caller decides (server.ts boots on the filesystem workspace).
  */
 export async function ladybugWorkspaceFromEnv(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = bootEnv(),
   opts: { dataDir?: string; backend?: GraphBackendOptions; store?: GraphWorkspaceStoreOptions } = {},
 ): Promise<{ backend: LadybugBackend; workspace: GraphWorkspaceStore; imported: FileImportReport }> {
   const dataDir = opts.dataDir ?? env["STRUT_WORKSPACE"] ?? "./workspace";

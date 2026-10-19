@@ -1,5 +1,6 @@
 import type { Context, Next } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { bootEnv } from "./env.js";
 
 /**
  * Deployment-scoped shared-secret auth. `createStrut` puts `requireApiKey`
@@ -32,13 +33,13 @@ let warned = false;
 
 /** Read the configured key at request time. Returns undefined if unset. */
 function configuredKey(): string | undefined {
-  const v = process.env[ENV_VAR];
+  const v = bootEnv()[ENV_VAR];
   return v && v.length > 0 ? v : undefined;
 }
 
 /** Read the configured peer key at request time. Returns undefined if unset. */
 function configuredPeerKey(): string | undefined {
-  const v = process.env[PEER_ENV];
+  const v = bootEnv()[PEER_ENV];
   return v && v.length > 0 ? v : undefined;
 }
 
@@ -158,7 +159,7 @@ const SECRET_ENV = "STRUT_SECRET_KEY";
 /** What signs a file token: the API key, else the secret-store key when it
  *  is set (never its dev default — a forgeable token is no credential). */
 function tokenSecret(): string | undefined {
-  const secret = process.env[SECRET_ENV];
+  const secret = bootEnv()[SECRET_ENV];
   return configuredKey() ?? (secret && secret.length > 0 ? secret : undefined);
 }
 
@@ -268,7 +269,7 @@ export interface Session {
 
 /** A session's life: `STRUT_SESSION_HOURS`, default 12. */
 export function sessionTtlMs(): number {
-  const h = Number(process.env[SESSION_HOURS_ENV]);
+  const h = Number(bootEnv()[SESSION_HOURS_ENV]);
   return (Number.isFinite(h) && h > 0 ? h : DEFAULT_SESSION_HOURS) * 3_600_000;
 }
 
@@ -373,7 +374,7 @@ export function sessionOf(c: Context): Session | undefined {
  * LLM step) — see plans/mothership-cost-control.md §2.
  */
 export function principalRequired(): boolean {
-  return process.env["STRUT_MOTHERSHIP_REQUIRED"] === "1";
+  return bootEnv()["STRUT_MOTHERSHIP_REQUIRED"] === "1";
 }
 
 /** Test-only: reset the one-time-warning state so tests stay deterministic. */

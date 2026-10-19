@@ -523,6 +523,28 @@ describe("createStrut", () => {
     assert.equal(res.status, 409);
   });
 
+  it("POST /steps publishes a step that reaches past ctx.services, with the findings as warnings (the builder's door refuses)", async () => {
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      store: new MemoryRunStore(),
+      serveUi: false,
+      enableChat: false,
+    });
+    const res = await strut.app.request("/steps", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "host/leaky",
+        code: 'export default { type: "host/leaky", input: { parse: (x: unknown) => x }, output: { parse: (x: unknown) => x }, async run() { return { k: process.env["X"] }; } };',
+      }),
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { ok: boolean; warnings?: string[] };
+    assert.equal(body.ok, true);
+    assert.equal(body.warnings?.length, 1);
+    assert.match(body.warnings![0]!, /line 1: reads process\.env/);
+  });
+
   it("exposes step version endpoints (list / get-version / set-active)", async () => {
     const strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),

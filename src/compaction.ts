@@ -26,6 +26,7 @@
  */
 
 import { addUsage, emptyUsage, usageFromResult, type TokenUsage } from "./pricing.js";
+import { bootEnv } from "./env.js";
 
 /** `STRUT_COMPACT_AT`: the share of the model's window past which a
  *  conversation is compacted. `1` disables compaction. */
@@ -47,7 +48,7 @@ export const COMPACTION_PREFIX = "[compaction]";
 
 /** The mark from the environment: `STRUT_COMPACT_AT`, default 0.9; `1` (or
  *  more) disables. A value that is not a positive number is the default. */
-export function compactAtFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+export function compactAtFromEnv(env: NodeJS.ProcessEnv = bootEnv()): number {
   const raw = env["STRUT_COMPACT_AT"];
   if (raw === undefined || raw.trim() === "") return COMPACT_AT_DEFAULT;
   const n = Number(raw);
