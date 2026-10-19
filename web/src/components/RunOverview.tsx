@@ -9,6 +9,7 @@ import { AgentIcon, ExternalIcon, EyeIcon, FileIcon, ImageIcon, LoopIcon, RunLin
 import { ArtifactViewer } from "./ArtifactViewer";
 import { fmtCost, fmtDuration, fmtTime, linkOf } from "./JobTimeline";
 import { ValueFields } from "./ValueFields";
+import { PALETTE, paletteKey } from "../step-colors";
 
 // ── Run overview: the run at a glance (the events panel's right column) ────
 //
@@ -20,6 +21,13 @@ import { ValueFields } from "./ValueFields";
 // card has a row's numbers, a click opens it. The output and the claims
 // come last, folded. Everything but the artifacts and the claims is folded
 // from the events (src/run-overview.ts), so a live run moves as it goes.
+
+/** A row's color is its step's (step-colors.ts), as on the canvas; a row
+ *  for a run it launched is the `run` color whatever launched it. Set as
+ *  `--bar` so CSS still paints an error red. */
+function barColor(r: OverviewRow): Record<string, string> {
+  return { "--bar": PALETTE[r.child ? "run" : paletteKey(r.stepType)].stroke };
+}
 
 const KIND_ICON: Record<RowKind, (p: { size?: number }) => JSX.Element> = {
   agent: AgentIcon,
@@ -126,7 +134,7 @@ export function RunOverview(props: {
   const showCard = (row: OverviewRow, el: HTMLElement) => {
     const r = el.getBoundingClientRect();
     // Beside the column, over the event log, so it never covers the rows.
-    setHover({ row, left: Math.max(8, r.left - 232), top: Math.min(r.top - 4, window.innerHeight - 170) });
+    setHover({ row, left: Math.min(r.right + 8, window.innerWidth - 232), top: Math.min(r.top - 4, window.innerHeight - 170) });
   };
 
   const total = Math.max(1, o.durationMs);
@@ -157,22 +165,25 @@ export function RunOverview(props: {
             {o.error.message || "failed"}
           </button>
         )}
-        <div class="ov-tiles">
-          <div class="ov-tile">
-            <div class="ov-tile-label">Cost</div>
-            <div class="ov-tile-value">{fmtCost(o.cost)}</div>
-            <div class="ov-tile-sub">{props.cap ? `of ${fmtCost(props.cap)} cap` : `${formatTokens(tokens)} tokens`}</div>
+        {/* A run that called no model (exec, http, …) has nothing to say here. */}
+        {(o.cost > 0 || o.modelCalls > 0 || o.toolCalls > 0 || tokens > 0) && (
+          <div class="ov-tiles">
+            <div class="ov-tile">
+              <div class="ov-tile-label">Cost</div>
+              <div class="ov-tile-value">{fmtCost(o.cost)}</div>
+              <div class="ov-tile-sub">{props.cap ? `of ${fmtCost(props.cap)} cap` : `${formatTokens(tokens)} tokens`}</div>
+            </div>
+            <div class="ov-tile">
+              <div class="ov-tile-label">Model calls</div>
+              <div class="ov-tile-value">{o.modelCalls}</div>
+              <div class="ov-tile-sub">{o.toolCalls} tool call{o.toolCalls === 1 ? "" : "s"}</div>
+            </div>
           </div>
-          <div class="ov-tile">
-            <div class="ov-tile-label">Model calls</div>
-            <div class="ov-tile-value">{o.modelCalls}</div>
-            <div class="ov-tile-sub">{o.toolCalls} tool call{o.toolCalls === 1 ? "" : "s"}</div>
-          </div>
-        </div>
+        )}
         {spend.length > 0 && (
           <div class="ov-spend">
             {spend.map((r) => (
-              <div key={r.key} class={`ov-k-${r.kind}`} style={{ flex: `0 1 ${(r.cost / o.cost) * 100}%` }} title={`${r.label} · ${fmtCost(r.cost)}`} />
+              <div key={r.key} style={{ flex: `0 1 ${(r.cost / o.cost) * 100}%`, ...barColor(r) }} title={`${r.label} · ${fmtCost(r.cost)}`} />
             ))}
           </div>
         )}
@@ -232,7 +243,7 @@ export function RunOverview(props: {
                   <span>{r.label}{r.count > 1 ? ` ×${r.count}` : ""}</span>
                 </span>
                 <span class="ov-track">
-                  <span class={`ov-bar ov-k-${r.kind}${r.status === "running" ? " ov-bar-running" : ""}`} style={{ left: `${left}%`, width: `${width}%` }} />
+                  <span class={`ov-bar${r.status === "running" ? " ov-bar-running" : ""}`} style={{ left: `${left}%`, width: `${width}%`, ...barColor(r) }} />
                 </span>
                 <span class="ov-num">{fmtDuration(r.end - r.start)}</span>
               </div>

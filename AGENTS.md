@@ -168,8 +168,9 @@ strut/
         ├── main.tsx       # entry: renders <App/>
         ├── app.tsx        # shell: sidebar, topbar, canvas, events panel, dialog/flyout orchestration
         ├── api.ts         # typed fetch wrapper for all API endpoints (+ run SSE tail; chat: sendChat/streamChat/getChat reattach)
-        ├── flow-to-canvas.ts  # Flow → CanvasData; STEP_COLORS → categories; childRefForStep/stepWorkflow (container nav)
+        ├── flow-to-canvas.ts  # Flow → CanvasData; one theme category per palette entry; childRefForStep/stepWorkflow (container nav)
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
+        ├── step-colors.ts # the step palette: PALETTE + paletteKey(type) — the ONE place a step's color is decided; the canvas nodes and the run overview's bars both read it
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
         ├── attachments.ts # the chat composer's files read for `POST /chat` (a PNG/JPEG past 1568 px scaled down first; the server's limits checked early)
@@ -2036,7 +2037,7 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
 2. Import it in `src/steps/registry.ts` and add to `CORE_STEPS`.
 3. If it's control flow, add to `SELF_RESOLVING_STEPS` in `runner.ts`
    and handle it in `dispatchStep`.
-4. Add a color entry in `STEP_COLORS` in `web/src/flow-to-canvas.ts`
+4. Add a color entry in `PALETTE` in `web/src/step-colors.ts`
    (categories are auto-generated from this map via `buildCategories()`;
    the Add Step dialog discovers types via the `/steps` API).
 5. Write tests in the appropriate test file.
@@ -2099,7 +2100,7 @@ with that move.
    directly. See "Lib step credentials".
 5. Shared helpers go in a leading-underscore file (`lib/<ns>/_shared.ts`) —
    imported by siblings, skipped by registry discovery.
-6. Add a `STEP_COLORS` entry in `web/src/flow-to-canvas.ts` if you want a
+6. Map the type or its namespace to a `PALETTE` entry in `web/src/step-colors.ts` if you want a
    distinct node color (optional; the Add Step dialog discovers the type
    regardless via `/steps`).
 7. Write tests; run `npm test` and `cd web && npx tsc --noEmit && npx vite build`.

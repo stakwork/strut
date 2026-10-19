@@ -25,12 +25,6 @@
   --walk-evidence: #94a3b8;
   --walk-other: #6b7689;
 
-  /* The run overview's kinds of work (RunOverview): spend bar + timeline. */
-  --spend-agent: #7c83f2;
-  --spend-subagent: #b3b0f7;
-  --spend-llm: #c084fc;
-  --spend-run: #2dd4bf;
-
   /* SourceCode: TypeScript type names (the other tokens reuse the colors above). */
   --code-type: #2dd4bf;
 
