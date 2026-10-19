@@ -32,7 +32,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, type Scope } from "./auth.js";
+import { carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -1063,18 +1063,63 @@ export async function createStrut<TServices = unknown>(
   // mounts later included. Launch is not narrowed by workflow: a workflow
   // whose agent has `bash` reaches whatever the server can (decided
   // 2026-10-09, plan as written).
+  //
+  // A fourth: the login itself. `POST /auth/session` trades the key for a
+  // session cookie (auth.ts "Sessions") — the browser's credential from
+  // then on, the key's equal to this gate (`carriesApiKey`) under the CSRF
+  // rules `sessionOf` keeps — and `DELETE /auth/session` ends one; neither
+  // needs a credential to be called.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
-    const open = read && (path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c));
+    const open = read
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c)
+      : path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c)) return unauthorized(c);
     if (!read && !(c.req.method === "POST" && PEER_POST.test(path)) && (await isPeer(c))) {
       return c.json({ error: "forbidden: a peer may read, launch a run, and control a run a peer launched" }, 403);
     }
     return next();
+  });
+
+  // ── Sessions (auth.ts "Sessions") ──────────────────────────────────────
+
+  // The login. A matching key buys an HttpOnly cookie for `STRUT_SESSION_HOURS`
+  // naming who signed in; the page never sees the key again. A wrong key
+  // is a 401 after a pause — the one route that takes guesses. With no
+  // key configured there is nothing to sign in to.
+  app.post("/auth/session", async (c) => {
+    if (!process.env["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown };
+    const key = typeof body.key === "string" ? body.key : "";
+    const actor = typeof body.actor === "string" ? body.actor.trim() : "";
+    if (body.actor !== undefined && (typeof body.actor !== "string" || actor.length > 120 || /[\r\n]/.test(actor))) {
+      return c.json({ error: "actor must be a short string" }, 400);
+    }
+    const issued = key ? issueSession(key, actor || undefined) : undefined;
+    if (!issued) {
+      await new Promise((r) => setTimeout(r, 500));
+      return c.json({ error: "unauthorized: that is not STRUT_API_KEY" }, 401);
+    }
+    c.header("set-cookie", sessionCookie(issued.token, issued.session.exp, isSecureRequest(c)));
+    return c.json(issued.session);
+  });
+
+  // The session this request spends, for the UI to show who is signed in;
+  // 404 for a request the key or nothing authenticated.
+  app.get("/auth/session", (c) => {
+    const session = sessionOf(c);
+    return session ? c.json(session) : c.json({ error: "no session" }, 404);
+  });
+
+  // Sign out: the cookie is cleared. The token itself stays valid until
+  // its expiry — it is stateless — but no browser holds it any more.
+  app.delete("/auth/session", (c) => {
+    c.header("set-cookie", sessionCookie(undefined, 0, isSecureRequest(c)));
+    return c.body(null, 204);
   });
 
   // ── Workflows ────────────────────────────────────────────────────────────

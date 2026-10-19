@@ -328,6 +328,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_EXIT_ON_STDIN_EOF` | (unset) | `1` = `desktop.js` exits when its stdin closes. A host spawns strut with a stdin pipe it never writes to; the kernel closes it when the host dies, crash or force quit included, so strut never outlives its app. Launcher only (`scripts/desktop.js`), not `build/server.js`. |
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
 | `STRUT_HOST_CONFIG`  | (unset)        | A JSON file with the host's delta for the workflows strut ships, `{ job?, orchestrator? }`, each `{ tools?: string[], system?: string, model?: string | null }` (`null`: no pinned model, so it runs on the connected one, `STRUT_DEFAULT_MODEL`), and `automation?: { workflow, approve?, grants? }` for the automation/* steps — what `createStrut({ job, orchestrator, automation })` takes, for a host that runs the bundled server (`build/server.js`, `desktop.js`) instead of embedding strut. Peel writes it at launch. A file that cannot be read or parsed fails the boot. |
+| `STRUT_SESSION_HOURS` | `12`          | How long a browser SESSION lasts (`POST /auth/session`, see "Auth"): the key traded for an HttpOnly cookie signed under `STRUT_API_KEY` (else `STRUT_SECRET_KEY`), so the page never holds the key. Stateless, like a file token: rotating the signing secret ends every session. |
 | `STRUT_PEER_KEY`     | (unset)        | The key ANOTHER strut holds for this one (plans/federation.md §3): presented like `STRUT_API_KEY`, but a request carrying it is `peer`-scoped — every read, a launch, and cancel / pause / resume of a run a peer launched; anything else is 403. Unset, it opens nothing. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
 | `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
@@ -406,6 +407,39 @@ container in the compose (strut and any service that registers steps).
   gate (mcp's `/lab`) hand such reads through. A served page can read its
   own URL, so the key itself must never be in one; the token is worth the
   files the page already shows.
+- **Sessions — the browser without the key** (`auth.ts` "Sessions"). A
+  strut whose UI faces the internet with no host in front should not keep
+  the deployment key in a browser's storage: one long-lived bearer secret,
+  no expiry, no revocation. Settings → Connection → **Sign in** posts it
+  ONCE to `POST /auth/session { key, actor? }` — the login, the one route a
+  stranger may POST (a wrong key is a 401 after half a second) — and gets
+  back an HttpOnly, `SameSite=Lax`, `Secure`-on-https cookie holding `{
+  actor?, exp }` signed under the file token's secret (`STRUT_API_KEY`,
+  else `STRUT_SECRET_KEY`): stateless, no store, `STRUT_SESSION_HOURS`
+  (12) long, and rotating the secret ends every session. The gate takes
+  the cookie as the key (`carriesApiKey`, scope `full` — never more than
+  the key: `/health` tells it everything, `/secrets` answers it), and the
+  default `resolveActor` stamps the cookie's actor on what it launches and
+  publishes — who signed in, with `x-strut-actor` beside it ignored.
+  `GET /auth/session` says who is signed in; `DELETE /auth/session`
+  clears the cookie (the token stays valid until its expiry; no browser
+  holds it). The UI then sends no bearer header at all — `api.ts` keeps a
+  marker of the session (who, until when) in `localStorage`, and a `401`
+  with it set means the session ran out. `?key=` from a host and the
+  pasted key ("Keep key in this browser") work as before; the dictation
+  WebSocket's upgrade reads the cookie. **CSRF:** the browser attaches the
+  cookie to every request to this origin, so a page elsewhere must not be
+  able to spend it. `SameSite=Lax` keeps it off every cross-site
+  subresource request and form POST; two rules hold beyond that (for a
+  browser without SameSite, and for an untrusted page served from strut's
+  own origin): a request that is not a read is honored only with
+  `x-strut-ui: 1`, the header the UI sends on every call and no cross-site
+  form can set; and a FILE read (`/artifacts/:runId…`, `/jobs/:id/files…`)
+  never opens on the cookie alone — the UI's listing fetch carries the
+  header and mints the `?t=` token every link carries, so a sandboxed
+  artifact page (an opaque origin) cannot reach another run's files
+  through the person's session. `createStrut.test.ts` ("a session") runs
+  the whole flow; the route sweeps leave out the two open login routes.
 - **Scope — what another strut may do** (plans/federation.md §3). Past the
   credential, the gate asks `createStrut({ resolveScope(c) })` — the twin of
   `resolveActor`, the host's call (mcp maps its JWT's scope) — whether the

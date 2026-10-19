@@ -24,13 +24,33 @@ export function SettingsDialog(props: {
   const [progress, setProgress] = useState("");
   const [hotwords, setHotwords] = useState(settings.hotwords);
   const [apiKey, setApiKeyState] = useState(api.getApiKey());
+  const [actor, setActor] = useState("");
+  const [signing, setSigning] = useState(false);
+  const [connError, setConnError] = useState("");
   const keySource = api.apiKeySource();
+  const session = api.getSession();
 
+  // Everything on screen was fetched with the old credential (or refused
+  // for it), so a change reloads.
   const saveApiKey = (value: string) => {
     const v = value.trim();
     if (v === api.getApiKey()) return;
     api.setApiKey(v);
-    // Everything on screen was fetched with the old key (or refused for it).
+    location.reload();
+  };
+  const signIn = async () => {
+    setSigning(true);
+    setConnError("");
+    try {
+      await api.signIn(apiKey.trim(), actor.trim() || undefined);
+      location.reload();
+    } catch (e) {
+      setConnError(e instanceof Error ? e.message : String(e));
+      setSigning(false);
+    }
+  };
+  const signOut = async () => {
+    await api.signOut();
     location.reload();
   };
 
@@ -106,24 +126,63 @@ export function SettingsDialog(props: {
         <div class="dialog-title">Settings</div>
 
         <div class="settings-section-title">Connection</div>
-        <div class="dialog-hint">
-          Needed when the server sets <code>STRUT_API_KEY</code>: nothing is served without
-          it. Sent as a bearer token on every request (and as <code>?key=</code> on the
-          dictation socket; an artifact link carries a read token for that run's files
-          instead, never the key).
-          {keySource === "url" && " This session's key came from the launch URL."}
-        </div>
-        <div class="dialog-field">
-          <label>API key</label>
-          <input
-            type="password"
-            value={apiKey}
-            placeholder="STRUT_API_KEY (blank in dev)"
-            autocomplete="off"
-            onInput={(e) => setApiKeyState((e.target as HTMLInputElement).value)}
-            onBlur={(e) => saveApiKey((e.target as HTMLInputElement).value)}
-          />
-        </div>
+        {session ? (
+          <>
+            <div class="dialog-hint">
+              Signed in{session.actor ? ` as ${session.actor}` : ""}: the server set a session
+              cookie this page cannot read, and nothing in this browser holds the key. Runs
+              and publishes from here are stamped with that name.
+            </div>
+            <div class="settings-row">
+              <span class="settings-status is-on">● signed in</span>
+              <span class="settings-detail">until {new Date(session.exp).toLocaleString()}</span>
+              <button class="btn" onClick={signOut}>
+                Sign out
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div class="dialog-hint">
+              Needed when the server sets <code>STRUT_API_KEY</code>: nothing is served without
+              it. <b>Sign in</b> trades the key for a session cookie (12 hours by default) and
+              forgets it; <b>Keep key</b> stores it in this browser and sends it as a bearer
+              token on every request instead. An artifact link carries a read token for that
+              run's files either way, never the key.
+              {keySource === "url" && " This session's key came from the launch URL."}
+              {keySource === "settings" && " A key is kept in this browser."}
+            </div>
+            <div class="dialog-field">
+              <label>API key</label>
+              <input
+                type="password"
+                value={apiKey}
+                placeholder="STRUT_API_KEY (blank in dev)"
+                autocomplete="off"
+                onInput={(e) => setApiKeyState((e.target as HTMLInputElement).value)}
+              />
+            </div>
+            <div class="dialog-field">
+              <label>Your name (optional — who runs and publishes are stamped with)</label>
+              <input
+                type="text"
+                value={actor}
+                placeholder="evan"
+                autocomplete="off"
+                onInput={(e) => setActor((e.target as HTMLInputElement).value)}
+              />
+            </div>
+            <div class="settings-row">
+              <button class="btn btn-primary" disabled={!apiKey.trim() || signing} onClick={signIn}>
+                {signing ? "Signing in…" : "Sign in"}
+              </button>
+              <button class="btn" disabled={apiKey.trim() === api.getApiKey()} onClick={() => saveApiKey(apiKey)}>
+                {apiKey.trim() ? "Keep key in this browser" : "Forget key"}
+              </button>
+            </div>
+            {connError && <div class="settings-warn">{connError}</div>}
+          </>
+        )}
 
         <div class="settings-section-title">Dictation</div>
         <div class="dialog-hint">

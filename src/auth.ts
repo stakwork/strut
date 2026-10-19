@@ -8,7 +8,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * are: the UI's own files and a bare `/health`).
  *
  * If `STRUT_API_KEY` is set in the environment, every request must present
- * `Authorization: Bearer <key>` (or `?key=`) matching that value. If unset,
+ * `Authorization: Bearer <key>` (or `?key=`) matching that value — or a
+ * SESSION cookie the key bought at `POST /auth/session` (see "Sessions"
+ * below: the browser's way in, so the page never holds the key). If unset,
  * the middleware is permissive (dev mode) — it logs a one-time warning at
  * boot so the lax posture is visible.
  *
@@ -63,7 +65,7 @@ export function warnIfUnconfigured(): void {
  * `<img>` / `<video>` / new tab). Permissive when the env var is unset.
  */
 export function carriesApiKey(c: Context): boolean {
-  return apiKeyMatches(c.req.header("authorization"), c.req.query("key"));
+  return apiKeyMatches(c.req.header("authorization"), c.req.query("key")) || sessionOf(c) !== undefined;
 }
 
 /**
@@ -95,14 +97,17 @@ export async function requireApiKey(c: Context, next: Next) {
 /**
  * The check behind `carriesApiKey`, for a caller with no Hono context — the
  * dictation WebSocket's upgrade, where the key rides as `?key=` because a
- * browser's WebSocket cannot set headers. Permissive (true) when
- * `STRUT_API_KEY` is unset.
+ * browser's WebSocket cannot set headers — or, signed in, as the session
+ * cookie (`cookie`): an upgrade is a GET, and a cross-site page's WebSocket
+ * never carries a SameSite cookie. Permissive (true) when `STRUT_API_KEY`
+ * is unset.
  */
-export function apiKeyMatches(authorization: string | undefined, queryKey?: string | null): boolean {
+export function apiKeyMatches(authorization: string | undefined, queryKey?: string | null, cookie?: string): boolean {
   const expected = configuredKey();
   if (!expected) return true;
   const got = presentedKey(authorization, queryKey);
-  return !!got && got === expected;
+  if (!!got && got === expected) return true;
+  return cookie !== undefined && sessionFromCookie(cookie) !== undefined;
 }
 
 // ── Scope ────────────────────────────────────────────────────────────────
@@ -209,9 +214,155 @@ export function carriesBadFileToken(c: Context): boolean {
  * that authenticates requests itself (mcp's JWT) passes its own hook.
  */
 export function actorFromHeader(c: Context): string | undefined {
-  if (!(configuredKey() && carriesApiKey(c)) && !carriesPeerKey(c)) return undefined;
+  const keyed = configuredKey() && apiKeyMatches(c.req.header("authorization"), c.req.query("key"));
+  // A session names its actor itself: who signed in, not a header the page
+  // could set to anything.
+  if (!keyed && !carriesPeerKey(c)) return sessionOf(c)?.actor;
   const v = c.req.header("x-strut-actor")?.trim();
   return v ? v : undefined;
+}
+
+// ── Sessions ─────────────────────────────────────────────────────────────
+//
+// A strut whose UI faces the internet with no host in front used to keep
+// STRUT_API_KEY itself in the browser (localStorage) and send it on every
+// request: one long-lived bearer secret, no expiry, no revocation. A
+// SESSION trades the key for something short-lived the page never reads:
+// `POST /auth/session { key, actor? }` — the login, open to everyone, a
+// wrong key a slow 401 — answers a matching key with an HttpOnly cookie
+// holding `{ actor?, exp }` signed under the same secret a file token is
+// (`tokenSecret`: the API key, else STRUT_SECRET_KEY). Stateless like the
+// file token: no store, nothing to clean up, and rotating the secret ends
+// every session. A session is the key's equal (`carriesApiKey`, scope
+// `full`), never more; its actor is who signed in (`actorFromHeader`).
+// `DELETE /auth/session` clears the cookie. `STRUT_SESSION_HOURS` (12) is
+// its life.
+//
+// CSRF. The browser attaches the cookie to every request it makes to this
+// origin, so a page on another site must not be able to spend it.
+// `SameSite=Lax` keeps it off every cross-site subresource request — a
+// fetch, an <img>, a frame, a form POST, a WebSocket — and leaves only a
+// top-level navigation the person clicks, a GET whose answer only they see.
+// Two more rules hold for a browser that ignores SameSite, and for a page
+// of an untrusted origin served from strut's own: (1) a request that is
+// not a read is honored only with `x-strut-ui: 1`, a header the UI sends
+// on every call and no cross-site form can set; (2) a FILE read
+// (`fileScopeOf`: a run's artifacts, a job's files) is never opened by the
+// cookie alone either — the header or the `?t=` token, as always. So a
+// sandboxed artifact page (an opaque origin, which Lax already treats as
+// cross-site) cannot reach another run's files through the person's
+// session: an <img> or a navigation has no header, and a fetch with one is
+// a cross-origin preflight the file route does not grant. The UI's listing
+// fetch carries the header, mints the token, and every link carries that.
+
+const SESSION_COOKIE = "strut_session";
+const SESSION_HOURS_ENV = "STRUT_SESSION_HOURS";
+const DEFAULT_SESSION_HOURS = 12;
+const UI_HEADER = "x-strut-ui";
+
+/** What a session cookie holds: who signed in, and when it ends (ms). */
+export interface Session {
+  actor?: string;
+  exp: number;
+}
+
+/** A session's life: `STRUT_SESSION_HOURS`, default 12. */
+export function sessionTtlMs(): number {
+  const h = Number(process.env[SESSION_HOURS_ENV]);
+  return (Number.isFinite(h) && h > 0 ? h : DEFAULT_SESSION_HOURS) * 3_600_000;
+}
+
+function sign(payload: string, secret: string): string {
+  return createHmac("sha256", secret).update(`session:${payload}`).digest("base64url");
+}
+
+/** The signed token for a session — `base64url(json).hmac` — or undefined
+ *  with no secret to sign it. */
+export function sessionToken(session: Session): string | undefined {
+  const secret = tokenSecret();
+  if (!secret) return undefined;
+  const payload = Buffer.from(JSON.stringify({ ...(session.actor ? { actor: session.actor } : {}), exp: session.exp })).toString("base64url");
+  return `${payload}.${sign(payload, secret)}`;
+}
+
+/** The session a token names, if the signature holds and it has not
+ *  expired; undefined otherwise (and always with no secret). */
+export function verifySessionToken(token: string, now = Date.now()): Session | undefined {
+  const secret = tokenSecret();
+  if (!secret) return undefined;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return undefined;
+  const payload = token.slice(0, dot);
+  const got = token.slice(dot + 1);
+  const expected = sign(payload, secret);
+  if (expected.length !== got.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const { actor, exp } = parsed as { actor?: unknown; exp?: unknown };
+  if (typeof exp !== "number" || !(exp > now)) return undefined;
+  if (actor !== undefined && typeof actor !== "string") return undefined;
+  return actor ? { actor, exp } : { exp };
+}
+
+/**
+ * The login: a key matching `STRUT_API_KEY` buys a session for `ttlMs`
+ * (default `sessionTtlMs()`), as the cookie value and the session it
+ * names. Undefined for a wrong key, and with no key configured — an open
+ * strut has nothing to sign in to.
+ */
+export function issueSession(key: string, actor?: string, ttlMs = sessionTtlMs()): { token: string; session: Session } | undefined {
+  const expected = configuredKey();
+  if (!expected || key.length !== expected.length || !timingSafeEqual(Buffer.from(key), Buffer.from(expected))) return undefined;
+  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs };
+  const token = sessionToken(session);
+  return token ? { token, session } : undefined;
+}
+
+/** The `Set-Cookie` value that stores a session token, or clears it
+ *  (`token` undefined). `Secure` on https, where the cookie must never
+ *  travel in clear; a local strut is plain http. */
+export function sessionCookie(token: string | undefined, exp: number, secure: boolean): string {
+  const maxAge = token ? Math.max(1, Math.floor((exp - Date.now()) / 1000)) : 0;
+  return `${SESSION_COOKIE}=${token ?? ""}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
+}
+
+/** Is this request on https — directly, or behind a proxy that says so? */
+export function isSecureRequest(c: Context): boolean {
+  const forwarded = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwarded) return forwarded === "https";
+  return c.req.url.startsWith("https:");
+}
+
+/** The session a `Cookie` header carries, verified — the CSRF rules aside
+ *  (for the WebSocket upgrade, a GET; everything else asks `sessionOf`). */
+export function sessionFromCookie(cookie: string | undefined): Session | undefined {
+  if (!cookie) return undefined;
+  for (const part of cookie.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== SESSION_COOKIE) continue;
+    const value = part.slice(eq + 1).trim();
+    return value ? verifySessionToken(value) : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The session this request may spend: a valid cookie, honored on a read
+ * that is not a file read, or on any request carrying `x-strut-ui: 1` —
+ * the CSRF rules above. Undefined otherwise.
+ */
+export function sessionOf(c: Context): Session | undefined {
+  const session = sessionFromCookie(c.req.header("cookie"));
+  if (!session) return undefined;
+  if (c.req.header(UI_HEADER) === "1") return session;
+  const read = c.req.method === "GET" || c.req.method === "HEAD";
+  return read && !fileScopeOf(c.req.path) ? session : undefined;
 }
 
 /**

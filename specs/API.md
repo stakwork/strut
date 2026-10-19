@@ -27,6 +27,10 @@ things served without the key are the web UI's own files and `GET /health`
 matching key — and is recorded on the run (`actor`, `principal`) and on the
 workflow it publishes (`owner`). AGENTS.md "Auth" has the whole model.
 
+**A browser signs in instead.** The web UI trades the key for a short-lived
+session cookie at `POST /auth/session` (§12), so the key is never kept in a
+browser; a client that is a program keeps using the header.
+
 **A peer's key.** `STRUT_PEER_KEY` is the key another strut holds for this
 one (§10). It is presented like `STRUT_API_KEY` (Bearer or `?key=`) but is
 **peer-scoped**: every `GET`, a launch (`POST /workflows/:name[/:version]/run`),
@@ -715,3 +719,39 @@ detached: true, runId }` and the run goes on; nothing can notify an MCP
 client, so `get_run` takes `wait` (ms, at most 55000) — it holds until the
 run settles or the wait is up, then reads the run as it stands, and the
 caller calls again until `status` is terminal.
+
+## 12. Sessions — a browser signs in
+
+The key is a deployment secret; a browser facing the internet should hold
+something shorter-lived. The login trades the key for an HttpOnly cookie the
+page cannot read, signed under the same secret as a file token
+(`STRUT_API_KEY`, else `STRUT_SECRET_KEY`) and stateless like one: no store,
+and rotating that secret ends every session.
+
+| Method | Path            | Description |
+| ------ | --------------- | ----------- |
+| POST   | `/auth/session` | `{ key, actor? }` → 200 `{ actor?, exp }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars |
+| GET    | `/auth/session` | `{ actor?, exp }` of the session the request carries; `404` for a request the key authenticated |
+| DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
+
+`exp` is the session's end in ms since the epoch — `STRUT_SESSION_HOURS`
+(default 12) from the login. `Secure` is set when the request came over
+https (directly, or `x-forwarded-proto: https`).
+
+A request carrying a valid cookie is the key's equal — every route, `full`
+scope, never more — and its `actor` is stamped on what it launches and
+publishes (`x-strut-actor` beside it is ignored). Two CSRF rules: a request
+that is not a `GET`/`HEAD` is honored only with the header `x-strut-ui: 1`
+(the UI sends it on every call; a cross-site form cannot), and a file read
+(`/artifacts/:runId…`, `/jobs/:id/files…`) never opens on the cookie alone —
+fetch the listing with the header, which mints the `?t=` token (§5), and
+read the files with that.
+
+```bash
+curl -s -c jar.txt -X POST localhost:3000/auth/session \
+  -H 'content-type: application/json' -d '{"key":"'"$STRUT_API_KEY"'","actor":"evan"}'
+# → { "actor": "evan", "exp": 1790479689808 }
+curl -s -b jar.txt localhost:3000/workflows                       # a read: the cookie alone
+curl -s -b jar.txt -H 'x-strut-ui: 1' -X POST localhost:3000/workflows/hello/run -d '{}'
+curl -s -b jar.txt -X DELETE localhost:3000/auth/session           # → 204, cookie cleared
+```
