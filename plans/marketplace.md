@@ -1,16 +1,18 @@
-# Packages — sharing and selling workflows and steps between struts
+# Packages — sharing workflows, steps and Concepts between struts
 
-> **Status (2026-10-18): design only, nothing built.** Revised the same day
+> **Status (2026-10-19): design only, nothing built.** Revised 2026-10-18
 > after a review against npm, Go modules, cargo, bundler, Homebrew taps and
 > OCI: the first draft's generated manifest, its first-installer name rule,
 > its vendored foreign items and its server-shaped index are gone (§10 says
-> what replaced each). Rows marked *ruled* in "Decided" are the owner's;
-> every other row is *proposed*. Companion plans this builds on:
-> `federation.md` (peers, `strut/run-workflow`, and §2.3's git library,
-> which this subsumes; see §9), `claims.md` (the contract a package
-> carries), `mothership-cost-control.md` (macaroons, the credential selling
-> reuses), `specs/ENV_SPEC.md` (the binaries a package needs). Code
-> citations are on `strut@83a5b10`.
+> what replaced each). Revised again 2026-10-19: **the product is finding,
+> downloading and using a package, paid or not** — paid EXECUTION and
+> bring-your-own-billing are a later plan (§6), and a package may be only
+> Concepts, or only steps (§1, §3). Rows marked *ruled* in "Decided" are
+> the owner's; every other row is *proposed*. Companion plans this builds
+> on: `federation.md` (peers, `strut/run-workflow`, and §2.3's git
+> library, which this subsumes; see §9), `claims.md` (the contract a
+> package carries), `specs/ENV_SPEC.md` (the binaries a package needs).
+> Code citations are on `strut@83a5b10`.
 
 ## Problem
 
@@ -47,8 +49,8 @@ What exists, and what's missing:
 
 | Question | Decision |
 | --- | --- |
-| The unit | ***Ruled:* one design serves both a workflow-centric package and a step-centric one.** A package is a DIRECTORY holding one namespace (§1) |
-| What is sold | ***Ruled:* both packages and execution**, through one credential (§6) |
+| The unit | ***Ruled:* one design serves both a workflow-centric package and a step-centric one.** A package is a DIRECTORY holding one namespace; any folder may be absent, so a package can be only steps, or only Concepts (§1) |
+| What is sold | ***Ruled (revised 2026-10-19):* packages.** A paid package is a gated download. Paid execution is a later plan (§6) |
 | Ownership | **By prefix.** Package `acme/linear` owns every name under `acme/linear/`, workflows included (`acme/linear/sync`). Who owns a name is read off the name; nothing is bound at install (§1) |
 | Dependencies | **A package carries only its own prefix.** Another package it executes is a `requires.packages` pin — an exact digest with a source hint — and the install resolves those with the same function, under one ask. No ranges, no solver: exact pins union, and two that disagree refuse (§1, §3) |
 | Identity | **The digest is a tree hash** over the directory, manifest included. The manifest holds nothing derivable from the files: no item list, no per-file hashes, no step types (§1) |
@@ -58,7 +60,7 @@ What exists, and what's missing:
 | An update, and a person | ***Ruled:* an update asks like an install.** New code never lands on an accept that was given for other code (§4, §8) |
 | Transport | **`file:`, `git+` and `peer:` in v1.** *Ruled:* the `peer:` source is in; it revises federation §2.3's "no strut-to-strut copy" for packages (§9). OCI is not designed (§5) |
 | Trust | ***Ruled:* in-process, with one fence.** An installed step runs like a `POST /steps` step today, and `requires.secrets` is ENFORCED: a step with an `upstream` reads only the names its package declared (§3) |
-| Price | **Not in the package.** The source gates it: a private repo's ACL, or a 402 on the peer's archive route — the same 402 as a paid launch (§6) |
+| Price | **Not in the package.** The source gates the download: a private repo's ACL, or a token the seller mints for the peer's archive route (§6) |
 | The index | **A list, not a service.** `index.yaml` in a git repo, or a peer's `GET /packages`. ***Ruled:* no public index yet**; each deployment names its own (§7) |
 | Who installs | **A person.** Installing is publishing third-party code onto the server: a keyed `full`-scope route, or a builder tool that asks first. No `meta/*` twin (§8) |
 
@@ -113,9 +115,23 @@ requires:
   doesn't (step 1). Core and lib types have one or two segments, today's
   custom namespaces (`pod/test`) have two, a package item has three or
   more — nothing collides.
-- **One shape for both kinds.** A step package is a directory of steps and
-  their Concept; a workflow package adds a workflow. Nothing in the format
-  or the install says which kind it is.
+- **One shape, any subset.** Every folder is optional: a package of one
+  step, a package of Concepts alone (an ontology a deployment shares), a
+  workflow over core and lib steps with no code at all. Nothing in the
+  format or the install says which kind it is, and `requires.packages`
+  pins any kind. **A new kind is a new folder** — prompt files, hotword
+  lists, cassettes later are one folder and one publisher each — and an
+  unknown top-level folder is REFUSED, not ignored, so a package from a
+  newer strut fails whole instead of installing half.
+- **A Concept's record is its stamp.** A Concept has no version record;
+  its node carries `unique_source_id = pkg/<package>/<file>@<hash>`
+  (`seedConcepts`), and the installed directory stays under
+  `<dataDir>/packages/<digest>/` (§5), so the node plus that file is what
+  `upstream` is for a step: which package, which content, and whether it
+  was edited since (its `description` / docs no longer equal the file's).
+  A page's `parent` must resolve to a page in this package, in a required
+  package, or already in the graph (`Job`, `Workflow Builder`); a missing
+  one is refused at install, naming it.
 - **The digest** is `sha256:<hex>` over `<path>\0<sha256 of the bytes>\n`
   for every file under the directory, sorted by path, `strut.yaml`
   included. Whoever pins computes it — an index entry, a
@@ -197,7 +213,9 @@ hand; the builder can author it too.
    a local creation under the prefix, a core/lib type, a sealed namespace
    — is `package_conflict: <name>`, and **nothing is published**: an
    install is all or nothing, so every name is checked before the first
-   write. The rule holds after install too: creating a step or workflow
+   write. Concepts join the same pass: a `concepts/<Name>.md` whose node
+   exists unstamped, or stamped by a seed or another package, is
+   `package_conflict: Concept <Name>` — never the seeder's silent skip. The rule holds after install too: creating a step or workflow
    under an INSTALLED prefix (`PUT /steps`, `create_step`, a publish) is
    refused with the package named — editing an installed item is a fork
    (§4), adding a sibling into someone else's namespace is not.
@@ -205,9 +223,10 @@ hand; the builder can author it too.
    `publishStep` / `publishWorkflowByContent` with a new door,
    `VersionSource: "install"`, and the new field `upstream` on the version
    record. Concepts go through `seedConcepts` as a set with the prefix
-   `pkg/<package>/`: the seeder's create / keep / update rules already
-   make a graph-side edit survive until the file changes. On a filesystem
-   workspace (no graph) Concepts are skipped, with a warning.
+   `pkg/<package>/` and one new option, `keepEdited`: a page whose fields
+   no longer equal the installed file is left alone and reported (§4),
+   where a boot seed overwrites. On a filesystem workspace (no graph)
+   Concepts are skipped, with a warning.
 4. **Claims.** A workflow's `claims:` block is reconciled at publish, as
    for any publish (`reconcileWorkflowClaims`,
    `src/claims-authoring.ts:489`). A step's `.claims.yaml` goes through the
@@ -228,12 +247,15 @@ hand; the builder can author it too.
    reach, and means it.
 
 **There is no package store.** `GET /packages` folds the workspace: every
-name whose versions carry an `upstream`, grouped by `upstream.package`,
-each with `{ installed: version, digest, source, active: <its version>,
-modified: active ≠ the installed hash }`. Uninstalling is deleting those
-names (`DELETE /packages/:publisher/:name` deletes every name under the
-prefix whose active version is still the package's own, and lists the
-forks it left alone).
+name whose versions carry an `upstream`, plus every Concept whose stamp
+starts with `pkg/`, grouped by package, each item with `{ installed:
+version, digest, source, active: <its version>, modified }` — `modified`
+is active ≠ the installed hash for a step or workflow, and fields ≠ the
+installed file for a Concept. Uninstalling is deleting those names
+(`DELETE /packages/:publisher/:name` deletes every name under the prefix
+whose active version is still the package's own, retires every untouched
+Concept of the package through `seedConcepts`'s `retired` path, and lists
+the forks and edited pages it left alone).
 
 **Version records gain one field.** `upstream?: { package, version,
 digest, source: { ref }, secrets }` on `WorkflowVersionInfo` and
@@ -266,6 +288,7 @@ hash the previous install put there:
 | A local version (forked) | **Diverged:** publish the new version WITHOUT activating it (a new `activate: false` on `PublishByContentOptions`) and report it. The fork stays active |
 | The new hash already (same content) | Nothing |
 | An item the new version no longer ships | Retired only if it is untouched, as a seeder's retired step is today. A fork is kept and reported |
+| A Concept | The same four rows, read off the node against the installed file (`keepEdited`): untouched → updated and restamped; edited → left alone and reported, with the three texts for the merge below — base the file in the previous install's cached directory, theirs the new file, ours the node |
 
 A required package at a new digest is updated the same way, first.
 
@@ -296,7 +319,7 @@ happens upstream — the left-pad rule). One interface,
 | --- | --- | --- |
 | `file:/path/to/pkg` | copy | dev, tests, packages a host ships in its image |
 | `git+https://host/org/repo@<ref>[#<path>]` | `git/checkout`'s bare cache under `<dataDir>/repos`, credential from a named secret (`tokenSecret`, default `GITHUB_TOKEN`) | GitHub, Forgejo, GitLab — anything git. The repo's ACL is the access control, so a private repo is a private package. The recorded ref is what an update re-resolves |
-| `peer:<id>/<publisher>/<name>[@sha256:…]` | `GET {peer}/packages/:publisher/:name/archive` through `ctx.services.peers`: a tar of the directory, the digest in a header | A strut serves what it built or installed, by digest, to a holder of its peer key (federation §3: read scope) — an org's struts sharing, a desktop pulling from its cloud strut. The same route answers 402 when selling (§6) |
+| `peer:<id>/<publisher>/<name>[@sha256:…]` | `GET {peer}/packages/:publisher/:name/archive` through `ctx.services.peers`: a tar of the directory, the digest in a header | A strut serves what it built or installed, by digest, to a holder of its peer key (federation §3: read scope) — an org's struts sharing, a desktop pulling from its cloud strut. The same route takes a seller-minted token when selling (§6) |
 
 OCI (`oci://…`, ORAS) is not designed: the digest model is OCI's already,
 so it would be a fourth resolver and nothing else.
@@ -308,44 +331,37 @@ writing the files. A package's repo IS its upstream: merging the PR, then
 the next update on every strut that installed it from there, is the
 distribution.
 
-## 6. Selling — two gates, one credential
+## 6. Selling — a gated download
 
-Nothing in §1–§5 knows about money. Both strategies sit on a peer's
-routes, and both answer **402**. The credential is a **gatekey macaroon**
-— the three-layer shape the Mothership already verifies
-(`src/mothership.ts`; caveats `agents`, `run_id`, `max_cost_usd`,
-`max_steps`, `budget`, `exp`): gatekey has no free-form caveats and no
-Lightning in it, so the payment is L402's *dance* (an invoice on the
-402, a credential once it is paid) without L402's macaroon library:
+Nothing in §1–§5 knows about money, and nothing has to: **a paid package
+is a download someone was allowed to make.** Two forms, both already in
+§5:
 
-- **A paid package:** the archive route (§5) gates the fetch. The
-  seller's strut mints, once the invoice is paid, a macaroon whose
-  `agents` names the package (`pkg:acme/linear`) and whose `exp` is the
-  end of the update entitlement. The buyer's strut keeps it in an
-  encrypted file beside `peers.json` (`entitlements.json`, keyed by peer
-  and package), never on the services bag, and presents it on every fetch
-  of that package — so updates flow until `exp` passes, then you keep what
-  you installed and stop getting new digests. The listing a stranger
-  browses is an index file (§7), never the seller's strut, which stays
-  behind its gate as every route does. A private git repo remains the
-  zero-infrastructure way: read access is the purchase, and the forge is
-  the gate.
-- **Paid execution:** the item is never shipped. The buyer's workflow
-  names `strut/run-workflow { peer: acme, workflow: … }`, already built,
-  and the peer's launch route answers 402; the credential is an ordinary
-  invocation — `agents: ["acme/<workflow>"]`, `max_cost_usd`, `max_steps`,
-  `exp` — which is what gatekey was made for.
-- **They compose:** an open package whose most valuable step is a paid
-  call. The buyer owns and adapts the workflow, and only that step's
-  inputs cross the wire.
+- **A private git repo.** Buying is being granted read access; the forge
+  is the gate. Zero new code, and the right answer for a company selling
+  to a few customers it already talks to.
+- **A strut's archive route behind a token the seller mints.** Strut
+  already mints and checks a scoped HMAC token for one run's or job's
+  files (`fileToken`, `src/auth.ts:162`): the same thing with a scope of
+  `package:acme/linear` and an expiry is the entitlement. The buyer's strut
+  keeps it in an encrypted file beside `peers.json` (`entitlements.json`,
+  keyed by peer and package) and presents it on every fetch of that
+  package, so updates flow until it expires — then you keep what you
+  installed and stop getting new digests. How the buyer paid to get that
+  token is a checkout, outside this plan.
 
-One payment path, one verifier, two gates. The package entitlement bends
-an agent-name list into a resource name; whether gatekey grows a
-`resources` caveat instead, or the archive route speaks real L402, is
-open question 5. **No DRM, ever:** a bought package can be read, forked
-and evolved, and that's the point — the money buys the updates, the
-evidence on them, and legitimacy. No per-buyer watermark either: the
-digest and the recorded source are the provenance.
+**No DRM, ever:** a bought package can be read, forked and evolved, and
+that's the point — the money buys the updates, the evidence on them, and
+legitimacy. No per-buyer watermark: the digest and the recorded source
+are the provenance.
+
+**Later, in its own plan — paid execution.** A buyer who never gets the
+item and calls it on the seller's strut (`strut/run-workflow`, already
+built), and the inverse of that: running a seller's logic and knowledge
+base on the BUYER's tokens by carrying the buyer's Mothership credential
+on the launch (`plans/mothership-cost-control.md`; federation §2.2 defers
+exactly this). Both are access on the launch route, not on the download,
+and both sit beside this plan without changing a line of §1–§5.
 
 ## 7. The index
 
@@ -384,7 +400,7 @@ Builder tools (`src/ai/tools.ts`), each thin over the functions above:
 - `install_package({ ref })`: fetches and verifies, then **asks**
   (`ask_user`, plans/elicitation.md) with the manifest summary: publisher,
   digest, source, the items (which are code), the required packages it
-  will install too, the secret names the code may read, the price if any.
+  will install too, the secret names the code may read.
   It installs only on accept, then `request_secret` for each missing name.
 - `update_package({ package, ref? })`: §4, and it asks the same way
   (*ruled*).
@@ -418,7 +434,8 @@ plan subsumes it:
 - Export is unchanged in mechanics, and writes a package.
 - **The "no strut-to-strut copy" ruling is revised for PACKAGES** (*ruled*
   2026-10-18): a strut serves a package it built or installed, by digest,
-  on its archive route — to a holder of its peer key, or behind a 402.
+  on its archive route — to a holder of its peer key, or of a token it
+  minted for that package (§6).
   Git stays the hub for collaboration: a template under review travels as
   a PR, never as a copy, and read-through (§2.1) is still the only way one
   strut reads another's runs.
@@ -465,8 +482,8 @@ plan subsumes it:
    the peer key.
 7. **Index files:** `STRUT_PACKAGE_INDEXES`, the paste door,
    `search_packages` over indexes + peers.
-8. **Selling:** 402 on the archive route and on launch, `entitlements.json`,
-   the macaroon on the fetch.
+8. **Selling:** the package token on the archive route,
+   `entitlements.json`, the fetch presenting it.
 
 ## Validation
 
@@ -492,8 +509,13 @@ plan subsumes it:
   pin; a git tag moved under an installed digest fails the update the same
   way.
 - Peer: a package built on one strut installs on another through `peer:`;
-  with selling on, a lapsed `updates_until` stops the next fetch and
+  with selling on, an expired package token stops the next fetch and
   leaves the installed version running.
+- Concepts alone: a package of two Concept pages, one the other's parent,
+  installs, shows in `GET /packages`, uninstalls; an edit to one page in
+  the graph survives an update of the package and is reported as
+  diverged, and the other page fast-forwards; a page whose name a seed
+  already holds refuses the whole install.
 
 ## Open questions
 
@@ -505,16 +527,10 @@ plan subsumes it:
    its claims verify offline on the buyer's strut, without the live API or
    a key. That needs a check that replays a cassette (`run-step.ts` has
    replay; the check runner doesn't take one).
-3. **Payments beyond Lightning.** The invoice-then-credential dance fits Sphinx, and gatekey is the credential. A card
-   checkout would have to mint the same macaroon; who hosts that is a
-   product question, not a design one.
+3. **The checkout.** What mints the package token after a payment —
+   Lightning through Sphinx, a card page — and who hosts it. A product
+   question; the token is the same whatever answers it.
 4. **The track record.** Read-through (federation §2.1) is not built;
    until it is, an index carries no evidence and the buyer's strut
    measures from zero. Whether a publisher may *report* numbers into an
    index file, labelled as such, is open.
-5. **The entitlement's shape.** §6 names the package in a gatekey
-   macaroon's `agents` and uses `exp` as the update horizon — no new
-   format, one verifier. The cleaner forms are a `resources` caveat in
-   gatekey (a release, and a gateway verifier change) or real L402 on the
-   archive route (a second macaroon library in strut, stateless proof of
-   payment by preimage). Decide when step 8 starts.
