@@ -38,9 +38,15 @@ rl.on("line", (line) => {
     update(sid, { sessionUpdate: "tool_call", toolCallId: "e1", title: "Write calc.py", kind: "edit", status: "completed", locations: [{ path: process.cwd() + "/calc.py" }] });
     update(sid, { sessionUpdate: "tool_call", toolCallId: "t1", title: "Run tests", kind: "execute", status: "pending" });
     pendingPerm = { prompt: m.id, sid };
+    if (process.env.FAKE_PLAN) {
+      // Ask to leave plan mode first; the answer is ignored, then the shell call asks too.
+      send({ id: 98, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "p1", title: "Ready to code?", kind: "switch_mode", rawInput: { plan: "1. Fix add()" } },
+        options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }, { optionId: "no", name: "No", kind: "reject_once" }] } });
+    }
     return send({ id: 99, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "t1", title: "Run tests", kind: "execute" },
       options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }, { optionId: "no", name: "No", kind: "reject_once" }] } });
   }
+  if (m.id === 98) return;
   if (m.id === 99 && pendingPerm) {
     const ok = m.result.outcome.optionId === "yes";
     const { sid, prompt } = pendingPerm;
@@ -93,7 +99,7 @@ describe("acp/prompt", () => {
     );
     const tool = events.find((e) => e.type === "step.end" && e.stepType === "tool:execute")!;
     assert.equal(tool.path, "wf/work/003-execute");
-    assert.deepEqual(tool.output, { title: "Run tests", output: "3 passed" });
+    assert.deepEqual(tool.output, { title: "Run tests", input: undefined, output: "3 passed" });
   });
 
   it("refuses what the mode doesn't allow and says so in denied and ask", async () => {
@@ -102,6 +108,14 @@ describe("acp/prompt", () => {
     assert.deepEqual(out.denied, [{ title: "Run tests", kind: "execute" }]);
     assert.match(out.ask.message, /edit mode.*Run tests/);
     assert.ok(events.some((e) => e.type === "step.error" && e.stepType === "tool:execute"));
+  });
+
+  it("turns a refused exit from plan mode into an ask that carries the plan", async () => {
+    const { run } = setup();
+    const out = await run({ prompt: "plan it", mode: "plan" }, { FAKE_PLAN: "1" });
+    assert.deepEqual(out.denied.map((d: any) => d.kind), ["switch_mode", "execute"]);
+    assert.match(out.ask.message, /^The agent has a plan and wants to carry it out:\n\n1\. Fix add\(\)/);
+    assert.match(out.ask.message, /kept the agent from: Run tests\./);
   });
 
   it("continues a named session with session/load, ignores the replayed history, and reports each turn's own cost", async () => {

@@ -130,7 +130,7 @@ export default defineStep({
     artifacts: z
       .array(z.object({ id: z.string(), title: z.string(), kind: z.string(), path: z.string() }))
       .describe("files the agent changed this turn, relative to cwd"),
-    denied: z.array(z.object({ title: z.string(), kind: z.string() })),
+    denied: z.array(z.object({ title: z.string(), kind: z.string(), plan: z.string().optional() })),
     ask: z.object({ message: z.string() }).optional(),
     toolCalls: z.number(),
     cost: z.number().optional().describe("this turn's spend in USD, when the agent reports it"),
@@ -164,7 +164,7 @@ export default defineStep({
       message = "";
     };
 
-    const tools = new Map<string, { path: string; title: string; kind: string; started: number; locations?: unknown }>();
+    const tools = new Map<string, { path: string; title: string; kind: string; started: number; locations?: unknown; rawInput?: unknown }>();
     // Files the agent changed this turn, from its edit calls' locations: the turn's artifacts.
     const changed = new Set<string>();
     // The agent may report paths under the cwd's real path (/private/var for /var on macOS).
@@ -181,7 +181,7 @@ export default defineStep({
         changed.add(rel(l.path));
       }
     };
-    const denied: Array<{ title: string; kind: string }> = [];
+    const denied: Array<{ title: string; kind: string; plan?: string }> = [];
     let toolCalls = 0;
     let cost: number | undefined;
     let loading = false; // session/load replays history; none of it is this turn
@@ -202,7 +202,7 @@ export default defineStep({
             const title = String(u.title ?? "tool");
             const kind = String(u.kind ?? "other");
             const path = nextPath(kind);
-            tools.set(id, { path, title, kind, started: Date.now(), locations: u.locations });
+            tools.set(id, { path, title, kind, started: Date.now(), locations: u.locations, rawInput: u.rawInput });
             await emit({ type: "step.start", path, stepType: `tool:${kind}`, input: { title, rawInput: u.rawInput }, toolCallId: id });
             if (u.status === "completed" || u.status === "failed") await finishTool(id, u);
             break;
@@ -211,6 +211,8 @@ export default defineStep({
             const t = tools.get(String(u.toolCallId));
             if (t && typeof u.title === "string") t.title = u.title;
             if (t && u.locations) t.locations = u.locations;
+            // Adapters often fill the input in after the call starts.
+            if (t && u.rawInput !== undefined) t.rawInput = u.rawInput;
             if (t && typeof u.kind === "string") t.kind = u.kind;
             if (u.status === "completed" || u.status === "failed") await finishTool(String(u.toolCallId), u);
             break;
@@ -231,15 +233,21 @@ export default defineStep({
       if (u.status === "completed") noteLocations(t.kind, u.locations ?? t.locations);
       const out = clip(textOf(u.content) || (u.rawOutput !== undefined ? JSON.stringify(u.rawOutput) : ""));
       if (u.status === "failed") {
-        await emit({ type: "step.error", path: t.path, stepType: `tool:${t.kind}`, error: { message: out || `${t.title} failed` }, toolCallId: id });
+        await emit({ type: "step.error", path: t.path, stepType: `tool:${t.kind}`, input: { title: t.title, rawInput: t.rawInput }, error: { message: out || `${t.title} failed` }, toolCallId: id });
       } else {
-        await emit({ type: "step.end", path: t.path, stepType: `tool:${t.kind}`, output: { title: t.title, output: out }, durationMs: Date.now() - t.started, toolCallId: id });
+        await emit({ type: "step.end", path: t.path, stepType: `tool:${t.kind}`, output: { title: t.title, input: t.rawInput, output: out }, durationMs: Date.now() - t.started, toolCallId: id });
       }
     };
 
     const onPermission = (req: PermissionRequest) => {
       const decision = decidePermission(mode, req);
-      if (!decision.allowed) denied.push({ title: req.toolCall.title ?? "a tool", kind: req.toolCall.kind ?? "other" });
+      if (!decision.allowed) {
+        const kind = req.toolCall.kind ?? "other";
+        const raw = (req.toolCall.rawInput ?? tools.get(req.toolCall.toolCallId)?.rawInput) as { plan?: unknown } | undefined;
+        // Leaving plan mode is how an agent says "here is my plan, may I do it?" — keep the plan.
+        const plan = kind === "switch_mode" && typeof raw?.plan === "string" ? raw.plan : undefined;
+        denied.push({ title: req.toolCall.title ?? "a tool", kind, ...(plan ? { plan } : {}) });
+      }
       const { allowed: _a, ...outcome } = decision;
       return outcome as PermissionOutcome;
     };
@@ -304,12 +312,15 @@ export default defineStep({
       if (cost !== undefined) await save(cost);
       const turnCost = cost === undefined ? undefined : Math.round(Math.max(0, cost - priorCost) * 1e6) / 1e6;
 
+      const plans = denied.filter((d) => d.plan).map((d) => d.plan!);
+      const kept = denied.filter((d) => d.kind !== "switch_mode").map((d) => d.title);
       const ask = denied.length
         ? {
-            message:
-              `This turn ran in ${mode} mode, which kept the agent from: ` +
-              denied.map((d) => d.title).join("; ") +
-              ". Run it again with more room if that's fine.",
+            message: [
+              ...plans.map((p) => `The agent has a plan and wants to carry it out:\n\n${p.trim()}`),
+              ...(kept.length ? [`This turn ran in ${mode} mode, which kept the agent from: ${kept.join("; ")}.`] : []),
+              "Run it again with more room if that's fine.",
+            ].join("\n\n"),
           }
         : undefined;
       return {
