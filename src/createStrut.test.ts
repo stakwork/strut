@@ -1915,12 +1915,14 @@ describe("run callbacks", () => {
 
 // ── The MCP door ───────────────────────────────────────────────────────────
 //
-// `POST /mcp` (src/ai/mcp.ts) over a real listener with the SDK's HTTP
-// client: the gate in front of it, and what the door adds for a caller that
-// is not the UI — absolute artifact links carrying the file token, `ui`
-// deep links, the actor stamped. The protocol itself is src/ai/mcp.test.ts.
+// `POST /mcp/builder` (src/ai/mcp.ts) over a real listener with the SDK's
+// HTTP client: the gate in front of both doors, and what the builder door
+// adds for a caller that is not the UI — absolute artifact links carrying
+// the file token, `ui` deep links, the actor stamped. The protocol itself is
+// src/ai/mcp.test.ts; the assistant door (`POST /mcp`) is
+// src/mcp-assistant.test.ts.
 
-describe("the MCP door (POST /mcp)", () => {
+describe("the MCP doors (POST /mcp, POST /mcp/builder)", () => {
   const KEY = "mcp-key";
   let tempDir: string;
   let savedKey: string | undefined;
@@ -1973,27 +1975,32 @@ steps:
       ...extra,
     });
   const json = (r: { content: unknown }) => JSON.parse((r.content as Array<{ text: string }>)[0]!.text);
-  const rpc = (strut: Awaited<ReturnType<typeof boot>>, headers: Record<string, string>) =>
-    strut.app.request("/mcp", {
+  const rpc = (strut: Awaited<ReturnType<typeof boot>>, headers: Record<string, string>, path = "/mcp") =>
+    strut.app.request(path, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
 
-  it("is behind the gate: 401 without the key, 403 for a peer, 405 for GET and DELETE; off with enableMcp: false", async () => {
+  it("both doors are behind the gate: 401 without the key, 403 for a peer, 405 for GET and DELETE; /mcp is the assistant set, /mcp/builder the builder's; off with enableMcp: false", async () => {
     process.env["STRUT_PEER_KEY"] = "peer-key";
     const strut = await boot();
-    assert.equal((await rpc(strut, {})).status, 401);
-    assert.equal((await rpc(strut, { authorization: "Bearer peer-key" })).status, 403);
-    const ok = await rpc(strut, { authorization: `Bearer ${KEY}` });
-    assert.equal(ok.status, 200);
-    assert.equal(ok.headers.get("content-type"), "text/event-stream");
-    assert.ok((await ok.text()).includes('"name":"create_workflow"'));
-    for (const method of ["GET", "DELETE"]) {
-      assert.equal((await strut.app.request("/mcp", { method, headers: { authorization: `Bearer ${KEY}` } })).status, 405, method);
+    for (const path of ["/mcp", "/mcp/builder"]) {
+      assert.equal((await rpc(strut, {}, path)).status, 401, path);
+      assert.equal((await rpc(strut, { authorization: "Bearer peer-key" }, path)).status, 403, path);
+      const ok = await rpc(strut, { authorization: `Bearer ${KEY}` }, path);
+      assert.equal(ok.status, 200, path);
+      assert.equal(ok.headers.get("content-type"), "text/event-stream");
+      const listed = await ok.text();
+      assert.equal(listed.includes('"name":"create_workflow"'), path === "/mcp/builder", path);
+      assert.equal(listed.includes('"name":"ask_workflow_builder"'), path === "/mcp", path);
+      for (const method of ["GET", "DELETE"]) {
+        assert.equal((await strut.app.request(path, { method, headers: { authorization: `Bearer ${KEY}` } })).status, 405, `${method} ${path}`);
+      }
     }
     const off = await boot({ enableMcp: false });
     assert.equal((await rpc(off, { authorization: `Bearer ${KEY}` })).status, 404);
+    assert.equal((await rpc(off, { authorization: `Bearer ${KEY}` }, "/mcp/builder")).status, 404);
   });
 
   it("serves the builder's tools over HTTP: artifact links absolute with the file token, ui deep links, the actor stamped", async () => {
@@ -2003,7 +2010,7 @@ steps:
     const clientFor = async (headers: Record<string, string>) => {
       const client = new Client({ name: "test", version: "0" });
       await client.connect(
-        new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${KEY}`, ...headers } } }),
+        new StreamableHTTPClientTransport(new URL(`${base}/mcp/builder`), { requestInit: { headers: { authorization: `Bearer ${KEY}`, ...headers } } }),
       );
       return client;
     };
@@ -2046,7 +2053,7 @@ steps:
     }
   });
 
-  it("publicUrl names the base for every link; the door mounts without the chat; the host's section is in the prompt", async () => {
+  it("publicUrl names the base for every link; without the chat /mcp serves the builder set; the host's section is in the prompt", async () => {
     let notes = "Deployment notes: everything built here is a newsletter.";
     const strut = await boot({
       enableChat: false,

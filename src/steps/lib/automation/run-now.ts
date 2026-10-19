@@ -1,6 +1,6 @@
 import { defineStep } from "../../../core.js";
 import { z } from "zod";
-import { approvedOnce, find, idInput, requireAutomations, unescaped, unwrap } from "./_shared.js";
+import { approvedOnce, cardGrant, find, idInput, requireAutomations, unescaped, unwrap } from "./_shared.js";
 
 /** Run an automation now, off its schedule, once the person allows it. */
 export default defineStep({
@@ -16,6 +16,6 @@ export default defineStep({
     return approvedOnce(ctx, cap, { action: `Run “${current.name}” now`, content: prompt }, async () => {
       const { runId } = unwrap(await cap.api.fire(cap.workflow, current.id));
       return { started: { id: current.id, name: current.name, runId } };
-    });
+    }, cardGrant(cap, undefined, current.id, current.name));
   },
 });

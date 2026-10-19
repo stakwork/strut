@@ -60,7 +60,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  *  `/jobs/<id>/files/…`) made absolute for a caller outside the UI, with the
  *  scope's read token (`?t=`, auth.ts) — the key never rides in a link.
  *  Anything else (an external URL, inline content) is left alone. */
-function publicRef(ref: ArtifactRef, base: string): ArtifactRef {
+export function publicRef(ref: ArtifactRef, base: string): ArtifactRef {
   if (!ref.url?.startsWith("/")) return ref;
   const scope = fileScopeOf(ref.url);
   const token = scope ? fileToken(scope) : undefined;

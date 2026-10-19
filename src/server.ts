@@ -9,7 +9,7 @@
 // built by scanning steps/) — no graph at all. STRUT_HOST_CONFIG names a
 // JSON file with the host's delta for the workflows strut ships —
 // `{ job?, orchestrator? }`, each `{ tools?, system? }` as createStrut takes
-// it, and `automation?: { workflow, approve? }` for the automation/* steps —
+// it, and `automation?: { workflow, approve?, grants? }` for the automation/* steps —
 // for a host that runs this server rather than embedding createStrut (Peel
 // writes it at launch).
 //
@@ -32,7 +32,7 @@ let strutInstance: Strut | null = null;
 
 /** The host's delta for the shipped workflows, from the JSON file
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator? }`, each `{ tools?,
- *  approve?, system? }`, and `automation?: { workflow, approve? }`. Nothing when unset. A file that cannot be read or parsed
+ *  approve?, system? }`, and `automation?: { workflow, approve?, grants? }`. Nothing when unset. A file that cannot be read or parsed
  *  fails the boot, rather than seeding the workflows without the host's
  *  tools. */
 export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<StrutOptions, "job" | "orchestrator" | "automation"> {
@@ -66,11 +66,19 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<St
   }
   const automation = (raw as Record<string, unknown> | null)?.["automation"];
   if (automation !== undefined) {
-    const { workflow, approve } = (automation ?? {}) as { workflow?: unknown; approve?: unknown };
-    if (typeof workflow !== "string" || !workflow || (approve !== undefined && typeof approve !== "string")) {
-      throw new Error(`STRUT_HOST_CONFIG: ${file}: "automation" must be { workflow: string, approve?: string }`);
+    const { workflow, approve, grants } = (automation ?? {}) as { workflow?: unknown; approve?: unknown; grants?: unknown };
+    if (
+      typeof workflow !== "string" || !workflow ||
+      (approve !== undefined && typeof approve !== "string") ||
+      (grants !== undefined && typeof grants !== "boolean")
+    ) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "automation" must be { workflow: string, approve?: string, grants?: boolean }`);
     }
-    out.automation = { workflow, ...(approve !== undefined ? { approve: approve as string } : {}) };
+    out.automation = {
+      workflow,
+      ...(approve !== undefined ? { approve: approve as string } : {}),
+      ...(grants !== undefined ? { grants: grants as boolean } : {}),
+    };
   }
   return out;
 }

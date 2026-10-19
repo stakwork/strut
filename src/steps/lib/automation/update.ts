@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { approvedOnce, brief, find, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
+import { approvedOnce, brief, cardGrant, comingFires, find, grantField, nameField, promptField, requireAutomations, runInput, schedule, triggerSchema, unescaped, unwrap } from "./_shared.js";
 
-/** Change an automation's name, prompt or schedule, or pause or resume it,
- *  once the person allows it. */
+/** Change an automation's name, prompt, schedule or grant, or pause or
+ *  resume it, once the person allows it. The card names the automation,
+ *  so a new grant replaces what the host holds under its id, and a change
+ *  with none shows what it already may do. */
 export default defineStep({
   type: "automation/update",
   description:
@@ -15,15 +17,17 @@ export default defineStep({
     prompt: promptField.optional(),
     trigger: triggerSchema.optional(),
     enabled: z.boolean().optional().describe("false pauses it; true resumes it."),
+    grant: grantField,
   }),
   output: z.any(),
   async run(cfg, ctx) {
     const cap = requireAutomations(ctx.services);
     const current = await find(cap, cfg.id);
+    const grant = cfg.grant && cardGrant(cap, cfg.grant, current.id, cfg.name ?? current.name);
     const details: string[] = [];
     if (cfg.name !== undefined && cfg.name !== current.name) details.push(`Name: “${cfg.name}”`);
     if (cfg.trigger) {
-      const { summary, next } = unwrap(cap.api.preview(cfg.trigger));
+      const { summary, next } = comingFires(unwrap(cap.api.preview(cfg.trigger)));
       details.push(`Runs: ${schedule(summary, next, cfg.trigger.tz)}`);
     }
     if (cfg.name !== undefined && cfg.name.toLowerCase() !== current.name.toLowerCase()) {
@@ -33,7 +37,7 @@ export default defineStep({
     let action: string;
     if (cfg.enabled === false && current.enabled) action = `Pause “${current.name}”`;
     else if (cfg.enabled === true && !current.enabled) action = `Resume “${current.name}”`;
-    else if (details.length || cfg.prompt !== undefined) action = `Change “${current.name}”`;
+    else if (details.length || cfg.prompt !== undefined || grant) action = `Change “${current.name}”`;
     else return { changed: false, error: "Nothing to change." };
     // A new prompt is the card's content, shown whole.
     return approvedOnce(ctx, cap, { action, ...(cfg.prompt !== undefined ? { content: cfg.prompt } : {}), details }, async () => {
@@ -48,6 +52,6 @@ export default defineStep({
         }),
       );
       return { changed: brief(saved.automation) };
-    });
+    }, grant ?? cardGrant(cap, undefined, current.id, cfg.name ?? current.name));
   },
 });

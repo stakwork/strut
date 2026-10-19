@@ -6,7 +6,7 @@ import type { RunStore } from "./store.js";
 import { countUsage, generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
-import { flowClosure, stepHashesFor } from "./closure.js";
+import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { isSealedStep, sealedInClosure } from "./sealed.js";
 import {
   mergeClaimSpecs,
@@ -800,6 +800,11 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // FRESH registry, same reason as runStep: steps published mid-run are
       // invisible to the enclosing run's registry snapshot.
       const registry = await deps.getRegistry();
+      // Its params may narrow what its agents are granted, never widen it.
+      const widened = grantWidenedBy(flow, (coerceJsonArg(params) ?? {}) as Record<string, unknown>, registry);
+      if (widened) {
+        return { error: `params may not grant a step the workflow "${name}" does not already: ${widened}. Run it with its own tools, or fewer.` };
+      }
       const runId = generateRunId();
       // Tree linkage: attach this nested run's controller to the launching
       // run's (opts.parentRunId = the calling step's ctx.runId), so controls

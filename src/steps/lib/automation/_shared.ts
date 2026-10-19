@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { stopOf, withStop, type StepContext } from "../../../core.js";
-import { triggerSchema } from "../../../automations.js";
+import { noRunsToCome, triggerSchema } from "../../../automations.js";
 import type { AutomationView, Automations } from "../../../scheduler.js";
 import { journal, journalKey } from "../job/_shared.js";
 
@@ -20,6 +21,20 @@ import { journal, journalKey } from "../job/_shared.js";
  * nobody has answered yet, which the automation step passes up so the turn
  * ends with nothing changed. Without an approval step the acting steps
  * refuse: an agent never schedules unattended runs on its own say.
+ *
+ * A host whose approval step can grant an automation more than its prompt
+ * (Peel: posting as the person to chats it names, up to a price) says so
+ * with `grants`. Then create and update take a `grant`, which strut never
+ * reads: it goes to the approval step with the automation's ID and name
+ * (`automation`, `name`), and the host keeps what it allowed under that id.
+ * At each fire the runner hands every step `ctx.automation` — set by the
+ * scheduler's launch alone, never by a caller or a model — so a host step
+ * that acts on the grant names the automation from there. Nothing rides in
+ * the run's input. The id exists before the card: the step mints it
+ * (`automationId`: the same for the same call, so a resumed call asks the
+ * same question) and hands it to `create`. A change or a run of an
+ * automation with no new grant hands the card its id and name alone, and
+ * the host says what it already may do.
  */
 export interface AutomationStepsOptions {
   /** The workflow the steps schedule. */
@@ -27,6 +42,11 @@ export interface AutomationStepsOptions {
   /** The registry step that asks the person (`{ intent }` →
    *  `{ approved, status?, error? }`). Absent: the acting steps refuse. */
   approve?: string;
+  /** The approval step takes a `grant` (`{ intent, grant }`, the grant with
+   *  the automation's `automation` (its id) and `name` added): create and
+   *  update offer one, and every change, run-now or delete card names the
+   *  automation the same way. */
+  grants?: boolean;
 }
 
 /** `ctx.services.automations`, which `createStrut` sets. */
@@ -58,13 +78,18 @@ export interface Intent {
  * otherwise the output the acting step returns as it is: a `withStop`
  * pending (no answer yet), or the refusal. Nothing is changed either way.
  */
-export async function approval(ctx: StepContext, cap: AutomationStepsCapability, intent: Intent): Promise<{ ok: true } | { output: unknown }> {
+export async function approval(
+  ctx: StepContext,
+  cap: AutomationStepsCapability,
+  intent: Intent,
+  grant?: Record<string, unknown>,
+): Promise<{ ok: true } | { output: unknown }> {
   if (!cap.approve) {
     throw new Error("automation/* steps: this strut has no approval step (automation.approve), so they cannot change automations.");
   }
   const def = ctx.registry?.[cap.approve];
   if (!def) throw new Error(`automation/* steps: the approval step "${cap.approve}" is not in this strut's registry.`);
-  const out = await def.run(def.input.parse({ intent }), { ...ctx, path: `${ctx.path}/approve` });
+  const out = await def.run(def.input.parse({ intent, ...(grant ? { grant } : {}) }), { ...ctx, path: `${ctx.path}/approve` });
   if (stopOf(out)) return { output: withStop({ changed: false, waiting: out }) };
   const answer = (out ?? {}) as { approved?: unknown; status?: unknown; error?: unknown };
   if (answer.approved === true) return { ok: true };
@@ -89,11 +114,12 @@ export async function approvedOnce<T extends object>(
   cap: AutomationStepsCapability,
   intent: Intent,
   act: () => Promise<T>,
+  grant?: Record<string, unknown>,
 ): Promise<unknown> {
   const key = journalKey(ctx, "act");
   const prior = key ? ctx.journal?.[key] : undefined;
   if (prior && typeof prior === "object") return prior;
-  const asked = await approval(ctx, cap, intent);
+  const asked = await approval(ctx, cap, intent, grant);
   if (!("ok" in asked)) return asked.output;
   const done = await act();
   await journal(ctx, key, done);
@@ -127,6 +153,29 @@ export function unescaped(text: string): string {
  *  successful run finished (null before the first), and `now`, the fire. */
 export function runInput(name: string, prompt: string): Record<string, unknown> {
   return { name: escaped(name), prompt: escaped(prompt), since: "{{ last.finishedAt }}", now: "{{ now }}" };
+}
+
+/** The id a new automation gets, minted before its card: the same for the
+ *  same call (a resumed one asks the same question), another for any
+ *  other. The scheduler's own format. */
+export function automationId(ctx: StepContext): string {
+  return "a-" + createHash("sha256").update(`${ctx.runId}\n${ctx.path}`).digest("hex").slice(0, 8);
+}
+
+/** What the card is handed beside the intent on a host that takes grants:
+ *  the `grant` the call names with the automation's id and name added, or
+ *  — a change or a run of one with no new grant — the id and name alone,
+ *  so the host says what it already may do (a changed prompt posts where
+ *  the old one did). Nothing on a host without grants; a grant on one is
+ *  refused. */
+export function cardGrant(
+  cap: AutomationStepsCapability,
+  grant: Record<string, unknown> | undefined,
+  automation: string,
+  name: string,
+): Record<string, unknown> | undefined {
+  if (grant && !cap.grants) throw new Error("automation/* steps: this strut's approval step takes no grant; leave grant out.");
+  return cap.grants ? { ...grant, automation, name } : undefined;
 }
 
 /** An automation as the agent reads it. */
@@ -163,6 +212,14 @@ export function schedule(summary: string, next: string[], tz: string | undefined
   return summary + (fires.length ? `; next ${fires.join(", ")}` : " (no runs to come)");
 }
 
+/** The scheduler refuses a schedule with no fire to come (a one-off set
+ *  in the past); the step asks the same of the preview first, so nobody
+ *  is shown a card for it. */
+export function comingFires<T extends { summary: string; next: string[] }>(preview: T): T {
+  if (!preview.next.length) throw new Error(noRunsToCome(preview.summary));
+  return preview;
+}
+
 /** A policy result's error as the step's failure. */
 export function unwrap<T>(result: ({ ok: true } & T) | { error: string }): T {
   if ("error" in result) throw new Error(result.error);
@@ -183,4 +240,8 @@ export const promptField = z
   .min(1)
   .max(4000)
   .describe("The standalone instruction each run carries out. It runs with nobody watching and does not see this conversation.");
+export const grantField = z
+  .record(z.string(), z.unknown())
+  .optional()
+  .describe("Only when your instructions say this strut takes one: what the automation may do beyond its prompt, shown to the person to allow with it. Leave out otherwise.");
 export { triggerSchema };

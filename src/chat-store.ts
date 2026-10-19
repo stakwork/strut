@@ -84,6 +84,11 @@ export interface ChatMeta {
    *  latest `[compaction]` message (plans/compaction.md §5). Absent → 0.
    *  The whole history stays on disk and the read endpoints serve it. */
   replayFrom?: number;
+  /** A chat started over the assistant MCP door (src/ai/assistant-tools.ts):
+   *  the base its builder's tool results make links absolute on — an
+   *  artifact link with its read token, a `ui` deep link — so the reply
+   *  text a caller outside the UI reads carries links it can share. */
+  publicUrl?: string;
 }
 
 /** Tokens the conversation occupies after a model call — that call's input
