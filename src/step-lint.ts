@@ -14,10 +14,12 @@
  * Where it runs: the builder's `create_step` / `edit_step` (and their meta/*
  * twins) REFUSE on a finding — the model-authored door, where the prompt
  * already says all three; `POST /steps` WARNS and answers with the findings,
- * since a host's own step is the host's call. The module loader warns at
- * import time for whatever is on disk (strut-resolve-hook.ts). Comments are
- * ignored. A determined author can get around a regex; the hook, and a
- * refusal there later, is the enforcement.
+ * since a host's own step is the host's call. The registry WARNS when it
+ * loads a workspace step from disk, whoever put it there (registry.ts
+ * `warnPastServices`) — static, so it holds under Node's own type stripping
+ * and under tsx alike; a later strut refuses to load there. Comments are
+ * ignored. A determined author can get around a regex; that refusal, and
+ * one day a worker or a container, is the enforcement.
  */
 
 /** Module → what to use instead. Matched with or without the `node:` prefix. */

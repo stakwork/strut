@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerStrutResolver } from "../strut-resolver.js";
 import type { AnyStepDef, StepRegistry } from "../core.js";
 import { parseStepRef } from "../step-ref.js";
+import { formatStepLint, lintStepSource } from "../step-lint.js";
 
 /** Where a registered step type came from. */
 export type StepSource = "core" | "lib" | "custom";
@@ -62,6 +63,7 @@ export async function resolveStep(registry: StepRegistry, ref: string): Promise<
   if (!pending) {
     pending = (async () => {
       const { path, hash } = await pins.load(type, version);
+      await warnPastServices(path, ref);
       const def = await importStepDef(path);
       // Also answer a plain `registry["type@vN"]` from now on (still hidden
       // from `Object.keys`): the sync lookups — validate, the agent's tool
@@ -220,6 +222,34 @@ function stepNameFromPath(filePath: string, baseDir: string): string {
   return withoutExt.split(/[/\\]/).join("/");
 }
 
+/** A WORKSPACE step whose source reaches past `ctx.services` (src/step-lint.ts:
+ *  a direct child_process / fs / net import, a `process.env` read, the global
+ *  fetch) is named once per file version on stderr when the registry loads it
+ *  — whoever put it on disk (a seed, `POST /steps`, an install; the
+ *  builder's own door refuses the same at publish). Warn-only today; this is
+ *  where a later strut refuses to load it. Static, so it holds on every
+ *  loader: Node's own type stripping and tsx (which loads a `.ts` file with
+ *  no package.json beside it as CommonJS, past any ESM resolve hook). Lib
+ *  steps are strut's own and are not checked here. */
+const warnedPastServices = new Map<string, number>();
+async function warnPastServices(filePath: string, name: string): Promise<void> {
+  let mtime = 0;
+  let source: string;
+  try {
+    mtime = (await stat(filePath)).mtimeMs;
+    source = await readFile(filePath, "utf8");
+  } catch {
+    return;
+  }
+  if (warnedPastServices.get(filePath) === mtime) return;
+  warnedPastServices.set(filePath, mtime);
+  const findings = lintStepSource(source);
+  if (!findings.length) return;
+  console.warn(
+    `[steps] ${name} (${filePath}) reaches past ctx.services — a custom step gets the shell, files, the network and credentials through ctx.services (shell, artifacts, http, secrets); a later strut refuses to load it:\n${formatStepLint(findings)}`,
+  );
+}
+
 /**
  * Dynamically import a step definition file.
  */
@@ -344,6 +374,7 @@ async function loadStepsFrom(
       console.warn(`Warning: ${tier} step "${name}" conflicts with existing step, skipping`);
       continue;
     }
+    if (tier === "custom") await warnPastServices(file, name);
     const def = await loadStepFile(file);
     if (def) {
       registry[name] = def;
