@@ -33,6 +33,8 @@ import type {
   GraphTx,
   NodeEngine,
   NodeGuard,
+  SoftDeleteResult,
+  EdgeDeleteResult,
   Params,
   PreparedNode,
   RawNode,
@@ -205,7 +207,7 @@ class LadybugNodes implements NodeEngine {
   /** Three statements in one transaction: stamp `deleted_at` (the first
    *  delete time kept), delete the node's outgoing edges, then its incoming
    *  ones. Every node in the file is in scope. */
-  async softDelete(ref_id: string, _namespace: string, guard: NodeGuard): Promise<boolean> {
+  async softDelete(ref_id: string, _namespace: string, guard: NodeGuard): Promise<SoftDeleteResult | null> {
     return this.lbug.withWrite(async (tx) => {
       const params: Params = { ref_id, now: Date.now() };
       const pattern = ["ref_id: $ref_id"];
@@ -216,12 +218,12 @@ class LadybugNodes implements NodeEngine {
       }
       if (guard.domainLabel) {
         // The one domain the file has: `Domain_strut` is the Strut types.
-        if (guard.domainLabel !== "Domain_strut") return false;
+        if (guard.domainLabel !== "Domain_strut") return null;
         where.push(`n.node_type IN [${LADYBUG_STRUT_TYPES.map(lit).join(", ")}]`);
       }
       let i = 0;
       for (const [k, v] of Object.entries(guard.props ?? {})) {
-        if (!nodeColumns()[k]) return false;
+        if (!nodeColumns()[k]) return null;
         params[`g${i}`] = v;
         pattern.push(`${q(k)}: $g${i++}`);
       }
@@ -230,10 +232,10 @@ class LadybugNodes implements NodeEngine {
          SET n.deleted_at = coalesce(n.deleted_at, CAST($now AS INT64)) RETURN n.ref_id AS ref_id`,
         params,
       );
-      if (hit.length === 0) return false;
-      await tx.run(`MATCH (n:Node {ref_id: $ref_id})-[r]->(:Node) DELETE r`, { ref_id });
-      await tx.run(`MATCH (n:Node {ref_id: $ref_id})<-[r]-(:Node) DELETE r`, { ref_id });
-      return true;
+      if (hit.length === 0) return null;
+      const out = await tx.run(`MATCH (n:Node {ref_id: $ref_id})-[r]->(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
+      const inc = await tx.run(`MATCH (n:Node {ref_id: $ref_id})<-[r]-(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
+      return { edges: Number(out[0]?.["n"] ?? 0) + Number(inc[0]?.["n"] ?? 0) };
     });
   }
 }
@@ -325,9 +327,14 @@ class LadybugEdges implements EdgeEngine {
     return rows.map((r) => String(r["ref_id"]));
   }
 
-  async delete(ref_id: string, tx?: GraphTx): Promise<boolean> {
-    const rows = await on(this.lbug, tx, `MATCH ()-[r {ref_id: $ref_id}]->() DELETE r RETURN count(r) AS n`, { ref_id });
-    return Number(rows[0]?.["n"] ?? 0) > 0;
+  async delete(ref_id: string, tx?: GraphTx): Promise<EdgeDeleteResult | null> {
+    const go = async (t: GraphTx): Promise<EdgeDeleteResult | null> => {
+      const at = await this.locate(t, ref_id);
+      if (!at) return null;
+      await t.run(`MATCH ()-[r:${q(at.edge)} {ref_id: $ref_id}]->() DELETE r`, { ref_id });
+      return { ref_id, edge: at.edge, source_ref_id: at.src, target_ref_id: at.tgt };
+    };
+    return tx ? go(tx) : this.lbug.withWrite(go);
   }
 
   async liveEdgesOf(tx: GraphTx, ref_id: string, edge: string, forward: boolean) {

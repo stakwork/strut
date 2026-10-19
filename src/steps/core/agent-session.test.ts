@@ -727,4 +727,61 @@ describe("agent sessions", () => {
       s.close();
     }
   });
+  // ── proposals (plans/proposals.md) ───────────────────────────────────────
+
+  it("a tool in `approve` records a proposal instead of running; the next turn of the thread is told the decision once", async () => {
+    const { proposalsCapability, decideProposal, proposalsRoot, listProposals, PROPOSAL_RESULT_PREFIX } = await import("../../proposals.js");
+    const ran: unknown[] = [];
+    const write = defineStep({
+      type: "dev/write",
+      description: "Write a thing. Details follow.",
+      input: z.object({ name: z.string() }),
+      output: z.any(),
+      async run(cfg) {
+        ran.push(cfg);
+        return { wrote: cfg.name };
+      },
+    });
+    const reg = { ...registry, "dev/write": write };
+    const proposals = proposalsCapability(cwd);
+    const services = { sessions, proposals };
+    const s = await serve([call("toolu_1", "dev_write", { name: "x", rationale: "it is missing" }), answer("toolu_2", "proposed it")]);
+    try {
+      const out = await run({ session: "abc", toolFilter: ["none"], agentTools: ["dev/write"], approve: ["dev/write"] }, { registry: reg, services, job: "j1" });
+      assert.equal(out.result, "proposed it");
+      assert.deepEqual(ran, [], "the gated step did not run");
+      const tool = (s.bodies[0].tools as any[]).find((t) => t.name === "dev_write");
+      assert.ok(tool.description.includes("PROPOSED, not run"));
+      assert.ok("rationale" in tool.input_schema.properties);
+      const [rec] = await listProposals(proposalsRoot(cwd));
+      assert.ok(rec);
+      assert.deepEqual(rec!.input, { name: "x" });
+      assert.equal(rec!.rationale, "it is missing");
+      assert.deepEqual([rec!.by.session, rec!.by.job, rec!.by.runId], ["abc", "j1", "r1"]);
+      // The model read the pending result, nothing more.
+      const seen = textOf((s.bodies[1].messages as any[]).at(-1));
+      assert.ok(/status[^a-z]{0,6}pending/.test(seen) && seen.includes(rec!.id), seen);
+    } finally {
+      s.close();
+    }
+
+    const decided = await decideProposal(proposalsRoot(cwd), (await listProposals(proposalsRoot(cwd)))[0]!.id, { action: "accept", by: "bob" }, { registry: reg, services });
+    assert.equal((decided.body as any).status, "applied");
+    assert.deepEqual(ran, [{ name: "x" }]);
+
+    // The next turn opens with the decision, before the prompt; the one after does not repeat it.
+    const s2 = await serve([answer("toolu_3", "noted"), answer("toolu_4", "again")]);
+    try {
+      await run({ session: "abc", toolFilter: ["none"], agentTools: ["dev/write"], approve: ["dev/write"], prompt: "and now?" }, { registry: reg, services, runId: "r2" });
+      const told = (s2.bodies[0].messages as any[]).at(-1);
+      assert.equal(told.role, "user");
+      const text = textOf(told);
+      assert.ok(text.includes(`${PROPOSAL_RESULT_PREFIX} `) && text.includes(` applied · dev/write \\"Write a thing.\\"`), text);
+      assert.ok(text.indexOf(PROPOSAL_RESULT_PREFIX) < text.indexOf("and now?"));
+      await run({ session: "abc", toolFilter: ["none"], agentTools: ["dev/write"], approve: ["dev/write"], prompt: "later" }, { registry: reg, services, runId: "r3" });
+      assert.ok(!textOf((s2.bodies[1].messages as any[]).at(-1)).includes(PROPOSAL_RESULT_PREFIX));
+    } finally {
+      s2.close();
+    }
+  });
 });

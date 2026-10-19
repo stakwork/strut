@@ -26,6 +26,8 @@ import type {
   GraphTx,
   NodeEngine,
   NodeGuard,
+  SoftDeleteResult,
+  EdgeDeleteResult,
   Params,
   PreparedNode,
   RawNode,
@@ -192,14 +194,15 @@ class Neo4jNodes implements NodeEngine {
     await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) SET n += $set ${removeClause}`, { ref_id, set: wrapInts(schema, set) });
   }
 
-  async softDelete(ref_id: string, namespace: string, guard: NodeGuard): Promise<boolean> {
-    const label = guard.domainLabel ?? guard.type!;
+  async softDelete(ref_id: string, namespace: string, guard: NodeGuard): Promise<SoftDeleteResult | null> {
+    // No domain, no type: any content node in the namespace.
+    const label = guard.domainLabel ?? guard.type ?? "Data_Bank";
     const extra = Object.keys(guard.props ?? {});
     const pattern = ["ref_id: $ref_id", "namespace: $ns", ...extra.map((k) => `${q(k)}: $p_${k}`)].join(", ");
     const params: Params = { ref_id, ns: namespace, now_ms: nowMs() };
     for (const k of extra) params[`p_${k}`] = guard.props![k];
     const rows = await this.bolt.run(`MATCH (n:${q(label)} {${pattern}}) ${DELETE_NODE_TAIL("n")}`, params);
-    return rows.length > 0;
+    return rows.length > 0 ? { edges: Number(rows[0]!["deleted_edge_count"] ?? 0) } : null;
   }
 }
 
@@ -283,9 +286,19 @@ class Neo4jEdges implements EdgeEngine {
     return found.map((r) => String(r["ref_id"]));
   }
 
-  async delete(ref_id: string, tx?: GraphTx): Promise<boolean> {
-    const rows = await on(this.bolt, tx, `MATCH ()-[r {ref_id: $ref_id}]->() DELETE r RETURN count(r) AS n`, { ref_id });
-    return Number(rows[0]?.["n"] ?? 0) > 0;
+  async delete(ref_id: string, tx?: GraphTx): Promise<EdgeDeleteResult | null> {
+    const rows = await on(
+      this.bolt,
+      tx,
+      `MATCH (s)-[r {ref_id: $ref_id}]->(t)
+       WITH r, r.ref_id AS ref_id, type(r) AS edge, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id
+       DELETE r
+       RETURN ref_id, edge, source_ref_id, target_ref_id`,
+      { ref_id },
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return { ref_id: String(r["ref_id"]), edge: String(r["edge"]), source_ref_id: String(r["source_ref_id"]), target_ref_id: String(r["target_ref_id"]) };
   }
 
   async liveEdgesOf(tx: GraphTx, ref_id: string, edge: string, forward: boolean) {

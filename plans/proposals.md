@@ -1,6 +1,8 @@
 # Proposals: a tool call a person approves before it runs
 
-> **Status (2026-10-19): proposed, scope ruled.** Written after a read of
+> **Status (2026-10-19): BUILT** (v1, §11 items 1–6, on branch `claude/proposal-tools-architecture-e87119`; the two graph deletes included). The design text below is as proposed and ruled.
+>
+> **Design status (2026-10-19): proposed, scope ruled.** Written after a read of
 > the three repos as they are today — hive `master` @146e2465 and the open
 > stakwork/hive#5551 (`mcp-org-propose-tools`), stakgraph `main` @8ede556e
 > (`mcp/src/lab`), strut `main` @8a03e85 — in answer to one question: where

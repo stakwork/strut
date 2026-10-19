@@ -19,7 +19,7 @@ const STEP_TYPES = [
   "graph/get-ontology", "graph/get-ontology-type", "graph/graph-search", "graph/graph-get",
   "graph/graph-get-batched", "graph/graph-neighbors", "graph/register-namespace", "graph/create-node",
   "graph/edit-node", "graph/create-triplet", "graph/create-batch-triplet", "graph/create-schema", "graph/edit-edge",
-  "graph/walk", "graph/move-node",
+  "graph/walk", "graph/move-node", "graph/delete-edge", "graph/delete-node",
 ];
 
 describe("graph/graph-get marks its `name` field as a node lookup typed by `node_type`", () => {
@@ -37,7 +37,7 @@ describe("graph/graph-get marks its `name` field as a node lookup typed by `node
 });
 
 describe("graph/* lib steps are discovered by the registry", () => {
-  it("all fifteen graph steps are present, sourced from lib", async () => {
+  it("all seventeen graph steps are present, sourced from lib", async () => {
     const { registry, sources } = await buildRegistry();
     for (const t of STEP_TYPES) {
       assert.ok(registry[t], `missing ${t}`);
@@ -562,6 +562,60 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.deepEqual([out.status, out.from_ref_id, out.to_ref_id], ["Success", g1, g2], JSON.stringify(out));
     assert.deepEqual((await run("graph/graph-neighbors", { ref_id: part })).map((n: any) => [n.name, n.edge_type, n.direction]), [["g2", "PART_OF", "forward"]]);
     assert.match(await run("graph/move-node", { ref_id: part, edge_type: "PART_OF", direction: "reverse", to_ref_id: g1 }), /nothing to move/, "the direction is the node's side");
+  });
+
+  it("delete-edge: by ref_id and by triple, both endpoints stay; refuses bad locators, missing and ambiguous edges", async () => {
+    const topic = async (name: string) => (await run("graph/create-node", { node_type: "Topic", namespace: NS, node_data: { name } })).ref_id as string;
+    const [p, c1, c2] = [await topic("del-p"), await topic("del-c1"), await topic("del-c2")];
+    const link = async (source_ref_id: string, target_ref_id: string, edge_type = "PARENT_OF") => {
+      const out = await run("graph/create-triplet", { source_ref_id, target_ref_id, edge_type, create_schema_if_missing: true });
+      assert.equal(out.status, "Success", JSON.stringify(out));
+      return out.edge_ref_id as string;
+    };
+    const e1 = await link(p, c1);
+    await link(p, c2);
+    const children = async (ref_id: string) => (await run("graph/graph-get", { ref_id, children: "PARENT_OF" })).children.map((c: any) => c.name);
+
+    let out = await run("graph/delete-edge", { edge_ref_id: e1 });
+    assert.deepEqual(out, { status: "Success", edge_ref_id: e1, edge_type: "PARENT_OF", source_ref_id: p, target_ref_id: c1 });
+    assert.deepEqual(
+      accessedNodesOf(out),
+      [[p, "del-p"], [c1, "del-c1"]].map(([ref_id, name]) => ({ ref_id, node_type: "Topic", name })),
+      "both endpoints, described — they stay",
+    );
+    assert.deepEqual(await children(p), ["del-c2"]);
+    assert.match(await run("graph/delete-edge", { edge_ref_id: e1 }), /NOT_FOUND/, "gone for good");
+
+    out = await run("graph/delete-edge", { source_ref_id: p, edge_type: "parent of", target_ref_id: c2 });
+    assert.deepEqual([out.status, out.edge_type, out.source_ref_id, out.target_ref_id], ["Success", "PARENT_OF", p, c2], JSON.stringify(out));
+    assert.deepEqual(await children(p), []);
+    assert.deepEqual((await run("graph/graph-get", { ref_id: c2 })).edges, {}, "the child has no edges left, and is still there");
+    assert.match(await run("graph/delete-edge", { source_ref_id: p, edge_type: "PARENT_OF", target_ref_id: c2 }), /NOT_FOUND/);
+    assert.match(await run("graph/delete-edge", {}), /invalid input/);
+    assert.match(await run("graph/delete-edge", { source_ref_id: p, edge_type: "PARENT_OF" }), /invalid input/);
+    assert.match(await run("graph/delete-edge", { edge_ref_id: "x", source_ref_id: p, edge_type: "PARENT_OF", target_ref_id: c2 }), /invalid input/);
+    assert.match(await run("graph/delete-edge", { source_ref_id: p, edge_type: "not an edge!", target_ref_id: c2 }), /UNKNOWN_TYPE/);
+  });
+
+  it("delete-node: any type, its edges go with it (counted), the node is hidden; a miss is NOT_FOUND", async () => {
+    const topic = async (name: string) => (await run("graph/create-node", { node_type: "Topic", namespace: NS, node_data: { name } })).ref_id as string;
+    const [root, mid, leaf] = [await topic("dn-root"), await topic("dn-mid"), await topic("dn-leaf")];
+    for (const [s, t] of [[root, mid], [mid, leaf]] as const) {
+      assert.equal((await run("graph/create-triplet", { source_ref_id: s, target_ref_id: t, edge_type: "PARENT_OF", create_schema_if_missing: true })).status, "Success");
+    }
+    const out = await run("graph/delete-node", { ref_id: mid, namespace: NS });
+    assert.deepEqual(out, { status: "Success", ref_id: mid, node_type: "Topic", name: "dn-mid", deleted_edges: 2 });
+    assert.deepEqual(accessedNodesOf(out), [{ ref_id: mid, node_type: "Topic", name: "dn-mid" }], "the node as it was");
+    assert.equal(await run("graph/graph-get", { ref_id: mid }), `node not found: ${mid}`, "hidden");
+    assert.deepEqual((await run("graph/graph-get", { ref_id: root, children: "PARENT_OF" })).children, [], "the edge to it is gone");
+    assert.deepEqual((await run("graph/graph-get", { ref_id: leaf })).edges, {}, "the child is cut loose, and stays");
+    assert.match(await run("graph/delete-node", { ref_id: mid }), /NOT_FOUND: no live node/, "already deleted");
+    assert.match(await run("graph/delete-node", { ref_id: "nope" }), /NOT_FOUND/);
+    assert.match(await run("graph/delete-node", { ref_id: leaf, namespace: "never-registered" }), /INVALID_NAMESPACE/);
+    // A Strut node too — any type.
+    const sv = await run("graph/create-node", { node_type: "StrutStep", namespace: NS, node_data: { step_type: "dn/step" } });
+    assert.equal(sv.status, "Success", JSON.stringify(sv));
+    assert.deepEqual(await run("graph/delete-node", { ref_id: sv.ref_id, namespace: NS }), { status: "Success", ref_id: sv.ref_id, node_type: "StrutStep", name: "dn/step", deleted_edges: 0 });
   });
 });
 

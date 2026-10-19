@@ -32,7 +32,7 @@ let strutInstance: Strut | null = null;
 
 /** The host's delta for the shipped workflows, from the JSON file
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator? }`, each `{ tools?,
- *  system? }`, and `automation?: { workflow, approve? }`. Nothing when unset. A file that cannot be read or parsed
+ *  approve?, system? }`, and `automation?: { workflow, approve? }`. Nothing when unset. A file that cannot be read or parsed
  *  fails the boot, rather than seeding the workflows without the host's
  *  tools. */
 export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<StrutOptions, "job" | "orchestrator" | "automation"> {
@@ -48,16 +48,18 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<St
   for (const key of ["job", "orchestrator"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
-    const { tools, system, model } = (delta ?? {}) as { tools?: unknown; system?: unknown; model?: unknown };
+    const { tools, approve, system, model } = (delta ?? {}) as { tools?: unknown; approve?: unknown; system?: unknown; model?: unknown };
     if (
       (tools !== undefined && !(Array.isArray(tools) && tools.every((t) => typeof t === "string"))) ||
+      (approve !== undefined && !(Array.isArray(approve) && approve.every((t) => typeof t === "string"))) ||
       (system !== undefined && typeof system !== "string") ||
       (model !== undefined && model !== null && typeof model !== "string")
     ) {
-      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], system?: string, model?: string | null }`);
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null }`);
     }
     out[key] = {
       ...(tools ? { tools: tools as string[] } : {}),
+      ...(approve ? { approve: approve as string[] } : {}),
       ...(system !== undefined ? { system: system as string } : {}),
       ...(model !== undefined ? { model: model as string | null } : {}),
     };

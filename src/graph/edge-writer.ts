@@ -30,7 +30,7 @@
  * the rel-table form. This file validates and decides; it issues no Cypher.
  */
 import { randomUUID } from "node:crypto";
-import type { EdgeMergeRow, EngineLike, GraphEngine, GraphTx } from "./engine.js";
+import type { EdgeDeleteResult, EdgeMergeRow, EngineLike, GraphEngine, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
@@ -213,27 +213,37 @@ export class EdgeWriter {
     if (Object.keys(set).length === 0 && remove.length === 0) throw new GraphValidationError("MISSING_REQUIRED", "edge", "nothing to set or remove");
 
     return this.engine.tx(async (tx) => {
-      let r;
-      if ("ref_id" in where) {
-        if (!where.ref_id) throw new GraphValidationError("MISSING_REQUIRED", "edge", "ref_id is required");
-        r = await this.engine.edgeEngine.setProps(tx, where.ref_id, set, remove);
-        if (!r) throw new GraphValidationError("NOT_FOUND", "edge", `no edge with ref_id ${where.ref_id}`);
-      } else {
-        const edge = where.edge.toUpperCase().replace(/ /g, "_");
-        if (!EDGE_TYPE.test(edge)) throw new GraphValidationError("UNKNOWN_TYPE", edge, "edge type must match ^[A-Z][A-Z0-9_]*$");
-        if (!where.source_ref_id || !where.target_ref_id) throw new GraphValidationError("MISSING_REQUIRED", edge, "source_ref_id and target_ref_id are required");
-        const found = await this.engine.edgeEngine.findByTriple(tx, edge, where.source_ref_id, where.target_ref_id);
-        if (found.length === 0) throw new GraphValidationError("NOT_FOUND", edge, `no ${edge} edge from ${where.source_ref_id} to ${where.target_ref_id}`);
-        if (found.length > 1) throw new GraphValidationError("DUPLICATE_KEY", edge, `${found.length} ${edge} edges between those nodes — pass the edge ref_id`);
-        r = (await this.engine.edgeEngine.setProps(tx, found[0]!, set, remove))!;
-      }
+      const ref_id = await this.locateEdge(tx, where);
+      const r = await this.engine.edgeEngine.setProps(tx, ref_id, set, remove);
+      if (!r) throw new GraphValidationError("NOT_FOUND", "edge", `no edge with ref_id ${ref_id}`);
       return { ...r, updated: Object.keys(set), removed: remove };
     });
   }
 
-  /** Edge delete (`DELETE r`), by edge ref_id. false: no such edge. */
-  async delete(ref_id: string): Promise<boolean> {
-    return this.engine.edgeEngine.delete(ref_id);
+  /** The ref_id of the one edge `where` names: a ref_id as given, or the
+   *  live (source, EDGE, target) triple — none is NOT_FOUND, several (distinct
+   *  edge_keys) DUPLICATE_KEY. Shared by `update` and `delete`. */
+  private async locateEdge(tx: GraphTx, where: EdgeLocator): Promise<string> {
+    if ("ref_id" in where) {
+      if (!where.ref_id) throw new GraphValidationError("MISSING_REQUIRED", "edge", "ref_id is required");
+      return where.ref_id;
+    }
+    const edge = where.edge.toUpperCase().replace(/ /g, "_");
+    if (!EDGE_TYPE.test(edge)) throw new GraphValidationError("UNKNOWN_TYPE", edge, "edge type must match ^[A-Z][A-Z0-9_]*$");
+    if (!where.source_ref_id || !where.target_ref_id) throw new GraphValidationError("MISSING_REQUIRED", edge, "source_ref_id and target_ref_id are required");
+    const found = await this.engine.edgeEngine.findByTriple(tx, edge, where.source_ref_id, where.target_ref_id);
+    if (found.length === 0) throw new GraphValidationError("NOT_FOUND", edge, `no ${edge} edge from ${where.source_ref_id} to ${where.target_ref_id}`);
+    if (found.length > 1) throw new GraphValidationError("DUPLICATE_KEY", edge, `${found.length} ${edge} edges between those nodes — pass the edge ref_id`);
+    return found[0]!;
+  }
+
+  /** Edge delete (`DELETE r`, `deletion.ts`: hard, never muted), by edge
+   *  ref_id or by the (source, EDGE, target) triple like `update`. Returns the
+   *  edge as it was; null when a ref_id names no edge (a triple that names
+   *  none throws NOT_FOUND, like `update`). */
+  async delete(where: string | EdgeLocator): Promise<EdgeDeleteResult | null> {
+    const at: EdgeLocator = typeof where === "string" ? { ref_id: where } : where;
+    return this.engine.tx(async (tx) => this.engine.edgeEngine.delete(await this.locateEdge(tx, at), tx));
   }
 
   /**
