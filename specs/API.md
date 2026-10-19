@@ -480,7 +480,7 @@ steps read), so every read shows `callback: { origin }` only.
 | ------ | ----------------------------------------- | ----------- |
 | GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running }]` |
 | POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
-| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback? }` |
+| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH |
 | PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback |
 | DELETE | `/workflows/:name/automations/:id` | remove |
 | POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going |

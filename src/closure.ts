@@ -17,7 +17,7 @@
  * `sealed: true` is marked, so `src/sealed.ts` can refuse a flow that
  * subflows a grading harness.
  */
-import type { Flow, Step } from "./core.js";
+import type { Flow, Step, StepRegistry } from "./core.js";
 import { hasTemplates } from "./expr.js";
 import { baseType } from "./step-ref.js";
 import type { SubflowResolver } from "./runner.js";
@@ -98,6 +98,59 @@ export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: Subflow
 
   await visitFlow(flow.steps);
   return out;
+}
+
+/** The params keys a flow's own `agentTools` read (`agentTools: "{{ params.tools }}"`,
+ *  or an entry like `"{{ params.ns }}/*"`): the knobs that are GRANTS. Its own
+ *  steps only — a subflow's params are the child's. */
+export function grantParams(flow: Pick<Flow, "steps">): Set<string> {
+  const keys = new Set<string>();
+  walkSteps(flow.steps, (s) => {
+    const tools = (s.config as Record<string, unknown> | undefined)?.["agentTools"];
+    for (const t of Array.isArray(tools) ? tools : [tools]) {
+      if (typeof t !== "string") continue;
+      for (const m of t.matchAll(/params\.([A-Za-z_$][\w$]*)/g)) keys.add(m[1]!);
+    }
+  });
+  return keys;
+}
+
+/** The registry step types a grant value reaches: each string (a type, a
+ *  pinned ref, a glob) in it, however it is shaped; a word that names no
+ *  step reaches nothing. */
+function grantedTypes(value: unknown, registry: StepRegistry): Set<string> {
+  const out = new Set<string>();
+  const visit = (v: unknown) => {
+    if (typeof v === "string") {
+      const base = baseType(v);
+      if (registry[base]) out.add(base);
+      else if (v.includes("*")) for (const t of Object.keys(registry)) if (globToRegExp(v).test(t)) out.add(t);
+    } else if (Array.isArray(v)) v.forEach(visit);
+    else if (v && typeof v === "object") Object.values(v).forEach(visit);
+  };
+  visit(value);
+  return out;
+}
+
+/**
+ * The first step a run's `params` override would grant that the flow's own
+ * params do not, as a phrase for an error, or null. Only the keys the flow's
+ * `agentTools` read are grants (`grantParams`); every other key is a knob
+ * (a prompt, a threshold) and may say anything. Both sides are expanded
+ * through the registry, so `browser/*` narrowed to `browser/screenshot` is
+ * fine and `gaia/*` over nothing is not. A launcher may narrow what a
+ * flow's agents hold, never widen it — or a child of a job would hold
+ * tools its parent was never given, sealed or not.
+ */
+export function grantWidenedBy(flow: Pick<Flow, "steps" | "params">, override: Record<string, unknown>, registry: StepRegistry): string | null {
+  for (const key of grantParams(flow)) {
+    if (!(key in override)) continue;
+    const own = grantedTypes(flow.params?.[key], registry);
+    for (const type of grantedTypes(override[key], registry)) {
+      if (!own.has(type)) return `"${type}" (params.${key})`;
+    }
+  }
+  return null;
 }
 
 /** Does the closure reach `type` — by name, or through an `agentTools` grant? */

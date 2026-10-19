@@ -21,6 +21,7 @@ import {
   describeTrigger,
   nextFire,
   nextFires,
+  noRunsToCome,
   automationCallbackSecret,
   normalizeTrigger,
   resolveAutomationInput,
@@ -375,8 +376,10 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         const unowned = await ownerGate(workflow, parsed.data.enabled ?? true);
         if (unowned) return { error: unowned };
         if (parsed.data.callback && !deps.secrets) return { error: NO_SECRETS };
-        const id = `a-${randomUUID().slice(0, 8)}`;
+        const id = parsed.data.id ?? `a-${randomUUID().slice(0, 8)}`;
+        if (list.some((a) => a.id === id)) return { error: `Automation "${id}" exists already on workflow "${workflow}"` };
         const trigger = triggerFrom(parsed.data.trigger);
+        if (!nextFires(trigger, clock()).length) return { error: noRunsToCome(describeTrigger(trigger)) };
         const callback = await saveCallback(id, parsed.data.callback ?? undefined);
         const automation: Automation = {
           id,
@@ -406,6 +409,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         if (p.callback && !deps.secrets) return { error: NO_SECRETS };
         // `callback`: absent keeps it, null clears it.
         const trigger = p.trigger ? triggerFrom(p.trigger, current.trigger) : current.trigger;
+        if (p.trigger && !nextFires(trigger, clock()).length) return { error: noRunsToCome(describeTrigger(trigger)) };
         const callback = await saveCallback(id, p.callback, current.callback);
         const automation: Automation = {
           id,

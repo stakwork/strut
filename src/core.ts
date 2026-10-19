@@ -101,6 +101,12 @@ export interface StepContext<TServices = unknown> {
    *  job shares, whatever its workflow. `job/dir` hands out its directory;
    *  templates see it as `{{ $job }}`. Absent on a plain run. */
   job?: string;
+  /** The AUTOMATION whose fire this run is (plans/automations.md §6): set
+   *  by the scheduler's launch alone, recorded on `run.start`, read back by
+   *  a resume. Nothing a caller sends (`POST …/run`, `meta/run-workflow`)
+   *  can set it, so a host step that acts on an automation's grant names
+   *  the automation from here, never from the input. Absent otherwise. */
+  automation?: { id: string };
   /** Who launched this run — an opaque string the host resolved from the
    *  request (plans/mothership-cost-control.md §2). Strut stores and forwards
    *  it, never interprets it. Absent when nobody is known. */

@@ -88,7 +88,8 @@ export interface RunOptions<TServices = unknown> {
    *  over HTTP. Recorded on `run.start`. */
   origin?: RunOrigin;
   /** The automation firing this run — recorded on `run.start` and on the
-   *  summary (see `RunSummary.automation`). */
+   *  summary (see `RunSummary.automation`), handed to every step as
+   *  `ctx.automation`. The scheduler's launch is the one site that sets it. */
   automation?: { id: string };
   /** Recorded on a check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
@@ -180,6 +181,7 @@ interface Exec {
   actor?: string;
   principal?: string;
   job?: string;
+  automation?: { id: string };
   mcp?: McpServer[];
   /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
@@ -325,6 +327,7 @@ export async function runWorkflow<TServices = unknown>(
     actor: opts?.actor,
     principal: opts?.principal,
     job: opts?.job,
+    automation: opts?.automation,
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     disposers: [],
   };
@@ -804,6 +807,7 @@ async function dispatchStep(
         ...(exec.actor ? { actor: exec.actor } : {}),
         ...(exec.principal ? { principal: exec.principal } : {}),
         ...(exec.job ? { job: exec.job } : {}),
+        ...(exec.automation ? { automation: exec.automation } : {}),
         ...(exec.mcp ? { mcp: exec.mcp } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.

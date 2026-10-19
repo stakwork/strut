@@ -30,13 +30,13 @@ const OTHER = "other";
 
 /** The host's approval step: answers as the test says, and records what it was asked. */
 let answer: "allow" | "deny" | "pending" = "allow";
-let asked: { intent: any; path: string }[] = [];
+let asked: { intent: any; grant?: any; path: string }[] = [];
 const approve = defineStep({
   type: "test/approve",
-  input: z.object({ intent: z.object({ action: z.string(), content: z.string().optional(), details: z.array(z.string()).optional() }) }),
+  input: z.object({ intent: z.object({ action: z.string(), content: z.string().optional(), details: z.array(z.string()).optional() }), grant: z.any().optional() }),
   output: z.any(),
   async run(cfg, ctx) {
-    asked.push({ intent: cfg.intent, path: ctx.path });
+    asked.push({ intent: cfg.intent, path: ctx.path, ...(cfg.grant ? { grant: cfg.grant } : {}) });
     if (answer === "pending") return withStop({ status: "pending", note: "Waiting for your Mac" });
     return answer === "allow" ? { approved: true } : { approved: false, status: "denied" };
   },
@@ -57,7 +57,7 @@ describe("automation/* steps", () => {
   let registry: StepRegistry;
   let saved: string | undefined;
 
-  const boot = async (automation?: { workflow: string; approve?: string }) => {
+  const boot = async (automation?: { workflow: string; approve?: string; grants?: boolean }) => {
     store = new MemoryRunStore();
     registry = await createRegistry([approve]);
     strut = await createStrut({
@@ -136,10 +136,86 @@ describe("automation/* steps", () => {
     assert.equal(stored!.callback, undefined, "a call outside a launched run has no callback to inherit");
 
     await assert.rejects(run(create, { name: "friday LIST", prompt: "again", trigger: weekly }), /exists already/);
+    // A one-off already past (a wrong year) is refused before any card.
+    const asks = asked.length;
+    await assert.rejects(run(create, { name: "Sand the tops", prompt: "p", trigger: { every: "once", at: "2025-10-18T13:00", tz: "Europe/London" } }), /no runs to come/);
+    assert.equal(asked.length, asks);
     // What the card shows whole: a one-line name, a prompt within a page.
     await assert.rejects(run(create, { name: "A\nRuns: never", prompt: "p", trigger: weekly }), /one line/);
     await assert.rejects(run(create, { name: "x".repeat(101), prompt: "p", trigger: weekly }));
     await assert.rejects(run(create, { name: "Long", prompt: "p".repeat(4001), trigger: weekly }));
+  });
+
+  it("a grant goes on the same card under the automation's id, which every fire's steps read as ctx.automation", async () => {
+    await boot({ workflow: WF, approve: "test/approve" });
+    const posts = { chats: ["Hive"], max_price_sats: 10 };
+    await assert.rejects(run(create, { name: "Hive test", prompt: "Post hi", trigger: weekly, grant: posts }), /takes no grant/);
+    assert.equal(asked.length, 0, "a host without grants asks nothing");
+    const plain = await run(create, { name: "Plain", prompt: "p", trigger: weekly });
+    assert.match(plain.created.id, /^a-[0-9a-f]{8}$/, "the scheduler's own id format");
+    await run(update, { id: plain.created.id, enabled: false });
+    assert.equal(asked.at(-1)!.grant, undefined, "a host without grants is told nothing about one");
+    await strut.close();
+
+    await boot({ workflow: WF, approve: "test/approve", grants: true });
+    const c = ctx();
+    answer = "pending";
+    await run(create, { name: "Hive test", prompt: "Post hi", trigger: weekly, grant: posts }, c);
+    const first = asked.at(-1)!.grant;
+    assert.match(first.automation, /^a-[0-9a-f]{8}$/);
+    assert.deepEqual(first, { ...posts, automation: first.automation, name: "Hive test" });
+    const named = async () => (await strut.automations.list(WF)).find((a) => a.name.startsWith("Hive"));
+    assert.equal(await named(), undefined, "nothing exists before an allow");
+    answer = "allow";
+    const made = await run(create, { name: "Hive test", prompt: "Post hi", trigger: weekly, grant: posts }, c);
+    assert.equal(asked.at(-1)!.grant.automation, first.automation, "the same call asks the same question");
+    assert.equal(made.created.id, first.automation, "the automation IS the id the card named");
+    const stored = await named();
+    assert.deepEqual(stored!.input, { name: "Hive test", prompt: "Post hi", since: "{{ last.finishedAt }}", now: "{{ now }}" }, "nothing of the grant rides in the input");
+    assert.equal(made.created.grant, undefined, "strut keeps nothing of the grant");
+
+    // Another call is another automation; a model-written id is never read.
+    await run(create, { name: "Other", prompt: "p", trigger: weekly, grant: { ...posts, automation: first.automation } });
+    assert.notEqual(asked.at(-1)!.grant.automation, first.automation, "strut's id wins over one in the grant");
+
+    // A change or a run-now names the automation, with a new grant or without one.
+    await run(update, { id: stored!.id, prompt: "Post hello" });
+    assert.deepEqual(asked.at(-1)!.grant, { automation: first.automation, name: "Hive test" }, "the card names the automation it changes");
+    await run(update, { id: stored!.id, name: "Hive hello" });
+    assert.deepEqual(asked.at(-1)!.grant, { automation: first.automation, name: "Hive hello" }, "under its new name");
+    const regranted = await run(update, { id: stored!.id, grant: { chats: ["Hive", "Kate"], max_price_sats: 0 } });
+    assert.equal(asked.at(-1)!.intent.action, "Change “Hive hello”");
+    assert.deepEqual(asked.at(-1)!.grant, { chats: ["Hive", "Kate"], max_price_sats: 0, automation: first.automation, name: "Hive hello" });
+    assert.equal(regranted.changed.prompt, "Post hello");
+
+    // The fire hands its run the automation, and nothing a caller sends can.
+    const fired = await run(runNow, { id: stored!.id });
+    assert.deepEqual(asked.at(-1)!.grant, { automation: first.automation, name: "Hive hello" });
+    let start;
+    for (let i = 0; i < 300 && !start; i++) {
+      start = (store.getEvents(WF, fired.started.runId) as any[]).find((e) => e.type === "run.start");
+      if (!start) await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.deepEqual([start.origin, start.automation], ["schedule", { id: first.automation }]);
+    await run(del, { id: stored!.id });
+    assert.deepEqual(asked.at(-1)!.grant, { automation: first.automation, name: "Hive hello" }, "a delete names it too, so the host lets its grant go");
+  });
+
+  it("every step of a fire sees ctx.automation; a run launched any other way sees none", async () => {
+    await boot({ workflow: WF, approve: "test/approve" });
+    const seen: unknown[] = [];
+    const peek = defineStep({ type: "test/peek", input: z.any(), output: z.any(), async run(_cfg, ctx) { seen.push(ctx.automation); return {}; } });
+    await strut.close();
+    registry = await createRegistry([approve, peek]);
+    strut = await createStrut({ workspace: new WorkspaceManager(dir), registry, store, serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, job: false, orchestrator: false });
+    await strut.workspace.publishWorkflow(WF, "v1", { steps: [{ id: "p", type: "test/peek", config: {} }] });
+    const made = (await strut.automations.create(WF, { name: "Peek", trigger: weekly, input: {} })) as any;
+    const fired = (await strut.automations.fire(WF, made.automation.id)) as any;
+    const plain = await strut.app.request(`/workflows/${WF}/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: {}, automation: { id: made.automation.id } }) });
+    assert.equal(plain.status, 202);
+    for (let i = 0; i < 300 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(seen, [{ id: made.automation.id }, undefined]);
+    assert.ok(fired.runId);
   });
 
   it("list and preview read only the steps' workflow and never ask", async () => {
@@ -224,6 +300,10 @@ describe("automation/* steps", () => {
     const file = join(dir, "host.json");
     await writeFile(file, JSON.stringify({ automation: { workflow: "peel-automation-run", approve: "sphinx/approve" } }));
     assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { automation: { workflow: "peel-automation-run", approve: "sphinx/approve" } });
+    await writeFile(file, JSON.stringify({ automation: { workflow: "w", approve: "a", grants: true } }));
+    assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { automation: { workflow: "w", approve: "a", grants: true } });
+    await writeFile(file, JSON.stringify({ automation: { workflow: "w", grants: "yes" } }));
+    assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"automation" must be/);
     await writeFile(file, JSON.stringify({ automation: { approve: "sphinx/approve" } }));
     assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"automation" must be/);
   });
