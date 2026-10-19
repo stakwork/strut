@@ -1030,6 +1030,21 @@ describe("run control endpoints", () => {
     }
   }
 
+  /** Poll until a RESUMED run has been finalized again: its summary's
+   *  `finishedAt` moves past `prev`. The summary is rewritten (tmp + rename)
+   *  AFTER `run.end` is appended, so a test that waits on the log or on a
+   *  step's counter and then removes the directory races that write — rm
+   *  failed with ENOTEMPTY on the run's directory under load. */
+  async function waitForRefinalize(store: FileRunStore, wf: string, runId: string, prev: string) {
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      const s = await store.getRunSummary(wf, runId);
+      if (s && s.finishedAt !== prev) return s;
+      if (Date.now() > deadline) throw new Error("resumed run never finalized");
+      await sleep(10);
+    }
+  }
+
   it("a run that has finished but is still tearing down never reads as live", async () => {
     // A slow `onRunEnd` holds the controller registered after the summary is
     // written — the window a control request used to see as "live".
@@ -1363,14 +1378,14 @@ describe("run control endpoints", () => {
         body: JSON.stringify({ from: "resumable/two" }),
       });
       assert.equal(mismatch.status, 409);
+      const beforeForced = (await store.getRunSummary("resumable", runId))!.finishedAt;
       const forced = await strut.app.request(`/workflows/resumable/runs/${runId}/resume`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ from: "resumable/two", force: true }),
       });
       assert.equal(forced.status, 202);
-      await waitForLog(store, "resumable", runId, (evts) =>
-        evts.filter((e) => e.type === "run.resumed").length === 3 && evts[evts.length - 1]!.type === "run.end");
+      await waitForRefinalize(store, "resumable", runId, beforeForced);
       assert.equal(flakey.attempts(), 4);
     } finally {
       await cleanup();
@@ -1787,8 +1802,9 @@ describe("run control endpoints", () => {
       });
       assert.equal(resume.status, 202);
 
-      await waitFor(() => tally.calls() === 2);
-      await waitFor(() => counter.calls() === 1); // memo replayed
+      await waitForRefinalize(store, "regrade", runId, first.finishedAt);
+      assert.equal(tally.calls(), 2);
+      assert.equal(counter.calls(), 1); // memo replayed
       const evts = await store.getRunEvents("regrade", runId);
       assert.ok(evts.some((e) => e.type === "step.replayed" && e.path === "regrade/memo"));
     } finally {
