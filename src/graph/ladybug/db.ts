@@ -12,9 +12,10 @@
  * ROLLBACK, one writer at a time — and `readOnly()` for the model's own
  * Cypher: a connection of its own whose every statement runs inside
  * `BEGIN TRANSACTION READ ONLY`, which the engine refuses writes in. (Not a
- * second `Database` opened read-only, as first planned: one reserves 8 TB
- * of address space and `close()` never returns it — the eighth open in a
- * process fails with "Mmap for size 8796093022208 failed".) On open: the
+ * second `Database` opened read-only, as first planned: one reserves
+ * `MAX_DB_SIZE` of address space and `close()` never returns it — at the
+ * addon's default of 8 TB the ninth open in a process failed with "Mmap for
+ * size 8796093022208 failed".) On open: the
  * `vector` and `fts` extensions (REQUIRED, ruling 4:
  * an open without them fails with the hint), the DDL (§3.1; every column
  * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the registry
@@ -76,6 +77,12 @@ export interface OpenOptions {
 }
 
 export const REQUIRED_EXTENSIONS = ["vector", "fts"] as const;
+
+/** The address space a `Database` reserves on open (the addon's `maxDBSize`),
+ *  which `close()` never returns: the default 8 TB fits eight to ten opens in
+ *  a process, and a test file opening nine failed on the ninth. 1 TB fits a
+ *  hundred and caps no file strut keeps. */
+export const MAX_DB_SIZE = 2 ** 40;
 
 // ── DDL ─────────────────────────────────────────────────────────────────────
 
@@ -268,7 +275,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
   const unclean = existsSync(`${path}.wal`);
 
   const lbug = await loadLadybug();
-  const db = new lbug.Database(path);
+  const db = new lbug.Database(path, 0, true, false, MAX_DB_SIZE);
   const readConn = new lbug.Connection(db);
   const writeConn = new lbug.Connection(db);
   const read = queryOn(readConn);
