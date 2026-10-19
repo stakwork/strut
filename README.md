@@ -5,6 +5,7 @@ An AI builder that writes workflows for you, a visual editor, and an HTTP api.</
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#connect-your-agent">Connect your agent</a> ·
   <a href="#workflows">Workflows</a> ·
   <a href="#steps">Steps</a> ·
   <a href="#agents">Agents</a> ·
@@ -64,13 +65,63 @@ npm run dev
 
 Open http://localhost:3000, and ask the AI builder for a workflow or draw one on the canvas.
 
-Or run it in Docker, with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image. The compose pulls the published images (`ghcr.io/stakwork/strut`, built from main on every merge, and its browser), and runs the graph backend beside its own Neo4j (Browser at http://localhost:7475, `bolt://localhost:7689`, `neo4j` / `testtest`). It reads the same `.env`, so put `STRUT_API_KEY` and `STRUT_SECRET_KEY` there before the port is reachable by anyone but you:
+### Docker
+
+The same thing with the tools workflows call (ffmpeg, yt-dlp, tesseract, uv, …) already in the image. The compose pulls the published images (`ghcr.io/stakwork/strut`, built from main on every merge, and its browser) and runs the graph backend beside its own Neo4j (Browser at http://localhost:7475, `bolt://localhost:7689`, `neo4j` / `testtest`). It reads the same `.env`; three lines are enough:
+
+```ini
+STRUT_API_KEY=…                 # openssl rand -hex 32 — every request carries it; set it before anyone else can reach the port
+STRUT_SECRET_KEY=…              # openssl rand -hex 32 — encrypts the secret store; set it before the first secret is stored
+ANTHROPIC_API_KEY=sk-ant-...    # or any provider key above
+```
 
 ```bash
 docker compose up -d
 ```
 
-To run your checkout's code instead: `docker compose -f docker-compose.yml -f docker-compose.build.yml up --build`.
+Then open the UI with the key once — it keeps it for the session and strips it from the address bar — or paste it under Settings → Connection:
+
+```bash
+open "http://localhost:3000/?key=$STRUT_API_KEY"
+```
+
+To run your checkout's code instead: `docker compose -f docker-compose.yml -f docker-compose.build.yml up --build`. For a clean slate, `docker compose down -v` removes the containers and every volume (Neo4j, workspace, model cache).
+
+## Connect your agent
+
+Strut is an MCP server. An agent you already use — Claude Code, Codex, Hermes — connects to it over HTTP and gets seven tools: talk to strut's workflow builder, read that conversation back, list workflows and runs, read a run, run a workflow. The agent never learns strut's YAML; it asks the builder in plain words and gets back what was built, with links it can hand on to its own connectors. Every artifact link is absolute and carries its own read token, so it opens the file by itself.
+
+Two headers: the key as a bearer token (drop it when `STRUT_API_KEY` is unset), and `x-strut-actor`, a name for the caller — MCP has no identity of its own — so the chats, runs and workflows it makes are stamped, and it finds its own chats again.
+
+**Claude Code**
+
+```bash
+claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY" --header "x-strut-actor: claude"
+```
+
+**Codex** — in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`), with `STRUT_API_KEY` exported in the environment Codex runs in:
+
+```toml
+[mcp_servers.strut]
+url = "http://localhost:3000/mcp"
+bearer_token_env_var = "STRUT_API_KEY"
+http_headers = { "x-strut-actor" = "codex" }
+```
+
+**Hermes** — in `~/.hermes/config.yaml`, then `/reload-mcp` in a session (`hermes mcp test strut` shows what the server answered):
+
+```yaml
+mcp_servers:
+  strut:
+    url: "http://localhost:3000/mcp"
+    headers:
+      Authorization: "Bearer <your STRUT_API_KEY>"
+      x-strut-actor: "hermes"
+```
+
+Then ask your agent for a workflow the way you would ask a colleague — "make a workflow that fetches the Hacker News front page every morning and writes a markdown summary, run it once, and give me the link" — and it talks to the builder for you. A build that outlives one call comes back as `working`; the agent reads the chat again until it is done. If the builder has a question, the agent relays it, and a secret it needs is entered by you under Secrets in the UI, never through the agent.
+
+For an agent that should author workflows itself, with the builder's own tools and the full prompt, point it at `/mcp/builder` instead. [specs/API.md §11](specs/API.md) has every tool's arguments and results.
 
 ## Workflows
 
