@@ -64,7 +64,7 @@ import { STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { installSystemWorkflows } from "./system-workflows.js";
-import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerStore, peersCapability, type Peer } from "./peers.js";
+import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
@@ -2443,7 +2443,7 @@ export async function createStrut<TServices = unknown>(
   //
   // The struts this one may call. A host pushes them (hive, by workspace
   // slug) or a person pastes one on a strut the host cannot reach. GET
-  // returns ids, labels and base URLs — never a token; the token has no
+  // returns the records — never a token; the token has no
   // read route at all.
 
   app.get("/peers", async (c) => c.json({ peers: await peerRecords.list() }));
@@ -2458,7 +2458,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
     await peerRecords.set(peer);
-    return c.json({ ok: true, id, baseUrl: peer.baseUrl, ...(peer.label ? { label: peer.label } : {}) });
+    return c.json({ ok: true, ...peerInfo(peer) });
   });
 
   app.delete("/peers/:id", async (c) => {
