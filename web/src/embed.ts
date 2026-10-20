@@ -59,8 +59,15 @@ function reportLocation(): void {
   window.parent.postMessage(msg, origin);
 }
 
-/** `history.replaceState` + tell the embedding host, if there is one. */
-export function replaceUrl(url: string | URL): void {
-  history.replaceState(null, "", url);
+/** `history.replaceState` + tell the embedding host, if there is one. The
+ *  entry's state (the back trail, ./nav-trail) is kept unless one is given. */
+export function replaceUrl(url: string | URL, state: unknown = history.state): void {
+  history.replaceState(state, "", url);
+  reportLocation();
+}
+
+/** `history.pushState` + tell the embedding host: a new back-button entry. */
+export function pushUrl(url: string | URL, state: unknown): void {
+  history.pushState(state, "", url);
   reportLocation();
 }
