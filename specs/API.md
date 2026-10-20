@@ -602,6 +602,9 @@ kept encrypted; the token has no read route.
 | GET    | `/peers` | `{ peers: [{ id, baseUrl, label?, description?, repos? }] }` — never a token |
 | PUT    | `/peers/:id` | `{ baseUrl, token, label?, description?, repos? }` → `{ ok, id, baseUrl, label?, description?, repos? }` (`repos`: the workspace's repository URLs — what `strut/list-peers` shows an agent choosing a peer); replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
 | DELETE | `/peers/:id` | `{ ok, id }`; 404 |
+| GET    | `/self` | `{ self: { id?, label?, description?, repos? } \| null }` — this strut's OWN workspace (never in `/peers`) |
+| PUT    | `/self` | `{ id?, label?, description?, repos? }` → `{ ok, id?, label?, description?, repos? }`; 400 on a bad shape. `STRUT_SELF` / `createStrut({ self })` seed it |
+| DELETE | `/self` | `{ ok }`; 404 when none |
 
 `STRUT_PEERS` (a JSON array of the same records) puts peers on file at boot
 for a strut nobody pushes to — a desktop strut behind NAT.

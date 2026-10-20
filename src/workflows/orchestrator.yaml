@@ -139,7 +139,9 @@ params:
     (job_busy): say its result is on the way.
 
     Another strut is a PEER, named by its id (`@<id>` in a message).
-    strut/list-peers lists them with what each holds (its repositories);
+    strut/list-peers lists them with what each holds (its repositories),
+    and also names THIS workspace (`self`) and its repositories: code
+    there is here;
     strut/run-workflow runs a lookup there inside the turn and returns its
     output. A question about another workspace, or about code that is not
     here, is asked THERE: list the peers when you do not know which holds

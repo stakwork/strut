@@ -1,7 +1,10 @@
 /**
  * Peers — the OTHER struts this one may call (plans/federation.md §2.2, §3).
  *
- * A strut knows nothing about other struts, not even its own name. A peer
+ * A strut knows nothing about other struts. (A host may tell it its OWN
+ * workspace — `self`, `{ id?, label?, description?, repos? }`, no baseUrl or
+ * token: nothing is ever dispatched to self — so an agent knows which repos
+ * are here. It is kept under `S_self`, never a peer.) A peer
  * is a record `{ id, baseUrl, token, label?, description?, repos? }` someone
  * put here: a host
  * pushes it (`PUT /peers/:id`, the way hive pushes delegations and actor
@@ -56,6 +59,15 @@ export interface Peer {
 /** A peer as anything may see it: never the token. */
 export type PeerInfo = Omit<Peer, "token">;
 
+/** This strut's OWN workspace: what a host says it holds. No baseUrl or
+ *  token — nothing is dispatched to self. */
+export interface SelfInfo {
+  id?: string;
+  label?: string;
+  description?: string;
+  repos?: string[];
+}
+
 export interface PeerStore {
   get(id: string): Promise<Peer | undefined>;
   set(peer: Peer): Promise<void>;
@@ -63,6 +75,11 @@ export interface PeerStore {
   delete(id: string): Promise<boolean>;
   /** Every peer, sorted by id — never a token. */
   list(): Promise<PeerInfo[]>;
+  /** This strut's own record, kept apart from the peers (never in `list`). */
+  getSelf(): Promise<SelfInfo | undefined>;
+  setSelf(info: SelfInfo): Promise<void>;
+  /** Returns true if it existed. */
+  deleteSelf(): Promise<boolean>;
 }
 
 // ── the record ────────────────────────────────────────────────────────────
@@ -107,6 +124,44 @@ export function checkPeer(raw: unknown): Peer {
   };
 }
 
+/** Validate this strut's own record (a PUT body, the env, the option). */
+export function checkSelf(raw: unknown): SelfInfo {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error("self must be an object");
+  const p = raw as Record<string, unknown>;
+  if (p["id"] !== undefined) {
+    const problem = peerIdProblem(p["id"]);
+    if (problem) throw new Error(`self id ${problem}`);
+  }
+  if (p["label"] !== undefined && typeof p["label"] !== "string") throw new Error("label must be a string");
+  if (p["description"] !== undefined && typeof p["description"] !== "string") throw new Error("description must be a string");
+  const repos = p["repos"];
+  if (repos !== undefined && !(Array.isArray(repos) && repos.every((r) => typeof r === "string"))) {
+    throw new Error("repos must be an array of strings");
+  }
+  return {
+    ...(p["id"] ? { id: p["id"] as string } : {}),
+    ...(p["label"] ? { label: p["label"] as string } : {}),
+    ...(p["description"] ? { description: p["description"] as string } : {}),
+    ...((repos as string[] | undefined)?.length ? { repos: repos as string[] } : {}),
+  };
+}
+
+/** `STRUT_SELF`: a JSON object, this strut's own record. */
+export function parseSelfEnv(raw: string | undefined): SelfInfo | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`STRUT_SELF is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    return checkSelf(parsed);
+  } catch (err) {
+    throw new Error(`STRUT_SELF ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /** A record as anything may see it: everything but the token. */
 export function peerInfo({ token: _token, ...info }: Peer): PeerInfo {
   return info;
@@ -132,6 +187,8 @@ export function parsePeersEnv(raw: string | undefined): Peer[] {
 }
 
 const PREFIX = "P_";
+/** Not a peer key: peer keys start `P_`, so `list()` never sees it. */
+const SELF_KEY = "S_self";
 const keyFor = (id: string): string => `${PREFIX}${Buffer.from(id, "utf8").toString("hex")}`;
 const idOf = (key: string): string => Buffer.from(key.slice(PREFIX.length), "hex").toString("utf8");
 
@@ -153,6 +210,16 @@ export function peerStore(secrets: SecretStore): PeerStore {
     async delete(id) {
       if (peerIdProblem(id)) return false;
       return secrets.delete(keyFor(id));
+    },
+    async getSelf() {
+      const raw = await secrets.get(SELF_KEY);
+      return raw ? (JSON.parse(raw) as SelfInfo) : undefined;
+    },
+    async setSelf(info) {
+      await secrets.set(SELF_KEY, JSON.stringify(checkSelf(info)));
+    },
+    async deleteSelf() {
+      return secrets.delete(SELF_KEY);
     },
     async list() {
       const names = (await secrets.list()).map((s) => s.name).filter((n) => n.startsWith(PREFIX));
@@ -179,6 +246,8 @@ export type PeerFetch = (url: string, init?: PeerFetchInit) => Promise<Response>
 /** `ctx.services.peers`: name a peer, make a request; the token stays inside. */
 export interface PeersCapability {
   list(): Promise<PeerInfo[]>;
+  /** This strut's own workspace, when the host said what it is. */
+  self(): Promise<SelfInfo | undefined>;
   /** `path` is relative to the peer's base URL (`/workflows/x/run`). Throws
    *  `peer_unknown:` for an id not on file. The response is the peer's,
    *  unread — a stream for the SSE tail, JSON for the rest. */
@@ -188,6 +257,7 @@ export interface PeersCapability {
 export function peersCapability(store: PeerStore, fetchImpl: PeerFetch = (u, i) => fetch(u, i)): PeersCapability {
   return {
     list: () => store.list(),
+    self: () => store.getSelf(),
     async fetch(id, path, init) {
       const peer = await store.get(id);
       if (!peer) {

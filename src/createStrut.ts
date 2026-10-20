@@ -65,7 +65,7 @@ import { STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { installSystemWorkflows } from "./system-workflows.js";
-import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer } from "./peers.js";
+import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
@@ -217,6 +217,11 @@ export interface StrutOptions<TServices = unknown> {
    *  for a strut nobody pushes to (a desktop host, a test). Each replaces
    *  the record of the same id. */
   peers?: Peer[];
+  /** This strut's OWN workspace — `{ id?, label?, description?, repos? }`,
+   *  what `strut/list-peers` reports as `self` so an agent knows which repos
+   *  are here. Seeded at boot after `STRUT_SELF` (this wins); `PUT /self` is
+   *  the same door. No baseUrl or token: nothing is dispatched to self. */
+  self?: SelfInfo;
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -682,6 +687,8 @@ export async function createStrut<TServices = unknown>(
   for (const peer of [...parsePeersEnv(bootEnv()["STRUT_PEERS"]), ...(opts.peers ?? [])]) {
     await peerRecords.set(peer);
   }
+  const selfSeed = opts.self ? checkSelf(opts.self) : parseSelfEnv(bootEnv()["STRUT_SELF"]);
+  if (selfSeed) await peerRecords.setSelf(selfSeed);
   const peersCap = peersCapability(peerRecords);
   // Automation callbacks (plans/automations.md): each URL is a host's
   // credential, kept in a fifth encrypted file beside the deployment's
@@ -2476,6 +2483,26 @@ export async function createStrut<TServices = unknown>(
     if (problem) return c.json({ error: `peer id ${problem}` }, 400);
     if (!(await peerRecords.delete(id))) return c.json({ error: `peer "${id}" not found` }, 404);
     return c.json({ ok: true, id });
+  });
+
+  // This strut's own workspace (never a peer): what it holds, for agents.
+  app.get("/self", async (c) => c.json({ self: (await peerRecords.getSelf()) ?? null }));
+
+  app.put("/self", async (c) => {
+    const body = await c.req.json<unknown>().catch(() => undefined);
+    let self: SelfInfo;
+    try {
+      self = checkSelf(body);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    await peerRecords.setSelf(self);
+    return c.json({ ok: true, ...self });
+  });
+
+  app.delete("/self", async (c) => {
+    if (!(await peerRecords.deleteSelf())) return c.json({ error: "no self record on file" }, 404);
+    return c.json({ ok: true });
   });
 
   // ── Actor secrets (plans/code-change.md §3.2) ────────────────────────────

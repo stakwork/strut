@@ -10,14 +10,23 @@ import type { PeersCapability } from "../../../peers.js";
  * workspace" or "the mixer's code" leads to the right id instead of a guess.
  * Never a token or a base URL: neither helps the model choose.
  */
+const selfShape = z.object({
+  id: z.string().optional(),
+  label: z.string().optional(),
+  description: z.string().optional(),
+  repos: z.array(z.string()).optional(),
+});
+
 export default defineStep({
   type: "strut/list-peers",
   description:
-    "List the OTHER struts this one can call with strut/run-workflow: { peers: [{ id, label?, description?, repos? }] }. " +
+    "List the OTHER struts this one can call with strut/run-workflow: { self?, peers: [{ id, label?, description?, repos? }] }. " +
+    "`self` is THIS workspace (its repos are the code here); `peers` are the others. " +
     "`id` is what strut/run-workflow's `peer` takes (hive registers a workspace by its slug, what a person types as @<slug>); " +
     "`repos` are the repositories that workspace holds, so code that is not here can be found there.",
   input: z.object({}),
   output: z.object({
+    self: selfShape.optional(),
     peers: z.array(
       z.object({
         id: z.string(),
@@ -34,7 +43,9 @@ export default defineStep({
         "strut/list-peers needs the peers capability (ctx.services.peers) — the standard strut server provides it; a bare runWorkflow bag does not",
       );
     }
+    const self = await peers.self();
     return {
+      ...(self && Object.keys(self).length ? { self } : {}),
       peers: (await peers.list()).map(({ id, label, description, repos }) => ({
         id,
         ...(label ? { label } : {}),
