@@ -1146,7 +1146,7 @@ describe("mid-stream socket death is resumed, not lost", () => {
       { runId: "r", path, scope: {}, input: undefined, emit: async () => {}, services: { secrets }, registry: {} } as any,
     ) as Promise<any>;
     try {
-      await assert.rejects(at("tidy-memory/tidy"), /no model connected \(STRUT_DEFAULT_MODEL is not set\)/);
+      await assert.rejects(at("tidy-memory/tidy"), { message: "No model is connected yet. Connect one to use your assistant." });
       assert.equal(s.bodies.length, 0, "nothing reached the wire");
       assert.equal((await at("my-flow/step")).result, "done");
       assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-4-5"'), s.bodies[0]);

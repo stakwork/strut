@@ -1163,8 +1163,11 @@ export default defineStep({
     const defaultModel = cfg.model ? undefined : (await (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets?.get("STRUT_DEFAULT_MODEL")) || undefined;
     // A system workflow runs only on the connected model: when the host
     // disconnects it (deletes STRUT_DEFAULT_MODEL), never a silent fallback.
+    // The run's error is what a person is shown (a host passes it on), so it
+    // is said plainly; the detail goes to the log.
     if (!cfg.model && !defaultModel && writerOf(ctx) === SYSTEM_WRITER) {
-      throw new Error("agent: no model connected (STRUT_DEFAULT_MODEL is not set)");
+      console.warn(`[agent] ${ctx?.path ?? "a system workflow"}: no model connected (STRUT_DEFAULT_MODEL is not set)`);
+      throw new Error("No model is connected yet. Connect one to use your assistant.");
     }
     const modelName = cfg.model ?? defaultModel ?? bootEnv()["STRUT_LLM_MODEL"];
     // STRUT_LLM_PROVIDER goes with STRUT_LLM_MODEL; a default model names its own provider.
