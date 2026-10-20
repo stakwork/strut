@@ -207,6 +207,10 @@ export interface Flow {
    *  surface never runs it, reads its runs, or publishes anything that
    *  reaches it. Content like `claims:`, so it rides in the version hash. */
   sealed?: boolean;
+  /** The YAML `peer: true` — another strut may launch it (plans/federation.md
+   *  §3): a peer-scoped launch of a workflow without it is refused. Content
+   *  like `sealed:`, so it rides in the version hash. */
+  peer?: boolean;
 }
 
 /** Run event types for the JSONL log. */

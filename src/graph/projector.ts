@@ -42,7 +42,7 @@
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatStore, StoredMessage } from "../chat-store.js";
-import { idProblem } from "../session-store.js";
+import { PEER_NAMESPACE, idProblem } from "../session-store.js";
 import type { JobIndex, JobView } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
@@ -194,6 +194,9 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   const keyOf = (e: RunEvent) => `${e.path}${e.iteration != null ? `#${e.iteration}` : ""}`;
   const ends = new Map<string, RunEvent>();
   for (const e of events) if ((e.type === "step.end" || e.type === "step.error") && e.stepType === "agent") ends.set(keyOf(e), e);
+  // A peer's run opened its sessions under PEER_NAMESPACE (runner.ts
+  // `bindPeer`), not under the id its config names.
+  const ns = start?.origin === "peer" ? PEER_NAMESPACE : "";
   for (const e of events) {
     if (e.type !== "step.start" || e.stepType !== "agent") continue;
     const end = ends.get(keyOf(e));
@@ -203,7 +206,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     // its thread too; the number is in the output, which only a committed
     // turn has. An id the step refused (a missing template value) names no
     // thread.
-    const thread = typeof input["session"] === "string" && !idProblem(input["session"]) ? input["session"] : undefined;
+    const thread = typeof input["session"] === "string" && !idProblem(input["session"]) ? `${ns}${input["session"]}` : undefined;
     const turn = (end?.output as { session?: { turn?: unknown } } | null | undefined)?.session?.turn;
     sessionPaths.push(e.path);
     sessions.push({

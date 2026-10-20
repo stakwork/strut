@@ -47,6 +47,12 @@ export function idProblem(id: unknown): string | null {
   return null;
 }
 
+/** Where a PEER's ids live (plans/federation.md §3): the `job` a peer
+ *  launches under and every session its run opens are kept under this
+ *  prefix, so a name a peer chooses never opens a local job's directory,
+ *  files and holds, or a local thread (the job agent's is its job id). */
+export const PEER_NAMESPACE = "peer/";
+
 /** The one directory (or file stem) an id is stored under: flat, so
  *  `abc/review` is a sibling of `abc`, never its child. */
 export function encodeId(id: string): string {

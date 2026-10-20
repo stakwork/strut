@@ -48,7 +48,7 @@ export default defineStep({
     `Run a workflow on ANOTHER strut (a PEER this one has on file — GET /peers; in a prompt, @<id>) and return its result: { peer, workflow, runId, status, output?, error?, durationMs }. ` +
     `The run executes on the peer, under the peer's secrets and billing for this run's principal (forwarded as x-strut-actor); its files and artifacts stay there (an artifact path in its output is the peer's, and a graph ref_id in it is the peer's graph). ` +
     `Waits on the peer's event stream, reattaching if the connection drops; cancelling this run cancels the peer's. wait: false returns { peer, workflow, runId, status: "running" } at once and leaves the run going. ` +
-    `A refused launch fails this step with the peer's message (job_busy:, an unknown workflow); an unknown peer fails peer_unknown:; a peer's run that died with its process and was not resumed fails peer_run_stale:. ` +
+    `A peer runs only a workflow whose YAML says \`peer: true\`, as published (no params), under a job of its own: a refused launch fails this step with the peer's message (not open to peers, job_busy:, an unknown workflow); an unknown peer fails peer_unknown:; a peer's run that died with its process and was not resumed fails peer_run_stale:. ` +
     `\`job\` names a job on the PEER to launch under — this run's own job is never forwarded (no shared directory across struts). Nothing returned is thrown: a child that failed is status "error" with its message.\n\n${EXAMPLE}`,
   input: z.object({
     peer: z.string().describe("The peer's id, as GET /peers lists it (hive registers workspaces by slug: @acme-web → acme-web)"),
@@ -57,7 +57,7 @@ export default defineStep({
     params: z
       .record(z.string(), z.any())
       .optional()
-      .describe("Overrides for the workflow's `params` knobs on the peer, shallow-merged over its defaults."),
+      .describe("Overrides for the workflow's `params` knobs on the peer, shallow-merged over its defaults. A peer reached on its peer key (STRUT_PEER_KEY — what a peer record should hold) refuses them: it runs a workflow as published."),
     version: z.string().optional().describe("A specific version on the peer. Defaults to its active version."),
     job: z
       .string()

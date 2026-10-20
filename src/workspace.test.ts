@@ -83,6 +83,15 @@ steps:
       );
     });
 
+    it("takes `peer:` as `true` or nothing — a mistyped one fails the publish", async () => {
+      const yamlWith = (peer: string) => `name: p\npeer: ${peer}\nsteps:\n  - id: a\n    type: log\n    config:\n      message: hi\n`;
+      await assert.rejects(() => ws.publishWorkflow("p", "v1", yamlWith('"yes"')), /invalid `peer:` key/);
+      await ws.publishWorkflow("p", "v1", yamlWith("true"));
+      assert.equal((await ws.getWorkflow("p")).peer, true);
+      await ws.publishWorkflow("q", "v1", { steps: [{ id: "a", type: "log", config: { message: "hi" } }], peer: true });
+      assert.equal((await ws.getWorkflow("q")).peer, true, "a steps publish renders it too");
+    });
+
     it("points at an unquoted ': ' inside a plain value", async () => {
       const badYaml = `name: bad
 description: Tells a second joke whose topic is "not about: <first joke>".

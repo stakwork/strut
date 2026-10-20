@@ -38,16 +38,16 @@ and cancel / pause / resume (§6) of a run a peer launched — that run's
 `run.start` carries `origin: "peer"`. Anything else is a `403`.
 `x-strut-actor` is honored beside it: a peer's launch names the person it
 is for. A host that authenticates requests itself decides the scope per
-request instead (`createStrut({ resolveScope })`). A launch is not narrowed
-by workflow: a peer can run any workflow here, and one whose agent has
-`bash` reaches whatever this server can.
+request instead (`createStrut({ resolveScope })`). A peer launches only a
+workflow whose YAML says `peer: true`, as published, in a namespace of its
+own (§3, "A peer's launch").
 
 ## 1. Publish
 
 | Method | Path                | Body                                                                 | Response |
 | ------ | ------------------- | -------------------------------------------------------------------- | -------- |
-| POST   | `/workflows`        | `{ name, steps \| yaml, input?, params?, claims?, description?, category?, source? }` | 201 `{ ok, workflow, version: "v1", active: "v1", renamed, requested, claims? }` |
-| POST   | `/workflows/:name`  | `{ version, steps \| yaml, input?, params?, claims?, description?, source? }` | 201 `{ ok, workflow, version, active, claims? }` |
+| POST   | `/workflows`        | `{ name, steps \| yaml, input?, params?, claims?, peer?, description?, category?, source? }` | 201 `{ ok, workflow, version: "v1", active: "v1", renamed, requested, claims? }` |
+| POST   | `/workflows/:name`  | `{ version, steps \| yaml, input?, params?, claims?, peer?, description?, source? }` | 201 `{ ok, workflow, version, active, claims? }` |
 
 - `steps` is an array of step objects (below) and the server writes the YAML;
   `yaml` is the whole file as text, `input:` / `params:` / `claims:` blocks
@@ -63,6 +63,10 @@ by workflow: a peer can run any workflow here, and one whose agent has
   own: `seed` (a host's boot-time seeder), `builder` (the chat builder),
   `agent` (`meta/publish-workflow`), `promote` (a promoted param). Versions
   published before this was recorded have none.
+- `peer: true` at the top of the YAML (or `peer: true` beside `steps`)
+  opens the workflow to other struts: it is what a peer's launch needs
+  (§3). Content, so it is in the version's `hash`; anything but `true` or
+  absent is a 400.
 - 400 for what the workspace refuses — a bad `input:` block, or an unquoted
   template (`message: {{ input.x }}` parses as a YAML mapping; write
   `message: "{{ input.x }}"`).
@@ -122,6 +126,18 @@ returns everything.
 | `title`          | the job's name (`plans/job-index.md`), recorded on the JOB, never on the run: the host's label for it, kept until a later launch carries another. 400 without `job` |
 | `jobCallback`    | `{ url }` (http/https) — the JOB's live updates (`job.update`: a hold taken or let go, a check's evidence, a verify ended, a step's screenshot or walkthrough frame) are POSTed there as they happen, from every run under the job; see `CALLBACKS.md` §5. Kept on the job, never returned; the latest launch that carries one wins, `null` clears it, absent keeps it. With or without `job`, the jobs THIS run starts (`job/start`, `job/continue`) inherit it — an orchestrator turn's host hears every job it starts at one URL, each event naming its `job` and `runId`. 400 for another scheme |
 | `mcp`            | `[{ name, url, token?, headers?, toolFilter? }]` (`McpServer`, `src/core.ts`; at most 10) — YOUR MCP servers, the way back into you for this run's agents: every `agent` step gets their tools as `<name>_<tool>` unless it says `mcp: false`, and so do the jobs a turn starts (`job/start`, `job/continue`) and the runs it launches (`meta/run-workflow`) — never a peer. `url` is a Streamable HTTP endpoint (http/https); `token` is sent as `Authorization: Bearer <token>`, `headers` for any other scheme; `toolFilter` keeps those tools only (names or globs). `name`: letters, digits, `_`, `-`, unique. A bad entry is a 400 and nothing launches. The log records `mcp: [{ name, origin }]` only; the entries are kept beside it for a resume and returned by nothing. A server that cannot be reached when an agent starts is skipped, the agent going on without its tools |
+
+**A peer's launch** (the peer key, Auth) is narrower. The workflow — the
+version launched, for `/:version/run` — must say `peer: true` at the top
+of its YAML, else `403` (`workflow "x" is not open to peers`). It runs as
+published: `params`, `paramOverrides` or `runId` in the body is a `403`
+(`a peer launches a workflow as published — drop params`). And it runs in
+a namespace of its own: its `job` is kept as `peer/<job>` (what
+`run.start.job`, `ctx.job` and `GET /jobs/:id` say), and every agent
+session the run opens is `peer/<id>` — a name a peer chooses never opens
+a local job or a local thread. A peer's durable resume (§6) of a run it
+launched is refused the same way when the version it would run does not
+say `peer: true`.
 
 The run is **detached**: the 202 comes back before anything executes, the
 run keeps going whether or not you stay connected, and every event is
@@ -616,9 +632,11 @@ path in it is the peer's (`/jobs/<id>/files/…` or `/artifacts/<runId>/…`
 THERE), and a graph `ref_id` in it is the peer's graph's. `wait: false`
 returns `{ peer, workflow, runId, status: "running" }` at once. Cancelling
 the caller's run POSTs `…/cancel` on the peer. `job` names a job ON THE
-PEER; the caller's own job is never forwarded (no shared directory across
-struts). A launch the peer refuses fails the step with the peer's message
-(`job_busy:`, an unknown workflow); an id not on file is `peer_unknown:`; a
+PEER (kept there as `peer/<job>`, §3); the caller's own job is never
+forwarded (no shared directory across struts). On its peer key a peer
+runs only a `peer: true` workflow, without `params` (§3). A launch the
+peer refuses fails the step with the peer's message (not open to peers,
+`job_busy:`, an unknown workflow); an id not on file is `peer_unknown:`; a
 peer that stays unreachable is `peer_unreachable:`; a peer run that died
 with its process and was not resumed there is `peer_run_stale:`.
 

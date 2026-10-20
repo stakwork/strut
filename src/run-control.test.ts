@@ -15,6 +15,7 @@ import { WorkspaceManager } from "./workspace.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { RunController, CancelledError, isCancelledError } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart, transitiveDependents } from "./journal.js";
+import type { SessionsCapability } from "./session-store.js";
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
@@ -1143,7 +1144,7 @@ describe("run control endpoints", () => {
         await workspace.publishWorkflowByContent(
           wf,
           // Two steps: a cancel lands on the checkpoint between them.
-          [`name: ${wf}`, "steps:", "  - id: a", "    type: gate", `    config: { name: ${wf} }`, "  - id: b", "    type: value", "    config: { result: 1 }"].join("\n"),
+          [`name: ${wf}`, "peer: true", "steps:", "  - id: a", "    type: gate", `    config: { name: ${wf} }`, "  - id: b", "    type: value", "    config: { result: 1 }"].join("\n"),
         );
       }
 
@@ -1182,6 +1183,83 @@ describe("run control endpoints", () => {
       const { runId: pinned } = (await versioned.json()) as { runId: string };
       assert.equal((await waitForSummary(store, "mine", pinned)).status, "success");
       assert.equal((await startOf("mine", pinned)).origin, "peer");
+    } finally {
+      for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await cleanup();
+    }
+  });
+
+  it("what a peer may launch: a workflow that says `peer: true`, as published, its job and sessions kept apart (plans/federation.md §3)", async () => {
+    const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    process.env["STRUT_PEER_KEY"] = "peer-key";
+    // What a run's steps see of its job and of a session they open.
+    const opener = defineStep({
+      type: "opener",
+      description: "opens a session and reports its id and the run's job",
+      input: z.object({ session: z.string() }),
+      output: z.any(),
+      async run(cfg, ctx) {
+        const s = await (ctx.services as { sessions: SessionsCapability }).sessions.open(cfg.session, { runId: ctx.runId, path: ctx.path });
+        s.release();
+        return { session: s.id, job: ctx.job ?? null };
+      },
+    });
+    const { strut, workspace, store, cleanup } = await makeServer({ opener });
+    const post = async (path: string, key: string, body: unknown) => {
+      const res = await strut.app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify(body),
+      });
+      return { status: res.status, body: (await res.json()) as { runId?: string; error?: string } };
+    };
+    const yaml = (name: string, peer: boolean) =>
+      [`name: ${name}`, ...(peer ? ["peer: true"] : []), "steps:", "  - id: o", "    type: opener", '    config: { session: "{{ input.session }}" }'].join("\n");
+    try {
+      await workspace.publishWorkflowByContent("closed", yaml("closed", false));
+      // v1 is closed; v2, the active one, is open.
+      await workspace.publishWorkflowByContent("open", yaml("open", false));
+      await workspace.publishWorkflowByContent("open", yaml("open", true));
+      const input = { session: "s1" };
+
+      // Only a workflow whose YAML says so — and only the version that says so.
+      const closed = await post("/workflows/closed/run", "peer-key", { input });
+      assert.equal(closed.status, 403);
+      assert.match(closed.body.error!, /"closed" is not open to peers/);
+      assert.equal((await post("/workflows/open/v1/run", "peer-key", { input })).status, 403, "v1 does not say it");
+      assert.equal((await post("/workflows/nope/run", "peer-key", { input })).status, 404);
+      const local = await post("/workflows/closed/run", "deploy-key", { input });
+      assert.equal(local.status, 202, "the deployment launches it as before");
+      assert.equal((await waitForSummary(store, "closed", local.body.runId!)).status, "success");
+
+      // As published: nothing that changes how it runs.
+      for (const extra of [{ params: { session: "x" } }, { paramOverrides: { child: { x: 1 } } }, { runId: "1700000000000" }]) {
+        const refused = await post("/workflows/open/run", "peer-key", { input, ...extra });
+        assert.equal(refused.status, 403, JSON.stringify(extra));
+        assert.match(refused.body.error!, new RegExp(`drop ${Object.keys(extra)[0]}`));
+      }
+      assert.deepEqual(await store.listRuns("open"), [], "nothing launched");
+
+      // Its job and its sessions are its own: what the peer names is kept
+      // under peer/, never a local job's or a local thread.
+      const launched = await post("/workflows/open/run", "peer-key", { input, job: "j1" });
+      assert.equal(launched.status, 202);
+      const theirs = await waitForSummary(store, "open", launched.body.runId!);
+      assert.equal(theirs.status, "success", JSON.stringify(theirs.error));
+      assert.deepEqual(theirs.output, { session: "peer/s1", job: "peer/j1" });
+      const start = (await store.getRunEvents("open", launched.body.runId!)).find((e) => e.type === "run.start")!;
+      assert.equal(start.origin, "peer");
+      assert.equal(start.job, "peer/j1");
+      const ours = await post("/workflows/open/run", "deploy-key", { input, job: "j1" });
+      assert.deepEqual((await waitForSummary(store, "open", ours.body.runId!)).output, { session: "s1", job: "j1" });
+
+      // The flag reads back with the flow.
+      const flowRes = await strut.app.request("/workflows/open/flow", { headers: { authorization: "Bearer deploy-key" } });
+      assert.equal(((await flowRes.json()) as { peer?: boolean }).peer, true);
     } finally {
       for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
         if (value === undefined) delete process.env[name];
