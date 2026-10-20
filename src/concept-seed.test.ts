@@ -6,6 +6,10 @@ import { join } from "node:path";
 import http from "node:http";
 import { parseConceptFile, planConceptSeed, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
 import { builderSystem, renderBuilderSystem } from "./ai/builder-system.js";
+import conceptStep, { renderConceptSection } from "./steps/lib/context/concept.js";
+import { accessedNodesOf, defineStep } from "./core.js";
+import { runSingleStep } from "./run-step.js";
+import { z } from "zod";
 import { createRegistry } from "./steps/registry.js";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -62,6 +66,9 @@ describe("concept files (pure)", () => {
     assert.ok(text.includes('graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'));
     assert.ok(!renderBuilderSystem({ name: "Workflow Builder", children: [] }).includes("Kinds recorded"));
     assert.ok(renderBuilderSystem({ name: "W", docs: "x".repeat(7000), children: [] }).includes(`${"x".repeat(6000)}…`), "docs are capped");
+    const job = renderConceptSection({ name: "Job", children: [{ name: "Explore" }] }, "graph_graph_get");
+    assert.ok(job.includes('graph_graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "the tool the agent calls");
+    assert.ok(job.includes("- Explore\n"));
   });
 });
 
@@ -200,6 +207,26 @@ for (const tb of testBackends()) {
       assert.ok(text!.includes("- Janitor — Cleans something up."));
       assert.equal(await builderSystem({ registry: await createRegistry([]), services: {} }), undefined, "no graph, no section");
     });
+
+    it("context/concept renders a page and the kinds under it for an agent's prompt, reports the page it read, and is empty without one", async () => {
+      const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
+      await page("Explore", "How to explore here.", { description: "Finding out how something works.", parent: "Job" });
+      await seedConcepts(b, [set()]);
+      const run = (config: Record<string, unknown>, services: Record<string, unknown> = { graph: b }) =>
+        conceptStep.run(conceptStep.input.parse(config), { services } as never);
+
+      const out = await run({ name: "Job" });
+      assert.ok(out.text.startsWith('Workspace knowledge — the "Job" Concept'), out.text);
+      assert.ok(out.text.includes("To record a new kind, add a child Concept here"), "the page's docs");
+      assert.ok(out.text.includes("- Explore — Finding out how something works."), "its kinds");
+      assert.ok(out.text.includes('graph_graph_get({ node_type: "Concept", name: "<name>"'), "opened with the agent's name for graph-get");
+      assert.deepEqual(accessedNodesOf(out)?.map((n) => n.ref_id), [strut["Job"]!.ref_id], "the page it read, never its children");
+
+      assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "no such page");
+      assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no graph");
+      const viaRegistry = await runSingleStep("context/concept", await createRegistry([]), { graph: b }, { config: { name: "Job", tool: "graph_get" } });
+      assert.ok((viaRegistry.output as { text: string }).text.includes('graph_get({ node_type: "Concept"'), "discovered as a lib step");
+    });
   });
 }
 
@@ -241,6 +268,28 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     assert.deepEqual(await names(), []);
     await make();
     assert.deepEqual(await names(), ["Job", "Workflow Builder"]);
+  });
+
+  it("puts the Job page at the end of the job agent's system prompt", async () => {
+    const systems: string[] = [];
+    // Stands in for the core `agent` step: records the system prompt it was handed.
+    const fakeAgent = defineStep({
+      type: "agent",
+      input: z.object({ system: z.string() }).passthrough(),
+      output: z.any(),
+      async run(cfg) {
+        systems.push(cfg.system);
+        return { result: "ok", object: { text: "ok", artifacts: [] }, steps: 1, usage: {}, cost: 0 };
+      },
+    });
+    const strut = await make({ registry: await createRegistry([fakeAgent]) });
+    const res = await strut.run("job", { prompt: "How does billing work?" });
+    assert.equal(res.status, "success", JSON.stringify(res.error));
+    const [system] = systems;
+    assert.ok(system!.startsWith("You are working on a JOB with a person"), "strut's prompt leads");
+    const at = system!.indexOf('Workspace knowledge — the "Job" Concept');
+    assert.ok(at > 0 && system!.slice(0, at).endsWith("verifies again.\n\n"), "the page follows the prompt after a blank line");
+    assert.ok(!system!.includes("open the `Job` Concept: graph/graph-get"), "no tool call to make for the list");
   });
 
   it("puts the Workflow Builder page in a chat's system prompt unless the host passes its own", async () => {

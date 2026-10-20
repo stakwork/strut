@@ -30,8 +30,8 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     const flow = flowFromYaml(JOB_WORKFLOW, "v1", text);
     assert.deepEqual(
       flow.steps.map((s) => s.type),
-      ["job/dir", "foreach", "if", "agent", "acp/prompt", "pack"],
-      "job/dir → checkouts → strut's agent, or a local one over ACP → pack",
+      ["job/dir", "foreach", "context/concept", "if", "agent", "acp/prompt", "pack"],
+      "job/dir → checkouts → the Job page → strut's agent, or a local one over ACP → pack",
     );
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["workspace", "session", "repos", "agent", "mode", "model", "cwd"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
@@ -119,15 +119,15 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
   it("runs on strut alone: with `job` on the launch the agent works in the job's directory on the job's thread and the artifacts resolve into it; without one it is a one-shot", async () => {
     const dir = await mkdtemp(join(tmpdir(), "job-seed-run-"));
     try {
-      const turns: Array<{ cwd: string; session: string | undefined; prompt: string; tools: unknown }> = [];
+      const turns: Array<{ cwd: string; session: string | undefined; prompt: string; tools: unknown; system: string }> = [];
       // Stands in for the core `agent` step: writes the plan into its cwd and
       // answers in the step's output shape (`object` is the structured answer).
       const fakeAgent = defineStep({
         type: "agent",
-        input: z.object({ cwd: z.string(), prompt: z.string(), session: z.string().optional(), agentTools: z.any() }).passthrough(),
+        input: z.object({ cwd: z.string(), prompt: z.string(), session: z.string().optional(), agentTools: z.any(), system: z.string() }).passthrough(),
         output: z.any(),
         async run(cfg) {
-          turns.push({ cwd: cfg.cwd, session: cfg.session, prompt: cfg.prompt, tools: cfg.agentTools });
+          turns.push({ cwd: cfg.cwd, session: cfg.session, prompt: cfg.prompt, tools: cfg.agentTools, system: cfg.system });
           const { writeFileSync } = await import("node:fs");
           writeFileSync(join(cfg.cwd, "plan.md"), `# Plan (turn ${turns.length})\n`);
           return { result: "wrote the plan", object: { text: "wrote the plan", artifacts: [{ id: "plan", title: "Plan", path: "plan.md" }] }, steps: 1, usage: {}, cost: 0 };
@@ -145,6 +145,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(turns[0]!.session, job, "the job's thread");
       assert.equal(turns[0]!.prompt, "Workspace: @acme, the one this strut belongs to. Plan dark mode.");
       assert.deepEqual(turns[0]!.tools, paramsOf(await jobWorkflowYaml()).tools, "params.tools reaches agentTools");
+      assert.equal(turns[0]!.system.trimEnd(), paramsOf(await jobWorkflowYaml()).system.trimEnd(), "no graph: strut's prompt alone, no Concept section");
       assert.ok(existsSync(join(dir, "jobs", job, "plan.md")));
 
       const links = ((await (await strut.app.request(`/workflows/${JOB_WORKFLOW}/runs/${first.runId}/artifacts`)).json()) as { artifacts: Array<{ id: string; kind?: string; url?: string }> }).artifacts;

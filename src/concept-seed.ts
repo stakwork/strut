@@ -17,7 +17,7 @@ import { composeNodeKey } from "./graph/node-writer.js";
  * name — a file of any set in the same call, or a node already in the
  * graph), body = `docs`. Strut seeds its own set (`STRUT_CONCEPTS`: the
  * `Workflow Builder` page the builder's prompt reads, the `Job` page the job
- * agent opens first) at boot; a host seeds its own sets with the same call
+ * workflow puts in its agent's prompt) at boot; a host seeds its own sets with the same call
  * once `createStrut` returned, so a page of its own can hang under one of
  * strut's.
  *
