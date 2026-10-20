@@ -44,7 +44,7 @@ const isStringRecord = (v: unknown): v is Record<string, string> =>
  */
 export function parseMcpServers(raw: unknown): McpServer[] | undefined {
   if (raw == null) return undefined;
-  if (!Array.isArray(raw)) throw new Error("mcp must be an array of { name, url, token?, headers?, toolFilter? }");
+  if (!Array.isArray(raw)) throw new Error("mcp must be an array of { name, url, token?, headers?, toolFilter?, readOnly? }");
   if (raw.length > MCP_SERVERS_MAX) throw new Error(`mcp: at most ${MCP_SERVERS_MAX} servers`);
   const seen = new Set<string>();
   return raw.map((entry, i) => {
@@ -69,12 +69,14 @@ export function parseMcpServers(raw: unknown): McpServer[] | undefined {
     if (e.toolFilter !== undefined && !(Array.isArray(e.toolFilter) && e.toolFilter.every((t) => typeof t === "string"))) {
       throw new Error(`${at}.toolFilter must be an array of tool names`);
     }
+    if (e.readOnly !== undefined && typeof e.readOnly !== "boolean") throw new Error(`${at}.readOnly must be a boolean`);
     return {
       name: e.name,
       url: e.url,
       ...(e.token ? { token: e.token } : {}),
       ...(e.headers && Object.keys(e.headers).length ? { headers: e.headers } : {}),
       ...(e.toolFilter?.length ? { toolFilter: e.toolFilter as string[] } : {}),
+      ...(e.readOnly === true ? { readOnly: true } : {}),
     };
   });
 }

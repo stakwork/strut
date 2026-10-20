@@ -54,6 +54,10 @@ export interface McpServer {
   token?: string;
   /** Request headers, for any other scheme; `token` wins on Authorization. */
   headers?: Record<string, string>;
+  /** The caller vouches that this server's tools only READ (a knowledge
+   *  door): an agent that asks before each tool call — a local coding agent
+   *  over ACP — is told yes in every mode, as for its own reads. */
+  readOnly?: boolean;
   /** Only these of its tools (exact names, or globs: `get_*`); absent or
    *  empty = all. */
   toolFilter?: string[];

@@ -4284,11 +4284,27 @@ export async function createStrut<TServices = unknown>(
       });
       return createMcpDoor(() => toolsetServer({ tools, instructions: assistantInstructions(publicUrl) })).handle(c.req.raw);
     };
+    // The knowledge door: the graph's read steps and nothing else, for an
+    // outside agent that should know how this deployment works (its Concept
+    // pages) without the builder's writes, runs or secrets — e.g. the local
+    // coding agent an acp/prompt step drives, handed this door as one of the
+    // run's MCP servers. Same key as every route. No graph → no tools.
+    const knowledgeHandler = async (c: Context) => {
+      const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
+      const { buildKnowledgeTools } = await import("./ai/tools.js");
+      const { deps } = await mcpDeps(c);
+      const tools = buildKnowledgeTools(deps);
+      const instructions =
+        "Read this deployment's knowledge graph. Concept nodes are pages: graph_get { node_type: \"Concept\", name, children: \"PARENT_OF\" } " +
+        "returns a page's docs and its child pages; open a child the same way, by its ref_id. graph_search finds nodes by words. Read only: nothing here writes.";
+      return createMcpDoor(() => toolsetServer({ tools, instructions })).handle(c.req.raw);
+    };
     app.post("/mcp/builder", builderHandler);
+    app.post("/mcp/knowledge", knowledgeHandler);
     app.post("/mcp", assistantDoor ? assistantHandler : builderHandler);
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
-    for (const path of ["/mcp", "/mcp/builder"]) {
+    for (const path of ["/mcp", "/mcp/builder", "/mcp/knowledge"]) {
       app.get(path, notAllowed);
       app.delete(path, notAllowed);
     }

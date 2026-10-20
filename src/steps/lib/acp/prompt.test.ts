@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import acpStep, { decidePermission, parseAgent } from "./prompt.js";
+import acpStep, { acpMcpServers, decidePermission, parseAgent } from "./prompt.js";
 
 /**
  * A fake ACP agent: a few dozen lines of node on stdio. Each prompt streams
@@ -21,6 +21,7 @@ const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...m }
 const update = (sessionId, u) => send({ method: "session/update", params: { sessionId, update: u } });
 const turns = {};
 let pendingPerm = null;
+let mcpGiven = null;
 const modes = { currentModeId: "default", availableModes: [{ id: "default" }, { id: "plan" }, { id: "acceptEdits" }, { id: "bypassPermissions" }] };
 let held = null;
 let cancels = 0;
@@ -34,8 +35,8 @@ rl.on("line", (line) => {
     }, 700);
     return;
   }
-  if (m.method === "initialize") return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-  if (m.method === "session/new") { const id = "s-" + Date.now(); turns[id] = 0; return send({ id: m.id, result: { sessionId: id, modes } }); }
+  if (m.method === "initialize") return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: !process.env.FAKE_NO_HTTP_MCP } } } });
+  if (m.method === "session/new") { const id = "s-" + Date.now(); turns[id] = 0; mcpGiven = m.params.mcpServers; return send({ id: m.id, result: { sessionId: id, modes } }); }
   if (m.method === "session/load") {
     const id = m.params.sessionId;
     turns[id] = Number(process.env.FAKE_PRIOR_TURNS || 0);
@@ -45,6 +46,10 @@ rl.on("line", (line) => {
   if (m.method === "session/set_mode") { process.stderr.write("mode=" + m.params.modeId + "\\n"); return send({ id: m.id, result: {} }); }
   if (m.method === "session/prompt") {
     const sid = m.params.sessionId;
+    if (process.env.FAKE_ECHO_MCP) {
+      update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(mcpGiven) } });
+      return send({ id: m.id, result: { stopReason: "end_turn" } });
+    }
     if (process.env.FAKE_HOLD) { held = { prompt: m.id, sid }; return; }
     turns[sid] = (turns[sid] || 0) + 1;
     update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Turn " + turns[sid] + ": " } });
@@ -74,12 +79,13 @@ rl.on("line", (line) => {
 });
 `;
 
-function setup(control?: { state: string; checkpoint: () => Promise<void> }) {
+function setup(control?: { state: string; checkpoint: () => Promise<void> }, mcp?: unknown[]) {
   const dir = mkdtempSync(join(tmpdir(), "acp-test-"));
   const agent = join(dir, "fake-agent.cjs");
   writeFileSync(agent, FAKE_AGENT);
   const events: Array<Record<string, any>> = [];
   const ctx = {
+    ...(mcp ? { mcp } : {}),
     runId: "r1",
     path: "wf/work",
     scope: {},
@@ -182,6 +188,43 @@ describe("acp/prompt", () => {
   it("rejects a session name a missing template would produce", async () => {
     const { run } = setup();
     await assert.rejects(run({ prompt: "x", session: "/review" }), /session has an empty segment/);
+  });
+});
+
+describe("acp/prompt and the run's MCP servers", () => {
+  const kb = { name: "kb", url: "http://127.0.0.1:9/mcp/knowledge", token: "t0k", readOnly: true };
+
+  it("hands the agent the run's servers in ACP's shape, the token as an Authorization header", async () => {
+    const { run } = setup(undefined, [kb, { name: "crm", url: "https://crm.example/mcp", headers: { "x-org": "7" } }]);
+    const out = await run({ prompt: "x" }, { FAKE_ECHO_MCP: "1" });
+    assert.deepEqual(JSON.parse(out.text), [
+      { type: "http", name: "kb", url: kb.url, headers: [{ name: "Authorization", value: "Bearer t0k" }] },
+      { type: "http", name: "crm", url: "https://crm.example/mcp", headers: [{ name: "x-org", value: "7" }] },
+    ]);
+  });
+
+  it("hands none with mcp: false, or to an agent that can't take MCP over HTTP", async () => {
+    assert.deepEqual(JSON.parse((await setup(undefined, [kb]).run({ prompt: "x", mcp: false }, { FAKE_ECHO_MCP: "1" })).text), []);
+    assert.deepEqual(JSON.parse((await setup(undefined, [kb]).run({ prompt: "x" }, { FAKE_ECHO_MCP: "1", FAKE_NO_HTTP_MCP: "1" })).text), []);
+  });
+
+  it("says yes to a read-only server's tools in every mode, and only to those", () => {
+    const req = (title: string) => ({
+      sessionId: "s",
+      toolCall: { toolCallId: "t", title, kind: "other" },
+      options: [
+        { optionId: "a", name: "Yes", kind: "allow_once" },
+        { optionId: "r", name: "No", kind: "reject_once" },
+      ],
+    });
+    assert.equal(decidePermission("plan", req("mcp__kb__graph_get"), ["kb"]).allowed, true);
+    assert.equal(decidePermission("plan", req("mcp__crm__create_deal"), ["kb"]).allowed, false);
+    assert.equal(decidePermission("plan", req("mcp__kbx__graph_get"), ["kb"]).allowed, false, "a prefix of another name is not the same server");
+    assert.equal(decidePermission("plan", req("mcp__kb__graph_get")).allowed, false, "not vouched for: an ordinary other");
+  });
+
+  it("acpMcpServers: no servers is an empty list", () => {
+    assert.deepEqual(acpMcpServers(undefined), []);
   });
 });
 

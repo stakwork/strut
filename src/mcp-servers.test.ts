@@ -14,6 +14,16 @@ const deps = { tool, jsonSchema, toModelOutput: registryToolModelOutput };
 const text = (t: string) => ({ content: [{ type: "text", text: t }] });
 
 describe("parseMcpServers", () => {
+  it("keeps readOnly: true, drops false, rejects anything else", () => {
+    const [ro, plain] = parseMcpServers([
+      { name: "kb", url: "http://127.0.0.1:1/mcp/knowledge", readOnly: true },
+      { name: "other", url: "http://127.0.0.1:1/mcp", readOnly: false },
+    ])!;
+    assert.equal(ro!.readOnly, true);
+    assert.equal("readOnly" in plain!, false);
+    assert.throws(() => parseMcpServers([{ name: "kb", url: "http://x/", readOnly: "yes" }]), /readOnly must be a boolean/);
+  });
+
   it("absent or null is none; a valid list keeps only the known fields", () => {
     assert.equal(parseMcpServers(undefined), undefined);
     assert.equal(parseMcpServers(null), undefined);
