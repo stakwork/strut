@@ -29,7 +29,7 @@ export const ORCHESTRATOR_DESCRIPTION =
   "Launch it once per message — POST /workflows/orchestrator/run { input: { prompt, session }, callback }; without a session it is a one-shot. " +
   "Input: { prompt, session? (the conversation's thread), context?: { line } (put before the prompt: the time, the person's time zone) }. " +
   "Output: { text, artifacts, ask?: { message }, cost, session }, job's shape. " +
-  "params.tools (memory/*, job/start, continue, list, get, read) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
+  "params.tools (memory/*, job/start, continue, list, get, read, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
 
 const ORCHESTRATOR_YAML = new URL("./workflows/orchestrator.yaml", import.meta.url);
 

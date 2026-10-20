@@ -145,7 +145,7 @@ describe("the peers capability", () => {
     assert.equal(res.status, 200);
     assert.equal(calls[0]!.url, "http://cloud.test/workflows");
     assert.deepEqual(calls[0]!.init?.headers, { accept: "application/json", authorization: "Bearer tok-cloud" });
-    await assert.rejects(cap.fetch("nope", "/workflows"), /peer_unknown: no peer "nope"/);
+    await assert.rejects(cap.fetch("nope", "/workflows"), /peer_unknown: no peer "nope" — the peers on file: cloud/);
     assert.deepEqual(await cap.list(), [{ id: "cloud", baseUrl: "http://cloud.test" }]);
   });
 });

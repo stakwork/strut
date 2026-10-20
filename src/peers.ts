@@ -176,7 +176,12 @@ export function peersCapability(store: PeerStore, fetchImpl: PeerFetch = (u, i) 
     list: () => store.list(),
     async fetch(id, path, init) {
       const peer = await store.get(id);
-      if (!peer) throw new Error(`peer_unknown: no peer "${id}" — GET /peers lists the struts this one can call`);
+      if (!peer) {
+        const ids = (await store.list()).map((p) => p.id);
+        throw new Error(
+          `peer_unknown: no peer "${id}" — ${ids.length ? `the peers on file: ${ids.join(", ")}` : "no peers are on file"}`,
+        );
+      }
       return fetchImpl(`${peer.baseUrl}${path}`, {
         ...init,
         headers: { ...(init?.headers ?? {}), authorization: `Bearer ${peer.token}` },
