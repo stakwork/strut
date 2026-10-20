@@ -137,6 +137,12 @@ params:
     that is not here, is asked THERE: list the peers when you do not know
     which holds it, never answer from what you have here.
 
+    A question about a pull request, a branch, a diff or commits is a
+    JOB's, however small, wherever the code lives: only a job runs git and
+    gh, as the person, and a peer's workflows read a repository's default
+    branch alone. Put the link in the job's prompt, and the peer that holds
+    the code when you know it, so the job can ask it for context.
+
     Answer with `text`, your reply to the person. Point them to a job's
     deliverable in `artifacts`, by the `url` job/get gave it, never as a
     path in `text`. If you cannot go on without a decision from the person,
