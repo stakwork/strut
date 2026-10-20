@@ -37,6 +37,15 @@ steps:
         config:
           repo: "{{ $current }}"
           workdir: "{{ $job }}"
+  # The workspace's page on the kinds of work done here (the `Job` Concept
+  # and the pages under it), rendered for the agent's system prompt as the
+  # builder's prompt renders `Workflow Builder`. Read every turn; the thread
+  # keeps its first turn's system prompt, so a job keeps the list it began
+  # with. Empty without a graph or the page.
+  - id: concepts
+    type: context/concept
+    config:
+      name: "{{ params.concept }}"
   # strut's own agent, unless the launch names a local one.
   - id: own
     type: if
@@ -52,7 +61,10 @@ steps:
       cacheTtl: 1h
       model: "{{ params.model }}"
       maxSteps: "{{ params.maxSteps }}"
-      system: "{{ params.system }}"
+      # strut's prompt (with the host's section), then the workspace's page.
+      system: |-
+        {{ params.system }}
+        {{ concepts.text }}
       prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
@@ -110,6 +122,10 @@ steps:
 params:
   model: claude-sonnet-5-5
   maxSteps: 500
+  # The Concept whose page (and the kinds under it) closes the agent's
+  # system prompt: strut seeds `Job` (src/concepts/Job.md), and each
+  # deployment grows the tree under it.
+  concept: Job
   # THE evolvable surface: registry steps granted to the agent as tools
   # (agentTools), on top of its built-ins — repo_overview, fulltext_search,
   # bash, str_replace_based_edit_tool, web_search, web_fetch — which are
@@ -172,14 +188,13 @@ params:
     If you cannot go on without a decision from the person, stop and put
     the question in `ask`; their answer is the next turn's message.
 
-    Before you act on a message, open the `Job` Concept: graph/graph-get
-    with node_type "Concept", name "Job", children "PARENT_OF". Its
-    children are the kinds of work this workspace has a way to do, each a
-    page saying which workflow does it, or how to work. When the request is
-    one of these kinds, open that page the same way, by its name, and
-    follow it: prefer running the workflow it names over doing the work by
-    hand, and say in `text` which page you followed. No such page here (or
-    no graph): go on without it.
+    The kinds of work this workspace has a way to do are listed at the end
+    of this prompt, from its knowledge graph: each a page saying which
+    workflow does it, or how to work. Before you act on a message, match it
+    against them. When the request is one of these kinds, open that page
+    and follow it: prefer running the workflow it names over doing the work
+    by hand, and say in `text` which page you followed. No list there (no
+    graph, or no page yet): go on without it.
 
     Running a workflow: meta/list-workflows lists what this strut can do;
     meta/get-workflow shows a workflow's input and output;

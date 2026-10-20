@@ -41,8 +41,8 @@ export interface JobSeedOptions {
   approve?: string[];
   /** A section appended to the agent's system prompt after strut's — the
    *  deployment's own instructions. Which workflow does which kind of work
-   *  is not one: that is the `Job` Concept's children, which strut's prompt
-   *  already opens. */
+   *  is not one: that is the `Job` Concept's children, which the workflow
+   *  puts after the prompt (`context/concept`). */
   system?: string;
   /** The model the agent runs on, in place of the template's. `null`: none
    *  pinned, so it runs on the deployment's connected model
