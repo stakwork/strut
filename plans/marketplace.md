@@ -8,11 +8,15 @@
 > downloading and using a package, paid or not** — paid EXECUTION and
 > bring-your-own-billing are a later plan (§6), and a package may be only
 > Concepts, or only steps (§1, §3). Rows marked *ruled* in "Decided" are
-> the owner's; every other row is *proposed*. Companion plans this builds
+> the owner's; every other row is *proposed*. Extended 2026-10-19: §11
+> says where an environment a package needs — a binary, a service, a
+> specialized container such as a Kali box — goes: declared in
+> `requires`, provided by the deployment, never a folder of the package.
+> Companion plans this builds
 > on: `federation.md` (peers, `strut/run-workflow`, and §2.3's git
 > library, which this subsumes; see §9), `claims.md` (the contract a
 > package carries), `specs/ENV_SPEC.md` (the binaries a package needs).
-> Code citations are on `strut@83a5b10`.
+> Code citations are on `strut@83a5b10`; §11's on `strut@19a895e`.
 
 ## Problem
 
@@ -63,6 +67,7 @@ What exists, and what's missing:
 | Price | **Not in the package.** The source gates the download: a private repo's ACL, or a token the seller mints for the peer's archive route (§6) |
 | The index | **A list, not a service.** `index.yaml` in a git repo, or a peer's `GET /packages`. ***Ruled:* no public index yet**; each deployment names its own (§7) |
 | Who installs | **A person.** Installing is publishing third-party code onto the server: a keyed `full`-scope route, or a builder tool that asks first. No `meta/*` twin (§8) |
+| An environment a package needs | **Declared in `requires`, provided by the deployment, never shipped.** A binary is `requires.binaries`, a network service is a URL and token in `requires.secrets`, a specialized container is a `requires.runtimes` entry naming a RUNTIME — a place `ctx.services.shell` spawns — pinned to an image digest the deployment builds from. No folder, no Dockerfile, no pull by strut (§11) |
 
 ## Design in one paragraph
 
@@ -122,7 +127,9 @@ requires:
   pins any kind. **A new kind is a new folder** — prompt files, hotword
   lists, cassettes later are one folder and one publisher each — and an
   unknown top-level folder is REFUSED, not ignored, so a package from a
-  newer strut fails whole instead of installing half.
+  newer strut fails whole instead of installing half. What has no
+  publisher in strut — a binary, a service, a container — is not a kind:
+  it is a requirement (§11).
 - **A Concept's record is its stamp.** A Concept has no version record;
   its node carries `unique_source_id = pkg/<package>/<file>@<hash>`
   (`seedConcepts`), and the installed directory stays under
@@ -321,8 +328,10 @@ happens upstream — the left-pad rule). One interface,
 | `git+https://host/org/repo@<ref>[#<path>]` | `git/checkout`'s bare cache under `<dataDir>/repos`, credential from a named secret (`tokenSecret`, default `GITHUB_TOKEN`) | GitHub, Forgejo, GitLab — anything git. The repo's ACL is the access control, so a private repo is a private package. The recorded ref is what an update re-resolves |
 | `peer:<id>/<publisher>/<name>[@sha256:…]` | `GET {peer}/packages/:publisher/:name/archive` through `ctx.services.peers`: a tar of the directory, the digest in a header | A strut serves what it built or installed, by digest, to a holder of its peer key (federation §3: read scope) — an org's struts sharing, a desktop pulling from its cloud strut. The same route takes a seller-minted token when selling (§6) |
 
-OCI (`oci://…`, ORAS) is not designed: the digest model is OCI's already,
-so it would be a fourth resolver and nothing else.
+OCI (`oci://…`, ORAS) as a TRANSPORT for packages is not designed: the
+digest model is OCI's already, so it would be a fourth resolver and
+nothing else. OCI *images* are something else — how an environment a
+package needs is named and pinned — and that is §11.
 
 **Exporting is the other direction, for git:** federation §2.3's
 `export_workflow` mechanics (`git/checkout` → write files → `git/push` →
@@ -456,6 +465,150 @@ plan subsumes it:
 | DRM, or a per-buyer signed manifest | A bought package is meant to be read and forked; a watermark contradicts that | Optional per-buyer signing |
 | An index as a service | A list in a repo, or a peer's fold, is an index already; a node type waits for a track record | `StrutPackage` nodes on an index strut |
 | Isolation in v1 | *Ruled*: in-process plus the secrets fence; a worker or container is a later piece that changes what a step can reach | Same, without the fence |
+| A Dockerfile or compose fragment in a package | An install would become a build; a container is the deployment's. The package pins an image digest and names a runtime (§11) | Nothing — the question came up 2026-10-19 |
+
+## 11. Environments — what a package needs but never carries
+
+A package is what strut publishes into its workspace: files, each with a
+publisher and a version record. Everything its steps need that strut does
+not publish — a binary, a service, a container — is **declared in
+`requires` and provided by the deployment**. That is already the rule for
+the host (AGENTS.md "Shell": *environment ≠ step; what's on PATH is the
+deployment's business*, and ENV_SPEC's `external`), and a specialized
+container is the same rule one process space over. Three kinds; only the
+third needs anything new:
+
+| The steps need | Example | Declared as | Reached through | Provided by |
+| --- | --- | --- | --- | --- |
+| A binary on PATH | `ffmpeg`, `yt-dlp` | `requires.binaries` — ENV_SPEC §9's workflow-level `requires`, folded over the package's items | `exec`, `ctx.services.shell` | ENV_SPEC's manifest (`env_add`), the image, the host |
+| A service over the network | another team's browser grid; a vector DB; a Neo4j | `requires.secrets` — its URL and token are secrets by NAME, like any credential | `ctx.services.http`; or a service object strut has (`ctx.services.browser` for anything that speaks Playwright's protocol) | the deployment: a compose service, a SaaS, whatever answers the URL |
+| A shell that is not the host's | a Kali box; a toolchain image; a GPU container | `requires.runtimes` (below) | `exec { runtime }`, `agent { runtime }` → `ctx.services.shell` | a named **runtime** the deployment configures |
+
+**Not a fourth folder.** A folder is an item: a file strut publishes, with
+a publisher, a version record and an `upstream` the fold reads. An image is
+built and hosted elsewhere, pulled by a container engine, and bound to a
+platform — strut has no publisher for it, and a `Dockerfile` or compose
+fragment in a package would make an install a *build* (root, minutes, a
+network, a platform), which ENV_SPEC §2 refuses for the host environment
+already: the engine image carries `pixi` and `uv`, and everything a
+deployment learns it needs lives on the volume. So a package **pins** an
+image the way it pins a package — an exact digest, OCI's own — and ships
+nothing to build. Same digest model, same refusal on disagreement (§1).
+That is also the answer to "more OCI": OCI *images* are how an environment
+is named (here); OCI *registries* as a transport for strut packages stay
+what §5 says, a fourth resolver and nothing else.
+
+**The other team's browser is a service, and needs nothing designed.** If
+their setup speaks Playwright's protocol, `BROWSER_WS_URL` points at it and
+strut's `browser/*` steps drive it unchanged (`BrowserService.fromEnv`,
+`src/browser/service.ts:268`). If it doesn't, their steps drive it through
+`ctx.services.http` with a URL and a token from `requires.secrets`, and
+ship as a package — `theirteam/browser/*` — whose Concept says what it is
+for. The container is theirs either way. `images/browser` is special only
+because strut's own service object knows Playwright; it is not a kind of
+thing a package ships.
+
+### 11.1 Runtimes — a named place a command runs
+
+A **runtime** is where `ctx.services.shell` spawns. The host is one (name
+`host`, always present, ENV_SPEC's prefix on its PATH); every other is
+deployment configuration, never a package's — `STRUT_RUNTIMES` (JSON) or
+`createStrut({ runtimes })`, two shapes:
+
+```json
+{
+  "kali":  { "url": "ws://kali:3000", "path": "<secret>" },
+  "cuda":  { "exec": ["ssh", "strut@gpu-box"] }
+}
+```
+
+- **`url` + `path`: an exec server** — `images/exec`, the twin of
+  `images/browser`: one small server (a static binary, so one `COPY
+  --from` line adds it to any base image — `FROM kalilinux/kali-rolling`
+  and nothing else) that takes a `ProcessRequest` and answers a
+  `ProcessResult` (`src/shell.ts:145`, `:171`) over a websocket on a
+  secret path, non-root, on a network of its own that strut joins. Because
+  it runs `runProcess`'s contract *inside* the container — stdin, the
+  per-stream caps, the timeout, the process-group kill, `onLeftover` — the
+  `exec` step and the agent's `bash` behave in a runtime exactly as on the
+  host, and strut holds no docker socket (root on the host) and no SSH
+  key. The browser image's trust shape, for a shell.
+- **`exec`: a command prefix** — the escape hatch for what a deployment
+  already has: `docker exec -i -w {cwd} strut-kali`, `podman exec`,
+  `ssh strut@box`, `kubectl exec -i`, `nsenter`. Strut spawns the prefix
+  on the host with the request's `cmd` and `args` appended, `{cwd}`
+  substituted; `runProcess`'s contract then holds for the prefix process
+  only — a kill ends `docker exec`, not necessarily what it started, and
+  the request's `env` crosses only if the prefix forwards it (`env:
+  ["-e", "{name}={value}"]`, a fragment repeated per variable, is the one
+  concession). Right for a desktop with Docker Desktop, where the person
+  owns the machine; the server image carries no docker CLI.
+
+**One tree, mounted at one path.** `cwd` is a path in the run's artifact
+directory or the job's (`exec`, `src/steps/core/exec.ts:141`), and the
+runtime must see it at the *same* path: the deployment mounts `dataDir`
+(the compose file's `strut-workspace` volume) into the runtime container
+where strut has it. Then the agent's file tools, `repo_overview` and
+`fulltext_search` stay on the host and its `bash` runs in the runtime,
+over one set of files, and `{{ dir.path }}` means the same thing on both
+sides. A runtime where `cwd` does not exist fails the call naming the
+path and the runtime, before anything runs.
+
+**What changes in code.** `ShellRequest` gains `runtime?: string`
+(`src/capabilities.ts:337`); the standard bag's `shell` dispatches by it,
+and a name that is not configured fails the call naming the runtimes that
+are. `exec` and `agent` gain a `runtime` config field (an `agent`'s `bash`
+tool goes through it; its other tools do not), and a custom step wrapping
+a CLI passes it through. It is config, so `step.start` records it and a
+check runs where its config says. `GET /health` lists the configured
+runtimes by name. Nothing else: no lifecycle, no pulls, no builds.
+
+### 11.2 The declaration
+
+```yaml
+requires:
+  secrets: [SHODAN_API_KEY]
+  binaries: [nmap]                   # on the host, or in a runtime named below
+  runtimes:
+    - name: kali                     # what the steps say: `exec { runtime: kali }`
+      image: docker.io/kalilinux/kali-rolling@sha256:…   # the publisher's suggestion; strut pulls nothing
+      binaries: [nmap, nikto, sqlmap]  # checked THROUGH the runtime at install, reported
+```
+
+- `name` is the package's word for it and the deployment's: a deployment
+  that calls its Kali box `pentest` configures `kali` as an alias, as it
+  would map any name. No registry of runtime names; a collision between
+  two packages wanting different things under one name is the
+  deployment's to resolve by configuring two.
+- `image` is a digest-pinned suggestion of what to build the runtime
+  from. Strut never pulls or runs it (v1); it is what the install ask
+  shows, and what a deployment copies into its compose file. A
+  deployment may run something else under that name — the install checks
+  `binaries` through the runtime (`which`, one call), not the image.
+- At install, a runtime that is not configured, or a binary a runtime
+  lacks, is **reported, not refused** — the rule §3 already applies to
+  secrets and host binaries. The builder's ask lists it with the image;
+  the fix is the deployment's (a compose service, a Docker Desktop
+  container), and there is **no `runtime_add` tool**: a container is the
+  deployment's, as ENV_SPEC's `external` is, and as `env_add` can add a
+  package but never a channel.
+
+### 11.3 What this is not
+
+- **Not isolation for installed code.** A runtime is where a *command*
+  runs; the package's steps still run in strut's process, with the secrets
+  fence (§3) and nothing more. Open question 1 stands.
+- **Not a per-run or per-job container.** A v1 runtime is long-running
+  and deployment-owned, shared by every run, the browser server's shape.
+  A fresh container per job — a Kali box that is this job's, a pod — is a
+  lifecycle: `runtime/start` would hold it on the job (`jobs.md` §6,
+  `ctx.services.jobs.hold`) and `runtime/stop` release it, and the pinned
+  `image` would then be what strut pulls. That is the lab's `pod/*` today
+  (a host-owned pool, `plans/pod-config.md`), and a strut-owned form is a
+  later plan.
+- **Not a sandbox.** What the runtime's container can reach on the
+  network, a command in it can — the compose file puts it on a network of
+  its own for that reason, as it does the browser.
 
 ## Step order
 
@@ -484,6 +637,11 @@ plan subsumes it:
    `search_packages` over indexes + peers.
 8. **Selling:** the package token on the archive route,
    `entitlements.json`, the fetch presenting it.
+9. **Runtimes** (§11.1), independent of 1–8 and useful before any of
+   them: `runtime` on `ShellRequest`, the two runtime shapes behind the
+   standard bag's `shell`, the field on `exec` and `agent`, `/health`;
+   then `images/exec`. `requires.binaries` / `requires.runtimes` join the
+   install ask in step 2 as reported items.
 
 ## Validation
 
@@ -511,6 +669,13 @@ plan subsumes it:
 - Peer: a package built on one strut installs on another through `peer:`;
   with selling on, an expired package token stops the next fetch and
   leaves the installed version running.
+- A runtime: with `STRUT_RUNTIMES` naming a container that shares the
+  workspace volume, `exec { runtime }` runs a command there and the
+  agent's `bash` does too, over the files its editor tool wrote on the
+  host; an unconfigured name fails naming the configured ones; a package
+  requiring a runtime the deployment lacks installs with it reported, and
+  the same package on a deployment that has it reports the binaries it
+  lacks through the runtime.
 - Concepts alone: a package of two Concept pages, one the other's parent,
   installs, shows in `GET /packages`, uninstalls; an edit to one page in
   the graph survives an update of the package and is reported as
@@ -530,7 +695,12 @@ plan subsumes it:
 3. **The checkout.** What mints the package token after a payment —
    Lightning through Sphinx, a card page — and who hosts it. A product
    question; the token is the same whatever answers it.
-4. **The track record.** Read-through (federation §2.1) is not built;
+4. **Per-job runtimes.** A container that is one job's — started from
+   the pinned image at first use, held on the job, released when the job
+   goes (§11.3) — is the natural next step once runtimes exist, and the
+   first time strut would pull an image. Whether strut should own that or
+   keep it the host's (the lab's pod pool) is open.
+5. **The track record.** Read-through (federation §2.1) is not built;
    until it is, an index carries no evidence and the buyer's strut
    measures from zero. Whether a publisher may *report* numbers into an
    index file, labelled as such, is open.
