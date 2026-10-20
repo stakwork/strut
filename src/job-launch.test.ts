@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -9,10 +9,11 @@ import { z } from "zod";
 
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
-import { defineStep } from "./core.js";
+import { defineStep, type StepContext } from "./core.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import type { JobLaunch, JobsCapability } from "./jobs.js";
+import { jobFileUrl } from "./artifact-refs.js";
 import jobStart from "./steps/lib/job/start.js";
 import jobContinue from "./steps/lib/job/continue.js";
 import { standInMcp } from "./test-util/mcp-server.js";
@@ -58,6 +59,19 @@ const writeStep = defineStep({
   async run(cfg) {
     await writeFile(cfg.path, cfg.text);
     return { ok: true };
+  },
+});
+
+/** A step that wrote a job file the person may want to watch, and says so
+ *  (plans/live-artifacts.md §3) — what browser/screenshot does. */
+const tellStep = defineStep({
+  type: "test/tell",
+  input: z.object({ path: z.string() }),
+  output: z.any(),
+  async run(cfg, ctx: StepContext) {
+    const jobs = (ctx.services as { jobs?: JobsCapability }).jobs;
+    jobs?.notify?.(ctx.job!, { kind: "image", url: jobFileUrl(ctx.job!, cfg.path), state: "done", runId: ctx.runId });
+    return { told: cfg.path };
   },
 });
 
@@ -144,7 +158,7 @@ describe("job/start and job/continue", () => {
     const store = new MemoryRunStore();
     const strut = await createStrut({
       workspace: new WorkspaceManager(dir),
-      registry: await createRegistry([writeStep]),
+      registry: await createRegistry([writeStep, tellStep]),
       store,
       serveUi: false,
       enableChat: false,
@@ -156,6 +170,7 @@ describe("job/start and job/continue", () => {
       steps: [
         { id: "dir", type: "job/dir", config: {} },
         { id: "report", type: "test/write", config: { path: "{{ dir.path }}/report.md", text: "# Flights" } },
+        { id: "tell", type: "test/tell", config: { path: "report.md" } },
         agent("JOBAGENT", { session: "{{ input.session || $job }}" }),
         pack,
       ],
@@ -176,8 +191,8 @@ describe("job/start and job/continue", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-    const launch = async (input: unknown, withCallback = true) => {
-      const res = await post({ input, ...(withCallback ? { callback: { url: hostUrl } } : {}) });
+    const launch = async (input: unknown, withCallback = true, extra: Record<string, unknown> = {}) => {
+      const res = await post({ input, ...(withCallback ? { callback: { url: hostUrl } } : {}), ...extra });
       assert.equal(res.status, 202);
       return ((await res.json()) as any).runId as string;
     };
@@ -321,6 +336,67 @@ describe("job/start and job/continue", () => {
       assert.ok(!JSON.stringify(posts).includes(TOKEN));
     } finally {
       await caller.close();
+    }
+  });
+
+  it("a turn launched with a jobCallback and no job of its own hands it to the jobs it starts: their job.update events reach it, each naming the job and the run (CALLBACKS.md §5)", async () => {
+    const { store, post, launch, settle, until, toolOutput } = await boot();
+    // The host's job-events endpoint: ONE URL for the whole conversation,
+    // not one per job — the events say which job and run they are about.
+    const live: any[] = [];
+    const liveHost = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        live.push(JSON.parse(raw));
+        res.writeHead(204).end();
+      });
+    });
+    await new Promise<void>((r) => liveHost.listen(0, "127.0.0.1", r));
+    const liveUrl = `http://127.0.0.1:${(liveHost.address() as any).port}/jobs?token=l1ve`;
+    try {
+      // Without a job of its own, the field is no longer refused: the 202 says it is honored.
+      orchTool = { name: "job_start", input: { prompt: "Research flights", title: "Flights" } };
+      const res = await post({ input: { prompt: "research flights" }, callback: { url: hostUrl }, jobCallback: { url: liveUrl } });
+      const launched = (await res.json()) as any;
+      assert.equal(res.status, 202, JSON.stringify(launched));
+      assert.equal(launched.jobCallback, true, "the host's proof this server honors it");
+      await settle("orch", launched.runId);
+      const started = await toolOutput(launched.runId);
+
+      // The job's first update reaches the turn's job callback: the job id
+      // and the run that made the change ride in the payload, since the URL
+      // is shared.
+      const update = await until(() => live.find((p) => p.event === "job.update"));
+      assert.equal(update.job, started.job);
+      assert.equal(update.runId, started.runId);
+      assert.deepEqual([update.kind, update.state, update.url], ["image", "done", `/jobs/${encodeURIComponent(started.job)}/files/report.md`]);
+      // …and its run.end the turn's run callback, as before.
+      const jobEnd = await until(() => posts.find((p) => p.workflow === "job"));
+      assert.equal(jobEnd.job, started.job);
+      assert.equal(posts.filter((p) => p.event === "job.update").length, 0, "updates never go to the run callback");
+      assert.equal(live.filter((p) => p.event === "run.end").length, 0, "run.end never goes to the job callback");
+
+      // On file for the JOB — the latest launch that carries one wins, as
+      // over HTTP — and for the turn's run, beside its log; in no log.
+      assert.deepEqual(JSON.parse(await readFile(join(dir, "jobs", ".callbacks", `${started.job}.json`), "utf8")), { url: liveUrl });
+      assert.equal(await store.getRunJobCallback("orch", launched.runId), liveUrl);
+      assert.equal(await store.getRunJobCallback("job", started.runId), liveUrl, "handed to the job's run, so a job that starts a job passes it on");
+      for (const [wf, id] of [["orch", launched.runId], ["job", started.runId]] as const) {
+        assert.ok(!JSON.stringify(await store.getRunEvents(wf, id)).includes("l1ve"), `${wf}'s log holds no credential`);
+      }
+
+      // A later turn WITHOUT one leaves the job's callback alone: its
+      // continue still reports there.
+      orchTool = { name: "job_continue", input: { job: started.job, prompt: "Only direct flights" } };
+      const second = await launch({ prompt: "only direct ones" });
+      await settle("orch", second);
+      const continued = await toolOutput(second);
+      const next = await until(() => live.find((p) => p.event === "job.update" && p.runId === continued.runId));
+      assert.equal(next.job, started.job);
+      assert.equal(await store.getRunJobCallback("orch", second), null);
+    } finally {
+      liveHost.close();
     }
   });
 

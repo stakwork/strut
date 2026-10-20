@@ -719,6 +719,7 @@ describe("jobs — over HTTP", () => {
         ],
       );
       assert.equal(host.posts[0].runId, run.json.runId);
+      assert.equal(host.posts[1].runId, run.json.runId, "a hold names the run that took it (the job's turn in flight)");
       assert.ok(!Number.isNaN(Date.parse(host.posts[0].at)));
 
       // The URL is the host's credential: in its own owner-only file, never in the record, the index or the log.
@@ -733,10 +734,10 @@ describe("jobs — over HTTP", () => {
       await jobsCapability(tempDir).hold("j-live", { id: "pod-8", kind: "pod", url: "https://pod-8.example", release: { type: "fake/release", input: { podId: "pod-8" } } });
       await jobsCapability(tempDir).release("j-live", "pod-7");
       await until(() => host.posts.length === 4);
-      assert.deepEqual(host.posts.slice(2).map((p) => [p.kind, p.state, p.id, p.url]), [
-        ["pod", "held", "pod-8", "https://pod-8.example"],
-        ["pod", "released", "pod-7", undefined],
-      ]);
+      assert.deepEqual(host.posts.slice(2).map((p) => [p.kind, p.state, p.id, p.url, p.runId]), [
+        ["pod", "held", "pod-8", "https://pod-8.example", undefined],
+        ["pod", "released", "pod-7", undefined, undefined],
+      ], "taken outside a run: no run to name");
       const gone = await api("/jobs/j-live", { method: "DELETE" });
       assert.equal(gone.status, 200, JSON.stringify(gone.json));
       await until(() => host.posts.length === 5);
@@ -747,13 +748,20 @@ describe("jobs — over HTTP", () => {
     }
   });
 
-  it("jobCallback: 400 without a job or with a bad URL; `null` clears it; a job without one posts nothing", async () => {
+  it("jobCallback: a bad URL is a 400; without a job it belongs to the run (what the jobs it starts inherit) and posts nothing by itself; `null` clears a job's; a job without one posts nothing", async () => {
     const { strut, api } = await boot();
     await strut.workspace.publishWorkflow("live", "v1", { steps: [{ id: "h", type: "holder", config: { id: "pod-1" } }] });
+    await strut.workspace.publishWorkflow("plain", "v1", { steps: [{ id: "p", type: "probe", config: { tpl: "x" } }] });
     const host = await callbackHost();
     const done = await callbackHost();
     try {
-      assert.equal((await api("/workflows/live/run", { body: { input: {}, jobCallback: { url: host.url } } })).status, 400);
+      const jobless = await api("/workflows/plain/run", { body: { input: {}, jobCallback: { url: host.url }, callback: { url: done.url } } });
+      assert.equal(jobless.status, 202, JSON.stringify(jobless.json));
+      assert.equal(jobless.json.jobCallback, true);
+      await until(() => done.posts.length === 1);
+      assert.equal(host.posts.length, 0, "no job, no update");
+      assert.equal(await strut.store.getRunJobCallback("plain", jobless.json.runId), host.url, "kept beside the run's log for the jobs it starts");
+      done.posts.length = 0;
       assert.match((await api("/workflows/live/run", { body: { job: "j-q", input: {}, jobCallback: { url: "ftp://x" } } })).json.error, /http/);
       const set = await api("/workflows/live/run", { body: { job: "j-q", input: {}, jobCallback: { url: host.url }, callback: { url: done.url } } });
       await until(() => done.posts.length === 1 && host.posts.length === 1);

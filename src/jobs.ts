@@ -314,7 +314,8 @@ export interface JobLaunch {
   title?: string;
   /** The `job` workflow's input: `prompt`, and `session`, `repos`, `workspace`. */
   input: Record<string, unknown>;
-  /** The launching run (`ctx.runId`): whose callback the job's run.end goes to. */
+  /** The launching run (`ctx.runId`): whose callback the job's run.end goes
+   *  to, and whose `jobCallback` the job inherits (CALLBACKS.md §5). */
   from: string;
   /** Billed like the launching run. */
   actor?: string;
@@ -327,11 +328,24 @@ export interface JobLaunch {
 /** The record's own writer, index or not. `index` (a server's stores) adds
  *  `list` / `get` / `read` — what the `/jobs` routes and the `job/*` steps
  *  read through. */
-export function jobsCapability(dataDir: string, index?: JobIndex): JobsCapability {
+export function jobsCapability(
+  dataDir: string,
+  index?: JobIndex,
+  deps: {
+    /** The job's run in flight, for a hold's update: `hold` / `release`
+     *  are called by tools with no run in hand, and a host routes an update
+     *  by the run that made it (CALLBACKS.md §5). The server knows. */
+    runOf?: (job: string) => string | undefined;
+  } = {},
+): JobsCapability {
   const rootOf = (job: string) => {
     const problem = idProblem(job);
     if (problem) throw new Error(`jobs: job id "${job}" ${problem}`);
     return jobRoot(dataDir, job);
+  };
+  const withRun = (job: string, update: JobUpdateInput): JobUpdateInput => {
+    const runId = deps.runOf?.(job);
+    return runId ? { ...update, runId } : update;
   };
   return {
     ...index,
@@ -341,7 +355,7 @@ export function jobsCapability(dataDir: string, index?: JobIndex): JobsCapabilit
       await updateJobRecord(root, job, (rec) => {
         rec.holds = [...(rec.holds ?? []).filter((h) => h.id !== hold.id), held];
       });
-      notifyJob(root, job, holdUpdate(held, "held"));
+      notifyJob(root, job, withRun(job, holdUpdate(held, "held")));
     },
     async recordRun(job, { title, actor, ...run }) {
       await updateJobRecord(rootOf(job), job, (rec) => {
@@ -365,7 +379,7 @@ export function jobsCapability(dataDir: string, index?: JobIndex): JobsCapabilit
         await writeJobRecord(root, rec);
         return hold;
       });
-      if (gone) notifyJob(root, job, holdUpdate(gone, "released"));
+      if (gone) notifyJob(root, job, withRun(job, holdUpdate(gone, "released")));
     },
     async holds(job) {
       return (await readJobRecord(rootOf(job)))?.holds ?? [];
