@@ -2,7 +2,8 @@
  * Peers — the OTHER struts this one may call (plans/federation.md §2.2, §3).
  *
  * A strut knows nothing about other struts, not even its own name. A peer
- * is a record `{ id, baseUrl, token, label? }` someone put here: a host
+ * is a record `{ id, baseUrl, token, label?, description?, repos? }` someone
+ * put here: a host
  * pushes it (`PUT /peers/:id`, the way hive pushes delegations and actor
  * secrets), or a person pastes it on a strut the host cannot reach — a
  * desktop strut behind NAT (`STRUT_PEERS`). The id is the caller's name for
@@ -14,7 +15,7 @@
  * JSON — never in `GET /secrets` or the builder's `list_secrets`. What a
  * step gets is `ctx.services.peers`, a capability that NAMES a peer and
  * makes a request with its token injected: the token itself is readable by
- * nothing (`list` returns ids, labels and base URLs). What a step can do
+ * nothing (`list` returns everything else). What a step can do
  * through it is bounded by the token's scope on the peer — today a swarm's
  * key, which is why the plan's `lab:peer` scope matters.
  *
@@ -45,21 +46,22 @@ export interface Peer {
   /** The bearer the peer accepts — its `STRUT_API_KEY`, or a scoped token. */
   token: string;
   label?: string;
+  /** What the peer's workspace is, in a sentence — so a model can tell
+   *  which peer holds what before it guesses an id. */
+  description?: string;
+  /** The repositories the peer's workspace holds (URLs). */
+  repos?: string[];
 }
 
 /** A peer as anything may see it: never the token. */
-export interface PeerInfo {
-  id: string;
-  baseUrl: string;
-  label?: string;
-}
+export type PeerInfo = Omit<Peer, "token">;
 
 export interface PeerStore {
   get(id: string): Promise<Peer | undefined>;
   set(peer: Peer): Promise<void>;
   /** Returns true if it existed. */
   delete(id: string): Promise<boolean>;
-  /** Every peer, sorted by id — ids, labels and base URLs, never tokens. */
+  /** Every peer, sorted by id — never a token. */
   list(): Promise<PeerInfo[]>;
 }
 
@@ -90,12 +92,24 @@ export function checkPeer(raw: unknown): Peer {
   const baseUrl = normalizeBaseUrl(p["baseUrl"]);
   if (typeof p["token"] !== "string" || !p["token"]) throw new Error("token (non-empty string) is required");
   if (p["label"] !== undefined && typeof p["label"] !== "string") throw new Error("label must be a string");
+  if (p["description"] !== undefined && typeof p["description"] !== "string") throw new Error("description must be a string");
+  const repos = p["repos"];
+  if (repos !== undefined && !(Array.isArray(repos) && repos.every((r) => typeof r === "string"))) {
+    throw new Error("repos must be an array of strings");
+  }
   return {
     id: p["id"] as string,
     baseUrl,
     token: p["token"],
     ...(p["label"] ? { label: p["label"] } : {}),
+    ...(p["description"] ? { description: p["description"] } : {}),
+    ...(repos?.length ? { repos: repos as string[] } : {}),
   };
+}
+
+/** A record as anything may see it: everything but the token. */
+export function peerInfo({ token: _token, ...info }: Peer): PeerInfo {
+  return info;
 }
 
 /** `STRUT_PEERS`: a JSON array of records, for a strut nobody pushes to. */
@@ -107,7 +121,7 @@ export function parsePeersEnv(raw: string | undefined): Peer[] {
   } catch (err) {
     throw new Error(`STRUT_PEERS is not JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
-  if (!Array.isArray(parsed)) throw new Error("STRUT_PEERS must be a JSON array of { id, baseUrl, token, label? }");
+  if (!Array.isArray(parsed)) throw new Error("STRUT_PEERS must be a JSON array of { id, baseUrl, token, label?, description?, repos? }");
   return parsed.map((entry, i) => {
     try {
       return checkPeer(entry);
@@ -145,7 +159,7 @@ export function peerStore(secrets: SecretStore): PeerStore {
       const peers = await Promise.all(names.map((n) => read(idOf(n))));
       return peers
         .filter((p): p is Peer => p !== undefined)
-        .map(({ id, baseUrl, label }) => ({ id, baseUrl, ...(label ? { label } : {}) }))
+        .map(peerInfo)
         .sort((a, b) => a.id.localeCompare(b.id));
     },
   };
@@ -176,7 +190,12 @@ export function peersCapability(store: PeerStore, fetchImpl: PeerFetch = (u, i) 
     list: () => store.list(),
     async fetch(id, path, init) {
       const peer = await store.get(id);
-      if (!peer) throw new Error(`peer_unknown: no peer "${id}" — GET /peers lists the struts this one can call`);
+      if (!peer) {
+        const ids = (await store.list()).map((p) => p.id);
+        throw new Error(
+          `peer_unknown: no peer "${id}" — ${ids.length ? `the peers on file: ${ids.join(", ")}` : "no peers are on file"}`,
+        );
+      }
       return fetchImpl(`${peer.baseUrl}${path}`, {
         ...init,
         headers: { ...(init?.headers ?? {}), authorization: `Bearer ${peer.token}` },

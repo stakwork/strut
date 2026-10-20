@@ -583,8 +583,8 @@ kept encrypted; the token has no read route.
 
 | Method | Path | Response |
 | ------ | ---- | -------- |
-| GET    | `/peers` | `{ peers: [{ id, baseUrl, label? }] }` — never a token |
-| PUT    | `/peers/:id` | `{ baseUrl, token, label? }` → `{ ok, id, baseUrl, label? }`; replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
+| GET    | `/peers` | `{ peers: [{ id, baseUrl, label?, description?, repos? }] }` — never a token |
+| PUT    | `/peers/:id` | `{ baseUrl, token, label?, description?, repos? }` → `{ ok, id, baseUrl, label?, description?, repos? }` (`repos`: the workspace's repository URLs — what `strut/list-peers` shows an agent choosing a peer); replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
 | DELETE | `/peers/:id` | `{ ok, id }`; 404 |
 
 `STRUT_PEERS` (a JSON array of the same records) puts peers on file at boot

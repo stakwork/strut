@@ -115,7 +115,8 @@ params:
   # bash, str_replace_based_edit_tool, web_search, web_fetch — which are
   # always on. Graph reads; the meta/* read + run tools: list/get a
   # workflow, run it (as a child run under this job, in this job's
-  # directory — plans/jobs.md §4), read a run; strut/run-workflow, the same
+  # directory — plans/jobs.md §4), read a run; strut/list-peers +
+  # strut/run-workflow, the same
   # on a PEER (plans/federation.md §2.2; its files stay there); the job/*
   # reads (plans/job-index.md §5): earlier jobs by words, what one produced
   # and the thread it ran on, one of its files — a screenshot the agent then
@@ -144,6 +145,7 @@ params:
     - http/verify
     - browser/verify
     - browser/walkthrough
+    - strut/list-peers
     - strut/run-workflow
     - job/list
     - job/get
@@ -186,7 +188,8 @@ params:
     failure. Prefer running a workflow that does the work over doing it by
     hand, and say in `text` which one you ran. strut/run-workflow runs one
     on a PEER — another strut, named by its slug (`@<slug>` in a message) —
-    and returns its output; its files stay there. When no workflow fits,
+    and returns its output; its files stay there. strut/list-peers says
+    which peers there are and what each holds. When no workflow fits,
     the work is yours — a plan, a page, notes — as files in your directory.
 
     Seeing what a page shows is a workflow too. You have no browser to look

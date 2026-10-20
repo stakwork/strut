@@ -12,6 +12,7 @@ import { MemorySecretStore, FileSecretStore } from "./secret-store.js";
 import { defineStep, withAccessedNodes, type RunEvent, type RunSummary } from "./core.js";
 import { createRegistry } from "./steps/registry.js";
 import { z } from "zod";
+import listPeers from "./steps/lib/strut/list-peers.js";
 import {
   launchOnPeer,
   listPeerWorkflows,
@@ -145,8 +146,22 @@ describe("the peers capability", () => {
     assert.equal(res.status, 200);
     assert.equal(calls[0]!.url, "http://cloud.test/workflows");
     assert.deepEqual(calls[0]!.init?.headers, { accept: "application/json", authorization: "Bearer tok-cloud" });
-    await assert.rejects(cap.fetch("nope", "/workflows"), /peer_unknown: no peer "nope"/);
+    await assert.rejects(cap.fetch("nope", "/workflows"), /peer_unknown: no peer "nope" — the peers on file: cloud/);
     assert.deepEqual(await cap.list(), [{ id: "cloud", baseUrl: "http://cloud.test" }]);
+  });
+
+  it("strut/list-peers shows what each peer holds, never a token or URL", async () => {
+    const { store, cap, ready } = capabilityOver(async () => json({}));
+    await ready;
+    await store.set({ id: "apps", baseUrl: "http://apps", token: "t", label: "Apps", repos: ["https://github.com/a/b"] });
+    const out = await listPeers.run({}, { services: { peers: cap } } as never);
+    assert.deepEqual(out, {
+      peers: [
+        { id: "apps", label: "Apps", repos: ["https://github.com/a/b"] },
+        { id: "cloud" },
+      ],
+    });
+    await assert.rejects(listPeers.run({}, { services: {} } as never), /needs the peers capability/);
   });
 });
 
@@ -368,6 +383,37 @@ describe("/peers routes", () => {
     assert.equal((await strut.app.request("/peers/acme-web", { method: "DELETE" })).status, 404);
     assert.equal((await strut.app.request("/peers/-bad", { method: "DELETE" })).status, 400);
     assert.deepEqual(await (await strut.app.request("/peers")).json(), { peers: [] });
+  });
+
+  it("keeps what the host says a peer holds: description and repos", async () => {
+    const strut = await boot();
+    const res = await put(strut, "sphinx-apps", {
+      baseUrl: "http://apps",
+      token: "k",
+      label: "Sphinx Apps",
+      description: "The Sphinx mobile and desktop apps",
+      repos: ["https://github.com/stakwork/sphinx-kotlin"],
+    });
+    assert.deepEqual(await res.json(), {
+      ok: true,
+      id: "sphinx-apps",
+      baseUrl: "http://apps",
+      label: "Sphinx Apps",
+      description: "The Sphinx mobile and desktop apps",
+      repos: ["https://github.com/stakwork/sphinx-kotlin"],
+    });
+    assert.equal((await put(strut, "x", { baseUrl: "http://x", token: "k", repos: "nope" })).status, 400);
+    assert.equal((await put(strut, "x", { baseUrl: "http://x", token: "k", description: 3 })).status, 400);
+    const { peers } = (await (await strut.app.request("/peers")).json()) as { peers: unknown[] };
+    assert.deepEqual(peers, [
+      {
+        id: "sphinx-apps",
+        baseUrl: "http://apps",
+        label: "Sphinx Apps",
+        description: "The Sphinx mobile and desktop apps",
+        repos: ["https://github.com/stakwork/sphinx-kotlin"],
+      },
+    ]);
   });
 
   it("seeds from the option and from STRUT_PEERS; a bad env fails the boot", async () => {
