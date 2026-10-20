@@ -1341,3 +1341,41 @@ export function buildTools(deps: AiDeps): ToolSet {
     ...((deps.webTools ?? {}) as Record<string, any>),
   }, deps.toolResultMaxChars, deps.documentMaxChars);
 }
+
+/** The read-only graph steps the knowledge door offers, as tool name → step type. */
+const KNOWLEDGE_STEPS: Record<string, string> = {
+  graph_get: GRAPH_GET_STEP,
+  graph_search: "graph/graph-search",
+  graph_neighbors: "graph/graph-neighbors",
+};
+
+/**
+ * The tools behind `POST /mcp/knowledge`: READ the knowledge graph, nothing
+ * else. Each is its graph step as a tool — the step's input schema and its
+ * run(), the same call a workflow makes — so an outside agent (a local
+ * coding agent on a run, over ACP) can open the Concept pages that tell it
+ * how this deployment works without being handed the builder's writes,
+ * runs or secrets. Empty without a graph.
+ */
+export function buildKnowledgeTools(deps: Pick<AiDeps, "graph" | "registry" | "services">): ToolSet {
+  if (!deps.graph) return {};
+  const tools: ToolSet = {};
+  for (const [name, type] of Object.entries(KNOWLEDGE_STEPS)) {
+    const def = deps.registry[type];
+    if (!def) continue;
+    tools[name] = tool({
+      description: def.description ?? type,
+      inputSchema: def.input as z.ZodType<Record<string, unknown>>,
+      execute: async (input) => {
+        const cfg = def.input.safeParse(input ?? {});
+        if (!cfg.success) return { error: `invalid input: ${cfg.error.message}` };
+        try {
+          return await def.run(cfg.data, { runId: "", path: name, scope: {}, input: undefined, emit: async () => {}, services: deps.services });
+        } catch (e) {
+          return { error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    });
+  }
+  return tools;
+}

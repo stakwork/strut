@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
-import { defineStep, type StepContext } from "../../../core.js";
+import { defineStep, type McpServer, type StepContext } from "../../../core.js";
 import { encodeId, idProblem } from "../../../session-store.js";
 import { minimalEnv } from "../../../shell.js";
 import { AcpClient, type AcpUpdate, type PermissionOutcome, type PermissionRequest } from "./_client.js";
@@ -64,15 +64,28 @@ export function parseAgent(agent: string): string[] {
   return parts.map((p) => (p.startsWith('"') ? p.slice(1, -1) : p));
 }
 
-export function decidePermission(mode: Mode, req: PermissionRequest): PermissionOutcome & { allowed: boolean } {
+export function decidePermission(mode: Mode, req: PermissionRequest, readOnlyMcp: string[] = []): PermissionOutcome & { allowed: boolean } {
   const kind = req.toolCall.kind ?? "other";
-  const allowed = ALLOWED_KINDS[mode] === "all" || (ALLOWED_KINDS[mode] as Set<string>).has(kind);
+  // A tool of a read-only MCP server the run was launched with is a read, whatever kind the agent gives it
+  // (Claude Code names them mcp__<server>__<tool> and calls them "other").
+  const title = req.toolCall.title ?? "";
+  const readOnlyTool = readOnlyMcp.some((name) => title.startsWith(`mcp__${name}__`));
+  const allowed = readOnlyTool || ALLOWED_KINDS[mode] === "all" || (ALLOWED_KINDS[mode] as Set<string>).has(kind);
   const pick = (kinds: string[]) => req.options.find((o) => kinds.includes(o.kind));
   const option = allowed ? pick(["allow_once", "allow_always"]) : pick(["reject_once", "reject_always"]);
   return option ? { outcome: "selected", optionId: option.optionId, allowed } : { outcome: "cancelled", allowed };
 }
 
 /** `cost`: the session total the agent last reported (ACP usage is cumulative), so a turn reports only its own. */
+/** strut's MCP server (name, url, token or headers) → ACP's `McpServerHttp`. A
+ *  server's `toolFilter` cannot follow it: the agent connects on its own. */
+export function acpMcpServers(servers: McpServer[] | undefined) {
+  return (servers ?? []).map((m) => {
+    const headers = { ...m.headers, ...(m.token ? { Authorization: `Bearer ${m.token}` } : {}) };
+    return { type: "http" as const, name: m.name, url: m.url, headers: Object.entries(headers).map(([name, value]) => ({ name, value })) };
+  });
+}
+
 type SessionRecord = { agent: string; sessionId: string; cost?: number };
 
 async function readSession(file: string): Promise<SessionRecord | null> {
@@ -122,6 +135,12 @@ export default defineStep({
     session: z.string().optional().describe("strut's name for the thread; the same name next turn continues it"),
     mode: z.enum(["plan", "edit", "auto"]).default("edit").describe("plan: look only. edit: edit files; commands only inside the agent's own sandbox. auto: anything"),
     model: z.string().optional().describe("a model id the agent offers (session/set_model); ignored when it doesn't"),
+    mcp: z
+      .boolean()
+      .default(true)
+      .describe(
+        "hand the agent the CALLER's MCP servers — the ones its run was launched with (`POST …/run { mcp }`) — when it can reach MCP over HTTP; a run launched without any has none. `false` keeps the agent to its own tools",
+      ),
     env: z
       .record(z.string(), z.string())
       .optional()
@@ -243,8 +262,9 @@ export default defineStep({
       }
     };
 
+    const readOnlyMcp = cfg.mcp ? (ctx.mcp ?? []).filter((m) => m.readOnly).map((m) => m.name) : [];
     const onPermission = (req: PermissionRequest) => {
-      const decision = decidePermission(mode, req);
+      const decision = decidePermission(mode, req, readOnlyMcp);
       if (!decision.allowed) {
         const kind = req.toolCall.kind ?? "other";
         const raw = (req.toolCall.rawInput ?? tools.get(req.toolCall.toolCallId)?.rawInput) as { plan?: unknown } | undefined;
@@ -275,6 +295,8 @@ export default defineStep({
         clientInfo: { name: "strut", version: "1" },
       });
       const canLoad = Boolean(init?.agentCapabilities?.loadSession);
+      // The run's MCP servers, in ACP's shape, for an agent that takes MCP over HTTP.
+      const mcpServers = cfg.mcp && init?.agentCapabilities?.mcpCapabilities?.http ? acpMcpServers(ctx.mcp) : [];
 
       const saved = sessionFile ? await readSession(sessionFile) : null;
       let modes: { availableModes?: Array<{ id: string }> } | undefined;
@@ -282,7 +304,7 @@ export default defineStep({
       if (saved && saved.agent === cfg.agent && canLoad) {
         loading = true;
         try {
-          const res = await client.request("session/load", { sessionId: saved.sessionId, cwd: cfg.cwd, mcpServers: [] });
+          const res = await client.request("session/load", { sessionId: saved.sessionId, cwd: cfg.cwd, mcpServers });
           sessionId = saved.sessionId;
           modes = res?.modes;
           models = res?.models;
@@ -294,7 +316,7 @@ export default defineStep({
         }
       }
       if (!sessionId) {
-        const res = await client.request("session/new", { cwd: cfg.cwd, mcpServers: [] });
+        const res = await client.request("session/new", { cwd: cfg.cwd, mcpServers });
         sessionId = res.sessionId;
         modes = res?.modes;
         models = res?.models;

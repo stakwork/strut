@@ -2101,10 +2101,10 @@ steps:
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
 
-  it("both doors are behind the gate: 401 without the key, 403 for a peer, 405 for GET and DELETE; /mcp is the assistant set, /mcp/builder the builder's; off with enableMcp: false", async () => {
+  it("every door is behind the gate: 401 without the key, 403 for a peer, 405 for GET and DELETE; /mcp is the assistant set, /mcp/builder the builder's, /mcp/knowledge reads only (none without a graph); off with enableMcp: false", async () => {
     process.env["STRUT_PEER_KEY"] = "peer-key";
     const strut = await boot();
-    for (const path of ["/mcp", "/mcp/builder"]) {
+    for (const path of ["/mcp", "/mcp/builder", "/mcp/knowledge"]) {
       assert.equal((await rpc(strut, {}, path)).status, 401, path);
       assert.equal((await rpc(strut, { authorization: "Bearer peer-key" }, path)).status, 403, path);
       const ok = await rpc(strut, { authorization: `Bearer ${KEY}` }, path);
@@ -2113,6 +2113,7 @@ steps:
       const listed = await ok.text();
       assert.equal(listed.includes('"name":"create_workflow"'), path === "/mcp/builder", path);
       assert.equal(listed.includes('"name":"ask_workflow_builder"'), path === "/mcp", path);
+      if (path === "/mcp/knowledge") assert.match(listed, /"tools":\[\]/, "no graph here: the knowledge door offers nothing");
       for (const method of ["GET", "DELETE"]) {
         assert.equal((await strut.app.request(path, { method, headers: { authorization: `Bearer ${KEY}` } })).status, 405, `${method} ${path}`);
       }
@@ -2120,6 +2121,7 @@ steps:
     const off = await boot({ enableMcp: false });
     assert.equal((await rpc(off, { authorization: `Bearer ${KEY}` })).status, 404);
     assert.equal((await rpc(off, { authorization: `Bearer ${KEY}` }, "/mcp/builder")).status, 404);
+    assert.equal((await rpc(off, { authorization: `Bearer ${KEY}` }, "/mcp/knowledge")).status, 404);
   });
 
   it("serves the builder's tools over HTTP: artifact links absolute with the file token, ui deep links, the actor stamped", async () => {
