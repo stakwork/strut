@@ -39,6 +39,7 @@ import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
   MemorySessionStore,
+  PEER_NAMESPACE,
   idProblem,
   sessionInfo,
   sessionsCapability,
@@ -1188,6 +1189,7 @@ export async function createStrut<TServices = unknown>(
       params?: Record<string, unknown>;
       claims?: ClaimsBlock;
       sealed?: boolean;
+      peer?: boolean;
       yaml?: string;
       description?: string;
       category?: string;
@@ -1213,6 +1215,7 @@ export async function createStrut<TServices = unknown>(
             ...(body.params != null ? { params: body.params } : {}),
             ...(body.claims != null ? { claims: body.claims } : {}),
             ...(body.sealed != null ? { sealed: body.sealed } : {}),
+            ...(body.peer != null ? { peer: body.peer } : {}),
           },
           body.description,
           body.category,
@@ -1792,6 +1795,9 @@ export async function createStrut<TServices = unknown>(
 
     const prepared = await prepareDurableResume(name, runId, body);
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
+    // A forced resume runs the ACTIVE version when none matches the run's:
+    // a peer resumes only into one that is open to peers.
+    if (!prepared.flow.peer && (await isPeer(c))) return c.json({ error: notForPeers(name) }, 403);
 
     // Re-check liveness after the awaits above: two concurrent resume
     // requests must not both launch onto the same log.
@@ -1965,6 +1971,7 @@ export async function createStrut<TServices = unknown>(
         ...(flow.params != null ? { params: flow.params } : {}),
         ...(flow.promotes != null ? { promotes: flow.promotes } : {}),
         ...(flow.sealed ? { sealed: true } : {}),
+        ...(flow.peer ? { peer: true } : {}),
       });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
@@ -1997,6 +2004,7 @@ export async function createStrut<TServices = unknown>(
       params?: Record<string, unknown>;
       claims?: ClaimsBlock;
       sealed?: boolean;
+      peer?: boolean;
       yaml?: string;
       description?: string;
       source?: string;
@@ -2021,6 +2029,7 @@ export async function createStrut<TServices = unknown>(
             ...(body.params != null ? { params: body.params } : {}),
             ...(body.claims != null ? { claims: body.claims } : {}),
             ...(body.sealed != null ? { sealed: body.sealed } : {}),
+            ...(body.peer != null ? { peer: body.peer } : {}),
           },
           body.description,
           undefined,
@@ -2990,6 +2999,20 @@ export async function createStrut<TServices = unknown>(
     return body.job;
   };
 
+  /** A PEER's launch (plans/federation.md §3) runs the workflow as published:
+   *  `params`, `paramOverrides` and `runId` are refused — an override could
+   *  hand a workflow's agents tools its author never gave them — and its
+   *  `job` is kept under `PEER_NAMESPACE`, so a name a peer chooses never
+   *  opens a local job's directory, files or holds. The body to launch, or
+   *  why not. Which workflows a peer may launch is `peer: true` (`notForPeers`). */
+  const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
+    const set = (["params", "paramOverrides", "runId"] as const).filter((k) => body[k] != null);
+    if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
+    return typeof body.job === "string" ? { ...body, job: `${PEER_NAMESPACE}${body.job}` } : body;
+  };
+  const notForPeers = (name: string) =>
+    `forbidden: workflow "${name}" is not open to peers — its YAML does not say \`peer: true\``;
+
   /** Whether the file behind a strut-relative artifact url is here: a job's
    *  file on disk, a run's through the artifacts capability (whatever
    *  backs it). Absolute urls are never checked. */
@@ -3106,7 +3129,13 @@ export async function createStrut<TServices = unknown>(
   // 202 carries `callback: true` — the host's proof this server honors it.
   app.post("/workflows/:name/run", async (c) => {
     const name = c.req.param("name");
-    const body = await c.req.json<RunBody>();
+    const peer = await isPeer(c);
+    let body = await c.req.json<RunBody>();
+    if (peer) {
+      const launch = peerLaunchBody(body);
+      if ("refused" in launch) return c.json({ error: launch.refused }, 403);
+      body = launch;
+    }
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
     let mcp: McpServer[] | undefined;
@@ -3124,11 +3153,12 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
+    if (peer && !flow.peer) return c.json({ error: notForPeers(name) }, 403);
     // On file before the run starts, so its first update finds it.
     if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       actor: await resolveActor(c),
-      ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
+      ...(peer ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),
@@ -3141,7 +3171,13 @@ export async function createStrut<TServices = unknown>(
 
   app.post("/workflows/:name/:version/run", async (c) => {
     const { name, version } = c.req.param();
-    const body = await c.req.json<RunBody>();
+    const peer = await isPeer(c);
+    let body = await c.req.json<RunBody>();
+    if (peer) {
+      const launch = peerLaunchBody(body);
+      if ("refused" in launch) return c.json({ error: launch.refused }, 403);
+      body = launch;
+    }
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
     let mcp: McpServer[] | undefined;
@@ -3159,12 +3195,15 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
+    // The version launched must say it, not the active one: an older
+    // version is not open to peers because a newer one is.
+    if (peer && !flow.peer) return c.json({ error: notForPeers(`${name}@${version}`) }, 403);
     // On file before the run starts, so its first update finds it.
     if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       version,
       actor: await resolveActor(c),
-      ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
+      ...(peer ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),

@@ -905,7 +905,7 @@ export function buildTools(deps: AiDeps): ToolSet {
       description:
         "Run a published workflow with a given input and return the result. Use this to test workflows you just created. Returns status (success/error), output (on success), error details (on failure), and the runId. " +
         `Long runs AUTO-DETACH: if the run is still executing after the wait window, this returns { status: 'running', detached: true, runId } and the run continues in the background — ${detachHint} ` +
-        "With `peer` the workflow runs on THAT strut (list_peers) and this call waits for its result — never detached; the run, its files and artifacts stay on the peer.",
+        "With `peer` the workflow runs on THAT strut (list_peers) and this call waits for its result — never detached; the run, its files and artifacts stay on the peer. A peer runs only a workflow whose YAML says `peer: true`, as published: leave `params` out.",
       inputSchema: z.object({
         name: z.string().describe("Workflow name to run"),
         input: z

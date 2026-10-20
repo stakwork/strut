@@ -81,7 +81,7 @@ strut/
 │   ├── concept-seed.ts    # Concept files → `Concept` nodes on either engine: seedConcepts(graph, sets) — a set is a folder of `<Name>.md` (front matter `description`, `parent`; body = docs) + a stamp prefix; each page reconciled by `unique_source_id = <prefix><file>@<hash>` (create; keep — a graph-side edit stays until the file changes; update when the file changed; a deleted page of ours restored; someone else's or unstamped skipped; `legacyPrefixes` = an earlier seeder's stamps counted as ours), `PARENT_OF` from `parent` (a page of another call or already in the graph), an undeclared `PARENT_OF` between two pages the call owns removed, `retired` files soft-deleted while they carry their stamp. Engine calls only (refByKey / readRaw / the writers / liveEdgesOf), no Cypher. createStrut seeds STRUT_CONCEPTS at boot on a graph (`concepts: false` seeds none); a host seeds its own sets with the same call afterwards and anchors pages from the outcomes it returns
 │   ├── concepts/          # the Concept pages strut SHIPS (copied into build/ by `npm run build`): `Workflow Builder` (what the builder's prompt reads; byte-identical to the page the stakgraph lab seeded first, whose stamps `lab/builder/concepts/` + `lab/job/concepts/` count as strut's) and `Job` (what the job agent opens first) — roots, workspace-general; each deployment grows the tree under them
 │   ├── artifact-refs.ts   # deliverables (plans/jobs.md §3): a run output's `artifacts: [{ id, kind?, title, path | url | content }]` resolved to links for the `run.end` callback and GET …/runs/:runId/artifacts — `path` → `/jobs/<job>/files/…` (a job run) or `/artifacts/<runId>/…`; `kind` from the extension when omitted (the host's renderer names)
-│   ├── auth.ts            # the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches, controls a run a peer launched, and the gate 403s the rest) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read
+│   ├── auth.ts            # the pieces of createStrut's one gate in front of EVERY route, reads included — carriesApiKey (Bearer or `?key=`) + requireApiKey (the per-route twin) + warnIfUnconfigured (STRUT_API_KEY shared secret) + the PEER KEY (STRUT_PEER_KEY: carriesPeerKey, scopeFromKey — the default `resolveScope`; a `peer` request reads, launches a `peer: true` workflow, controls a run a peer launched, and the gate 403s the rest) + actorFromHeader, the default `resolveActor` (x-strut-actor, honored only with the key) + the FILE TOKEN (fileToken / fileScopeOf / carriesFileToken): the key attenuated to one run's or job's files, an HMAC the listing mints, what an artifact link carries as `?t=` so the key is never in a URL a served page can read
 │   ├── secret-store.ts    # SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 │   ├── session-store.ts   # agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
 │   ├── peers.ts           # PEERS (plans/federation.md §2.2, §3): the other struts this one may call — `{ id, baseUrl, token, label? }` in a fourth encrypted file, peers.json (`P_<hex(id)>`), behind PUT/DELETE/GET /peers (GET: ids, labels, base URLs — never a token) + `STRUT_PEERS` / `createStrut({ peers })`, the paste door for a strut nobody pushes to. `ctx.services.peers` names a peer and makes a request with its token injected (readable by nothing; what a step can do through it is the token's scope on the peer). The client the step and the builder's `peer` tools share: launchOnPeer (POST …/run, `x-strut-actor: ctx.principal`), tailPeerRun (the peer's SSE tail, reattached with `?skip=N` after a drop — reader-initiated, so a strut behind NAT can call a cloud one), cancelOnPeer, runOnPeer, listPeerWorkflows / readPeerWorkflow
@@ -334,7 +334,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
 | `STRUT_HOST_CONFIG`  | (unset)        | A JSON file with the host's delta for the workflows strut ships, `{ job?, orchestrator? }`, each `{ tools?: string[], approve?: string[], system?: string, model?: string | null }` (`null`: no pinned model, so it runs on the connected one, `STRUT_DEFAULT_MODEL`), and `automation?: { workflow, approve?, grants? }` for the automation/* steps — what `createStrut({ job, orchestrator, automation })` takes, for a host that runs the bundled server (`build/server.js`, `desktop.js`) instead of embedding strut. Peel writes it at launch. A file that cannot be read or parsed fails the boot. |
 | `STRUT_SESSION_HOURS` | `12`          | How long a browser SESSION lasts (`POST /auth/session`, see "Auth"): the key traded for an HttpOnly cookie signed under `STRUT_API_KEY` (else `STRUT_SECRET_KEY`), so the page never holds the key. Stateless, like a file token: rotating the signing secret ends every session. |
-| `STRUT_PEER_KEY`     | (unset)        | The key ANOTHER strut holds for this one (plans/federation.md §3): presented like `STRUT_API_KEY`, but a request carrying it is `peer`-scoped — every read, a launch, and cancel / pause / resume of a run a peer launched; anything else is 403. Unset, it opens nothing. See "Auth" below. |
+| `STRUT_PEER_KEY`     | (unset)        | The key ANOTHER strut holds for this one (plans/federation.md §3): presented like `STRUT_API_KEY`, but a request carrying it is `peer`-scoped — every read, a launch of a workflow whose YAML says `peer: true` (as published: no `params`), and cancel / pause / resume of a run a peer launched; anything else is 403. Unset, it opens nothing. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
 | `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
 | `STRUT_MOTHERSHIP` | (unset) | `1` = the default server (`src/server.ts`) builds `createMothership({ dataDir })`, passes its `llmAuth` to `createStrut` and mounts `/llm/delegations` — every LLM call of an actor with a delegation goes through the gateway. See "Mothership cost control". |
@@ -459,9 +459,24 @@ container in the compose (strut and any service that registers steps).
   run a peer launched — the control routes read the stamp, or for a run
   just launched, a mark on its controller. Anything else is `403`, a route
   a host mounts later included; `createStrut.test.ts` sweeps the routes
-  with the peer key like it does without one. The known gap (decided
-  2026-10-09): a launch is not narrowed by workflow, so a peer that can
-  launch one whose agent has `bash` reaches whatever the server can.
+  with the peer key like it does without one. **What a peer may launch**
+  (2026-10-20; before it, any workflow, with any `params`): only a workflow
+  whose YAML says `peer: true` at the top (`Flow.peer`, content in the
+  version hash like `sealed:`; the version launched must say it, and a
+  peer's durable resume runs only into one that does), AS PUBLISHED — a
+  peer launch carrying `params`, `paramOverrides` or `runId` is `403`,
+  because an override is how a peer would hand `explore`'s agent `bash`
+  — and in a namespace of its own (`PEER_NAMESPACE`, `peer/`,
+  session-store.ts): its `job` is kept as `peer/<job>` (createStrut's
+  `peerLaunchBody`), and every agent session its run opens as
+  `peer/<id>` (runner.ts `bindPeer`, a per-run `sessions` view like
+  `bindPrincipal`'s), so a name a peer chooses never opens a local job's
+  directory, files and holds, or a local thread — the job agent's is its
+  job id. The meta surface may not publish `peer: true` (a person opens a
+  workflow to other struts). `peer: true` is the AUTHOR vouching for
+  everything the workflow can reach given any input: a run it launches
+  (`meta/run-workflow`, `job/*`) is a local run with local names, and an
+  agent it grants `bash` is a shell for the peer.
 
 The same secret authenticates **both directions** within a deployment:
 
@@ -1917,9 +1932,12 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   one, while a callback would need a route back. Cancelling the caller's
   run POSTs cancel to the peer; `wait: false` returns the handle;
   `job` is explicit and never this run's own (no shared directory across
-  struts — the peer's job is a different job of the same name). The output
+  struts — the peer's job is a different job of the same name, kept there
+  as `peer/<job>`). The peer runs only a workflow whose YAML says `peer:
+  true`, as published (no `params`). The output
   is the peer's result; an artifact path in it is the peer's. A refused
-  launch fails the step with the peer's message (`job_busy:`); an id not on
+  launch fails the step with the peer's message (not open to peers,
+  `job_busy:`); an id not on
   file is `peer_unknown:`; a peer that stays unreachable is
   `peer_unreachable:`. The token to give a peer record is the peer's
   `STRUT_PEER_KEY` (see "Auth": read, launch, control what it launched),

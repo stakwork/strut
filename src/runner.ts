@@ -20,6 +20,7 @@ import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tally
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
+import { PEER_NAMESPACE, type SessionsCapability } from "./session-store.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -167,6 +168,21 @@ function bindPrincipal<TServices>(services: TServices, principal: string | undef
   return { ...(services as object), secrets: secrets.forPrincipal(principal) } as TServices;
 }
 
+/** A PEER's run opens its sessions under `PEER_NAMESPACE` (plans/federation.md
+ *  §3): a session id a peer names — explore's `input.session` — is never a
+ *  local thread, the way its `job` is never a local job (createStrut). A
+ *  per-run view like `bindPrincipal`'s; the consumer's bag is not mutated. */
+function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined): TServices {
+  if (origin !== "peer" || services == null || typeof services !== "object") return services;
+  const sessions = (services as { sessions?: SessionsCapability }).sessions;
+  if (typeof sessions?.open !== "function") return services;
+  const view: SessionsCapability = {
+    open: (id, holder) => sessions.open(`${PEER_NAMESPACE}${id}`, holder),
+    holder: (id) => sessions.holder(`${PEER_NAMESPACE}${id}`),
+  };
+  return { ...(services as object), sessions: view } as TServices;
+}
+
 /** Everything the execution tree threads through unchanged — bundled so the
  *  recursive executors don't each grow another positional parameter. */
 interface Exec {
@@ -211,8 +227,12 @@ export async function runWorkflow<TServices = unknown>(
   // With a principal and an actor-aware secrets capability, this run's
   // `secrets` is bound to that principal (plans/code-change.md §3.2): a
   // shallow per-run view, so the consumer's bag object is never mutated and
-  // a step's `secrets.get(NAME)` needs to know nothing about actors.
-  const services = bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal);
+  // a step's `secrets.get(NAME)` needs to know nothing about actors. A
+  // peer's run gets its own session namespace the same way (bindPeer).
+  const services = bindPeer(
+    bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
+    opts?.origin,
+  );
 
   const onEvent = opts?.onEvent;
   // `RunSummary.stepCounts` and `totals`, kept as events are emitted. A

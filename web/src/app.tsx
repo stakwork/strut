@@ -882,8 +882,8 @@ export function App() {
     const nextVersion = `v${Math.max(0, ...nums) + 1}`;
     const hasParams = localParams != null && Object.keys(localParams).length > 0;
     // The editor models name / input / steps / params; every other top-level
-    // key of the version being edited — `claims:`, `promotes:`, `sealed:` —
-    // rides through unchanged.
+    // key of the version being edited — `claims:`, `promotes:`, `sealed:`,
+    // `peer:` — rides through unchanged.
     let rest: Record<string, unknown> = {};
     try {
       const prev = yaml.load(await api.getWorkflowYaml(selectedWf, viewVersion ?? activeVersion)) as Record<string, unknown> | null;

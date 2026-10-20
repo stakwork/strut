@@ -133,7 +133,7 @@ two processes.
 | Order | **Dispatch-through first** (peers + `strut/run-workflow` + `@slug` in the builder), the seeded `explore` workflow beside it, then read-through on the same record, the scoped peer token, library via git, roll-up + reflection. The hive workspace selector is independent. **Gateway chaining: not at all** (§5). Revised 2026-10-08 — the original order put read-through first, for the org-wide runs view |
 | Peer identity | **Assigned by whoever registers the peer** — hive uses the **workspace slug** (what a person types as `@slug`; one swarm per workspace, and hive maps slug ↔ `swarmId` when it stores a handle). No self-declared strut id (strut has none today and would have to coordinate one). A run's cross-strut handle is `(peer, workflow, runId)` as the reader names the peer (§3, §4) |
 | Version identity | `name` + `contentHash` — already the dedup key in both stores (`src/version.ts:9-11`; content-addressed version nodes, `src/graph/workspace-store.ts` header). Same YAML anywhere = same version (§4) |
-| Peer credential | A bearer token in a fourth encrypted `FileSecretStore` file, `peers.json` — pushed by the host (the delegation and actor-secret pattern) or, on a **local strut hive cannot reach, pasted** (`STRUT_PEERS`, a Peers dialog). Peers should hold a **scoped** token — `lab:peer`: read, launch, control what it launched; `lab:read` for a central that only reads. Today's tokens are all-or-nothing, and the fix is the JWT scope in mcp; it matters most for a laptop, which must never hold a swarm's admin key (§3). Strut's half — `resolveScope` + `STRUT_PEER_KEY` — built 2026-10-09; a launch is **not** narrowed by workflow (decided 2026-10-09, §3) |
+| Peer credential | A bearer token in a fourth encrypted `FileSecretStore` file, `peers.json` — pushed by the host (the delegation and actor-secret pattern) or, on a **local strut hive cannot reach, pasted** (`STRUT_PEERS`, a Peers dialog). Peers should hold a **scoped** token — `lab:peer`: read, launch, control what it launched; `lab:read` for a central that only reads. Today's tokens are all-or-nothing, and the fix is the JWT scope in mcp; it matters most for a laptop, which must never hold a swarm's admin key (§3). Strut's half — `resolveScope` + `STRUT_PEER_KEY` — built 2026-10-09; a launch is narrowed by workflow since 2026-10-20 (`peer: true`, §3) |
 | Actor across the chain | The same opaque string everywhere: hive derives it from the global `User` (`{login}-{id}`, `hive/src/services/bifrost/reconciler.ts:676-682`), so it is valid on every strut in every org. Forwarded as `x-strut-actor` on peer calls; the peer's own `resolveActor` decides whether to honor it. The delegation for that string is on every strut in the org (the fan-out, `plans/org-gateway.md` §3), so a peer bills the forwarded principal without a per-dispatch push (§3) |
 | Cost | **One gateway per org** (`plans/org-gateway.md`): every strut in the org bills through it, under a delegation hive fans out to every strut for every member. A run still executes where the workflow lives; the org gateway's log, split by a `workspace` dim, is the LLM-side truth across the org. `RunSummary.costUsd` stays for strut-side per-run spend. **Deferred (2026-10-08):** a cross-strut call needs the caller's principal's delegation on the peer, and the fan-out that would put it there is not built; the explorer milestone does not wait on it (§5). **Partly built 2026-10-09:** hive's nightly cron (hive#5470) puts the org strut's users' delegations on every other swarm's strut, so a call from the org strut bills; other directions still have no answer |
 | Secrets | **Never cross a boundary.** A dispatch-through run reads the executing leaf's own deployment and actor secrets, pushed there by hive (§6) |
@@ -634,12 +634,28 @@ lab (register a step that reads any secret). So:
   caller's cancel right after its launch landed in that window five times
   out of five in the test). The stamp says a peer launched it, not which
   one: strut cannot tell two holders of one key apart. `x-strut-actor` is
-  honored with the peer key. **Launch is not narrowed by workflow (decided
-  2026-10-09, the plan as written):** a peer that can launch a workflow
-  whose agent has `bash` — the lab's seeded `job` — reaches whatever the
-  server's user can; on Linux that includes the server's own environment
-  (`/proc/<pid>/environ`, the lab's `API_TOKEN` among it — reasoned, not
-  demonstrated on a swarm). What the scope does keep from a peer:
+  honored with the peer key. **Launch was not narrowed by workflow
+  (decided 2026-10-09, the plan as written):** a peer that can launch a
+  workflow whose agent has `bash` — the lab's seeded `job` — reaches
+  whatever the server's user can; on Linux that includes the server's own
+  environment (`/proc/<pid>/environ`, the lab's `API_TOKEN` among it —
+  reasoned, not demonstrated on a swarm). Worse, a launch's `params`
+  override was never checked on this route, so a peer could hand
+  `explore`'s read-only agent `bash` and the graph's write steps
+  (`params: { builtins: ["bash"], tools: ["graph/*"] }` — demonstrated
+  2026-10-20). **Narrowed 2026-10-20**, for a logs workflow the
+  orchestrator calls on other swarms: a peer launches only a workflow
+  whose YAML says `peer: true` (content, in the version hash; the version
+  launched must say it; the meta surface may not publish it), AS
+  PUBLISHED — `params`, `paramOverrides` and `runId` on a peer launch are
+  a `403` — and in a namespace of its own, `peer/`: its `job` and every
+  agent session its run opens, so a name a peer picks never opens a local
+  job or a local thread (the job agent's session is its job id; a peer
+  appending to it would put words in an agent that has `bash`). `peer:
+  true` is the author vouching for everything the workflow reaches given
+  any input — a child run it launches is a local run under local names,
+  an agent it grants `bash` is a shell for the peer. What the scope keeps
+  from a peer besides:
   publishing workflows or steps, the builder chat, writing secrets, actor
   secrets, delegations, peers, owners and caps, deleting anything, and
   control of every run it did not launch.

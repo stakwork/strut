@@ -64,6 +64,12 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   if (sealed != null && typeof sealed !== "boolean") {
     throw new Error("Workflow YAML has an invalid `sealed:` key — it is `true` (a grading harness the meta surface may never run or reach) or absent.");
   }
+  // `peer:` likewise: a mistyped one read as "open to peers" would hand
+  // another strut a workflow nobody vouched for.
+  const peer = (parsed as { peer?: unknown } | null)?.peer;
+  if (peer != null && typeof peer !== "boolean") {
+    throw new Error("Workflow YAML has an invalid `peer:` key — it is `true` (another strut may launch it) or absent.");
+  }
   // A `claims:` block is checked for SHAPE here (every backend, no graph
   // needed) so a malformed contract fails the publish like a bad `input:`;
   // what it names (step types, the sealed check) is the claims layer's
@@ -147,6 +153,7 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
     ...(data.params != null ? { params: resolveParamSelfReferences(data.params) } : {}),
     ...(Array.isArray(data.promotes) ? { promotes: data.promotes } : {}),
     ...(data.sealed === true ? { sealed: true } : {}),
+    ...(data.peer === true ? { peer: true } : {}),
   };
 }
 
@@ -162,6 +169,8 @@ export interface WorkflowContent {
   claims?: ClaimsBlock;
   /** `sealed: true` — a grading harness (`src/sealed.ts`). */
   sealed?: boolean;
+  /** `peer: true` — another strut may launch it (plans/federation.md §3). */
+  peer?: boolean;
 }
 
 export function renderWorkflowYaml(name: string, content: WorkflowContent | string): string {
@@ -176,6 +185,7 @@ export function renderWorkflowYaml(name: string, content: WorkflowContent | stri
           ...(content.promotes != null ? { promotes: content.promotes } : {}),
           ...(content.claims != null ? { claims: content.claims } : {}),
           ...(content.sealed ? { sealed: true } : {}),
+          ...(content.peer ? { peer: true } : {}),
         },
         { lineWidth: 120, noRefs: true },
       );

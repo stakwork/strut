@@ -134,6 +134,22 @@ describe("projectRunEvents (pure)", () => {
     );
   });
 
+  it("a peer's run opened its threads under peer/ — failed turns included", () => {
+    const p = projectRunEvents(
+      WF,
+      RUN,
+      [
+        ev(0, "run.start", WF, { origin: "peer" }),
+        ev(1, "step.start", `${WF}/ask`, { stepType: "agent", input: { prompt: "go", session: "s1" } }),
+        ev(2, "step.end", `${WF}/ask`, { stepType: "agent", output: { result: "ok", session: { id: "peer/s1", turn: 0, offset: 0 } } }),
+        ev(3, "step.start", `${WF}/again`, { stepType: "agent", input: { prompt: "go", session: "s1" } }),
+        ev(4, "step.error", `${WF}/again`, { stepType: "agent", error: { message: "session_busy: …" } }),
+      ],
+      null,
+    )!;
+    assert.deepEqual(p.sessions.map((s) => [s.data["session_id"], s.data["session_turn"]]), [["peer/s1", 0], ["peer/s1", undefined]]);
+  });
+
   it("stamps the run and its sessions with the job, and builds a StrutJob from the index's view (plans/job-index.md §6)", () => {
     const events = sampleEvents("h").map((e) => (e.type === "run.start" ? { ...e, job: "j-1" } : e));
     const p = projectRunEvents(WF, RUN, events, null)!;

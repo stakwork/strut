@@ -323,6 +323,12 @@ describe("authoring capability (the meta surface)", () => {
     assert.equal(open.ok, true, JSON.stringify(open));
   });
 
+  it("a candidate may not open itself to peers (plans/federation.md §3)", async () => {
+    const r = (await authoring.publishWorkflow("cand-peer", `name: cand-peer\npeer: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n`)) as any;
+    assert.ok(r.error && /declares `peer: true`/.test(r.error), JSON.stringify(r));
+    assert.ok(!(await strut.workspace.listWorkflows()).some((w) => w.name === "cand-peer"), "nothing was published");
+  });
+
   it("the job agent's shape: a workflow whose meta/run-workflow step runs a seeded pod-pr", async () => {
     await strut.workspace.createWorkflow("job-like", `name: job-like\nsteps:\n  - id: run\n    type: meta/run-workflow\n    config:\n      name: "{{ input.name }}"\n      input: {}\n`);
     const ok = await strut.run("job-like", { name: "pod-pr" });

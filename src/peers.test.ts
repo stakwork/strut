@@ -468,14 +468,17 @@ describe("strut/run-workflow across two struts", () => {
       enableChat: false,
       scheduler: false,
     });
+    // Open to peers (`peer: true`): what the peer key may launch. `touch` is not.
     await peer.workspace.publishWorkflow("echo", "v1", {
       steps: [{ id: "g", type: "log", config: { message: "hi {{ input.name }}" } }],
+      peer: true,
     });
     await peer.workspace.publishWorkflow("touch", "v1", {
       steps: [{ id: "t", type: "test/touch" }, { id: "again", type: "test/touch" }],
     });
     await peer.workspace.publishWorkflow("slow", "v1", {
       steps: [{ id: "many", type: "foreach", config: { items: 200, body: { id: "w", type: "wait", config: { durationMs: 50 } } } }],
+      peer: true,
     });
     const port = await peer.listen(0, "127.0.0.1");
 
@@ -562,6 +565,12 @@ describe("strut/run-workflow across two struts", () => {
       const start = (await peer.store.getRunEvents("echo", far.runId)).find((e) => e.type === "run.start")!;
       assert.equal(start.origin, "peer");
       assert.equal(start.actor, "alice-1", "the forwarded principal is honored with the peer key");
+
+      // A workflow that does not say `peer: true` is refused, and the step
+      // fails with the peer's word for it.
+      const refused = await settled(caller, "calltouch", await launch("calltouch", { input: {} }));
+      assert.equal(refused.status, "error");
+      assert.match(refused.error?.message ?? "", /not open to peers/);
 
       const runId = await launch("callslow", { input: {} });
       let peerRun: { workflow: string; runId: string } | undefined;

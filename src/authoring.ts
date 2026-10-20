@@ -763,6 +763,11 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       if (candidate.sealed) {
         return { error: `Nothing was published — "${name}" declares \`sealed: true\`. Only a seeded grading harness is sealed; drop the key.` };
       }
+      // Nor open itself to peers: what another strut may launch here is a
+      // person's call (plans/federation.md §3), never an agent's in a run.
+      if (candidate.peer) {
+        return { error: `Nothing was published — "${name}" declares \`peer: true\`. Only a person opens a workflow to other struts; drop the key.` };
+      }
       const reached = sealedInClosure(await flowClosure(candidate, workspace), await deps.getRegistry());
       if (reached) {
         return { error: `Nothing was published — "${name}" reaches a sealed ${reached}: a candidate may never run, subflow, or grant a grader (EVOLVE_SPEC §6).` };
