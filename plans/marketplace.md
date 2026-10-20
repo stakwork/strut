@@ -12,7 +12,9 @@
 > says where an environment a package needs — a binary, a service, a
 > specialized container such as a Kali box — goes: declared in
 > `requires`, provided by the deployment, never a folder of the package.
-> Companion plans this builds
+> §12 (2026-10-19) is the other use of the format: a DISTRO, an operator's
+> packages rolled out to its own fleet automatically, which is what the
+> mcp lab's seeders become. Companion plans this builds
 > on: `federation.md` (peers, `strut/run-workflow`, and §2.3's git
 > library, which this subsumes; see §9), `claims.md` (the contract a
 > package carries), `specs/ENV_SPEC.md` (the binaries a package needs).
@@ -67,6 +69,8 @@ What exists, and what's missing:
 | Price | **Not in the package.** The source gates the download: a private repo's ACL, or a token the seller mints for the peer's archive route (§6) |
 | The index | **A list, not a service.** `index.yaml` in a git repo, or a peer's `GET /packages`. ***Ruled:* no public index yet**; each deployment names its own (§7) |
 | Who installs | **A person.** Installing is publishing third-party code onto the server: a keyed `full`-scope route, or a builder tool that asks first. No `meta/*` twin (§8) |
+| A fleet | ***Ruled:* an operator's packages roll out to its own struts automatically, by channel** (a branch of the distro repo); the merge is the accept. Every rule above holds for an item — a swarm's edit is never overwritten (§12) |
+| The lab's names | ***Ruled:* they move under package prefixes** (`pod/claim` → `hive/pod/claim`), with a `renames` map from the distro for what still says the old name (§12) |
 | An environment a package needs | **Declared in `requires`, provided by the deployment, never shipped.** A binary is `requires.binaries`, a network service is a URL and token in `requires.secrets`, a specialized container is a `requires.runtimes` entry naming a RUNTIME — a place `ctx.services.shell` spawns — pinned to an image digest the deployment builds from. No folder, no Dockerfile, no pull by strut (§11) |
 
 ## Design in one paragraph
@@ -197,8 +201,10 @@ steps?, concepts? })` writes the directory:
    calls in step source — and the author edits it. It is a declaration
    the install ENFORCES, so an under-declared package fails on the buyer's
    strut with the missing name, not silently.
-6. **Refusals.** A sealed item (`src/sealed.ts`: by namespace,
-   `sealed: true` on a def, a sealed workflow) can't be packaged.
+6. **Refusals.** An item in a sealed NAMESPACE (`eval/*`, `meta/*`,
+   `STRUT_SEALED`; `src/sealed.ts`) can't be packaged — those are strut's.
+   An item marked `sealed: true` on its def or at the top of its YAML can,
+   and keeps the mark on install; a grader is the case (§12).
 
 The manifest `buildPackage` writes is the one a person would write by
 hand; the builder can author it too.
@@ -258,7 +264,10 @@ name whose versions carry an `upstream`, plus every Concept whose stamp
 starts with `pkg/`, grouped by package, each item with `{ installed:
 version, digest, source, active: <its version>, modified }` — `modified`
 is active ≠ the installed hash for a step or workflow, and fields ≠ the
-installed file for a Concept. Uninstalling is deleting those names
+installed file for a Concept. Uninstalling is deleting those names the
+way a seeder retires one — the versions go (soft on a graph), the RUNS,
+evidence and jobs stay, never `store.deleteRuns` — so history keeps the
+name it ran under
 (`DELETE /packages/:publisher/:name` deletes every name under the prefix
 whose active version is still the package's own, retires every untouched
 Concept of the package through `seedConcepts`'s `retired` path, and lists
@@ -428,6 +437,9 @@ the registry rebuilds, before any workflow calls it, this world's npm
 - There's no `meta/*` twin: an in-run agent can never pull code. That's
   the sealed surface's job (EVOLVE_SPEC §6), and installing joins what it
   refuses.
+- The one door with no ask is a DISTRO's (§12, *ruled*): the operator's
+  merge to the channel is the accept, and branch protection on the distro
+  repo is the gate. Still a person, still never an agent.
 
 ## 9. What this changes in `federation.md` §2.3
 
@@ -437,9 +449,10 @@ plan subsumes it:
 
 - `source` becomes the version's `upstream`, which also says *what* it
   came with (the package, the digest) and whether it was edited since.
-- Seeding from repos becomes installing from `git+` sources. The lab's own
-  boot seeding stays as it is: a seed is a host's template and overwrites.
-  A package is someone else's product and never does (§4).
+- Seeding from repos becomes installing from `git+` sources. Strut's own
+  seeds (`job`, `orchestrator`, the browser workflows) stay seeds: a seed
+  is strut's template and overwrites. The lab's seeding becomes a distro
+  (§12), whose items follow §4 — a swarm's edit is never overwritten.
 - Export is unchanged in mechanics, and writes a package.
 - **The "no strut-to-strut copy" ruling is revised for PACKAGES** (*ruled*
   2026-10-18): a strut serves a package it built or installed, by digest,
@@ -610,6 +623,249 @@ requires:
   network, a command in it can — the compose file puts it on a network of
   its own for that reason, as it does the browser.
 
+## 12. Distros — an operator's packages on its own fleet
+
+> *Proposed* 2026-10-19. Everything above is a person installing someone
+> else's package. A **distro** is the other use of the same format: an
+> operator rolling ITS OWN packages out to a fleet of struts it runs —
+> every swarm's strut, today fed by the mcp lab's boot seeders. *Ruled
+> by the owner:* the fleet rollout is automatic, and the lab's names move
+> under package prefixes (`pod/claim` → `hive/pod/claim`). What a distro
+> changes in the sections above is written there, in place: §2 step 6
+> (sealed items), §3 (uninstall keeps runs), §8 (the no-ask door), §9
+> (the lab's seeding). Reviewed 2026-10-19 (the renames rule, the
+> seed-to-package bridge, the trial load, `gitsee`).
+
+**What it replaces.** The lab (`mcp/src/lab`) is four layers: files
+(about 100 steps, 40 workflows and 20 Concepts in 15 directories, each
+with its own `seed.ts`, plus `SEED_OPTS`, the `RETIRED_*` lists,
+`MOVED_TO_STRUT` and `anchorConcepts`); the host's delta on strut's
+seeded workflows (`JOB_SEED`, `ORCHESTRATOR_SEED`); in-process services
+(`concepts`, `gitsee`, `harvey`, `gaia`, `optimizer`); and host glue (the
+Express bridge, JWT → actor and scope, the gitree proxies, the Mothership,
+the stores pinned to disk). A distro takes the first two. The services
+are ported to strut's own (below); the glue is what is left of an
+embedding host, and with nothing else in it, a swarm can run the
+published strut image on its own instead. That ends mcp's git pin on
+strut and the "bump strut to X" PR on every strut change, the
+one-copy-per-process peer trap (AGENTS.md), and the tsx loader mcp needs
+for workspace steps.
+
+**A distro is a git repo:**
+
+```
+distro.yaml
+packages/hive/pod/strut.yaml          # package hive/pod → hive/pod/claim, hive/pod/release, …
+packages/hive/pod/steps/claim.ts
+packages/hive/code/workflows/change-pr.yaml
+packages/stakwork/gaia/…
+```
+
+```yaml
+# distro.yaml
+distro: stakwork/hive
+packages:                              # every package a strut on this distro holds, at exact digests
+  - { package: hive/pod,  digest: "sha256:…", source: "file:packages/hive/pod" }
+  - { package: hive/code, digest: "sha256:…", source: "file:packages/hive/code" }
+  - { package: acme/linear, digest: "sha256:…", source: "git+https://github.com/acme/linear@v1.4.0" }
+host:                                  # STRUT_HOST_CONFIG's shape (src/server.ts:39), now versioned with the packages
+  job: { tools: ["hive/pod/*"], system: "…" }
+  orchestrator: { tools: [], approve: [], system: "…" }
+renames:                               # old name → new, for the migration (below)
+  pod/claim: hive/pod/claim
+  pod/release: hive/pod/release
+```
+
+- **Packages are the §1 format, unchanged.** A `file:` source resolves
+  relative to the distro repo, so most packages live in it; a `git+` one
+  is a package the operator chose from elsewhere, pinned the same way.
+  The digest is in `distro.yaml` because the pinner computes it (§1);
+  CI on the distro repo recomputes every `file:` digest and fails a
+  commit whose line is stale, so a hand edit to a step cannot ship
+  without its pin.
+- **`host:` moves the delta into the distro.** It is what
+  `createStrut({ job, orchestrator, automation })` takes and
+  `STRUT_HOST_CONFIG` reads today; in the distro it changes in the same
+  commit as the grants it names (`hive/pod/*` on the job agent), and
+  `templateWithDelta` (`src/job-seed.ts:69`) applies it as before. A poll
+  that changes `job` or `orchestrator` reseeds them live (the seeders are
+  callable); `automation` is wired at construction and takes effect at
+  the next boot, which `GET /distro` says.
+- **Nothing else.** No secrets, no automations, no owners, no per-swarm
+  values: what differs between swarms is their env and their workspace,
+  never a distro per swarm.
+
+**Rollout — automatic, by channel.** A strut names one distro and one
+ref: `STRUT_DISTRO=git+https://github.com/stakwork/hive-distro@stable`
+(or `createStrut({ distro })`). A **channel is a branch** of the distro
+repo: `stable`, `canary`, whatever the operator keeps. A tag pins a
+swarm; a branch makes it follow.
+
+1. **At boot**, strut resolves the ref through the `git+` resolver (§5),
+   verifies every digest, and installs: `installPackage` per package,
+   with a new door, `VersionSource: "distro"`, and **no ask**. The
+   operator's commit to the channel is the accept — whoever can merge to
+   `stable` can run code on every swarm, which is who can merge to
+   stakgraph today; branch protection is the gate. Then `host:` is
+   applied, then the registry is built, as seeding does now.
+2. **While it runs**, strut re-resolves the ref every
+   `STRUT_DISTRO_POLL_MINUTES` (default 10; `0` = boot only), and on a new
+   commit applies it live: the same install, then `rebuildRegistry()`.
+   No restart, so no run is cut off. `POST /distro/sync` (keyed, `full`
+   scope; hive can call it after a merge) does the same now. A run in
+   flight keeps the step defs it was launched with; the next run gets
+   the new ones.
+3. **Rollback is a revert** on the channel, which the next poll applies
+   like any other commit — every item goes back to the content it had,
+   which its records already hold, so nothing is fetched twice.
+4. **One update rule for an item, §4's:** untouched → fast-forward;
+   edited on this swarm → the new version published beside it, the edit
+   left active, and reported. A swarm's own work is never overwritten by
+   the fleet; the builder rebases it on request. This is a change from
+   seeding, where a changed template activates over an edit
+   (`SEED_OPTS`); it is the reason to accept the change.
+5. **Removal:** a package or item the new commit no longer lists is
+   uninstalled the §3 way — deleted only if untouched, a fork kept and
+   reported. That retires the `RETIRED_STEPS` / `RETIRED_WORKFLOWS` lists:
+   the distro's diff IS the list.
+6. **What it can't apply, it refuses whole.** A digest that does not
+   match, a `package_conflict:`, a step that fails to load — the commit
+   is not applied, the swarm keeps the last one it applied, and says so
+   (below). An install is all or nothing per commit, not per package.
+   The load check runs BEFORE the first write: every step file of the
+   commit is materialized to a scratch directory and imported there (the
+   pin loader's own path, `materializeStepVersion`, so nothing new), and
+   one that throws at module top level refuses the commit, naming it.
+   The same trial load belongs to §3's install, where a person's accept
+   should not be followed by a registry that will not build.
+7. **At boot, offline is not an error.** A ref that cannot be resolved at
+   boot (no network, a bad token) leaves the workspace as the last
+   applied commit left it — the items are already published — and strut
+   boots on them, with the failure on `GET /distro`. The `git+` resolver's
+   credential is `GITHUB_TOKEN` through the secrets capability: on a
+   first boot that means env, later boots read the store on the volume.
+
+**The fleet's view.** `GET /distro` (keyed) on each strut: the distro,
+the ref, the commit applied and when, the last poll and its error if
+any, and every item `diverged` (edited here, the new version waiting)
+— the §3 fold, filtered. Hive already holds every swarm's key and can
+show the fleet as one table: which swarms are on which commit of which
+channel, which are stuck, which have local edits. No new service; the
+struts are the source.
+
+**Sealed items ship (overrides §2 step 6).** A package may carry items
+marked `sealed: true` — a grader step (`defineStep({ sealed: true })`) or
+a grading harness (the workflow's top-level key). The install keeps the
+mark; `sealedInClosure` (`src/sealed.ts:55`) refuses every candidate
+that reaches one, as it does for a seeded grader; the meta surface's
+publisher rule (`requirePublisher: "ai"`, `src/authoring.ts:664`) already
+keeps it from editing a step it did not author. Holding a grader in a
+package adds what the lab pins by hand: the digest is the grader's
+exact bytes, so a check's evidence records `upstream.digest` in place of
+`SCORER_SHA256` / `benchmarkRev`, and a person's edit to a grader shows
+as `modified` beside every score it produced. Not changed: gold answers
+are data the step fetches at first use (GAIA's terms forbid shipping
+them), and an agent with `bash` on the same server can read files on its
+disk, as with `GAIA_DIR` today — open question 1. This applies to any
+package, not only a distro's; it is here because harvey and gaia are the
+first to need it.
+
+**Renames — the lab's names move under prefixes.** §1's rule (an item is
+`<package>/<path>`) gives every lab item a new name: `pod/claim` →
+`hive/pod/claim`, `jarvis/*` → `hive/jarvis/*`, `code-change-pr` →
+`hive/code/change-pr`, `explore` → `hive/explore/explore`. What refers to
+the old names and cannot be edited in the same commit:
+
+| Holds an old name | Example | Handled by |
+| --- | --- | --- |
+| Hive, and peers' `strut/run-workflow` calls | `workflow: "explore"`, `code-change-pr` | `renames`: a launch by an old workflow name runs the new one |
+| A hold on a job already on file | `release: { type: "pod/release" }` (`pod/claim`) | `renames`: `releaseWith` (`src/jobs.ts:392`) resolves the old type to the new |
+| A workflow a person wrote on a swarm | `type: pod/claim` in their YAML | `renames`: `resolveStep` resolves it, and the builder is told the new name in the result |
+| Concept pages, the `job` prompt's grants | `Pod` names `pod/claim`; `tools: ["pod/*"]` | edited in the same distro commit |
+| Old runs, evidence, stats | `workflows/code-change-pr/runs/` | nothing — history keeps the name it ran under |
+
+`renames` is a map from the distro alone (no other door writes one),
+consulted at exactly those lookups — `resolveStep`, the launch route's
+workflow lookup, `releaseWith`, and `flowClosure`'s registry check
+(`src/closure.ts:126`, so a person's workflow naming `pod/claim` still
+resolves, and a publish reaching a sealed item through an old name is
+still refused) — and only when the old name does not exist. **The event
+log records the NEW name:** `step.start.stepType` is what the step
+resolved to, never the YAML's spelling (today it is `s.type` as written,
+`src/runner.ts:517`), so stats, claims, verify and the palette see one
+name for one step. A GLOB is not renamed: `agentTools: ["pod/*"]`
+expands against the registry and matches nothing after the move
+(`expandAgentTools` already warns on that); the two seeds' grants change
+in the distro commit, and a person's workflow gets the warning with the
+new prefix named at its next validate or publish. An entry is dropped from the map once nothing calls the
+old name — hive's callers moved, no hold names it — which `GET /distro`
+helps tell by counting the lookups each entry served. An old name's
+items are uninstalled by the commit that installs the new ones,
+untouched or not — a renamed item is the same item, so an edit on a
+swarm moves with it: it is published under the new name as a local
+version upstreamed to the package, and reported diverged.
+
+**The bridge from seeds.** The first distro commit meets items no package
+installed: the lab's seeds, with no `upstream`. The §4 table needs a
+previous install's hash to tell untouched from forked; here the version's
+`source` tells it — an old name whose ACTIVE version is a `seed` version
+is untouched (uninstalled, the new name installed), any other source
+(`ui`, `builder`, `api`) is a fork and moves as above. That is the whole
+bridge; it applies to any entry in `renames` whose old name has no
+`upstream`. Ordering with mcp: the mcp build that stops seeding a
+directory (its `seed.ts` deleted, `STRUT_DISTRO` set) deploys BEFORE the
+distro commit that renames its items — the other order has the seeder
+publishing `pod/claim` again on its next boot, beside `hive/pod/claim`.
+Between the two deploys the old names stay and nothing breaks.
+
+**The services are ported, not packaged.** A package cannot carry a live
+object, and a distro does not try. Per lab service:
+
+| Service | Becomes |
+| --- | --- |
+| `gaia`, `harvey` (sealed graders running a pinned Python scorer) | Sealed steps over `ctx.services.shell` + `secrets` (`HF_TOKEN`), the dataset cloned at first use — a `stakwork/gaia` package, a `stakwork/harvey` one |
+| `optimizer` (the evolve loop runs child workflows) | The launch `meta/run-workflow` already uses, on the step's context |
+| `gitsee` (a per-run browser and booted stack) | `ctx.services.browser` for the browser; the booted stack is a per-run container, which §11 does NOT give (a v1 runtime is long-running and the deployment's) — it waits on open question 4, or stays a hold on the job the host's pool provides |
+| `concepts` (storage, LLM, clone, summarizer over mcp's aieo and `repo/*`) | The gitree → workflows rollout: `graph/*`, `git/checkout`, `agent`. The last to go |
+
+Until a service is ported, its packages need a host that provides it,
+and the distro and an embedding host compose: mcp passes
+`createStrut({ distro, services })`, the distro brings the files, mcp
+brings what is not ported yet. A package states the service it needs as
+it states a binary — reported at install, not refused (§3) — so a swarm
+without mcp installs it and its steps fail naming the service.
+
+**Migration order.** Each step ships alone and leaves every swarm working:
+
+1. **The distro mechanism**, in strut: `STRUT_DISTRO`, `distro.yaml`,
+   the boot install with no ask, the poll, `POST /distro/sync`,
+   `GET /distro`, `renames`. Needs §"Step order" 1–2 (provenance,
+   nested names, the install) and the `git+` resolver from 3.
+2. **Sealed items in a package** (above): a test that a candidate
+   reaching an installed grader is refused.
+3. **The lab's files move**, one package per lab directory, starting
+   with those that use only strut's services: `code`, `job`'s Concepts,
+   `janitor`, `explore`, `pods`, `pod-setup`, `jarvis`, `eval`,
+   `wfbench`, `artifacts`. Per directory, mcp deploys first (its
+   `seed.ts` deleted, `STRUT_DISTRO` set), then the distro commit lands
+   (the bridge above); `JOB_SEED` and `ORCHESTRATOR_SEED` move to
+   `host:`. Hive's callers move to the new names behind `renames`.
+4. **The services**, per the table: `gaia` and `harvey`, then
+   `optimizer`, `gitsee`, `concepts`.
+5. **Strut leaves mcp.** With nothing but glue left, a swarm runs the
+   published strut image beside mcp, on the same Neo4j: `STRUT_API_KEY`
+   and `STRUT_PEER_KEY` for what `labAuth` and the `lab:peer` JWT do,
+   `x-strut-actor` from hive as today. mcp's `/lab` mount and its gitree
+   proxies go when hive calls strut directly.
+
+**Not in a distro:** a solver or ranges (pins, as §1); per-swarm
+packages (a swarm that needs a package the channel lacks installs it
+through §8, by a person, and the distro leaves it alone — it is not
+the distro's item); a push from hive to a swarm (each strut pulls,
+which works behind NAT and needs no route back, federation's reasoning
+for the tail); a staged percentage rollout inside one channel (two
+channels are the stage).
+
 ## Step order
 
 1. **Provenance + names.** `upstream` on version records (file store,
@@ -676,6 +932,21 @@ requires:
   requiring a runtime the deployment lacks installs with it reported, and
   the same package on a deployment that has it reports the binaries it
   lacks through the runtime.
+- A swarm on `stable` applies a commit within one poll, with no
+  restart; a run in flight finishes on the old defs; the next run uses
+  the new.
+- A step edited on one swarm survives a commit that changes it, and
+  `GET /distro` reports it diverged; an untouched one fast-forwards.
+- A commit with a stale digest, or one step that fails to load, is
+  refused whole, the swarm stays on its last commit, and `GET /distro`
+  names the error; a revert on the channel is applied by the next poll.
+- An item dropped from the distro is uninstalled when untouched and
+  kept and reported when edited.
+- With `pod/release` in `renames`, a job holding a pod claimed under
+  the old name is released by the new step; a launch of `explore`
+  runs `hive/explore/explore`.
+- An installed `sealed: true` grader: a candidate whose closure reaches
+  it is refused at publish; its evidence records the package digest.
 - Concepts alone: a package of two Concept pages, one the other's parent,
   installs, shows in `GET /packages`, uninstalls; an edit to one page in
   the graph survives an update of the package and is reported as
@@ -705,223 +976,3 @@ requires:
    measures from zero. Whether a publisher may *report* numbers into an
    index file, labelled as such, is open.
 
-## Distros
-
-> *Proposed* 2026-10-19. Everything above is a person installing someone
-> else's package. A **distro** is the other use of the same format: an
-> operator rolling ITS OWN packages out to a fleet of struts it runs —
-> every swarm's strut, today fed by the mcp lab's boot seeders. *Ruled
-> by the owner:* the fleet rollout is automatic, and the lab's names move
-> under package prefixes (`pod/claim` → `hive/pod/claim`). Where this
-> section contradicts an earlier one, this section wins for a distro, and
-> says so: §2 step 6 (sealed items), §4 and §8 (the ask), §9 ("the lab's
-> own boot seeding stays as it is").
-
-**What it replaces.** The lab (`mcp/src/lab`) is four layers: files
-(about 100 steps, 40 workflows and 20 Concepts in 15 directories, each
-with its own `seed.ts`, plus `SEED_OPTS`, the `RETIRED_*` lists,
-`MOVED_TO_STRUT` and `anchorConcepts`); the host's delta on strut's
-seeded workflows (`JOB_SEED`, `ORCHESTRATOR_SEED`); in-process services
-(`concepts`, `gitsee`, `harvey`, `gaia`, `optimizer`); and host glue (the
-Express bridge, JWT → actor and scope, the gitree proxies, the Mothership,
-the stores pinned to disk). A distro takes the first two. The services
-are ported to strut's own (below); the glue is what is left of an
-embedding host, and with nothing else in it, a swarm can run the
-published strut image on its own instead. That ends mcp's git pin on
-strut and the "bump strut to X" PR on every strut change, the
-one-copy-per-process peer trap (AGENTS.md), and the tsx loader mcp needs
-for workspace steps.
-
-**A distro is a git repo:**
-
-```
-distro.yaml
-packages/hive/pod/strut.yaml          # package hive/pod → hive/pod/claim, hive/pod/release, …
-packages/hive/pod/steps/claim.ts
-packages/hive/code/workflows/change-pr.yaml
-packages/stakwork/gaia/…
-```
-
-```yaml
-# distro.yaml
-distro: stakwork/hive
-packages:                              # every package a strut on this distro holds, at exact digests
-  - { package: hive/pod,  digest: "sha256:…", source: "file:packages/hive/pod" }
-  - { package: hive/code, digest: "sha256:…", source: "file:packages/hive/code" }
-  - { package: acme/linear, digest: "sha256:…", source: "git+https://github.com/acme/linear@v1.4.0" }
-host:                                  # STRUT_HOST_CONFIG's shape (src/server.ts:39), now versioned with the packages
-  job: { tools: ["hive/pod/*"], system: "…" }
-  orchestrator: { tools: [], approve: [], system: "…" }
-renames:                               # old name → new, for the migration (below)
-  pod/claim: hive/pod/claim
-  pod/release: hive/pod/release
-```
-
-- **Packages are the §1 format, unchanged.** A `file:` source resolves
-  relative to the distro repo, so most packages live in it; a `git+` one
-  is a package the operator chose from elsewhere, pinned the same way.
-  The digest is in `distro.yaml` because the pinner computes it (§1);
-  CI on the distro repo recomputes every `file:` digest and fails a
-  commit whose line is stale, so a hand edit to a step cannot ship
-  without its pin.
-- **`host:` moves the delta into the distro.** It is what
-  `createStrut({ job, orchestrator, automation })` takes and
-  `STRUT_HOST_CONFIG` reads today; in the distro it changes in the same
-  commit as the grants it names (`hive/pod/*` on the job agent), and
-  `templateWithDelta` (`src/job-seed.ts:69`) applies it as before.
-- **Nothing else.** No secrets, no automations, no owners, no per-swarm
-  values: what differs between swarms is their env and their workspace,
-  never a distro per swarm.
-
-**Rollout — automatic, by channel.** A strut names one distro and one
-ref: `STRUT_DISTRO=git+https://github.com/stakwork/hive-distro@stable`
-(or `createStrut({ distro })`). A **channel is a branch** of the distro
-repo: `stable`, `canary`, whatever the operator keeps. A tag pins a
-swarm; a branch makes it follow.
-
-1. **At boot**, strut resolves the ref through the `git+` resolver (§5),
-   verifies every digest, and installs: `installPackage` per package,
-   with a new door, `VersionSource: "distro"`, and **no ask**. The
-   operator's commit to the channel is the accept — whoever can merge to
-   `stable` can run code on every swarm, which is who can merge to
-   stakgraph today; branch protection is the gate. Then `host:` is
-   applied, then the registry is built, as seeding does now.
-2. **While it runs**, strut re-resolves the ref every
-   `STRUT_DISTRO_POLL_MINUTES` (default 10; `0` = boot only), and on a new
-   commit applies it live: the same install, then `rebuildRegistry()`.
-   No restart, so no run is cut off. `POST /distro/sync` (keyed, `full`
-   scope; hive can call it after a merge) does the same now. A run in
-   flight keeps the step defs it was launched with; the next run gets
-   the new ones.
-3. **Rollback is a revert** on the channel, which the next poll applies
-   like any other commit — every item goes back to the content it had,
-   which its records already hold, so nothing is fetched twice.
-4. **One update rule for an item, §4's:** untouched → fast-forward;
-   edited on this swarm → the new version published beside it, the edit
-   left active, and reported. A swarm's own work is never overwritten by
-   the fleet; the builder rebases it on request. This is a change from
-   seeding, where a changed template activates over an edit
-   (`SEED_OPTS`); it is the reason to accept the change.
-5. **Removal:** a package or item the new commit no longer lists is
-   uninstalled the §3 way — deleted only if untouched, a fork kept and
-   reported. That retires the `RETIRED_STEPS` / `RETIRED_WORKFLOWS` lists:
-   the distro's diff IS the list.
-6. **What it can't apply, it refuses whole.** A digest that does not
-   match, a `package_conflict:`, a step that fails to load — the commit
-   is not applied, the swarm keeps the last one it applied, and says so
-   (below). An install is all or nothing per commit, not per package.
-
-**The fleet's view.** `GET /distro` (keyed) on each strut: the distro,
-the ref, the commit applied and when, the last poll and its error if
-any, and every item `diverged` (edited here, the new version waiting)
-— the §3 fold, filtered. Hive already holds every swarm's key and can
-show the fleet as one table: which swarms are on which commit of which
-channel, which are stuck, which have local edits. No new service; the
-struts are the source.
-
-**Sealed items ship (overrides §2 step 6).** A package may carry items
-marked `sealed: true` — a grader step (`defineStep({ sealed: true })`) or
-a grading harness (the workflow's top-level key). The install keeps the
-mark; `sealedInClosure` (`src/sealed.ts:55`) refuses every candidate
-that reaches one, as it does for a seeded grader; the meta surface's
-publisher rule (`requirePublisher: "ai"`, `src/authoring.ts:664`) already
-keeps it from editing a step it did not author. Holding a grader in a
-package adds what the lab pins by hand: the digest is the grader's
-exact bytes, so a check's evidence records `upstream.digest` in place of
-`SCORER_SHA256` / `benchmarkRev`, and a person's edit to a grader shows
-as `modified` beside every score it produced. Not changed: gold answers
-are data the step fetches at first use (GAIA's terms forbid shipping
-them), and an agent with `bash` on the same server can read files on its
-disk, as with `GAIA_DIR` today — open question 1. This applies to any
-package, not only a distro's; it is here because harvey and gaia are the
-first to need it.
-
-**Renames — the lab's names move under prefixes.** §1's rule (an item is
-`<package>/<path>`) gives every lab item a new name: `pod/claim` →
-`hive/pod/claim`, `jarvis/*` → `hive/jarvis/*`, `code-change-pr` →
-`hive/code/change-pr`, `explore` → `hive/explore/explore`. What refers to
-the old names and cannot be edited in the same commit:
-
-| Holds an old name | Example | Handled by |
-| --- | --- | --- |
-| Hive, and peers' `strut/run-workflow` calls | `workflow: "explore"`, `code-change-pr` | `renames`: a launch by an old workflow name runs the new one |
-| A hold on a job already on file | `release: { type: "pod/release" }` (`pod/claim`) | `renames`: `releaseWith` (`src/jobs.ts:392`) resolves the old type to the new |
-| A workflow a person wrote on a swarm | `type: pod/claim` in their YAML | `renames`: `resolveStep` resolves it, and the builder is told the new name in the result |
-| Concept pages, the `job` prompt's grants | `Pod` names `pod/claim`; `tools: ["pod/*"]` | edited in the same distro commit |
-| Old runs, evidence, stats | `workflows/code-change-pr/runs/` | nothing — history keeps the name it ran under |
-
-`renames` is a map from the distro alone (no other door writes one),
-consulted at exactly those three lookups, and only when the old name
-does not exist. An entry is dropped from the map once nothing calls the
-old name — hive's callers moved, no hold names it — which `GET /distro`
-helps tell by counting the lookups each entry served. An old name's
-items are uninstalled by the commit that installs the new ones,
-untouched or not — a renamed item is the same item, so an edit on a
-swarm moves with it: it is published under the new name as a local
-version upstreamed to the package, and reported diverged.
-
-**The services are ported, not packaged.** A package cannot carry a live
-object, and a distro does not try. Per lab service:
-
-| Service | Becomes |
-| --- | --- |
-| `gaia`, `harvey` (sealed graders running a pinned Python scorer) | Sealed steps over `ctx.services.shell` + `secrets` (`HF_TOKEN`), the dataset cloned at first use — a `stakwork/gaia` package, a `stakwork/harvey` one |
-| `optimizer` (the evolve loop runs child workflows) | The launch `meta/run-workflow` already uses, on the step's context |
-| `gitsee` (a per-run browser and booted stack) | `ctx.services.browser` for the browser; the stack is a runtime (§11) or a hold on the job |
-| `concepts` (storage, LLM, clone, summarizer over mcp's aieo and `repo/*`) | The gitree → workflows rollout: `graph/*`, `git/checkout`, `agent`. The last to go |
-
-Until a service is ported, its packages need a host that provides it,
-and the distro and an embedding host compose: mcp passes
-`createStrut({ distro, services })`, the distro brings the files, mcp
-brings what is not ported yet. A package states the service it needs as
-it states a binary — reported at install, not refused (§3) — so a swarm
-without mcp installs it and its steps fail naming the service.
-
-**Migration order.** Each step ships alone and leaves every swarm working:
-
-1. **The distro mechanism**, in strut: `STRUT_DISTRO`, `distro.yaml`,
-   the boot install with no ask, the poll, `POST /distro/sync`,
-   `GET /distro`, `renames`. Needs §"Step order" 1–2 (provenance,
-   nested names, the install) and the `git+` resolver from 3.
-2. **Sealed items in a package** (above): a test that a candidate
-   reaching an installed grader is refused.
-3. **The lab's files move**, one package per lab directory, starting
-   with those that use only strut's services: `code`, `job`'s Concepts,
-   `janitor`, `explore`, `pods`, `pod-setup`, `jarvis`, `eval`,
-   `wfbench`, `artifacts`. mcp sets `STRUT_DISTRO` and deletes each
-   directory's `seed.ts` as its package lands; `JOB_SEED` and
-   `ORCHESTRATOR_SEED` move to `host:`. Hive's callers move to the new
-   names behind `renames`.
-4. **The services**, per the table: `gaia` and `harvey`, then
-   `optimizer`, `gitsee`, `concepts`.
-5. **Strut leaves mcp.** With nothing but glue left, a swarm runs the
-   published strut image beside mcp, on the same Neo4j: `STRUT_API_KEY`
-   and `STRUT_PEER_KEY` for what `labAuth` and the `lab:peer` JWT do,
-   `x-strut-actor` from hive as today. mcp's `/lab` mount and its gitree
-   proxies go when hive calls strut directly.
-
-**Not in a distro:** a solver or ranges (pins, as §1); per-swarm
-packages (a swarm that needs a package the channel lacks installs it
-through §8, by a person, and the distro leaves it alone — it is not
-the distro's item); a push from hive to a swarm (each strut pulls,
-which works behind NAT and needs no route back, federation's reasoning
-for the tail); a staged percentage rollout inside one channel (two
-channels are the stage).
-
-**Validation, for this section:**
-
-- A swarm on `stable` applies a commit within one poll, with no
-  restart; a run in flight finishes on the old defs; the next run uses
-  the new.
-- A step edited on one swarm survives a commit that changes it, and
-  `GET /distro` reports it diverged; an untouched one fast-forwards.
-- A commit with a stale digest, or one step that fails to load, is
-  refused whole, the swarm stays on its last commit, and `GET /distro`
-  names the error; a revert on the channel is applied by the next poll.
-- An item dropped from the distro is uninstalled when untouched and
-  kept and reported when edited.
-- With `pod/release` in `renames`, a job holding a pod claimed under
-  the old name is released by the new step; a launch of `explore`
-  runs `hive/explore/explore`.
-- An installed `sealed: true` grader: a candidate whose closure reaches
-  it is refused at publish; its evidence records the package digest.
