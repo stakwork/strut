@@ -18,7 +18,7 @@
 > on: `federation.md` (peers, `strut/run-workflow`, and §2.3's git
 > library, which this subsumes; see §9), `claims.md` (the contract a
 > package carries), `specs/ENV_SPEC.md` (the binaries a package needs).
-> Code citations are on `strut@83a5b10`; §11's on `strut@19a895e`.
+> Code citations are on `strut@83a5b10`; §11's and §12's on `strut@19a895e`.
 
 ## Problem
 
@@ -110,6 +110,8 @@ version: 1.4.0                # the publisher's label; the digest is the truth
 description: Linear issues, comments and sync, tested against the live API
 requires:
   secrets: [LINEAR_API_KEY]   # the names its steps may read — enforced after install (§3)
+  binaries: []                # what its steps call by name on PATH — checked, reported (§11)
+  runtimes: []                # containers its steps run commands in — named, never shipped (§11.2)
   packages: []                # other packages it executes, at exact digests (§1):
   # - { package: bob/util, digest: "sha256:…", source: "git+https://github.com/bob/util@v2.1.0" }
 ```
@@ -200,7 +202,11 @@ steps?, concepts? })` writes the directory:
    `secretsEnv` names in the YAML, string literals in `secrets.get("…")`
    calls in step source — and the author edits it. It is a declaration
    the install ENFORCES, so an under-declared package fails on the buyer's
-   strut with the missing name, not silently.
+   strut with the missing name, not silently. `requires.binaries` and
+   `requires.runtimes` start the same way — every literal `cmd` of an
+   `exec` step (ENV_SPEC §9's rule) and every `runtime:` field in the
+   closure — and the author edits them; neither is enforced, both are
+   reported at install (§11.2).
 6. **Refusals.** An item in a sealed NAMESPACE (`eval/*`, `meta/*`,
    `STRUT_SEALED`; `src/sealed.ts`) can't be packaged — those are strut's.
    An item marked `sealed: true` on its def or at the top of its YAML can,
@@ -418,7 +424,8 @@ Builder tools (`src/ai/tools.ts`), each thin over the functions above:
 - `install_package({ ref })`: fetches and verifies, then **asks**
   (`ask_user`, plans/elicitation.md) with the manifest summary: publisher,
   digest, source, the items (which are code), the required packages it
-  will install too, the secret names the code may read.
+  will install too, the secret names the code may read, the binaries
+  and runtimes it needs with which are missing here (§11.2).
   It installs only on accept, then `request_secret` for each missing name.
 - `update_package({ package, ref? })`: §4, and it asks the same way
   (*ruled*).
@@ -723,7 +730,15 @@ swarm; a branch makes it follow.
    left active, and reported. A swarm's own work is never overwritten by
    the fleet; the builder rebases it on request. This is a change from
    seeding, where a changed template activates over an edit
-   (`SEED_OPTS`); it is the reason to accept the change.
+   (`SEED_OPTS`); it is the reason to accept the change. The one
+   exception is strut's own seeds: a `host:` change reseeds `job` and
+   `orchestrator` through `templateWithDelta`, and a changed template
+   activates over a swarm's edit of them, as §9 says a seed does.
+   **The fence (§3 step 5) holds for a distro's steps too:** a lab step
+   reads only what its package's `requires.secrets` names, so an
+   under-declared package fails on the first swarm with the name. That
+   is what the `canary` channel is for: the migration lands each package
+   on `canary` and runs its claims there before `stable` sees it.
 5. **Removal:** a package or item the new commit no longer lists is
    uninstalled the §3 way — deleted only if untouched, a fork kept and
    reported. That retires the `RETIRED_STEPS` / `RETIRED_WORKFLOWS` lists:
@@ -753,7 +768,7 @@ show the fleet as one table: which swarms are on which commit of which
 channel, which are stuck, which have local edits. No new service; the
 struts are the source.
 
-**Sealed items ship (overrides §2 step 6).** A package may carry items
+**Sealed items ship (§2 step 6).** A package may carry items
 marked `sealed: true` — a grader step (`defineStep({ sealed: true })`) or
 a grading harness (the workflow's top-level key). The install keeps the
 mark; `sealedInClosure` (`src/sealed.ts:55`) refuses every candidate
@@ -799,7 +814,8 @@ expands against the registry and matches nothing after the move
 in the distro commit, and a person's workflow gets the warning with the
 new prefix named at its next validate or publish. An entry is dropped from the map once nothing calls the
 old name — hive's callers moved, no hold names it — which `GET /distro`
-helps tell by counting the lookups each entry served. An old name's
+helps tell by counting the lookups each entry served (an in-process
+count, reset by a restart — a hint, not a record). An old name's
 items are uninstalled by the commit that installs the new ones,
 untouched or not — a renamed item is the same item, so an edit on a
 swarm moves with it: it is published under the new name as a local
@@ -861,7 +877,9 @@ without mcp installs it and its steps fail naming the service.
 **Not in a distro:** a solver or ranges (pins, as §1); per-swarm
 packages (a swarm that needs a package the channel lacks installs it
 through §8, by a person, and the distro leaves it alone — it is not
-the distro's item); a push from hive to a swarm (each strut pulls,
+the distro's item, and the inverse holds: `update_package` and
+`DELETE /packages/…` on an item whose `upstream.source` is `distro`
+are refused, naming the channel that owns it); a push from hive to a swarm (each strut pulls,
 which works behind NAT and needs no route back, federation's reasoning
 for the tail); a staged percentage rollout inside one channel (two
 channels are the stage).
@@ -872,8 +890,15 @@ channels are the stage).
    graph schema, conformance case), carried forward by every publish;
    `VersionSource: "install"`; `activate: false` on the content-hash
    publishers; workflow names with slashes — the file store's listing
-   walking nested directories for `_metadata.json`, and the run store's
-   `workflows/<name>/runs/` under a nested name.
+   walking nested directories for `_metadata.json`, the run store's
+   `workflows/<name>/runs/` under a nested name, and **the URL rule**: 25
+   routes take `/workflows/:name/…` as one segment, and `:name{.+}` would
+   swallow the `/:version` catch-all behind it, so a slashed workflow
+   name travels URL-ENCODED on the wire (`/workflows/acme%2Flinear%2Fsync/run`,
+   as GitLab encodes a project path; the router matches `%2F` as one
+   segment and `param()` decodes it), encoded by `web/src/api.ts`, the
+   embed deep links and the MCP doors' `ui` links. The step routes keep
+   `:type{.+}` as they are.
 2. **Format + install from `file:`.** The tree digest, `buildPackage`,
    `installPackage` (verify, the prefix rule, `requires.packages`
    recursion, all or nothing, Concepts, step claims, the fence),
