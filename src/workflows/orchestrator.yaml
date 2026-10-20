@@ -1,15 +1,19 @@
 name: orchestrator
 # The orchestrator workflow — one turn of a long conversation with a person.
 # A host (Peel's agent contact, one day Hive's Jamie) launches it once per
-# message, with the conversation's `session`: the agent answers small things
-# with its tools inside the turn and hands bigger work to the `job` workflow
-# DETACHED (job/start, job/continue), several jobs at once if need be. The
+# message, with the conversation's `session`. ONE line between the two: the
+# agent answers from what already EXISTS — memory, the graph, earlier jobs, a
+# lookup (a workflow that returns an answer, here or on a peer) — inside the
+# turn, and anything that needs a WORKING DIRECTORY (files, a shell, git,
+# the web, a checkout to change) is a job: the `job` workflow, started
+# DETACHED (job/start, job/continue), several at once if need be. The
 # turn ends while a job works; the job's `run.end` goes to the callback this
 # turn was launched with. One conversation is one session, for good: the
 # agent step compacts it in place when it nears the window. Its system prompt
-# is the session's first turn's. Its own files go
-# in the run's artifact folder
-# (job/dir with no job), so its reply has job's shape. Seeded at boot by
+# is the session's first turn's. It writes no files (no built-ins): its
+# `artifacts` point at jobs' deliverables or carry small inline content, in
+# job's reply shape. `dir` (job/dir with no job: the run's artifact folder)
+# is only the agent's cwd. Seeded at boot by
 # createStrut (src/orchestrator-seed.ts); `params.tools` and `params.system`
 # are the evolvable surface, and a host appends its own grants and prompt
 # section through `createStrut({ orchestrator })`. Every step here is strut's
@@ -47,20 +51,19 @@ steps:
           text: { type: string, description: "Your reply to the person, markdown." }
           artifacts:
             type: array
-            description: "Anything you produced THIS turn for the person to look at (usually none), and any job's deliverable you point them to. Files are paths relative to your working directory."
+            description: "Usually none. A job's deliverable you point the person to, by the url job/get gave it, or a small piece of inline content. You write no files: anything that is one is a job's."
             items:
               type: object
               additionalProperties: false
               required: [id, title]
               properties:
                 id: { type: string, description: "Stable across turns: the same id next turn means a newer version of the same thing." }
-                kind: { type: string, description: "Only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
+                kind: { type: string, description: "Only when the link would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
                 title: { type: string }
                 label: { type: string, description: "What it is to the reader: Plan, Page, Screenshot" }
                 summary: { type: string, description: "One sentence about what is in it" }
-                path: { type: string, description: "A file you wrote, relative to the working directory" }
-                url: { type: string, description: "Instead of a file you wrote: an absolute link, or the url job/get gave a job's deliverable" }
-                content: { type: string, description: "Small inline content instead of a file" }
+                url: { type: string, description: "The url job/get gave a job's deliverable, or an absolute link" }
+                content: { type: string, description: "Small inline content, instead of a url" }
           ask:
             type: object
             description: "Only when you need a decision from the person before going on: the question, in prose. The answer comes as the next turn's message."
@@ -114,13 +117,18 @@ params:
     You are a person's assistant, in one long conversation with them. Each
     turn you get one message; you remember the conversation before it.
 
-    Answer small things yourself, inside the turn, with your tools: what
-    you remember (memory/recall, memory/get), what to remember
-    (memory/remember), a question about earlier work (job/list, job/get).
+    One line divides your work. You answer from what already EXISTS, inside
+    the turn: what you remember (memory/recall, memory/get; memory/remember
+    keeps something new), earlier work (job/list, job/get, job/read), and
+    lookups — a workflow that returns an answer, here or on a peer.
+    Anything that needs a WORKING DIRECTORY is a job's: files to write or
+    deliver, a shell, git or gh (a pull request, a branch, a diff,
+    commits), the web, a checkout to read at a ref or to change. When in
+    doubt, it is a job's; never answer from a guess.
 
-    Start a JOB (job/start) for work that needs files, the web or many
-    steps: research, a plan, a page, a document. Give it everything it
-    needs in its prompt, since it does not see this conversation, and a
+    Start a JOB (job/start) for that work, however small. Give it everything
+    it needs in its prompt, since it does not see this conversation —
+    links, names, the peer that holds the code when you know it — and a
     short title. Several jobs may run at once. Never wait on a job: tell
     the person in a line what you started and end your turn. Its result
     (a reply, files, or a question) reaches the person when it ends.
@@ -132,16 +140,11 @@ params:
 
     Another strut is a PEER, named by its id (`@<id>` in a message).
     strut/list-peers lists them with what each holds (its repositories);
-    strut/run-workflow runs one of a peer's workflows inside the turn and
-    returns its output. A question about another workspace, or about code
-    that is not here, is asked THERE: list the peers when you do not know
-    which holds it, never answer from what you have here.
-
-    A question about a pull request, a branch, a diff or commits is a
-    JOB's, however small, wherever the code lives: only a job runs git and
-    gh, as the person, and a peer's workflows read a repository's default
-    branch alone. Put the link in the job's prompt, and the peer that holds
-    the code when you know it, so the job can ask it for context.
+    strut/run-workflow runs a lookup there inside the turn and returns its
+    output. A question about another workspace, or about code that is not
+    here, is asked THERE: list the peers when you do not know which holds
+    it, never answer from what you have here. A peer's lookups read a
+    repository's default branch alone; anything past that is a job's.
 
     Answer with `text`, your reply to the person. Point them to a job's
     deliverable in `artifacts`, by the `url` job/get gave it, never as a
