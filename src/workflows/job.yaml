@@ -8,12 +8,19 @@ name: job
 # artifact directory. Seeded at boot by createStrut (src/job-seed.ts);
 # `params.tools` and `params.system` are the evolvable surface, and a host
 # appends its own grants and prompt section through `createStrut({ job })`.
-# Every step here is strut's own.
+# Every step here is strut's own. The turn is done by strut's `agent` step,
+# or — when the launch names an `agent` — by a local coding agent over ACP
+# (acp/prompt: Claude Code, Codex, goose, any ACP command), in the job's
+# directory or the folder the host passes as `cwd`.
 input:
   prompt: { type: string, description: "What to do this turn" }
   workspace: { type: string, required: false, description: "The workspace this strut belongs to, by its slug. Another workspace is a peer, @<slug>" }
   session: { type: string, required: false, description: "The agent's thread (a session id). Defaults to the job id — one thread across every turn of the job. Pass one to work on the job's files with a different thread (a fresh one, or a second beside the first)" }
   repos: { type: json, required: false, description: "Repository URLs to check out into the job's directory, one subdirectory each, kept there turn to turn (a private one needs the launching person's GITHUB_TOKEN here)" }
+  agent: { type: string, required: false, description: "A local coding agent to do the turn over ACP instead of strut's own: claude, codex, goose, gemini, opencode, or an ACP command line. It uses its own login, model and tools" }
+  mode: { type: string, required: false, description: "With `agent`: plan (look only), edit (edit files; commands only inside the agent's sandbox) or auto (anything). Default edit" }
+  model: { type: string, required: false, description: "With `agent`: one of the models that agent offers. Its own default otherwise" }
+  cwd: { type: string, required: false, description: "An absolute folder to work in instead of the job's directory — a host's own checkout or worktree" }
 steps:
   - id: dir
     type: job/dir
@@ -30,10 +37,17 @@ steps:
         config:
           repo: "{{ $current }}"
           workdir: "{{ $job }}"
+  # strut's own agent, unless the launch names a local one.
+  - id: own
+    type: if
+    config:
+      cond: "{{ !input.agent }}"
   - id: work
     type: agent
+    depends: own
+    when: true
     config:
-      cwd: "{{ dir.path }}"
+      cwd: "{{ input.cwd || dir.path }}"
       session: "{{ input.session || $job }}"
       cacheTtl: 1h
       model: "{{ params.model }}"
@@ -71,14 +85,28 @@ steps:
             required: [message]
             properties:
               message: { type: string }
+  - id: local
+    type: acp/prompt
+    depends: own
+    when: false
+    config:
+      agent: "{{ input.agent }}"
+      cwd: "{{ input.cwd || dir.path }}"
+      session: "{{ input.session || $job }}"
+      mode: "{{ input.mode || 'edit' }}"
+      model: "{{ input.model }}"
+      prompt: "{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ input.prompt }}"
+  # Whichever ran; the other was skipped and reads as undefined (a ternary
+  # evaluates both sides, so `?.` and `||`).
   - id: result
     type: pack
+    depends: [work, local]
     config:
-      text: "{{ work.object.text }}"
-      artifacts: "{{ work.object.artifacts }}"
-      ask: "{{ work.object.ask }}"
-      cost: "{{ work.cost }}"
-      session: "{{ work.session }}"
+      text: "{{ work?.object?.text || local?.text }}"
+      artifacts: "{{ work?.object?.artifacts || local?.artifacts }}"
+      ask: "{{ work?.object?.ask || local?.ask }}"
+      cost: "{{ work?.cost || local?.cost }}"
+      session: "{{ work?.session || local?.session }}"
 params:
   model: claude-sonnet-5-5
   maxSteps: 500

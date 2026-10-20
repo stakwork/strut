@@ -45,8 +45,12 @@ describe("the env boundary (src/env.ts)", () => {
     assert.deepEqual(offenders, [], "a process.env read or hand-off outside env.ts: use bootEnv() / minimalEnv() (see src/env.ts)");
   });
 
-  it("only shell.ts and the STT model unpack spawn a child directly", () => {
-    const allowed = new Set(["shell.ts", "audio/stt.ts"]);
+  it("only shell.ts, the STT model unpack and the ACP client spawn a child directly", () => {
+    // acp/_client.ts: the agent is a long-lived child spoken to over stdin
+    // and stdout for the whole turn — bidirectional, which runProcess (run to
+    // completion, output captured) cannot provide. It spawns with the env
+    // its caller builds from minimalEnv(), never the server's.
+    const allowed = new Set(["shell.ts", "audio/stt.ts", "steps/lib/acp/_client.ts"]);
     const offenders = sources()
       .filter((p) => /\b(?:from|import|require)\s*\(?\s*["'](?:node:)?child_process["']/.test(readFileSync(p, "utf8")))
       .map((p) => relative(SRC, p))
