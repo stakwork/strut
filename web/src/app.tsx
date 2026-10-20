@@ -5,7 +5,8 @@ import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
 import { foldAccessedNodes } from "./accessed-nodes";
-import { replaceUrl } from "./embed";
+import { pushUrl, replaceUrl } from "./embed";
+import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";
 import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
 import "./styles/base.css";
@@ -20,7 +21,7 @@ import { OwnerEditor } from "./components/OwnerEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { ClockIcon, GearIcon, UserIcon } from "./icons";
+import { ArrowLeftIcon, ClockIcon, GearIcon, UserIcon } from "./icons";
 import { displayActor } from "./actor";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
 import { AddStepDialog, StepTypeEntry } from "./components/AddStepDialog";
@@ -73,6 +74,11 @@ function countIterations(events: api.RunEvent[], prefix: string): number {
   return max + 1;
 }
 
+// What's on screen, as one comparable key (the back trail's notion of "moved").
+function spotKey(wf: string | null, run: string | null, job: string | null): string {
+  return `${wf ?? ""}|${run ?? ""}|${job ?? ""}`;
+}
+
 // Identity of a set of live runs, state included — equal keys, nothing changed.
 function activeKey(runs: api.ActiveRun[]): string {
   return runs.map((r) => `${r.workflow}/${r.runId}:${r.state}`).join(",");
@@ -94,6 +100,14 @@ export function App() {
   // breadcrumb leads back. ?job=<id> deep-links into one. The selected
   // workflow stays underneath as the history panel's filter.
   const [selectedJob, setSelectedJob] = useState<string | null>(initialUrl.get("job"));
+  // The back trail (./nav-trail): where the links you followed came from,
+  // newest last, kept in the history entry's state so a reload or the back
+  // button restores it. `navRef` says how the next selection change happens —
+  // "push" (a step: new history entry), "restore" (the back button) or null
+  // (a jump: the sidebar, a new run — the trail starts over).
+  const [trail, setTrail] = useState<TrailEntry[]>(() => readTrail(history.state));
+  const navRef = useRef<"push" | "restore" | null>(null);
+  const lastSpot = useRef(spotKey(initialUrl.get("wf"), initialUrl.get("run"), initialUrl.get("job")));
   const [jobs, setJobs] = useState<api.JobListing[]>([]);
   const [job, setJob] = useState<api.JobView | null>(null);
   const [jobQuery, setJobQuery] = useState("");
@@ -210,11 +224,21 @@ export function App() {
   }, [selectedWf, localParams, wfClaims, viewingOld]);
   const activeTab: WorkflowTab | null = workflowTabs.includes(wfTab) ? wfTab : (workflowTabs[0] ?? null);
 
-  // Mirror the selection into the address bar (replaceState — no history
-  // spam) so the current view is always copy-paste shareable — and, when
-  // embedded, reported to the host so ITS address bar is too (./embed).
+  // Mirror the selection into the address bar so the current view is always
+  // copy-paste shareable — and, when embedded, reported to the host so ITS
+  // address bar is too (./embed). A jump replaces the entry (no history
+  // spam); a step along the trail pushes one, so the back button returns.
   // Unrelated params (e.g. ?chat) are preserved.
   useEffect(() => {
+    const spot = spotKey(selectedWf, selectedRun, selectedJob);
+    const moved = spot !== lastSpot.current;
+    lastSpot.current = spot;
+    const mode = navRef.current;
+    navRef.current = null;
+    if (moved && mode === null && trail.length > 0) {
+      setTrail([]); // a jump: this effect runs again with the empty trail
+      return;
+    }
     const p = new URLSearchParams(location.search);
     const put = (k: string, val: string | null) => (val ? p.set(k, val) : p.delete(k));
     put("wf", selectedWf);
@@ -224,10 +248,52 @@ export function App() {
     put("secrets", showSecrets ? "1" : null);
     const qs = p.toString();
     const next = `${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`;
-    if (next !== `${location.pathname}${location.search}${location.hash}`) {
-      replaceUrl(next);
+    const state = withTrail(history.state, trail);
+    if (mode === "push") {
+      pushUrl(next, state);
+    } else if (
+      mode === "restore" || // the browser moved the URL; the host still has to hear
+      next !== `${location.pathname}${location.search}${location.hash}` ||
+      JSON.stringify(readTrail(history.state)) !== JSON.stringify(trail)
+    ) {
+      replaceUrl(next, state);
     }
-  }, [selectedWf, selectedRun, viewVersion, selectedJob, showSecrets]);
+  }, [selectedWf, selectedRun, viewVersion, selectedJob, showSecrets, trail]);
+
+  // The back (or forward) button: show what that entry's URL says, with
+  // the trail it had.
+  useEffect(() => {
+    const onPop = () => {
+      const p = new URLSearchParams(location.search);
+      const wf = p.get("wf"), run = p.get("run"), job = p.get("job"), v = p.get("v");
+      if (spotKey(wf, run, job) !== lastSpot.current) navRef.current = "restore";
+      liveStreamRef.current = false;
+      setRunning(false);
+      setFlyoutStepId(null);
+      setFlyoutStepIndex(null);
+      setThreadView(null);
+      setTrail(readTrail(history.state));
+      setSelectedWf(wf);
+      setSelectedRun(run);
+      setSelectedJob(job);
+      setVersionPin({ wf: v ? wf : null, v });
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Following a link: the selection change that comes next is a step on the
+  // trail, not a jump. Call just before selecting `to`.
+  const stepTo = useCallback((to: TrailEntry) => {
+    const next = stepTrail(trail, hereEntry(selectedWf, selectedRun, selectedJob), to);
+    if (next === trail) return;
+    navRef.current = "push";
+    setTrail(next);
+  }, [trail, selectedWf, selectedRun, selectedJob]);
+
+  // Back to the trail's i-th place: through the browser's history (every step
+  // is an entry), so its back/forward stay in step; popstate does the rest.
+  const goBack = (i: number) => history.go(i - trail.length);
 
   // ── Sidebar grouping ─────────────────────────────────────────────────────
   // Workflows grouped by category; groups (and workflows within them) are
@@ -561,12 +627,13 @@ export function App() {
       return;
     }
     if (name === selectedWf) return;
+    stepTo({ wf: name, run: null, job: selectedJob });
     setSelectedWf(name);
     setSelectedRun(null);
     setEvents([]);
     setFlyoutStepId(null);
     setFlyoutStepIndex(null);
-  }, [selectedWf, isRunView, viewSteps]);
+  }, [selectedWf, selectedJob, isRunView, viewSteps, stepTo]);
 
   // Drill into a container step's nested execution (run view). Loads the child
   // workflow definition and pushes a frame; events are re-keyed by `viewEvents`.
@@ -662,9 +729,10 @@ export function App() {
     liveStreamRef.current = false;
     setRunning(false);
     closeFlyout();
+    stepTo({ wf, run: runId, job: selectedJob });
     if (selectedWf !== wf) setSelectedWf(wf);
     setSelectedRun(runId);
-  }, [selectedWf]);
+  }, [selectedWf, selectedJob, stepTo]);
 
   // Select a job: its timeline takes the canvas (no run open). The selected
   // workflow is left alone — it is the history panel's filter, and the
@@ -973,6 +1041,7 @@ export function App() {
     setPanel(null);
     closeFlyout();
     setViewVersion(null);
+    stepTo({ wf: workflow, run: runId, job: selectedJob });
     setSelectedWf(workflow);
     setSelectedRun(runId);
   };
@@ -1366,8 +1435,15 @@ export function App() {
 
       {/* Canvas */}
       <div class="shell-canvas">
-        {(runDrill.length > 0 || (selectedJob && selectedRun)) && (
+        {(trail.length > 0 || runDrill.length > 0 || (selectedJob && selectedRun)) && (
           <div class="drill-bar">
+            {/* Followed a link here: Back returns to where it was, for when
+                there is no browser back button (an iframe, the desktop app). */}
+            {trail.length > 0 && (
+              <button class="drill-back" onClick={() => goBack(trail.length - 1)} title={trailTitle(trail[trail.length - 1]!)}>
+                <ArrowLeftIcon size={12} /> Back
+              </button>
+            )}
             {/* A run opened from a job: the job leads the breadcrumb, back
                 to its timeline. */}
             {selectedJob && selectedRun && (
@@ -1376,6 +1452,13 @@ export function App() {
                 <span class="drill-sep">›</span>
               </>
             )}
+            {/* Then the places the links came from, oldest first. */}
+            {trail.map((e, i) => (
+              <span key={i}>
+                <button class="drill-crumb" onClick={() => goBack(i)} title={trailTitle(e)}>{e.wf}</button>
+                <span class="drill-sep">›</span>
+              </span>
+            ))}
             <button class={`drill-crumb${runDrill.length === 0 ? " is-active" : ""}`} onClick={() => setRunDrill([])}>{selectedWf}</button>
             {runDrill.map((f, i) => (
               <span key={f.pathPrefix}>
