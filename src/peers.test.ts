@@ -163,6 +163,16 @@ describe("the peers capability", () => {
     });
     await assert.rejects(listPeers.run({}, { services: {} } as never), /needs the peers capability/);
   });
+
+  it("strut/list-peers includes self when set and omits it when not", async () => {
+    const { store, cap, ready } = capabilityOver(async () => json({}));
+    await ready;
+    assert.ok(!("self" in ((await listPeers.run({}, { services: { peers: cap } } as never)) as object)));
+    await store.setSelf({ id: "me", repos: ["https://github.com/a/mine"] });
+    const out = await listPeers.run({}, { services: { peers: cap } } as never);
+    assert.deepEqual(out, { self: { id: "me", repos: ["https://github.com/a/mine"] }, peers: [{ id: "cloud" }] });
+    assert.deepEqual(await cap.list(), [{ id: "cloud", baseUrl: "http://cloud.test" }]);
+  });
 });
 
 // ── the client ────────────────────────────────────────────────────────────
@@ -349,15 +359,20 @@ describe("the builder's peer reads", () => {
 describe("/peers routes", () => {
   let dir: string;
   let savedEnv: string | undefined;
+  let savedSelf: string | undefined;
   beforeEach(async () => {
     dir = join(tmpdir(), `strut-peers-routes-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     savedEnv = process.env["STRUT_PEERS"];
     delete process.env["STRUT_PEERS"];
+    savedSelf = process.env["STRUT_SELF"];
+    delete process.env["STRUT_SELF"];
   });
   afterEach(async () => {
     if (savedEnv === undefined) delete process.env["STRUT_PEERS"];
     else process.env["STRUT_PEERS"] = savedEnv;
+    if (savedSelf === undefined) delete process.env["STRUT_SELF"];
+    else process.env["STRUT_SELF"] = savedSelf;
     await rm(dir, { recursive: true, force: true });
   });
   const boot = (peers?: Parameters<typeof createStrut>[0]["peers"]) =>
@@ -427,6 +442,55 @@ describe("/peers routes", () => {
     });
     process.env["STRUT_PEERS"] = "[{}]";
     await assert.rejects(boot(), /STRUT_PEERS\[0\]: peer id is empty/);
+  });
+});
+
+describe("/self routes", () => {
+  let dir: string;
+  let savedSelf: string | undefined;
+  beforeEach(async () => {
+    dir = join(tmpdir(), `strut-self-routes-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    savedSelf = process.env["STRUT_SELF"];
+    delete process.env["STRUT_SELF"];
+  });
+  afterEach(async () => {
+    if (savedSelf === undefined) delete process.env["STRUT_SELF"];
+    else process.env["STRUT_SELF"] = savedSelf;
+    await rm(dir, { recursive: true, force: true });
+  });
+  const boot = (self?: Parameters<typeof createStrut>[0]["self"]) =>
+    createStrut({ workspace: new WorkspaceManager(dir), store: new MemoryRunStore(), serveUi: false, enableChat: false, scheduler: false, ...(self ? { self } : {}) });
+  const put = (strut: Strut, body: unknown) =>
+    strut.app.request("/self", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  it("PUT/GET/DELETE round trip; 400 on bad input; never in /peers", async () => {
+    const strut = await boot();
+    assert.deepEqual(await (await strut.app.request("/self")).json(), { self: null });
+    assert.equal((await strut.app.request("/self", { method: "DELETE" })).status, 404);
+    const body = { id: "me", label: "Me", description: "My code", repos: ["https://github.com/a/b"] };
+    assert.deepEqual(await (await put(strut, body)).json(), { ok: true, ...body });
+    assert.equal((await put(strut, { repos: "nope" })).status, 400);
+    assert.equal((await put(strut, { description: 3 })).status, 400);
+    assert.equal((await put(strut, { id: "-bad" })).status, 400);
+    assert.deepEqual(await (await strut.app.request("/self")).json(), { self: body });
+    assert.deepEqual(await (await strut.app.request("/peers")).json(), { peers: [] });
+    assert.equal((await strut.app.request("/self", { method: "DELETE" })).status, 200);
+    assert.deepEqual(await (await strut.app.request("/self")).json(), { self: null });
+  });
+
+  it("seeds from STRUT_SELF and the option (option wins); a bad env fails the boot", async () => {
+    process.env["STRUT_SELF"] = JSON.stringify({ label: "Env", repos: ["https://github.com/e/e"] });
+    let strut = await boot();
+    assert.deepEqual(await (await strut.app.request("/self")).json(), { self: { label: "Env", repos: ["https://github.com/e/e"] } });
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    strut = await boot({ label: "Opt" });
+    assert.deepEqual(await (await strut.app.request("/self")).json(), { self: { label: "Opt" } });
+    process.env["STRUT_SELF"] = "{nope";
+    await assert.rejects(boot(), /STRUT_SELF is not JSON/);
+    process.env["STRUT_SELF"] = JSON.stringify({ repos: [1] });
+    await assert.rejects(boot(), /STRUT_SELF repos must be an array of strings/);
   });
 });
 

@@ -204,7 +204,8 @@ params:
     hand, and say in `text` which one you ran. strut/run-workflow runs one
     on a PEER — another strut, named by its slug (`@<slug>` in a message) —
     and returns its output; its files stay there. strut/list-peers says
-    which peers there are and what each holds. When no workflow fits,
+    which peers there are and what each holds, and also names THIS
+    workspace (`self`) and its repositories — code there is here. When no workflow fits,
     the work is yours — a plan, a page, notes — as files in your directory.
 
     Seeing what a page shows is a workflow too. You have no browser to look

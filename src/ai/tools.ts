@@ -398,12 +398,14 @@ export function buildTools(deps: AiDeps): ToolSet {
 
     list_peers: tool({
       description:
-        "List the OTHER strut instances this one can call (plans/federation.md): each { id, label?, description?, repos? (the repositories that workspace holds), baseUrl }. \"@<id>\" in the user's message names one. Pass `peer` to list_workflows / get_workflow / run_workflow to act on that strut instead of this one. Never a token: those stay on the server.",
+        "List the OTHER strut instances this one can call (plans/federation.md): each { id, label?, description?, repos? (the repositories that workspace holds), baseUrl }, plus `self` (THIS workspace's id/label/description/repos, when set — code in those repos is here). \"@<id>\" in the user's message names one. Pass `peer` to list_workflows / get_workflow / run_workflow to act on that strut instead of this one. Never a token: those stay on the server.",
       inputSchema: z.object({}),
       execute: async () => {
         if (!deps.peers) return { error: "No peers are configured on this strut (PUT /peers/:id, or STRUT_PEERS)." };
         const peers = await deps.peers.list();
+        const self = await deps.peers.self?.();
         return {
+          ...(self ? { self } : {}),
           peers,
           ...(peers.length === 0 ? { hint: "No peers on file. A host pushes them (PUT /peers/:id) or a person sets STRUT_PEERS." } : {}),
         };

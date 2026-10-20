@@ -1017,6 +1017,7 @@ describe("AI peer tools", () => {
     const seen: Array<{ path: string; method: string; actor?: string; body?: unknown }> = [];
     const peers = {
       list: async () => [{ id: "cloud", baseUrl: "http://cloud.test", label: "Cloud" }],
+      self: async () => undefined as { id?: string; repos?: string[] } | undefined,
       fetch: async (id: string, path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
         if (id !== "cloud") throw new Error(`peer_unknown: no peer "${id}"`);
         seen.push({ path, method: init?.method ?? "GET", actor: init?.headers?.["x-strut-actor"], body: init?.body ? JSON.parse(init.body) : undefined });
@@ -1046,6 +1047,8 @@ describe("AI peer tools", () => {
     const { peers } = fakePeers();
     const tools = buildTools(makeDeps(peers)) as any;
     assert.deepEqual(await tools.list_peers.execute({}), { peers: [{ id: "cloud", baseUrl: "http://cloud.test", label: "Cloud" }] });
+    const withSelf = buildTools(makeDeps({ ...peers, self: async () => ({ id: "me", repos: ["https://github.com/a/b"] }) })) as any;
+    assert.deepEqual((await withSelf.list_peers.execute({})).self, { id: "me", repos: ["https://github.com/a/b"] });
     const bare = buildTools(makeDeps()) as any;
     assert.match((await bare.list_peers.execute({})).error, /No peers are configured/);
     assert.match((await bare.list_workflows.execute({ peer: "cloud", limit: 10 })).error, /No peers/);
