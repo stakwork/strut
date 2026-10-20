@@ -78,6 +78,8 @@ import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-auth
 import { createStt, type SttService } from "./audio/stt.js";
 import { audioRoutes } from "./audio/routes.js";
 import { attachAudioWebSocket } from "./audio/ws.js";
+import { bootEnv } from "./env.js";
+import { lintStepSource } from "./step-lint.js";
 // Static import is safe: notifier depends only on chat-store, never the AI
 // SDK (which stays lazy-loaded inside launchChatTurn).
 import { createChatNotifier, formatRestartNotification, formatRunNotification } from "./ai/notifier.js";
@@ -581,7 +583,7 @@ export async function createStrut<TServices = unknown>(
   const fileBacked = workspace instanceof FileWorkspaceStore;
   const dataDir =
     opts.dataDir ??
-    (fileBacked ? workspace.path : (process.env["STRUT_WORKSPACE"] ?? "./workspace"));
+    (fileBacked ? workspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
   // Controllers for runs currently executing **in this process** (keyed
   // `${workflow}/${runId}`) — RUN_CONTROL_SPEC §2.2. A controller's presence
@@ -676,7 +678,7 @@ export async function createStrut<TServices = unknown>(
     opts.peerStore ??
       (secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, PEERS_FILE) : new MemorySecretStore()),
   );
-  for (const peer of [...parsePeersEnv(process.env["STRUT_PEERS"]), ...(opts.peers ?? [])]) {
+  for (const peer of [...parsePeersEnv(bootEnv()["STRUT_PEERS"]), ...(opts.peers ?? [])]) {
     await peerRecords.set(peer);
   }
   const peersCap = peersCapability(peerRecords);
@@ -822,7 +824,7 @@ export async function createStrut<TServices = unknown>(
   // finds a chat cut off by a restart wakes it or only marks it.
   const autoResumeOpts: AutoResumeOptions = typeof opts.autoResume === "object" ? opts.autoResume : {};
   const autoResumeOn = (persistent: boolean) =>
-    opts.autoResume === undefined ? persistent && process.env["STRUT_AUTO_RESUME"] !== "0" : opts.autoResume !== false;
+    opts.autoResume === undefined ? persistent && bootEnv()["STRUT_AUTO_RESUME"] !== "0" : opts.autoResume !== false;
   /** Set inside the chat block; a no-op without chat. */
   let autoResumeStaleChats: (o?: AutoResumeOptions) => Promise<ChatResumeOutcome[]> = async () => [];
   const chatStore: ChatStore =
@@ -830,16 +832,16 @@ export async function createStrut<TServices = unknown>(
   const autoResumeRuns = autoResumeOn(!(store instanceof MemoryRunStore));
   const autoResumeChats = enableChat && autoResumeOn(!(chatStore instanceof MemoryChatStore));
   const chatMaxSteps =
-    opts.chatMaxSteps ?? Number(process.env["STRUT_CHAT_MAX_STEPS"] ?? 100);
+    opts.chatMaxSteps ?? Number(bootEnv()["STRUT_CHAT_MAX_STEPS"] ?? 100);
   const chatModel =
-    opts.chatModel ?? process.env["STRUT_CHAT_MODEL"] ?? "claude-sonnet-5-5";
+    opts.chatModel ?? bootEnv()["STRUT_CHAT_MODEL"] ?? "claude-sonnet-5-5";
   const chatRunWaitMs =
-    opts.chatRunWaitMs ?? Number(process.env["STRUT_CHAT_RUN_WAIT_MS"] ?? 60_000);
+    opts.chatRunWaitMs ?? Number(bootEnv()["STRUT_CHAT_RUN_WAIT_MS"] ?? 60_000);
   const chatMaxAutoTurns =
-    opts.chatMaxAutoTurns ?? Number(process.env["STRUT_CHAT_MAX_AUTO_TURNS"] ?? 10);
+    opts.chatMaxAutoTurns ?? Number(bootEnv()["STRUT_CHAT_MAX_AUTO_TURNS"] ?? 10);
   const webDist =
     opts.webDist ??
-    process.env["STRUT_WEB_DIST"] ??
+    bootEnv()["STRUT_WEB_DIST"] ??
     resolve(dirname(fileURLToPath(import.meta.url)), "../web/dist");
   const registryWasInjected = opts.registry !== undefined;
 
@@ -922,7 +924,7 @@ export async function createStrut<TServices = unknown>(
   // Everything downstream (authoring, the chat tools, the prompt, the HTTP
   // door, the verify pass) is handed `claimsAuthoring` and gates on that,
   // never on `workspace.graph`.
-  const claimsEnabled = opts.claims ?? process.env["STRUT_CLAIMS"] !== "0";
+  const claimsEnabled = opts.claims ?? bootEnv()["STRUT_CLAIMS"] !== "0";
   const claimsGraph = claimsEnabled ? workspace.graph : undefined;
   // The job index (plans/job-claims.md §1–§2): a job subject's node is
   // upserted from its record, its active version is its newest turn.
@@ -1100,7 +1102,7 @@ export async function createStrut<TServices = unknown>(
   // is a 401 after a pause — the one route that takes guesses. With no
   // key configured there is nothing to sign in to.
   app.post("/auth/session", async (c) => {
-    if (!process.env["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
+    if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
     const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown };
     const key = typeof body.key === "string" ? body.key : "";
     const actor = typeof body.actor === "string" ? body.actor.trim() : "";
@@ -2628,6 +2630,11 @@ export async function createStrut<TServices = unknown>(
       publisher?: string;
     }>();
     if (!body.name || !body.code) return c.json({ error: "name and code are required" }, 400);
+    // A host's own step is the host's call: a source that reaches past
+    // ctx.services is published, with the findings in the answer and the
+    // log (the builder's door refuses the same — authoring.ts).
+    const warnings = lintStepSource(body.code).map((f) => `line ${f.line}: ${f.message}`);
+    if (warnings.length) console.warn(`[steps] ${body.name} reaches past ctx.services:\n${warnings.join("\n")}`);
     let result: { version: string; changed: boolean };
     try {
       result = await workspace.publishStep(body.name, body.code, body.description, body.publisher);
@@ -2635,7 +2642,7 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
     if (result.changed) await rebuildRegistry();
-    return c.json({ ok: true, type: body.name, version: result.version, changed: result.changed }, 201);
+    return c.json({ ok: true, type: body.name, version: result.version, changed: result.changed, ...(warnings.length ? { warnings } : {}) }, 201);
   });
 
   // Run a SINGLE step in isolation (synchronous) — the adapter author's inner
@@ -3049,7 +3056,7 @@ export async function createStrut<TServices = unknown>(
     }
     return c.json({ actor, claimed, skipped });
   });
-  if (opts.scheduler === undefined ? process.env["STRUT_SCHEDULER"] !== "0" : opts.scheduler) automations.start();
+  if (opts.scheduler === undefined ? bootEnv()["STRUT_SCHEDULER"] !== "0" : opts.scheduler) automations.start();
 
   // Re-verify a finished run (plans/claims.md §4): after claims or checks
   // change, to backfill, or to fire `manual` checks. Synchronous, idempotent
@@ -4380,8 +4387,8 @@ export async function createStrut<TServices = unknown>(
 
   async function listen(port?: number, host?: string): Promise<number> {
     warnIfUnconfigured();
-    const requested = port ?? parseInt(process.env["STRUT_PORT"] ?? "3000", 10);
-    const hostname = host ?? process.env["STRUT_HOST"] ?? undefined;
+    const requested = port ?? parseInt(bootEnv()["STRUT_PORT"] ?? "3000", 10);
+    const hostname = host ?? bootEnv()["STRUT_HOST"] ?? undefined;
     console.log(
       fileBacked
         ? `strut workspace: ${dataDir}`
@@ -4408,7 +4415,7 @@ export async function createStrut<TServices = unknown>(
     console.log(`strut server: http://${hostname ?? "localhost"}:${bound}`);
     // Structured ready line for a host that spawned us (desktop app): one
     // JSON object on its own stdout line, after the human ones.
-    const readyKey = process.env["STRUT_READY_KEY"] ? process.env["STRUT_API_KEY"] : undefined;
+    const readyKey = bootEnv()["STRUT_READY_KEY"] ? bootEnv()["STRUT_API_KEY"] : undefined;
     console.log(JSON.stringify({ event: "ready", port: bound, host: hostname ?? "0.0.0.0", ...(readyKey ? { key: readyKey } : {}) }));
     return bound;
   }

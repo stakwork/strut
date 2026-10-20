@@ -27,6 +27,7 @@ import { FileRunStore } from "./store.js";
 import { FileChatStore } from "./chat-store.js";
 import { FileSecretStore } from "./secret-store.js";
 import { workspaceBackendFromEnv } from "./graph/wiring.js";
+import { bootEnv, scrubProcessEnv, scrubRequested } from "./env.js";
 
 let strutInstance: Strut | null = null;
 
@@ -35,7 +36,7 @@ let strutInstance: Strut | null = null;
  *  approve?, system? }`, and `automation?: { workflow, approve?, grants? }`. Nothing when unset. A file that cannot be read or parsed
  *  fails the boot, rather than seeding the workflows without the host's
  *  tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Pick<StrutOptions, "job" | "orchestrator" | "automation"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "automation"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -90,16 +91,16 @@ async function getDefault(): Promise<Strut> {
     // STRUT_MOTHERSHIP=1 routes every LLM call through the stakgraph gateway
     // with a per-actor macaroon (src/mothership.ts); delegations arrive via
     // PUT /llm/delegations/:actor.
-    const dataDir = process.env["STRUT_WORKSPACE"] ?? "./workspace";
+    const dataDir = bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
     const mothership =
-      process.env["STRUT_MOTHERSHIP"] === "1"
+      bootEnv()["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
     const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "job" | "orchestrator" | "automation"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.
-      ...(process.env["STRUT_PUBLIC_URL"] ? { publicUrl: process.env["STRUT_PUBLIC_URL"] } : {}),
+      ...(bootEnv()["STRUT_PUBLIC_URL"] ? { publicUrl: bootEnv()["STRUT_PUBLIC_URL"] } : {}),
       // The host's delta for the shipped workflows (STRUT_HOST_CONFIG).
       ...hostConfigFromEnv(),
     };
@@ -116,7 +117,7 @@ async function getDefault(): Promise<Strut> {
     const kind = workspaceBackendFromEnv();
     if (kind === "ladybug") {
       const { ladybugWorkspaceFromEnv } = await import("./graph/wiring.js");
-      const { backend, workspace, imported } = await ladybugWorkspaceFromEnv(process.env, { dataDir });
+      const { backend, workspace, imported } = await ladybugWorkspaceFromEnv(bootEnv(), { dataDir });
       if (imported.status === "failed") {
         // The flip to the file happens only once the import succeeds
         // (plans/ladybug-backend.md §7.1): until then the filesystem
@@ -132,7 +133,7 @@ async function getDefault(): Promise<Strut> {
       }
     } else if (kind === "neo4j") {
       const { graphWorkspaceFromEnv } = await import("./graph/wiring.js");
-      const { backend, workspace } = await graphWorkspaceFromEnv(process.env, { dataDir });
+      const { backend, workspace } = await graphWorkspaceFromEnv(bootEnv(), { dataDir });
       strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...shared });
     } else {
       strutInstance = await createStrut(shared);
@@ -162,6 +163,15 @@ export async function getApp() {
  * ```
  */
 export async function startServer(port?: number, host?: string): Promise<number> {
+  // The default server holds the deployment's keys in its env (src/env.ts):
+  // take the boot snapshot and empty process.env before anything else runs,
+  // so a step — or a child it spawns with process.env — finds nothing there.
+  // Every read of strut's own goes through bootEnv(). STRUT_ENV_SCRUB=0 keeps
+  // the env as it is. A host that embeds createStrut decides for itself.
+  if (scrubRequested()) {
+    const gone = scrubProcessEnv();
+    if (gone.length) console.log(`[env] ${gone.length} variable(s) taken out of process.env (kept in the boot snapshot): ${gone.join(", ")}`);
+  }
   const strut = await getDefault();
   return strut.listen(port, host);
 }

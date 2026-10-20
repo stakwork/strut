@@ -75,6 +75,7 @@ import { PREVIEW_MAX_CHARS } from "./graph/strut-schemas.js";
 import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } from "./run-step.js";
 import { checkRunKey, stepTypeOfRunKey, type RunStore } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
+import { bootEnv } from "./env.js";
 
 // ── What a run observed ─────────────────────────────────────────────────────
 
@@ -416,7 +417,7 @@ export type Verifier = ReturnType<typeof createVerifier>;
 export function createVerifier(deps: VerifierDeps) {
   const { graph, store, workspace } = deps;
   const reader = new ClaimsReader(graph, { jobs: deps.jobs });
-  const env = () => deps.env ?? process.env;
+  const env = () => deps.env ?? bootEnv();
   const inflight = new Map<string, { explicit: boolean; promise: Promise<VerifyResult> }>();
   /** Explicit job passes in flight, by job: a second one joins the first. */
   const inflightJobs = new Map<string, Promise<JobVerifyResult>>();

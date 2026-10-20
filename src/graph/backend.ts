@@ -46,6 +46,7 @@ import { Neo4jReader, type GraphReader } from "./search.js";
 import { migrateVeinToStrut, type VeinMigrationReport } from "./vein-migration.js";
 import { migrateRunStatus, type RunStatusMigrationReport } from "./run-status-migration.js";
 import { migrateExactKeys, type ExactKeyMigrationReport } from "./exact-key-migration.js";
+import { bootEnv } from "../env.js";
 
 /** A LadybugDB file (plans/ladybug-backend.md §3.2). */
 export interface LadybugConfig {
@@ -187,7 +188,7 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
 }
 
 /** `STRUT_GRAPH_EMBEDDINGS`: on unless `off` / `0` / `false`. */
-export function embeddingsOn(env: Record<string, string | undefined> = process.env): boolean {
+export function embeddingsOn(env: Record<string, string | undefined> = bootEnv()): boolean {
   const emb = (env["STRUT_GRAPH_EMBEDDINGS"] ?? "").toLowerCase();
   return !(emb === "off" || emb === "0" || emb === "false");
 }
@@ -196,7 +197,7 @@ export function embeddingsOn(env: Record<string, string | undefined> = process.e
  *  `STRUT_GRAPH_NAMESPACE`; null when `NEO4J_URI` is unset. Neo4j only: the
  *  Ladybug file is wired by `wiring.ts` (`ladybugConfigFromEnv`). */
 export function openGraphBackendFromEnv(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = bootEnv(),
   opts: GraphBackendOptions = {},
 ): Promise<GraphBackend> | null {
   const cfg = graphConfigFromEnv(env);

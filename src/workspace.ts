@@ -12,6 +12,7 @@ import { contentHash, nextVersionLabel } from "./version.js";
 import { evaluateExpr } from "./expr.js";
 import { inputSchema, parseInputBlock, type InputBlock } from "./input-block.js";
 import { claimsArgSchema, type ClaimsBlock } from "./claims-schemas.js";
+import { bootEnv } from "./env.js";
 
 // Match a `{{ params.<path> }}` reference (and ONLY a params reference) so we can
 // resolve param-to-param references at load time without touching `{{ input.* }}`
@@ -452,7 +453,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   private root: string;
 
   constructor(root?: string) {
-    this.root = root ?? process.env["STRUT_WORKSPACE"] ?? "./workspace";
+    this.root = root ?? bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
   }
 
   /** The filesystem root — an implementation detail of THIS store, not part
