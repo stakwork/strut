@@ -737,7 +737,11 @@ export async function createStrut<TServices = unknown>(
     // each run's status, the session store for the job's threads, the
     // workspace for what is sealed. What `GET /jobs[/:id]` and the
     // `job/*` steps read through.
-    jobs: jobsCapability(dataDir, jobIndex),
+    jobs: jobsCapability(dataDir, jobIndex, {
+      // A hold's update names the run that took or let go of it: the
+      // job's top-level run in flight (its turn), when there is one.
+      runOf: (job) => [...controllers.values()].find((c) => c.job?.id === job && !c.parent)?.runId,
+    }),
     peers: peersCap,
     // Proposals (plans/proposals.md): the record a gated tool call writes
     // and the proposal/* steps read; a job's host hears each as a
@@ -2731,10 +2735,13 @@ export async function createStrut<TServices = unknown>(
      *  describes the job and the host, not the run's subject. 400 without
      *  `job`. */
     title?: string;
-    /** Where to POST the JOB's live updates (plans/live-artifacts.md §1):
-     *  kept on the job, not the run — every run under the job reaches it,
-     *  the latest launch that carries one wins, `null` clears it. 400
-     *  without `job`. */
+    /** Where to POST live updates (plans/live-artifacts.md §1,
+     *  CALLBACKS.md §5). With `job`: kept on the job, not the run — every
+     *  run under the job reaches it, the latest launch that carries one
+     *  wins, `null` clears it. With or without one, the jobs THIS run
+     *  starts (`job/start`, `job/continue`) inherit it: an orchestrator
+     *  turn launched with none of its own hands its host's URL to every
+     *  job it starts. Kept by the run store beside the log for that. */
     jobCallback?: { url: string } | null;
     /** The caller's MCP servers (src/mcp-servers.ts): its door back into
      *  itself for this run's agents, the pull-direction twin of `callback`.
@@ -2778,6 +2785,11 @@ export async function createStrut<TServices = unknown>(
        *  to the run's steps as `ctx.mcp`; the log records names and
        *  origins only. */
       mcp?: McpServer[];
+      /** Where the jobs this run starts post their live updates (`POST
+       *  …/run { jobCallback }`): kept by the run store beside the log
+       *  (`setRunJobCallback`), read by the job launcher
+       *  (`rootJobCallbackOf`). Never in the log. */
+      jobCallback?: { url: string };
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -2797,6 +2809,7 @@ export async function createStrut<TServices = unknown>(
       // read them from there already.
       if (callback && !extra?.resume) await store.setRunCallback(flow.name, runId, callback.url);
       if (mcp && !extra?.resume) await store.setRunMcp(flow.name, runId, mcp);
+      if (extra?.jobCallback && !extra.resume) await store.setRunJobCallback(flow.name, runId, extra.jobCallback.url);
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
@@ -2884,13 +2897,24 @@ export async function createStrut<TServices = unknown>(
   const launchCap = (opts.services as Record<string, unknown> | undefined)?.["jobs"]
     ? undefined
     : ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined);
-  /** The callback URL of the run `runId` belongs to: the ROOT run's, since
-   *  only a top-level launch keeps one, and a turn may be a child run
-   *  (meta/run-workflow) of the one the host launched. */
-  async function rootCallbackOf(runId: string): Promise<string | null> {
+  /** The ROOT run of the run `runId` belongs to: only a top-level launch
+   *  keeps a callback, and a turn may be a child run (meta/run-workflow)
+   *  of the one the host launched. */
+  const rootRunOf = (runId: string): RunController | undefined => {
     let root = controllersByRunId.get(runId);
     while (root?.parent) root = root.parent;
+    return root;
+  };
+  /** The callback URL of the run `runId` belongs to: the root run's. */
+  async function rootCallbackOf(runId: string): Promise<string | null> {
+    const root = rootRunOf(runId);
     return root ? store.getRunCallback(root.workflow, root.runId) : null;
+  }
+  /** The job callback the run `runId` was launched with (the root run's,
+   *  as above): what the jobs it starts inherit (CALLBACKS.md §5). */
+  async function rootJobCallbackOf(runId: string): Promise<string | null> {
+    const root = rootRunOf(runId);
+    return root ? store.getRunJobCallback(root.workflow, root.runId) : null;
   }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal, mcp }) => {
@@ -2898,6 +2922,13 @@ export async function createStrut<TServices = unknown>(
       if (problem) throw new Error(`job "${job}" ${problem}`);
       const flow = await workspace.getWorkflow("job");
       const url = await rootCallbackOf(from);
+      const live = await rootJobCallbackOf(from);
+      // The job INHERITS the launching run's job callback: on file before
+      // the run starts, so its first update finds it — the latest launch
+      // that carries one wins, as over HTTP; a run launched with none
+      // leaves what the job has. Handed to the job's run too, so a job
+      // that starts a job passes it on.
+      if (live) await setJobCallback(jobRoot(dataDir, job), live);
       // After the awaits: from here to launchDetached's trackRun is
       // synchronous, so two launches of one job cannot both pass.
       const running = [...controllers.values()].find((c) => c.job?.id === job);
@@ -2908,6 +2939,7 @@ export async function createStrut<TServices = unknown>(
         ...(actor ? { actor } : {}),
         ...(principal ? { principal } : {}),
         ...(url ? { callback: { url } } : {}),
+        ...(live ? { jobCallback: { url: live } } : {}),
         // The launching turn's caller, reachable from the job's agents too.
         ...(mcp?.length ? { mcp } : {}),
       });
@@ -2937,11 +2969,11 @@ export async function createStrut<TServices = unknown>(
   const runCallbackOf = (body: RunBody): { url: string } | undefined =>
     body.callback == null ? undefined : parseCallback(body.callback);
 
-  /** A run body's `jobCallback`: a URL, `null` (clear it), or absent
-   *  (leave what is on file). Belongs to a job, so it needs one. */
+  /** A run body's `jobCallback`: a URL, `null` (clear the job's), or
+   *  absent (leave what is on file). With `job` it is the job's; either
+   *  way it is what the jobs this run starts inherit. */
   const jobCallbackOf = (body: RunBody): { url: string } | null | undefined => {
     if (body.jobCallback === undefined) return undefined;
-    if (body.job === undefined || body.job === null) throw new Error("jobCallback belongs to a job: pass it with `job`");
     return body.jobCallback === null ? null : parseCallback(body.jobCallback);
   };
 
@@ -3093,11 +3125,12 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     // On file before the run starts, so its first update finds it.
-    if (jobCallback !== undefined) await setJobCallback(jobRoot(dataDir, body.job!), jobCallback?.url ?? null);
+    if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       actor: await resolveActor(c),
       ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
+      ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),
     });
     return c.json(
@@ -3127,12 +3160,13 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     // On file before the run starts, so its first update finds it.
-    if (jobCallback !== undefined) await setJobCallback(jobRoot(dataDir, body.job!), jobCallback?.url ?? null);
+    if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       version,
       actor: await resolveActor(c),
       ...((await isPeer(c)) ? { origin: "peer" as const } : {}),
       ...(callback ? { callback } : {}),
+      ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),
     });
     return c.json(

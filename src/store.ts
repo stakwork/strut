@@ -219,6 +219,14 @@ export interface RunStore {
    *  run launched without. */
   setRunMcp(workflow: string, runId: string, servers: McpServer[]): Promise<void>;
   getRunMcp(workflow: string, runId: string): Promise<McpServer[] | null>;
+  /** Where the JOBS this run starts post their live updates (`POST …/run
+   *  { jobCallback }` on the launch, plans/live-artifacts.md §1): the URL
+   *  the jobs a turn starts through `job/start` / `job/continue` INHERIT
+   *  (CALLBACKS.md §5). Kept here on the callback's terms — a credential,
+   *  served by nothing, read by the launcher of a child job and so kept
+   *  through a durable resume. Null for a run launched without one. */
+  setRunJobCallback(workflow: string, runId: string, url: string): Promise<void>;
+  getRunJobCallback(workflow: string, runId: string): Promise<string | null>;
   /** Heal a log left torn by a crash mid-append (a truncated final line with
    *  no newline) so the next append starts on a fresh line instead of being
    *  glued onto the fragment. Called before a durable resume; returns true
@@ -490,6 +498,21 @@ export class FileRunStore implements RunStore {
     }
   }
 
+  async setRunJobCallback(workflow: string, runId: string, url: string): Promise<void> {
+    const dir = this.runDir(workflow, runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "job-callback.json"), JSON.stringify({ url }), { encoding: "utf-8", mode: 0o600 });
+  }
+
+  async getRunJobCallback(workflow: string, runId: string): Promise<string | null> {
+    try {
+      const { url } = JSON.parse(await readFile(join(this.runDir(workflow, runId), "job-callback.json"), "utf-8")) as { url?: unknown };
+      return typeof url === "string" ? url : null;
+    } catch {
+      return null;
+    }
+  }
+
   async append(workflow: string, runId: string, event: RunEvent): Promise<void> {
     const dir = this.runDir(workflow, runId);
     await mkdir(dir, { recursive: true });
@@ -646,6 +669,7 @@ export class MemoryRunStore implements RunStore {
   summaries: Map<string, RunSummary> = new Map();
   callbacks: Map<string, string> = new Map();
   mcp: Map<string, McpServer[]> = new Map();
+  jobCallbacks: Map<string, string> = new Map();
 
   private key(workflow: string, runId: string): string {
     return `${workflow}/${runId}`;
@@ -673,6 +697,7 @@ export class MemoryRunStore implements RunStore {
       this.summaries.delete(this.key(workflow, id));
       this.callbacks.delete(this.key(workflow, id));
       this.mcp.delete(this.key(workflow, id));
+      this.jobCallbacks.delete(this.key(workflow, id));
     }
   }
 
@@ -690,6 +715,14 @@ export class MemoryRunStore implements RunStore {
 
   async getRunMcp(workflow: string, runId: string): Promise<McpServer[] | null> {
     return this.mcp.get(this.key(workflow, runId)) ?? null;
+  }
+
+  async setRunJobCallback(workflow: string, runId: string, url: string): Promise<void> {
+    this.jobCallbacks.set(this.key(workflow, runId), url);
+  }
+
+  async getRunJobCallback(workflow: string, runId: string): Promise<string | null> {
+    return this.jobCallbacks.get(this.key(workflow, runId)) ?? null;
   }
 
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {

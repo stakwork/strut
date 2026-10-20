@@ -159,7 +159,8 @@ its turn without waiting. That job's run carries YOUR run's callback, so
 your URL gets a second `run.end` when the job ends: `workflow: "job"`,
 the `job` id, and its artifacts resolved in the job's directory. Tell the
 two apart by `workflow` and `job`. A run launched with no callback starts
-jobs with none.
+jobs with none. The same goes for live updates: the jobs a run starts
+inherit its `jobCallback` (§5).
 
 ## 5. Live updates — a job tells you what changed, as it changes
 
@@ -181,10 +182,34 @@ pod it claimed, a check's verdict — launch with a `jobCallback` beside
   it — later turns, the runs a turn starts, verify passes. The latest launch
   that carries one wins (rotate your token with any turn); `jobCallback:
   null` clears it; leaving it out keeps what is on file.
-- `400` without `job`, or when the URL is not `http(s)`. The `202` carries
-  `jobCallback: true`.
+- `400` when the URL is not `http(s)`. The `202` carries `jobCallback: true`.
 - Like `callback.url`, it is your secret: kept apart from the job's record,
   never returned by any endpoint.
+
+**The jobs your run starts inherit it.** A run whose agent starts jobs
+(`job/start`, `job/continue` — §4) hands each of them the `jobCallback`
+its own launch carried, the way it hands them its `callback`: written onto
+the job before the job's run starts, so its first update finds it, and on
+to the jobs that job starts in turn. So a launch needs no `job` of its own
+to carry one — an orchestrator turn is launched with `callback` and
+`jobCallback` and nothing else, and every job it starts reports to that
+URL:
+
+```json
+{
+  "input": { "message": "…", "session": "…" },
+  "callback":    { "url": "https://your-app.example/hooks/strut-run?id=…&token=…" },
+  "jobCallback": { "url": "https://your-app.example/hooks/strut-jobs?conversation=…&token=…" }
+}
+```
+
+That URL is then **shared by every job of the conversation**, not minted
+per job, so route by the payload: `job` names the job and `runId` the run
+(the turn) that made the change — both ride in every event a run makes
+(below). A turn launched without one leaves what each job has on file; a
+later turn that carries one replaces it, the rule above. The inherited URL
+is kept beside the launching run's log like its `callback`, so a turn
+resumed after a restart still hands it on.
 
 Strut then POSTs one small event per change:
 
@@ -207,7 +232,7 @@ Strut then POSTs one small event per change:
 | `url`   | its link: a job file is `/jobs/<job>/files/<path>`, exactly what a deliverable with that `path` resolves to in `run.end` — match the two by URL |
 | `id`    | its own id where it has one: a hold's, a piece of evidence's |
 | `state`, `title`, `detail` | what happened to it, small and kind-specific |
-| `runId` | the run that made the change, when one did |
+| `runId` | the run that made the change — a hold taken or let go by a tool names the job's turn in flight; absent only for a change no run made (a hold released by a delete or the idle sweep) |
 
 What strut sends today:
 
