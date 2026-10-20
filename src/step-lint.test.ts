@@ -1,13 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { lintStepSource, formatStepLint } from "./step-lint.js";
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+import { buildRegistry } from "./steps/registry.js";
 
 describe("lintStepSource", () => {
   it("passes a step that stays on ctx.services", () => {
@@ -60,44 +57,40 @@ export default { async run(cfg, ctx) {
   });
 });
 
-describe("the module loader warns on a risky import from a workspace step (strut-resolve-hook.ts)", () => {
-  it("names the file and the module on stderr, once, and still loads the step", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "strut-hook-"));
+describe("the registry warns when it loads a workspace step that reaches past ctx.services (registry.ts)", () => {
+  it("names the step, the file and each finding once per file version, and still loads it", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "strut-load-lint-"));
     const custom = path.join(dir, "steps", "custom");
     mkdirSync(path.join(custom, "risky"), { recursive: true });
     mkdirSync(path.join(custom, "clean"), { recursive: true });
     const def = (type: string, extra: string) =>
-      `${extra}\nexport default { type: "${type}", input: { parse: (x) => x }, output: { parse: (x) => x }, async run() { return {}; } };\n`;
-    writeFileSync(path.join(custom, "risky", "spawn.ts"), def("risky/spawn", 'import { spawn } from "node:child_process";\nimport { readFileSync } from "node:fs";\nvoid spawn; void readFileSync;'));
+      `${extra}\nexport default { type: "${type}", input: { parse: (x: unknown) => x }, output: { parse: (x: unknown) => x }, async run() { return {}; } };\n`;
+    const risky = path.join(custom, "risky", "spawn.ts");
+    writeFileSync(risky, def("risky/spawn", 'import { spawn } from "node:child_process";\nimport { readFileSync } from "node:fs";\nvoid spawn; void readFileSync;'));
     writeFileSync(path.join(custom, "clean", "pure.ts"), def("clean/pure", 'import { join } from "node:path";\nvoid join;'));
-    const entry = path.join(dir, "entry.mts"); // .mts: the temp dir has no package.json to make .ts ESM
-    writeFileSync(
-      entry,
-      `import { buildRegistry } from ${JSON.stringify(path.join(ROOT, "src", "steps", "registry.ts"))};
-const { registry } = await buildRegistry(${JSON.stringify(custom)});
-console.log(JSON.stringify(Object.keys(registry).filter((k) => k.startsWith("risky/") || k.startsWith("clean/")).sort()));
-// The hooks thread writes its console asynchronously: let it drain before exit.
-await new Promise((r) => setTimeout(r, 300));
-`,
-    );
-    const out = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn(process.execPath, ["--import", "tsx", entry], {
-        cwd: ROOT,
-        env: { PATH: process.env["PATH"], HOME: process.env["HOME"], TMPDIR: process.env["TMPDIR"] },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (d) => (stdout += String(d)));
-      child.stderr.on("data", (d) => (stderr += String(d)));
-      child.on("close", (code) => resolve({ code, stdout, stderr }));
-    });
-    assert.equal(out.code, 0, out.stderr);
-    assert.deepEqual(JSON.parse(out.stdout.trim().split("\n").pop()!), ["clean/pure", "risky/spawn"], "warn-only: both steps load");
-    const warnings = out.stderr.split("\n").filter((l) => l.startsWith("[steps] "));
-    assert.equal(warnings.length, 2, out.stderr);
-    assert.match(warnings[0]!, /risky\/spawn\.ts imports node:child_process: a custom step reaches the shell/);
-    assert.match(warnings[1]!, /risky\/spawn\.ts imports node:fs:/);
-    assert.ok(!out.stderr.includes("clean/pure"), "node:path is fine");
+
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    try {
+      const first = await buildRegistry(custom);
+      assert.ok(first.registry["risky/spawn"] && first.registry["clean/pure"], "warn-only: both steps load");
+      assert.equal(first.sources["risky/spawn"], "custom");
+      // The same file again: nothing new. Changed: warned again.
+      await buildRegistry(custom);
+      writeFileSync(risky, def("risky/spawn", 'import { spawn } from "node:child_process";\nvoid spawn;'));
+      utimesSync(risky, new Date(Date.now() + 2000), new Date(Date.now() + 2000));
+      await buildRegistry(custom);
+    } finally {
+      console.warn = orig;
+    }
+    const ours = warnings.filter((w) => w.startsWith("[steps] "));
+    assert.equal(ours.length, 2, warnings.join("\n"));
+    assert.match(ours[0]!, /^\[steps\] risky\/spawn \(.*spawn\.ts\) reaches past ctx\.services/);
+    assert.match(ours[0]!, /line 1: imports child_process — use ctx\.services\.shell/);
+    assert.match(ours[0]!, /line 2: imports fs — use ctx\.services\.artifacts/);
+    assert.match(ours[1]!, /line 1: imports child_process/);
+    assert.ok(!ours[1]!.includes("imports fs"), "the new version has one finding");
+    assert.ok(!warnings.some((w) => w.includes("clean/pure")), "node:path is fine");
   });
 });

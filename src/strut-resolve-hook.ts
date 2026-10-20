@@ -34,38 +34,7 @@ type ResolveContext = { parentURL?: string; conditions: string[]; importAttribut
 type ResolveResult = { url: string; format?: string | null; shortCircuit?: boolean };
 type NextResolve = (specifier: string, context: ResolveContext) => Promise<ResolveResult>;
 
-/**
- * A WORKSPACE step (under `steps/custom/`, an archived version under
- * `steps/_history/`, the graph store's materialized `steps/_graph*`) that
- * imports the shell, the disk or the wire directly is going around
- * `ctx.services` — the scrubbed child env, the cassette, the secrets
- * masking (src/step-lint.ts has the same list and runs at publish; this
- * runs at import, so it sees what is on disk whoever put it there). Warn-only
- * today, once per file and module; a later strut refuses the import here.
- * Strut's own lib steps and a host's node_modules are not under those
- * directories and pass untouched.
- */
-const RISKY_MODULES = new Set([
-  "child_process", "fs", "fs/promises", "net", "http", "https", "http2", "dns", "tls", "dgram", "worker_threads", "vm", "cluster",
-]);
-const STEP_DIR = /\/steps\/(custom|_history|_graph(-versions)?)\//;
-const warned = new Set<string>();
-
-function warnRiskyImport(specifier: string, parentURL: string | undefined): void {
-  if (!parentURL || !STEP_DIR.test(parentURL)) return;
-  const bare = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
-  if (!RISKY_MODULES.has(bare)) return;
-  const file = decodeURIComponent(parentURL.replace(/^file:\/\//, "")).split("?")[0]!; // without the loader's ?v= cache-bust
-  const key = `${file}|${bare}`;
-  if (warned.has(key)) return;
-  warned.add(key);
-  console.warn(
-    `[steps] ${file} imports ${specifier}: a custom step reaches the shell, files and the network through ctx.services (shell, artifacts, http) — a later strut refuses this import`,
-  );
-}
-
 export async function resolve(specifier: string, context: ResolveContext, next: NextResolve): Promise<ResolveResult> {
   if (entry && SELF_SPECIFIERS.has(specifier)) return { url: entry, shortCircuit: true };
-  warnRiskyImport(specifier, context.parentURL);
   return next(specifier, context);
 }

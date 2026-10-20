@@ -88,7 +88,7 @@ strut/
 │   ├── actor-secrets.ts   # per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
 │   ├── capabilities.ts    # the standard services bag steps build on: http (fetch-like, plain result), secrets, artifacts (per-run files), shell (subprocesses), jobs (a job's holds, jobs.ts) — every one recordable by cassette.ts + secret-safe
 │   ├── env.ts             # the ENV BOUNDARY: `bootEnv()` is the one way strut's own code reads the environment (env.test.ts fails on a `process.env[…]` read anywhere else under src/), and `scrubProcessEnv()` — called by the default server's entry (`startServer`: server.ts, desktop.js), never by createStrut — copies the env into that snapshot and empties `process.env` down to `KEEP_ENV` (the shell allowlist + what Node reads lazily + what Windows needs to spawn), so a step's `process.env.X`, or a child it spawns with `process.env`, finds nothing while `ctx.services.secrets` still resolves a key the deployment set in env. `STRUT_ENV_SCRUB=0` / `STRUT_ENV_KEEP`. A host that embeds strut calls it itself once its steps read through ctx.services
-│   ├── step-lint.ts       # the static check on a custom step's SOURCE — imports of child_process / fs / net / http (RISKY_MODULES), a `process.env` read, the global `fetch` — each with what to use instead. The builder's create_step / edit_step (+ meta/* twins) REFUSE on a finding (authoring.ts); `POST /steps` publishes and answers with `warnings`; the module loader (strut-resolve-hook.ts) WARNS at import time for a workspace step on disk (`steps/custom`, `_history`, `_graph*`) whoever wrote it — the place a later strut refuses
+│   ├── step-lint.ts       # the static check on a custom step's SOURCE — imports of child_process / fs / net / http (RISKY_MODULES), a `process.env` read, the global `fetch` — each with what to use instead. The builder's create_step / edit_step (+ meta/* twins) REFUSE on a finding (authoring.ts); `POST /steps` publishes and answers with `warnings`; the registry WARNS when it loads a workspace step from disk, whoever put it there (registry.ts `warnPastServices`, once per file version; static, so it holds under tsx, which loads a workspace `.ts` as CommonJS past any ESM resolve hook) — the place a later strut refuses to load it
 │   ├── shell.ts           # every child process strut spawns: env scrubbing (allowlist, never process.env), runCmd/runShell (agent + builder bash tools), runProcess (the shell capability / exec step: exit code, stdin, abort → process-group kill, head+tail output cap)
 │   ├── llm.ts             # resolveModel()/listModelOptions(): strut's glue over aieo's resolve.ts — the chat, agent + llm steps resolve model NAME → provider/id/LanguageModel/output cap here; keys via ctx.services.secrets (store → env); backs GET /llm/models. Also the `llmAuth` seam (plans/mothership-cost-control.md §1): a host hook that returns {apiKey, baseUrl, headers} per call, consulted before the client is built; `stepAuth(ctx)` builds a step's call context
 │   ├── mothership.ts      # OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir }) → { llmAuth, mount }. Hive pushes one standing macaroon per user (PUT /llm/delegations/:actor); strut appends keyless HMAC links per run and per step (gatekey `attenuate`) so the gateway bills user × workflow × step and caps the run. Delegations live in a second encrypted file (mothership.json), never on the services bag. Core never imports it
@@ -482,7 +482,7 @@ secret store** (`src/secret-store.ts`) so credentials can be managed from the UI
 instead of baked into env at deploy time.
 
 - **The boundary is enforced, in stages** (`src/env.ts`, `src/step-lint.ts`,
-  `src/strut-resolve-hook.ts`). A step is TypeScript in the server process,
+  `src/steps/registry.ts`). A step is TypeScript in the server process,
   so "never `process.env`" was a convention until 2026-10-19: any step — in-tree,
   custom, or installed — could read the server's env (STRUT_SECRET_KEY, the
   key to every encrypted store, among it) or spawn a child with it. Now (1)
@@ -495,8 +495,8 @@ instead of baked into env at deploy time.
   `edit_step` refuse a source that imports `child_process` / `fs` / `net` /
   `http`, reads `process.env` or calls the global `fetch`, naming the line and
   the `ctx.services` door to use, `POST /steps` publishes it with `warnings`,
-  and the module loader warns at import time for any workspace step on disk
-  that does — warn-only, the place a later strut refuses. A host that embeds
+  and the registry warns at load time for any workspace step on disk that
+  does, whoever put it there — warn-only, the place a later strut refuses. A host that embeds
   strut (mcp's lab, whose gitsee/harvey steps still read env and spawn) is
   untouched until it calls `scrubProcessEnv()` itself. Not isolation: a step
   that legitimately holds a value can still send it anywhere; a credential
