@@ -447,6 +447,14 @@ A lib step under `src/steps/lib/strut/`:
 
 ### 2.3 Library — export to git, seed from git
 
+> **Superseded in part (ruled 2026-10-21): a seed always matches git.**
+> Strut's own seeders no longer pass `reactivateKnown: false` (stakwork/strut#261,
+> `plans/builder-job.md` §9): every boot makes the committed template active,
+> so a local edit lasts until the next boot, not until the file changes.
+> Wherever this section and §8 lean on an edit surviving a reseed, read it
+> as "until the next boot"; the way to keep an edit is the export below.
+> The mcp lab's `SEED_OPTS` still keeps edits until mcp applies the rule.
+
 The boot seeder is already a library sync with one source, the mcp source
 tree: content-hash reconciliation, `reactivateKnown: false` so a local edit
 stays active until the template itself changes, `RETIRED_STEPS` for

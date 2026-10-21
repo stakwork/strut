@@ -696,7 +696,11 @@ callbacks.
    `strut/views` app. A text seen before is made active again, nothing new
    is published, and an edit made since (the UI, the chat builder, a
    promotion) stays in the history, active until the next boot. The store
-   keeps `reactivateKnown: false` for callers that want an edit kept.
+   keeps `reactivateKnown: false` for callers that want an edit kept. The
+   Concept pages strut seeds follow the same rule (ruled the same day): a
+   page's description or docs edited in the graph is put back to the
+   file's text at the next boot. A page a person made under the same name,
+   or took over by clearing its stamp, is still theirs.
 
 **Found, not fixed.**
 
