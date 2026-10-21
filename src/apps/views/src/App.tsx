@@ -9,8 +9,8 @@ import {
   ArtifactView, LaunchForm, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, Transcript,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
-import { TRANSCRIPT, TRANSCRIPT_MARKS } from "./fixtures/content";
-import { REF, RUN_ID, WORKFLOW } from "./fixtures/runs";
+import { TRANSCRIPT_MARKS } from "./fixtures/content";
+import { EXPLORE_PATH, REF, RUN_ID, WORKFLOW } from "./fixtures/runs";
 
 interface Entry {
   name: string;
@@ -77,10 +77,10 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "Transcript",
-    what: "An agent's session: the person's messages, the model's markdown, tool calls with their results, the server's notices, turn marks.",
-    grants: "none: pass the messages",
-    usage: `<Transcript messages={run.output.messages} />`,
-    demo: () => <Transcript messages={TRANSCRIPT} marks={TRANSCRIPT_MARKS} />,
+    what: "An agent's session: the person's messages, the model's markdown, tool calls with their results, the server's notices, turn marks. Read from a run's agent step, or drawn from messages you pass.",
+    grants: "grants.workflows: the run's workflow (run/transcript) · none: pass the messages",
+    usage: `<Transcript workflow="research" runId={runId} path="research/explore" />  <Transcript messages={messages} />`,
+    demo: () => <Transcript workflow={WORKFLOW} runId={RUN_ID} path={EXPLORE_PATH} marks={TRANSCRIPT_MARKS} />,
   },
   {
     name: "ArtifactView",

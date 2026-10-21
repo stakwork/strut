@@ -8,6 +8,8 @@ export const WORKFLOW = "research";
 export const RUN_ID = "1790000000100";
 export const CHILD_WORKFLOW = "summarize";
 export const CHILD_RUN_ID = "1790000000500";
+/** The run's agent step: its transcript is the gallery's TRANSCRIPT. */
+export const EXPLORE_PATH = `${WORKFLOW}/explore`;
 
 /** The Concept tree the run walks (fixtures/graph.ts holds the nodes). */
 export const REF = {
@@ -58,7 +60,8 @@ export const RUN_EVENTS: RunEvent[] = [
     output: { peer: "acme-lab", workflow: "lookup", runId: "1790000009999", status: "success" },
     nodes: [{ ref_id: "aa000000-0000-4000-8000-0000000000aa", node_type: "Concept", name: "Lab panels", peer: "acme-lab" }],
   }, { peer: "acme-lab", workflow: "lookup" }),
-  { type: "step.end", path: `${WORKFLOW}/explore`, stepType: "agent", ts: at(46), durationMs: 40_000, output: { result: "Three findings." }, modelCalls: 9, usage: usage(48_000, 4_200), cost: 0.2072 },
+  // The log serves an agent's session as a link (run/transcript reads it).
+  { type: "step.end", path: EXPLORE_PATH, stepType: "agent", ts: at(46), durationMs: 40_000, output: { result: "Three findings." }, transcript: `/workflows/${WORKFLOW}/runs/${RUN_ID}/transcripts/${EXPLORE_PATH}`, modelCalls: 9, usage: usage(48_000, 4_200), cost: 0.2072 },
   { type: "step.start", path: `${WORKFLOW}/each`, stepType: "foreach", ts: at(46) },
   ...step(`${WORKFLOW}/each#0/score`, "graph/graph-get", 46, 2, { nodes: [{ ref_id: REF.hypertension, node_type: "Concept", name: "Hypertension" }] }, { ref_id: REF.hypertension }),
   ...step(`${WORKFLOW}/each#1/score`, "graph/graph-get", 48, 2, { nodes: [{ ref_id: REF.heartFailure, node_type: "Concept", name: "Heart failure" }] }, { ref_id: REF.heartFailure }),

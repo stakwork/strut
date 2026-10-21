@@ -239,7 +239,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
   return {
     [STEP_RUN_TOOL]: tool({
       description:
-        "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/launch, run/cancel, run/workflow, run/files on a granted workflow; graph/* and any step grants.steps names; app/report-error always), " +
+        "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files on a granted workflow; graph/* and any step grants.steps names; app/report-error always), " +
         "`config` its fields, `input` the scope its {{ input.* }} templates read, `app` the app's identity — the token the served document carries in <meta name=\"strut-app-token\">. " +
         "A refused call is an error naming the grant; a step's own failure is an error with its message. The result is the step's whole output.",
       inputSchema: z.object({

@@ -2,28 +2,84 @@ import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bell, CheckCircle2, ChevronRight, CircleDashed, Loader2, Paperclip, XCircle } from "lucide-react";
-import { groupStatus, STATUS_TITLE, transcriptToEntries, type ChatEntry, type ToolGroup, type TranscriptMark } from "@strut/kit";
+import { groupStatus, STATUS_TITLE, transcriptToEntries, useTranscript, type ChatEntry, type ToolGroup, type TranscriptMark } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { errorText } from "../lib/format";
 
-export interface TranscriptProps {
-  /** An agent's session as strut stores it: AI SDK model messages (`system`,
-   *  `user`, `assistant`, `tool`). The run log hands a transcript out as a
-   *  link a page cannot fetch, so pass what you have — a run's output (an
-   *  agent step with `returnMessages: true`), or a session read elsewhere. */
-  messages: Array<{ role: string; content: unknown }>;
+type Messages = Array<{ role: string; content: unknown }>;
+
+export type TranscriptProps = {
   /** Turn boundaries to draw, before the message at each index. */
   marks?: TranscriptMark[];
   /** A tool call without a result yet is pending, not unanswered. */
   live?: boolean;
   className?: string;
-}
+} & (
+  | {
+      /** An agent's session as strut stores it: AI SDK model messages
+       *  (`system`, `user`, `assistant`, `tool`) — a run's output (an agent
+       *  step with `returnMessages: true`), or a session read elsewhere. */
+      messages: Messages;
+      workflow?: undefined;
+      runId?: undefined;
+      path?: undefined;
+      full?: undefined;
+    }
+  | {
+      messages?: undefined;
+      /** Or the agent step to read it from, through `run/transcript` (the
+       *  importing app's grant on the workflow): its path in the run, as a
+       *  `step.end` in `run/events` names it. */
+      workflow: string;
+      runId: string;
+      path: string;
+      /** A session turn: the whole thread up to it, not just the turn. */
+      full?: boolean;
+    }
+);
 
 /** An agent's transcript, folded (`transcriptToEntries`): the person's
  *  messages, the model's text as markdown, its tool calls grouped with their
  *  results (open one to read it), the server's notices folded to a line, and
- *  the turn marks. The text renders through react-markdown, never as HTML. */
-export function Transcript({ messages, marks, live = false, className }: TranscriptProps) {
+ *  the turn marks. The text renders through react-markdown, never as HTML.
+ *  Given a run's step instead of its messages, it reads them — a page cannot
+ *  follow the `transcript` link the run log hands out. */
+export function Transcript(props: TranscriptProps) {
+  if (props.messages) return <Entries messages={props.messages} marks={props.marks} live={props.live} className={props.className} />;
+  return <RunTranscript {...props} />;
+}
+
+function RunTranscript({ workflow, runId, path, full, marks, live, className }: Extract<TranscriptProps, { workflow: string }>) {
+  const q = useTranscript(workflow, runId, path, { full: !!full });
+  const t = q.data;
+  const cut = t?.truncated;
+  // Where the cap left messages out, a mark says so.
+  const shown = useMemo(
+    () => (cut?.messages ? [...(marks ?? []), { at: cut.messages.at, label: `${cut.messages.count} messages left out` }] : marks),
+    [cut, marks],
+  );
+  if (q.isError) return <p className={cn("text-sm text-destructive", className)}>{errorText(q.error)}</p>;
+  if (q.isPending) return <Skeleton className={cn("h-48 w-full", className)} />;
+  return (
+    <div className={cn("flex flex-col gap-2", className)}>
+      <Entries messages={t!.messages} marks={shown} live={live} />
+      {cut && (
+        <p className="text-xs text-muted-foreground" data-testid="transcript-cut">
+          Cut from {Math.round(cut.chars / 1024)} KB to fit:{" "}
+          {[
+            cut.strings ? `${cut.strings} long ${cut.strings === 1 ? "string" : "strings"} shortened to ${Math.round(cut.stringMax / 1024)} KB` : "",
+            cut.messages ? `${cut.messages.count} messages left out` : "",
+          ].filter(Boolean).join(", ")}{" "}
+          — the whole transcript is in strut.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Entries({ messages, marks, live = false, className }: { messages: Messages; marks?: TranscriptMark[]; live?: boolean; className?: string }) {
   const entries = useMemo(() => transcriptToEntries(messages, marks), [messages, marks]);
   if (!entries.length) return <p className={cn("text-sm text-muted-foreground", className)}>Nothing said yet.</p>;
   return (

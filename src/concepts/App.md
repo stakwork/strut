@@ -91,8 +91,9 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
 ```
 
-Also `RunStatus`, `Transcript` (pass `messages`), `ArtifactView` (a run's
-file through `run/files`), `NodeCard`, `NodeSearch`, `NodeGraph`. They run on
+Also `RunStatus`, `Transcript` (an agent step's session through
+`run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),
+`ArtifactView` (a run's file through `run/files`), `NodeCard`, `NodeSearch`, `NodeGraph`. They run on
 YOUR grants: the run views need the workflow (and a child run's) in
 `grants.workflows`; the graph views need `graph/graph-get-batched`,
 `graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
@@ -108,6 +109,7 @@ tool (`step_run`) the host relays to strut:
 | `useRuns(workflow, { status?, automation?, limit?, since?, live? })` | `run/list`: the runs, newest first; `live` refetches while any is in flight |
 | `useRun(workflow, runId, { live? })` | `run/get`: the summary, its whole `input` and `output`, `artifacts` as links; `live` long-polls (`wait`) while in flight |
 | `useRunEvents(workflow, runId, { live? })` | `run/events`: the log, transcripts as links |
+| `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
 | `useLaunch(workflow)` → `{ launch(input, params?, key?), pending }` | `run/launch`: a MUTATION — a function to call on a click, never a query |
 | `useCancel()` → `{ cancel(workflow, runId) }` | `run/cancel` |
 | `useWorkflow(workflow)` | `run/workflow`: description, the `input:` block, params defaults — what a launch form renders |
@@ -133,7 +135,7 @@ a click and never on a render:
 - A chat box inside an app is a workflow with an `agent` step on
   `session: "{{ input.session }}"`, one run per turn.
 
-Reads (`useRuns`, `useRun`, `useRunEvents`, `useWorkflow`) are free and may
+Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useWorkflow`) are free and may
 refetch on their own. A tool call (`useStep` on a cheap step) is fine on a
 render. A launch is a click. Nothing in the kit launches on mount or on a
 poll, and `step_run` refuses `llm`, `agent` and `exec` whatever the manifest

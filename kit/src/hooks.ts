@@ -15,6 +15,7 @@ export const RUN_STEPS = {
   list: "run/list",
   get: "run/get",
   events: "run/events",
+  transcript: "run/transcript",
   launch: "run/launch",
   cancel: "run/cancel",
   workflow: "run/workflow",
@@ -50,6 +51,25 @@ export interface RunEvent {
   path?: string;
   ts?: string;
   [k: string]: unknown;
+}
+
+/** What `run/transcript` returns (the server's `RunTranscript`): one
+ *  agent's session as stored — AI SDK model messages — capped, with what
+ *  the cap cut. */
+export interface RunTranscript {
+  path: string;
+  messages: Array<{ role: string; content: unknown }>;
+  /** `full` stitched a session turn's whole thread. */
+  full?: true;
+  truncated?: {
+    /** The whole transcript's size, in JSON chars. */
+    chars: number;
+    /** Strings cut to their head and tail, and the length each was cut to. */
+    strings: number;
+    stringMax: number;
+    /** `count` messages left out before index `at`. */
+    messages?: { at: number; count: number };
+  };
 }
 
 /** What `run/workflow` returns: the workflow's description, active version,
@@ -92,6 +112,7 @@ export const runKeys = {
   lists: (workflow: string) => ["strut", RUN_STEPS.list, workflow] as const,
   run: (workflow: string, runId: string) => ["strut", RUN_STEPS.get, workflow, runId] as const,
   events: (workflow: string, runId: string) => ["strut", RUN_STEPS.events, workflow, runId] as const,
+  transcript: (workflow: string, runId: string, path: string, full = false) => ["strut", RUN_STEPS.transcript, workflow, runId, path, full] as const,
   workflow: (workflow: string) => ["strut", RUN_STEPS.workflow, workflow] as const,
 };
 
@@ -165,6 +186,25 @@ export function useRunEvents(workflow: string, runId: string | undefined, opts: 
     queryFn: () => client.run<RunEvent[]>(RUN_STEPS.events, compact({ workflow, runId })),
     enabled: (opts.enabled ?? true) && !!workflow && !!runId,
     refetchInterval: opts.live ? (q) => (eventsSettled(q.state.data) ? false : LIVE_INTERVAL_MS) : false,
+  });
+}
+
+export interface UseTranscriptOptions {
+  /** A session turn: the whole thread up to it, not just the turn. */
+  full?: boolean;
+  enabled?: boolean;
+}
+
+/** `run/transcript`: one agent's transcript by its step path — what the
+ *  `transcript` link on a `step.end` in `run/events` points at, which a page
+ *  cannot follow. Written once, when the step ends, so never refetched. */
+export function useTranscript(workflow: string, runId: string | undefined, path: string | undefined, opts: UseTranscriptOptions = {}): UseQueryResult<RunTranscript> {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: runKeys.transcript(workflow, runId ?? "", path ?? "", !!opts.full),
+    queryFn: () => client.run<RunTranscript>(RUN_STEPS.transcript, compact({ workflow, runId, path, full: opts.full || undefined })),
+    enabled: (opts.enabled ?? true) && !!workflow && !!runId && !!path,
+    staleTime: Infinity,
   });
 }
 
