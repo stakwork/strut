@@ -15,7 +15,9 @@
  * resolved to links the way a run's own `…/artifacts` are. Nothing is
  * stored; a file a later turn overwrote serves the later bytes behind the
  * same link. A child run's artifacts are never folded — a turn names what
- * it wants shown.
+ * it wants shown. A turn that ran on a peer (the `builder`'s `remote`
+ * branch) folds its deliverables tagged with that peer, as they came: never
+ * a link here, never `not found` (artifact-refs.ts).
  */
 
 import { access, readdir, readFile } from "node:fs/promises";
@@ -71,7 +73,8 @@ export interface JobRunView extends JobRun {
 /** One current deliverable: a resolved ref, and the run that last reported it. */
 export interface JobArtifact extends ArtifactRef {
   runId: string;
-  /** Relative to the job's directory, as declared — what `job/read` takes. */
+  /** Relative to the job's directory, as declared — what `job/read` takes.
+   *  With `peer`: relative to that peer's `job` directory, unread here. */
   path?: string;
 }
 

@@ -21,6 +21,14 @@
 > what it may never touch) and `specs/CALLBACKS.md` (what a job's `run.end`
 > carries). Hive's half is described as the contract it reads, not as work
 > items here.
+>
+> **Work item 4 BUILT 2026-10-21** on `feature/peer-tagged-artifacts`:
+> `strut/run-workflow` tags the peer output's `artifacts` with `peer` and the
+> job as the PEER recorded it (its `run.start`: `peer/<job>` on its peer key
+> — the peer's own id for the job, so a host resolves a path with no
+> namespace rule of its own), `resolveArtifactRefs` leaves a tagged ref as
+> it came, the job fold and the UI's deliverable cards show it as foreign;
+> `specs/CALLBACKS.md` §4 is the host's contract.
 
 ## Problem
 
@@ -313,10 +321,12 @@ nothing resolved here: `artifact-refs` turns a `path` into
 foreign thing is tagged with the peer, by id, never rewritten to a URL,
 and resolved by the reader (`federation.md` §2.2, "Provenance"):
 
-1. `strut/run-workflow` folds `peer: cfg.peer` and `job: cfg.job` onto
-   each entry of the peer output's `artifacts` when the output has one.
-   The same step, the same tail, no extra request; the model sees the
-   plain output.
+1. `strut/run-workflow` folds `peer: cfg.peer` and `job` onto each entry
+   of the peer output's `artifacts` when the output has one — `job` as
+   the PEER recorded the run (its `run.start`, `peer/<job>` on its peer
+   key; `cfg.job` only when the log has none). The same step, the same
+   tail, no extra request; the model sees the plain output. An entry the
+   peer itself tagged (from a third strut) keeps its tag, as a node does.
 2. `resolveArtifactRefs` leaves a ref carrying `peer` as it came — no
    local path, no `error` — so the `run.end` callback and
    `GET …/runs/:runId/artifacts` carry `{ id, title, path, peer, job }`
@@ -413,7 +423,8 @@ Three things, each small, each needed for cross-strut v1.
    unchanged — the reply shape is the job's.
 3. **Resolve a peer-tagged artifact.** A ref `{ path, peer, job }` is a
    file on the swarm hive registered as peer `<slug>`, at
-   `/lab/jobs/peer%2F<job>/files/<path>` there, read with that swarm's own
+   `/lab/jobs/<job, percent-encoded>/files/<path>` there (`job` is the
+   peer's own id for it, `peer/<id>`), read with that swarm's own
    credential through the proxy hive already has per swarm. One branch
    in the artifact reader; hive's run-graph fold already skips
    peer-tagged nodes (`job-turn.ts:541-543`), so the shape is familiar.
@@ -498,7 +509,7 @@ Strut, in order; each a PR of its own, never stacked.
 4. **Deliverables tagged**: `strut/run-workflow` tags the peer output's
    `artifacts`; `resolveArtifactRefs` leaves a tagged ref alone; the
    `run.end` callback and `GET …/artifacts` carry it; `specs/CALLBACKS.md`
-   §4 documents `peer` on a ref. Tests over both.
+   §4 documents `peer` on a ref. Tests over both. **BUILT 2026-10-21.**
 5. **Live over two struts** (§9) before the mcp bump that carries 1–4.
 
 Hive, as the contract it reads (§5): delegations on every org swarm; a
