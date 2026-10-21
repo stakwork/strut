@@ -3,8 +3,11 @@
 > **Status (2026-10-20): proposed, two points ruled; work item 1 BUILT** on
 > `feature/builder-job` — `src/workflows/builder.yaml`, `src/builder-seed.ts`,
 > the `peer: false` delta, `createStrut({ builder })`, `STRUT_HOST_CONFIG.builder`,
-> `src/builder-seed.test.ts`. Its `params.system` is the procedure in the
-> twins' names; item 2 renders the dialect in front of it. Written against strut
+> `src/builder-seed.test.ts`. **Work item 2 BUILT** on
+> `feature/builder-prompt-source`: the builder's rules in `src/ai/prompts.ts`
+> render from a role → tool-name map (`CHAT_TOOLS`, `JOB_TOOLS`), the
+> chat's byte-identical (`src/ai/prompts.test.ts`), the job's rendered into
+> builder.yaml's `params.system` by the seed. Written against strut
 > `main` @4b19438 (this worktree), hive `master` @250154f6e and stakgraph
 > `main` @be2cde00; citations are `file:line` on those commits. The question:
 > Jamie's chats are now turns of strut's `orchestrator` workflow
@@ -489,7 +492,17 @@ Strut, in order; each a PR of its own, never stacked.
    "Tools" section and `BUILDER_PROCEDURE` rendered from a role → name
    map; `buildSystem` output byte-identical to today's (a test pins the
    chat's rendering against a fixture); the seed renders the meta names
-   into `params.system`.
+   into `params.system`. **BUILT** (`feature/builder-prompt-source`):
+   `BuilderTools` is the map, with `chat` for what the chat alone has (the
+   steps listing, detach and notifications, `ask_user` / `request_secret`,
+   `edits`, bash, graph_query, rollback, run control, schedules, peers);
+   `builderRules(t)` is the dialect + tools + procedure. builder.yaml keeps
+   the job's own text (who the agent is, claims, the kinds, the reply)
+   around one `<<strut: the builder's rules>>` line the seed replaces
+   before the delta (`templateWithDelta`'s `fill`). Found on the way: the
+   loader resolved a `{{ params.x }}` inside a param to `""` when `x` was
+   not declared, so the rules' own examples ("Reference them as
+   {{ params.name }}") were blanked — it now leaves them as written.
 3. **`job/start { workflow, peer }`**, `job/continue` following the record,
    `JobLaunch.workflow`, the launcher reading that workflow; `GET /jobs/:id`
    says which workflow a job is. The orchestrator prompt paragraph.

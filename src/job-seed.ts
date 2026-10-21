@@ -71,9 +71,13 @@ const JOB_YAML = new URL("./workflows/job.yaml", import.meta.url);
 
 /** A committed template with the host's delta applied — the text that is
  *  hashed and published. Pure over the file: no workspace. Shared with the
- *  `orchestrator` seed (src/orchestrator-seed.ts), whose delta is the same. */
-export async function templateWithDelta(template: URL, opts?: JobSeedOptions): Promise<string> {
+ *  `orchestrator` and `builder` seeds, whose delta is the same. `fill`
+ *  renders strut's own text into the template's `params.system` BEFORE the
+ *  host's section is appended (the builder's rules, src/builder-seed.ts),
+ *  so the hash covers it. */
+export async function templateWithDelta(template: URL, opts?: JobSeedOptions, fill?: (system: string) => string): Promise<string> {
   const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean; params: { tools: string[]; approve?: string[]; system: string; model?: string } };
+  if (fill) doc.params.system = fill(doc.params.system);
   if (opts?.peer === false) delete doc.peer;
   if (opts?.tools?.length) doc.params.tools.push(...opts.tools);
   if (opts?.approve?.length) (doc.params.approve ??= []).push(...opts.approve);

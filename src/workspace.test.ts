@@ -304,6 +304,18 @@ steps:
       // ...while non-params templates (input/step refs) are left for run time.
       assert.match(p.finalAnswer, /\{\{ input\.keep \}\}/);
     });
+
+    it("leaves a reference to a param the workflow does not declare as written; a declared null renders empty", async () => {
+      await ws.publishWorkflow("teacher", "v1", {
+        steps: SAMPLE_STEPS,
+        params: {
+          empty: null,
+          system: "Reference them as {{ params.name }}: message: \"{{ params.greeting }}: {{ fetch.body }}\" ({{ params.empty }})",
+        },
+      });
+      const p = (await ws.getWorkflow("teacher")).params as Record<string, any>;
+      assert.equal(p.system, "Reference them as {{ params.name }}: message: \"{{ params.greeting }}: {{ fetch.body }}\" ()");
+    });
   });
 
   // ── getWorkflowSource ─────────────────────────────────────────────────

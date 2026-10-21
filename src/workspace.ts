@@ -109,14 +109,18 @@ export function claimsBlockOf(yamlStr: string): ClaimsBlock | undefined {
  * resolution. One pass over the ORIGINAL params — chained references aren't
  * re-expanded, and the substitution uses the param DEFAULTS (a per-run override
  * of a referenced param won't retro-edit a value that embedded it). Unknown/erroring
- * refs are left verbatim rather than throwing.
+ * refs are left verbatim rather than throwing — a reference to a param the
+ * workflow does not declare too, so a prompt param that TEACHES the syntax
+ * (the builder's rules: "Reference them as {{ params.name }}") reaches the
+ * model as written. A declared `null` renders empty.
  */
 function resolveParamSelfReferences(params: Record<string, unknown>): Record<string, unknown> {
   const resolveStr = (s: string): string =>
     s.replace(PARAM_SELF_REF, (whole, expr: string) => {
       try {
         const val = evaluateExpr(expr, { params });
-        if (val === null || val === undefined) return "";
+        if (val === undefined) return whole;
+        if (val === null) return "";
         return typeof val === "object" ? JSON.stringify(val) : String(val);
       } catch {
         return whole; // leave unresolved on any error
