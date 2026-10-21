@@ -24,7 +24,7 @@
  */
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { Message, OnResolveResult } from "esbuild";
 import { treeFiles, treeHash } from "../version.js";
 import { kitOf, type Kit, type KitLocation } from "./kit.js";
@@ -122,6 +122,42 @@ export function lintAppSource(text: string, file: string): { errors: string[]; w
     });
   return { errors, warnings };
 }
+
+// ── zod's namespace ─────────────────────────────────────────────────────────
+
+/** The zod entries whose `z` (and default) export is a NAMESPACE re-export. */
+const ZOD_NAMESPACE = /^zod(?:\/v4(?:\/classic)?)?$/;
+const IMPORT_BRACES = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])([^"'\n]+)\2/g;
+const IMPORT_DEFAULT = /\bimport\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{([^}]*)\})?\s*from\s*(["'])([^"'\n]+)\3/g;
+
+/**
+ * `import { z } from "zod"` (and `{ z as Q }`, and the default import) as
+ * `import * as z from "zod"`. zod's `z` is `export * as`-style — a namespace
+ * re-exported by name — and esbuild keeps every member of a namespace it
+ * cannot follow, all of zod's locales included: 454 KB minified against
+ * 75 KB for the same `z.string()` through `import * as z` (2026-10-21,
+ * zod 4.6). Models write the named form by reflex, and so does the MCP Apps
+ * SDK the bootstrap carries, so every app paid it. Member access means the
+ * same either way; only the bundle changes.
+ */
+export function zodNamespaceImports(text: string): string {
+  if (!text.includes("zod")) return text;
+  const named = text.replace(IMPORT_BRACES, (whole, list: string, q: string, spec: string) => {
+    if (!ZOD_NAMESPACE.test(spec)) return whole;
+    const items = list.split(",").map((x) => x.trim()).filter(Boolean);
+    const zi = items.findIndex((x) => /^z(?:\s+as\s+[A-Za-z_$][\w$]*)?$/.test(x));
+    if (zi < 0) return whole;
+    const local = /\s+as\s+([A-Za-z_$][\w$]*)$/.exec(items[zi]!)?.[1] ?? "z";
+    const rest = items.filter((_, i) => i !== zi);
+    return `import * as ${local} from ${q}${spec}${q}` + (rest.length ? `;import { ${rest.join(", ")} } from ${q}${spec}${q}` : "");
+  });
+  return named.replace(IMPORT_DEFAULT, (whole, local: string, list: string | undefined, q: string, spec: string) => {
+    if (!ZOD_NAMESPACE.test(spec) || local === "type") return whole;
+    return `import * as ${local} from ${q}${spec}${q}` + (list?.trim() ? `;import { ${list.trim()} } from ${q}${spec}${q}` : "");
+  });
+}
+
+const LOADERS: Record<string, "js" | "jsx" | "ts" | "tsx"> = { ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "jsx", ".ts": "ts", ".mts": "ts", ".tsx": "tsx" };
 
 // ── The document ────────────────────────────────────────────────────────────
 
@@ -251,6 +287,9 @@ interface Root {
   parent?: Root;
 }
 
+/** The namespace of a module the package disables in the browser. */
+const EMPTY_NS = "strut-empty";
+
 const RESOLVE_EXTS = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".css", ".json"];
 
 async function exists(p: string): Promise<"file" | "dir" | null> {
@@ -335,6 +374,10 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
   };
 
   const err = (text: string): OnResolveResult => ({ errors: [{ text }] });
+  /** A module of the kit's tree, with the side-effect flag its package
+   *  declares — esbuild reads no package.json for a path a plugin hands it,
+   *  and without the flag nothing an app leaves unused could be dropped (§2.5). */
+  const vendorModule = (path: string): OnResolveResult => (kit.modules[path]?.pure ? { path, sideEffects: false } : { path });
 
   /** The §3.4 rule: `name[@vN][/sub]`, the longest installed name first. */
   async function resolveApp(spec: string, from: Root): Promise<OnResolveResult | null> {
@@ -379,13 +422,14 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
         if (args.kind === "entry-point") return undefined;
         const spec = args.path;
         if (/^https?:/i.test(spec)) return err(`"${spec}": URL imports are refused — every library is the kit's, compiled in`);
-        // The kit's bundles import their shared chunks relatively; nothing else.
+        // Inside the kit's module tree every import was resolved by the kit's
+        // own build; nothing is resolved again, nothing leaves the tree.
         if (inside(kit.vendorDir, args.importer)) {
-          if (spec.startsWith(".")) {
-            const abs = resolve(args.resolveDir, spec);
-            if (inside(kit.vendorDir, abs)) return { path: abs };
-          }
-          return err(`"${spec}" from the kit's ${relative(kit.vendorDir, args.importer)}: the vendor layer is self-contained`);
+          const links = kit.modules[args.importer]?.links;
+          const to = links?.[spec];
+          if (to === null) return { path: spec, namespace: EMPTY_NS };
+          if (to === undefined) return err(`"${spec}" from the kit's ${relative(kit.vendorDir, args.importer)}: not in the kit's module table — the vendor layer is self-contained`);
+          return vendorModule(to);
         }
         const from = rootOf(args.importer) ?? (args.importer === "<stdin>" || !args.importer ? main : undefined);
         if (!from) return err(`"${spec}" imported from outside the app (${args.importer})`);
@@ -404,15 +448,24 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
           const own = await resolveFile(join(from.dir, "src", spec.slice(2)));
           if (own) return { path: own };
           const kitFile = kit.imports[spec];
-          if (kitFile) return { path: kitFile };
+          if (kitFile) return vendorModule(kitFile);
           return err(`"${spec}" is neither in ${label(from)}'s src/ nor in the kit (its @/ modules: @/components/ui/<name>, @/lib/utils, @/hooks/use-mobile)`);
         }
         const mapped = kit.imports[spec];
-        if (mapped) return { path: mapped };
+        if (mapped) return vendorModule(mapped);
         const app = await resolveApp(spec, from);
         if (app) return app;
         return err(notInKit(spec, kit, deps.installedApps ? await deps.installedApps() : []));
       });
+      // zod's namespace, whoever imports it (the app, an imported app, the kit's tree).
+      build.onLoad({ filter: /\.(m?[jt]sx?|cjs)$/ }, async (args) => {
+        const text = await readFile(args.path, "utf8");
+        const out = zodNamespaceImports(text);
+        if (out === text) return undefined;
+        return { contents: out, loader: LOADERS[extname(args.path)] ?? "js", resolveDir: dirname(args.path) };
+      });
+      // A module the package disables in the browser (its `browser` field).
+      build.onLoad({ filter: /.*/, namespace: EMPTY_NS }, () => ({ contents: "module.exports = {};", loader: "js" }));
       // A stylesheet: an app's own goes through the Tailwind compile (every
       // .css in the directory does — below), the kit's is appended raw; the
       // import itself becomes an empty module.
@@ -426,6 +479,8 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
   const esbuild = await loadEsbuild();
   const entryRel = relative(root, entryAbs).split(sep).join("/");
   let js: string;
+  /** Every module the bundle holds, by absolute path. */
+  const bundled = new Set<string>();
   try {
     const result = await esbuild.build({
       stdin: {
@@ -456,26 +511,36 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
         ".md": "text", ".txt": "text", ".csv": "text", ".html": "text",
       },
       plugins: [plugin],
+      metafile: true,
       logLevel: "silent",
     });
     js = result.outputFiles.find((f) => f.path.endsWith(".js"))?.text ?? "";
-    for (const w of result.warnings) warnings.push(formatMessage(w, root));
+    for (const input of Object.keys(result.metafile.inputs)) if (!input.includes(":") && input !== "<stdin>") bundled.add(resolve(root, input));
+    // A warning inside the kit's modules is not the app author's to act on
+    // (esbuild says nothing about code under a node_modules; the tree is not one).
+    for (const w of result.warnings) if (!w.location || !inside(kit.vendorDir, resolve(root, w.location.file))) warnings.push(formatMessage(w, root));
   } catch (e) {
     const messages = (e as { errors?: Message[] }).errors;
     if (!Array.isArray(messages) || !messages.length) return { ok: false, errors: [e instanceof Error ? e.message : String(e)], warnings };
     return { ok: false, errors: [...new Set(messages.map((m) => formatMessage(m, root)))], warnings };
   }
 
-  // The source checks, over every root's sources (§2.1, §3.4).
+  // The source checks, over every root's sources (§2.1, §3.4). The Tailwind
+  // scan reads the app's own sources and, of an imported app and of the kit,
+  // only the modules the bundle kept: an app that draws one of strut/views'
+  // components is not styled for the gallery (§2.5).
   const sources: string[] = [];
   const cssTexts: string[] = [];
+  for (const file of [...bundled].sort()) {
+    if (inside(kit.vendorDir, file) && SOURCE_RE.test(file) && !inside(join(kit.vendorDir, "files", "_m"), file)) sources.push(await readFile(file, "utf8"));
+  }
   for (const r of roots) {
     const list = r === main ? files : await treeFiles(join(r.dir, "src"), (_rel, name) => name.startsWith(".") || name === "node_modules");
     for (const f of list.sort()) {
       const abs = r === main ? join(r.dir, f) : join(r.dir, "src", f);
       if (SOURCE_RE.test(f)) {
         const text = await readFile(abs, "utf8");
-        sources.push(text);
+        if (r === main || bundled.has(abs)) sources.push(text);
         const lint = lintAppSource(text, rel(r, abs));
         errors.push(...lint.errors);
         warnings.push(...lint.warnings);
@@ -492,13 +557,13 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
   try {
     const stylesheet = [kit.baseCss, ...cssTexts].join("\n");
     const compiler = await tw.compile(stylesheet, tailwindOptions(dirname(kit.baseCssPath)) as Parameters<typeof tw.compile>[1]);
-    const candidates = new Set<string>(kit.candidates);
-    for (const c of await scanCandidates(tw, kit, stylesheet, sources)) candidates.add(c);
-    css = compiler.build([...candidates].sort());
+    const candidates = await scanCandidates(tw, kit, stylesheet, sources);
+    css = compiler.build(candidates);
+    for (const f of vendorCss) css += `\n${await readFile(f, "utf8")}`;
+    css = (await esbuild.transform(css, { loader: "css", minify: true, legalComments: "none" })).code;
   } catch (e) {
     return { ok: false, errors: [`styles: ${e instanceof Error ? e.message : String(e)}`], warnings };
   }
-  for (const f of vendorCss) css += `\n${await readFile(f, "utf8")}`;
 
   const html = document(manifest.title, cspFor(manifest.csp?.resourceDomains ?? []), css, js);
   const bytes = Buffer.byteLength(html, "utf8");

@@ -1,70 +1,97 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join, relative } from "node:path";
 import { buildVendor, entries, type VendorBuild } from "../scripts/build-vendor.js";
 import { ALIASES, PACKAGES } from "../scripts/manifest.js";
 import { compileStyles, kitDir, readCandidates, readImportMap, readManifest } from "./node.js";
 
-/** One module path that must be in exactly ONE output — the shared state the page must not have twice. */
+/** A module the page must not have twice: the tree holds exactly one file at
+ *  a path ending so — every import of it, from anywhere, is that file. */
 const SINGLETONS: Record<string, string> = {
-  react: "node_modules/react/cjs/react.production.js",
-  "react-dom": "node_modules/react-dom/cjs/react-dom-client.production.js",
-  "react-query": "node_modules/@tanstack/query-core/build/modern/queryClient.js",
-  zod: "node_modules/zod/v4/classic/schemas.js",
-  "radix dismissable layer": "react-dismissable-layer/dist/index.mjs",
-  "react-router": "node_modules/react-router/dist/production/index.js",
+  react: "/react/cjs/react.production.js",
+  "react-dom": "/react-dom/cjs/react-dom-client.production.js",
+  "react-query": "/@tanstack/query-core/build/modern/queryClient.mjs",
+  zod: "/zod/v4/classic/schemas.mjs",
+  "radix dismissable layer": "/react-dismissable-layer/dist/index.mjs",
+  "react-router": "/react-router/dist/production/index.mjs",
 };
 
-describe("the vendor build", () => {
+/** Every file under a directory, relative to it. */
+function walk(dir: string, base = dir): string[] {
+  const out: string[] = [];
+  for (const f of readdirSync(dir)) {
+    const p = join(dir, f);
+    if (statSync(p).isDirectory()) out.push(...walk(p, base));
+    else out.push(relative(base, p));
+  }
+  return out;
+}
+
+describe("the vendor build — a frozen module tree", () => {
   const outdir = mkdtempSync(join(tmpdir(), "strut-kit-vendor-"));
   let built: VendorBuild;
+  let tree: string[];
   before(async () => {
     built = await buildVendor({ outdir });
+    tree = walk(join(outdir, "files")).map((f) => `files/${f}`);
   });
 
-  it("writes every bundle the import map names, and the map names every entry", () => {
+  it("names every entry in the import map, each a module of the tree or a stylesheet", () => {
     const map = readImportMap(outdir);
     for (const e of entries()) assert.ok(map[e.id], `import map lacks ${e.id}`);
     for (const [id, file] of Object.entries(map)) {
       assert.ok(existsSync(file), `${id} → ${file} missing`);
-      assert.ok(statSync(file).size > 0, `${id} → ${file} empty`);
       assert.ok(file.startsWith(outdir), `${id} resolves outside the vendor dir`);
+      const rel = relative(outdir, file);
+      assert.ok(rel.endsWith(".css") || built.modules[rel], `${id} → ${rel} is not in modules.json`);
     }
     for (const [alias, target] of Object.entries(ALIASES)) assert.equal(map[alias], map[target], `${alias} → ${target}`);
-    assert.ok(map["@/components/ui/button"]?.endsWith("/ui/button.js"));
-    assert.ok(map["@/lib/utils"]?.endsWith("/lib/utils.js"));
+    assert.equal(relative(outdir, map["@/components/ui/button"]!), "files/src/components/ui/button.mjs");
+    assert.equal(relative(outdir, map["@/lib/utils"]!), "files/src/lib/utils.mjs");
+    assert.equal(relative(outdir, map["react"]!), "files/_m/react/index.js");
     assert.ok(map["@xyflow/react/dist/style.css"]?.endsWith(".css"));
     assert.equal(built.warnings.length, 0, built.warnings.map((w) => w.text).join("\n"));
   });
 
-  it("every JS entry has NAMED exports — a CommonJS package through its facade", async () => {
-    const map = readImportMap(outdir);
-    const seen = new Set<string>();
-    for (const e of entries()) {
-      const file = map[e.id]!;
-      if (e.kind !== "js" || seen.has(file)) continue;
-      seen.add(file);
-      assert.match(readFileSync(file, "utf8"), /export\{/, `${e.id} (${file}) exports only a default — a CommonJS entry missing from CJS_ENTRIES?`);
+  it("records every module and every import: each link is a module of the tree, or null for one the browser field disables", () => {
+    const files = new Set(tree);
+    assert.deepEqual(Object.keys(built.modules).sort(), [...files].sort(), "modules.json lists the tree, file for file");
+    let links = 0;
+    for (const [file, m] of Object.entries(built.modules)) {
+      for (const [spec, to] of Object.entries(m.links)) {
+        links++;
+        if (to !== null) assert.ok(files.has(to), `${file}: ${spec} → ${to} is not in the tree`);
+      }
     }
-    const react = await import(pathToFileURL(map["react"]!).href);
-    assert.equal(typeof react.useState, "function", "react exports useState by name");
-    assert.equal(typeof react.default.useState, "function", "and as its default's key");
-    const jsx = await import(pathToFileURL(map["react/jsx-runtime"]!).href);
-    assert.equal(typeof jsx.jsx, "function");
-    const lodash = await import(pathToFileURL(map["lodash"]!).href);
-    assert.equal(typeof lodash.debounce, "function");
+    assert.ok(links > 5000, `${links} links`);
+    assert.ok(!tree.some((f) => f.split("/").includes("node_modules")), "no node_modules segment (npm never packs one)");
+    assert.ok(!tree.some((f) => /\.development\./.test(f)), "production modules only (react's dev build is never reached)");
   });
 
   it("holds one copy of every shared module", () => {
     for (const [what, needle] of Object.entries(SINGLETONS)) {
-      const where = Object.entries(built.metafile.outputs)
-        .filter(([, o]) => Object.keys(o.inputs).some((i) => i.endsWith(needle)))
-        .map(([f]) => f);
-      assert.equal(where.length, 1, `${what} (${needle}) is in ${where.length} outputs: ${where.join(", ")}`);
+      const where = tree.filter((f) => f.endsWith(needle));
+      assert.equal(where.length, 1, `${what} (${needle}) is in the tree ${where.length} times: ${where.join(", ")}`);
     }
+  });
+
+  it("keeps how each module is read: a CommonJS module as it is, a `type: module` package's .js as .mjs, the kit's TypeScript compiled", () => {
+    assert.deepEqual(built.modules["files/_m/react/index.js"]!.links, { "./cjs/react.production.js": "files/_m/react/cjs/react.production.js" });
+    assert.ok(tree.includes("files/_m/zod/v4/classic/schemas.mjs"), "zod is type: module");
+    assert.ok(tree.includes("files/_m/@xyflow/react/dist/esm/index.js"), "@xyflow/react is not");
+    const kit = readFileSync(join(outdir, "files/src/hooks.mjs"), "utf8");
+    assert.match(kit, /export\s*\{[^}]*useRuns/);
+    assert.doesNotMatch(kit, /:\s*StrutClient\b/, "no type annotations left");
+    assert.equal(built.modules["files/src/components/ui/button.mjs"]!.links["@/lib/utils"], "files/src/lib/utils.mjs", "the kit's own @/ resolved to the kit");
+  });
+
+  it("carries each package's sideEffects declaration, which esbuild does not read for a plugin's path", () => {
+    assert.equal(built.modules["files/_m/lucide-react/dist/esm/icons/alarm-clock.mjs"]?.pure, true, "lucide: sideEffects false");
+    assert.equal(built.modules["files/_m/zod/v4/classic/schemas.mjs"]?.pure, true, "zod: an array that names only compile");
+    assert.equal(built.modules["files/_m/@modelcontextprotocol/ext-apps/dist/src/app.mjs"]?.pure, undefined, "ext-apps declares nothing");
+    assert.equal(built.modules["files/src/hooks.mjs"]?.pure, true, "the kit: only its stylesheets have side effects");
   });
 
   it("records the versions it built from, which are package.json's exact pins", () => {
@@ -79,19 +106,6 @@ describe("the vendor build", () => {
     }
   });
 
-  it("bundles the kit itself: the hooks, the provider and the bootstrap", async () => {
-    const map = readImportMap(outdir);
-    const kit = await import(pathToFileURL(map["@strut/kit"]!).href);
-    for (const name of ["StrutProvider", "useRuns", "useRun", "useRunEvents", "useLaunch", "useCancel", "useWorkflow", "useStep", "useToolInput", "useHost", "createBridgeClient"]) {
-      assert.equal(typeof kit[name], "function", `@strut/kit exports ${name}`);
-    }
-    const boot = await import(pathToFileURL(map["@strut/kit/bootstrap"]!).href);
-    assert.equal(typeof boot.bootstrap, "function");
-    assert.equal(boot.TOKEN_META, "strut-app-token");
-    const button = await import(pathToFileURL(map["@/components/ui/button"]!).href);
-    assert.equal(typeof button.Button, "function");
-  });
-
   it("precomputes the components' Tailwind candidates, which the base stylesheet compiles", async () => {
     const candidates = readCandidates(outdir);
     for (const c of ["inline-flex", "bg-primary", "text-primary-foreground", "rounded-md", "bg-destructive/5", "data-[state=open]:bg-accent"]) {
@@ -101,7 +115,6 @@ describe("the vendor build", () => {
     const css = await compileStyles({ candidates: [], kitCandidates: candidates });
     assert.match(css, /\.inline-flex\s*\{/);
     assert.match(css, /\.bg-primary\s*\{/);
-    assert.ok(resolve(outdir, "candidates.json"));
   });
 
   it("cleans up", () => {
