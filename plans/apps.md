@@ -28,6 +28,14 @@
 >   grants onto the registry, and steps or workflows in the same package
 >   when it needs logic of its own. No server code of the app's own.
 >
+> A fourth, the same day: **an app's agent and LLM workflows are ROUTINES**
+> — a core piece of what an app is for, and never triggered by the UI on
+> its own (a render, a refetch, a poll). An app has three responsibilities:
+> rendering workflow output, calling tools, and AI-agent-powered UI. §5.1
+> says what each one is allowed to cost and what may trigger it; the rules
+> there (the workflow as the unit of spend, launch as a mutation only, the
+> dedupe key) are mine.
+>
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
 > is the tree hash shared with packages and the kit is out of it (§1.3);
@@ -128,6 +136,7 @@ decide, and why; each is open.
 | What a build refuses | **Any bare import outside the kit**, a relative import that leaves the directory, URL imports, `dangerouslySetInnerHTML`, `eval` and `new Function`. The errors are the build's result, step-lint's pattern |
 | Where an app's data comes from | **The registry, through one tool** (ruled: an endpoint is a tool is a workflow). `step_run` under the app's grants, served over MCP (app-only) and over HTTP (`…/call`), §5. Runs, launches, the graph, the app's SQLite, schedules and files are all STEPS — `run/*`, `graph/*`, `sqlite/*`, `automation/*`, `job/*` — the same steps a workflow or an agent calls, one implementation each. The app adds no tool of its own but `report_error` |
 | What an app may touch | **Its manifest's `grants`**: step types, plus a scope per family — which workflows (`run/*`), which graph types (`graph/*` writes), its own file (`sqlite/*`), which schedules (`automation/*`) — checked by strut on every call in every host. So an app can never rewrite a Concept or a `StrutWorkflow` node. Grants box model-written code acting as the viewer; they never raise the viewer, who already holds a full credential |
+| Routines — where the model runs | **Inside a run, never inside the page** (ruled: an app's agent and LLM workflows are routines, never triggered on their own). The workflow is the unit of spend: `step_run` from a model-written manifest refuses `llm`, `agent` and `exec`, so every model call an app causes is a run — logged, billed to the viewer, cancelable, verified. A routine is a granted workflow; launching one is a mutation the kit exposes only as a function, never as a query, and `run/launch { key }` returns an in-flight run instead of starting a second (§5.1) |
 | How a step knows it runs for an app | **`ctx.app`**, the twin of `ctx.job`: `{ name, version }` for a workspace app, `{ job, path }` for a job's, set by the app door for the call and never by a launch body. The `sqlite/*` steps open the app's file from it, the graph write scope reads the declared types from it, `automation/*` reads `grants.automations` from it, and a run the app launches records `app` on `run.start` as a job run records `job` — so a workflow working for the app finds the app's file the way a job's steps find the job's directory (§5) |
 | Sharing and forking | **A package kind** (ruled: forkable and flexible). `apps/<name>/` in a package (`marketplace.md` §1), the one item that is a directory. One representation everywhere: a job's live directory, a workspace version, a package member, a git repo and an `app/init` template are the same bytes. The fork is the normal path: an edit is a fork carrying `upstream`, an update fast-forwards an untouched app and merges a forked one per file, and the app is the wrapper around bought steps, so a forked UI leaves them fast-forwarding (§11) |
 | Who pays and who acts | **The viewer.** A launch from an app is billed to whoever clicked, and binds actor secrets to them, exactly as if they had pressed Run |
@@ -171,7 +180,10 @@ registry step — the same steps a workflow or an agent runs:
 
 An endpoint is a tool is a workflow, so the app's server side is no code of
 its own: a UI, grants onto the registry, and steps or workflows in the same
-package when it needs logic of its own.
+package when it needs logic of its own. The model is always inside a run,
+never inside the page: an app renders workflow output, calls cheap tools,
+and launches ROUTINES — its agent and LLM workflows — on a click, never on
+a render (§5.1).
 
 `ui/message` sends a message to the host's conversation: the builder chat
 in strut's UI, the job's conversation for a job's app in hive, Claude's own
@@ -204,8 +216,8 @@ description: Customers, visits and invoices for an HVAC business.
 icon: receipt                       # a lucide name
 entry: src/App.tsx                  # the default
 grants:
-  workflows: [invoice-from-photo, invoice-reminders]   # run/* on these: read runs, launch, cancel
-  steps: [graph/*, llm]             # any registry step (graph writes: declared types only)
+  workflows: [invoice-from-photo, invoice-reminders]   # the app's ROUTINES: run/* on these — read runs, launch, cancel
+  steps: [graph/*]                  # cheap, deterministic steps (graph writes: declared types only); never llm / agent / exec (§5.1)
   sqlite: true                      # sqlite/* on this app's own database (§4.4)
   automations: [invoice-reminders]  # automation/* on these workflows' schedules
 data:
@@ -435,7 +447,7 @@ supplies it. Every hook names a STEP TYPE:
 | Hook | Step (§5) |
 | --- | --- |
 | `useRuns(workflow, { status?, automation?, live? })`, `useRun(workflow, runId, { live? })`, `useRunEvents(workflow, runId)` | `run/list`, `run/get`, `run/events` |
-| `useLaunch(workflow)` → `{ launch(input, params?), pending }`, `useCancel()` | `run/launch`, `run/cancel` |
+| `useLaunch(workflow)` → `{ launch(input, params?, key?), pending }`, `useCancel()` — mutations: a function to call, never a query, so no hook launches on mount or on a poll (§5.1) | `run/launch`, `run/cancel` |
 | `useWorkflow(workflow)`: description, `input:` block, params defaults | `run/workflow` |
 | `useStep(type)` → `run(config, input)` | any granted step |
 | `useNodes(type, { where, orderBy, limit })`, `useNode(refId)`, `useNodesByRef(refs)`, `useCreateNode(type)`, `useUpdateNode()`, `useLink()`, `useUnlink()`, `useGraphSearch()` | `graph/find` (new, §4.3), `graph-get`, `graph-get-batched`, `create-node`, `edit-node`, `create-triplet`, `delete-edge`, `graph-search` |
@@ -482,6 +494,10 @@ Generic UI is shadcn's and the chart libraries'; the kit writes none of it.
 - **Strut's own Preact UI** can render kit components later through
   `preact/compat` (§12), so one `RunGraph` serves everywhere. v1 does not
   need it: strut's UI hosts apps, and each app brings its own React.
+- **`LaunchForm` is the routine's face** (§5.1): the workflow's `input:`
+  block as a form, a button, the in-flight run it dedupes onto, and the
+  last run's status. An app that only lists its routines and renders their
+  output is a complete app.
 
 ## 4. Data — runs, the graph, the app's own SQLite
 
@@ -625,12 +641,12 @@ trimmed for a model. A result over 5 MB is an error that names the cap.
 
 | Family | Steps | Grant, and the scope `ctx.app` carries |
 | --- | --- | --- |
-| Runs | **New: `run/*`**, lib steps, unsealed, thin over the layer the routes call. `run/list { workflow, limit?, status?, since?, automation?, job? }` (summaries newest first: status, timing, cost, actor, origin, automation, job, artifacts); `run/get { workflow, runId, wait? }` (the summary, the whole `input` and `output`, the resolved artifacts); `run/events { workflow, runId, skip? }` (the log, transcripts as links, as `GET …/events` serves, capped); `run/launch { workflow, input?, params?, job?, title? }` (`launchDetached`, like `POST …/run`: `run.start` and the summary get `origin: "app"` and `app`; the actor is the viewer and the principal follows the usual rule; a `params` override may narrow a grant but never widen it — `grantWidenedBy`, the `meta/run-workflow` rule; returns `{ runId }`); `run/cancel { workflow, runId }`; `run/workflow { workflow }` (the description, the active version, the `input:` block, the params defaults); `run/files { workflow, runId, path }` (one file, text or base64, capped — a page cannot fetch a URL, §9) | `grants.workflows`: the workflows these may read, launch and cancel. A job's app also its own job (§6): `run/list { job }`, `run/files { job, path }` |
+| Runs | **New: `run/*`**, lib steps, unsealed, thin over the layer the routes call. `run/list { workflow, limit?, status?, since?, automation?, job? }` (summaries newest first: status, timing, cost, actor, origin, automation, job, artifacts); `run/get { workflow, runId, wait? }` (the summary, the whole `input` and `output`, the resolved artifacts); `run/events { workflow, runId, skip? }` (the log, transcripts as links, as `GET …/events` serves, capped); `run/launch { workflow, input?, params?, job?, title?, key? }` (`launchDetached`, like `POST …/run`: `run.start` and the summary get `origin: "app"` and `app`; the actor is the viewer and the principal follows the usual rule; a `params` override may narrow a grant but never widen it — `grantWidenedBy`, the `meta/run-workflow` rule; returns `{ runId }`; with `key`, an in-flight run of the workflow launched under the same key is returned instead of a second launch, `{ runId, existing: true }`, §5.1); `run/cancel { workflow, runId }`; `run/workflow { workflow }` (the description, the active version, the `input:` block, the params defaults); `run/files { workflow, runId, path }` (one file, text or base64, capped — a page cannot fetch a URL, §9) | `grants.workflows`: the workflows these may read, launch and cancel. A job's app also its own job (§6): `run/list { job }`, `run/files { job, path }` |
 | The graph | `graph/*`, as they are, plus `graph/find` (§4.3) | `grants.steps` names them; a write is refused on a type the app does not declare |
 | The app's tables | `sqlite/*` (§4.4) | `grants.sqlite: true`; the file is `ctx.app`'s |
 | Schedules | `automation/*`, as they are (`list`, `preview`, `create`, `update`, `delete`, `run-now`). Today they are scoped to the ONE workflow the host names (`createStrut({ automation })`) and run its approval step first; under `ctx.app` the scope is `grants.automations` and the approval is the viewer's own click — the app acts as the viewer (§11, Proposals). One step family, two scopes (open question 9) | `grants.automations` |
 | The job | `job/get`, `job/read`, as they are | a job's app's own job, implicit (§6) |
-| Anything else | Any registry step the manifest names: `llm`, a package's own steps | `grants.steps`. Sealed steps, `exec` and `agent` only from a person (§9) |
+| Anything else | Any registry step the manifest names: a package's own deterministic steps | `grants.steps`. Never a paid or shell-shaped step from a model-written manifest: `llm`, `agent`, `exec` and sealed steps only from a person (§5.1, §9) |
 | Errors | `report_error { message, stack?, componentStack? }` — the one tool that is not a step; kept for the agent that wrote the app (§8) | always |
 
 **Why `meta/*` is not reused.** `meta/run-workflow` and `meta/get-run` are
@@ -646,6 +662,45 @@ starts, and an automation the app sets, carry it (the launch records `app`
 as it records `job`; the scheduler hands it on at each fire as it does
 `automation`), so the steps of a workflow working for the app find its
 file and its types the way a job's steps find the job's directory.
+
+### 5.1 Three responsibilities — reads, tools, routines
+
+**Ruled (2026-10-20):** an app's agent and LLM workflows are **routines**, a
+core part of what an app is for, and they must never be triggered by the
+UI on its own. An app does three things, and each has its own cost and its
+own trigger:
+
+| Responsibility | Steps | Cost, and what may trigger it |
+| --- | --- | --- |
+| **Rendering workflow output** | `run/get`, `run/events`, `run/files`, `run/list`; the kit's `RunGraph`, `RunTimeline`, `Transcript`, `ArtifactView` | Free reads. They refetch on their own (`live`, `wait`) |
+| **Calling tools** | `step_run` over `graph/*`, `sqlite/*`, `job/*`, a package's own deterministic steps | Cheap and synchronous, in the viewer's name. Fine on a render |
+| **AI-agent-powered UI** | `run/launch` of a routine, then the reads above. A chat box inside an app is a workflow with an `agent` step on `session: "{{ input.session }}"`, one run per turn — the orchestrator's shape, nothing new. `ui/message` reaches the host's conversation for "change this app" | A click, a run, the viewer pays. Never a render, a refetch or a poll |
+
+Three rules make the third row hold, and strut enforces them, not the
+model-written app:
+
+- **The workflow is the unit of spend.** `step_run` from a model-written
+  manifest — the builder's, a job agent's — refuses `llm`, `agent` and
+  `exec`, whatever `grants.steps` says (§9; a person's publish on the HTTP
+  door may still grant them, the `peer: true` precedent). So every model
+  call an app causes has a run behind it: a log, a cost on the summary, a
+  cancel, the viewer's delegation through the Mothership, the claims pass.
+  A one-step workflow around `llm` is the cheapest routine there is (§10).
+- **A routine is a granted workflow, and launching is a mutation.**
+  `grants.workflows` is the app's routine list; `run/workflow` gives each
+  one's description and `input:` block, which is what `LaunchForm`
+  renders. In the kit, `useLaunch` returns a function and nothing else, and
+  there is no query form of it — react-query's own split: queries refetch,
+  mutations fire only when called. Nothing can launch on mount or on a poll.
+- **Dedupe in flight.** `run/launch { key }` returns the in-flight run of
+  that workflow launched under the same key instead of starting another,
+  `{ runId, existing: true }` — a double click, a re-mounted component, a
+  retried request all land on one run. The same rule automations already
+  have: a fire is skipped while the previous run is live.
+
+The model is therefore always inside a run and never inside the page, which
+is what makes a routine safe to show as a button: strut knows what it costs
+and who clicked.
 
 ## 6. Jobs have apps
 
@@ -756,8 +811,8 @@ Job apps over MCP come later (§12).
   ever carries a credential, and the app runs in an opaque origin, never
   same-origin.
 - **The relay**, `web/src/app-host.ts`, is ext-apps' host bridge
-  (`AppBridge`), or the handful of messages by hand if that will not sit in
-  Preact:
+  (`AppBridge`, plain TypeScript with no framework in it, so it sits in
+  Preact as it is — nothing is hand-rolled):
   - `tools/call` → the app's `…/call` route;
   - `ui/message` → `sendChat` on the builder chat (a workspace app);
   - `ui/open-link` → the SPA's own navigation for a strut link;
@@ -823,8 +878,10 @@ bash, then a build that answers with errors.
   - §4.2's table;
   - the grant rules;
   - additive migrations;
-  - when to put work in a workflow instead (anything slow, paid or
-    shell-shaped: `useLaunch`, then `useRun` with `live`);
+  - routines (§5.1): a paid or shell-shaped step is never called from the
+    page — the grant is refused — so anything slow, paid or shell-shaped
+    is a workflow, launched on a click (`useLaunch` with a `key`, then
+    `useRun` with `live`), never on a render;
   - the four example shapes (§10).
 - **Client errors come back as results.** The kit's error boundary and
   `window.onerror` call `report_error`. Strut keeps the last 50 per app
@@ -866,10 +923,12 @@ person's authority over the tools its grants name.
 - **Graph writes are limited to the app's declared types** (§4.3). SQL
   reaches only the app's own file (§4.4).
 - **The meta surface may not grant** a sealed workflow or a sealed step
-  (the meta gate's rule, `authoring.ts`), nor `exec` or `agent` in
-  `grants.steps`. This covers the builder and a job's agent alike. A
-  person's publish on the HTTP door may grant anything; that is the
-  `peer: true` precedent, where a person vouches.
+  (the meta gate's rule, `authoring.ts`), nor `llm`, `exec` or `agent` in
+  `grants.steps` — the workflow is the unit of spend (§5.1). This covers
+  the builder and a job's agent alike, and `step_run` refuses the call even
+  if the manifest says otherwise. A person's publish on the HTTP door may
+  grant anything; that is the `peer: true` precedent, where a person
+  vouches.
 - **The build refuses the obvious holes** (§2.1). Any remaining XSS inside
   an app reaches only its own grants.
 - **Billing and secrets follow the viewer.** A launch or a step from an app
@@ -889,7 +948,7 @@ person's authority over the tools its grants name.
 | **Benchmark hill-climb** | `openhealth-list-tasks` (the catalogue), `openhealth-run` and `openhealth-improve-loop` (launch, cancel, live), `openhealth-improve` | Reads only: the Concepts an improve step wrote | A person's notes on a run | `RunList`, `LaunchForm`, `RunGraph`, `RunTimeline`, recharts (score over time against the target line), tabs, react-router |
 | **HVAC invoice tracker** | `invoice-from-photo`, where an `agent` with vision reads a photo; until uploads exist (§12) a pasted image goes in `input`, and the run returns the invoice and the app writes it. An automation on `invoice-reminders`, whose agent finds overdue invoices with `graph/find` and drafts the emails | `Customer`, `Visit`, `Invoice` plus the edges. "Mark the Henderson invoice paid" works from any agent, and `graph-search` finds "the furnace job on Elm St" | Line items, and last year's invoices imported from CSV | tanstack table, react-hook-form + zod, papaparse, react-leaflet (the day's visits), `NodeGraph` (a customer's history), sonner |
 | **Fact library** | `fact-ingest`: a URL goes to an agent, which writes `Fact` and `Source` nodes and their edges with `graph/*` | `Fact`, `Source`, `Topic`. Semantic search comes free (`search: [...]` fields) | Reading lists and saved searches | `NodeSearch`, `NodeCard`, `NodeGraph` (React Flow over a topic), fuse.js, react-markdown |
-| **Virality tracker** | `tweet-poll` (`http` plus an `X_BEARER_TOKEN` secret, which the builder's `request_secret` asks for). "Track this tweet" creates an automation on it with `input: { tweetId }`, and `llm` runs as a step for "why did this take off?" | none | none. **The automations are its state** (one per tracked tweet), and each poll's output is a data point: `run/list { automation }` is the series | recharts, motion, simple-statistics (the growth rate), `useAutomations` |
+| **Virality tracker** | `tweet-poll` (`http` plus an `X_BEARER_TOKEN` secret, which the builder's `request_secret` asks for). "Track this tweet" creates an automation on it with `input: { tweetId }`. "Why did this take off?" is a routine, `explain-tweet`: a one-step workflow around `llm`, launched by the button and never by the chart (§5.1) | none | none. **The automations are its state** (one per tracked tweet), and each poll's output is a data point: `run/list { automation }` is the series | recharts, motion, simple-statistics (the growth rate), `useAutomations`, `useLaunch` |
 
 Every row is built from what strut has, plus `graph/find`, declared graph
 types and the app's SQLite file.
@@ -1039,9 +1098,11 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - **The backend.** `step_run` refuses a step outside the grants, a
     `run/*` call on an ungranted workflow, a graph write on an undeclared
     type, and a `sqlite/*` call naming a file while `ctx.app` is set. A
-    `params` widening is refused. A sealed grant is refused from the
-    builder and from a job's agent, and accepted from a person. A workflow
-    launched through `run/launch` finds the app's file from `ctx.app`.
+    `params` widening is refused. A sealed grant, and `llm`, `agent` or
+    `exec` in `grants.steps`, are refused from the builder and from a job's
+    agent, and accepted from a person. `run/launch { key }` returns the
+    in-flight run with that key and launches nothing. A workflow launched
+    through `run/launch` finds the app's file from `ctx.app`.
   - **The graph.** A write on an undeclared type is refused, including an
     edit by `ref_id` of a Concept. `graph/find` filters, sorts and pages on
     both engines. A conflicting declaration is refused. Declared types
