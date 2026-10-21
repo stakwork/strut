@@ -53,6 +53,14 @@ export function idProblem(id: unknown): string | null {
  *  files and holds, or a local thread (the job agent's is its job id). */
 export const PEER_NAMESPACE = "peer/";
 
+/** `id` in the peer namespace — left as it is when it already is there: a
+ *  peer run's `$job` arrives namespaced (`peer/<job>`), so a thread named
+ *  after the job — the builder's and the job agent's — is `peer/<job>`,
+ *  never `peer/peer/<job>`. */
+export function peerScoped(id: string): string {
+  return id.startsWith(PEER_NAMESPACE) ? id : `${PEER_NAMESPACE}${id}`;
+}
+
 /** The one directory (or file stem) an id is stored under: flat, so
  *  `abc/review` is a sibling of `abc`, never its child. */
 export function encodeId(id: string): string {

@@ -64,8 +64,10 @@ export interface JobTurn {
   /** Threads this turn caused: sub-agents under its path, child runs it
    *  launched, peer runs — chronological. */
   spawned: JobThread[];
-  /** A `strut/run-workflow` execution: the peer's run, drillable nowhere here. */
-  peer?: { id: string; workflow: string; runId: string; status: string };
+  /** A `strut/run-workflow` execution: the peer's run, drillable nowhere
+   *  here. `session` is the thread it was a turn of THERE, when its output
+   *  says (a builder job's turns on a peer are one thread). */
+  peer?: { id: string; workflow: string; runId: string; status: string; session?: string };
 }
 
 export interface JobTotals {
@@ -235,6 +237,9 @@ export function foldJobThreads(runs: ThreadRun[], turnLines: SessionTurn[] = [],
     const execPaths: string[] = [];
     const peerPaths: string[] = [];
     for (const [path, p] of paths) {
+      // Never ran: a step the gate skipped (`step.skipped` alone) — the
+      // local agent of a turn that ran on a peer.
+      if (!p.start && !p.last) continue;
       const t = baseType(p.stepType);
       if (p.messages || t === MODEL_STEP) execPaths.push(path);
       else if (t === PEER_STEP && p.last?.type === "step.end" && isRecord(p.last.output) && typeof p.last.output["runId"] === "string") peerPaths.push(path);
@@ -289,12 +294,22 @@ export function foldJobThreads(runs: ThreadRun[], turnLines: SessionTurn[] = [],
       const out = p.last!.output as Record<string, unknown>;
       const peer = String(out["peer"] ?? "");
       const inner = isRecord(out["output"]) ? out["output"] : undefined;
+      // The peer's thread, when its output says (a job's reply shape does).
+      const far = isRecord(inner?.["session"]) ? inner!["session"] : undefined;
+      const farSession = typeof far?.["id"] === "string" && far["id"] ? far["id"] : undefined;
       const t = mk(path, p);
       turns.set(path, {
         ...t,
         label: `@${peer} ${String(out["workflow"] ?? "")}`.trim(),
         ...(typeof inner?.["cost"] === "number" ? { cost: inner["cost"] } : {}),
-        peer: { id: peer, workflow: String(out["workflow"] ?? ""), runId: String(out["runId"]), status: String(out["status"] ?? "") },
+        ...(farSession && typeof far?.["turn"] === "number" ? { turn: far["turn"] } : {}),
+        peer: {
+          id: peer,
+          workflow: String(out["workflow"] ?? ""),
+          runId: String(out["runId"]),
+          status: String(out["status"] ?? ""),
+          ...(farSession ? { session: farSession } : {}),
+        },
       });
       const parent = nearestExec(path);
       if (parent) parentOf.set(path, parent);
@@ -329,7 +344,9 @@ export function foldJobThreads(runs: ThreadRun[], turnLines: SessionTurn[] = [],
   const threadOf = new Map<JobTurn, JobThread>();
   for (const f of folds.values()) {
     for (const t of f.turns.values()) {
-      const id = t.session ?? `${t.runId}/${t.path}`;
+      // A peer turn joins the peer's thread (`@<peer>/<session>`): a build
+      // on another strut is one thread there, whatever runs it took here.
+      const id = t.session ?? (t.peer?.session ? `@${t.peer.id}/${t.peer.session}` : `${t.runId}/${t.path}`);
       let th = threads.get(id);
       if (!th) {
         threads.set(id, (th = { id, session: !!t.session, label: t.label, startedAt: t.at, updatedAt: t.at, turns: [], totals: totalsOf([]) }));

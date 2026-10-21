@@ -40,6 +40,17 @@
 > namespace rule of its own), `resolveArtifactRefs` leaves a tagged ref as
 > it came, the job fold and the UI's deliverable cards show it as foreign;
 > `specs/CALLBACKS.md` §4 is the host's contract.
+>
+> **Work item 5 VALIDATED 2026-10-21** (`feature/builder-job-live-validation`):
+> two struts from this checkout, a real model, every row of §9 — the
+> orchestrator routing a build to `@second` (and, with no `@`, here), `#launch`,
+> peer-tagged nodes and deliverables, `job/continue` on the peer's thread,
+> kill-and-resume reattaching, cancel forwarded, `peer: false` refusing.
+> Three strut bugs found and fixed on the branch (a peer's job thread was
+> `peer/peer/<job>`; the job view split a peer build into phantom threads;
+> a reverted host delta was never re-applied, so seeds now always match
+> git, as ruled that day); four observations written up in §9. About $1.53
+> of model spend.
 
 ## Problem
 
@@ -559,6 +570,9 @@ Strut, in order; each a PR of its own, never stacked.
    `run.end` callback and `GET …/artifacts` carry it; `specs/CALLBACKS.md`
    §4 documents `peer` on a ref. Tests over both. **BUILT 2026-10-21.**
 5. **Live over two struts** (§9) before the mcp bump that carries 1–4.
+   **VALIDATED 2026-10-21** — §9 "What the run showed" has the run, what
+   matched, the three fixes (`peerScoped`, the job-threads fold, seeds
+   that always match git) and what is left open.
 
 Hive, as the contract it reads (§5): delegations on every org swarm; a
 `run.end` with `job` adopted whatever its workflow; a peer-tagged artifact
@@ -587,6 +601,156 @@ resolved by slug.
   new workflow with `publisher: ai`.
 - `npm test`: the seed tests, the prompt fixture, the `job/start` enum,
   the artifact tagging; the route sweep unchanged (no new route).
+
+### What the run showed (2026-10-21)
+
+**Setup.** Two `node build/server.js` processes of this checkout (strut
+`main` @e47a098, then the branch's two fixes), not the compose image
+twice: the same code without a Docker build. A on :3201 held B as peer
+`second` through `STRUT_PEERS`; B on :3202 had `STRUT_PEER_KEY`. Each had
+its own data dir and `STRUT_API_KEY`, ran on the Ladybug backend
+(`STRUT_GRAPH_EMBEDDINGS=off`) with the Anthropic key in env, and had no
+Mothership. B's `Workflow Builder` page was seeded at boot, and a
+`Greeting Workflow` kind was added under it (`graph/create-triplet`; the
+convention: name `greet-<audience>`, one `log` step `say`, a `greeting`
+knob, category `demo`). A had no such kind. A listener on :3299 took the
+callbacks.
+
+**What matched.**
+
+- **Routing.** `POST /workflows/orchestrator/run` on A with "On @second,
+  build me a small workflow that greets a person by name…" made one tool
+  call, `job_start { workflow: builder, peer: second, title }` (6 s, $0.05).
+  The same ask without `@second`, in a new conversation, made
+  `job_start { workflow: builder }` with no `peer`.
+- **A's builder run.** `remote` journaled `builder/remote#launch` (`{ peer,
+  workflow, runId, launchedAt }`) before it waited. Its `step.end` carried
+  `nodes` tagged `peer: "second"`: B's `Workflow Builder` and `Greeting
+  Workflow` pages. The builder opened the kind's page, followed it, and said
+  so in its reply.
+- **B.** `run.start` recorded `job: peer/<id>`, `origin: peer`, and
+  `actor` / `principal` set to the forwarded `x-strut-actor`. B held a job
+  `peer/<id>` with `workflow: builder` and both its runs: the builder's,
+  and the `greet-person` test run it launched. `greet-person` v1 was
+  stamped `publisher: ai` in category `demo`, with a claim the builder
+  added and verified `supported`. A peer launch of `job` was 403 (`not
+  open to peers`).
+- **A's `run.end` callback.** It carried `workflow: "builder"`, the `job`
+  and `output.peer: "second"`. Turn 2 also carried `artifacts: [{ id:
+  readme, kind: markdown, path: README.md, peer: second, job: peer/<id> }]`
+  (the builder wrote the file with the editor). `GET
+  …/runs/:runId/artifacts` and `GET /jobs/<id>`'s fold carried the same
+  entry. On B the file reads at `/jobs/peer%2F<id>/files/README.md` with
+  B's key and with its peer key: the path hive#5583 resolves.
+- **`GET /jobs/<id>` on A.** `workflow: builder`, both runs `builder`.
+- **Turn 2, through the orchestrator** in the same conversation session.
+  The call was `job_continue { job, prompt }`, naming only the job. A's
+  launch carried `input.peer: second` from the record. B's builder went on
+  in the same thread: it edited, by id, the check it had made in turn 1.
+- **Kill.** A was SIGKILLed while B's builder was three tool calls in. At
+  A's next boot: `[auto-resume] builder/<run>: resumed — replaying 4
+  journaled step(s)`. `remote` ran again without a second `#launch` and
+  reattached. B had ONE builder run for the job, and the callback posted
+  once, after the resume. Ladybug rebuilt its full-text index at that boot,
+  as designed.
+- **Cancel.** `POST …/cancel` on A mid-build. B's run logged
+  `run.cancelling` in the same second and `run.cancelled` 2 s later; A's
+  run and its callback both said `cancelled`.
+- **`peer: false`.** B was restarted with
+  `STRUT_HOST_CONFIG={"builder":{"peer":false}}`. A's `remote` failed with
+  `peer "second" refused POST /workflows/builder/run (403): forbidden:
+  workflow "builder" is not open to peers…`, and nothing was published or
+  recorded on B.
+- **Local.** With no `peer`, the build ran on A. The job's directory was
+  empty beside its record, the session was the plain job id, and
+  `greet-person` was stamped `ai`, with no category: A has no greeting kind.
+
+**Fixed on the branch** (each its own commit, with its test):
+
+1. **B's thread was `peer/peer/<id>`**, not the `peer/<id>` §1 names.
+   `peerLaunchBody` namespaces the job, then `bindPeer` prefixed every
+   session id again, and the builder's session IS `$job`. `peerScoped()`
+   (`src/session-store.ts`) leaves an id already under `peer/` as it is;
+   the runner and the projector both use it. No deployed strut has a peer
+   builder job yet (stakgraph#1805 is still open), so no thread is orphaned.
+2. **A's job view split a peer build into phantom threads.** Each turn
+   showed the skipped local `build` agent as a turn of status `error`, and
+   each turn's `remote` as a thread of its own, so one conversation on B
+   read as two one-turn threads beside two failures. A path with only
+   `step.skipped` is no turn now (`src/job-threads.ts`). A peer turn joins
+   the thread of the session its output names (`@second/peer/<id>`) and is
+   numbered by that session's turn.
+
+   After both fixes, a re-run gave B the thread `peer/fixcheck-1` with 2
+   turns, and A one thread `@second/peer/fixcheck-1` with turns 0 and 1.
+3. **A reverted delta was never applied (every seed).** After the `peer:
+   false` boot, B was restarted with its normal config and seeded
+   nothing: v1's content was known, and every seeder passed
+   `reactivateKnown: false`, which leaves the active version alone. So v2
+   (`peer: false`) stayed active, and the peer launch stayed 403 until
+   `PUT /workflows/builder/active { version: v1 }`. Ruled 2026-10-21: **a
+   seed always matches git.** Every boot now makes the committed template
+   (with the host's delta) the active version: `job`, `orchestrator`,
+   `builder`, the browser workflows, the system workflows (`tidy-memory`;
+   its automation's on/off and trigger stay the person's) and the
+   `strut/views` app. A text seen before is made active again, nothing new
+   is published, and an edit made since (the UI, the chat builder, a
+   promotion) stays in the history, active until the next boot. The store
+   keeps `reactivateKnown: false` for callers that want an edit kept. The
+   Concept pages strut seeds follow the same rule (ruled the same day): a
+   page's description or docs edited in the graph is put back to the
+   file's text at the next boot. A page a person made under the same name,
+   or took over by clearing its stamp, is still theirs.
+
+**Found, not fixed.**
+
+- **"No bash" is not a boundary in practice.** All six builds that
+  published wrote their claim's check as an `exec` running `sh -c`,
+  `bash` or `node -e`. One build also published an `exec` step (`tr a-z
+  A-Z`) after the expression language refused `toUpperCase()`. §4 already
+  says authoring is code execution. The run adds that this takes no step
+  authoring and that no lint applies: a check's config or a workflow's YAML
+  is enough. This is evidence for §10 question 1.
+- **The prompt does not say strings have no methods.** The dialect text
+  lists the array whitelist only. One build spent three failing test runs
+  on `toUpperCase()`, and another gave up on counting words. One line in
+  `src/ai/prompts.ts` would cover it.
+- **A peer build's spend is not on the org strut's summary.** A's builder
+  run has no `totals`; the peer's cost is only in `output.cost` (§10
+  question 5). Separately, and not the builder's alone: a CANCELLED agent
+  step reports no usage. B's cancelled turn made two model calls and its
+  summary shows none.
+- **`concepts` reads the org strut's page on the remote branch too.** The
+  text is unused, and A's `Workflow Builder` is recorded as touched by a
+  run that built elsewhere. Moving the step under `here` would avoid that;
+  job.yaml's order was kept on purpose, so it is left as is.
+
+**Cost.** About $1.53 of Anthropic spend (claude-sonnet-5-5): seven
+builder turns on B, $1.08; the local build on A, $0.32; three orchestrator
+turns, $0.08; and the cancelled turn, which recorded nothing (about $0.05
+by its two calls). A peer build turn took about 20 s end to end.
+
+**Not covered.** mcp's `/lab` host (the `lab:peer` JWT through
+`resolveScope`, the `/lab` base URL), the Mothership (no delegation for
+the forwarded person on the target: §5 item 1's first-use window), hive
+(hive#5583's webhook and peer-artifact reader), the Neo4j backend and the
+compose image.
+
+**stakgraph#1805.** As far as strut goes, it is safe to merge for
+cross-strut building. Every row above held on code that contains its pin
+(d7d3670): the first turns ran before any fix. The first two only rename
+a thread and tidy a view. One caution there: the first fix renames the
+peer's thread, so if a peer build could start between #1805 and a bump
+past this branch, that job's next turn after the bump begins a cold
+thread on the peer (its files are kept). Re-pinning #1805 to this
+branch's merge before it ships avoids that. The third changes what a
+boot does: on the first boot past this branch, a strut-seeded workflow
+someone edited on a swarm (`job`, `orchestrator`, `builder`, the browser
+and system workflows) goes back to git's version, the edit kept in its
+history. The lab's own seeders (`SEED_OPTS` in
+`stakgraph/mcp/src/lab/seed-opts.ts`) still pass `reactivateKnown: false`
+and keep edits until mcp makes the same change. The lab-specific doors
+above are #1805's own to test.
 
 ## 10. Open questions (OPEN)
 

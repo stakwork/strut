@@ -321,8 +321,9 @@ export interface StrutOptions<TServices = unknown> {
   /** The Concept pages strut ships (src/concepts/; `src/concept-seed.ts`):
    *  `Workflow Builder`, which the builder's prompt reads, and `Job`, which
    *  the job workflow puts in its agent's prompt — seeded at boot on a graph, each
-   *  reconciled by its source stamp, so an edit made in the graph stays
-   *  until strut's file changes. A host seeds its own pages under them with
+   *  reconciled by its source stamp, and like every seed it always matches
+   *  git: each boot puts the file's text back over an edit made in the
+   *  graph. A host seeds its own pages under them with
    *  `seedConcepts` once this returned. `false` seeds nothing. */
   concepts?: false;
   /** The `orchestrator` workflow strut ships (`src/orchestrator-seed.ts`):

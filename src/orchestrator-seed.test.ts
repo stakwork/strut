@@ -86,7 +86,7 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(paramsOf(await orchestratorWorkflowYaml()).model, paramsOf(await orchestratorWorkflowYaml({ tools: [] })).model);
   });
 
-  it("createStrut seeds it by content hash beside job: once, as a seed; a reboot is a no-op; a changed delta publishes; `orchestrator: false` seeds nothing", async () => {
+  it("createStrut seeds it by content hash beside job: once, as a seed; a reboot is a no-op; a changed delta publishes, and taking it back out makes the first version active again; `orchestrator: false` seeds nothing", async () => {
     const dir = await mkdtemp(join(tmpdir(), "orch-seed-"));
     const fresh = await mkdtemp(join(tmpdir(), "orch-seed-off-"));
     try {
@@ -110,6 +110,11 @@ describe("the orchestrator workflow strut ships", () => {
       assert.deepEqual(await versions(), [["v1", "seed"], ["v2", "seed"]]);
       assert.equal((await ws().getWorkflowMetadata(ORCHESTRATOR_WORKFLOW))!.active, "v2");
       assert.equal(paramsOf(await ws().getWorkflowSource(ORCHESTRATOR_WORKFLOW, "v2")).tools.at(-1), "sphinx/*");
+
+      // Taken back out: v1 is active again, nothing new published.
+      await createStrut({ workspace: ws(), ...quiet() });
+      assert.deepEqual(await versions(), [["v1", "seed"], ["v2", "seed"]]);
+      assert.equal((await ws().getWorkflowMetadata(ORCHESTRATOR_WORKFLOW))!.active, "v1");
 
       const off = await createStrut({ workspace: new WorkspaceManager(fresh), ...quiet(), orchestrator: false });
       const names = ((await (await off.app.request("/workflows")).json()) as Array<{ name: string }>).map((w) => w.name);

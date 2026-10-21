@@ -21,12 +21,16 @@ import { composeNodeKey } from "./graph/node-writer.js";
  * once `createStrut` returned, so a page of its own can hang under one of
  * strut's.
  *
- * Reconciled like the workflow seeders, on the node instead of a version:
- * every seeded Concept carries `unique_source_id =
- * <prefix><file>@<sha256[0..12]>` of the file it came from.
+ * Reconciled like the workflow seeders, on the node instead of a version,
+ * and like them a seed always matches git: every seeded Concept carries
+ * `unique_source_id = <prefix><file>@<sha256[0..12]>` of the file it came
+ * from.
  *   - no node under that name → create;
- *   - the same stamp, node live → keep: nothing written, so an edit made in
- *     the graph stays until the committed file changes;
+ *   - the same stamp, node live, its text the file's → keep: nothing
+ *     written;
+ *   - the same stamp, its text edited in the graph → upsert description +
+ *     docs: every boot puts the file's text back (a field the file does not
+ *     set is not the seed's, and is left as it is);
  *   - our path, node DELETED → upsert, which restores it: a Concept the
  *     files ship is in the graph, whoever deleted it there. To be rid of one
  *     for good, retire the file, or take the node over (clear its stamp);
@@ -88,6 +92,9 @@ export interface ExistingConcept {
   unique_source_id?: unknown;
   /** `deleted_at` set or `is_deleted` true. */
   deleted?: boolean;
+  /** The node's text, as the graph holds it now. */
+  description?: unknown;
+  docs?: unknown;
 }
 
 /** One seeded file: what was done, and the node (absent when it failed). */
@@ -135,15 +142,23 @@ export function parseConceptFile(file: string, text: string, prefix: string): Co
 }
 
 /** Pure: the reconcile rule in the module comment. `legacy` are the file's
- *  earlier paths, `<prefix><file>@`. */
-export function planConceptSeed(existing: ExistingConcept | null, stamp: string, legacy: readonly string[] = []): SeedAction {
+ *  earlier paths, `<prefix><file>@`; `file` is the file's text — when given,
+ *  a page of ours whose text was edited in the graph is put back. */
+export function planConceptSeed(
+  existing: ExistingConcept | null,
+  stamp: string,
+  legacy: readonly string[] = [],
+  file?: Pick<ConceptFile, "description" | "docs">,
+): SeedAction {
   if (!existing) return "create";
   const usid = typeof existing.unique_source_id === "string" ? existing.unique_source_id : undefined;
   const at = stamp.lastIndexOf("@") + 1;
   const ours = usid !== undefined && [stamp.slice(0, at), ...legacy].some((path) => usid.startsWith(path));
   if (existing.deleted) return ours ? "update" : "skip"; // an upsert restores a deleted node
   if (!ours) return "skip";
-  return usid!.slice(usid!.lastIndexOf("@") + 1) === stamp.slice(at) ? "keep" : "update";
+  if (usid!.slice(usid!.lastIndexOf("@") + 1) !== stamp.slice(at)) return "update";
+  const edited = (field: "description" | "docs") => file?.[field] !== undefined && existing[field] !== file[field];
+  return edited("description") || edited("docs") ? "update" : "keep";
 }
 
 const pathsOf = (set: ConceptSet, file: string): string[] => [set.prefix, ...(set.legacyPrefixes ?? [])].map((p) => `${p}${file}@`);
@@ -177,7 +192,7 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
         name = c.name;
         parsed.push(c);
         const existing = await findConcept(graph, schema, c.name);
-        const action = planConceptSeed(existing, c.stamp, pathsOf(set, file).slice(1));
+        const action = planConceptSeed(existing, c.stamp, pathsOf(set, file).slice(1), c);
         if (action === "keep" || action === "skip") {
           if (!existing!.deleted) refs.set(c.name, existing!.ref_id); // a deleted node is nobody's parent
           if (action === "keep") owned.set(c.name, existing!.ref_id);
@@ -264,6 +279,12 @@ async function findConcept(graph: GraphBackend, schema: NodeSchema, name: string
     const raw = ref ? await graph.nodeEngine.readRaw(tx, ref) : null;
     if (!raw) return null;
     const p = raw.props;
-    return { ref_id: raw.ref_id, unique_source_id: p["unique_source_id"], deleted: p["deleted_at"] != null || p["is_deleted"] === true };
+    return {
+      ref_id: raw.ref_id,
+      unique_source_id: p["unique_source_id"],
+      deleted: p["deleted_at"] != null || p["is_deleted"] === true,
+      description: p["description"],
+      docs: p["docs"],
+    };
   });
 }

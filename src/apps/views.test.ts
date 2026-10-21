@@ -98,7 +98,7 @@ describe("strut/views — seeded at boot, imported by apps", () => {
     for (const d of dirs) await rm(d, { recursive: true, force: true });
   });
 
-  it("publishes strut/views on a clean workspace — its gallery built to a document — and is a no-op on reboot; `views: false` seeds nothing", async () => {
+  it("publishes strut/views on a clean workspace — its gallery built to a document — is a no-op on reboot and puts its version back over another; `views: false` seeds nothing", async () => {
     const dataDir = await tmp("strut-views-seed-");
     const first = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit });
     const app = await first.apps.get(VIEWS_APP);
@@ -116,6 +116,13 @@ describe("strut/views — seeded at boot, imported by apps", () => {
     assert.equal(rec?.version, "v1");
     assert.deepEqual(Object.keys(rec?.versions ?? {}), ["v1"], "no second version");
     assert.deepEqual(await seedViewsApp({ workspace: again.workspace, kit }), { version: "v1", changed: false });
+
+    // A seed always matches git: another version made active (a person's
+    // publish) lasts until the seed runs again, which puts v1 back.
+    await again.workspace.publishApp(VIEWS_APP, "another-tree", app.manifest, { source: "ui" });
+    assert.equal((await again.workspace.getApp(VIEWS_APP))?.version, "v2");
+    assert.deepEqual(await seedViewsApp({ workspace: again.workspace, kit }), { version: "v1", changed: true });
+    assert.equal((await again.workspace.getApp(VIEWS_APP))?.version, "v1");
 
     const off = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(await tmp("strut-views-off-")), store: new MemoryRunStore(), kit, views: false });
     assert.equal(await off.apps.get(VIEWS_APP), null);

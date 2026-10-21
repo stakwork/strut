@@ -67,15 +67,20 @@ describe("system workflows", () => {
     assert.deepEqual(meta.automations, [mine]);
   });
 
-  it("a version edited in strut stays active; the new shipped one is published beside it", async () => {
+  it("a seed always matches git: over a version edited in strut, the shipped one is active again, new or known; the edit stays in the history", async () => {
     await installSystemWorkflow(ws, "sys", yamlV(1), automationJson);
     await ws.publishWorkflow("sys", "v1", yamlV(99), undefined, undefined, undefined, { source: "ui" });
 
     const r = await installSystemWorkflow(ws, "sys", yamlV(2), automationJson);
-    assert.equal(r.action, "published");
+    assert.equal(r.action, "updated");
     const meta = (await ws.getWorkflowMetadata("sys"))!;
-    assert.equal(meta.active, "v1");
-    assert.ok(meta.versions[shippedVersionLabel(yamlV(2))], "offered as a version to restore");
+    assert.equal(meta.active, shippedVersionLabel(yamlV(2)));
+    assert.ok(meta.versions["v1"], "the edit is kept");
+
+    await ws.setActiveVersion("sys", "v1");
+    const again = await installSystemWorkflow(ws, "sys", yamlV(2), automationJson);
+    assert.equal(again.action, "updated");
+    assert.equal((await ws.getWorkflowMetadata("sys"))!.active, shippedVersionLabel(yamlV(2)), "a known shipped version is made active again");
   });
 
   it("an automation still carrying a former shipped name takes the new one; a name the user chose is left alone", async () => {

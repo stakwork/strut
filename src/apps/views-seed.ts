@@ -3,9 +3,9 @@
  * apps import — seeded into the workspace when `createStrut` boots, by TREE
  * HASH the way `job.yaml` is seeded by content hash (src/job-seed.ts): a
  * changed `src/apps/views/` publishes the next version and activates it; a
- * known one does nothing (`reactivateKnown: false`), so a version a person
- * made active stays active across boots. `createStrut({ views: false })`
- * seeds nothing, and nothing in strut's core depends on it.
+ * known one is made active again — a seed always matches git, so a version
+ * a person made active lasts until the next boot. `createStrut({ views:
+ * false })` seeds nothing, and nothing in strut's core depends on it.
  *
  * A publish builds, and an app build is esbuild + Tailwind over the kit — a
  * second or so — while strut boots in every test. So the BUILD is done once
@@ -95,7 +95,9 @@ export async function seedViewsApp(opts: ViewsSeedOptions): Promise<{ version: s
   const rec = await workspace.getApp(VIEWS_APP).catch(() => null);
   const known = rec ? Object.entries(rec.versions).find(([, v]) => v.hash === hash)?.[0] : undefined;
   if (known && (await exists(join((await workspace.materializeAppVersion(VIEWS_APP, known)).path, "dist", "index.html")))) {
-    return { version: known, changed: false };
+    if (rec!.active === known) return { version: known, changed: false };
+    await workspace.setActiveAppVersion(VIEWS_APP, known);
+    return { version: known, changed: true };
   }
   let kit: Kit;
   try {
@@ -104,7 +106,7 @@ export async function seedViewsApp(opts: ViewsSeedOptions): Promise<{ version: s
     return null;
   }
   const built = await builtCopy(src, hash, kit, opts.cacheDir ?? join(tmpdir(), "strut-views"));
-  const r = await workspace.publishApp(VIEWS_APP, hash, built.manifest, { publisher: "strut", source: "seed", reactivateKnown: false });
+  const r = await workspace.publishApp(VIEWS_APP, hash, built.manifest, { publisher: "strut", source: "seed" });
   const { path } = await workspace.materializeAppVersion(VIEWS_APP, r.version);
   if (!(await exists(join(path, "dist", "index.html")))) await copyAppDir(built.dir, path, { dist: true });
   return r;

@@ -7,9 +7,9 @@ import type { WorkspaceStore } from "../workspace.js";
  * browser/capture call) and an explored one (`browser-explore`: an agent
  * whose tools are the browser/* steps), a scheduled reader
  * (`browser-watch`), and a captcha a person solves (`browser-captcha`). Seeded at boot by `createStrut` the way `job` is
- * (src/job-seed.ts): content-hash publish, `reactivateKnown: false`, so a
- * changed committed copy publishes and activates the next version and an
- * unchanged one leaves a workspace-side edit active. ONE seeder per name.
+ * (src/job-seed.ts): content-hash publish, so every boot makes the
+ * committed copy the active version — a workspace-side edit lasts until the
+ * next boot. ONE seeder per name.
  */
 export const BROWSER_CATEGORY = "browser";
 
@@ -33,7 +33,7 @@ export async function seedBrowserWorkflows(workspace: WorkspaceStore): Promise<A
   for (const [name, description] of Object.entries(BROWSER_WORKFLOWS)) {
     try {
       const text = await readFile(new URL(`../workflows/${name}.yaml`, import.meta.url), "utf-8");
-      const r = await workspace.publishWorkflowByContent(name, text, description, BROWSER_CATEGORY, undefined, { reactivateKnown: false, source: "seed" });
+      const r = await workspace.publishWorkflowByContent(name, text, description, BROWSER_CATEGORY, undefined, { source: "seed" });
       out.push({ name, ...r });
     } catch (err) {
       console.warn(`[browser] could not seed workflow "${name}":`, err instanceof Error ? err.message : err);

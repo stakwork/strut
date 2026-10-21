@@ -144,10 +144,14 @@ describe("projectRunEvents (pure)", () => {
         ev(2, "step.end", `${WF}/ask`, { stepType: "agent", output: { result: "ok", session: { id: "peer/s1", turn: 0, offset: 0 } } }),
         ev(3, "step.start", `${WF}/again`, { stepType: "agent", input: { prompt: "go", session: "s1" } }),
         ev(4, "step.error", `${WF}/again`, { stepType: "agent", error: { message: "session_busy: …" } }),
+        // A thread named after the run's job, which arrives namespaced:
+        // the builder's `session: "{{ input.session || $job }}"`.
+        ev(5, "step.start", `${WF}/build`, { stepType: "agent", input: { prompt: "go", session: "peer/j1" } }),
+        ev(6, "step.end", `${WF}/build`, { stepType: "agent", output: { result: "ok", session: { id: "peer/j1", turn: 0, offset: 0 } } }),
       ],
       null,
     )!;
-    assert.deepEqual(p.sessions.map((s) => [s.data["session_id"], s.data["session_turn"]]), [["peer/s1", 0], ["peer/s1", undefined]]);
+    assert.deepEqual(p.sessions.map((s) => [s.data["session_id"], s.data["session_turn"]]), [["peer/s1", 0], ["peer/s1", undefined], ["peer/j1", 0]]);
   });
 
   it("stamps the run and its sessions with the job, and builds a StrutJob from the index's view (plans/job-index.md §6)", () => {

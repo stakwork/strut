@@ -839,7 +839,7 @@ export interface JobTurn {
   nodeCount: number;
   nodes?: AccessedNode[];
   spawned: JobThread[];
-  peer?: { id: string; workflow: string; runId: string; status: string };
+  peer?: { id: string; workflow: string; runId: string; status: string; session?: string };
 }
 
 export interface JobTotals {
