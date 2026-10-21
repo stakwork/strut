@@ -21,19 +21,25 @@ const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).param
 const quiet = () => ({ serveUi: false, enableChat: false, scheduler: false as const, stt: false as const, store: new MemoryRunStore() });
 
 describe("the orchestrator workflow strut ships", () => {
-  it("the template is a valid workflow over strut's own registry: job/dir → agent (session, no built-ins) → pack, every grant a strut step", async () => {
+  it("the template is a valid workflow over strut's own registry: job/dir → context/concept (the kinds of job, no docs) → agent (session, no built-ins) → pack, every grant a strut step", async () => {
     const text = await orchestratorWorkflowYaml();
     const registry = await createRegistry([]);
     const v = validateWorkflowYaml(text, { registry });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "agent", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "agent", "pack"]);
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["session", "context"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
-    const turn = flow.steps[1]!.config as Record<string, unknown>;
+    // The kinds of work a job can do here, the Job tree's children alone:
+    // the page's docs are the job agent's instructions, and this agent has
+    // no graph-get to open a page with.
+    assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.concept }}", docs: false, tool: "" });
+    assert.equal((yaml.load(text) as { params: { concept: string } }).params.concept, "Job");
+    const turn = flow.steps[2]!.config as Record<string, unknown>;
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);
+    assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}", "the kinds close the prompt");
 
     const { tools } = paramsOf(text);
     for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read", "memory/recall", "memory/remember"]) assert.ok(tools.includes(t), t);
