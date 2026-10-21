@@ -448,7 +448,7 @@ describe("createStrut", () => {
     assert.deepEqual(await store.listRuns("step:clip/shout"), [kept.runId]);
     assert.equal((await store.listRuns("shouter")).length, 2, "workflow run history is untouched");
     const listed = (await (await strut.app.request("/workflows")).json()) as Array<{ name: string }>;
-    assert.deepEqual(listed.map((w) => w.name).filter((n) => n !== "job" && n !== "orchestrator"), ["shouter"], "a step key is never a workflow");
+    assert.deepEqual(listed.map((w) => w.name).filter((n) => n !== "job" && n !== "orchestrator" && n !== "builder"), ["shouter"], "a step key is never a workflow");
   });
 
   it("a filesystem workspace has no claims layer: GET /claims says so, mutations are 409", async () => {
@@ -1023,7 +1023,7 @@ describe("createStrut", () => {
     await ws.publishWorkflow("daily-digest", "v1", { steps }, "Summarize the day");
     await ws.publishWorkflow("slack-backfill", "v1", { steps });
     await ws.publishWorkflow("clip", "v1", { steps });
-    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false, job: false, orchestrator: false, systemWorkflows: false, browserWorkflows: false });
+    const strut = await createStrut({ workspace: ws, store: new MemoryRunStore(), serveUi: false, enableChat: false, job: false, orchestrator: false, builder: false, systemWorkflows: false, browserWorkflows: false });
     const names = async (q: string) =>
       ((await (await strut.app.request(`/workflows?q=${encodeURIComponent(q)}`)).json()) as { name: string }[]).map((w) => w.name);
     assert.deepEqual(await names("slack"), ["slack-backfill"]);
@@ -1598,7 +1598,7 @@ describe("actors and the principal rule", () => {
       enableChat: false,
       scheduler: false,
       job: false, // the suite is about the workflows IT publishes
-      orchestrator: false,
+      orchestrator: false, builder: false,
       systemWorkflows: false,
       browserWorkflows: false,
       ...(o.resolveActor ? { resolveActor: o.resolveActor } : {}),

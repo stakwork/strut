@@ -1,6 +1,10 @@
 # The builder job: workflow building as a kind of job, here and on another strut
 
-> **Status (2026-10-20): proposed, two points ruled.** Written against strut
+> **Status (2026-10-20): proposed, two points ruled; work item 1 BUILT** on
+> `feature/builder-job` — `src/workflows/builder.yaml`, `src/builder-seed.ts`,
+> the `peer: false` delta, `createStrut({ builder })`, `STRUT_HOST_CONFIG.builder`,
+> `src/builder-seed.test.ts`. Its `params.system` is the procedure in the
+> twins' names; item 2 renders the dialect in front of it. Written against strut
 > `main` @4b19438 (this worktree), hive `master` @250154f6e and stakgraph
 > `main` @be2cde00; citations are `file:line` on those commits. The question:
 > Jamie's chats are now turns of strut's `orchestrator` workflow

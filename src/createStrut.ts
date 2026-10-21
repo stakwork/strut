@@ -64,6 +64,7 @@ import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
 import { STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
+import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
 import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, parsePeersEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer } from "./peers.js";
 import { stepHashesFor } from "./closure.js";
@@ -300,6 +301,14 @@ export interface StrutOptions<TServices = unknown> {
    *  detached. Seeded as `job` is, with the same host delta (`{ tools,
    *  system }`, appended after strut's). `false` seeds nothing. */
   orchestrator?: false | OrchestratorSeedOptions;
+  /** The `builder` workflow strut ships (`src/builder-seed.ts`,
+   *  plans/builder-job.md): one turn of a WORKFLOW BUILD as a job — the
+   *  meta/* authoring twins as its agent's tools, the web tools as its only
+   *  built-ins, the `Workflow Builder` page in its prompt — `peer: true`,
+   *  so another strut may launch it as published. Seeded as `job` is, with
+   *  the same host delta plus `peer: false` to close it to peers. `false`
+   *  seeds nothing. */
+  builder?: false | BuilderSeedOptions;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -871,8 +880,9 @@ export async function createStrut<TServices = unknown>(
     await rebuildRegistry();
   }
 
-  // The workflows strut ships: `job` (plans/jobs.md §5; src/job-seed.ts) and
-  // `orchestrator` (src/orchestrator-seed.ts).
+  // The workflows strut ships: `job` (plans/jobs.md §5; src/job-seed.ts),
+  // `orchestrator` (src/orchestrator-seed.ts) and `builder`
+  // (src/builder-seed.ts; plans/builder-job.md).
   // Content-hash seeded, so a boot is a no-op unless the template or the
   // host's delta changed; before the claims reconcile below, which records
   // a seeded workflow's `claims:` block. A workspace that will not take it
@@ -891,6 +901,14 @@ export async function createStrut<TServices = unknown>(
       if (changed) console.log(`[orchestrator] seeded workflow: orchestrator @ ${version}`);
     } catch (err) {
       console.warn(`[orchestrator] could not seed the orchestrator workflow:`, err instanceof Error ? err.message : err);
+    }
+  }
+  if (opts.builder !== false) {
+    try {
+      const { version, changed } = await seedBuilderWorkflow(workspace, opts.builder);
+      if (changed) console.log(`[builder] seeded workflow: builder @ ${version}`);
+    } catch (err) {
+      console.warn(`[builder] could not seed the builder workflow:`, err instanceof Error ? err.message : err);
     }
   }
 
