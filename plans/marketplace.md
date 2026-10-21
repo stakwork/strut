@@ -14,10 +14,18 @@
 > `requires`, provided by the deployment, never a folder of the package.
 > §12 (2026-10-19) is the other use of the format: a DISTRO, an operator's
 > packages rolled out to its own fleet automatically, which is what the
-> mcp lab's seeders become. Companion plans this builds
+> mcp lab's seeders become. **Extended 2026-10-20: a fourth kind, an APP**
+> (`apps/<name>/`, `plans/apps.md`) — the first item that is a directory,
+> and, *ruled by the owner*, **forkable and flexible**: the one kind whose
+> normal path is the fork. What that changes is written in place: §1 (the
+> kind, its hash, what stays out), §2 step 1 (grants in the closure), §3
+> (the build as the install check, migrations, graph types), §4 (the
+> per-file merge, the inverted nudge), §12 (the first distro app); the
+> specifics are mine and proposed. Companion plans this builds
 > on: `federation.md` (peers, `strut/run-workflow`, and §2.3's git
 > library, which this subsumes; see §9), `claims.md` (the contract a
-> package carries), `specs/ENV_SPEC.md` (the binaries a package needs).
+> package carries), `specs/ENV_SPEC.md` (the binaries a package needs),
+> `apps.md` (what an app is, how it is built and what it may call).
 > Code citations are on `strut@83a5b10`; §11's and §12's on `strut@19a895e`.
 
 ## Problem
@@ -56,6 +64,7 @@ What exists, and what's missing:
 | Question | Decision |
 | --- | --- |
 | The unit | ***Ruled:* one design serves both a workflow-centric package and a step-centric one.** A package is a DIRECTORY holding one namespace; any folder may be absent, so a package can be only steps, or only Concepts (§1) |
+| An app | ***Ruled (2026-10-20):* forkable and flexible.** A kind like the others, `apps/<name>/` — the one item that is itself a directory (`apps.md` §1.1). Its item hash is the tree hash of its own directory, the same function as the package digest; `data.db` and `dist/` are never shipped; it is built at install against the installing strut's kit, and the build is the check. An update merges it per file, and the app is the wrapper that keeps the package's steps fast-forwarding underneath a fork (§1, §3, §4) |
 | What is sold | ***Ruled (revised 2026-10-19):* packages.** A paid package is a gated download. Paid execution is a later plan (§6) |
 | Ownership | **By prefix.** Package `acme/linear` owns every name under `acme/linear/`, workflows included (`acme/linear/sync`). Who owns a name is read off the name; nothing is bound at install (§1) |
 | Dependencies | **A package carries only its own prefix.** Another package it executes is a `requires.packages` pin — an exact digest with a source hint — and the install resolves those with the same function, under one ask. No ranges, no solver: exact pins union, and two that disagree refuse (§1, §3) |
@@ -101,6 +110,8 @@ steps/create-issue.ts             # → the step acme/linear/create-issue
 steps/create-issue.claims.yaml    # optional: the step's claims
 steps/_shared.ts                  # → acme/linear/_shared; helpers ride with their namespace
 concepts/Linear.md                # front matter as seedConcepts reads it
+apps/issues/app.yaml              # → the app acme/linear/issues: a DIRECTORY item (apps.md §1.1)
+apps/issues/src/App.tsx           #   with its src/, public/ and db/ migrations — never its data.db
 ```
 
 ```yaml
@@ -128,7 +139,8 @@ requires:
   more — nothing collides.
 - **One shape, any subset.** Every folder is optional: a package of one
   step, a package of Concepts alone (an ontology a deployment shares), a
-  workflow over core and lib steps with no code at all. Nothing in the
+  workflow over core and lib steps with no code at all, an app with the
+  workflows it drives. Nothing in the
   format or the install says which kind it is, and `requires.packages`
   pins any kind. **A new kind is a new folder** — prompt files, hotword
   lists, cassettes later are one folder and one publisher each — and an
@@ -136,6 +148,20 @@ requires:
   newer strut fails whole instead of installing half. What has no
   publisher in strut — a binary, a service, a container — is not a kind:
   it is a requirement (§11).
+- **An app is the one kind that is a directory** (2026-10-20). `apps/<name>/`
+  is the app's whole directory as `apps.md` §1.1 lays it out — `app.yaml`,
+  `src/`, `public/`, `db/` — named `<package>/<name>` like a file item.
+  Its item hash is the **tree hash of that directory**, the same function
+  as the package digest below (`treeHash`, `src/version.ts`), which is
+  also its version hash in the workspace (`apps.md` §1.3): one hash, so
+  "untouched" means the same thing for an app as for a workflow.
+  `data.db` and `dist/` are never in a package — the buyer's data, and the
+  derived document the install builds (`apps.md` §2).
+  The kit the app is built against is the INSTALLING strut's, never the
+  package's: the build at install is the compatibility check (§3), and the
+  manifest declares nothing about it. The alternative — a package that IS
+  an app, `src/` at its root — was considered and dropped: two shapes for
+  one thing, when a package of zero or several apps is the common case.
 - **A Concept's record is its stamp.** A Concept has no version record;
   its node carries `unique_source_id = pkg/<package>/<file>@<hash>`
   (`seedConcepts`), and the installed directory stays under
@@ -172,23 +198,32 @@ requires:
   step. They are the package's promise, and §4 re-runs them on the buyer's
   strut after every change.
 - **Not in a package:** runs, evidence, secret values, automations,
-  owners, run caps, params overrides, prices, signatures.
+  owners, run caps, params overrides, prices, signatures, an app's
+  `data.db` and `dist/`, a kit version.
 
 ## 2. Building one — `buildPackage`
 
 `buildPackage(workspace, { package, version, description?, workflows?,
-steps?, concepts? })` writes the directory:
+steps?, apps?, concepts? })` writes the directory:
 
 1. **Closure.** For each named workflow, `flowClosure` (`src/closure.ts:60`),
-   `agentTools` globs expanded against the registry. Every reached
+   `agentTools` globs expanded against the registry. **For each named app,
+   its `grants`** — every workflow in `grants.workflows` and
+   `grants.automations`, every custom step in `grants.steps` (globs
+   expanded the same way) — walked on from there by `flowClosure`: an
+   app's grants are what it can execute, as a workflow's subflows and
+   `agentTools` are (`apps.md` §5). Every reached
    workflow and custom step under the prefix is an item. One outside the
    prefix: with an `upstream`, its package and digest become a
    `requires.packages` pin (a second pin of the same package at another
    digest refuses the build); without one, the build is refused naming it
    — package it under your prefix, or install it from its package. Core
-   and lib types are recorded nowhere. A closure that isn't `resolvable`
+   and lib types are recorded nowhere, an app's `graph/*`, `run/*` and
+   `sqlite/*` grants among them. A closure that isn't `resolvable`
    (a templated `subflow` or grant) is refused, naming the step, unless
-   `workflows` / `steps` list what it reaches.
+   `workflows` / `steps` list what it reaches. A named app itself goes in
+   whole — its active version's directory as `materializeAppVersion` gives
+   it, minus `data.db` and `dist/`, which are never an item's content.
 2. **Helpers.** Every `_`-prefixed file in the prefix's step directory goes
    in. Imports aren't parsed; the namespace convention (`gitree/_shared`)
    is the boundary.
@@ -222,7 +257,13 @@ hand; the builder can author it too.
 1. **Verify.** The tree digest against the pin when there is one. Each
    step file's declared `type`, and each workflow's path, against the
    prefix rule. Every core and lib type the YAML names is in this
-   registry. Every `requires.packages` entry is installed at that digest,
+   registry. **Each app's `app.yaml` shape-checks and its directory
+   BUILDS against this strut's kit** (`apps.md` §2): a bare import the kit
+   lacks, an import that leaves the directory, a manifest that does not
+   parse, refuses the install naming it — the kit is this strut's, so the
+   build is the compatibility check and the package declares nothing. Each
+   app's granted workflows and custom steps are items of this package, of
+   a required one, or core and lib. Every `requires.packages` entry is installed at that digest,
    else resolved from its hint and installed FIRST — the same function
    recursing; one name required at two digests, or already installed at
    a third, refuses. Missing `requires.secrets` and binaries are reported,
@@ -238,10 +279,16 @@ hand; the builder can author it too.
    under an INSTALLED prefix (`PUT /steps`, `create_step`, a publish) is
    refused with the package named — editing an installed item is a fork
    (§4), adding a sibling into someone else's namespace is not.
-3. **Publish.** Steps first, in path order, then workflows, through
-   `publishStep` / `publishWorkflowByContent` with a new door,
-   `VersionSource: "install"`, and the new field `upstream` on the version
-   record. Concepts go through `seedConcepts` as a set with the prefix
+3. **Publish.** Steps first, in path order, then workflows, then apps,
+   through `publishStep` / `publishWorkflowByContent` / `publishApp` with
+   a new door, `VersionSource: "install"`, and the new field `upstream` on
+   the version record. An app's publish is the publish `apps.md` §1.3
+   describes: the document built (already proven in step 1), the
+   `db/*.sql` files the buyer's `data.db` has not seen applied in order —
+   install IS a publish, and a failing migration fails the install, which
+   is all or nothing — and its declared graph types registered add-only
+   (`apps.md` §4.3), a type that conflicts with what the graph holds
+   refusing, naming both. Concepts go through `seedConcepts` as a set with the prefix
    `pkg/<package>/` and one new option, `keepEdited`: a page whose fields
    no longer equal the installed file is left alone and reported (§4),
    where a boot seed overwrites. On a filesystem workspace (no graph)
@@ -280,10 +327,11 @@ Concept of the package through `seedConcepts`'s `retired` path, and lists
 the forks and edited pages it left alone).
 
 **Version records gain one field.** `upstream?: { package, version,
-digest, source: { ref }, secrets }` on `WorkflowVersionInfo` and
-`StepVersionInfo` — the file store's `_metadata.json`, and one optional
-attribute on `StrutWorkflowVersion` / `StrutStepVersion` (the AGENTS.md
-schema convention, plus a conformance case). **A publish over an existing
+digest, source: { ref }, secrets }` on `WorkflowVersionInfo`,
+`StepVersionInfo` and `AppVersionInfo` — the file store's `_metadata.json`,
+and one optional attribute on `StrutWorkflowVersion` / `StrutStepVersion` /
+`StrutAppVersion` (the AGENTS.md schema convention, plus a conformance
+case). **A publish over an existing
 name carries the active version's `upstream` forward** unless it sets its
 own. So a builder edit of an installed workflow is a fork that still knows
 its base.
@@ -293,7 +341,9 @@ its base.
 **A fork is an edit.** `edit_workflow` / `edit_step` / the UI publish a
 new local version (door `builder` / `ui`) whose `upstream` is inherited.
 Its hash differs from the installed one, so the fold says `modified`.
-Nothing else changes.
+Nothing else changes. For an app the edit is to a directory —
+`app/checkout`, files, `app/publish`, by the builder or a job agent alike
+(`apps.md` §8) — and the new tree hash says `modified` the same way.
 
 **An update is an install of the same package from its recorded ref.**
 `update_package({ package, ref? })` re-resolves `upstream.source.ref`: a
@@ -325,9 +375,34 @@ claims run:** the package's own, which the fork inherited, and the
 buyer's. The tool result is the ledger. "Did my change or their update
 break what I paid for?" is answered by checks, not by reading the diff.
 
+**An app merges per file.** The same three-way merge, run inside the
+directory: base is the installed version's directory under
+`<dataDir>/packages/<digest>/`, theirs the new package's, ours the active
+fork materialized. A file only one side changed is taken; a file both
+changed goes through `git merge-file`; a binary under `public/` changed on
+both sides takes theirs and is reported; `db/*.sql` are never merged —
+migrations are additive files, so theirs are added and run at the
+publish. The merged directory must BUILD: a result that does not build is
+a conflict for the builder like a marker is. A clean result is published
+as a local version upstreamed to the new one; `data.db` is untouched
+throughout, which is the whole reason to update in place rather than
+reinstall. (`app/checkout`, `app/build` and `app/publish` are the builder's
+hands here, `apps.md` §8.)
+
 **Wrap rather than edit** is what the builder's prompt should prefer for a
 bought STEP: compose around it (a step or workflow that calls it), so
 updates keep fast-forwarding. It's a nudge in the prompt, not a rule.
+
+**For an app the nudge inverts** (*ruled* 2026-10-20: apps are forkable and
+flexible). An app cannot be wrapped, only edited, so the fork is its normal
+path: fork freely, and the merge above is the update — shadcn's model, the
+code copied into your project so that you can change it, with the update
+path shadcn lacks. The app is itself the wrapper around the package's
+steps: a forked `apps/issues/` leaves `acme/linear/create-issue`
+fast-forwarding underneath it, which is what "wrap rather than edit" was
+for. A COPY under a new name — `app/init { template: acme/linear/issues }`
+— is not a fork: it carries no `upstream`, lives under the buyer's own
+names, and no update reaches it.
 
 ## 5. Sources
 
@@ -429,7 +504,7 @@ Builder tools (`src/ai/tools.ts`), each thin over the functions above:
   It installs only on accept, then `request_secret` for each missing name.
 - `update_package({ package, ref? })`: §4, and it asks the same way
   (*ruled*).
-- `export_package({ package, workflows, to })`: §2 + §5.
+- `export_package({ package, workflows?, apps?, to })`: §2 + §5.
 
 **Installing is a person's act.** Installing a step is running someone
 else's TypeScript in the server process — its module top level runs when
@@ -486,6 +561,8 @@ plan subsumes it:
 | An index as a service | A list in a repo, or a peer's fold, is an index already; a node type waits for a track record | `StrutPackage` nodes on an index strut |
 | Isolation in v1 | *Ruled*: in-process plus the secrets fence; a worker or container is a later piece that changes what a step can reach | Same, without the fence |
 | A Dockerfile or compose fragment in a package | An install would become a build; a container is the deployment's. The package pins an image digest and names a runtime (§11) | Nothing — the question came up 2026-10-19 |
+| A kit version in a package, or in an app's hash | The kit is the installing strut's and the build at install is the check; an app's identity is its directory, its document a derived artifact (`apps.md` §1.3) | Nothing — `apps.md`'s first draft put the kit in the version hash |
+| A package that IS an app (`src/` at the root) | Two shapes for one thing; a package of zero or several apps is the common case, so an app is a folder like every kind (§1) | Nothing — considered 2026-10-20 |
 
 ## 11. Environments — what a package needs but never carries
 
@@ -834,6 +911,14 @@ distro commit that renames its items — the other order has the seeder
 publishing `pod/claim` again on its next boot, beside `hive/pod/claim`.
 Between the two deploys the old names stay and nothing breaks.
 
+**The first distro app** (2026-10-20). Hive's OpenHealth UI — ~6.6k lines
+keyed on one workflow's internals, `apps.md`'s opening problem — becomes
+`apps/climb/` in a `stakwork/openhealth` package, beside the four
+workflows it drives, so hive#5573's `BENCHMARK_RUN_VIEWS` escape hatch
+goes and a benchmark's UI ships with its workflows in the same channel
+commit. Hive renders it through the `apps.md` §7.4 contract and changes
+nothing per benchmark after that.
+
 **The services are ported, not packaged.** A package cannot carry a live
 object, and a distro does not try. Per lab service:
 
@@ -899,16 +984,20 @@ channels are the stage).
    segment and `param()` decodes it), encoded by `web/src/api.ts`, the
    embed deep links and the MCP doors' `ui` links. The step routes keep
    `:type{.+}` as they are.
-2. **Format + install from `file:`.** The tree digest, `buildPackage`,
+2. **Format + install from `file:`.** The tree digest (`treeHash`, shared
+   with `apps.md` §1.3), `buildPackage`,
    `installPackage` (verify, the prefix rule, `requires.packages`
    recursion, all or nothing, Concepts, step claims, the fence),
    `GET /packages`, `POST /packages/install`,
    `DELETE /packages/:publisher/:name` (a package name has one slash, so
-   the routes take it as two segments).
+   the routes take it as two segments). **Apps as a kind** join here once
+   `apps.md`'s work item 1 exists: grants in the closure, the build against
+   the kit at install, migrations and graph types at the publish,
+   `upstream` on app versions.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, fast-forward / diverged / retire, and
-   `update_package`'s merge.
+   `update_package`'s merge — per file for an app.
 5. **Builder tools + UI:** an "installed from acme/linear 1.4.0 ·
    modified" line on a workflow's Versions tab and in a step's info
    flyout; the install and update asks as elicitation forms.
@@ -977,6 +1066,15 @@ channels are the stage).
   the graph survives an update of the package and is reported as
   diverged, and the other page fast-forwards; a page whose name a seed
   already holds refuses the whole install.
+- An app in a package: build one holding an app and the two workflows its
+  grants name; its item hash equals the app's version hash on the source
+  strut. Install it on a strut whose kit builds it: the app is published,
+  its migrations run, its graph types register, its granted workflows are
+  items. A kit lacking one import refuses the whole install naming it. Fork
+  one component file, then update the package: the forked file is merged,
+  an untouched one fast-forwards, a new `db/*.sql` is added and run,
+  `data.db` is untouched, and a merge whose result does not build comes
+  back to the builder as a conflict.
 
 ## Open questions
 
@@ -1000,4 +1098,9 @@ channels are the stage).
    until it is, an index carries no evidence and the buyer's strut
    measures from zero. Whether a publisher may *report* numbers into an
    index file, labelled as such, is open.
+6. **An app's claims in a package.** `apps.md` §11 makes a workspace app a
+   claim subject; a workflow's claims ride in its YAML and a step's in a
+   sibling `.claims.yaml`. An app's could be a `claims:` block in
+   `app.yaml`, the workflow's shape, so the render check travels with the
+   app. Not designed.
 

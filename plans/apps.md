@@ -15,6 +15,60 @@
 >   the run graph first.
 > - **Data has two stores:** the graph for graph-shaped data, and SQLite.
 >
+> **Revised 2026-10-20, later the same day**, after the synthesis with
+> `marketplace.md`. Three more rulings from the owner:
+> - **Apps are forkable and flexible.** An app is a package KIND
+>   (`apps/<name>/`, `marketplace.md` §1), the one item that is a directory,
+>   and the fork is its normal path, not a fallback (§11).
+> - **Backends are tools.** An API endpoint is the same thing as a tool or
+>   a workflow: an input shape, an execution block, an output shape. So an
+>   app's backend is the registry, reached through one tool, and the graph
+>   and SQLite are steps like everything else (§5).
+> - **Apps are the expression surface of generalized software**: a UI,
+>   grants onto the registry, and steps or workflows in the same package
+>   when it needs logic of its own. No server code of the app's own.
+>
+> A fourth, the same day: **an app's agent and LLM workflows are ROUTINES**
+> — a core piece of what an app is for, and never triggered by the UI on
+> its own (a render, a refetch, a poll). An app has three responsibilities:
+> rendering workflow output, calling tools, and AI-agent-powered UI. §5.1
+> says what each one is allowed to cost and what may trigger it; the rules
+> there (the workflow as the unit of spend, launch as a mutation only, the
+> dedupe key) are mine.
+>
+> **Simplified 2026-10-20, a last pass** (mine, proposed): the app token IS
+> the file token, and the document is a file the build writes,
+> `dist/index.html`, served by the file routes that exist (§2, §7.2); a
+> workspace app's files live under `dataDir` on every backend, the
+> workspace store holding pointers only (§1.3, closing open question 3);
+> and an app's writes and its error reports are KEPT STEP RUNS, so there is
+> no audit file, no error file, and no tool but `step_run` (§5, §8, §9).
+> And **one door** (2026-10-21): there is no `POST …/call` route. Every
+> host — strut's own UI, hive, Claude — relays the frame's `tools/call` to
+> `/mcp` as it is, so the frame's call reaches strut in the shape it left
+> the frame in and no host translates anything (§7). Hive's other calls to
+> strut, runs, jobs, chat and files over the HTTP API, are untouched: this
+> is only where an app frame's calls go. And **no builder app tools**
+> (2026-10-21): the `app/*` steps are the builder's tools by name, through
+> `buildRegistryTools` as the `agent` step's `agentTools` are, in place of
+> five chat tools that each wrapped one of them (§8).
+>
+> **With stakwork/strut#239** (2026-10-21; the builder job,
+> `plans/builder-job.md`): a second author. Apps are a builder job's kind
+> of work under that plan's ruling; the `builder` seed gains the editor
+> family and `app/*` and still no bash; one authoring path — a directory,
+> the editor, `app/build`, `app/publish` — serves the chat, the builder job
+> and a code job's agent alike; a build on a peer tags its deliverable by
+> peer; the build warns on a global `fetch` (§8, §2.1, §11). Mine, proposed.
+>
+> What those rulings changed here, in place: §5 is no longer a tool set of
+> its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
+> is the tree hash shared with packages and the kit is out of it (§1.3);
+> `ctx.app` joins `ctx.job` (Decided, §5); §4.3 proposes per-type columns on
+> Ladybug (open question 2); §11 says how an app forks. The specifics of
+> each (the hash, `ctx.app`, the `run/*` steps, the per-file merge, the
+> columns) are mine and open; the three rulings are not.
+>
 > The other rows of "Decided" are mine and open. The companion plans:
 > - `jobs.md` and `live-artifacts.md`: the job directory, deliverables, the
 >   file token, `job.update`.
@@ -23,6 +77,8 @@
 > - `ladybug-backend.md`: the closed registry this plan opens.
 > - `marketplace.md`: an app is a package member.
 > - `federation.md`: apps stay local, but their workflows may reach peers.
+> - `builder-job.md` (stakwork/strut#239): the `builder` job, the
+>   orchestrator's door to authoring, here and on a peer.
 >
 > Hosts appear below only as the contract they read. Their own repos are
 > adoption, not work items.
@@ -30,7 +86,10 @@
 **The thesis.** Workflows are an app's server functions, steps its API,
 automations its cron, the graph its knowledge base, the builder its
 developer, and claims its tests. Runs are its history. The only new store
-is a SQLite file of the app's own (§4).
+is a SQLite file of the app's own (§4). And an endpoint is a tool is a
+workflow — an input shape, an execution block, an output shape — so the
+app reaches all of it through ONE tool over the registry (§5), and ships,
+forks and updates as a package member like the workflows it drives (§11).
 
 ## Problem
 
@@ -96,18 +155,22 @@ decide, and why; each is open.
 | --- | --- |
 | The protocol between an app and its host | **MCP Apps** (ruled; SEP-1865, stable 2026-01-26): the `ui/initialize` handshake, `hostContext`, `tools/call`, app-only tools, `ui/message`, `ui/open-link`. Hosts that render it today include Claude, Claude Desktop, VS Code Copilot, M365 Copilot and Goose. Strut's own UI and any other host implement the same bridge |
 | What an app is | **A directory with an `app.yaml`** (ruled): sources, styles, assets and SQL migrations, laid out like a Vite + shadcn project (§1.1). Not a run artifact, since an app spans runs, and not a field on a workflow, since one app drives several workflows (OpenHealth uses four) |
-| Where an app lives | **In the workspace**, published as a versioned object, **or in a job's directory** (ruled), as a live directory the job's agent edits. One build, one kit, one set of tools, both homes (§1.2, §6). A job's app can be published to the workspace |
+| Where an app lives | **In the workspace**, published as a versioned object, **or in a job's directory** (ruled), as a live directory the job's agent edits. One build, one kit, one set of tools, both homes (§1.2, §6). A job's app can be published to the workspace. Either way the files are a directory under `dataDir`; the workspace store holds pointers (§1.3) |
 | The stack | **Fixed and opinionated** (ruled): React 19, Tailwind 4, shadcn/ui at the import paths models know, lucide, recharts, d3, React Flow, motion, three, react-router, zustand, react-query, tanstack table, dnd-kit, date-fns, zod, papaparse, leaflet and more (§3.1). One kit version is one frozen set |
 | Shared components | **A strut kit** (ruled): hooks over the bridge plus strut-native components (`RunGraph` first, ported from hive), in the same React and Tailwind stack, so a host's own pages can import them too |
 | The data stores | **The graph and SQLite** (ruled), beside runs (§4). Runs are history, one row per execution. The graph holds entities and relations that agents, workflows and other apps should also see; the app declares its node and edge types in `app.yaml`. A SQLite file of the app's own holds its tables: many rows, sums, imports, settings. Earlier drafts had a strut-wide "records" store; it is gone |
 | How the fixed set reaches a page | **Compiled in when the app is built**, never fetched at runtime. esbuild bundles the directory and Tailwind 4's pure-JS compiler compiles its classes, both against the kit, into ONE self-contained HTML document. With nothing to fetch, the page works under any host's CSP and offline. A workspace version keeps its document, so a strut upgrade never breaks it |
 | What a build refuses | **Any bare import outside the kit**, a relative import that leaves the directory, URL imports, `dangerouslySetInnerHTML`, `eval` and `new Function`. The errors are the build's result, step-lint's pattern |
-| Where an app's data comes from | **Strut, through app-only tools** (§5): runs, launches, single steps (the graph's steps among them), the app's SQL, graph reads, automations and files. One implementation, served over MCP (app-only) and over HTTP (`…/call`) |
-| What an app may touch | **Its manifest's `grants`**, checked by strut on every call in every host. Graph writes are limited to the types the app declares, so an app can never rewrite a Concept or a `StrutWorkflow` node. Grants box model-written code acting as the viewer; they never raise the viewer, who already holds a full credential |
+| Where an app's data comes from | **The registry, through one tool** (ruled: an endpoint is a tool is a workflow). `step_run` under the app's grants, an app-only tool on the MCP door and nowhere else — every host relays the frame's `tools/call` to `/mcp` as it is (§5, §7). Runs, launches, the graph, the app's SQLite, schedules and files are all STEPS — `run/*`, `graph/*`, `sqlite/*`, `automation/*`, `job/*` — the same steps a workflow or an agent calls, one implementation each. The app adds no tool of its own: even its error report is a step, `app/report-error` (§8) |
+| What an app may touch | **Its manifest's `grants`**: step types, plus a scope per family — which workflows (`run/*`), which graph types (`graph/*` writes), its own file (`sqlite/*`), which schedules (`automation/*`) — checked by strut on every call in every host. So an app can never rewrite a Concept or a `StrutWorkflow` node. Grants box model-written code acting as the viewer; they never raise the viewer, who already holds a full credential |
+| Routines — where the model runs | **Inside a run, never inside the page** (ruled: an app's agent and LLM workflows are routines, never triggered on their own). The workflow is the unit of spend: `step_run` from a model-written manifest refuses `llm`, `agent` and `exec`, so every model call an app causes is a run — logged, billed to the viewer, cancelable, verified. A routine is a granted workflow; launching one is a mutation the kit exposes only as a function, never as a query, and `run/launch { key }` returns an in-flight run instead of starting a second (§5.1) |
+| How a step knows it runs for an app | **`ctx.app`**, the twin of `ctx.job`: `{ name, version }` for a workspace app, `{ job, path }` for a job's, set by the app door for the call and never by a launch body. The `sqlite/*` steps open the app's file from it, the graph write scope reads the declared types from it, `automation/*` reads `grants.automations` from it, and a run the app launches records `app` on `run.start` as a job run records `job` — so a workflow working for the app finds the app's file the way a job's steps find the job's directory (§5) |
+| Sharing and forking | **A package kind** (ruled: forkable and flexible). `apps/<name>/` in a package (`marketplace.md` §1), the one item that is a directory. One representation everywhere: a job's live directory, a workspace version, a package member, a git repo and an `app/init` template are the same bytes. The fork is the normal path: an edit is a fork carrying `upstream`, an update fast-forwards an untouched app and merges a forked one per file, and the app is the wrapper around bought steps, so a forked UI leaves them fast-forwarding (§11) |
+| Who writes an app | **A builder** — the chat, or the `builder` job of stakwork/strut#239 — and a code job's agent for a job app (§6). One path for all three: a directory, the editor, `app/build`, `app/publish { name, path }` (§8). Apps are a builder job's kind of work under #239's ruling, so a regular job never holds `app/publish`; the builder job gets the editor family and `app/*` and still no bash |
 | Who pays and who acts | **The viewer.** A launch from an app is billed to whoever clicked, and binds actor secrets to them, exactly as if they had pressed Run |
-| How strut knows which app is calling | **The host names it** on the HTTP door: the frame it loaded and the path it called. On the MCP door, where the host relays `tools/call` as-is, the served document carries an **app token**, an HMAC of the app's identity built the way the file token is. It says which app is calling; the connection's credential says who. Alone it is worth nothing |
-| Who may grant sealed or shell-like things | **A person only.** The meta surface (the builder, `meta/*`, a job's agent) may not grant a sealed workflow or step, nor `exec` or `agent` as direct step grants; it runs those through a workflow, whose YAML is versioned and reviewable. A person on the HTTP door may grant anything, as with `peer: true` |
-| How an agent learns its app broke | **In a result:** the build's errors (from `app/build`, the publish), and the app's client-side errors (the kit's error boundary calls `report_error`), returned by `get_app` and `app/build` |
+| How strut knows which app is calling | **The app's file token.** The host relays `tools/call` as it is and names nothing; the served document carries the app's **file token** (`fileToken`, `auth.ts`), scoped to its own directory — the token that lets a page read its own files, written into `dist/index.html` as it is served (§7.2). `step_run` reads which app is calling off its scope; the connection's credential says who. Alone it is worth that directory's files and nothing more |
+| Who may grant sealed or shell-like things | **A person only.** The meta surface (the builder, `meta/*`, a job's agent) may not grant a sealed workflow or step, nor `llm`, `exec` or `agent` as direct step grants (§5.1); it runs those through a workflow, whose YAML is versioned and reviewable. A person on the HTTP door may grant anything, as with `peer: true` |
+| How an agent learns its app broke | **In a result:** the build's errors (from `app/build`, the publish), and the app's client-side errors (the kit's error boundary calls `app/report-error`, a step kept as a run), returned by `app/get` and `app/build` |
 
 ## Design in one paragraph
 
@@ -116,13 +179,14 @@ types it declares, extra image or map domains) plus `src/` (TSX, its own
 shadcn overrides, CSS), `public/` (assets) and `db/` (SQL migrations).
 
 It lives in one of two places:
-- **The workspace:** published as a versioned object, content-hashed over
-  its files and the kit version.
+- **The workspace:** published as a versioned object, tree-hashed over its
+  files, the directory kept under `dataDir`.
 - **A job's directory:** a live directory the job's agent edits and
   declares as a deliverable `{ kind: "app", path }`.
 
-**Building** it bundles `src/App.tsx` against the **kit** and produces one
-self-contained HTML document carrying the MCP Apps bootstrap. The kit is a
+**Building** it bundles `src/App.tsx` against the **kit** and writes one
+self-contained HTML document carrying the MCP Apps bootstrap,
+`dist/index.html`, beside the sources. The kit is a
 frozen set of React, Tailwind, shadcn/ui and the popular chart, graph,
 motion and data libraries, plus strut's own hooks and components (the run
 graph among them). A bare import outside the kit is a build error that
@@ -130,17 +194,26 @@ names the set.
 
 Any MCP Apps host renders the document in a sandboxed frame: strut's own UI
 in an **Apps** section; Claude and the other MCP Apps hosts through
-strut's `/mcp`; hive or any portal through `GET …/html` plus a relay.
+strut's `/mcp`; hive or any portal through the file route plus a relay to
+`/mcp`.
 
 The page holds no credential. Its `tools/call`s go to its host, which
-forwards them with its own credential to strut's app-only tools, and strut
-checks each call against the app's grants. Through them the app can:
-- list, read, launch (billed to the viewer) and cancel runs;
-- run a single step, which is how it reads and writes the graph (`graph/*`,
-  writes limited to the types it declares);
-- query and write its own SQLite file;
-- set schedules;
-- read files.
+forwards them as they are to `/mcp` with its own credential — strut's one
+app tool, `step_run` — and strut checks each call against the app's grants. Every call is a
+registry step — the same steps a workflow or an agent runs:
+- `run/*`: list, read, launch (billed to the viewer) and cancel runs;
+- `graph/*`: read and write the graph (writes limited to the types it
+  declares);
+- `sqlite/*`: query and write its own SQLite file;
+- `automation/*`: set schedules;
+- `job/*`: its own job, for a job's app.
+
+An endpoint is a tool is a workflow, so the app's server side is no code of
+its own: a UI, grants onto the registry, and steps or workflows in the same
+package when it needs logic of its own. The model is always inside a run,
+never inside the page: an app renders workflow output, calls cheap tools,
+and launches ROUTINES — its agent and LLM workflows — on a click, never on
+a render (§5.1).
 
 `ui/message` sends a message to the host's conversation: the builder chat
 in strut's UI, the job's conversation for a job's app in hive, Claude's own
@@ -173,10 +246,10 @@ description: Customers, visits and invoices for an HVAC business.
 icon: receipt                       # a lucide name
 entry: src/App.tsx                  # the default
 grants:
-  workflows: [invoice-from-photo, invoice-reminders]   # read runs, launch, cancel
-  steps: [graph/*, llm]             # step_run (graph writes: declared types only)
-  sqlite: true                      # this app's own database (§4.4)
-  automations: [invoice-reminders]  # workflows whose schedules it may set
+  workflows: [invoice-from-photo, invoice-reminders]   # the app's ROUTINES: run/* on these — read runs, launch, cancel
+  steps: [graph/*]                  # cheap, deterministic steps (graph writes: declared types only); never llm / agent / exec (§5.1)
+  sqlite: true                      # sqlite/* on this app's own database (§4.4)
+  automations: [invoice-reminders]  # automation/* on these workflows' schedules
 data:
   graph:
     types:
@@ -192,8 +265,10 @@ csp:
 ```
 
 - **What the build reads.** Every file under the directory except `db/`,
-  `data.db` (§4.4), dotfiles and `node_modules/`. The limits are 2,000 files
-  and 20 MB, and the build refuses past them.
+  `data.db` (§4.4), `dist/` (its own output, §2), dotfiles and
+  `node_modules/`. The limits are 2,000 files and 20 MB, and the build
+  refuses past them. **What the hash covers** (§1.3): every file but
+  `data.db` and `dist/` — the data and the derived document.
 - **The name** follows workflow naming (`hvac-invoices`) in its own
   namespace. An app and a workflow may share a name.
 - **The manifest is content.** It is shape-checked at every build, like a
@@ -205,58 +280,82 @@ csp:
 
 | | A workspace app | A job's app |
 | --- | --- | --- |
-| Where | The workspace store: `apps/<name>` | The job's directory: `<dataDir>/jobs/<job>/<path>`, by convention `apps/<name>/` |
-| Who writes it | The builder (`checkout_app`, `publish_app`), a person (`POST /apps`) | The job's agent, with its editor and bash, in its cwd |
-| Versions | `vN`, content-hashed, an active pointer, rollback | None. One live directory behind one link, the jobs contract; `job.update` says it changed |
-| Its document | Built at publish and kept with the version | Built when read, cached by content hash (`<dataDir>/apps/builds/<hash>.html`) |
+| Where | `<dataDir>/apps/<name>/<vN>/`, one directory per version, with the pointer in the workspace store (§1.3) | The job's directory: `<dataDir>/jobs/<job>/<path>`, by convention `apps/<name>/` |
+| Who writes it | A builder — the chat, or a `builder` job (stakwork/strut#239) — with the editor: `app/checkout`, files, `app/build`, `app/publish`; a person (`POST /apps`) | The job's agent, with its editor and bash, in its cwd |
+| Versions | `vN`, tree-hashed (§1.3), an active pointer, rollback, `upstream` when a package installed it | None. One live directory behind one link, the jobs contract; `job.update` says it changed |
+| Its document | `dist/index.html` in the version's directory, written by the publish's build; rebuilt there on a newer kit only when asked | `dist/index.html` in the app's directory, written by `app/build` — the agent builds before it hands the app over, as it verifies before it says done |
 | Its SQLite | `<dataDir>/apps/<name>/data.db`, shared by all its versions | `<path>/data.db`, inside the job's directory, so the agent can `sqlite3` what the person entered |
-| Its URL | `/apps/<name>/…` | `/jobs/<job>/app/…?path=<path>` |
+| Its URL | `/apps/<name>/<vN>/files/dist/index.html`, the version's file route (§7.2) | `/jobs/<job>/files/<path>/dist/index.html`, the job's file route |
 | Grants | As published: the meta surface's rules, or a person's (§9) | As its `app.yaml` says, under the meta surface's rules, plus its own job: that job's runs and files (§6) |
 
 A job's app is **published to the workspace** with `app/publish { name,
 path }`. A person does it from the job timeline ("Publish as an app"), or
-the builder does it on request. The directory becomes the app's next
-version, and `data.db` comes along when the workspace app has none yet. A
-prototype with real data in a job becomes a real app.
+a builder does it on request — the chat, or a `builder` job naming the
+other job's directory; a code job never holds the step (§8). The
+directory becomes the app's next version, and `data.db` comes along when
+the workspace app has none yet. A prototype with real data in a job
+becomes a real app.
 
 ### 1.3 Workspace versions and storage
 
-- **`publishApp` follows `publishStep`.** The hash covers the sorted (path,
-  sha256) list of the directory's files plus the kit version. Identical
-  content reactivates the version it already is; anything else publishes
-  the next `vN`. The active pointer, rollback (`PUT /apps/:name/active`) and
-  the `publisher` and `owner` stamps work as they do for workflows.
-  Republishing on a newer kit is a new version.
-- **A version keeps** its files, its built document, `kit`, `builtAt` and
-  `hash`. Old documents are never rebuilt.
-- **`WorkspaceStore` gains** `listApps`, `getApp(name, version?)`,
-  `publishApp(name, files, built, opts)`, `listAppVersions`,
-  `materializeAppVersion(name, version) → dir` (what `checkout_app`
-  copies, the twin of `materializeStepVersion`), `setActiveAppVersion` and
-  `deleteApp`.
-  - **Files:** `apps/<name>/_metadata.json`,
-    `apps/<name>/versions/<vN>/…` (the directory as published) and
-    `apps/<name>/versions/<vN>.html`.
-  - **Graph:** `StrutApp` and `StrutAppVersion`, `exact_key`, joined by
-    `VERSION_OF` and `ACTIVE_VERSION`. `USES_WORKFLOW` (version → workflow,
-    from `grants.workflows`) makes "which apps read this workflow" one
-    query, which the Workflow flyout shows. Where a version's files and
-    document live on the graph is open (Open questions 3).
+- **`publishApp` follows `publishStep`.** The hash is the **tree hash**:
+  `sha256` over `<path>\0<sha256 of the bytes>\n` for every file under the
+  directory, sorted by path — the same computation `marketplace.md` §1 uses
+  for a package's digest, so it is one function in `src/version.ts`
+  (`treeHash`), and an app's item hash in a package IS its version hash
+  here. **The kit is not in it.** The identity is the directory; the built
+  document is a derived artifact, `dist/index.html`, written beside the
+  sources and left out of the hash with `data.db` (§1.1). Identical content reactivates the version it already is; anything else
+  publishes the next `vN`. The active pointer, rollback
+  (`PUT /apps/:name/active`) and the `publisher` and `owner` stamps work as
+  they do for workflows. Republishing on a newer kit is a REBUILD of the
+  same version, never a new one.
+- **A version keeps** its files, its `hash`, and in `dist/` the document
+  it was last built with — `dist/build.json` records the `kit`, `builtAt`
+  and the tree hash it was built from. A strut upgrade rebuilds nothing by
+  itself — the old document stays, so the app keeps working; `app/build` on
+  the version, or the next publish, builds it on the current kit.
+- **`upstream`** rides on an app version as on a workflow's
+  (`marketplace.md` §3): which package, which digest, whether it was edited
+  since. Carried forward by every publish over the name.
+- **The files live under `dataDir`, on every backend.**
+  `<dataDir>/apps/<name>/<vN>/` is the version's directory as published,
+  `dist/` included, beside the app's `data.db` — the rule AGENTS.md already
+  states for artifacts, cassettes and jobs: the inherently local things hang
+  off `dataDir`, whatever the workspace's kind. The workspace store keeps
+  only the POINTERS, so a version is never a 20 MB graph property, and
+  `materializeAppVersion(name, version)` is the directory's path, not a copy
+  (`app/checkout` copies from it to edit). Closes open question 3.
+  - **`WorkspaceStore` gains** `listApps`, `getApp(name, version?)` (the
+    manifest, the hash, the versions, the active one, `publisher`, `owner`,
+    `upstream`), `publishApp(name, hash, manifest, opts)`,
+    `setActiveAppVersion` and `deleteApp`. On files the pointers are
+    `apps/<name>/_metadata.json`; on the graph `StrutApp` and
+    `StrutAppVersion`, `exact_key`, joined by `VERSION_OF` and
+    `ACTIVE_VERSION`, holding the manifest and the hash and never a file.
+    `USES_WORKFLOW` (version → workflow, from `grants.workflows`) makes
+    "which apps read this workflow" one query, which the Workflow flyout
+    shows.
   - **On every layer:** the Neo4j schema (`strut-schemas.ts`), the Ladybug
     registry (`LADYBUG_STRUT_TYPES` and `LADYBUG_EDGES`), a case in
     `src/test-util/workspace-conformance.ts`, the fs → graph import
-    (`fs-import.ts`), and a run of `npm run test:graph`, per the AGENTS.md
-    convention.
+    (`fs-import.ts`: pointers only, the directories stay where they are),
+    and a run of `npm run test:graph`, per the AGENTS.md convention.
+  - A graph copied without its `dataDir` loses the app files, as it loses
+    artifacts today; `app/get` says so for a version whose directory is
+    missing.
 - **Workflows do not name apps.** The grants are the link. Granting a
   workflow that does not exist is a build error. If a granted workflow is
-  deleted later, the grant goes inert, and `get_app` says so.
+  deleted later, the grant goes inert, and `app/get` says so.
 
 ## 2. The build
 
 `src/apps/build.ts` is lazy-imported, as a lib step's SDK is, so building
 the registry never loads esbuild. There is one function: `buildApp(dir) →
-{ html, warnings } | { errors }`. A workspace publish calls it (§1.3), a
-job app's read calls it (§6), and so does `app/build` (§8).
+{ warnings } | { errors }`, which writes `dist/index.html` and
+`dist/build.json` (the kit, `builtAt`, the tree hash it built from) into
+the directory. A workspace publish calls it (§1.3) and so does `app/build`
+(§8). Nothing builds on a read: the document is a file.
 
 ### 2.1 Bundle
 
@@ -289,10 +388,15 @@ job app's read calls it (§6), and so does `app/build` (§8).
   `eval` and `new Function` are refused. Markdown goes through the kit's
   `react-markdown`, which is safe by default. Even with `connect-src 'none'`
   (§9), a script injected into an app could call that app's granted tools
-  as the viewer, so the build closes the door it can see.
+  as the viewer, so the build closes the door it can see. A call to the
+  global `fetch`, `XMLHttpRequest` or `WebSocket` is a WARNING in the
+  result that names the hook to use instead (`useStep`, `useLaunch`): a
+  model writes `fetch('/api/…')` by reflex, the CSP refuses it at runtime,
+  and without the warning only `app/report-error` would say so — step-lint's
+  rule for a step's `fetch`, for the same reason.
 - **Types are not checked in v1**, because esbuild strips them. A `tsc` pass
   against the kit's `.d.ts` comes later (§12). Render errors reach the
-  agent through `report_error` (§8).
+  agent through `app/report-error` (§8).
 
 ### 2.2 Styles
 
@@ -335,11 +439,13 @@ The kit's bootstrap:
   mode;
 - mounts `<StrutProvider><ErrorBoundary><App/></ErrorBoundary></StrutProvider>`;
 - reports its size through `ui/notifications/size-changed`;
-- turns render failures and `window.onerror` into `report_error`.
+- turns render failures and `window.onerror` into `app/report-error`.
 
-The output is deterministic: the same inputs give the same bytes. The app
-token (§7.2) is injected when the document is **served**, never at build,
-so rotating the signing secret rebuilds nothing.
+The output is deterministic: the same inputs give the same bytes, and
+`dist/` holds no credential. The app's file token (§7.2) is written into
+the document when it is **served** — the file route, handing out
+`dist/index.html` under a valid `?t=`, fills a `<meta>` the kit reads —
+never at build, so rotating the signing secret rebuilds nothing.
 
 ### 2.5 Size
 
@@ -385,24 +491,25 @@ ships.
 ### 3.2 Hooks — the bridge, so the model never writes `postMessage`
 
 The hooks come from `@strut/kit`. They are built on react-query over a
-`StrutClient { call(tool, args) }`. In an app, the client is the MCP Apps
-bridge; in a host's own page, the host supplies it.
+`StrutClient { run(type, config?, input?) }` — one call, the §5 tool. In an
+app, the client is the MCP Apps bridge; in a host's own page, the host
+supplies it. Every hook names a STEP TYPE:
 
-| Hook | Tool (§5) |
+| Hook | Step (§5) |
 | --- | --- |
-| `useRuns(workflow, { status?, automation?, live? })`, `useRun(workflow, runId, { live? })`, `useRunEvents(workflow, runId)` | `runs_list`, `run_get`, `run_events` |
-| `useLaunch(workflow)` → `{ launch(input, params?), pending }`, `useCancel()` | `run_launch`, `run_cancel` |
-| `useWorkflow(workflow)`: description, `input:` block, params defaults | `workflow_get` |
-| `useStep(type)` → `run(config, input)` | `step_run` |
-| `useNodes(type, { where, orderBy, limit })`, `useNode(refId)`, `useNodesByRef(refs)`, `useCreateNode(type)`, `useUpdateNode()`, `useLink()`, `useUnlink()`, `useGraphSearch()` | `step_run` over `graph/find` (new, §4.3), `graph-get`, `graph-get-batched`, `create-node`, `edit-node`, `create-triplet`, `delete-edge`, `graph-search` |
-| `useSql(sql, params)`, `useSqlMutation()` | `sql_query`, `sql_exec`, `sql_batch` |
-| `useAutomations(workflow)` | `automations_*` |
-| `useJob()`: a job's app's own job, with its runs and deliverables | `runs_list { job }`, `files_read` |
-| `useToolInput()`: what the model or a link opened the app with | `ui/notifications/tool-input` |
-| `useHost()` → theme, display mode, `sendMessage(text)`, `openLink(url)` | `ui/message`, `ui/open-link` |
+| `useRuns(workflow, { status?, automation?, live? })`, `useRun(workflow, runId, { live? })`, `useRunEvents(workflow, runId)` | `run/list`, `run/get`, `run/events` |
+| `useLaunch(workflow)` → `{ launch(input, params?, key?), pending }`, `useCancel()` — mutations: a function to call, never a query, so no hook launches on mount or on a poll (§5.1) | `run/launch`, `run/cancel` |
+| `useWorkflow(workflow)`: description, `input:` block, params defaults | `run/workflow` |
+| `useStep(type)` → `run(config, input)` | any granted step |
+| `useNodes(type, { where, orderBy, limit })`, `useNode(refId)`, `useNodesByRef(refs)`, `useCreateNode(type)`, `useUpdateNode()`, `useLink()`, `useUnlink()`, `useGraphSearch()` | `graph/find` (new, §4.3), `graph-get`, `graph-get-batched`, `create-node`, `edit-node`, `create-triplet`, `delete-edge`, `graph-search` |
+| `useSql(sql, params)`, `useSqlMutation()` | `sqlite/query`, `sqlite/exec`, `sqlite/batch` |
+| `useAutomations(workflow)` | `automation/*` |
+| `useJob()`: a job's app's own job, with its runs and deliverables | `run/list { job }`, `job/get`, `job/read` |
+| `useToolInput()`: what the model or a link opened the app with | `ui/notifications/tool-input` (the bridge, not a step) |
+| `useHost()` → theme, display mode, `sendMessage(text)`, `openLink(url)` | `ui/message`, `ui/open-link` (the bridge) |
 
 `live` means a refetch interval while anything shown is in flight, plus
-`run_get { wait }`'s long-poll for a single run. That replaces the 10 s
+`run/get { wait }`'s long-poll for a single run. That replaces the 10 s
 polling OpenHealth does today; push comes later (§12). A graph write
 invalidates the `useNodes` queries for its type.
 
@@ -415,9 +522,9 @@ Generic UI is shadcn's and the chart libraries'; the kit writes none of it.
 | `RunGraph` | Ported from hive (`lib/strut-run-graph` + `components/strut-run-graph`, ~3.7k lines with its service and routes; already React + Tailwind) |
 | `RunTimeline` | `web/src/run-overview.ts` (the fold) |
 | `Transcript` | `web/src/transcript.ts` |
-| `LaunchForm` | A workflow's `input:` block (`workflow_get`): the Run popover's form, in React |
+| `LaunchForm` | A workflow's `input:` block (`run/workflow`): the Run popover's form, in React |
 | `ArtifactView` | `web/src/artifact-view.ts`: markdown, images, video, PDF, HTML, the walkthrough scrubber |
-| `RunList`, `RunStatus` | `runs_list` |
+| `RunList`, `RunStatus` | `run/list` |
 | `NodeCard`, `NodeSearch`, `NodeGraph` (React Flow over a node's neighborhood) | `graph/graph-get-batched`, `graph/graph-search`, `graph/graph-neighbors` |
 | `ClaimsBadge` | The ledger (§11) |
 
@@ -427,7 +534,7 @@ Generic UI is shadcn's and the chart libraries'; the kit writes none of it.
 - **The run graph's data path moves into strut.** Hive builds it from the
   run log and hydrates its nodes through stakgraph's `/api/hive/query` on
   the swarm. In the kit:
-  - its calls come from `run_events` through the accessed-nodes fold;
+  - its calls come from `run/events` through the accessed-nodes fold;
   - node details come from `graph/graph-get-batched` (up to 50 refs per
     call) through `step_run`, on both engines;
   - a child run opens on demand through the `runId` of the call that
@@ -438,6 +545,10 @@ Generic UI is shadcn's and the chart libraries'; the kit writes none of it.
 - **Strut's own Preact UI** can render kit components later through
   `preact/compat` (§12), so one `RunGraph` serves everywhere. v1 does not
   need it: strut's UI hosts apps, and each app brings its own React.
+- **`LaunchForm` is the routine's face** (§5.1): the workflow's `input:`
+  block as a form, a button, the in-flight run it dedupes onto, and the
+  last run's status. An app that only lists its routines and renders their
+  output is a complete app.
 
 ## 4. Data — runs, the graph, the app's own SQLite
 
@@ -447,7 +558,7 @@ A run is history. It records what one execution did; it is immutable, and
 its output is whatever that execution produced. For many apps that is all
 the data there is. Each run of `openhealth-run` is one attempt with its
 score. Each poll of a tweet is one data point. An app reads them with
-`runs_list` and draws them, with no store at all (§10).
+`run/list` and draws them, with no store at all (§10).
 
 What runs cannot hold is **state a person changes in place**. An invoice is
 created, edited, marked paid, or voided. Modeled as runs:
@@ -464,7 +575,7 @@ That state lives in one of two places, depending on its shape.
 
 | Data | Where | Why |
 | --- | --- | --- |
-| What workflows did, one row per execution: scores, polls, extractions | **Runs** | Already there. `runs_list` and outputs, filtered by `automation` or `job` |
+| What workflows did, one row per execution: scores, polls, extractions | **Runs** | Already there. `run/list` and outputs, filtered by `automation` or `job` |
 | Entities and their relations that others should see too: customers, visits, facts, sources, people, topics | **The graph** | Agents find them (`graph-search`, semantic), workflows write them with `graph/*`, the run graph shows which run touched which invoice (`ACCESSED`), Concepts can describe their types, and another app can read them |
 | The app's own tables: line items, a 50k-row import, settings, high-frequency rows, anything summed or grouped | **The app's SQLite** | Real queries (filters, joins, sums, group by), migrations in the directory, one file per app, on every workspace backend including `fs`, which has no graph |
 
@@ -484,10 +595,13 @@ workspace has:
   **declared types only**. The file keeps a table of declared types and
   edges. Each new attribute is an `ALTER ADD` column on the one `Node`
   table, the same path a code attribute takes at restart. Each new edge
-  type is a `REL TABLE` from `Node` to `Node`. The registry's existing rule
-  still holds: an attribute name must have one type across every type in
-  the file, so two apps cannot give `amount` two different types; that is
-  a build error naming both. `Strut*` types and `Concept` stay code-only.
+  type is a `REL TABLE` from `Node` to `Node`. **App attributes get
+  per-type columns** (proposed, open question 2): `Invoice__amount`, not
+  `amount`, so the registry's one-type-per-attribute-name rule keeps
+  holding for the code types while two apps' `amount` never meet, and the
+  dialect's `project` maps the column back to its name. The cost is a
+  column per (type, attribute), which a SQL-shaped store pays anyway.
+  `Strut*` types and `Concept` stay code-only.
 - **The `fs` backend** has no graph. An app that declares graph types does
   not build there, and the error says so.
 
@@ -511,11 +625,11 @@ before today, by due date" is one call.
 `create-triplet`, `delete-edge`, `delete-node` and `move-node`. An app
 reaches them with `step_run`, and its reads the same way (`graph-get`,
 `graph-get-batched`, `graph-search`, `graph-neighbors`, `find`), so the
-graph adds no app tool at all. **The write scope** is the
-safety: a write from an app is refused on any type the app does not
-declare. For a create the type is in the config; for an edit or delete by
-`ref_id`, the node is read first. Reads may touch any type: the viewer can
-read the graph anyway.
+graph adds no app tool at all — the shape every other backend in §5 now
+follows. **The write scope** is the safety: a write from an app is refused
+on any type the app does not declare, read off `ctx.app`. For a create the
+type is in the config; for an edit or delete by `ref_id`, the node is read
+first. Reads may touch any type: the viewer can read the graph anyway.
 
 ### 4.4 The app's own SQLite
 
@@ -532,46 +646,113 @@ read the graph anyway.
   transaction rolls back, and nothing activates. A job's app applies them
   at build. Rolling back a version does not roll back the schema, so
   migrations must be additive; the Concept page says so.
-- **The tools:**
-  - `sql_query { sql, params? }` → `{ columns, rows }`, capped;
-  - `sql_exec { sql, params? }` → `{ changes, lastInsertRowid }`;
-  - `sql_batch { statements }`, in one transaction.
+- **The steps** (ruled: a backend is steps; there are no `sql_*` tools):
+  - `sqlite/query { sql, params? }` → `{ columns, rows }`, capped;
+  - `sqlite/exec { sql, params? }` → `{ changes, lastInsertRowid }`;
+  - `sqlite/batch { statements }`, in one transaction.
 
-  They reach this app's own file only. `ATTACH`, `DETACH`, `VACUUM INTO`,
+  **Which file** is `ctx.app`'s: a page reaches its own file through
+  `step_run`, and a run the app launched, or an automation it set, carries
+  `app` and finds the same file from its steps. A step with no `ctx.app`
+  names it — `{ app: <name> }` or `{ job, path }` — which is how an agent
+  granted `agentTools: ["sqlite/*"]` or a workflow outside the app reads
+  it; the argument is REFUSED when `ctx.app` is set, so a page can never
+  name another app's file. `ATTACH`, `DETACH`, `VACUUM INTO`,
   `load_extension` and any PRAGMA outside a short read allowlist are
   refused by a keyword pre-check, the way `graph/query.ts` checks Cypher,
   and extensions are never enabled. Raw SQL is fine here: the worst a page
-  can do is damage its own tables.
-- **The steps:** `sqlite/query` and `sqlite/exec { app | job + path, sql,
-  params? }` let a workflow or an agent reach an app's database by naming
-  the app. They are grantable (`agentTools: ["sqlite/*"]`). A job's agent
-  can also run `sqlite3 apps/<name>/data.db` with its bash.
+  can do is damage its own tables. A job's agent can also run `sqlite3
+  apps/<name>/data.db` with its bash.
 - **The export:** `GET /apps/:name/data` returns the file, behind the key.
   A job's app's database is one of the job's files.
 - **Not shared.** An app's database is its own; anything shared goes in the
   graph. A second app never opens another app's file in v1.
 
-## 5. The app's tools — the backend
+## 5. The backend — the registry, through one tool
 
-`src/apps/tools.ts` holds `buildAppTools(app, deps)`, which returns an AI
-SDK `ToolSet` like `buildAssistantTools`. It is served two ways (§7): as
-app-only tools over MCP, and as `POST …/call { tool, args }` over HTTP.
-Every call checks the app's grants first. Results are whole data, never
+**Ruled (2026-10-20): an API endpoint is the same thing as a tool or a
+workflow** — an input shape, an execution block, an output shape. So an app
+has no tool set of its own. Its backend is the registry, reached through
+ONE tool, `step_run { type, config?, input? }`, under the app's grants —
+and nothing else: even its error report is a step (§8). The steps an app
+calls are the steps a workflow or an agent calls — the same `run()`, the same schemas, one
+implementation — and strut's own routes are thin over the same layers, as
+`job/*`, `automation/*` and `strut/run-workflow` already are. The first
+draft of this section minted fifteen app-only tools and then `sqlite/*`
+steps as their twins for workflows; that was two implementations of one
+backend.
+
+`src/apps/tools.ts` holds `buildAppTools(app, deps)`: `step_run` with the
+grant checks, one tool. It is served one way (§7.2): as an app-only tool on
+the MCP doors. Every host, strut's own UI included, relays the frame's
+`tools/call` there as it is; there is no HTTP call route.
+`step_run` calls `runStep` with the viewer as actor and **`ctx.app` set**
+(`RunStepOptions.app`, the twin of `RunStepOptions.job`); the step is kept
+only by the usual rule (claims or `keep`). Results are whole data, never
 trimmed for a model. A result over 5 MB is an error that names the cap.
 
-| Tool | Grant | What it does |
+| Family | Steps | Grant, and the scope `ctx.app` carries |
 | --- | --- | --- |
-| `runs_list { workflow, limit?, status?, since?, automation?, job? }` | `workflows` (`job`: a job's app's own job) | Summaries, newest first: status, timing, cost, actor, origin, automation, job, artifacts |
-| `run_get { workflow, runId, wait? }` | `workflows` | The summary, the whole `input` and `output`, and the resolved artifacts |
-| `run_events { workflow, runId, skip? }` | `workflows` | The log, with transcripts as links (what `GET …/events` serves), capped |
-| `run_launch { workflow, input?, params?, job?, title? }` | `workflows` | Calls `launchDetached`, like `POST …/run`. `run.start` and the summary get `origin: "app"` and `app: { name, version } \| { job, path }`. The actor is the viewer, and the principal follows the usual rule. A `params` override may narrow a grant but never widen it (`grantWidenedBy`, the `meta/run-workflow` rule). Returns `{ runId }` |
-| `run_cancel { workflow, runId }` | `workflows` | The cancel that the control route does |
-| `workflow_get { workflow }` | `workflows` | The description, the active version, the `input:` block, the params defaults |
-| `step_run { type, config?, input? }` | `steps` | Calls `runStep` with the viewer as actor; the step is kept only by the usual rule (claims or `keep`). Graph writes get the §4.3 scope |
-| `sql_query`, `sql_exec`, `sql_batch` | `sqlite` | §4.4 |
-| `automations_list`, `automations_set`, `automations_delete { workflow, … }` | `automations` | The scheduler's layer (`createAutomations`), as the routes call it; `set` answers with `summary` and `next` |
-| `files_read { workflow, runId, path }` or `{ job, path }` | `workflows`, or a job's app's own job | One file, as text or base64, capped. A page cannot fetch a URL (§9) |
-| `report_error { message, stack?, componentStack? }` | always | Kept for the agent that wrote the app (§8) |
+| Runs | **New: `run/*`**, lib steps, unsealed, thin over the layer the routes call. `run/list { workflow, limit?, status?, since?, automation?, job? }` (summaries newest first: status, timing, cost, actor, origin, automation, job, artifacts); `run/get { workflow, runId, wait? }` (the summary, the whole `input` and `output`, the resolved artifacts); `run/events { workflow, runId, skip? }` (the log, transcripts as links, as `GET …/events` serves, capped); `run/launch { workflow, input?, params?, job?, title?, key? }` (`launchDetached`, like `POST …/run`: `run.start` and the summary get `origin: "app"` and `app`; the actor is the viewer and the principal follows the usual rule; a `params` override may narrow a grant but never widen it — `grantWidenedBy`, the `meta/run-workflow` rule; returns `{ runId }`; with `key`, an in-flight run of the workflow launched under the same key is returned instead of a second launch, `{ runId, existing: true }`, §5.1); `run/cancel { workflow, runId }`; `run/workflow { workflow }` (the description, the active version, the `input:` block, the params defaults); `run/files { workflow, runId, path }` (one file, text or base64, capped — a page cannot fetch a URL, §9) | `grants.workflows`: the workflows these may read, launch and cancel. A job's app also its own job (§6): `run/list { job }`, `run/files { job, path }` |
+| The graph | `graph/*`, as they are, plus `graph/find` (§4.3) | `grants.steps` names them; a write is refused on a type the app does not declare |
+| The app's tables | `sqlite/*` (§4.4) | `grants.sqlite: true`; the file is `ctx.app`'s |
+| Schedules | `automation/*`, as they are (`list`, `preview`, `create`, `update`, `delete`, `run-now`). Today they are scoped to the ONE workflow the host names (`createStrut({ automation })`) and run its approval step first; under `ctx.app` the scope is `grants.automations` and the approval is the viewer's own click — the app acts as the viewer (§11, Proposals). One step family, two scopes (open question 9) | `grants.automations` |
+| The job | `job/get`, `job/read`, as they are | a job's app's own job, implicit (§6) |
+| Anything else | Any registry step the manifest names: a package's own deterministic steps | `grants.steps`. Never a paid or shell-shaped step from a model-written manifest: `llm`, `agent`, `exec` and sealed steps only from a person (§5.1, §9) |
+| Errors | `app/report-error { message, stack?, componentStack? }`, a step kept as a run for the agent that wrote the app (§8) | always |
+
+**Why `meta/*` is not reused.** `meta/run-workflow` and `meta/get-run` are
+the sealed surface's (EVOLVE_SPEC §6): a model-written manifest may never
+grant them, and nothing about listing or launching a run is meta. The
+`run/*` steps are the unsealed twins — grantable to an agent as well
+(`agentTools: ["run/*"]`), the way `job/*` are.
+
+**`ctx.app`** (Decided) is set by the app door for the call — `{ name,
+version }` for a workspace app, `{ job, path }` for a job's — beside
+`ctx.job` and `ctx.mcp`, never from a launch body. A run `run/launch`
+starts, and an automation the app sets, carry it (the launch records `app`
+as it records `job`; the scheduler hands it on at each fire as it does
+`automation`), so the steps of a workflow working for the app find its
+file and its types the way a job's steps find the job's directory.
+
+### 5.1 Three responsibilities — reads, tools, routines
+
+**Ruled (2026-10-20):** an app's agent and LLM workflows are **routines**, a
+core part of what an app is for, and they must never be triggered by the
+UI on its own. An app does three things, and each has its own cost and its
+own trigger:
+
+| Responsibility | Steps | Cost, and what may trigger it |
+| --- | --- | --- |
+| **Rendering workflow output** | `run/get`, `run/events`, `run/files`, `run/list`; the kit's `RunGraph`, `RunTimeline`, `Transcript`, `ArtifactView` | Free reads. They refetch on their own (`live`, `wait`) |
+| **Calling tools** | `step_run` over `graph/*`, `sqlite/*`, `job/*`, a package's own deterministic steps | Cheap and synchronous, in the viewer's name. Fine on a render |
+| **AI-agent-powered UI** | `run/launch` of a routine, then the reads above. A chat box inside an app is a workflow with an `agent` step on `session: "{{ input.session }}"`, one run per turn — the orchestrator's shape, nothing new. `ui/message` reaches the host's conversation for "change this app" | A click, a run, the viewer pays. Never a render, a refetch or a poll |
+
+Three rules make the third row hold, and strut enforces them, not the
+model-written app:
+
+- **The workflow is the unit of spend.** `step_run` from a model-written
+  manifest — the builder's, a job agent's — refuses `llm`, `agent` and
+  `exec`, whatever `grants.steps` says (§9; a person's publish on the HTTP
+  door may still grant them, the `peer: true` precedent). So every model
+  call an app causes has a run behind it: a log, a cost on the summary, a
+  cancel, the viewer's delegation through the Mothership, the claims pass.
+  A one-step workflow around `llm` is the cheapest routine there is (§10).
+- **A routine is a granted workflow, and launching is a mutation.**
+  `grants.workflows` is the app's routine list; `run/workflow` gives each
+  one's description and `input:` block, which is what `LaunchForm`
+  renders. In the kit, `useLaunch` returns a function and nothing else, and
+  there is no query form of it — react-query's own split: queries refetch,
+  mutations fire only when called. Nothing can launch on mount or on a poll.
+- **Dedupe in flight.** `run/launch { key }` returns the in-flight run of
+  that workflow launched under the same key instead of starting another,
+  `{ runId, existing: true }` — a double click, a re-mounted component, a
+  retried request all land on one run. The same rule automations already
+  have: a fire is skipped while the previous run is live.
+
+The model is therefore always inside a run and never inside the page, which
+is what makes a routine safe to show as a button: strut knows what it costs
+and who clicked.
 
 ## 6. Jobs have apps
 
@@ -582,32 +763,37 @@ same way it hands over a plan or a screenshot:
 { "text": "…", "artifacts": [{ "id": "tracker", "kind": "app", "title": "Visit tracker", "path": "apps/tracker" }] }
 ```
 
-- **`artifact-refs.ts` resolves `kind: "app"`** to `{ url:
-  "/jobs/<job>/app/html?path=apps/tracker", app: { job, path } }`. A host
-  that knows `app` renders it through its bridge (§7). A host that does
-  not shows the link, which opens an inert page. Strut's job timeline and
-  the artifact viewer render it through the app host component (§7.3).
+- **`artifact-refs.ts` resolves `kind: "app"`** as it resolves any job
+  `path`, pointing at the document inside it: `{ url:
+  "/jobs/<job>/files/apps/tracker/dist/index.html", app: { job, path } }`.
+  A host that knows `app` renders it through its bridge (§7). A host that
+  does not shows the link, which opens the page with no host behind it —
+  it renders, and says so. Strut's job timeline and the artifact viewer
+  render it through the app host component (§7.3).
 - **It is live.** One live directory sits behind one link, as with every
   job deliverable: the same `id` on a later turn is a newer version of the
-  same thing. A read builds the document when the directory's content hash
-  changed and caches it by hash. `app/build` sends `job.update { kind:
-  "app" }` to a listening host, which reloads the frame.
-- **`app/build { path }`**, a step the job seed grants, builds without
-  serving. It returns the errors, the warnings, the size and the latest
-  client errors, so the agent iterates inside its turn the way it does with
-  `browser/verify`. `app/init { path, template? }` scaffolds a starter
+  same thing. `app/build` writes `dist/` and sends `job.update { kind:
+  "app" }` to a listening host, which reloads the frame. Nothing builds on
+  a read: the agent builds before it hands the app over, as it runs
+  `browser/verify` before it says done, and a `dist/` older than its
+  sources is what a stale screenshot is — `app/get` reports it `stale` from
+  `dist/build.json`'s hash.
+- **`app/build { path }`**, a step the job seed grants, writes
+  `dist/index.html` and `dist/build.json`. It returns the errors, the
+  warnings, the size and the latest client errors, so the agent iterates
+  inside its turn the way it does with `browser/verify`. `app/init { path, template? }` scaffolds a starter
   directory (§8).
-- **The routes**, behind the key:
-  - `GET /jobs/:id/app?path=`: the manifest and the build status;
-  - `GET /jobs/:id/app/html?path=`: the document;
-  - `POST /jobs/:id/app/call?path=`: `{ tool, args }`, §5.
-
-  The path goes through `jobFilePath` (`jobs.ts`), the job file routes'
-  guard: nothing outside the job's directory.
+- **No route is new.** The document and the manifest are the job's FILES —
+  `GET /jobs/:id/files/<path>/dist/index.html`, `…/<path>/app.yaml` — on
+  the file route that exists, behind the job's file token narrowed to the
+  app's path (§7.2); the frame's calls go to `/mcp` like every app's, and
+  that token names the job and the path. The path goes through
+  `jobFilePath` (`jobs.ts`), the job file routes' guard: nothing outside
+  the job's directory.
 - **Grants.** An app's `app.yaml` states its grants under the meta
   surface's rules, since a model wrote them. Every job app also gets its
-  own job: that job's runs (`runs_list { job }`, `run_get`) and its files
-  (`files_read { job }`).
+  own job: that job's runs (`run/list { job }`, `run/get`), its record
+  (`job/get`) and its files (`run/files { job, path }`, `job/read`).
 - **`ui/message` from a job's app goes to the job.** Hive puts it in the
   job's conversation, so the app talks to its agent: "add a column for the
   technician" becomes the job's next turn, and the agent edits the
@@ -621,7 +807,7 @@ same way it hands over a plan or a screenshot:
 | Message | Use |
 | --- | --- |
 | `ui/initialize` → `hostContext` | Theme, `styles.variables`, `displayMode`, locale and time zone, which the kit applies |
-| `tools/call` (app → host) | The §5 tools |
+| `tools/call` (app → host) | The §5 tool, relayed by the host to `/mcp` as it is |
 | `ui/notifications/tool-input` | What the app was opened with, `{ view?, runId?, … }`, from the model or a deep link (`useToolInput`; react-router navigates to `view`) |
 | `ui/message` | A message to the host's conversation (§6, §8) |
 | `ui/open-link` | Host-native views: a strut deep link (a run, a job, a workflow) opens in strut's UI; anything else opens in a new tab |
@@ -631,17 +817,16 @@ same way it hands over a plan or a screenshot:
 
 **HTTP.** Every route sits behind the key gate. `createStrut.test.ts`'s
 sweep covers new routes by itself, and the Vite dev proxy gains `/apps`.
+There is no call route: an app's calls go to the MCP door, below.
 
 | Route | |
 | --- | --- |
 | `GET /apps` | Active apps: name, title, description, icon, active version, grants |
 | `GET /apps/:name`, `GET /apps/:name/versions` | One app: its manifest, its files list, build info and recent client errors (§8) |
-| `GET /apps/:name/html[?version=]` | The built document's bytes, with the app token injected, for a host to FETCH. It is served `CSP: sandbox` (no scripts) and `nosniff`. Anyone who opens the URL directly, `?key=` and all, sees an inert page, so no script ever reads a credential off its own URL — the `artifactHeaders` lesson. Every host frames the fetched bytes (§7.3, §7.4) |
+| `GET /apps/:name/:version/files[/<path>]` | The version's directory, served exactly as a run's artifacts are (`GET /artifacts/:runId[/<path>]`): the listing mints the app's **file token**, a file under it opens with `?t=`, and `dist/index.html` is the document — the token written into it as it is served, `CSP: sandbox allow-scripts` + `nosniff` as any tokened `.html` gets (`artifactHeaders`). Read with the key instead of a token it runs no script, the existing rule, so no document ever reads a credential off its URL. Every host frames the fetched bytes (§7.3, §7.4) |
 | `GET /apps/:name/data` | The app's SQLite file |
 | `POST /apps` | Publish `{ name, files }`, with files as a path → content map (base64 for binary). This is a person's door, so grants are unrestricted (§9). Build errors are a 400 |
 | `PUT /apps/:name/active`, `DELETE /apps/:name` | Rollback; delete (a soft delete on the graph; the database file is kept until it is purged) |
-| `POST /apps/:name/call` | `{ tool, args }` → §5. The path names the app: the host that framed the document vouches for which one it loaded |
-| `GET /jobs/:id/app[/html]?path=`, `POST /jobs/:id/app/call?path=` | A job's app (§6) |
 
 **MCP.** Both doors, `/mcp` and `/mcp/builder`, gain three things:
 - `resources/list` and `resources/read` for `ui://strut/app/<name>`, with
@@ -651,20 +836,30 @@ sweep covers new routes by itself, and the Vite dev proxy gains `/apps`.
   description is the app's; it takes `{ view?: string, runId?: string }`
   and carries `_meta.ui.resourceUri`. Its text result names the app and
   its absolute URL, for a host without MCP Apps.
-- The §5 tools with `_meta.ui.visibility: ["app"]`: hidden from the model,
-  callable by the app.
+- `step_run` with `_meta.ui.visibility: ["app"]`: hidden from the model,
+  callable by the app. (The builder door's own `run_step` is the model's,
+  under the builder's rules; this one is the app's, under the app's
+  grants.)
 
-The host relays `tools/call` without saying which app sent it, so every
-app-only tool takes an `app` argument: the **app token**. It is an HMAC of
-`app:<name>@<version>` under the file token's secret (`tokenSecret`,
-`auth.ts`). The served document carries it, and the kit adds it to every
-call; strut applies that app's grants and refuses a call with no valid
-token. The token opens nothing alone, since the call still needs the MCP
-connection's credential.
+The host relays `tools/call` without saying which app sent it, so
+`step_run` takes an `app` argument: the app's **file token** — not a token
+of its own. `fileToken` (`auth.ts`) already mints an HMAC of a scope under
+the secret, and the scope here is the app's directory: `app:<name>@<vN>`
+for a workspace app, the job's token narrowed to the app's path for a job's
+(`job:<id>/<path>`, a subtree the job file routes accept for reads under
+it). The file route writes it into `dist/index.html` as it serves it, the
+kit adds it to every call, and strut reads the app off `fileScopeOf(token)`
+and applies that app's grants; a call with no valid token is refused. One
+token, one meaning: this document is app X at version V and may read its
+own files. Alone it is worth those files, since the call still needs the
+MCP connection's credential.
 
 `toolsetServer` gains `resources` and a per-tool `_meta` side map, which
-`mcpToolsFrom` passes through; the SDK is already lazy-imported there.
-Job apps over MCP come later (§12).
+`mcpToolsFrom` passes through; the SDK is already lazy-imported there. A
+job's app CALLS through this door from day one, since there is no other —
+its token names the job and the path, and strut reads the manifest from
+the job's files. A job's app as a RESOURCE a model can open
+(`ui://strut/job/<id>/<path>`, an `app_` tool for it) comes later (§12).
 
 ### 7.3 Strut's own UI as a host
 
@@ -674,15 +869,20 @@ Job apps over MCP come later (§12).
   appears. The topbar shows the title, a version select for rollback, and
   **Edit with the builder**, which opens the chat with the app named. The
   deep link is `?app=<name>`, which joins `embed.ts`'s params.
-- **The frame.** `api.ts` fetches the document (with the key as a header,
-  or with the session) and frames it as a blob URL in `<iframe
+- **The frame.** `api.ts` lists the version's files (which mints the
+  token — `useFileScope`, as for a run's artifacts), fetches
+  `dist/index.html?t=…` and frames the bytes as a blob URL in `<iframe
   sandbox="allow-scripts">`, as hive's `HtmlArtifactFrame` does. No `src`
   ever carries a credential, and the app runs in an opaque origin, never
   same-origin.
 - **The relay**, `web/src/app-host.ts`, is ext-apps' host bridge
-  (`AppBridge`), or the handful of messages by hand if that will not sit in
-  Preact:
-  - `tools/call` → the app's `…/call` route;
+  (`AppBridge`, plain TypeScript with no framework in it, so it sits in
+  Preact as it is — nothing is hand-rolled):
+  - `tools/call` → `/mcp`, as it is: the MCP SDK's `Client` over
+    `StreamableHTTPClientTransport` pointed at `/mcp`, with the session
+    cookie or the key and the `x-strut-ui: 1` header the UI sends on every
+    call, wired to `AppBridge` — the pairing ext-apps is built for. Every
+    other screen of the UI keeps the HTTP API as it is;
   - `ui/message` → `sendChat` on the builder chat (a workspace app);
   - `ui/open-link` → the SPA's own navigation for a strut link;
   - a theme change → `host-context-changed`.
@@ -694,63 +894,118 @@ Job apps over MCP come later (§12).
 
 ### 7.4 Any other host — the contract
 
-Hive, Peel or a customer's portal does one of two things; neither needs a
-strut change per host:
-- **The HTTP route.** List `GET /apps` (and a job's `app` deliverables),
-  fetch `…/html`, and frame it `sandbox="allow-scripts"`. Run an MCP Apps
-  host bridge, and relay `tools/call` to `…/call` with its own credential
-  and `x-strut-actor`. Hive's `HtmlArtifactFrame` already fetches a swarm
-  page into a sandboxed blob and runs a `postMessage` nav bridge; this swaps
-  the nav-only bridge for an MCP Apps one.
-- **MCP.** Connect to `/mcp` as an MCP Apps host. Then every MCP server's
-  apps work there, not only strut's.
+Hive, Peel or a customer's portal is an MCP Apps host, one of two ways;
+neither needs a strut change per host, and both end at `/mcp`:
+- **Fetch the document itself.** List `GET /apps` (and a job's `app`
+  deliverables), fetch the document from its file route with the token the
+  listing minted, and frame it `sandbox="allow-scripts"`. Run an MCP Apps
+  host bridge, and relay `tools/call` to `/mcp` AS IT IS, with its own
+  credential and `x-strut-actor`. Hive's `HtmlArtifactFrame` already
+  fetches a swarm page into a sandboxed blob and runs a `postMessage` nav
+  bridge; this swaps the nav-only bridge for an MCP Apps one pointed at
+  `/mcp`. Nothing else hive says to strut changes: runs, jobs, chat and
+  files stay on the HTTP API as today.
+- **Let MCP hand it the document.** Connect to `/mcp` as an MCP Apps host
+  and read the app as a resource. Then every MCP server's apps work there,
+  not only strut's.
 
 A host's own pages may also import the kit's library build and give it a
 client over the host's routes. Hive's OpenHealth page could swap its run
 graph for the kit's. That is adoption.
 
-## 8. Authoring — the builder and the job agent are the developers
+## 8. Authoring — the builders and the job agent are the developers
 
-Both write an app the same way: files in a directory, with their editor and
-bash, then a build that answers with errors.
+Three authors, one path. The chat builder, the `builder` JOB that
+stakwork/strut#239 adds (`plans/builder-job.md`: the orchestrator's door to
+authoring, `peer: true`, launched with `job/start { workflow: builder,
+peer? }`) and a code job's agent all write an app the same way: files in a
+directory, with the editor, then `app/build`, which answers with errors,
+then `app/publish { name, path }`. That is the loop models are trained on
+— create, build, read the errors, fix, build — minus the shell on the two
+builders. There is no second, argument-shaped way to author an app (a
+`files` map, an `edits` list): a workflow is one document and travels well
+as a tool argument, a ten-file front-end project does not, and a shape no
+model has seen would fight the very prior the fixed stack was chosen to
+ride.
 
-- **Steps** (one implementation; tools are steps):
+- **Steps** (one implementation; tools are steps — the builder's too,
+  below):
+  - `app/list` and `app/get { name, version? }`: the manifest, the files
+    list, build info, recent client errors, `stale` for a job app (§6).
   - `app/init { path, template? }` scaffolds a starter directory: `app.yaml`
     and an `App.tsx` with a shadcn sidebar layout, react-router and an
     empty `db/`, shipped under `src/apps/templates/`, so a model starts from
-    a shell that already looks right.
+    a shell that already looks right. A template is an APP: strut's own
+    under `src/apps/templates/`, or any workspace or installed app by name
+    (`template: acme/hvac/invoices`), its directory copied under the new
+    name with no `upstream` — a COPY, not a fork (§11).
+  - `app/checkout { name, version?, path }` copies a version's directory
+    (`materializeAppVersion`) to a path to edit: the builder's scratch
+    (`scratch/apps/<name>/`), or a job's directory.
   - `app/build { path }` (§6).
-  - `app/publish { name, path }` (§1.2), under the meta surface's rules when
-    the caller is the meta surface.
-- **The builder chat:**
-  - `list_apps` and `get_app { name, version? }` (manifest, files list,
-    build info, recent client errors);
-  - `checkout_app { name, version? }` copies the version into its scratch
-    (`scratch/apps/<name>/`, through `materializeAppVersion`);
-  - `build_app { path }` and `publish_app { name, path }`, thin over the
-    steps;
-  - the **text editor** the `agent` step already has
-    (`str_replace_based_edit_tool`, its `textEdit()` handler), sandboxed to
-    the builder's data directory. Today the builder has only `bash`, and a
-    real front-end project wants an editor.
-
-  The MCP builder door carries these like every other builder tool.
+  - `app/publish { name, path, job? }` (§1.2), under the meta surface's
+    rules when the caller is the meta surface; `job` publishes from another
+    job's directory (a builder job publishing a code job's prototype).
+- **The builder has no app tools of its own.** It gets the `app/*` steps as
+  named tools through `buildRegistryTools`, the function the `agent` step
+  already uses for `agentTools`: a step's input schema is the tool schema,
+  its `run()` the executor. The builder is a ToolLoopAgent like the agent
+  step, so `buildTools(deps)` makes the same call with one fixed grant,
+  `app/*`. A job agent gets them through `agentTools: ["app/*"]`, and
+  anyone through `run_step`: one implementation, three doors, no wrapper.
+  The first draft had five builder tools here (`list_apps`, `get_app`,
+  `checkout_app`, `build_app`, `publish_app`), each "thin over a step" —
+  the §5 duplication again. The MCP builder door carries them like every
+  other builder tool, since it serves `buildTools(deps)`. And because
+  `app/list` and `app/get` are steps, an app may be granted them: a
+  launcher that lists and opens other apps costs nothing.
+- **Apps are a builder job's kind of work.** #239 rules that building
+  workflows is a separate kind of work from a code job, and that the
+  authoring tools are never a grant on a regular `job`. An app is that
+  kind: it is published into the workspace, and the workflows it drives
+  are authored in the same breath. So "build me an invoice tracker" from
+  the orchestrator is `job/start { workflow: builder }`, and the `builder`
+  seed's delta, made by this plan's work item 1, gains `app/*` in
+  `params.tools` and the EDITOR FAMILY in `params.builtins` —
+  `str_replace_based_edit_tool`, `repo_overview`, `fulltext_search`: view,
+  list, grep — and still no `bash`. #239's rule is no SHELL on a workflow
+  another strut may launch; the editor is not one. It is view, create,
+  str_replace and insert sandboxed to the job's directory (`job/dir`, which
+  the builder already has and could not write in), reaching neither the
+  process nor the network, and authoring a custom step is already code
+  loaded into the process. The build is a step, not `npm run build` in a
+  shell, which is what lets a shell-less builder build an app at all. A
+  code job's agent keeps `app/init`, `app/build` and `app/get` on the job
+  seed for a job app (§6) and never `app/publish` or `app/checkout`, the
+  authoring writes: a job app reaches the workspace through a person's
+  click or a builder job on request (§1.2).
+- **The text editor** the `agent` step already has
+  (`str_replace_based_edit_tool`, its `textEdit()` handler), sandboxed to
+  the builder's data directory, joins the CHAT builder's tools too. Today
+  the chat has only `bash`, and a real front-end project wants an editor.
 - **The prompt** is an `App` Concept page under `Workflow Builder`
   (`src/concepts/App.md`), seeded by strut and one of the kinds the
   builder's prompt lists. The job workflow reads the same page through
-  `Job`'s tree. It covers:
+  `Job`'s tree, and the `builder` job through `Workflow Builder`'s, the
+  same `context/concept` step (`plans/builder-job.md` §1) — one prompt for
+  every author. It covers:
   - the layout;
   - the kit's imports, the hooks and the components;
   - §4.2's table;
   - the grant rules;
   - additive migrations;
-  - when to put work in a workflow instead (anything slow, paid or
-    shell-shaped: `useLaunch`, then `useRun` with `live`);
+  - routines (§5.1): a paid or shell-shaped step is never called from the
+    page — the grant is refused — so anything slow, paid or shell-shaped
+    is a workflow, launched on a click (`useLaunch` with a `key`, then
+    `useRun` with `live`), never on a render;
   - the four example shapes (§10).
 - **Client errors come back as results.** The kit's error boundary and
-  `window.onerror` call `report_error`. Strut keeps the last 50 per app
-  version or job app (`<dataDir>/apps/errors/<key>.jsonl`), and `get_app`
-  and `app/build` return them. An app that crashes on a run's real output
+  `window.onerror` call `app/report-error`, a step like any other, through
+  `step_run` — and a KEPT one (`keep: true`, the `run_step` surface's own
+  rule, plans/claims.md §3): the run lands under `step:app/report-error`
+  with the actor, the time, the message and `app` on its summary. `app/get`
+  and `app/build` read the app's last 50 from the run store. No file of its
+  own. An app that crashes on a run's real output
   therefore reaches the agent in a result it reads. That is the step-lint
   and ledger lesson: the model reads the contract in a result, not in an
   instruction.
@@ -765,8 +1020,8 @@ bash, then a build that answers with errors.
 An app is model-written code that runs in front of a person, with that
 person's authority over the tools its grants name.
 
-- **The page holds no credential** beyond the app token, which is worthless
-  alone (§7.2). The frame gets an opaque origin and only the `sandbox`
+- **The page holds no credential** beyond its file token, worth its own
+  files and nothing more (§7.2). The frame gets an opaque origin and only the `sandbox`
   flags; `allow-same-origin` is never set.
 - **The document's own CSP**, which a host may only tighten:
 
@@ -787,21 +1042,26 @@ person's authority over the tools its grants name.
 - **Graph writes are limited to the app's declared types** (§4.3). SQL
   reaches only the app's own file (§4.4).
 - **The meta surface may not grant** a sealed workflow or a sealed step
-  (the meta gate's rule, `authoring.ts`), nor `exec` or `agent` in
-  `grants.steps`. This covers the builder and a job's agent alike. A
-  person's publish on the HTTP door may grant anything; that is the
-  `peer: true` precedent, where a person vouches.
+  (the meta gate's rule, `authoring.ts`), nor `llm`, `exec` or `agent` in
+  `grants.steps` — the workflow is the unit of spend (§5.1). This covers
+  the builder and a job's agent alike, and `step_run` refuses the call even
+  if the manifest says otherwise. A person's publish on the HTTP door may
+  grant anything; that is the `peer: true` precedent, where a person
+  vouches.
 - **The build refuses the obvious holes** (§2.1). Any remaining XSS inside
   an app reaches only its own grants.
 - **Billing and secrets follow the viewer.** A launch or a step from an app
   is the viewer's run: their delegation pays through the Mothership, and
   `secrets` binds to their principal.
 - **Every write records who made it.** The node writer stamps no actor
-  today, so the app tool layer writes one audit line per write, whether it
-  is a graph step through `step_run` or `sql_exec` / `sql_batch`. Each line
-  holds the tool, the step type or the statement's first 200 chars, the
-  `ref_id`s or the change count, the actor and the time, and lands in
-  `<dataDir>/apps/audit/<key>.jsonl`.
+  today, so `step_run` KEEPS every write — a `graph/*` write, a
+  `sqlite/exec` or `sqlite/batch`; a `run/launch` is a run already — as a
+  kept step run (`keep: true`), the surface `run_step` has: the record
+  under `step:<type>` holds the step type, the input (the statement, the
+  `ref_id`s), the output, the actor and the time, with `app` stamped on the
+  summary as `job` is, so a fold by app is one scan. Reads are not kept. No
+  audit file of its own; the step stats and the run list see these runs
+  like any kept run.
 
 ## 10. The four apps, end to end
 
@@ -810,7 +1070,7 @@ person's authority over the tools its grants name.
 | **Benchmark hill-climb** | `openhealth-list-tasks` (the catalogue), `openhealth-run` and `openhealth-improve-loop` (launch, cancel, live), `openhealth-improve` | Reads only: the Concepts an improve step wrote | A person's notes on a run | `RunList`, `LaunchForm`, `RunGraph`, `RunTimeline`, recharts (score over time against the target line), tabs, react-router |
 | **HVAC invoice tracker** | `invoice-from-photo`, where an `agent` with vision reads a photo; until uploads exist (§12) a pasted image goes in `input`, and the run returns the invoice and the app writes it. An automation on `invoice-reminders`, whose agent finds overdue invoices with `graph/find` and drafts the emails | `Customer`, `Visit`, `Invoice` plus the edges. "Mark the Henderson invoice paid" works from any agent, and `graph-search` finds "the furnace job on Elm St" | Line items, and last year's invoices imported from CSV | tanstack table, react-hook-form + zod, papaparse, react-leaflet (the day's visits), `NodeGraph` (a customer's history), sonner |
 | **Fact library** | `fact-ingest`: a URL goes to an agent, which writes `Fact` and `Source` nodes and their edges with `graph/*` | `Fact`, `Source`, `Topic`. Semantic search comes free (`search: [...]` fields) | Reading lists and saved searches | `NodeSearch`, `NodeCard`, `NodeGraph` (React Flow over a topic), fuse.js, react-markdown |
-| **Virality tracker** | `tweet-poll` (`http` plus an `X_BEARER_TOKEN` secret, which the builder's `request_secret` asks for). "Track this tweet" creates an automation on it with `input: { tweetId }`, and `llm` runs as a step for "why did this take off?" | none | none. **The automations are its state** (one per tracked tweet), and each poll's output is a data point: `runs_list { automation }` is the series | recharts, motion, simple-statistics (the growth rate), `useAutomations` |
+| **Virality tracker** | `tweet-poll` (`http` plus an `X_BEARER_TOKEN` secret, which the builder's `request_secret` asks for). "Track this tweet" creates an automation on it with `input: { tweetId }`. "Why did this take off?" is a routine, `explain-tweet`: a one-step workflow around `llm`, launched by the button and never by the chart (§5.1) | none | none. **The automations are its state** (one per tracked tweet), and each poll's output is a data point: `run/list { automation }` is the series | recharts, motion, simple-statistics (the growth rate), `useAutomations`, `useLaunch` |
 
 Every row is built from what strut has, plus `graph/find`, declared graph
 types and the app's SQLite file.
@@ -821,23 +1081,44 @@ types and the app's SQLite file.
   name }` for a workspace app, whose version is the app version. A job's
   app is covered by the job's own claims (`job-claims.md`). A check renders
   the app with real data and reads it: `browser/verify` against the app,
-  with a recent run's `tool-input`. The browser container must open the
-  app without the key in a URL (Open questions 5). Until then,
-  `report_error` is the signal.
-- **Automations.** The app uses the `automations_*` tools on granted
-  workflows. An automation made from an app belongs to the viewer; the
+  with a recent run's `tool-input`. The document opens on its file token,
+  so the key is not the problem; what the check lacks is a HOST behind the
+  page to answer `ui/initialize` and relay `tools/call` (Open questions 5).
+  Until then, `app/report-error` is the signal.
+- **Automations.** The app uses the `automation/*` steps on granted
+  workflows, through `step_run` (§5). An automation made from an app belongs to the viewer; the
   owner and principal rules are unchanged.
 - **Runs.** `origin: "app"` and `app` go on `run.start` and the summary,
   and the run list and the run overview show an app chip.
 - **Jobs.** §6.
 - **Sealed.** §9.
-- **Packages** (`marketplace.md`). An app is a package member, like a
-  workflow or a step. The package carries the directory, without its
-  `data.db`, and the app is built at install against the installing
-  strut's kit. Its declared graph types register then, and its granted
-  workflows travel with it or are named as requirements.
+- **Packages** (`marketplace.md` §1, §3, §4). **Ruled: an app is forkable
+  and flexible.** An app is a package KIND — `apps/<name>/`, the first
+  item that is a directory — named by the prefix rule
+  (`acme/hvac/invoices`), its item hash the tree hash (§1.3), `data.db`
+  never in the package. The install builds it against the installing
+  strut's kit (a failed build refuses the install, so nothing about the
+  kit is declared), runs its `db/*.sql` on the buyer's existing file,
+  registers its graph types add-only, and its granted workflows travel in
+  the package or are `requires.packages` pins (`buildPackage` walks
+  `grants` as it walks subflows). **Flexible means one representation:** a
+  job's live directory, a workspace version, a package member, a git repo
+  and an `app/init` template are the same bytes, and every surface reads
+  them. **Forking is the normal path**, the inverse of the "wrap rather
+  than edit" nudge for a bought step: an edit is a fork carrying
+  `upstream`, an update fast-forwards an untouched app and publishes
+  beside a forked one, and the rebase is a per-file three-way merge inside
+  the directory — shadcn's model, the code copied into your project so you
+  can edit it, with the update path shadcn lacks. The app is the wrapper
+  around bought steps, so a forked UI leaves the steps underneath
+  fast-forwarding. A COPY under a new name (`app/init { template }`) has no
+  `upstream`, and no update reaches it.
 - **Peers.** An app is local. A workflow it launches may reach a peer
-  through `strut/run-workflow`.
+  through `strut/run-workflow`. A build on a peer is a builder job there
+  (`job/start { workflow: builder, peer }`, `plans/builder-job.md` §3): the
+  app is published on that strut, its deliverable comes back tagged
+  `{ peer, job }` under that plan's rule, and the host resolves it against
+  that strut. Nothing of an app crosses.
 - **Proposals.** An app acts directly as the viewer. A gated step stays a
   matter for an agent's turn, not a button.
 - **The Mothership.** Nothing new: a launch is a run.
@@ -853,14 +1134,17 @@ types and the app's SQLite file.
   budget.
 - **Push**: subscriptions over the bridge, such as a `tool-result`
   notification when a run ends or the graph changes. v1 uses polling plus
-  `wait`.
+  `wait`. This is where "an endpoint is a tool" strains — a tool returns
+  once and a UI wants a tail — and the fix is a subscription over the
+  bridge, never a streaming route creeping back into §5.
 - **A `tsc` pass at build**, against the kit's types.
 - **`connectDomains`.**
 - **Shared SQLite**, where one app reads another's file. The graph is the
   shared store.
-- **Job apps over MCP**, and **`ui/message` from a job's app in strut's
-  UI**, which has no send box for jobs. Both need a "continue this job"
-  door.
+- **A job's app as an MCP resource** a model can open (`ui://strut/job/…`,
+  an `app_` tool for it; its CALLS go through `/mcp` from day one, §7.2),
+  and **`ui/message` from a job's app in strut's UI**, which has no send
+  box for jobs. Both need a "continue this job" door.
 - **Kit components in strut's own Preact UI** (`preact/compat`).
 - **`meta/*` twins** of the builder's app tools. The steps are reachable
   already.
@@ -874,50 +1158,71 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
 1. **The app object, the build, the first host.**
    - `WorkspaceStore` app methods on files and the graph: schemas, the
      Ladybug registry, conformance cases, the fs import.
+   - `treeHash` in `src/version.ts`, the one hash for an app version and a
+     package digest.
    - `src/apps/manifest.ts` and `build.ts`: esbuild and Tailwind as
-     dependencies, the resolver, assets, the AST refusals, the document,
+     dependencies, the resolver, assets, the AST refusals and the `fetch`
+     warning, the document written to `dist/` with `build.json`,
      determinism.
    - `kit/` v1: §3.1's set minus maps and 3D, the bootstrap, `StrutClient`,
      and the run, launch, workflow and step hooks.
-   - `src/apps/tools.ts`: the run, workflow, step and `report_error` tools,
-     with grant checks.
-   - The §7.2 HTTP routes for workspace apps, with `/apps` in the Vite
-     proxy.
-   - The strut UI host (§7.3).
+   - The `run/*` lib steps (`src/steps/lib/run/`), thin over the layers the
+     routes call.
+   - `src/apps/tools.ts`: `step_run` with the grant checks and `ctx.app`
+     (`RunStepOptions.app`); the `app/report-error` step, kept.
+   - `step_run` on the MCP doors as an app-only tool: `toolsetServer`'s
+     per-tool `_meta` for the visibility flag, the file token as its `app`
+     argument. The first host needs it, so it is here, not in item 5.
+   - The §7.2 HTTP routes for workspace apps — the version's file route
+     with the app's file-token scope, the publish and the pointers — with
+     `/apps` in the Vite proxy.
+   - The strut UI host (§7.3): `AppBridge` wired to the MCP `Client` over
+     `/mcp`.
    - The steps `app/init`, `app/build` and `app/publish`, and the template.
-   - The builder's tools and its text editor.
+   - The `app/*` steps as the builder's tools (`buildRegistryTools` in
+     `buildTools`, grant `app/*`) and the chat's text editor; the `builder`
+     seed's delta (stakwork/strut#239, once merged): `app/*` in
+     `params.tools`, the editor family in `params.builtins`, no bash.
    - `App.md`.
 
    Tests drive a test app through a fake workflow. By hand, rebuild the
    OpenHealth climb view as an app against a scratch workflow with the
    same output shape.
-2. **Job apps.** The `kind: "app"` deliverable in `artifact-refs.ts`, the
-   build cache, the job routes, the implicit job grant, `job.update {
-   kind: "app" }`, `app/build` in the job seed's grants, the job timeline's
+2. **Job apps.** The `kind: "app"` deliverable in `artifact-refs.ts`
+   resolving to `dist/index.html` under the job's files, the job token
+   narrowed to an app's path (and `step_run` reading a job app off it),
+   the implicit job grant, `job.update { kind: "app" }`, `app/build` in the job seed's grants, the job timeline's
    render, and "Publish as an app". By hand, ask a job for "a tracker for
    the visits in this spreadsheet" and watch it build, open, and publish
    one.
 3. **SQLite.** The file per app, migrations at publish and at build, the
-   `sql_*` tools and their refusals, `sqlite/*` steps, the export, the audit
-   line, and the `engines` bump.
+   `sqlite/*` steps and their refusals (the file from `ctx.app`, or named
+   when there is none), the export, writes kept as step runs, and the
+   `engines` bump.
 4. **Graph data.** Declared types on Neo4j (`createNodeSchema`) and on
-   Ladybug: the declared-types table, `ALTER ADD`, rel tables, and the
-   conflict rule. This reverses ruling 6 for app-declared types only. Also
-   `graph/find` on both engines (`testBackends()`) and the write scope. By
-   hand, build the invoice tracker.
-5. **MCP.** `toolsetServer` resources and `_meta`, the per-app tools, the
-   app-only tools and the app token. By hand, have Claude render an app
+   Ladybug: the declared-types table, per-type columns by `ALTER ADD`, rel
+   tables, and the conflict rule. This reverses ruling 6 for app-declared
+   types only. Also `graph/find` on both engines (`testBackends()`) and the
+   write scope. By hand, build the invoice tracker.
+5. **MCP for models.** `toolsetServer` resources, the per-app `app_<name>`
+   tools with their `_meta.ui.resourceUri`, so an MCP Apps host opens an
+   app a model names (the app-only tool itself landed in item 1). By hand, have Claude render an app
    from strut's `/mcp`.
 6. **Strut components.**
    - Move the folds to `kit/src/core/`, with `web/` importing them.
    - `RunTimeline`, `Transcript`, `LaunchForm`, `ArtifactView`, `NodeCard`,
      `NodeSearch` and `NodeGraph`.
-   - `RunGraph` ported from hive over `run_events` and
+   - `RunGraph` ported from hive over `run/events` and
      `graph/graph-get-batched`.
    - The rest of §3.1 (maps, 3D).
    - The kit's library build.
-7. **Automations and app claims.** The `automations_*` tools, the app
-   subject kind and a render check. By hand, build the virality tracker.
+7. **Automations and app claims.** `automation/*` under `ctx.app`
+   (`grants.automations` as the scope, the viewer's click as the approval),
+   the app subject kind and a render check. By hand, build the virality
+   tracker.
+8. **The package kind** — in `marketplace.md`'s step order, once its steps
+   1–2 exist: `apps/<name>/` in `buildPackage` and `installPackage`,
+   `upstream` on app versions, the per-file merge.
 
 ## 14. Validation
 
@@ -925,12 +1230,21 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - **The build.** A good directory gives one document, with relative
     imports and `@/` overrides resolved. A non-kit import, an import that
     leaves the directory, `dangerouslySetInnerHTML` and `eval` are each
-    refused with the reason named. The same inputs give the same bytes, and
-    the hash covers every file and the kit.
+    refused with the reason named; a `fetch(` call warns, naming the hook. The same inputs give the same bytes, into
+    `dist/`; the hash covers every file but `data.db` and `dist/`, is the
+    same with any kit, and equals the package digest `marketplace.md`
+    computes over the directory.
   - **The app store's conformance**, on files and on a Ladybug file.
-  - **The app tools.** Each is refused outside its grant. A `params`
-    widening is refused. A sealed grant is refused from the builder and
-    from a job's agent, and accepted from a person.
+  - **The backend.** `step_run` refuses a step outside the grants, a
+    `run/*` call on an ungranted workflow, a graph write on an undeclared
+    type, and a `sqlite/*` call naming a file while `ctx.app` is set. A
+    `params` widening is refused. A sealed grant, and `llm`, `agent` or
+    `exec` in `grants.steps`, are refused from the builder and from a job's
+    agent, and accepted from a person. `run/launch { key }` returns the
+    in-flight run with that key and launches nothing. A workflow launched
+    through `run/launch` finds the app's file from `ctx.app`. A write from
+    an app is a kept step run under `step:<type>` with the actor and `app`
+    on its summary; a read is not kept; an `app/report-error` is.
   - **The graph.** A write on an undeclared type is refused, including an
     edit by `ref_id` of a Concept. `graph/find` filters, sorts and pages on
     both engines. A conflicting declaration is refused. Declared types
@@ -938,12 +1252,17 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - **SQLite.** Migrations run once, in order. A failing one fails the
     publish and activates nothing. `ATTACH` and `load_extension` are
     refused.
-  - **Job apps.** A `kind: "app"` deliverable resolves. A read after an
-    edit rebuilds. A path out of the job is refused. The job grant sees
+  - **Job apps.** A `kind: "app"` deliverable resolves to the document
+    under the job's files. `app/get` says `stale` after an edit until
+    `app/build` runs. A path out of the job is refused, and the narrowed
+    token opens nothing outside the app's directory. The job grant sees
     that job's runs and no other's.
   - **The MCP door.** `resources/list` and `resources/read` work,
-    `app_<name>` is listed, the app-only tools are flagged, and a missing
-    or foreign token is refused.
+    `app_<name>` is listed, the app-only tool is flagged, and a missing
+    or foreign token is refused. A document served by token carries it;
+    the bytes in `dist/` do not. A `tools/call` of `step_run` on `/mcp`
+    with a job app's token reads that app's manifest from the job's files
+    and applies its grants.
   - **The key-gate sweep.**
 - **By hand, with no host.** Start a scratch strut (`STRUT_WORKSPACE_BACKEND=ladybug`
   and a key). Tell the builder: "build me an invoice tracker for an HVAC
@@ -953,7 +1272,10 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - its line items survive a reload;
   - "Add a due-date column", typed in the app, reaches the chat and makes
     v2, and the frame reloads;
-  - rolling back to v1 works.
+  - rolling back to v1 works;
+  - the same ask as a `builder` job (`POST /workflows/builder/run { job,
+    input: { prompt } }`) writes the app with the editor, builds it with
+    `app/build` and publishes it, with no `bash` call in the run log.
 - **An MCP Apps host.** Add strut's `/mcp` to Claude as a remote connector.
   "Open the invoices app" should render it inline, its tool calls should
   work, and the viewer's actor should be on what it writes. Repeat with
@@ -972,23 +1294,28 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    (a later step), or is that the job of a workflow?
 2. **Ladybug's closed registry.** Apps would open it for declared types,
    which reverses ruling 6 for non-Strut types. Because the file keeps one
-   column per attribute name across all types, two apps' `amount` must
-   agree on a type. Is that acceptable, or should app attributes be
-   namespaced per type (`Invoice.amount` as its own column)?
+   column per attribute name across all types, two apps' `amount` would
+   have to agree on a type. **Proposed answer (2026-10-20): per-type
+   columns** (`Invoice__amount`, §4.3), so app types never meet each other
+   or the code types. Open until ruled.
 3. **Where a workspace version's files and document live on the graph
    backend.** Node properties (the workspace stays self-contained, at up to
-   ~20 MB per version) or content-addressed blobs under `dataDir` with the
-   node holding the hashes (lighter, but a graph copied without `dataDir`
-   loses them)?
+   ~20 MB per version) or directories under `dataDir` with the node holding
+   the hashes? **Proposed answer (2026-10-20): `dataDir`** (§1.3), the rule
+   artifacts, cassettes and jobs already follow; a graph copied without its
+   `dataDir` loses them as it loses artifacts. Open until ruled.
 4. **How the kit ships.** It could be built in `prepare`, which installs the
    kit's dev dependencies in every git-dependency install (mcp's), or built
    once per kit release and published as a package strut pins exactly,
    which hive can also import. My lean is the second.
-5. **How a check opens an app** without a key in a URL: a short-lived,
-   read-only view token the verify pass mints for its own browser call, or a
-   session in a storage-state secret.
-6. **The app token on the MCP door.** My lean is to send it as an argument,
-   since the spec has hosts forward arguments as-is. The alternative is
+5. **How a check drives an app.** The document opens on its file token, so
+   the URL is no longer the problem; what `browser/verify` lacks is a HOST
+   behind the page — something to answer `ui/initialize` and relay
+   `tools/call` as the viewer the check runs as. A `browser/open { app }`
+   that runs the bridge in the check's own page, or a check that renders
+   through strut's UI signed in with a session; not designed.
+6. **The file token on the MCP door.** My lean is to send it as an
+   argument, since the spec has hosts forward arguments as-is. The alternative is
    `params._meta`, but the spec does not promise that hosts forward it.
 7. **When migrations run against activation.** Today they run at publish,
    before the version activates, so a v2 migration lands while v1 is still
@@ -996,3 +1323,23 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
 8. **How hive lists apps.** A per-workspace Apps page plus a job's `app`
    deliverables, with the benchmark registry's entries becoming apps. That
    is hive's call; strut's contract is §7.4.
+9. **Automations from an app.** The `automation/*` steps today serve one
+   host-named workflow behind the host's approval step; §5 has them read
+   `grants.automations` from `ctx.app` and take the viewer's click as the
+   approval. One step family with two scopes, or does the app want its own
+   `automation/*` twins? My lean is one family: the approval is a step the
+   host configures, and an app with none configured simply has none.
+10. **A new app's tool on a stateless door.** `app_<name>` (§7.2) is a tool
+    that did not exist when the host connected. MCP announces that through
+    `notifications/tools/list_changed`, which needs a session, and both
+    doors are deliberately stateless — one SDK `Server` per request
+    (`src/ai/mcp.ts`). So an app the builder publishes mid-conversation
+    shows up in Claude Desktop or Goose only once the host refreshes its
+    tool list: a new chat, a reconnect. Two ways out: a sessionful door
+    (the SDK has one; strut chose stateless for simplicity), or ONE
+    `open_app { name, view?, runId? }` tool — which works only if MCP Apps
+    lets a tool RESULT carry `_meta.ui.resourceUri`, where my reading of
+    SEP-1865 has it on the tool definition alone, so the host can prefetch
+    the resource. Check the spec before work item 5. Until it is settled,
+    the builder's reply names the app and its URL, and a host without the
+    tool shows a link.

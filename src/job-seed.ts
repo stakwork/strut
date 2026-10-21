@@ -48,6 +48,12 @@ export interface JobSeedOptions {
    *  pinned, so it runs on the deployment's connected model
    *  (`STRUT_DEFAULT_MODEL`), which a desktop host changes at run time. */
   model?: string | null;
+  /** `false` deletes the template's top-level `peer: true` — a deployment
+   *  that will not have other struts launch the workflow. Only `builder`
+   *  carries one (plans/builder-job.md §4); on `job` and `orchestrator`
+   *  there is nothing to delete. A delta can only CLOSE a workflow to
+   *  peers, never open one: opening is the template's statement. */
+  peer?: false;
 }
 
 export const JOB_WORKFLOW = "job";
@@ -67,7 +73,8 @@ const JOB_YAML = new URL("./workflows/job.yaml", import.meta.url);
  *  hashed and published. Pure over the file: no workspace. Shared with the
  *  `orchestrator` seed (src/orchestrator-seed.ts), whose delta is the same. */
 export async function templateWithDelta(template: URL, opts?: JobSeedOptions): Promise<string> {
-  const doc = yaml.load(await readFile(template, "utf-8")) as { params: { tools: string[]; approve?: string[]; system: string; model?: string } };
+  const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean; params: { tools: string[]; approve?: string[]; system: string; model?: string } };
+  if (opts?.peer === false) delete doc.peer;
   if (opts?.tools?.length) doc.params.tools.push(...opts.tools);
   if (opts?.approve?.length) (doc.params.approve ??= []).push(...opts.approve);
   if (opts?.model === null) delete doc.params.model;
