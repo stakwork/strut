@@ -796,6 +796,12 @@ export interface ArtifactRef {
   url?: string;
   content?: unknown;
   error?: string;
+  /** Another strut's deliverable (a run on a peer): `path` is relative to
+   *  `job`'s directory THERE, and a strut-relative `url` is the peer's —
+   *  this strut opens neither. */
+  peer?: string;
+  job?: string;
+  path?: string;
 }
 
 /** A current deliverable of a job: the ref and the run that last reported it. */

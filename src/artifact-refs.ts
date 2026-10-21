@@ -10,6 +10,13 @@
  * read off the file's extension (or a manifest's name). `output` itself is
  * never rewritten.
  *
+ * An entry tagged with a `peer` (plans/builder-job.md §3) is ANOTHER
+ * strut's — `strut/run-workflow` tags the deliverables of the run it
+ * waited on there — and is left as it came: its `path` is relative to
+ * that peer's `job` directory and its `url` is the peer's, so nothing here
+ * resolves, checks or rewrites either (the handle rule, plans/federation.md
+ * §2.2). The reader resolves it against the peer, by id.
+ *
  * `kind` is the HOST's renderer vocabulary (hive's canvas chat:
  * `markdown | html | image | video | audio | pdf | url | diff |
  * pull_request | code | log | json`), passed through unchecked; the
@@ -30,6 +37,10 @@ export interface ArtifactEntry {
   url?: string;
   /** Inline: a diff, a JSON value, short markdown. */
   content?: unknown;
+  /** Another strut's deliverable: the peer's id, as this strut names it. */
+  peer?: string;
+  /** With `peer`: the job its files are under on that peer. */
+  job?: string;
 }
 
 /** One resolved entry, as a host receives it. */
@@ -44,6 +55,13 @@ export interface ArtifactRef {
   /** Why there is no `url`/`content`: the file is not there, the url is
    *  not one, the content is over the cap. The host shows "unavailable". */
   error?: string;
+  /** Another strut's deliverable, left as it came: `path` (relative to
+   *  `job`'s directory there) and `url` are THAT peer's, for the reader to
+   *  resolve against it by id — never a link on this strut. */
+  peer?: string;
+  job?: string;
+  /** With `peer` only. */
+  path?: string;
 }
 
 /** Inline content larger than this is refused (the ref carries `error`). */
@@ -148,7 +166,14 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
     // strut (it knows where the file is); it takes the place of a `url`.
     // A `content` rides along whichever way the location resolved.
     let error: string | undefined;
-    if (path !== undefined) {
+    const peer = text(raw["peer"]);
+    if (peer) {
+      // Another strut's: kept as it came. Its path and url are the peer's,
+      // for the reader to resolve there — nothing here checks either.
+      const job = text(raw["job"]);
+      if (!text(raw["kind"])) ref.kind = artifactKind((path ?? url) ?? "");
+      Object.assign(ref, { peer, ...(job ? { job } : {}), ...(path !== undefined ? { path } : {}), ...(url !== undefined ? { url } : {}) });
+    } else if (path !== undefined) {
       const rel = path.replace(/^\/+/, "");
       const resolved = at.job ? jobFileUrl(at.job, rel) : `/artifacts/${encodeURIComponent(at.runId)}/${rel}`;
       if (!text(raw["kind"])) ref.kind = artifactKind(rel);
@@ -166,8 +191,8 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       else ref.content = raw["content"];
     }
     // An error only when nothing could be shown: a bad path beside good
-    // inline content is still something to look at.
-    if (error && ref.url === undefined && ref.content === undefined) ref.error = error;
+    // inline content is still something to look at, and so is a peer's path.
+    if (error && ref.url === undefined && ref.path === undefined && ref.content === undefined) ref.error = error;
     out.push(ref);
   }
   return out;

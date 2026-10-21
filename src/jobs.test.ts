@@ -506,6 +506,32 @@ describe("jobs — artifact refs", () => {
     ]);
   });
 
+  it("leaves an entry tagged with a peer as it came — its path and url are the peer's — and resolves the rest of the list", async () => {
+    const checked: string[] = [];
+    const output = {
+      artifacts: [
+        { id: "plan", title: "Plan", path: "plan.md" },
+        { id: "far", title: "Far plan", path: "plan.md", peer: "acme-web", job: "peer/build-1" },
+        { id: "far-gone", title: "Far ../", path: "../up.md", peer: "acme-web", job: "peer/build-1" },
+        { id: "far-link", kind: "html", title: "Far page", url: "/jobs/peer%2Fbuild-1/files/page.html", peer: "acme-web" },
+        { id: "far-pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", peer: "acme-web", job: "peer/build-1" },
+        { id: "far-inline", title: "Sample", content: "hello", peer: "acme-web" },
+        { id: "far-empty", title: "Nothing", peer: "acme-web" },
+      ],
+    };
+    const refs = await resolveArtifactRefs(output, { runId: "run-1", job: "build-1", exists: async (url) => (checked.push(url), true) });
+    assert.deepEqual(refs, [
+      { id: "plan", kind: "markdown", title: "Plan", url: "/jobs/build-1/files/plan.md" },
+      { id: "far", kind: "markdown", title: "Far plan", path: "plan.md", peer: "acme-web", job: "peer/build-1" },
+      { id: "far-gone", kind: "markdown", title: "Far ../", path: "../up.md", peer: "acme-web", job: "peer/build-1" },
+      { id: "far-link", kind: "html", title: "Far page", url: "/jobs/peer%2Fbuild-1/files/page.html", peer: "acme-web" },
+      { id: "far-pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", peer: "acme-web", job: "peer/build-1" },
+      { id: "far-inline", kind: "url", title: "Sample", content: "hello", peer: "acme-web" },
+      { id: "far-empty", kind: "url", title: "Nothing", error: "one of path, url or content is required" },
+    ]);
+    assert.deepEqual(checked, ["/jobs/build-1/files/plan.md"], "nothing of the peer's is looked for here");
+  });
+
   it("is undefined when the output declares none", async () => {
     assert.equal(await resolveArtifactRefs({ text: "hi" }, at()), undefined);
     assert.equal(await resolveArtifactRefs("a string", at()), undefined);

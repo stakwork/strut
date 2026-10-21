@@ -145,6 +145,33 @@ unavailable. Entries with no `id` or `title` are dropped. The same
 list is at `GET /workflows/:name/runs/:runId/artifacts` for a callback you
 missed.
 
+**A deliverable from another strut — `peer` and `job`.** A run that did
+its work on another strut (`strut/run-workflow`; the `builder` workflow
+launched with `input.peer`, `plans/builder-job.md` §3) hands back THAT
+strut's deliverables, and its files are there, not here. Each such entry
+carries `peer` — the id this strut has the other on file under (`GET
+/peers`; hive registers a workspace's swarm by its slug) — and, when the
+work ran under a job there, `job`: the job as THAT strut holds it
+(`peer/<id>` when it was launched on its peer key). Strut delivers it as it
+came, never resolved here:
+
+```json
+{ "id": "plan", "kind": "markdown", "title": "Plan", "path": "plan.md", "peer": "acme-web", "job": "peer/build-1" }
+```
+
+no `url` made on this strut, no `not found`; `kind` is read off the
+extension as for any entry. **Resolve it against the peer, by its id**: a
+`path` is `GET /jobs/<job, percent-encoded>/files/<path>` on the strut you
+know as `peer`, read with your own credential for that strut; a `url`
+starting with `/` is a link on that strut too; an absolute `url` and a
+`content` are what they are anywhere. A host that cannot reach the peer
+shows the entry as foreign — its title and where it lives — rather than as
+unavailable. An entry the peer itself got from a third strut keeps the tag
+the peer gave it (the peer's id for that strut). The output's own `peer`
+(the `builder`'s reply) says the same of the whole turn. A link is never
+written into the entry: a URL would be a second identity for one thing,
+stale once the peer moves (the handle rule, `plans/federation.md` §2.2).
+
 **Jobs.** `POST …/run { job: "<id>" }` launches the run under a job — an
 id you mint, the format of a session id (`API.md` §9) — and the `job/dir`
 step then hands the workflow ONE directory, `<dataDir>/jobs/<id>/`, the

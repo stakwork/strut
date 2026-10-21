@@ -215,7 +215,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/workflows/:name/runs/:runId`                         | the summary (§5.1); a partial one (§5.2) while the run is going or if it died before finalizing; 404 only when there is no log at all |
 | GET    | `/workflows/:name/runs/:runId/events`                  | every event, in order (§5.3) |
 | GET    | `/workflows/:name/runs/:runId/transcripts/<step path>` | one agent session as a bare array of AI SDK model messages; 404 if that step recorded none. For a step that continued a `session` (§9) this is its system prompt + THAT TURN; `?full=1` is the thread up to and including it (404 once the session is deleted) |
-| GET    | `/workflows/:name/runs/:runId/artifacts`               | `{ workflow, runId, job?, artifacts: [{ id, kind, title, label?, summary?, url? \| content? \| error? }] }` — the deliverables the run's output declared, resolved as the run callback resolves them (`CALLBACKS.md` §4); 404 until the run has a summary |
+| GET    | `/workflows/:name/runs/:runId/artifacts`               | `{ workflow, runId, job?, artifacts: [{ id, kind, title, label?, summary?, url? \| content? \| error?, peer?, job?, path? }] }` — the deliverables the run's output declared, resolved as the run callback resolves them (`CALLBACKS.md` §4) — one tagged `peer` (another strut's, `strut/run-workflow`) as it came, its `path` in that peer's `job`, resolved by the reader against the peer; 404 until the run has a summary |
 | GET    | `/workflows/:name/evidence[?runId=&limit=&before=]`   | what the checks said about the workflow's runs (§5.4) |
 | GET    | `/artifacts/:runId`                                    | `{ runId, files: ["report.md", …], token? }` — what the run's steps wrote, and the run's **file token** (present when there is a secret to sign it: `STRUT_API_KEY`, else `STRUT_SECRET_KEY`): a `GET` of this listing or of any file under it with `?t=<token>` needs no key — the link form, worth this run's files and nothing else (an HMAC of the run id under the secret: no store, rotates with it). A `?t=` strut cannot vouch for is a 401 even on an open strut, so a host's gate may hand token-bearing reads through; 501 when the deployment has no artifact store |
 | GET    | `/artifacts/:runId/<path>`                             | the file, content-typed by extension (unknown → `application/octet-stream`), with `X-Content-Type-Options: nosniff` and `Access-Control-Allow-Origin: *`; 404 for a path that is not a file (a directory: the listing is what names what is in it). A step wrote it, so everything but `video/*` and `audio/*` also carries `Content-Security-Policy: sandbox`: opened in a browser it has no origin, and only `text/html` read by its file token runs script (`sandbox allow-scripts`) — a page an agent built runs, and the one thing in its URL is that token; read with the key, or through a host's gate, it runs none. A host that frames or proxies artifacts must keep these headers |
@@ -632,9 +632,11 @@ It makes two requests of this API on the peer:
    back).
 
 The step's output is `{ peer, workflow, runId, status, output?, error?,
-durationMs }` — the peer's `RunResult` under the handle; an `artifacts`
-path in it is the peer's (`/jobs/<id>/files/…` or `/artifacts/<runId>/…`
-THERE), and a graph `ref_id` in it is the peer's graph's. `wait: false`
+durationMs }` — the peer's `RunResult` under the handle; each entry of
+an `artifacts` list in it comes back tagged `{ peer, job }` — `job` the
+job the peer recorded the run under — so its `path` stays the peer's
+(`/jobs/<job>/files/…` THERE; `CALLBACKS.md` §4), and a graph `ref_id` in
+it is the peer's graph's. `wait: false`
 returns `{ peer, workflow, runId, status: "running" }` at once. Cancelling
 the caller's run POSTs `…/cancel` on the peer. `job` names a job ON THE
 PEER (kept there as `peer/<job>`, §3); the caller's own job is never

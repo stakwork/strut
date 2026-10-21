@@ -8,7 +8,7 @@ import { foldRunOverview, type OverviewRow, type RowKind } from "../run-overview
 import { AgentIcon, ExternalIcon, EyeIcon, FileIcon, ImageIcon, LoopIcon, RunLinkIcon, SparkIcon, StepIcon, SubflowIcon } from "../icons";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { ProposalList } from "./ProposalList";
-import { fmtCost, fmtDuration, fmtTime, linkOf } from "./JobTimeline";
+import { fmtCost, fmtDuration, fmtTime, linkOf, peerArtifactNote } from "./JobTimeline";
 import { ValueFields } from "./ValueFields";
 import { PALETTE, paletteKey } from "../step-colors";
 
@@ -228,11 +228,11 @@ export function RunOverview(props: {
             const viewable = !!link && isArtifactPath(link);
             const Icon = a.kind === "image" ? ImageIcon : FileIcon;
             return (
-              <button key={a.id} class="ov-art" onClick={() => openArtifact(a)} title={a.summary ?? a.title}>
+              <button key={a.id} class="ov-art" onClick={() => openArtifact(a)} title={a.peer ? peerArtifactNote(a) : a.summary ?? a.title}>
                 <Icon size={14} />
                 <span class="ov-art-text">
                   <span class="ov-art-title">{a.title}</span>
-                  <span class="ov-art-sub">{a.error ?? a.label ?? (link ? linkText(link) : a.kind)}</span>
+                  <span class="ov-art-sub">{a.peer ? `on @${a.peer} · ${a.path ?? (link ? linkText(link) : a.kind)}` : a.error ?? a.label ?? (link ? linkText(link) : a.kind)}</span>
                 </span>
                 {viewable ? <EyeIcon /> : link ? <ExternalIcon /> : null}
               </button>
