@@ -64,7 +64,7 @@ What exists, and what's missing:
 | Question | Decision |
 | --- | --- |
 | The unit | ***Ruled:* one design serves both a workflow-centric package and a step-centric one.** A package is a DIRECTORY holding one namespace; any folder may be absent, so a package can be only steps, or only Concepts (§1) |
-| An app | ***Ruled (2026-10-20):* forkable and flexible.** A kind like the others, `apps/<name>/` — the one item that is itself a directory (`apps.md` §1.1). Its item hash is the tree hash of its own directory, the same function as the package digest; `data.db` is never shipped; it is built at install against the installing strut's kit, and the build is the check. An update merges it per file, and the app is the wrapper that keeps the package's steps fast-forwarding underneath a fork (§1, §3, §4) |
+| An app | ***Ruled (2026-10-20):* forkable and flexible.** A kind like the others, `apps/<name>/` — the one item that is itself a directory (`apps.md` §1.1). Its item hash is the tree hash of its own directory, the same function as the package digest; `data.db` and `dist/` are never shipped; it is built at install against the installing strut's kit, and the build is the check. An update merges it per file, and the app is the wrapper that keeps the package's steps fast-forwarding underneath a fork (§1, §3, §4) |
 | What is sold | ***Ruled (revised 2026-10-19):* packages.** A paid package is a gated download. Paid execution is a later plan (§6) |
 | Ownership | **By prefix.** Package `acme/linear` owns every name under `acme/linear/`, workflows included (`acme/linear/sync`). Who owns a name is read off the name; nothing is bound at install (§1) |
 | Dependencies | **A package carries only its own prefix.** Another package it executes is a `requires.packages` pin — an exact digest with a source hint — and the install resolves those with the same function, under one ask. No ranges, no solver: exact pins union, and two that disagree refuse (§1, §3) |
@@ -155,7 +155,8 @@ requires:
   as the package digest below (`treeHash`, `src/version.ts`), which is
   also its version hash in the workspace (`apps.md` §1.3): one hash, so
   "untouched" means the same thing for an app as for a workflow.
-  `data.db` is never in a package — it is the buyer's data, as a run is.
+  `data.db` and `dist/` are never in a package — the buyer's data, and the
+  derived document the install builds (`apps.md` §2).
   The kit the app is built against is the INSTALLING strut's, never the
   package's: the build at install is the compatibility check (§3), and the
   manifest declares nothing about it. The alternative — a package that IS
@@ -198,7 +199,7 @@ requires:
   strut after every change.
 - **Not in a package:** runs, evidence, secret values, automations,
   owners, run caps, params overrides, prices, signatures, an app's
-  `data.db`, a kit version.
+  `data.db` and `dist/`, a kit version.
 
 ## 2. Building one — `buildPackage`
 
@@ -222,7 +223,7 @@ steps?, apps?, concepts? })` writes the directory:
    (a templated `subflow` or grant) is refused, naming the step, unless
    `workflows` / `steps` list what it reaches. A named app itself goes in
    whole — its active version's directory as `materializeAppVersion` gives
-   it, minus `data.db`, which is never an item's content.
+   it, minus `data.db` and `dist/`, which are never an item's content.
 2. **Helpers.** Every `_`-prefixed file in the prefix's step directory goes
    in. Imports aren't parsed; the namespace convention (`gitree/_shared`)
    is the boundary.
