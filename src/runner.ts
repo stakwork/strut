@@ -21,7 +21,7 @@ import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tally
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
-import { PEER_NAMESPACE, type SessionsCapability } from "./session-store.js";
+import { peerScoped, type SessionsCapability } from "./session-store.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -183,8 +183,8 @@ function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined)
   const sessions = (services as { sessions?: SessionsCapability }).sessions;
   if (typeof sessions?.open !== "function") return services;
   const view: SessionsCapability = {
-    open: (id, holder) => sessions.open(`${PEER_NAMESPACE}${id}`, holder),
-    holder: (id) => sessions.holder(`${PEER_NAMESPACE}${id}`),
+    open: (id, holder) => sessions.open(peerScoped(id), holder),
+    holder: (id) => sessions.holder(peerScoped(id)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }

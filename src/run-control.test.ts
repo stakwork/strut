@@ -1257,6 +1257,17 @@ describe("run control endpoints", () => {
       const ours = await post("/workflows/open/run", "deploy-key", { input, job: "j1" });
       assert.deepEqual((await waitForSummary(store, "open", ours.body.runId!)).output, { session: "s1", job: "j1" });
 
+      // A thread named after the job — the builder's `input.session ||
+      // $job` — is the job's own id there, `peer/<job>`: the job arrives
+      // namespaced, and the session is not namespaced a second time.
+      await workspace.publishWorkflowByContent(
+        "openjob",
+        ["name: openjob", "peer: true", "steps:", "  - id: o", "    type: opener", '    config: { session: "{{ input.session || $job }}" }'].join("\n"),
+      );
+      const byJob = await post("/workflows/openjob/run", "peer-key", { input: {}, job: "j2" });
+      assert.equal(byJob.status, 202);
+      assert.deepEqual((await waitForSummary(store, "openjob", byJob.body.runId!)).output, { session: "peer/j2", job: "peer/j2" });
+
       // The flag reads back with the flow.
       const flowRes = await strut.app.request("/workflows/open/flow", { headers: { authorization: "Bearer deploy-key" } });
       assert.equal(((await flowRes.json()) as { peer?: boolean }).peer, true);
