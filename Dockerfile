@@ -59,11 +59,13 @@ RUN apt-get update && apt-get install -y \
 # Same contents as mcp's: PDF text (pypdf, pdfplumber; pdftotext from poppler),
 # spreadsheets (openpyxl, pandas), numerics (numpy), images (pillow), scraping
 # (requests, bs4), media (yt-dlp; ffmpeg from apt), video frame OCR
-# (opencv-python-headless + pytesseract over the tesseract binary).
+# (opencv-python-headless + pytesseract over the tesseract binary). certifi is
+# requests' CA bundle, pinned past the compromised emSign intermediates
+# (GHSA-6q48-6c7w-9gw2).
 RUN python3 -m venv /usr/src/agent-venv && \
     /usr/src/agent-venv/bin/pip install --no-cache-dir \
-      numpy pandas openpyxl pypdf pdfplumber pillow requests beautifulsoup4 yt-dlp \
-      opencv-python-headless pytesseract && \
+      numpy pandas openpyxl pypdf pdfplumber pillow requests "certifi>=2026.10.19" \
+      beautifulsoup4 yt-dlp opencv-python-headless pytesseract && \
     /usr/src/agent-venv/bin/python -c "import numpy, pandas, openpyxl, pypdf, pdfplumber, PIL, requests, bs4, cv2, pytesseract"
 ENV PATH="/usr/src/agent-venv/bin:$PATH"
 
