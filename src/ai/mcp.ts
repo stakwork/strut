@@ -147,8 +147,13 @@ function toContent(out: ModelOutput): { content: Content[]; structuredContent?: 
   }
 }
 
+/** Per-tool `_meta`, listed beside the tool (tools/list): what an AI SDK
+ *  tool has no field for — MCP Apps' `ui.visibility` (an app-only tool,
+ *  src/apps/tools.ts), a `ui.resourceUri` later. */
+export type McpToolMeta = Record<string, Record<string, unknown>>;
+
 /** The builder's AI SDK tools as MCP tools — nothing reimplemented. */
-export function mcpToolsFrom(tools: ToolSet): McpTools {
+export function mcpToolsFrom(tools: ToolSet, meta: McpToolMeta = {}): McpTools {
   const executable = Object.entries(tools).filter(([, t]) => typeof t.execute === "function");
   return {
     async list() {
@@ -163,6 +168,7 @@ export function mcpToolsFrom(tools: ToolSet): McpTools {
             name,
             ...(description ? { description } : {}),
             inputSchema: { type: "object" as const, ...inputSchema },
+            ...(meta[name] ? { _meta: meta[name] } : {}),
           };
         }),
       );
@@ -228,17 +234,19 @@ export interface ToolsetServerOptions {
   instructions: string;
   /** Prompts served; none → no prompts capability. */
   prompts?: McpPrompt[];
+  /** Per-tool `_meta` (`McpToolMeta`), passed through to tools/list. */
+  meta?: McpToolMeta;
 }
 
 /** One SDK `Server` over a tool set (and prompts) — what `createMcpDoor`
  *  connects to a transport per request, and what a test connects to an
  *  `InMemoryTransport`. */
-export async function toolsetServer({ tools: toolSet, instructions, prompts = [] }: ToolsetServerOptions): Promise<Server> {
+export async function toolsetServer({ tools: toolSet, instructions, prompts = [], meta }: ToolsetServerOptions): Promise<Server> {
   const [{ Server }, types] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/index.js"),
     import("@modelcontextprotocol/sdk/types.js"),
   ]);
-  const tools = mcpToolsFrom(toolSet);
+  const tools = mcpToolsFrom(toolSet, meta);
   const server = new Server(
     { name: "strut", version: VERSION },
     { capabilities: { tools: {}, ...(prompts.length ? { prompts: {} } : {}) }, instructions },
@@ -276,14 +284,19 @@ export interface BuilderMcpOptions {
   instructions: string;
   /** The `workflow-builder` prompt's text: `buildSystem(deps)` by default. */
   prompt?: () => Promise<string>;
+  /** Tools served BESIDE the builder's — the app door's `step_run`
+   *  (src/apps/tools.ts), with its `_meta` in `meta`. */
+  tools?: ToolSet;
+  meta?: McpToolMeta;
 }
 
 /** The BUILDER set: `buildTools(deps)` + the `workflow-builder` prompt. */
-export function builderServer({ deps, instructions, prompt }: BuilderMcpOptions): Promise<Server> {
+export function builderServer({ deps, instructions, prompt, tools, meta }: BuilderMcpOptions): Promise<Server> {
   return toolsetServer({
-    tools: buildTools(deps),
+    tools: { ...buildTools(deps), ...(tools ?? {}) },
     instructions,
     prompts: [{ name: PROMPT_NAME, description: PROMPT_DESCRIPTION, read: prompt ?? (() => buildSystem(deps)) }],
+    ...(meta ? { meta } : {}),
   });
 }
 

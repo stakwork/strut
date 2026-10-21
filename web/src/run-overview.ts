@@ -25,6 +25,7 @@ export interface OverviewEvent {
   error?: { message: string };
   actor?: string;
   job?: string;
+  app?: { name: string; version: string };
   modelCalls?: number;
   usage?: TokenUsage;
   cost?: number;
@@ -64,6 +65,8 @@ export interface RunOverview {
   durationMs: number;
   actor?: string;
   job?: string;
+  /** The app the run was launched for (plans/apps.md §11). */
+  app?: { name: string; version: string };
   cost: number;
   modelCalls: number;
   toolCalls: number;
@@ -275,6 +278,7 @@ export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunO
     durationMs: total,
     ...(runStart?.actor ? { actor: runStart.actor } : {}),
     ...(runStart?.job ? { job: runStart.job } : {}),
+    ...(runStart?.app ? { app: runStart.app } : {}),
     cost,
     modelCalls,
     toolCalls,

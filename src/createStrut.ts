@@ -33,7 +33,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -52,6 +52,8 @@ import {
   isValidSecretName,
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, fileResult, listEntryOf, matchesRunFilter, type RunListEntry, type RunsCapability } from "./runs.js";
+import type { AppRef } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
@@ -68,10 +70,10 @@ import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orches
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
 import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
-import { stepHashesFor } from "./closure.js";
+import { grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
-import { createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
+import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import type { KitLocation } from "./apps/kit.js";
 import { listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -919,7 +921,14 @@ export async function createStrut<TServices = unknown>(
   // wins, as every other capability's does.
   const apps: AppsCapability =
     ((services as Record<string, unknown>)["apps"] as AppsCapability | undefined) ??
-    createApps({ workspace, getRegistry: () => registry, ...(opts.kit ? { kit: opts.kit } : {}) });
+    createApps({
+      workspace,
+      getRegistry: () => registry,
+      ...(opts.kit ? { kit: opts.kit } : {}),
+      // An app's client-side errors are kept runs (plans/apps.md §8): read
+      // off the run store, newest first, when `app/get` asks.
+      errors: (name, max) => appErrors(store, name, max),
+    });
   (services as Record<string, unknown>)["apps"] = apps;
   let stepSources: StepSources = {};
   // `type@vN` pins load through the workspace's version archive (src/step-ref.ts).
@@ -2310,11 +2319,16 @@ export async function createStrut<TServices = unknown>(
     if (!bytes) return c.json({ error: `no file "${relPath}" in ${at.name}@${at.version}` }, 404);
     const tokenRead = carriesFileToken(c);
     if (relPath === DOCUMENT_FILE) {
-      // The document: the app's identity goes in as it is served (§7.2) —
-      // the token it was read with, and nothing when it was the key.
+      // The document: the app's IDENTITY goes in as it is served (§7.2;
+      // `appIdentity`, auth.ts — the scope and its token, what `step_run`
+      // reads the app off): under the token it was read with; on a strut
+      // with no secret to sign one (nothing minted, the gate open) the
+      // scope alone, so a dev strut's apps still call; read with the key
+      // instead, nothing.
       const html = Buffer.from(bytes).toString("utf8");
-      const token = tokenRead ? fileToken({ kind: "app", id: `${at.name}@${at.version}` }) : undefined;
-      return c.body(token ? withToken(html, token) : withoutTokenMeta(html), 200, artifactHeaders(relPath, tokenRead));
+      const signs = fileToken({ kind: "app", id: `${at.name}@${at.version}` }) !== undefined;
+      const identity = tokenRead || !signs ? appIdentity(at.name, at.version) : undefined;
+      return c.body(identity ? withToken(html, identity) : withoutTokenMeta(html), 200, artifactHeaders(relPath, tokenRead));
     }
     return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, artifactHeaders(relPath, tokenRead));
   });
@@ -3020,10 +3034,13 @@ export async function createStrut<TServices = unknown>(
       journal?: Record<string, unknown>;
       resume?: boolean;
       version?: string;
-      /** An automation's fire (plans/automations.md §3), or a peer's launch
-       *  (plans/federation.md §3). */
-      origin?: "schedule" | "peer";
+      /** An automation's fire (plans/automations.md §3), a peer's launch
+       *  (plans/federation.md §3), or an app's (plans/apps.md §5). */
+      origin?: "schedule" | "peer" | "app";
       automation?: { id: string };
+      /** The app the run is launched for (`run/launch` under `ctx.app`):
+       *  recorded with `origin: "app"`, handed to every step as `ctx.app`. */
+      app?: AppRef;
       /** The request actor, and (on resume) the principal recorded at the
        *  original launch; otherwise the principal rule decides (§2). */
       actor?: string;
@@ -3082,6 +3099,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.resume ? { resume: true } : {}),
         ...(extra?.origin ? { origin: extra.origin } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
+        ...(extra?.app ? { app: extra.app } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
@@ -3285,6 +3303,137 @@ export async function createStrut<TServices = unknown>(
    *  declares none. */
   const artifactRefs = (runId: string, output: unknown, job: string | undefined): Promise<ArtifactRef[] | undefined> =>
     resolveArtifactRefs(output, { runId, ...(job ? { job } : {}), exists: artifactFileExists });
+
+  // ── Runs as a capability (src/runs.ts; plans/apps.md §5) ──────────────
+  // What the `run/*` steps are thin over — list, read, launch, cancel, a
+  // workflow's contract, one of a run's files — over the same layers the run
+  // routes call above: the store, the controllers, `launchDetached`,
+  // `controlLiveRun`, `artifactRefs`. On the bag as `runs` unless the
+  // consumer brought its own. An APP reaches these through `step_run` on
+  // its `grants.workflows`; an agent through `agentTools: ["run/*"]`.
+
+  /** `run/launch { key }` (§5.1): `<workflow>\0<key>` → the run launched
+   *  under it, memory-only — a key whose run is no longer live is free. */
+  const launchKeys = new Map<string, string>();
+  const liveKey = (workflow: string, runId: string) => controllers.has(`${workflow}/${runId}`);
+  /** The active flow — or a throw: unknown, or sealed (these are a model's
+   *  door; EVOLVE_SPEC §6). */
+  const openFlow = async (name: string): Promise<Flow> => {
+    const flow = await workspace.getWorkflow(name);
+    if (flow.sealed) throw new Error(`workflow "${name}" is sealed — its runs are not readable or launchable from here`);
+    return flow;
+  };
+  const runsCap: RunsCapability = {
+    async list(q) {
+      await openFlow(q.workflow);
+      const limit = Math.min(RUN_LIST_MAX_LIMIT, Math.max(1, q.limit ?? RUN_LIST_DEFAULT_LIMIT));
+      const out: RunListEntry[] = [];
+      for (const runId of await store.listRuns(q.workflow)) {
+        if (out.length >= limit) break;
+        const summary = await store.getRunSummary(q.workflow, runId);
+        const row: RunListEntry & { jobTitle?: string } = summary
+          ? listEntryOf(summary)
+          : { runId, workflow: q.workflow, status: liveStatus(q.workflow, runId), ...liveJob(controllers.get(`${q.workflow}/${runId}`)) } as RunListEntry;
+        if (!matchesRunFilter(row, q)) continue;
+        const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
+        out.push({ ...row, ...(artifacts ? { artifacts } : {}) });
+      }
+      return out;
+    },
+    async get(q) {
+      await openFlow(q.workflow);
+      const deadline = Date.now() + Math.min(RUN_GET_MAX_WAIT_MS, Math.max(0, q.wait ?? 0));
+      for (;;) {
+        const summary = await store.getRunSummary(q.workflow, q.runId);
+        if (summary) {
+          const artifacts = (await artifactRefs(q.runId, summary.output, summary.job).catch(() => undefined)) ?? [];
+          return { ...summary, artifacts };
+        }
+        // In flight: hold while the caller's wait lasts, then answer with the
+        // partial summary the log gives (the route's rule, `partial: true`).
+        if (liveKey(q.workflow, q.runId) && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        const events = await store.getRunEvents(q.workflow, q.runId);
+        const partial = summarizeFromEvents(q.workflow, q.runId, events, liveStatus(q.workflow, q.runId));
+        return partial ? { ...partial, partial: true } : null;
+      }
+    },
+    async events(q) {
+      await openFlow(q.workflow);
+      const events = await store.getRunEvents(q.workflow, q.runId);
+      return capEvents(events.map((e) => withTranscriptLink(q.workflow, e)), q.skip);
+    },
+    async launch(q, by) {
+      const flow = await openFlow(q.workflow);
+      // Its params may narrow what its agents are granted, never widen it
+      // (the meta/run-workflow rule).
+      const widened = grantWidenedBy(flow, q.params ?? {}, registry);
+      if (widened) throw new Error(`params may not grant a step the workflow "${q.workflow}" does not already: ${widened}`);
+      if (q.job) {
+        const problem = idProblem(q.job);
+        if (problem) throw new Error(`job "${q.job}" ${problem}`);
+      }
+      // Dedupe in flight (§5.1): the run launched under this key, while it
+      // lives. Keys whose runs have ended are let go here.
+      for (const [k, id] of launchKeys) if (!liveKey(k.slice(0, k.indexOf("\0")), id)) launchKeys.delete(k);
+      const key = q.key ? `${q.workflow}\0${q.key}` : undefined;
+      const prior = key ? launchKeys.get(key) : undefined;
+      if (prior) return { runId: prior, existing: true };
+      const runId = launchDetached(
+        flow,
+        { input: q.input, ...(q.params ? { params: q.params } : {}), ...(q.job ? { job: q.job } : {}), ...(q.job && q.title ? { title: q.title } : {}) },
+        {
+          ...(by.actor ? { actor: by.actor } : {}),
+          ...(by.principal ? { principal: by.principal } : {}),
+          ...(by.app ? { origin: "app" as const, app: by.app } : {}),
+          ...(by.mcp?.length ? { mcp: by.mcp } : {}),
+        },
+      );
+      if (key) launchKeys.set(key, runId);
+      return { runId };
+    },
+    async cancel(q) {
+      await openFlow(q.workflow);
+      const r = await controlLiveRun(q.workflow, q.runId, "cancel");
+      return r.ok ? { ok: true, runId: r.runId, state: r.state } : { ok: false, error: r.error };
+    },
+    async workflow(q) {
+      const [meta, flow] = await Promise.all([workspace.getWorkflowMetadata(q.workflow), openFlow(q.workflow)]);
+      const description = meta?.versions[meta.active]?.description;
+      return {
+        name: q.workflow,
+        ...(description ? { description } : {}),
+        ...(meta?.category ? { category: meta.category } : {}),
+        ...(meta?.active ? { activeVersion: meta.active } : {}),
+        ...(flow.inputBlock != null ? { input: flow.inputBlock as Record<string, unknown> } : {}),
+        ...(flow.params != null ? { params: flow.params } : {}),
+        ...(flow.sealed ? { sealed: true as const } : {}),
+        ...(flow.peer ? { peer: true as const } : {}),
+      };
+    },
+    async files(q) {
+      await openFlow(q.workflow);
+      const summary = await store.getRunSummary(q.workflow, q.runId);
+      let job = summary?.job;
+      if (!summary) {
+        const events = await store.getRunEvents(q.workflow, q.runId);
+        if (!events.length) return null;
+        job = events.find((e) => e.type === "run.start")?.job;
+      }
+      try {
+        // A job run's files are the job's; a plain run's, its artifacts —
+        // what its artifact links point at. Each guard keeps the path inside.
+        const bytes = job ? new Uint8Array(await readFile(jobFilePath(jobRoot(dataDir, job), q.path))) : artifacts ? await artifacts.read(q.runId, q.path) : null;
+        return bytes ? fileResult(q.path, bytes) : null;
+      } catch (err: any) {
+        if (err?.code === "ENOENT" || err?.code === "EISDIR") return null;
+        throw err;
+      }
+    },
+  };
+  if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
@@ -4525,13 +4674,24 @@ export async function createStrut<TServices = unknown>(
         artifactRefs,
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      return { publicUrl, actor, deps };
+      // The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
+      // doors — hidden from a model, callable by a page whose host relays
+      // its tools/call here. The viewer is the connection's actor.
+      const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
+      const appTools = buildAppTools({
+        apps,
+        registry,
+        services,
+        ...(actor ? { actor } : {}),
+        runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
+      });
+      return { publicUrl, actor, deps, appTools, appMeta: APP_TOOL_META };
     };
     const builderHandler = async (c: Context) => {
       // The SDK loads on the first MCP request, never at boot.
       const { createBuilderMcp, builderInstructions } = await import("./ai/mcp.js");
       const { buildSystem } = await import("./ai/prompts.js");
-      const { publicUrl, actor, deps } = await mcpDeps(c);
+      const { publicUrl, actor, deps, appTools, appMeta } = await mcpDeps(c);
       // The `workflow-builder` prompt is the chat's whole system prompt, the
       // host's section included (StrutOptions.chatSystem — on a graph, the
       // `Workflow Builder` Concept's page), read at each prompts/get: there
@@ -4547,13 +4707,13 @@ export async function createStrut<TServices = unknown>(
           });
         return buildSystem({ ...deps, ...(hostSystem ? { hostSystem } : {}) });
       };
-      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt }).handle(c.req.raw);
+      return createBuilderMcp({ deps, instructions: builderInstructions(publicUrl), prompt, tools: appTools, meta: appMeta }).handle(c.req.raw);
     };
     const assistantHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer, assistantInstructions } = await import("./ai/mcp.js");
       const { buildAssistantTools } = await import("./ai/assistant-tools.js");
       const { buildTools } = await import("./ai/tools.js");
-      const { publicUrl, actor, deps } = await mcpDeps(c);
+      const { publicUrl, actor, deps, appTools, appMeta } = await mcpDeps(c);
       const tools = buildAssistantTools({
         workspace,
         store,
@@ -4566,7 +4726,7 @@ export async function createStrut<TServices = unknown>(
         runWorkflow: buildTools(deps)["run_workflow"]!,
         ...(actor ? { actor } : {}),
       });
-      return createMcpDoor(() => toolsetServer({ tools, instructions: assistantInstructions(publicUrl) })).handle(c.req.raw);
+      return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta })).handle(c.req.raw);
     };
     app.post("/mcp/builder", builderHandler);
     app.post("/mcp", assistantDoor ? assistantHandler : builderHandler);

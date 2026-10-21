@@ -41,6 +41,7 @@ const fat: RunEvent = {
   actor: "evan",
   principal: "evan",
   job: "j1",
+  app: { name: "bench", version: "v1" },
   verify: { checkId: "c1", subject: "step:x", sourceRunId: "0" },
   subflow: { workflow: "child", hash: "ghi" },
   parentRunId: "0",

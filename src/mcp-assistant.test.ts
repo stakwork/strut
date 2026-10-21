@@ -140,7 +140,8 @@ describe("the assistant MCP door (POST /mcp)", () => {
       const { tools } = await client.listTools();
       assert.deepEqual(
         tools.map((t) => t.name).sort(),
-        ["ask_workflow_builder", "get_run", "list_runs", "list_workflow_builder_chats", "list_workflows", "read_workflow_builder_chat", "run_workflow"],
+        // + step_run, the APP door (src/apps/tools.ts): listed app-only, so a model never sees it.
+        ["ask_workflow_builder", "get_run", "list_runs", "list_workflow_builder_chats", "list_workflows", "read_workflow_builder_chat", "run_workflow", "step_run"],
       );
       const instructions = client.getInstructions()!;
       assert.ok(instructions.includes(`${base}/`), instructions);

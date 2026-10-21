@@ -256,6 +256,8 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | `actor`, `principal` | who launched it and who is billed, when known |
 | `automation`   | `{ id }` when a schedule fired it |
 | `job`          | the job it was launched under (§3), when one was given |
+| `origin`       | who launched it when it was not a person or an API call: `schedule`, `peer`, `app` (as on `run.start`) |
+| `app`          | `{ name, version }` — the app it was launched for, with `origin: "app"` (§14.1) |
 
 After a durable resume (§6.2) the summary describes the resumed execution:
 `startedAt` is the resume's, and replayed steps are not counted again.
@@ -662,7 +664,12 @@ any MCP client:
 | Door | Tool set | For |
 | ---- | -------- | --- |
 | `POST /mcp` | **assistant** (`src/ai/assistant-tools.ts`): seven tools — talk to the workflow builder, read its chats, list workflows and runs, read a run, run a workflow | an agent with its own connectors that wants workflows built, run and shared, and should not learn strut's YAML; the default |
-| `POST /mcp/builder` | **builder**: the SAME tools the builder chat's model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`, with their descriptions, input schemas and capped results (`buildTools`, nothing reimplemented) | an agent that authors workflows itself |
+| `POST /mcp/builder` | **builder**: the SAME tools the builder chat's model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`, the `app_*` steps and the text editor, with their descriptions, input schemas and capped results (`buildTools`, nothing reimplemented) | an agent that authors workflows itself |
+
+Both doors also list **`step_run`**, the APP door (§14.1): an app-only tool
+(`_meta.ui.visibility: ["app"]` — an MCP Apps host hides it from the model
+and lets a page call it), served beside each set so a host relays a frame's
+`tools/call` to whichever door it connects.
 
 ```bash
 claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY" --header "x-strut-actor: hermes"
@@ -834,6 +841,93 @@ The same reads and writes as steps — `app/list`, `app/get { name, version? }`,
 `app/build { path }`, `app/publish { name, path, job? }` — are the authoring
 loop (`plans/apps.md` §8): a directory, the editor, build, read the errors,
 publish. `app/publish` stamps `publisher: "ai"` and applies the meta
-surface's rules. Not here yet (work item 1c): the app's calls (`step_run` on
-the MCP doors), the `run/*` steps, `ctx.app`, strut's UI as a host, the
-builder's grant.
+surface's rules. `app/get` (and `GET /apps/:name`) also carries `errors`:
+the app's latest client-side errors, newest first, at most 50 — the kept
+`step:app/report-error` runs stamped with the app (§14.1).
+
+### 14.1 The app door — `step_run` (plans/apps.md §5, §7.2, §9)
+
+An app's page holds no credential but its IDENTITY, written into
+`<meta name="strut-app-token">` as the document is served under a valid
+`?t=`: `app:<name>@<vN>.<token>` — the scope, then the file token minted for
+it (`appIdentity`, `src/auth.ts`); on a strut with no secret to sign one
+(dev mode: nothing minted, the gate open) the scope alone, `app:<name>@<vN>.`.
+The kit sends it as the `app` argument of every call, and the host relays
+the call as it is:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "step_run",
+              "arguments": { "type": "run/list", "config": { "workflow": "score-wf" }, "app": "app:bench@v1.<token>" } } }
+```
+
+`step_run { type, config?, input?, app }` runs one registry step as the
+connection's actor (the viewer: `x-strut-actor`, or who signed in) with
+`ctx.app = { name, version }` set — the twin of `ctx.job` — after checking
+the call against that app's manifest, in every host:
+
+| Call | Rule |
+| ---- | ---- |
+| `run/*` | only on a workflow in `grants.workflows`; a sealed workflow refused by name; `job` not yet (work item 2) |
+| any other type | only when `grants.steps` names it (globs as `agentTools` takes them) |
+| `llm`, `agent`, `exec`, `acp/prompt` | refused whatever the manifest says — the workflow is the unit of spend (§5.1): a paid or shell-shaped step runs inside a workflow the app launches |
+| a sealed step | refused |
+| a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare — the type from the config for a create, the node read first for an edit or delete by `ref_id`; every value checked must be a literal, an edge is located by its endpoints |
+| `sqlite/*`, `automation/*`, `job/start`, `job/continue` | "not available in this strut yet" (work items 3, 7, 2) |
+| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `job/dir` | not a thing a page does |
+| `app/report-error { message, stack?, componentStack? }` | always granted |
+
+A refused call, a missing or foreign token (a run's or a job's file token,
+a forged or unsigned one on a strut that signs, another app's) and a
+step's own failure are error results: `isError: true` with a text
+`{ "error": "…" }` the kit throws as a `StrutError`. A result is the
+step's whole output — `structuredContent` when it is an object, the same
+JSON as text — never trimmed for a model; past 5 MB it is an error naming
+the cap. **Writes are kept** (§9): a graph write and an error report land
+under `step:<type>` with the actor and `app` on their summary
+(`GET /workflows/step:<type>/runs`); reads are not. A run `run/launch`
+starts records `origin: "app"` and `app` on `run.start` and its summary and
+hands `ctx.app` to every step.
+
+### 14.2 The `run/*` steps (`src/steps/lib/run/`; `plans/apps.md` §5)
+
+Runs as steps, unsealed — what the kit's hooks name, grantable to an agent
+as `agentTools: ["run/*"]`, and the §3 … §7 routes' layers one more way
+(`ctx.services.runs`, `src/runs.ts`). A sealed workflow is refused by name.
+
+| Step | Config | Result |
+| ---- | ------ | ------ |
+| `run/list` | `{ workflow, limit? (50, ≤ 500), status?, since? (ISO or ms), automation?, job? }` | the summaries newest first, without `input` / `output` / `stepCounts`, each with `artifacts` resolved (§5); a run in flight has a live status |
+| `run/get` | `{ workflow, runId, wait? (ms, ≤ 55 000) }` | the summary whole + `artifacts`; in flight, the partial summary (`partial: true`) after holding up to `wait` |
+| `run/events` | `{ workflow, runId, skip? }` | the log as `GET …/events` serves it (transcripts as links, long fields replaced by their size), cut at 5 000 keeping the head and the last event |
+| `run/launch` | `{ workflow, input?, params?, job?, title?, key? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }` |
+| `run/cancel` | `{ workflow, runId }` | `{ ok: true, runId, state }`; a run that is not live is an error |
+| `run/workflow` | `{ workflow }` | `{ name, description?, category?, activeVersion?, input? (the \`input:\` block), params?, peer? }` |
+| `run/files` | `{ workflow, runId, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
+
+### 14.3 Hosting an app (plans/apps.md §7.3, §7.4)
+
+Strut's own UI is an MCP Apps host (`web/src/app-host.ts`,
+`web/src/components/AppHost.tsx`), and any other host — hive, a portal —
+is one the same way, with no strut change per host:
+
+1. **Fetch the document.** `GET /apps/:name/:version/files` (the active
+   version from `GET /apps`) mints the token; `GET …/files/dist/index.html?t=<token>`
+   is the page with its identity written in. Frame the TEXT as a blob URL
+   in `<iframe sandbox="allow-scripts">` — an opaque origin, never
+   `allow-same-origin`, no `src` that carries a credential.
+2. **Run the bridge.** ext-apps' `AppBridge` over a `PostMessageTransport`
+   on the frame's window, connected BEFORE the document loads, over the MCP
+   SDK's `Client` + `StreamableHTTPClientTransport` pointed at `/mcp` with
+   the host's own credential (`Authorization`, `x-strut-actor` — the
+   viewer; strut's UI sends its session cookie or key and `x-strut-ui: 1`).
+   The bridge relays `tools/call` to the client by itself.
+3. **Answer the two requests a page makes of its host:** `ui/message` goes
+   to the host's conversation (strut's UI: the builder chat, the text
+   prefixed with which app it is about); `ui/open-link` opens a strut deep
+   link (`?wf=`, `?run=`, `?job=`, `?app=`) in place and anything else in a
+   new tab. A theme change is a `ui/notifications/host-context-changed`.
+
+Nothing else a host says to strut changes: runs, jobs, chat and files stay
+on the HTTP API. A page's `tools/call` reaches strut in the shape it left
+the frame in.

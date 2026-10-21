@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { stepHashesFor } from "./closure.js";
-import type { Flow, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
+import type { AppRef, Flow, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
 import type { ClaimsReader } from "./graph/claims.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
 import { baseType } from "./step-ref.js";
@@ -66,6 +66,10 @@ export interface RunStepOptions {
    *  in the job's directory — recorded on `run.start`, never on the job's
    *  run list (a verify-origin run is not a turn), no hold taken. */
   job?: string;
+  /** The APP the step runs for (plans/apps.md §5): the app door's
+   *  (`step_run`) stamp, the twin of `job` — `ctx.app` for the step, `app`
+   *  on the kept run's summary. */
+  app?: AppRef;
   /** Who launched the run and who pays (see `RunOptions`). */
   actor?: string;
   principal?: string;
@@ -128,6 +132,7 @@ export async function runSingleStep(
     ...(opts.actor ? { actor: opts.actor } : {}),
     ...(opts.principal ? { principal: opts.principal } : {}),
     ...(opts.job ? { job: opts.job } : {}),
+    ...(opts.app ? { app: opts.app } : {}),
     onEvent: (e) => {
       events.push(e);
     },
@@ -248,6 +253,7 @@ export async function persistRunUnder(store: RunStore, key: string, result: RunS
   for (const e of result.events) await store.append(key, result.runId, e);
   const first = result.events[0]!;
   const last = result.events[result.events.length - 1]!;
+  const start = result.events.find((e) => e.type === "run.start");
   const summary: RunSummary = {
     runId: result.runId,
     workflow: key,
@@ -255,7 +261,14 @@ export async function persistRunUnder(store: RunStore, key: string, result: RunS
     finishedAt: last.ts,
     durationMs: Date.parse(last.ts) - Date.parse(first.ts),
     status: result.status,
-    input: result.events.find((e) => e.type === "run.start")?.input,
+    input: start?.input,
+    // Who ran it and for what (plans/apps.md §9): a kept step run is a
+    // record, so the actor and the app ride on its summary as on a
+    // workflow run's.
+    ...(start?.actor ? { actor: start.actor } : {}),
+    ...(start?.principal ? { principal: start.principal } : {}),
+    ...(start?.job ? { job: start.job } : {}),
+    ...(start?.app ? { app: start.app } : {}),
     ...(result.output !== undefined ? { output: result.output } : {}),
     ...(result.error ? { error: result.error } : {}),
     stepCounts: countSteps(result.events),

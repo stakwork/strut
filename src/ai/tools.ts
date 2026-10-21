@@ -40,6 +40,15 @@ import {
   searchRunEvents,
 } from "../authoring.js";
 import { bootEnv } from "../env.js";
+// The agent step's own plumbing, reused whole (plans/apps.md §8): the
+// registry-steps-as-tools builder that hands the builder the app/* steps by
+// name, and the text editor's pure handler.
+import { buildRegistryTools, textEdit, type TextEditInput } from "../steps/core/agent.js";
+
+/** The builder's one fixed registry grant (plans/apps.md §8): the app/*
+ *  steps as named tools — app_list, app_get, app_init, app_checkout,
+ *  app_build, app_publish — through `buildRegistryTools`, no wrapper. */
+export const BUILDER_REGISTRY_TOOLS: readonly string[] = ["app/*"];
 
 /** The step behind the builder's `graph_get` tool. */
 const GRAPH_GET_STEP = "graph/graph-get";
@@ -1206,6 +1215,56 @@ export function buildTools(deps: AiDeps): ToolSet {
     // Elicitation — only when the host wires `deps.openElicitation` (the
     // chat does; embedders/tests without it get neither tool).
     ...(deps.openElicitation ? elicitationTools(deps) : {}),
+
+    // The app/* steps as the builder's tools (plans/apps.md §8): a step's
+    // input schema is the tool schema and its run() the executor, under a
+    // context with no run — app paths then resolve against the server's
+    // data directory (app/_shared.ts), where the editor and bash work. The
+    // same steps are a job agent's through agentTools and anyone's through
+    // run_step: one implementation, three doors.
+    ...buildRegistryTools(
+      [...BUILDER_REGISTRY_TOOLS],
+      deps.registry,
+      {
+        runId: "",
+        path: "builder",
+        scope: {},
+        input: undefined,
+        emit: async () => {},
+        services: deps.services,
+        registry: deps.registry,
+        ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
+      },
+      tool,
+    ),
+
+    // The text editor the agent step has (`str_replace_based_edit_tool`,
+    // its `textEdit` handler), sandboxed to the builder's data directory —
+    // the same root as bash: a front-end project (an app) wants an editor,
+    // and a workflow or a step still travels as a tool argument. Offered
+    // where bash is: with `deps.shell`.
+    ...(deps.shell
+      ? {
+          str_replace_based_edit_tool: tool({
+            description:
+              "View and edit text files under the server's data directory (where bash runs; scratch/ is yours — an app you build lives at scratch/apps/<name>). Commands: " +
+              "`view` (path; a directory lists its entries; optional view_range [start, end]), `create` (path, file_text), " +
+              "`str_replace` (path, old_str — must match EXACTLY once — new_str), `insert` (path, insert_line — 0 = top of file — insert_text). " +
+              "Paths are relative to the data directory or absolute inside it; nothing outside it.",
+            inputSchema: z.object({
+              command: z.enum(["view", "create", "str_replace", "insert"]),
+              path: z.string().describe("The file (or, for view, a directory), relative to the data directory."),
+              file_text: z.string().optional().describe("create: the whole file."),
+              old_str: z.string().optional().describe("str_replace: the text to replace — exactly one match."),
+              new_str: z.string().optional().describe("str_replace: its replacement."),
+              insert_line: z.number().int().nonnegative().optional().describe("insert: after this line (0 = top of file)."),
+              insert_text: z.string().optional().describe("insert: the text to insert."),
+              view_range: z.array(z.number().int()).length(2).optional().describe("view: [start, end] lines (1-based; end -1 = the last)."),
+            }),
+            execute: async (input) => textEdit(input as TextEditInput, deps.shell!.cwd),
+          }),
+        }
+      : {}),
 
     // Build-time shell — only offered when the host wires `deps.shell` (the
     // standard server does; embedders/tests without it get no bash tool).

@@ -49,7 +49,26 @@ export interface AppView extends AppRecord {
   stale: boolean;
   /** Granted workflows that no longer exist (§1.3). */
   inertGrants: string[];
+  /** The app's latest client-side errors (§8): the kept
+   *  `step:app/report-error` runs stamped with this app, newest first, at
+   *  most `APP_ERRORS_MAX`. Absent when the capability has no run store. */
+  errors?: AppError[];
 }
+
+/** One client-side error an app's page reported (`app/report-error`). */
+export interface AppError {
+  at: string;
+  version: string;
+  message: string;
+  stack?: string;
+  componentStack?: string;
+  actor?: string;
+  /** The kept run, under `step:app/report-error`. */
+  runId: string;
+}
+
+/** How many of an app's errors `app/get` carries. */
+export const APP_ERRORS_MAX = 50;
 
 export type PublishSurface = "person" | "ai";
 
@@ -96,6 +115,9 @@ export interface AppsDeps {
   kit?: Kit | KitLocation;
   templatesDir?: string;
   now?: () => Date;
+  /** The app's latest client-side errors, newest first (§8) — createStrut
+   *  reads them off the run store (`appErrors`); absent, `get` carries none. */
+  errors?: (name: string, max: number) => Promise<AppError[]>;
 }
 
 const isDir = async (p: string) => {
@@ -185,7 +207,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
       for (const wf of new Set([...rec.manifest.grants.workflows, ...rec.manifest.grants.automations])) {
         if (!(await workspace.getWorkflowMetadata(wf).catch(() => null))) inertGrants.push(wf);
       }
-      return { ...rec, dir: path, missing, files, build, stale, inertGrants };
+      const errors = deps.errors ? await deps.errors(name, APP_ERRORS_MAX).catch(() => []) : undefined;
+      return { ...rec, dir: path, missing, files, build, stale, inertGrants, ...(errors ? { errors } : {}) };
     },
 
     versionDir,
@@ -258,4 +281,40 @@ export function createApps(deps: AppsDeps): AppsCapability {
 
     buildDeps,
   };
+}
+
+/**
+ * An app's latest client-side errors off the run store (§8): the kept
+ * `step:app/report-error` runs whose summary carries the app, newest first
+ * — what `createApps({ errors })` is given on the standard server. One
+ * summary read per kept run, newest first, stopping at `max` hits or
+ * `scanned` runs.
+ */
+export async function appErrors(
+  store: { listRuns(key: string): Promise<string[]>; getRunSummary(key: string, runId: string): Promise<{ startedAt: string; output?: unknown; actor?: string; app?: { name: string; version: string } } | null> },
+  name: string,
+  max = APP_ERRORS_MAX,
+  scanned = 1000,
+): Promise<AppError[]> {
+  const key = "step:app/report-error";
+  const out: AppError[] = [];
+  const ids = (await store.listRuns(key).catch(() => [])).slice(0, scanned);
+  for (const runId of ids) {
+    if (out.length >= max) break;
+    const s = await store.getRunSummary(key, runId).catch(() => null);
+    if (!s?.app || s.app.name !== name) continue;
+    // The report rides on the step's output (a summary keeps the run's
+    // input, never a step's config).
+    const report = (s.output ?? {}) as { message?: unknown; stack?: unknown; componentStack?: unknown };
+    out.push({
+      at: s.startedAt,
+      version: s.app.version,
+      message: typeof report.message === "string" ? report.message : "",
+      ...(typeof report.stack === "string" ? { stack: report.stack } : {}),
+      ...(typeof report.componentStack === "string" ? { componentStack: report.componentStack } : {}),
+      ...(s.actor ? { actor: s.actor } : {}),
+      runId,
+    });
+  }
+  return out;
 }

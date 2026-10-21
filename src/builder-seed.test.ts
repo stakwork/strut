@@ -25,7 +25,7 @@ const paramsOf = (text: string) => docOf(text).params;
 const quiet = () => ({ serveUi: false, enableChat: false, scheduler: false as const, stt: false as const, store: new MemoryRunStore() });
 
 describe("the builder workflow strut ships", () => {
-  it("the template is a valid workflow over strut's own registry: job/dir → concept → if → agent | strut/run-workflow → pack; meta/* and the web tools, never bash", async () => {
+  it("the template is a valid workflow over strut's own registry: job/dir → concept → if → agent | strut/run-workflow → pack; meta/* + app/*, the web tools and the editor family, never bash", async () => {
     const text = await builderWorkflowYaml();
     const registry = await createRegistry([]);
     const v = validateWorkflowYaml(text, { registry });
@@ -51,7 +51,9 @@ describe("the builder workflow strut ships", () => {
     assert.equal(build!.config["session"], "{{ input.session || $job }}");
 
     const { tools, builtins, concept } = paramsOf(text);
-    assert.deepEqual(builtins, ["web_search", "web_fetch"], "the web tools are the only built-ins");
+    assert.deepEqual(builtins, ["web_search", "web_fetch", "str_replace_based_edit_tool", "repo_overview", "fulltext_search"], "the web tools and the editor family; never bash (plans/apps.md §8)");
+    assert.ok(!builtins.includes("bash"), "no shell on a workflow another strut may launch");
+    assert.ok(tools.includes("app/*"), "apps are a builder job's kind of work");
     assert.equal(concept, "Workflow Builder");
     assert.ok(tools.includes("meta/*"), "the whole authoring surface, by glob");
     for (const t of ["graph/graph-get", "job/list", "job/get", "job/read"]) assert.ok(tools.includes(t), t);
@@ -221,7 +223,7 @@ describe("the builder, end to end", () => {
     throw new Error("never happened");
   };
 
-  it("a builder turn under a job: the authoring twins and the web tools, no bash; strut's prompt then the host's; the job's thread; run.end to the callback", async () => {
+  it("a builder turn under a job: the authoring twins, the app steps, the web tools and the editor, no bash; strut's prompt then the host's; the job's thread; run.end to the callback", async () => {
     const seen: any[] = [];
     process.env["ANTHROPIC_BASE_URL"] = await listen((body) => {
       seen.push(body);
@@ -256,10 +258,11 @@ describe("the builder, end to end", () => {
     assert.equal(seen.length, 1, "one model call: the answer");
     const req = seen[0];
     const names: string[] = req.tools.map((t: any) => t.name);
-    for (const t of ["meta_list_workflows", "meta_get_step", "meta_create_step", "meta_run_step", "meta_validate_workflow", "meta_publish_workflow", "meta_run_workflow", "meta_add_claim", "graph_graph_get", "job_list", "final_answer"]) {
+    for (const t of ["meta_list_workflows", "meta_get_step", "meta_create_step", "meta_run_step", "meta_validate_workflow", "meta_publish_workflow", "meta_run_workflow", "meta_add_claim", "graph_graph_get", "job_list", "app_init", "app_build", "app_publish", "app_get", "final_answer"]) {
       assert.ok(names.includes(t), `${t} in ${names.join(",")}`);
     }
-    for (const t of ["bash", "str_replace_based_edit_tool", "repo_overview", "fulltext_search", "file_summary"]) assert.ok(!names.includes(t), `no ${t}`);
+    for (const t of ["bash", "file_summary"]) assert.ok(!names.includes(t), `no ${t}`);
+    for (const t of ["str_replace_based_edit_tool", "repo_overview", "fulltext_search"]) assert.ok(names.includes(t), `the editor family: ${t}`);
     assert.ok(names.includes("web_search") && names.includes("web_fetch"), "the web tools stay");
     const system = JSON.stringify(req.system);
     assert.ok(system.includes("You are a workflow BUILDER"), "strut's prompt");

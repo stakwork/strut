@@ -69,8 +69,11 @@ steps:
         {{ params.system }}
         {{ concepts.text }}
       prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ input.prompt }}"
-      # The web tools only (API documentation while authoring): no bash, no
-      # editor, no file tools on a workflow another strut may launch.
+      # The web tools (API documentation while authoring) and the EDITOR
+      # family — view, create, str_replace, insert on the job's directory,
+      # a tree listing, a grep — for an app's files (plans/apps.md §8).
+      # Never bash on a workflow another strut may launch: the editor
+      # reaches neither the process nor the network.
       toolFilter: "{{ params.builtins }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
@@ -141,10 +144,13 @@ params:
   # the page the chat builder's prompt reads too.
   concept: Workflow Builder
   # The built-ins the agent keeps (the agent step's toolFilter): the web
-  # tools, for API documentation while authoring. Never bash on a workflow
-  # another strut may launch; what the chat builder did with bash is
-  # meta/run-step with a cassette, meta/get-run and job/read.
-  builtins: [web_search, web_fetch]
+  # tools, for API documentation while authoring, and the editor family
+  # for an APP's files in the job's directory (plans/apps.md §8) — view,
+  # create, str_replace, insert; a tree listing; a grep. Never bash on a
+  # workflow another strut may launch: the editor is not a shell. What the
+  # chat builder did with bash is meta/run-step with a cassette,
+  # meta/get-run and job/read.
+  builtins: [web_search, web_fetch, str_replace_based_edit_tool, repo_overview, fulltext_search]
   # THE evolvable surface: registry steps granted to the agent as tools.
   # `meta/*` is the whole authoring surface as steps — the reads, the runs,
   # publish-workflow, create-step, edit-step, validate-workflow, run-step,
@@ -160,6 +166,10 @@ params:
     - job/list
     - job/get
     - job/read
+    # Apps are a builder job's kind of work (plans/apps.md §8): scaffold,
+    # build and publish a front-end project over workflows — the editor
+    # writes its files in the job's directory.
+    - app/*
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. None by default; a deployment
@@ -172,9 +182,11 @@ params:
   system: |
     You are a workflow BUILDER working on a job with a person, over many
     turns: you author, revise, test and debug this strut's workflows and
-    custom steps. Each turn you get one message; you remember the turns
-    before it. You write no files and have no shell: everything you make
-    is published through your tools, and everything you learn comes back
+    custom steps, and the APPS over them. Each turn you get one message;
+    you remember the turns before it. You have no shell: a workflow or a
+    step is published through your tools, an app is a directory you write
+    with the editor (str_replace_based_edit_tool) in the job's directory,
+    then app/build and app/publish — and everything you learn comes back
     as a tool result.
 
     Build in this order, and do not skip a step:
@@ -213,6 +225,12 @@ params:
     object"); knobs a person might vary go in `params` and are read as
     {{ params.name }}; declare the run's payload in `input:`; steps run in
     order unless `depends` says otherwise, and `depends: []` runs at once.
+
+    An APP (a front-end project over workflows, plans/apps.md): app/init
+    scaffolds one at apps/<name> in the job's directory, the editor writes
+    its files, app/build compiles it and returns the errors to fix,
+    app/publish records it as a version. Follow the App page among the
+    kinds below for the layout, the kit's hooks, the grants and the rules.
 
     The kinds of thing this workspace builds are listed at the end of this
     prompt, from its knowledge graph: each a page with that kind's

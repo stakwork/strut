@@ -53,14 +53,17 @@ export function artifactKind(path: string): ArtifactKind | null {
  *  `/artifacts/<runId>/<relPath>` (see `ctx.services.artifacts`) or a job's
  *  `/jobs/<job>/files/<relPath>` (`job/dir`). */
 export function isArtifactPath(v: unknown): v is string {
-  return typeof v === "string" && (v.startsWith("/artifacts/") || v.startsWith("/jobs/"));
+  return typeof v === "string" && (v.startsWith("/artifacts/") || v.startsWith("/jobs/") || APP_SCOPE_RE.test(v));
 }
+
+/** An app version's files: `/apps/<name>/<vN>/files` (plans/apps.md §7.2). */
+const APP_SCOPE_RE = /^\/apps\/[^/]+\/v\d+\/files/;
 
 /** The scope a served-file path reads from — `/artifacts/<runId>` or
  *  `/jobs/<id>/files` — whose listing names every file under it and mints
  *  the token for them; null for anything else. */
 export function fileScopeOf(path: string): string | null {
-  const m = path.match(/^\/artifacts\/[^/]+/) ?? path.match(/^\/jobs\/[^/]+\/files/);
+  const m = path.match(/^\/artifacts\/[^/]+/) ?? path.match(/^\/jobs\/[^/]+\/files/) ?? path.match(APP_SCOPE_RE);
   return m ? m[0] : null;
 }
 
@@ -77,7 +80,7 @@ export function artifactRel(path: string): string | null {
  *  `/artifacts/1790/systemmap/report.md` — short enough for a menu item and
  *  unambiguous within one run. The whole path when nothing follows the prefix. */
 export function artifactLabel(path: string): string {
-  const rel = path.replace(/^\/artifacts\/[^/]+\/|^\/jobs\/[^/]+\/files\//, "");
+  const rel = path.replace(/^\/artifacts\/[^/]+\/|^\/jobs\/[^/]+\/files\/|^\/apps\/[^/]+\/v\d+\/files\//, "");
   return rel && rel !== path ? rel : path;
 }
 
