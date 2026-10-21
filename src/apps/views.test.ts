@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { distinctNodeRefs, foldRunOverview, projectWithLaunches, type OverviewEvent } from "@strut/kit/folds";
@@ -122,7 +122,10 @@ describe("strut/views — seeded at boot, imported by apps", () => {
   });
 
   it("an app that imports strut/views builds — the import's hash in its build.json — and carries only what it uses", async () => {
-    const dataDir = await tmp("strut-views-import-");
+    // The workspace at its real path, the importer behind the temp dir's
+    // symlink on macOS (/var → /private/var): the build must not lose the
+    // imported modules between the two spellings.
+    const dataDir = await realpath(await tmp("strut-views-import-"));
     const strut = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit });
     await strut.workspace.publishWorkflowByContent("research", "name: research\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n");
     const views = (await strut.apps.get(VIEWS_APP))!;
@@ -139,6 +142,8 @@ describe("strut/views — seeded at boot, imported by apps", () => {
     const info = JSON.parse(await readFile(join(dir, "dist", "build.json"), "utf8"));
     assert.deepEqual(info.imports, [{ name: VIEWS_APP, version: "v1", hash: views.hash }]);
     const html = await readFile(join(dir, "dist", "index.html"), "utf8");
+    const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
+    assert.match(style, /\.bg-violet-500\{/, "the classes of the views it draws are compiled (an agent's bar in RunTimeline) — across roots, symlinked temp dirs included");
     assert.doesNotMatch(html, /react-flow__/, "NodeGraph and its stylesheet stay out of an app that does not draw one");
     assert.doesNotMatch(html, /SPRINT-AF/, "the gallery's fixtures stay out");
     assert.ok(built.bytes < 1_200_000, `${built.bytes} bytes`);

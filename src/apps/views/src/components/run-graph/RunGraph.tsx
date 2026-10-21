@@ -919,7 +919,7 @@ export function RunGraph({
         ) : (
           <p className="text-xs text-muted-foreground" data-testid="run-graph-summary">
             {calls.length} calls{scope !== null ? ` under ${scopeLabel}` : ""} read or wrote {touched.length} nodes
-            {live ? " so far" : ""}
+            {live && !settled ? " so far" : ""}
             {lineage.length > 0
               ? `, under the ${lineage.length === 1 ? "1 node" : `${lineage.length} nodes`} they descend from`
               : ""}

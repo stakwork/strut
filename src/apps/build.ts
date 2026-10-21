@@ -22,7 +22,7 @@
  * too. Lazy-imported by whoever builds (the publish, `app/build`), as a lib
  * step's SDK is, so the registry build never loads esbuild.
  */
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { Message, OnResolveResult } from "esbuild";
@@ -324,7 +324,10 @@ function notInKit(spec: string, kit: Kit, installed: string[]): string {
 
 /** Build the app at `dir`: `dist/index.html` + `dist/build.json`, or the errors (and nothing written). */
 export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<BuildResult> {
-  const root = resolve(dir);
+  // Real paths throughout: esbuild reports the metafile against its REAL
+  // working directory, so a root behind a symlink (macOS's /var/folders,
+  // /tmp) would miss every module it bundled from another root.
+  const root = await realpath(resolve(dir)).catch(() => resolve(dir));
   const warnings: string[] = [];
   const read = await readManifest(root);
   if (!read.ok) return { ok: false, errors: read.errors, warnings };
@@ -408,9 +411,10 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
         const names = [...chain.map(label), label({ name, version: app.version })];
         return err(`"${spec}": import cycle ${names.join(" → ")} — an app may not import the app that imports it`);
       }
-      let appRoot = roots.find((r) => r.dir === app!.dir);
+      const appDir = await realpath(resolve(app.dir)).catch(() => resolve(app.dir));
+      let appRoot = roots.find((r) => r.dir === appDir);
       if (!appRoot) {
-        appRoot = { name, version: app.version, dir: resolve(app.dir), hash: app.hash, parent: from, ...(version ? { pinned: true as const } : {}) };
+        appRoot = { name, version: app.version, dir: appDir, hash: app.hash, parent: from, ...(version ? { pinned: true as const } : {}) };
         roots.push(appRoot);
       }
       const sub = segs.slice(n).join("/");
