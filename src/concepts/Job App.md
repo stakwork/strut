@@ -18,7 +18,9 @@ you, a dashboard over a workflow's runs, a small form.
   it, and the person's view reloads when you build it again.
 - What it sees: THIS job's runs and files — `run/list { job }`, any run of
   the job, `run/files { job, path }`, `job/get`, `job/read` — with no
-  grant, and nothing of another job. Beyond that, the workflows and steps
+  grant, and nothing of another job. Every one of these names the job: in
+  the page, `useApp()` from `@strut/kit` is `{ job, path }` — pass that
+  `job` (`useRuns(null, { job })`). Beyond that, the workflows and steps
   its `app.yaml` grants, under the usual rules: never `llm`, `agent`,
   `exec` or anything sealed (the build refuses them).
 - You never publish it. Promoting it to the workspace is the person's

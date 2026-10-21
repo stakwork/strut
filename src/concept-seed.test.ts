@@ -78,7 +78,7 @@ describe("concept files (pure)", () => {
     assert.equal(jobApp.parent, "Job");
     assert.match(jobApp.description!, /interactive app/);
     assert.ok(!jobApp.description!.includes("\n"), "one line");
-    for (const must of ["apps/<name>/", "app/init", "app/build", "BEFORE you hand it over", 'kind: "app"', "run/list { job }", "run/files { job, path }", "Publish as an app", "open the `App` page"]) assert.ok(jobApp.docs!.includes(must), must);
+    for (const must of ["apps/<name>/", "app/init", "app/build", "BEFORE you hand it over", 'kind: "app"', "run/list { job }", "run/files { job, path }", "useApp()", "Publish as an app", "open the `App` page"]) assert.ok(jobApp.docs!.includes(must), must);
     assert.doesNotMatch(jobApp.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
     assert.ok(!app.docs!.includes("## A job's app"), "App stays the builders' manual");
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
