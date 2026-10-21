@@ -52,7 +52,7 @@ import {
   isValidSecretName,
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, fileResult, listEntryOf, matchesRunFilter, type RunListEntry, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppRef } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
@@ -1418,14 +1418,6 @@ export async function createStrut<TServices = unknown>(
     return c.json(events.map((e) => withTranscriptLink(name, e)));
   });
 
-  // One agent session from a run, by step path (`wf/review`, a sub-agent's
-  // `wf/review/003-agent`): the `messages` of that path's last `step.end`,
-  // as a bare JSON array. What the run callback's `transcripts` point at, so
-  // a host copies each transcript byte-for-byte without parsing `/events`.
-  //
-  // A session turn (plans/agent-sessions.md) recorded its system prompt and
-  // THAT TURN; `?full=1` serves the thread up to and including it, read from
-  // the session store.
   // A run's declared deliverables (plans/jobs.md §3), resolved as the run
   // callback resolves them — for a host that missed the callback.
   app.get("/workflows/:name/runs/:runId/artifacts", async (c) => {
@@ -1445,19 +1437,37 @@ export async function createStrut<TServices = unknown>(
     return c.json({ workflow: name, runId, proposals });
   });
 
+  /** One agent session by step path — what the transcript route serves and
+   *  `run/transcript` (the runs capability below) returns — or why not. */
+  const readTranscript = async (
+    workflow: string,
+    runId: string,
+    path: string,
+    full: boolean,
+  ): Promise<{ messages: unknown[]; full?: true } | { error: string }> => {
+    const events = await store.getRunEvents(workflow, runId);
+    const end = events.filter((e) => e.type === "step.end" && e.path === path && e.messages).pop();
+    if (!end) return { error: `No transcript at "${path}" in run "${runId}"` };
+    const at = (end.output as { session?: { id?: unknown; offset?: unknown } } | null | undefined)?.session;
+    if (!full || typeof at?.id !== "string" || typeof at.offset !== "number") return { messages: end.messages! };
+    const thread = sessionsInjected ? null : await sessionStore.load(at.id).catch(() => null);
+    if (!thread) return { error: `Session "${at.id}" is gone` };
+    const [system, ...turn] = end.messages!;
+    return { messages: [system, ...thread.messages.slice(0, at.offset), ...turn], full: true };
+  };
+
+  // One agent session from a run, by step path (`wf/review`, a sub-agent's
+  // `wf/review/003-agent`): the `messages` of that path's last `step.end`,
+  // as a bare JSON array. What the run callback's `transcripts` point at, so
+  // a host copies each transcript byte-for-byte without parsing `/events`.
+  //
+  // A session turn (plans/agent-sessions.md) recorded its system prompt and
+  // THAT TURN; `?full=1` serves the thread up to and including it, read from
+  // the session store.
   app.get("/workflows/:name/runs/:runId/transcripts/:path{.+}", async (c) => {
     const { name, runId, path } = c.req.param();
-    const events = await store.getRunEvents(name, runId);
-    const end = events.filter((e) => e.type === "step.end" && e.path === path && e.messages).pop();
-    if (!end) return c.json({ error: `No transcript at "${path}" in run "${runId}"` }, 404);
-    const at = (end.output as { session?: { id?: unknown; offset?: unknown } } | null | undefined)?.session;
-    if (c.req.query("full") !== "1" || typeof at?.id !== "string" || typeof at.offset !== "number") {
-      return c.json(end.messages);
-    }
-    const thread = sessionsInjected ? null : await sessionStore.load(at.id).catch(() => null);
-    if (!thread) return c.json({ error: `Session "${at.id}" is gone` }, 404);
-    const [system, ...turn] = end.messages!;
-    return c.json([system, ...thread.messages.slice(0, at.offset), ...turn]);
+    const t = await readTranscript(name, runId, path, c.req.query("full") === "1");
+    return "error" in t ? c.json({ error: t.error }, 404) : c.json(t.messages);
   });
 
   // Reattach to a run (live or completed) — SSE tail of its event log.
@@ -3337,9 +3347,9 @@ export async function createStrut<TServices = unknown>(
 
   // ── Runs as a capability (src/runs.ts; plans/apps.md §5) ──────────────
   // What the `run/*` steps are thin over — list, read, launch, cancel, a
-  // workflow's contract, one of a run's files — over the same layers the run
-  // routes call above: the store, the controllers, `launchDetached`,
-  // `controlLiveRun`, `artifactRefs`. On the bag as `runs` unless the
+  // workflow's contract, one of a run's files, an agent's transcript — over
+  // the same layers the run routes call above: the store, the controllers,
+  // `launchDetached`, `controlLiveRun`, `artifactRefs`, `readTranscript`. On the bag as `runs` unless the
   // consumer brought its own. An APP reaches these through `step_run` on
   // its `grants.workflows`; an agent through `agentTools: ["run/*"]`.
 
@@ -3462,6 +3472,12 @@ export async function createStrut<TServices = unknown>(
         if (err?.code === "ENOENT" || err?.code === "EISDIR") return null;
         throw err;
       }
+    },
+    async transcript(q) {
+      await openFlow(q.workflow);
+      const t = await readTranscript(q.workflow, q.runId, q.path, !!q.full);
+      if ("error" in t) throw new Error(t.error);
+      return { path: q.path, ...capTranscript(t.messages as RunTranscript["messages"]), ...(t.full ? { full: true as const } : {}) };
     },
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;

@@ -15,6 +15,7 @@ import { MemoryRunStore } from "./store.js";
 import { MemoryChatStore } from "./chat-store.js";
 import { FileSessionStore, MemorySessionStore } from "./session-store.js";
 import { projectRunEvents } from "./graph/projector.js";
+import type { RunsCapability } from "./runs.js";
 
 // Agent sessions through a whole strut (plans/agent-sessions.md): runs
 // launched over HTTP with the id in `input`, a stand-in Anthropic endpoint
@@ -161,7 +162,7 @@ describe("agent sessions over HTTP", () => {
   });
 
   it("two runs on one session: the log holds each turn, ?full=1 the thread, /sessions the record", async () => {
-    const { json, run, ends, store } = await boot();
+    const { strut, json, run, ends, store } = await boot();
     const first = await run("talk", { prompt: "why is login slow?", session: "abc" });
     assert.equal(first.summary.status, "success", JSON.stringify(first.summary));
     const second = await run("talk", { prompt: "fix it", session: "abc" });
@@ -197,6 +198,12 @@ describe("agent sessions over HTTP", () => {
     const firstTurn = (await json(`/workflows/talk/runs/${first.runId}/transcripts/talk/work`)).body as any[];
     assert.deepEqual((await json(`/workflows/talk/runs/${first.runId}/transcripts/talk/work?full=1`)).body, firstTurn);
     assert.deepEqual(full, [...firstTurn, ...turn.slice(1)]);
+    // run/transcript (the runs capability, an app's door) serves the same,
+    // as it reaches the page: JSON.
+    const runs = (strut.services as { runs: RunsCapability }).runs;
+    const wire = (v: unknown) => JSON.parse(JSON.stringify(v));
+    assert.deepEqual(wire(await runs.transcript({ workflow: "talk", runId: second.runId, path: "talk/work" })), { path: "talk/work", messages: turn });
+    assert.deepEqual(wire(await runs.transcript({ workflow: "talk", runId: second.runId, path: "talk/work", full: true })), { path: "talk/work", messages: full, full: true });
 
     // The record.
     const list = (await json("/sessions")).body.sessions as any[];
@@ -229,7 +236,7 @@ describe("agent sessions over HTTP", () => {
   });
 
   it("DELETE /sessions: 409 while a turn holds it, then gone — and ?full=1 with it", async () => {
-    const { json, run, launch, settle } = await boot();
+    const { strut, json, run, launch, settle } = await boot();
     const first = await run("talk", { prompt: "one", session: "abc" });
 
     let release!: () => void;
@@ -249,6 +256,8 @@ describe("agent sessions over HTTP", () => {
     assert.deepEqual((await json("/sessions?id=abc", { method: "DELETE" })).body, { ok: true });
     assert.equal((await json("/sessions?id=abc")).status, 404);
     assert.equal((await json(`/workflows/talk/runs/${first.runId}/transcripts/talk/work?full=1`)).status, 404);
+    const runs = (strut.services as { runs: RunsCapability }).runs;
+    await assert.rejects(runs.transcript({ workflow: "talk", runId: first.runId, path: "talk/work", full: true }), /Session "abc" is gone/);
     // The turn itself is still in the run log.
     assert.equal((await json(`/workflows/talk/runs/${first.runId}/transcripts/talk/work`)).status, 200);
   });

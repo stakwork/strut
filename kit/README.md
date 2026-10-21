@@ -75,7 +75,9 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   client.
 - **`src/hooks.ts`** — §3.2, each naming a step: `useRuns` / `useRun` /
   `useRunEvents` (`run/list`, `run/get` with `wait`, `run/events`; `live` =
-  refetch while anything shown is in flight), `useLaunch(workflow)` →
+  refetch while anything shown is in flight), `useTranscript` (`run/transcript`:
+  an agent's session by step path — the log's `transcript` link, which a page
+  cannot follow), `useLaunch(workflow)` →
   `{ launch(input, params?, key?), pending }` — a MUTATION with no query form,
   so nothing launches on mount or on a poll (§5.1) — `useCancel`,
   `useWorkflow` (`run/workflow`), `useStep(type)` → `run(config, input)`,

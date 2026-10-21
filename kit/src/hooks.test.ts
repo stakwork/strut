@@ -9,7 +9,7 @@ import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
   RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, isInFlight,
-  useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useWorkflow,
+  useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useWorkflow,
 } from "./hooks.js";
 
 useActEnvironment();
@@ -34,6 +34,7 @@ const defaults: Record<string, (c: Call) => unknown> = {
   [RUN_STEPS.list]: (c) => [{ runId: "1", workflow: c.config?.workflow, status: "success" }],
   [RUN_STEPS.get]: (c) => ({ runId: c.config?.runId, workflow: c.config?.workflow, status: "success", output: { n: 1 } }),
   [RUN_STEPS.events]: () => [{ type: "run.start" }, { type: "run.end" }],
+  [RUN_STEPS.transcript]: (c) => ({ path: c.config?.path, messages: [{ role: "user", content: "hi" }] }),
   [RUN_STEPS.launch]: () => ({ runId: "9" }),
   [RUN_STEPS.cancel]: () => ({ cancelled: true }),
   [RUN_STEPS.workflow]: (c) => ({ name: c.config?.workflow, description: "a workflow" }),
@@ -108,6 +109,25 @@ describe("the run hooks name their step and pass what they were given", () => {
     assert.deepEqual(calls, [{ type: "run/events", config: { workflow: "wf", runId: "r1" } }]);
     assert.equal(h.result().data!.length, 2);
     await h.unmount();
+  });
+
+  it("useTranscript → run/transcript, `full` only when asked; nothing without a path", async () => {
+    const { client, calls } = fakeClient();
+    const h = await renderHook(() => useTranscript("wf", "r1", "wf/agent"), { client });
+    await until(() => h.result().data !== undefined, "transcript");
+    assert.deepEqual(calls, [{ type: "run/transcript", config: { workflow: "wf", runId: "r1", path: "wf/agent" } }]);
+    assert.deepEqual(h.result().data, { path: "wf/agent", messages: [{ role: "user", content: "hi" }] });
+    await h.unmount();
+    const thread = fakeClient();
+    const t = await renderHook(() => useTranscript("wf", "r1", "wf/agent", { full: true }), { client: thread.client });
+    await until(() => t.result().data !== undefined, "the thread");
+    assert.deepEqual(thread.calls, [{ type: "run/transcript", config: { workflow: "wf", runId: "r1", path: "wf/agent", full: true } }]);
+    await t.unmount();
+    const none = fakeClient();
+    const n = await renderHook(() => useTranscript("wf", "r1", undefined), { client: none.client });
+    await act(async () => { await sleep(30); });
+    assert.deepEqual(none.calls, []);
+    await n.unmount();
   });
 
   it("useWorkflow → run/workflow", async () => {

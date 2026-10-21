@@ -1,19 +1,20 @@
 /**
  * RUNS as a capability (plans/apps.md §5): what the `run/*` lib steps are
  * thin over — list, read, launch and cancel runs, read a workflow's
- * contract and one of a run's files — the same layers the HTTP routes call
- * (`GET …/runs`, `GET …/runs/:runId`, `…/events`, `…/artifacts`, `POST
- * …/run`, `…/cancel`), one implementation. `createStrut` builds it into
+ * contract, one of a run's files and one of its agents' transcripts — the
+ * same layers the HTTP routes call (`GET …/runs`, `GET …/runs/:runId`,
+ * `…/events`, `…/artifacts`, `…/transcripts/<path>`, `POST …/run`,
+ * `…/cancel`), one implementation. `createStrut` builds it into
  * `ctx.services.runs` (the launcher, the controllers and the artifact
  * resolver live there); this module is the contract and the pure parts: the
- * list filter, the event cap, the file result.
+ * list filter, the event cap, the file result, the transcript cap.
  *
  * Unsealed, unlike the `meta/*` twins (EVOLVE_SPEC §6): grantable to an
  * agent as `agentTools: ["run/*"]`, and what an APP reaches through
  * `step_run` on its `grants.workflows` — the kit's `useRuns`, `useRun`,
- * `useRunEvents`, `useLaunch`, `useCancel` and `useWorkflow` name these
- * steps (kit/src/hooks.ts). A sealed workflow (a grading harness) is still
- * refused by name: the steps are a model's door.
+ * `useRunEvents`, `useTranscript`, `useLaunch`, `useCancel` and
+ * `useWorkflow` name these steps (kit/src/hooks.ts). A sealed workflow (a
+ * grading harness) is still refused by name: the steps are a model's door.
  */
 import type { AppRef, McpServer, RunEvent, RunSummary } from "./core.js";
 import type { ArtifactRef } from "./artifact-refs.js";
@@ -103,6 +104,33 @@ export interface RunFile {
   truncated?: true;
 }
 
+/** One agent's transcript (`run/transcript`): what `GET
+ *  …/runs/:runId/transcripts/<path>` serves — the `messages` of that path's
+ *  last `step.end` (AI SDK model messages: system, user, assistant, tool) —
+ *  capped, since a page cannot follow the link the run log hands out. */
+export interface RunTranscript {
+  path: string;
+  messages: Array<{ role: string; content: unknown }>;
+  /** `full` stitched a session turn's thread from the session store (the
+   *  route's `?full=1`): the system prompt, every earlier turn, this one. */
+  full?: true;
+  /** What the cap (`RUN_TRANSCRIPT_MAX_CHARS`) cut: absent when nothing was. */
+  truncated?: TranscriptCut;
+}
+
+/** What `capTranscript` cut, so a reader can say so. */
+export interface TranscriptCut {
+  /** The whole transcript's size, in JSON chars. */
+  chars: number;
+  /** How many strings (tool results, file contents, long prompts) were cut
+   *  to their head and tail, and the length each was cut to. */
+  strings: number;
+  stringMax: number;
+  /** Messages left out of the middle: `count` of them, before index `at` of
+   *  what came back — when the cut strings were not enough. */
+  messages?: { at: number; count: number };
+}
+
 /** Every method refuses a SEALED workflow (a grading harness) by name —
  *  these are a model's door, as the meta/* twins are (EVOLVE_SPEC §6). */
 export interface RunsCapability {
@@ -118,6 +146,10 @@ export interface RunsCapability {
   workflow(q: { workflow: string }): Promise<WorkflowInfo>;
   /** Null when the run or the file is not there. */
   files(q: { workflow: string; runId: string; path: string }): Promise<RunFile | null>;
+  /** One agent's transcript by step path (`wf/review`, a sub-agent's
+   *  `wf/review/003-agent`), capped (`capTranscript`). Throws what the route
+   *  answers 404 with: no transcript at the path, or (`full`) a session gone. */
+  transcript(q: { workflow: string; runId: string; path: string; full?: boolean }): Promise<RunTranscript>;
 }
 
 /** The most `run/get { wait }` may hold: under a client's request timeout,
@@ -131,6 +163,11 @@ export const RUN_LIST_MAX_LIMIT = 500;
 export const RUN_EVENTS_MAX = 5_000;
 /** `run/files`: the most of a file that comes through (text or base64). */
 export const RUN_FILE_MAX_BYTES = 2 * 1024 * 1024;
+/** `run/transcript`: the most of a transcript that comes through, in JSON chars. */
+export const RUN_TRANSCRIPT_MAX_CHARS = 2 * 1024 * 1024;
+/** The lengths `capTranscript` cuts long strings to, in turn, before it
+ *  leaves messages out. */
+const TRANSCRIPT_STRING_LEVELS = [65_536, 16_384, 4_096];
 
 export function requireRuns(services: unknown): RunsCapability {
   const runs = (services as { runs?: RunsCapability } | undefined)?.runs;
@@ -211,4 +248,71 @@ export function fileResult(path: string, bytes: Uint8Array, max = RUN_FILE_MAX_B
   else out.text = Buffer.from(head).toString("utf8");
   if (cut) out.truncated = true;
   return out;
+}
+
+type TranscriptMessage = RunTranscript["messages"][number];
+
+/** Every string in `v` over `max` chars cut to its head and tail, with how
+ *  much went; `count.n` counts the cuts. */
+function cutStrings(v: unknown, max: number, count: { n: number }): unknown {
+  if (typeof v === "string") {
+    if (v.length <= max) return v;
+    count.n++;
+    const half = Math.floor(max / 2);
+    return `${v.slice(0, half)}\n…[${v.length - 2 * half} chars cut]…\n${v.slice(v.length - half)}`;
+  }
+  if (Array.isArray(v)) return v.map((x) => cutStrings(x, max, count));
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) out[k] = cutStrings(x, max, count);
+    return out;
+  }
+  return v;
+}
+
+/**
+ * A transcript as `run/transcript` returns it: whole when its JSON is within
+ * `max` chars; else every string over a length (64k, then 16k, then 4k
+ * chars) cut to its head and tail, and — when that is not enough — messages
+ * left out of the middle: the head through the first user message (the
+ * system prompt, the task) stays, then as many of the newest as fit, never
+ * starting on a tool result whose call was left out. `truncated` says what
+ * went.
+ */
+export function capTranscript(messages: TranscriptMessage[], max = RUN_TRANSCRIPT_MAX_CHARS): Pick<RunTranscript, "messages" | "truncated"> {
+  const chars = JSON.stringify(messages).length;
+  if (chars <= max) return { messages };
+  let cut: TranscriptMessage[] = messages;
+  let counts: number[] = [];
+  let stringMax = 0;
+  for (const level of TRANSCRIPT_STRING_LEVELS) {
+    counts = [];
+    cut = messages.map((m) => {
+      const count = { n: 0 };
+      const out = cutStrings(m, level, count) as TranscriptMessage;
+      counts.push(count.n);
+      return out;
+    });
+    stringMax = level;
+    if (JSON.stringify(cut).length <= max) {
+      return { messages: cut, truncated: { chars, strings: counts.reduce((a, b) => a + b, 0), stringMax } };
+    }
+  }
+  const sizes = cut.map((m) => JSON.stringify(m).length + 1);
+  const firstUser = cut.findIndex((m) => m.role === "user");
+  const head = firstUser < 0 ? Math.min(1, cut.length) : firstUser + 1;
+  let budget = max - 2 - sizes.slice(0, head).reduce((a, b) => a + b, 0);
+  let from = cut.length;
+  while (from > head && budget >= sizes[from - 1]!) budget -= sizes[--from]!;
+  while (from < cut.length && cut[from]!.role === "tool") from++;
+  const kept = [...counts.slice(0, head), ...counts.slice(from)];
+  return {
+    messages: [...cut.slice(0, head), ...cut.slice(from)],
+    truncated: {
+      chars,
+      strings: kept.reduce((a, b) => a + b, 0),
+      stringMax,
+      ...(from > head ? { messages: { at: head, count: from - head } } : {}),
+    },
+  };
 }

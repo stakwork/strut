@@ -2,9 +2,9 @@
 // fixtures — so every component draws as it would against a strut, with no
 // grant and no run. A launch is remembered by its key, as `run/launch` is.
 import type { StrutClient } from "@strut/kit";
-import { FILES } from "./content";
+import { FILES, TRANSCRIPT } from "./content";
 import { getBatched, neighbors, search } from "./graph";
-import { CHILD_EVENTS, CHILD_RUN_ID, RUNS, RUN_EVENTS, RUN_ID, WORKFLOW_INFO } from "./runs";
+import { CHILD_EVENTS, CHILD_RUN_ID, EXPLORE_PATH, RUNS, RUN_EVENTS, RUN_ID, WORKFLOW_INFO } from "./runs";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,6 +35,9 @@ export function createFixtureClient(): StrutClient {
         return { ok: true };
       case "run/files":
         return FILES[String(c["path"])] ?? null;
+      case "run/transcript":
+        if (c["runId"] === RUN_ID && c["path"] === EXPLORE_PATH) return { path: EXPLORE_PATH, messages: TRANSCRIPT };
+        throw new Error(`No transcript at "${String(c["path"])}" in run "${String(c["runId"])}"`);
       case "graph/graph-get-batched":
         return getBatched((c["ref_ids"] as string[]) ?? []);
       case "graph/graph-neighbors":

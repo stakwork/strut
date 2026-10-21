@@ -1,13 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { RunEvent } from "./core.js";
-import { RUN_FILE_MAX_BYTES, capEvents, fileResult, listEntryOf, matchesRunFilter, mediaTypeOf, sinceMs } from "./runs.js";
+import { RUN_FILE_MAX_BYTES, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, mediaTypeOf, sinceMs } from "./runs.js";
 
 /**
  * The pure parts of the runs capability (src/runs.ts): the list filter,
- * the event cap, the file result. The capability itself — list / get /
- * events / launch / cancel / workflow / files over a strut — is driven
- * through `step_run` in src/apps/tools.test.ts.
+ * the event cap, the file result, the transcript cap. The capability itself
+ * — list / get / events / launch / cancel / workflow / files / transcript
+ * over a strut — is driven through `step_run` in src/apps/tools.test.ts;
+ * `transcript { full }` on a session thread in src/sessions.test.ts.
  */
 
 const ev = (type: RunEvent["type"], path = "wf", extra: Partial<RunEvent> = {}): RunEvent => ({ ts: "2026-10-21T00:00:00.000Z", runId: "1", path, type, ...extra });
@@ -67,5 +68,48 @@ describe("runs — the pure parts", () => {
     assert.equal(cut.truncated, true);
     assert.equal(cut.text!.length, RUN_FILE_MAX_BYTES);
     assert.equal(cut.bytes, RUN_FILE_MAX_BYTES + 10);
+  });
+
+  it("a transcript comes back whole under the cap; over it, long strings are cut to head and tail, tighter until it fits", () => {
+    const msgs = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "task" },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "bash", input: { command: "cat big" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "bash", output: { type: "text", value: "a".repeat(50_000) + "TAIL" } }] },
+      { role: "assistant", content: "done" },
+    ];
+    const whole = capTranscript(msgs, 1_000_000);
+    assert.equal(whole.messages, msgs, "under the cap: the same messages");
+    assert.equal(whole.truncated, undefined);
+
+    const chars = JSON.stringify(msgs).length;
+    const cut = capTranscript(msgs, 40_000);
+    assert.deepEqual(cut.truncated, { chars, strings: 1, stringMax: 16_384 }, "64k did not fit, 16k does");
+    assert.ok(JSON.stringify(cut.messages).length <= 40_000);
+    const value = (cut.messages[3]!.content as any)[0].output.value as string;
+    assert.ok(value.startsWith("a".repeat(8192)) && value.endsWith("TAIL"), "head and tail kept");
+    assert.match(value, /…\[33620 chars cut\]…/);
+    assert.equal(cut.messages[4]!.content, "done", "short strings untouched");
+    assert.equal((msgs[3]!.content as any)[0].output.value.length, 50_004, "the input is not mutated");
+  });
+
+  it("when cut strings are not enough, the middle is left out: the system prompt and the task stay, the newest that fit, never a tool result without its call", () => {
+    const msgs: Array<{ role: string; content: unknown }> = [{ role: "system", content: "sys" }, { role: "user", content: "the task" }];
+    for (let i = 0; i < 40; i++) {
+      msgs.push({ role: "assistant", content: [{ type: "tool-call", toolCallId: `c${i}`, toolName: "bash", input: { command: `step ${i}` } }] });
+      msgs.push({ role: "tool", content: [{ type: "tool-result", toolCallId: `c${i}`, toolName: "bash", output: { type: "text", value: "x".repeat(3_000) } }] });
+    }
+    msgs.push({ role: "assistant", content: "the answer" });
+    const out = capTranscript(msgs, 30_000);
+    assert.ok(JSON.stringify(out.messages).length <= 30_000);
+    assert.deepEqual(out.messages.slice(0, 2), msgs.slice(0, 2), "the head stays");
+    assert.equal(out.messages.at(-1)!.content, "the answer", "the newest stays");
+    assert.equal(out.messages[2]!.role, "assistant", "the kept tail never starts on a tool result");
+    const t = out.truncated!;
+    assert.equal(t.stringMax, 4_096);
+    assert.equal(t.strings, 0, "no string was over 4k");
+    assert.equal(t.messages!.at, 2);
+    assert.equal(out.messages.length, msgs.length - t.messages!.count);
+    assert.ok(t.messages!.count > 0 && t.messages!.count % 2 === 0, "whole call + result pairs left out");
   });
 });

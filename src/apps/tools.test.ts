@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createStrut, type Strut } from "../createStrut.js";
 import { createRegistry } from "../steps/registry.js";
-import { defineStep, type StepContext, type StepRegistry } from "../core.js";
+import { defineStep, withMessages, type StepContext, type StepRegistry } from "../core.js";
 import type { StrutCapabilities } from "../capabilities.js";
 import { FileWorkspaceStore } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
@@ -60,6 +60,19 @@ const whoami = defineStep({
     return { app: ctx.app ?? null, actor: ctx.actor ?? null, principal: ctx.principal ?? null };
   },
 });
+/** An agent stand-in: its session rides on its output, as the agent step's does. */
+const talker = defineStep({
+  type: "talker",
+  input: z.object({ task: z.string() }),
+  output: z.any(),
+  async run(cfg) {
+    return withMessages({ result: "said" }, [
+      { role: "system", content: "you talk" },
+      { role: "user", content: cfg.task },
+      { role: "assistant", content: [{ type: "text", text: "said it" }] },
+    ]);
+  },
+});
 const big = defineStep({
   type: "big",
   input: z.object({}),
@@ -74,6 +87,7 @@ const WORKFLOWS: Record<string, string> = {
   // Two steps: a cancel is cooperative and lands at the boundary between them.
   "slow-wf": `name: slow-wf\nsteps:\n  - id: n1\n    type: nap\n    config: { ms: 700 }\n  - id: n2\n    type: nap\n    config: { ms: 700 }\n`,
   "echo-app": `name: echo-app\nsteps:\n  - id: w\n    type: whoami\n`,
+  "talk-wf": `name: talk-wf\nsteps:\n  - id: a\n    type: talker\n    config: { task: "say it" }\n`,
   agentish: `name: agentish\nparams:\n  tools: []\nsteps:\n  - id: a\n    type: agent\n    config:\n      prompt: hi\n      agentTools: "{{ params.tools }}"\n`,
   "grader-run": `name: grader-run\nsealed: true\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n`,
 };
@@ -82,7 +96,7 @@ const MANIFESTS: Record<string, string> = {
   bench: [
     "title: Bench",
     "grants:",
-    "  workflows: [score-wf, slow-wf, echo-app, agentish, grader-run]",
+    "  workflows: [score-wf, slow-wf, echo-app, agentish, grader-run, talk-wf]",
     "  steps: [graph/*, app/get, whoami, big, run/launch]",
     "data:",
     "  graph:",
@@ -152,7 +166,7 @@ describe("step_run — the app door", () => {
       const written = await graph.nodes.write({ type: "Concept", data: { name: "Job", description: "the job page" } }, "create", { namespace: "default" });
       conceptRef = written.ref_id;
     }
-    registry = await createRegistry([score, nap, whoami, big]);
+    registry = await createRegistry([score, nap, whoami, talker, big]);
     const workspace = new FileWorkspaceStore(dataDir);
     strut = await createStrut({
       workspace,
@@ -283,6 +297,27 @@ describe("step_run — the app door", () => {
     assert.equal(cancelled.ok, true);
     const after = await ok({ type: "run/get", config: { workflow: "slow-wf", runId: toCancel.runId, wait: 10_000 }, app: identity });
     assert.equal(after.status, "cancelled");
+  });
+
+  it("run/transcript reads an agent's session the log hands out as a link, on the workflow's grant", async () => {
+    const launched = await ok({ type: "run/launch", config: { workflow: "talk-wf" }, app: identity });
+    await ok({ type: "run/get", config: { workflow: "talk-wf", runId: launched.runId, wait: 10_000 }, app: identity });
+    const events = await ok({ type: "run/events", config: { workflow: "talk-wf", runId: launched.runId }, app: identity });
+    const end = events.find((e: any) => e.type === "step.end" && e.path === "talk-wf/a");
+    assert.equal(end.messages, undefined, "the log never inlines a session");
+    assert.equal(end.transcript, `/workflows/talk-wf/runs/${launched.runId}/transcripts/talk-wf/a`);
+    const t = await ok({ type: "run/transcript", config: { workflow: "talk-wf", runId: launched.runId, path: "talk-wf/a" }, app: identity });
+    assert.deepEqual(t, {
+      path: "talk-wf/a",
+      messages: [
+        { role: "system", content: "you talk" },
+        { role: "user", content: "say it" },
+        { role: "assistant", content: [{ type: "text", text: "said it" }] },
+      ],
+    });
+    await refused({ type: "run/transcript", config: { workflow: "talk-wf", runId: launched.runId, path: "talk-wf/nope" }, app: identity }, /No transcript at "talk-wf\/nope"/);
+    await refused({ type: "run/transcript", config: { workflow: "talk-wf", runId: launched.runId, path: "talk-wf/a" }, app: appIdentity("strict", "v1") }, /workflow "talk-wf" is not granted/);
+    await refused({ type: "run/transcript", config: { workflow: "grader-run", runId: "1", path: "grader-run/a" }, app: identity }, /sealed/);
   });
 
   it("app/report-error is always granted and kept; app/get reads the app's errors back", async () => {
