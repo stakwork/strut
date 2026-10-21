@@ -33,7 +33,7 @@
 // One React per page holds by construction: every import of `react`, from
 // anywhere in the tree, is the one file the table names. Nothing here runs in
 // strut's server process; `yarn build:vendor`.
-import { build, transform, type Metafile, type Message } from "esbuild";
+import { build, transform, type BuildOptions, type Metafile, type Message } from "esbuild";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -179,7 +179,7 @@ const BUILD_OPTIONS = {
   // `process.env.NODE_ENV` branch); the app build defines the same.
   define: { "process.env.NODE_ENV": '"production"' },
   logLevel: "silent",
-} as const;
+} satisfies BuildOptions;
 
 /** Build everything into `outdir` (default `kit/vendor/`). `minify` is the
  *  stylesheets'; the modules are frozen as shipped and minified per app. */

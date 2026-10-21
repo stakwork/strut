@@ -1,0 +1,420 @@
+/**
+ * Unit tests for `lib/strut-run-graph/project.ts`: strut run events → the
+ * run's graph calls.
+ *
+ * Coverage:
+ *   - a call is a `step.end` that carries `nodes`, whoever ran the step;
+ *   - the call keeps the allowlisted scalar query fields of its
+ *     `step.start` input and nothing else — no node payload, no output;
+ *   - reads and writes are told apart by the step's name;
+ *   - a search keeps its place among the calls and the count of what it
+ *     matched, and none of its hits as nodes;
+ *   - node refs are deduplicated and malformed ones dropped;
+ *   - a ref tagged with a peer (another workspace's graph) is kept under a
+ *     qualified id, and a tag that is not a slug drops the ref;
+ *   - a call that launched a run of its own carries its workflow (and peer),
+ *     and is a call even with no nodes of its own (its child may have some),
+ *     the run id only server-side, read from whole or truncated JSON; a
+ *     child's calls go under a prefix, its untagged refs in its peer's graph;
+ *   - with `fileReads`, a file an agent viewed (or summarized with
+ *     `file_summary`) in a repository the run checked out is a read call
+ *     whose file is `owner/repo/<path>`.
+ */
+
+import { describe } from "node:test";
+import { expect, it } from "./_expect.js";
+import {
+  accessOf,
+  distinctNodeRefs,
+  isSearch,
+  projectRunGraphCalls,
+  projectWithLaunches,
+} from "./project.js";
+
+const start = (path: string, stepType: string, input: unknown, ts = "2026-09-28T16:56:45.000Z") => ({
+  ts,
+  type: "step.start",
+  path,
+  stepType,
+  input,
+});
+
+const end = (path: string, stepType: string, extra: Record<string, unknown> = {}, ts = "2026-09-28T16:56:46.000Z") => ({
+  ts,
+  type: "step.end",
+  path,
+  stepType,
+  durationMs: 1000.4,
+  ...extra,
+});
+
+describe("projectRunGraphCalls", () => {
+  it("projects an agent's tool call and a workflow step alike", () => {
+    const calls = projectRunGraphCalls([
+      { type: "run.start", path: "wf", input: { gtId: 1 } },
+      start("wf/produce/012-graph_graph_get", "tool:graph_graph_get", { ref_id: "a" }),
+      end("wf/produce/012-graph_graph_get", "tool:graph_graph_get", {
+        output: '{"ref_id":"a"}',
+        nodes: [{ ref_id: "a", node_type: "Concept" }],
+      }),
+      start("wf/ingest#0/state", "graph/graph-get", { ref_id: "b", namespace: "ns" }),
+      end("wf/ingest#0/state", "graph/graph-get", {
+        output: { ref_id: "b", properties: { secret: "x" } },
+        nodes: [{ ref_id: "b", node_type: "Document" }],
+      }),
+    ]);
+
+    expect(calls).toEqual([
+      {
+        path: "wf/produce/012-graph_graph_get",
+        tool: "graph_graph_get",
+        by: "agent",
+        access: "read",
+        startedAt: "2026-09-28T16:56:45.000Z",
+        endedAt: "2026-09-28T16:56:46.000Z",
+        durationMs: 1000,
+        query: { ref_id: "a" },
+        nodes: [{ ref_id: "a", node_type: "Concept" }],
+      },
+      {
+        path: "wf/ingest#0/state",
+        tool: "graph/graph-get",
+        by: "workflow",
+        access: "read",
+        startedAt: "2026-09-28T16:56:45.000Z",
+        endedAt: "2026-09-28T16:56:46.000Z",
+        durationMs: 1000,
+        query: { ref_id: "b", namespace: "ns" },
+        nodes: [{ ref_id: "b", node_type: "Document" }],
+      },
+    ]);
+  });
+
+  it("skips a step that touched no node", () => {
+    const calls = projectRunGraphCalls([
+      start("wf/task", "openhealth/load-task", { gtId: 1 }),
+      end("wf/task", "openhealth/load-task", { output: { groundTruth: ["I10"] } }),
+      end("wf/reqcheck", "graph/graph-neighbors", { output: [], nodes: [] }),
+    ]);
+    expect(calls).toEqual([]);
+  });
+
+  it("never carries a step's output or a node payload", () => {
+    const calls = projectRunGraphCalls([
+      start("wf/evalset", "graph/create-node", {
+        node_type: "EvalSet",
+        namespace: "ns",
+        node_data: { groundTruth: ["I10"], name: "set" },
+        triplets: [{ source: "x" }],
+      }),
+      end("wf/evalset", "graph/create-node", {
+        output: { ref_id: "c", groundTruth: ["I10"] },
+        nodes: [{ ref_id: "c" }],
+      }),
+    ]);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].query).toEqual({ node_type: "EvalSet", namespace: "ns" });
+    expect(JSON.stringify(calls)).not.toContain("groundTruth");
+  });
+
+  it("reads a tool input that reached the log as JSON text", () => {
+    const calls = projectRunGraphCalls([
+      start("wf/a/001-graph_graph_search", "tool:graph_graph_search", '{"q":"sepsis","limit":20}'),
+      end("wf/a/001-graph_graph_search", "tool:graph_graph_search", { nodes: [{ ref_id: "a" }] }),
+    ]);
+    expect(calls[0].query).toEqual({ q: "sepsis", limit: 20 });
+  });
+
+  it("keeps a call whose input cannot be read, with an empty query", () => {
+    const calls = projectRunGraphCalls([
+      start("wf/a/001-graph_graph_search", "tool:graph_graph_search", '{"q":"sep [… truncated'),
+      end("wf/a/001-graph_graph_search", "tool:graph_graph_search", { nodes: [{ ref_id: "a" }] }),
+    ]);
+    expect(calls[0].query).toEqual({});
+  });
+
+  it("clips long query strings and lists", () => {
+    const calls = projectRunGraphCalls([
+      start("wf/a/001-graph_graph_get_batched", "tool:graph_graph_get_batched", {
+        ref_ids: Array.from({ length: 80 }, (_, i) => `r${i}`),
+        query: "x".repeat(400),
+      }),
+      end("wf/a/001-graph_graph_get_batched", "tool:graph_graph_get_batched", { nodes: [{ ref_id: "a" }] }),
+    ]);
+    expect(calls[0].query.ref_ids).toHaveLength(50);
+    expect(String(calls[0].query.query)).toHaveLength(301);
+  });
+
+  it("counts what a search matched and keeps none of it as nodes", () => {
+    const calls = projectRunGraphCalls([
+      start("wf/seed/003-graph_graph_search", "tool:graph_graph_search", { q: "Chart Neutral", type: "Concept" }),
+      end("wf/seed/003-graph_graph_search", "tool:graph_graph_search", {
+        nodes: [
+          { ref_id: "chart-neutral", node_type: "Concept" },
+          { ref_id: "code-graph-visualization", node_type: "Concept" },
+          { ref_id: "chart-neutral", node_type: "Concept" },
+        ],
+      }),
+      start("wf/seed/find", "graph/graph-search", { q: "sepsis" }),
+      end("wf/seed/find", "graph/graph-search", { nodes: [{ ref_id: "sepsis" }] }),
+      start("wf/seed/004-graph_graph_get", "tool:graph_graph_get", { ref_id: "chart-neutral" }),
+      end("wf/seed/004-graph_graph_get", "tool:graph_graph_get", {
+        nodes: [{ ref_id: "chart-neutral", node_type: "Concept" }],
+      }),
+    ]);
+
+    expect(calls.map((c) => [c.tool, c.access, c.nodes.length, c.hits])).toEqual([
+      ["graph_graph_search", "read", 0, 2],
+      ["graph/graph-search", "read", 0, 1],
+      ["graph_graph_get", "read", 1, undefined],
+    ]);
+    expect(calls[0].query).toEqual({ q: "Chart Neutral" });
+    expect(calls[2]).not.toHaveProperty("hits");
+    // A hit is a node of the run only because a later call read it.
+    expect(distinctNodeRefs(calls)).toEqual([{ ref_id: "chart-neutral", node_type: "Concept" }]);
+    expect(JSON.stringify(calls)).not.toContain("code-graph-visualization");
+  });
+
+  it("deduplicates node refs and drops malformed ones", () => {
+    const calls = projectRunGraphCalls([
+      end("wf/a/001-graph_graph_neighbors", "tool:graph_graph_neighbors", {
+        nodes: [{ ref_id: "a", node_type: "Concept" }, { ref_id: "a" }, { ref_id: "" }, { node_type: "X" }, null, "b"],
+      }),
+    ]);
+    expect(calls[0].nodes).toEqual([{ ref_id: "a", node_type: "Concept" }]);
+    expect(calls[0].startedAt).toBeNull();
+  });
+
+  it("keeps a node another workspace's run touched under a qualified id, apart from this graph's", () => {
+    const calls = projectRunGraphCalls([
+      end("wf/ask", "strut/run-workflow", {
+        nodes: [
+          { ref_id: "a", node_type: "Concept", peer: "cloud" },
+          { ref_id: "a", node_type: "Concept" },
+          { ref_id: "b", node_type: "Concept", peer: "" },
+          { ref_id: "c", peer: "not a slug!" },
+          { ref_id: "a", peer: "cloud" },
+        ],
+      }),
+      end("wf/remote-only", "strut/run-workflow", { nodes: [{ ref_id: "d", peer: "other-ws" }] }),
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].nodes).toEqual([
+      { ref_id: "@cloud:a", node_type: "Concept", peer: "cloud" },
+      { ref_id: "a", node_type: "Concept" },
+      { ref_id: "b", node_type: "Concept" },
+    ]);
+    expect(calls[1].nodes).toEqual([{ ref_id: "@other-ws:d", peer: "other-ws" }]);
+    expect(distinctNodeRefs(calls).map((n) => n.ref_id)).toEqual(["@cloud:a", "a", "b", "@other-ws:d"]);
+  });
+
+  it("answers an empty list for anything that is not an event log", () => {
+    expect(projectRunGraphCalls(null)).toEqual([]);
+    expect(projectRunGraphCalls({ events: [] })).toEqual([]);
+    expect(projectRunGraphCalls([null, "x", { type: "step.end" }])).toEqual([]);
+  });
+});
+
+describe("accessOf", () => {
+  it.each([
+    ["graph/graph-get", "read"],
+    ["graph_graph_search", "read"],
+    ["graph_graph_neighbors", "read"],
+    ["graph/walk", "read"],
+    ["graph/create-node", "write"],
+    ["graph_create_batch_triplet", "write"],
+    ["graph/edit-node", "write"],
+    ["jarvis/create-triplet", "write"],
+    ["graph/register-namespace", "write"],
+  ])("%s is a %s", (tool, access) => {
+    expect(accessOf(tool)).toBe(access);
+  });
+});
+
+describe("isSearch", () => {
+  it.each([
+    ["graph/graph-search", true],
+    ["graph_graph_search", true],
+    ["jarvis/search", true],
+    ["graph/graph-get", false],
+    ["graph_graph_get_batched", false],
+    ["graph_graph_neighbors", false],
+    ["graph/walk", false],
+    ["graph/research", false],
+    ["graph/create-search-index", false],
+  ])("%s: %s", (tool, search) => {
+    expect(isSearch(tool)).toBe(search);
+  });
+});
+
+describe("distinctNodeRefs", () => {
+  it("lists each node once, first touch first, and fills in a type learned later", () => {
+    const calls = projectRunGraphCalls([
+      end("wf/a/001-graph_create_batch_triplet", "tool:graph_create_batch_triplet", {
+        nodes: [{ ref_id: "a" }, { ref_id: "b" }],
+      }),
+      end("wf/a/002-graph_graph_get", "tool:graph_graph_get", {
+        nodes: [
+          { ref_id: "b", node_type: "ClinicalFinding" },
+          { ref_id: "c", node_type: "Concept" },
+        ],
+      }),
+    ]);
+    expect(distinctNodeRefs(calls)).toEqual([
+      { ref_id: "a" },
+      { ref_id: "b", node_type: "ClinicalFinding" },
+      { ref_id: "c", node_type: "Concept" },
+    ]);
+  });
+});
+
+describe("launching calls", () => {
+  it("marks a local launch with its workflow, and keeps the run id server-side — from a truncated output too", () => {
+    const { calls, launches } = projectWithLaunches([
+      start("job/work/002-meta_run_workflow", "tool:meta_run_workflow", { name: "explore", input: { prompt: "how?" } }),
+      end("job/work/002-meta_run_workflow", "tool:meta_run_workflow", {
+        nodes: [{ ref_id: "a" }],
+        output: '{"runId":"1791647782933","status":"success","output":{"answer":"**Caveat:** no repo is chec',
+      }),
+    ]);
+    expect(calls[0].child).toEqual({ workflow: "explore" });
+    expect(JSON.stringify(calls)).not.toContain("1791647782933");
+    expect(launches.get("job/work/002-meta_run_workflow")).toEqual({ workflow: "explore", runId: "1791647782933" });
+  });
+
+  it("keeps a launch whose child touched no graph node — the child's file views are found only when it is opened", () => {
+    const { calls, launches } = projectWithLaunches([
+      start("job/work/004-meta_run_workflow", "tool:meta_run_workflow", { name: "explore", input: "{}" }),
+      end("job/work/004-meta_run_workflow", "tool:meta_run_workflow", {
+        output: '{"runId":"1791735843683","status":"success","output":{"answer":"All paths are under',
+      }),
+      start("job/work/005-bash", "tool:bash", { command: "ls" }),
+      end("job/work/005-bash", "tool:bash"),
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ path: "job/work/004-meta_run_workflow", nodes: [], child: { workflow: "explore" } });
+    expect(launches.get("job/work/004-meta_run_workflow")).toEqual({ workflow: "explore", runId: "1791735843683" });
+  });
+
+  it("marks a peer launch with its workflow and peer, as a workflow step or a tool", () => {
+    const { calls, launches } = projectWithLaunches([
+      start("wf/ask", "strut/run-workflow", { peer: "apps", workflow: "explore" }),
+      end("wf/ask", "strut/run-workflow", {
+        nodes: [{ ref_id: "x", peer: "apps" }],
+        output: { peer: "apps", workflow: "explore", runId: "1791647731999", status: "success" },
+      }),
+    ]);
+    expect(calls[0].child).toEqual({ workflow: "explore", peer: "apps" });
+    expect(launches.get("wf/ask")).toEqual({ workflow: "explore", runId: "1791647731999", peer: "apps" });
+  });
+
+  it("is no launch without a usable run id, workflow or peer, or for any other step", () => {
+    const { calls, launches } = projectWithLaunches([
+      end("wf/a", "tool:meta_run_workflow", { nodes: [{ ref_id: "a" }], output: { runId: "1" } }),
+      start("wf/b", "tool:meta_run_workflow", { name: "../etc" }),
+      end("wf/b", "tool:meta_run_workflow", { nodes: [{ ref_id: "a" }], output: { runId: "2" } }),
+      start("wf/c", "tool:strut_run_workflow", { workflow: "explore", peer: "not a slug" }),
+      end("wf/c", "tool:strut_run_workflow", { nodes: [{ ref_id: "a" }], output: { runId: "3" } }),
+      start("wf/d", "tool:meta_run_workflow", { name: "explore" }),
+      end("wf/d", "tool:meta_run_workflow", { nodes: [{ ref_id: "a" }], output: { runId: "x/../y" } }),
+      start("wf/e", "tool:graph_graph_get", { name: "explore" }),
+      end("wf/e", "tool:graph_graph_get", { nodes: [{ ref_id: "a" }], output: { runId: "4" } }),
+    ]);
+    expect(calls.filter((c) => c.child)).toEqual([]);
+    expect(launches.size).toBe(0);
+  });
+
+  it("puts a child's calls under a prefix, and its untagged refs in the peer's graph it ran on", () => {
+    const calls = projectRunGraphCalls(
+      [
+        end("explore/explore/001-graph_graph_get", "tool:graph_graph_get", {
+          nodes: [
+            { ref_id: "fn", node_type: "Function" },
+            { ref_id: "far", peer: "elsewhere" },
+          ],
+        }),
+      ],
+      { prefix: "job/work/004-strut_run_workflow", peer: "apps" },
+    );
+    expect(calls[0].path).toBe("job/work/004-strut_run_workflow/explore/explore/001-graph_graph_get");
+    expect(calls[0].nodes).toEqual([
+      { ref_id: "@apps:fn", node_type: "Function", peer: "apps" },
+      { ref_id: "@elsewhere:far", peer: "elsewhere" },
+    ]);
+  });
+});
+
+describe("file reads", () => {
+  const DIR = "/data/artifacts/1791665463791";
+  const checkout = (path: string, dir: string, repo: string) =>
+    end(path, "git/checkout", { output: { path: dir, repo, sha: "abc", ref: "master" } });
+  const view = (n: number, input: Record<string, unknown>) => [
+    start(`explore/explore/00${n}-str_replace_based_edit_tool`, "tool:str_replace_based_edit_tool", input),
+    end(`explore/explore/00${n}-str_replace_based_edit_tool`, "tool:str_replace_based_edit_tool", { output: "1\t…" }),
+  ];
+  const EVENTS = [
+    checkout("explore/checkouts#0", `${DIR}/hive`, "stakwork/hive"),
+    ...view(1, { command: "view", path: `${DIR}/hive/src/lib/auth/sphinx-verify.ts`, view_range: [76, 173] }),
+    ...view(2, { command: "view", path: "hive/src/app/api/auth/sphinx/token/route.ts" }),
+    ...view(3, { command: "view", path: `${DIR}/plan.md` }),
+    ...view(4, { command: "str_replace", path: `${DIR}/hive/src/x.ts`, old_str: "a", new_str: "b" }),
+    ...view(5, { command: "view", path: `${DIR}/hive/../hive/secret.ts` }),
+    ...view(6, { command: "view", path: `${DIR}/hive/src/it's.ts` }),
+  ];
+
+  it("reads a viewed file in a checked-out repository as owner/repo/<path> — absolute or relative to the agent's directory", () => {
+    const { calls, fileReads } = projectWithLaunches(EVENTS, { fileReads: true });
+    expect([...fileReads]).toEqual([
+      ["explore/explore/001-str_replace_based_edit_tool", "stakwork/hive/src/lib/auth/sphinx-verify.ts"],
+      ["explore/explore/002-str_replace_based_edit_tool", "stakwork/hive/src/app/api/auth/sphinx/token/route.ts"],
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      path: "explore/explore/001-str_replace_based_edit_tool",
+      tool: "str_replace_based_edit_tool",
+      by: "agent",
+      access: "read",
+      query: { file: "stakwork/hive/src/lib/auth/sphinx-verify.ts" },
+      nodes: [],
+    });
+    expect(calls[1]).toMatchObject({ query: { file: "stakwork/hive/src/app/api/auth/sphinx/token/route.ts" } });
+  });
+
+  it("reads a summarized file too, by the path file_summary was given", () => {
+    const { calls, fileReads } = projectWithLaunches(
+      [
+        checkout("explore/checkouts#0", `${DIR}/hive`, "stakwork/hive"),
+        start("explore/explore/001-file_summary", "tool:file_summary", { file_path: "hive/src/lib/githubApp.ts" }),
+        end("explore/explore/001-file_summary", "tool:file_summary", { output: "…" }),
+        start("explore/explore/002-file_summary", "tool:file_summary", { file_path: "elsewhere/x.ts" }),
+        end("explore/explore/002-file_summary", "tool:file_summary", { output: "…" }),
+        start("wf/summary", "file_summary", { file_path: "hive/src/y.ts" }),
+        end("wf/summary", "file_summary", { output: "…" }),
+      ],
+      { fileReads: true },
+    );
+    expect([...fileReads]).toEqual([["explore/explore/001-file_summary", "stakwork/hive/src/lib/githubApp.ts"]]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ tool: "file_summary", by: "agent", access: "read", query: { file: "stakwork/hive/src/lib/githubApp.ts" } });
+  });
+
+  it("keeps file views out unless asked, and puts them under a child's prefix", () => {
+    expect(projectRunGraphCalls(EVENTS)).toEqual([]);
+    const { fileReads } = projectWithLaunches(EVENTS, { fileReads: true, prefix: "job/work/002-meta_run_workflow" });
+    expect([...fileReads.keys()][0]).toBe(
+      "job/work/002-meta_run_workflow/explore/explore/001-str_replace_based_edit_tool",
+    );
+  });
+});
+
+describe("names (strut)", () => {
+  it("keeps the name a step reported for a node, and a later call fills one an earlier left out", () => {
+    const calls = projectRunGraphCalls([
+      { type: "step.end", path: "wf/a", stepType: "graph/graph-get", ts: "2026-10-21T10:00:00.000Z", nodes: [{ ref_id: "r1", node_type: "Concept" }] },
+      { type: "step.end", path: "wf/b", stepType: "graph/graph-get", ts: "2026-10-21T10:00:01.000Z", nodes: [{ ref_id: "r1", name: " Billing " }, { ref_id: "r2", name: "  " }] },
+    ]);
+    expect(calls[1]!.nodes).toEqual([{ ref_id: "r1", name: "Billing" }, { ref_id: "r2" }]);
+    expect(distinctNodeRefs(calls)).toEqual([{ ref_id: "r1", node_type: "Concept", name: "Billing" }, { ref_id: "r2" }]);
+  });
+});

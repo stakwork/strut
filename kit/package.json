@@ -38,7 +38,7 @@
     "build:vendor": "tsx scripts/build-vendor.ts",
     "build:lib": "tsx scripts/build-lib.ts",
     "shadcn": "shadcn add --all --overwrite --yes",
-    "test": "tsx --test src/*.test.ts src/folds/*.test.ts"
+    "test": "tsx --test src/*.test.ts src/folds/*.test.ts src/folds/run-graph/*.test.ts"
   },
   "peerDependencies": {
     "@tanstack/react-query": "5.104.5",
