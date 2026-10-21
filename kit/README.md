@@ -29,7 +29,14 @@ cd kit && yarn install --frozen-lockfile --ignore-scripts && yarn build
 
 `yarn build` is `build:vendor` (esbuild → `vendor/`, ~1 s) then `build:lib`
 (esbuild + `tsc --emitDeclarationOnly` → `dist/`). Both directories are
-gitignored and listed in `files`, so `npm pack` ships them.
+gitignored and listed in `files`, so `npm pack` ships them. A CommonJS
+package in the set (`react`, `react-dom`, the jsx runtimes, `lodash`,
+`papaparse` — `CJS_ENTRIES` in `scripts/manifest.ts`) is built through an
+ESM FACADE naming every export the module has at build time, since esbuild
+cannot enumerate a CJS module's exports and would otherwise emit `export
+default module.exports` alone — `import { useState } from "react"` would find
+nothing. The vendor test fails on any other entry that comes out with no
+named exports.
 
 Tests run with the repo's `npm test` (they are in the root `test` list) or
 `yarn test` here; either needs this directory's install. The vendor test builds

@@ -142,10 +142,24 @@ export {
   type PublishByContentOptions,
   type PublishOptions,
   type VersionSource,
+  type AppMetadata,
+  type AppVersionInfo,
+  type AppVersionSummary,
+  type AppListEntry,
+  type AppRecord,
+  type AppUpstream,
+  type PublishAppOptions,
 } from "./workspace.js";
 
 // Content-hash versioning (internal dedup) + sequential version labels
-export { contentHash, nextVersionLabel } from "./version.js";
+export { contentHash, nextVersionLabel, treeHash, treeFiles } from "./version.js";
+// Apps (plans/apps.md): the manifest, the build, the store's files and the
+// capability the app/* steps and the /apps routes are thin over.
+export { manifestSchema, parseManifest, readManifest, MANIFEST_FILE, type AppManifest, type AppGrants } from "./apps/manifest.js";
+export { buildApp, lintAppSource, readBuildInfo, cspFor, withToken, withoutTokenMeta, DOCUMENT_FILE, BUILD_FILE, TOKEN_META, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./apps/build.js";
+export { loadKit, defaultKitDir, type Kit, type KitLocation } from "./apps/kit.js";
+export { appsRoot, appVersionDir, appFilePath, listAppFiles, validateAppName } from "./apps/files.js";
+export { createApps, TEMPLATES_DIR, PAID_OR_SHELL_STEPS, type AppsCapability, type AppView, type AppPublishOptions, type AppPublishResult } from "./apps/apps.js";
 
 // LLM token usage (shared by the agent + lab eval/score steps). Pricing and
 // cost live in aieo (`computeSessionCost`); `usageForCost` adapts the shape.

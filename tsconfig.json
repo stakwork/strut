@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "build", "**/*.test.ts"]
+  "exclude": ["node_modules", "build", "**/*.test.ts", "src/apps/__fixtures__/**", "src/apps/templates/**"]
 }

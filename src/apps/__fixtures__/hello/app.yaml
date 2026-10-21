@@ -1,0 +1,8 @@
+title: Hello
+description: The fixture app the build tests drive — relative imports, a @/ override, a kit component, a kit stylesheet import, an asset.
+icon: hand
+grants:
+  workflows: []
+  steps: []
+csp:
+  resourceDomains: [https://tile.openstreetmap.org]

@@ -40,6 +40,24 @@ describe("the vendor build", () => {
     assert.equal(built.warnings.length, 0, built.warnings.map((w) => w.text).join("\n"));
   });
 
+  it("every JS entry has NAMED exports — a CommonJS package through its facade", async () => {
+    const map = readImportMap(outdir);
+    const seen = new Set<string>();
+    for (const e of entries()) {
+      const file = map[e.id]!;
+      if (e.kind !== "js" || seen.has(file)) continue;
+      seen.add(file);
+      assert.match(readFileSync(file, "utf8"), /export\{/, `${e.id} (${file}) exports only a default — a CommonJS entry missing from CJS_ENTRIES?`);
+    }
+    const react = await import(pathToFileURL(map["react"]!).href);
+    assert.equal(typeof react.useState, "function", "react exports useState by name");
+    assert.equal(typeof react.default.useState, "function", "and as its default's key");
+    const jsx = await import(pathToFileURL(map["react/jsx-runtime"]!).href);
+    assert.equal(typeof jsx.jsx, "function");
+    const lodash = await import(pathToFileURL(map["lodash"]!).href);
+    assert.equal(typeof lodash.debounce, "function");
+  });
+
   it("holds one copy of every shared module", () => {
     for (const [what, needle] of Object.entries(SINGLETONS)) {
       const where = Object.entries(built.metafile.outputs)

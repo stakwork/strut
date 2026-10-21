@@ -5,7 +5,8 @@ import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -70,6 +71,11 @@ import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdPr
 import { stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
+import { createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
+import type { KitLocation } from "./apps/kit.js";
+import { listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
+import { DOCUMENT_FILE, withToken, withoutTokenMeta } from "./apps/build.js";
+import type { AppUpstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -129,6 +135,12 @@ export interface StrutOptions<TServices = unknown> {
    *  `FileWorkspaceStore()` (reads `STRUT_WORKSPACE` env, falls back to
    *  `./workspace`). Any `WorkspaceStore` implementation works. */
   workspace?: WorkspaceStore;
+
+  /** Where the app KIT is (plans/apps.md §3; `src/apps/kit.ts`): the vendor
+   *  layer app builds resolve against. Default: `@strut/kit` when pinned,
+   *  else the repo's `kit/` — read at the first build, so a strut without a
+   *  built kit boots and the build says what is missing. */
+  kit?: KitLocation;
 
   /** Local directory for the inherently-local things: run artifacts,
    *  step cassettes, the chat builder's shell cwd + scratch/. Defaults to
@@ -434,6 +446,9 @@ export interface Strut<TServices = unknown> {
   /** Agent sessions — the store behind `ctx.services.sessions` + `/sessions`. */
   sessionStore: SessionStore;
   services: TServices;
+  /** Apps (plans/apps.md): what the `/apps` routes and the `app/*` steps are
+   *  thin over — `ctx.services.apps`. */
+  apps: AppsCapability;
 
   /** Current registry. Reads through the closure so callers always see
    *  the latest after `rebuildRegistry()`. */
@@ -898,6 +913,14 @@ export async function createStrut<TServices = unknown>(
 
   // Mutable closure state — `app` handlers read through these.
   let registry: StepRegistry = opts.registry ?? {};
+  // Apps (plans/apps.md §1.3, §8): the one implementation the `/apps`
+  // routes and the `app/*` steps share, over the workspace's pointers and
+  // the version directories under dataDir. A host's own `apps` on the bag
+  // wins, as every other capability's does.
+  const apps: AppsCapability =
+    ((services as Record<string, unknown>)["apps"] as AppsCapability | undefined) ??
+    createApps({ workspace, getRegistry: () => registry, ...(opts.kit ? { kit: opts.kit } : {}) });
+  (services as Record<string, unknown>)["apps"] = apps;
   let stepSources: StepSources = {};
   // `type@vN` pins load through the workspace's version archive (src/step-ref.ts).
   const loadStepVersion = (name: string, version: string) => workspace.materializeStepVersion(name, version);
@@ -2209,6 +2232,153 @@ export async function createStrut<TServices = unknown>(
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+  });
+
+  // ── Apps (plans/apps.md §7.2) ────────────────────────────────────────────
+  // A workspace app's pointers and its version directories. The files are
+  // served exactly as a run's artifacts are: the listing mints the app's
+  // FILE TOKEN (`app:<name>@<vN>`, auth.ts), a file under it opens with
+  // `?t=`, and `dist/index.html` — the document — is served with the token
+  // written into its `<meta name="strut-app-token">` and `CSP: sandbox
+  // allow-scripts`, so the page's calls carry its identity and the key is
+  // never in a URL it can read. Read with the key instead it carries no meta
+  // and runs no script. A name may hold `/` (`acme/hvac/invoices`): encoded
+  // in the URL, decoded by the router. `POST /apps` is a PERSON's door: its
+  // grants are unrestricted (§9); build errors are a 400.
+
+  const appRoute = (c: Context): { name: string } | Response => {
+    const name = c.req.param("name") ?? "";
+    try {
+      validateAppName(name);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    return { name };
+  };
+
+  app.get("/apps", async (c) => c.json({ apps: await apps.list() }));
+
+  app.get("/apps/:name", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const version = c.req.query("version") || undefined;
+    const view = await apps.get(at.name, version);
+    if (!view) return c.json({ error: version ? `App "${at.name}" has no version ${version}` : `App "${at.name}" not found` }, 404);
+    return c.json(view);
+  });
+
+  app.get("/apps/:name/versions", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const rec = await workspace.getApp(at.name);
+    if (!rec) return c.json({ error: `App "${at.name}" not found` }, 404);
+    return c.json({ name: at.name, active: rec.active, versions: rec.versions, ...(rec.publisher ? { publisher: rec.publisher } : {}), ...(rec.owner ? { owner: rec.owner } : {}) });
+  });
+
+  /** The version's directory, or the 404 / 400 that says why not. */
+  const appVersionRoute = async (c: Context): Promise<{ name: string; version: string; path: string; hash: string } | Response> => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const version = c.req.param("version") ?? "";
+    if (!/^v\d+$/.test(version)) return c.json({ error: `"${version}" is not a version label (v1, v2, …)` }, 404);
+    const dir = await apps.versionDir(at.name, version);
+    if (!dir) return c.json({ error: `App "${at.name}" has no version ${version}` }, 404);
+    return { name: at.name, version, path: dir.path, hash: dir.hash };
+  };
+
+  app.get("/apps/:name/:version/files", async (c) => {
+    const refused = badToken(c);
+    if (refused) return refused;
+    const at = await appVersionRoute(c);
+    if (at instanceof Response) return at;
+    const token = fileToken({ kind: "app", id: `${at.name}@${at.version}` });
+    return c.json({ app: at.name, version: at.version, hash: at.hash, files: await listAppFiles(at.path), ...(token ? { token } : {}) });
+  });
+
+  app.get("/apps/:name/:version/files/:path{.+}", async (c) => {
+    const refused = badToken(c);
+    if (refused) return refused;
+    const at = await appVersionRoute(c);
+    if (at instanceof Response) return at;
+    const relPath = c.req.param("path");
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await readAppFile(at.path, relPath);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    if (!bytes) return c.json({ error: `no file "${relPath}" in ${at.name}@${at.version}` }, 404);
+    const tokenRead = carriesFileToken(c);
+    if (relPath === DOCUMENT_FILE) {
+      // The document: the app's identity goes in as it is served (§7.2) —
+      // the token it was read with, and nothing when it was the key.
+      const html = Buffer.from(bytes).toString("utf8");
+      const token = tokenRead ? fileToken({ kind: "app", id: `${at.name}@${at.version}` }) : undefined;
+      return c.body(token ? withToken(html, token) : withoutTokenMeta(html), 200, artifactHeaders(relPath, tokenRead));
+    }
+    return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, artifactHeaders(relPath, tokenRead));
+  });
+
+  // Publish from a files map: `{ name, files: { "app.yaml": "…", "src/App.tsx": "…", "public/logo.png": { base64 } }, publisher?, upstream? }`.
+  // Written to a scratch directory, built, recorded, copied into place.
+  app.post("/apps", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      name?: unknown;
+      files?: unknown;
+      publisher?: unknown;
+      upstream?: unknown;
+      reactivateKnown?: unknown;
+    };
+    if (typeof body.name !== "string" || !body.name) return c.json({ error: "name is required" }, 400);
+    if (!body.files || typeof body.files !== "object" || Array.isArray(body.files) || !Object.keys(body.files).length) {
+      return c.json({ error: "files is required: a path → content map (text, or { base64 } for a binary file), app.yaml among them" }, 400);
+    }
+    try {
+      validateAppName(body.name);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    const scratch = await mkdtemp(join(tmpdir(), "strut-app-publish-"));
+    let result: AppPublishResult;
+    try {
+      await writeAppFiles(scratch, body.files as Record<string, string | { base64: string }>);
+      const actor = await resolveActor(c);
+      result = await apps.publish(scratch, body.name, {
+        surface: "person",
+        source: "api",
+        ...(typeof body.publisher === "string" ? { publisher: body.publisher } : {}),
+        ...(actor ? { actor } : {}),
+        ...(body.upstream === null || (body.upstream && typeof body.upstream === "object") ? { upstream: body.upstream as AppUpstream | null } : {}),
+        ...(typeof body.reactivateKnown === "boolean" ? { reactivateKnown: body.reactivateKnown } : {}),
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+    if (!result.ok) return c.json({ error: "the app did not build", errors: result.errors, warnings: result.warnings }, 400);
+    return c.json(result, 201);
+  });
+
+  app.put("/apps/:name/active", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown };
+    if (typeof body.version !== "string" || !body.version) return c.json({ error: "version is required" }, 400);
+    try {
+      await apps.setActive(at.name, body.version);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+    }
+    return c.json({ ok: true, name: at.name, active: body.version });
+  });
+
+  app.delete("/apps/:name", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const removed = await apps.delete(at.name);
+    if (!removed) return c.json({ error: `App "${at.name}" not found` }, 404);
+    return c.json({ ok: true, name: at.name });
   });
 
   // ── Jobs (plans/jobs.md §2.2, §6) ────────────────────────────────────────
@@ -4617,6 +4787,7 @@ export async function createStrut<TServices = unknown>(
     autoResumeStaleChats,
     reconcileClaims,
     run,
+    apps,
     stt,
     automations,
     claims,

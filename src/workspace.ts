@@ -9,6 +9,8 @@ import type { GraphBackend } from "./graph/backend.js";
 import type { SubflowResolver } from "./runner.js";
 import { readStepSourceFromDisk, type StepSource } from "./steps/registry.js";
 import { contentHash, nextVersionLabel } from "./version.js";
+import type { AppGrants, AppManifest } from "./apps/manifest.js";
+import { appVersionDir, appsRoot, validateAppName } from "./apps/files.js";
 import { evaluateExpr } from "./expr.js";
 import { inputSchema, parseInputBlock, type InputBlock } from "./input-block.js";
 import { claimsArgSchema, type ClaimsBlock } from "./claims-schemas.js";
@@ -288,6 +290,85 @@ export interface StepDirMetadata {
 export interface FileWorkspaceSnapshot {
   workflows: Array<{ name: string; meta: WorkflowMetadata; versions: Array<{ label: string; yaml: string; info: WorkflowVersionInfo }> }>;
   steps: Array<{ name: string; active: string; publisher?: string; versions: Array<{ label: string; code: string; info: StepVersionInfo }> }>;
+  /** The app POINTERS (plans/apps.md §1.3): the directories stay where they are. */
+  apps: Array<{ name: string; meta: AppMetadata }>;
+}
+
+// ── Apps (plans/apps.md §1.3) ───────────────────────────────────────────────
+
+/** Where an installed app came from (`marketplace.md` §3): which package,
+ *  which content, how to fetch it again. Carried forward by every publish
+ *  over the name unless the publish sets (or clears) its own. */
+export interface AppUpstream {
+  package: string;
+  version?: string;
+  digest?: string;
+  source?: Record<string, unknown>;
+  secrets?: string[];
+  /** Edited since it was installed (a fork). */
+  edited?: boolean;
+}
+
+/** One app version: its tree hash (`treeHash`, src/version.ts) and the
+ *  manifest as published — the pointer; the files are the directory
+ *  `materializeAppVersion` names. */
+export interface AppVersionInfo extends Pick<WorkflowVersionInfo, "source" | "actor"> {
+  createdAt: string;
+  hash: string;
+  manifest: AppManifest;
+  publisher?: string;
+  upstream?: AppUpstream;
+}
+
+export type AppVersionSummary = Omit<AppVersionInfo, "manifest">;
+
+/** The app's record: `apps/<name>/_metadata.json` on files, the `StrutApp`
+ *  node and its `StrutAppVersion`s on the graph. */
+export interface AppMetadata {
+  active: string;
+  versions: Record<string, AppVersionInfo>;
+  /** Who published it — `ai` for the meta surface (`app/publish`), a host's
+   *  stamp, or none for a person's `POST /apps`. */
+  publisher?: string;
+  /** The PERSON the app belongs to: the first publish's actor, as for a
+   *  workflow (`WorkflowMetadata.owner`). */
+  owner?: string;
+}
+
+export interface AppListEntry {
+  name: string;
+  activeVersion: string;
+  versions: string[];
+  title: string;
+  description?: string;
+  icon?: string;
+  grants: AppGrants;
+  publisher?: string;
+  owner?: string;
+}
+
+/** `getApp`: one version (the active one by default) with the app's record around it. */
+export interface AppRecord {
+  name: string;
+  /** The version read. */
+  version: string;
+  hash: string;
+  manifest: AppManifest;
+  createdAt: string;
+  upstream?: AppUpstream;
+  active: string;
+  versions: Record<string, AppVersionSummary>;
+  publisher?: string;
+  owner?: string;
+}
+
+export interface PublishAppOptions extends PublishByContentOptions {
+  publisher?: string;
+  /** The owner to record when the app has none yet (the import carries one
+   *  over); `actor` serves the same way. */
+  owner?: string;
+  /** This version's upstream; `null` clears what would be carried forward. */
+  upstream?: AppUpstream | null;
 }
 
 /** `v1, v2, …, v10` in numeric order; anything else after, alphabetically. */
@@ -446,6 +527,23 @@ export interface WorkspaceStore extends SubflowResolver {
   setActiveStepVersion(name: string, version: string): Promise<void>;
   deleteStep(name: string): Promise<boolean>;
   deleteStepsByPublisher(publisher: string): Promise<string[]>;
+
+  // ── Apps (plans/apps.md §1.3) — the POINTERS; the files are under dataDir ──
+  listApps(): Promise<AppListEntry[]>;
+  /** One app at a version (the active one when omitted), or null. */
+  getApp(name: string, version?: string): Promise<AppRecord | null>;
+  /** Record a version: a known tree hash re-activates its version (unless
+   *  `reactivateKnown: false`), new content is the next `vN`. The caller
+   *  builds first and writes the files to `materializeAppVersion`'s path
+   *  after (src/apps/apps.ts). */
+  publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }>;
+  setActiveAppVersion(name: string, version: string): Promise<void>;
+  /** Remove the pointers; the directories stay. False when there was none. */
+  deleteApp(name: string): Promise<boolean>;
+  /** The directory a version's files live in (`<dataDir>/apps/<name>/<vN>`)
+   *  and its hash — the path, never a copy. Throws when the version is not
+   *  on record; says nothing about whether the directory is there. */
+  materializeAppVersion(name: string, version: string): Promise<{ path: string; hash: string }>;
 
   // ── Step source + code loading ──
   /** A step's source text across all tiers (core / lib ship with the
@@ -934,6 +1032,153 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return { version: vid, changed: true };
   }
 
+  // ── Apps (plans/apps.md §1.3) ──────────────────────────────────────────
+  //
+  // `apps/<name>/_metadata.json` beside the version directories
+  // (`apps/<name>/<vN>/`, written by the publish flow after this records the
+  // pointer) and, later, the app's `data.db`. A name may carry `/`
+  // (`acme/hvac/invoices`): nested folders, the metadata at the leaf, so the
+  // listing walks for `_metadata.json` files and never descends into a
+  // version's directory.
+
+  private appsDir(): string {
+    return appsRoot(this.root);
+  }
+
+  private appMetaPath(name: string): string {
+    return join(this.appsDir(), ...name.split("/"), "_metadata.json");
+  }
+
+  private async readAppMetadata(name: string): Promise<AppMetadata | null> {
+    try {
+      return JSON.parse(await readFile(this.appMetaPath(name), "utf-8")) as AppMetadata;
+    } catch {
+      return null;
+    }
+  }
+
+  private async writeAppMetadata(name: string, meta: AppMetadata): Promise<void> {
+    const file = this.appMetaPath(name);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify(meta, null, 2), "utf-8");
+  }
+
+  /** Every app on record, by name, sorted. */
+  private async appNames(): Promise<string[]> {
+    const out: string[] = [];
+    const walk = async (dir: string, prefix: string): Promise<void> => {
+      const entries = await safeReaddir(dir);
+      let versions = new Set<string>();
+      if (prefix && entries.some((e) => e.isFile() && e.name === "_metadata.json")) {
+        out.push(prefix);
+        versions = new Set(Object.keys((await this.readAppMetadata(prefix))?.versions ?? {}));
+      }
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith(".") || versions.has(e.name)) continue;
+        await walk(join(dir, e.name), prefix ? `${prefix}/${e.name}` : e.name);
+      }
+    };
+    await walk(this.appsDir(), "");
+    return out.sort();
+  }
+
+  async listApps(): Promise<AppListEntry[]> {
+    const out: AppListEntry[] = [];
+    for (const name of await this.appNames()) {
+      const meta = await this.readAppMetadata(name);
+      const active = meta?.versions[meta.active];
+      if (!meta || !active) continue;
+      out.push(appListEntry(name, meta, active));
+    }
+    return out;
+  }
+
+  async getApp(name: string, version?: string): Promise<AppRecord | null> {
+    validateAppName(name);
+    const meta = await this.readAppMetadata(name);
+    if (!meta) return null;
+    const label = version ?? meta.active;
+    const info = meta.versions[label];
+    if (!info) return null;
+    return appRecord(name, meta, label, info);
+  }
+
+  async publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
+    validateAppName(name);
+    const meta = await this.readAppMetadata(name);
+    if (meta) {
+      const match = Object.entries(meta.versions).find(([, v]) => v.hash === hash);
+      if (match) {
+        const [vid] = match;
+        let changed = false;
+        let dirty = false;
+        if (meta.active !== vid && opts?.reactivateKnown !== false) {
+          meta.active = vid;
+          changed = dirty = true;
+        }
+        if (opts?.publisher !== undefined && meta.publisher !== opts.publisher) {
+          meta.publisher = opts.publisher;
+          dirty = true;
+        }
+        const owner = opts?.owner ?? opts?.actor;
+        if (!meta.owner && owner) {
+          meta.owner = owner;
+          dirty = true;
+        }
+        if (dirty) await this.writeAppMetadata(name, meta);
+        return { version: vid, changed };
+      }
+    }
+    const inherited = meta?.versions[meta.active]?.upstream;
+    const upstream = opts?.upstream === null ? undefined : (opts?.upstream ?? inherited);
+    const vid = nextVersionLabel(Object.keys(meta?.versions ?? {}));
+    const publisher = opts?.publisher ?? meta?.publisher;
+    const owner = meta?.owner ?? opts?.owner ?? opts?.actor;
+    await this.writeAppMetadata(name, {
+      active: vid,
+      versions: {
+        ...(meta?.versions ?? {}),
+        [vid]: {
+          createdAt: new Date().toISOString(),
+          hash,
+          manifest,
+          ...(publisher !== undefined ? { publisher } : {}),
+          ...(upstream ? { upstream } : {}),
+          ...provenance(opts),
+        },
+      },
+      ...(publisher !== undefined ? { publisher } : {}),
+      ...(owner ? { owner } : {}),
+    });
+    return { version: vid, changed: true };
+  }
+
+  async setActiveAppVersion(name: string, version: string): Promise<void> {
+    validateAppName(name);
+    const meta = await this.readAppMetadata(name);
+    if (!meta) throw new Error(`App "${name}" not found`);
+    if (!meta.versions[version]) {
+      throw new Error(`Version "${version}" not found for app "${name}". Available: ${Object.keys(meta.versions).join(", ")}`);
+    }
+    meta.active = version;
+    await this.writeAppMetadata(name, meta);
+  }
+
+  async deleteApp(name: string): Promise<boolean> {
+    validateAppName(name);
+    if (!(await this.readAppMetadata(name))) return false;
+    // The pointer only: the version directories (and a database) stay.
+    await rm(this.appMetaPath(name), { force: true });
+    return true;
+  }
+
+  async materializeAppVersion(name: string, version: string): Promise<{ path: string; hash: string }> {
+    validateAppName(name);
+    const info = (await this.readAppMetadata(name))?.versions[version];
+    if (!info) throw new Error(`Version "${version}" of app "${name}" not found`);
+    return { path: appVersionDir(this.appsDir(), name, version), hash: info.hash };
+  }
+
   /** Absolute path to an archived step version source file. */
   private stepVersionPath(name: string, version: string): string {
     return join(this.root, "steps", "_history", name, `${version}.ts`);
@@ -1117,7 +1362,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
    *  step file with no metadata (published before versions were recorded)
    *  is one version, `v1`. */
   async snapshot(): Promise<FileWorkspaceSnapshot | null> {
-    const out: FileWorkspaceSnapshot = { workflows: [], steps: [] };
+    const out: FileWorkspaceSnapshot = { workflows: [], steps: [], apps: [] };
     for (const entry of await safeReaddir(join(this.root, "workflows"))) {
       if (!entry.isDirectory()) continue;
       const meta = await this.readWorkflowMetadata(entry.name);
@@ -1144,7 +1389,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
       out.steps.push({ name, active: "v1", versions: [{ label: "v1", code, info: { createdAt: (await stat(file)).mtime.toISOString(), hash: contentHash(code) } }] });
     }
     out.steps.sort((a, b) => a.name.localeCompare(b.name));
-    return out.workflows.length || out.steps.length ? out : null;
+    for (const name of await this.appNames()) {
+      const meta = await this.readAppMetadata(name);
+      if (meta) out.apps.push({ name, meta });
+    }
+    return out.workflows.length || out.steps.length || out.apps.length ? out : null;
   }
 
   /** Move the workspace's own files out of the root into `to` (created):
@@ -1173,6 +1422,13 @@ export class FileWorkspaceStore implements WorkspaceStore {
       }
       await mkdir(join(to, "steps"), { recursive: true });
       await rename(from, join(to, "steps", sub));
+    }
+    // An app's POINTER moves; its version directories stay where every
+    // backend reads them (plans/apps.md §1.3).
+    for (const name of await this.appNames()) {
+      const dest = join(to, "apps", ...name.split("/"), "_metadata.json");
+      await mkdir(dirname(dest), { recursive: true });
+      await rename(this.appMetaPath(name), dest);
     }
   }
 
@@ -1215,6 +1471,44 @@ async function safeReaddir(dir: string) {
   } catch {
     return [];
   }
+}
+
+/** An `AppListEntry` from a record and its active version — shared by the
+ *  file and graph stores. */
+export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "versions" | "publisher" | "owner">, active: AppVersionInfo): AppListEntry {
+  const m = active.manifest;
+  return {
+    name,
+    activeVersion: meta.active,
+    versions: Object.keys(meta.versions).sort(versionLabelOrder),
+    title: m.title,
+    ...(m.description ? { description: m.description } : {}),
+    ...(m.icon ? { icon: m.icon } : {}),
+    grants: m.grants,
+    ...(meta.publisher ? { publisher: meta.publisher } : {}),
+    ...(meta.owner ? { owner: meta.owner } : {}),
+  };
+}
+
+/** An `AppRecord` for one version — shared by the file and graph stores. */
+export function appRecord(name: string, meta: AppMetadata, version: string, info: AppVersionInfo): AppRecord {
+  const versions: Record<string, AppVersionSummary> = {};
+  for (const label of Object.keys(meta.versions).sort(versionLabelOrder)) {
+    const { manifest: _m, ...rest } = meta.versions[label]!;
+    versions[label] = rest;
+  }
+  return {
+    name,
+    version,
+    hash: info.hash,
+    manifest: info.manifest,
+    createdAt: info.createdAt,
+    ...(info.upstream ? { upstream: info.upstream } : {}),
+    active: meta.active,
+    versions,
+    ...(meta.publisher ? { publisher: meta.publisher } : {}),
+    ...(meta.owner ? { owner: meta.owner } : {}),
+  };
 }
 
 async function pathExists(p: string): Promise<boolean> {

@@ -39,6 +39,14 @@ export const JS_ENTRIES = [
   "react-markdown", "remark-gfm",
 ];
 
+/** The entries whose package is CommonJS. esbuild cannot enumerate a CJS
+ *  module's exports, so an entry built straight from one is `export default
+ *  module.exports` and `import { useState } from "react"` finds nothing;
+ *  these get an ESM FACADE naming every key the module has at build time
+ *  (`writeFacade`, build-vendor.ts). vendor.test.ts fails on any other entry
+ *  that comes out with no named exports. */
+export const CJS_ENTRIES = ["react", "react/jsx-runtime", "react/jsx-dev-runtime", "react-dom", "react-dom/client", "lodash", "papaparse"];
+
 /** Stylesheets an app imports by specifier (`import "@xyflow/react/dist/style.css"`). */
 export const CSS_ENTRIES = [
   "@xyflow/react/dist/style.css", "@xyflow/react/dist/base.css",

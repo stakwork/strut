@@ -14,7 +14,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kitDir, scanCandidates, sourceFiles, vendorDir } from "../src/node.js";
-import { ALIASES, CSS_ENTRIES, JS_ENTRIES, KIT_ENTRIES, PACKAGES, outName } from "./manifest.js";
+import { createRequire } from "node:module";
+import { ALIASES, CJS_ENTRIES, CSS_ENTRIES, JS_ENTRIES, KIT_ENTRIES, PACKAGES, outName } from "./manifest.js";
 
 export interface VendorEntry {
   /** The specifier an app imports. */
@@ -29,11 +30,28 @@ export interface VendorEntry {
 /** A direct dependency's package.json (read from the file: not every package exports it). */
 const packageJson = (name: string) => JSON.parse(readFileSync(join(kitDir, "node_modules", name, "package.json"), "utf8"));
 
-/** The specifiers the import map holds, with the file each builds to. */
-export function entries(): VendorEntry[] {
+const kitRequire = createRequire(join(kitDir, "package.json"));
+
+/** The ESM facade for a CommonJS entry: its default export and every key the
+ *  module has when required here, as named exports — what esbuild cannot
+ *  derive from the CJS source (manifest.ts `CJS_ENTRIES`). */
+export function facadeSource(id: string): string {
+  const mod = kitRequire(id) as Record<string, unknown>;
+  const names = Object.keys(mod).filter((k) => /^[A-Za-z_$][\w$]*$/.test(k) && k !== "default" && k !== "__esModule").sort();
+  if (!names.length) throw new Error(`${id}: a CommonJS entry with no exports to name`);
+  return `import m from ${JSON.stringify(id)};\nexport default m;\nexport const { ${names.join(", ")} } = m;\n`;
+}
+
+/** Where a CJS entry's facade is written for the build (inside the kit, so
+ *  its bare import resolves through kit/node_modules); removed after. */
+const facadePath = (facadeDir: string, id: string) => join(facadeDir, `${outName(id)}.js`);
+
+/** The specifiers the import map holds, with the file each builds to. With
+ *  `facadeDir`, a CJS entry builds from its facade there. */
+export function entries(facadeDir?: string): VendorEntry[] {
   const ui = readdirSync(join(kitDir, "src/components/ui")).filter((f) => f.endsWith(".tsx")).sort();
   const list: VendorEntry[] = [];
-  for (const id of JS_ENTRIES) list.push({ id, in: id, out: outName(id), kind: "js" });
+  for (const id of JS_ENTRIES) list.push({ id, in: facadeDir && CJS_ENTRIES.includes(id) ? facadePath(facadeDir, id) : id, out: outName(id), kind: "js" });
   for (const id of CSS_ENTRIES) list.push({ id, in: id, out: outName(id), kind: "css" });
   for (const [id, file] of Object.entries(KIT_ENTRIES)) list.push({ id, in: file, out: outName(id), kind: "js" });
   for (const f of ui) {
@@ -67,10 +85,17 @@ export interface VendorBuild {
 
 /** Build everything into `outdir` (default `kit/vendor/`). */
 export async function buildVendor({ outdir = vendorDir, minify = true }: { outdir?: string; minify?: boolean } = {}): Promise<VendorBuild> {
-  const all = entries();
   rmSync(outdir, { recursive: true, force: true });
   mkdirSync(outdir, { recursive: true });
-  const result = await build({
+  // The facades live under the kit for the build and go once it is done.
+  const facadeDir = join(kitDir, ".vendor-facades");
+  rmSync(facadeDir, { recursive: true, force: true });
+  mkdirSync(facadeDir, { recursive: true });
+  for (const id of CJS_ENTRIES) writeFileSync(facadePath(facadeDir, id), facadeSource(id));
+  const all = entries(facadeDir);
+  let result: Awaited<ReturnType<typeof build>>;
+  try {
+    result = await build({
     absWorkingDir: kitDir,
     entryPoints: all.map((e) => ({ in: e.in, out: e.out })),
     bundle: true,
@@ -88,6 +113,9 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
     write: true,
     logLevel: "silent",
   });
+  } finally {
+    rmSync(facadeDir, { recursive: true, force: true });
+  }
   const imports: Record<string, string> = {};
   for (const e of all) {
     const file = `${e.out}.${e.kind}`;

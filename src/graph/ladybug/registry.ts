@@ -1,11 +1,11 @@
 /**
- * The closed registry (plans/ladybug-backend.md §3, ruling 6): the ten node
- * types a Ladybug file holds and the fifteen edge types between them,
+ * The closed registry (plans/ladybug-backend.md §3, ruling 6): the twelve node
+ * types a Ladybug file holds and the sixteen edge types between them,
  * declared here and nowhere else. No Schema meta-graph, no runtime
  * registration: on Ladybug the `SchemaResolver` resolves from this module
  * (`SchemaSource.registry`), and the table's columns are derived from it.
  *
- *   - the six Strut types the workspace store and the projector need, from
+ *   - the eight Strut types the workspace store and the projector need, from
  *     `strut-schemas.ts` by name, with Thing's unread stamps left off;
  *   - `Claim`, `Check`, `Evidence` (plans/claims.md) and `Concept`, under
  *     their jarvis names with the SAME `node_key` specs, so the ids and
@@ -25,7 +25,7 @@ import { STRUT_EDGES, getStrutSchema, type AttrBase, type AttrType } from "../st
 export const CONCEPT_TYPE = "Concept";
 
 /** The Strut types in the file (plans/ladybug-backend.md §3). */
-export const LADYBUG_STRUT_TYPES: readonly string[] = ["StrutWorkflow", "StrutWorkflowVersion", "StrutStep", "StrutStepVersion", "StrutRun", "StrutJob"];
+export const LADYBUG_STRUT_TYPES: readonly string[] = ["StrutWorkflow", "StrutWorkflowVersion", "StrutStep", "StrutStepVersion", "StrutApp", "StrutAppVersion", "StrutRun", "StrutJob"];
 
 /** Thing's attributes nothing on the desktop reads: not in the table. */
 const THING_VESTIGES = ["weight", "is_muted", "unique_source_id", "image_url"];

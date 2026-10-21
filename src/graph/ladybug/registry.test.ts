@@ -55,7 +55,9 @@ describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
     assert.equal(ladybugEdge("ACCESSED", "StrutToolCall", "Concept"), null);
     assert.equal(ladybugEdge("PUBLISHED_BY", "StrutStepVersion", "Person"), null);
     assert.equal(ladybugEdge("RELATED_TO", "Concept", "Concept"), null, "no jarvis allowlist");
-    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACTIVE_VERSION", "CHILD_OF", "DEPENDS_ON", "EVIDENCED_BY", "EXECUTED", "HAS_SOURCE", "IN_JOB", "PARENT_OF", "PRODUCED_BY", "PROMOTED_FROM", "SUPERSEDES", "TESTS", "USES_STEP", "VERSION_OF"]);
+    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACTIVE_VERSION", "CHILD_OF", "DEPENDS_ON", "EVIDENCED_BY", "EXECUTED", "HAS_SOURCE", "IN_JOB", "PARENT_OF", "PRODUCED_BY", "PROMOTED_FROM", "SUPERSEDES", "TESTS", "USES_STEP", "USES_WORKFLOW", "VERSION_OF"]);
+    // Apps (plans/apps.md §1.3): the version → app pair and the workflows a version's grants name.
+    assert.ok(ladybugEdge("VERSION_OF", "StrutAppVersion", "StrutApp") && ladybugEdge("ACTIVE_VERSION", "StrutApp", "StrutAppVersion") && ladybugEdge("USES_WORKFLOW", "StrutAppVersion", "StrutWorkflow"));
   });
 
   it("columns: one per attribute, no conflicts, no jarvis stamps but a seeded Concept's source", () => {

@@ -151,8 +151,10 @@ export function scopeFromKey(c: Context): Scope {
 // a `?t=` strut cannot vouch for is refused, whatever the gate's mode — and
 // with no secret at all nothing is minted and every `?t=` is refused.
 
-/** What a file token opens: one run's artifacts or one job's files. */
-export type FileScope = { kind: "run" | "job"; id: string };
+/** What a file token opens: one run's artifacts, one job's files, or one
+ *  app VERSION's directory (`app:<name>@<vN>`, plans/apps.md §7.2 — the
+ *  token the served document carries as the app's identity). */
+export type FileScope = { kind: "run" | "job" | "app"; id: string };
 
 const SECRET_ENV = "STRUT_SECRET_KEY";
 
@@ -171,13 +173,15 @@ export function fileToken(scope: FileScope): string | undefined {
   return createHmac("sha256", secret).update(`${scope.kind}:${scope.id}`).digest("base64url");
 }
 
-/** The scope a path reads from — `/artifacts/<runId>[/…]` or
- *  `/jobs/<id>/files[/…]`, the id decoded as the route decodes it — or
- *  undefined for any other path. */
+/** The scope a path reads from — `/artifacts/<runId>[/…]`,
+ *  `/jobs/<id>/files[/…]` or `/apps/<name>/<vN>/files[/…]`, the id decoded
+ *  as the route decodes it — or undefined for any other path. */
 export function fileScopeOf(path: string): FileScope | undefined {
-  const m = path.match(/^\/artifacts\/([^/]+)(?:\/|$)/) ?? path.match(/^\/jobs\/([^/]+)\/files(?:\/|$)/);
-  if (!m) return undefined;
   try {
+    const app = path.match(/^\/apps\/([^/]+)\/(v\d+)\/files(?:\/|$)/);
+    if (app) return { kind: "app", id: `${decodeURIComponent(app[1]!)}@${app[2]}` };
+    const m = path.match(/^\/artifacts\/([^/]+)(?:\/|$)/) ?? path.match(/^\/jobs\/([^/]+)\/files(?:\/|$)/);
+    if (!m) return undefined;
     return { kind: path.startsWith("/jobs/") ? "job" : "run", id: decodeURIComponent(m[1]!) };
   } catch {
     return undefined;
