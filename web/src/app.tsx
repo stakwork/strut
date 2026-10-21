@@ -157,9 +157,14 @@ export function App() {
   const updateStt = (next: SttSettings) => { sttStore.set(next); setSttSettings(next); };
   const [showAddStep, setShowAddStep] = useState(false);
   const [stepTypes, setStepTypes] = useState<StepTypeEntry[]>([]);
-  // Sidebar Steps catalog: whether the section is expanded (persisted), and
-  // which step type's read-only info flyout is open.
-  const [stepsOpen, setStepsOpen] = useState<boolean>(() => loadPref("stepsOpen", false));
+  // The sidebar's bottom pair, Tools and Apps: at most one is expanded
+  // (persisted; `stepsOpen` was the Tools-only pref before Apps joined it),
+  // and which step type's read-only info flyout is open.
+  const [bottomOpen, setBottomOpen] = useState<"tools" | "apps" | null>(
+    () => loadPref("sidebarBottom", loadPref("stepsOpen", false) ? "tools" : null),
+  );
+  const stepsOpen = bottomOpen === "tools";
+  const appListOpen = bottomOpen === "apps";
   const [infoStep, setInfoStep] = useState<StepTypeEntry | null>(null);
   const [stepQuery, setStepQuery] = useState("");
   const [wfQuery, setWfQuery] = useState("");
@@ -1127,10 +1132,11 @@ export function App() {
     { label: "Custom", steps: matchedSteps.filter((s) => s.source === "custom") },
   ].filter((g) => g.steps.length > 0), [matchedSteps]);
 
-  const toggleStepsSection = useCallback(() => {
-    setStepsOpen((prev) => {
-      const next = !prev;
-      savePref("stepsOpen", next);
+  // Opening one of Tools / Apps closes the other.
+  const toggleBottom = useCallback((section: "tools" | "apps") => {
+    setBottomOpen((prev) => {
+      const next = prev === section ? null : section;
+      savePref("sidebarBottom", next);
       return next;
     });
   }, []);
@@ -1147,40 +1153,6 @@ export function App() {
       {/* Sidebar */}
       <div class="shell-sidebar">
         <div class="sidebar-brand"><span class="brand-dot" /> strut</div>
-
-        {/* Apps (plans/apps.md §7.3): every workspace app, by title — a click
-            opens its page in the canvas area. Empty, the section is a line. */}
-        <div class="sidebar-section sidebar-apps" data-section="apps" style={apps.length ? undefined : "--grow:0"}>
-          <div class="section-title">Apps</div>
-          {apps.length > 2 && (
-            <input
-              class="sidebar-search"
-              type="search"
-              value={appQuery}
-              placeholder="Filter apps…"
-              aria-label="Filter apps"
-              onInput={(e) => setAppQuery((e.target as HTMLInputElement).value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setAppQuery("");
-                if (e.key === "Enter" && matchedApps.length === 1) selectApp(matchedApps[0]!.name);
-              }}
-            />
-          )}
-          <div class="sidebar-scroll">
-            {apps.length === 0 && <div class="empty-sidebar">No apps yet — ask the builder for one</div>}
-            {apps.length > 0 && matchedApps.length === 0 && <div class="empty-sidebar">No matching apps</div>}
-            {matchedApps.map((a) => (
-              <div key={a.name} class={`list-item ${selectedApp === a.name ? "is-active" : ""}`} title={a.description ? `${a.name} — ${a.description}` : a.name}
-                onClick={() => selectApp(a.name)}>
-                <span class="app-icon" aria-hidden="true"><AppGlyph /></span>
-                <span class="list-item-name">{a.title}</span>
-                <span class="badge badge-accent">{a.activeVersion}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <SidebarResizer />
 
         <div class="sidebar-section" data-section="workflows">
           <div class="section-title">
@@ -1359,12 +1331,12 @@ export function App() {
           </div>
         </div>
 
-        {stepsOpen && <SidebarResizer />}
+        {bottomOpen && <SidebarResizer />}
 
         {/* Steps catalog — every registered step type (core / lib / custom).
             Collapsed by default; click a step for its info flyout. */}
         <div class={`sidebar-section${stepsOpen ? "" : " is-collapsed"}`} data-section="tools">
-          <div class="section-title section-title-toggle" onClick={toggleStepsSection}>
+          <div class="section-title section-title-toggle" onClick={() => toggleBottom("tools")}>
             <span class={`cat-caret${stepsOpen ? " is-open" : ""}`}>▸</span>
             <span>Tools</span>
             <span class="cat-count">
@@ -1412,6 +1384,47 @@ export function App() {
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+
+        {/* Apps (plans/apps.md §7.3): every workspace app, by title — a click
+            opens its page in the canvas area. Shares the bottom with Tools:
+            opening one closes the other. */}
+        <div class={`sidebar-section sidebar-apps${appListOpen ? "" : " is-collapsed"}`} data-section="apps">
+          <div class="section-title section-title-toggle" onClick={() => toggleBottom("apps")}>
+            <span class={`cat-caret${appListOpen ? " is-open" : ""}`}>▸</span>
+            <span>Apps</span>
+            <span class="cat-count">
+              {appQuery.trim() ? `${matchedApps.length} / ${apps.length}` : apps.length}
+            </span>
+          </div>
+          {appListOpen && apps.length > 2 && (
+            <input
+              class="sidebar-search"
+              type="search"
+              value={appQuery}
+              placeholder="Filter apps…"
+              aria-label="Filter apps"
+              onInput={(e) => setAppQuery((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setAppQuery("");
+                if (e.key === "Enter" && matchedApps.length === 1) selectApp(matchedApps[0]!.name);
+              }}
+            />
+          )}
+          {appListOpen && (
+            <div class="sidebar-scroll">
+              {apps.length === 0 && <div class="empty-sidebar">No apps yet — ask the builder for one</div>}
+              {apps.length > 0 && matchedApps.length === 0 && <div class="empty-sidebar">No matching apps</div>}
+              {matchedApps.map((a) => (
+                <div key={a.name} class={`list-item ${selectedApp === a.name ? "is-active" : ""}`} title={a.description ? `${a.name} — ${a.description}` : a.name}
+                  onClick={() => selectApp(a.name)}>
+                  <span class="app-icon" aria-hidden="true"><AppGlyph /></span>
+                  <span class="list-item-name">{a.title}</span>
+                  <span class="badge badge-accent">{a.activeVersion}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>

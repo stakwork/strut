@@ -15,11 +15,15 @@
 # (STRUT_WORKSPACE_BACKEND=graph + NEO4J_URI). Runs, artifacts, secrets, and
 # models live under /data — mount volumes there.
 
+# One Node for every stage. Pinned to the patch so a security release is a
+# visible bump here, not whatever the floating tag held when the cache was made.
+ARG NODE_VERSION=22.23.4
+
 # Web UI → web/dist, served by the engine (STRUT_WEB_DIST default). It is
 # arch-independent, so it builds once on the build host, not per target. It
 # imports src/search.ts, hence the src copy. No web lockfile is committed
 # (package-lock.json is gitignored), so `npm install`, not `npm ci`.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS web
 WORKDIR /usr/src/strut
 COPY web/package.json ./web/
 RUN npm install --prefix web
@@ -31,14 +35,14 @@ RUN npm run build --prefix web
 # build resolves against, src/apps/kit.ts): a frozen module tree, arch-independent,
 # built once on the build host like web/. Only kit/vendor reaches the image —
 # the kit's own node_modules (React and the rest of the set) stays here.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS kit
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS kit
 WORKDIR /usr/src/strut
 COPY kit/package.json kit/yarn.lock ./kit/
 RUN yarn --cwd kit install --frozen-lockfile --ignore-scripts --production=false && yarn cache clean
 COPY kit ./kit
 RUN yarn --cwd kit build:vendor
 
-FROM node:22-bookworm-slim
+FROM node:${NODE_VERSION}-bookworm-slim
 
 WORKDIR /usr/src/strut
 
