@@ -10,7 +10,9 @@
  * provenance, then the workflow's active version, category, publisher,
  * owner, run cap and automations; every custom step version in label order
  * (`publishStep` hands out the next label, so the labels come out the
- * same), then the step's active version. The store is content-addressed,
+ * same), then the step's active version; every app's version POINTERS the
+ * same way (plans/apps.md §1.3) — the directories stay where every backend
+ * reads them, under `<dataDir>/apps`. The store is content-addressed,
  * so running this twice is a no-op; a label that already exists in the
  * graph with OTHER content is a conflict and the import fails — the graph
  * was written to by something else, and merging is not this step's call.
@@ -31,7 +33,7 @@
  * again at the next boot.
  */
 import { basename, join } from "node:path";
-import { FileWorkspaceStore, type FileWorkspaceSnapshot } from "../workspace.js";
+import { FileWorkspaceStore, versionLabelOrder, type FileWorkspaceSnapshot } from "../workspace.js";
 import { contentHash } from "../version.js";
 import type { GraphWorkspaceStore } from "./workspace-store.js";
 
@@ -46,6 +48,8 @@ export interface FileImportReport {
   workflowVersions: number;
   steps: number;
   stepVersions: number;
+  apps: number;
+  appVersions: number;
   /** Non-active workflow versions the graph store refused (`name vN: why`). */
   skipped: string[];
   /** Where the files went (`imported`). */
@@ -61,7 +65,7 @@ export function importAsideDir(dataDir: string, now: Date = new Date()): string 
 }
 
 export async function importFileWorkspace(dataDir: string, target: GraphWorkspaceStore, opts: { now?: Date } = {}): Promise<FileImportReport> {
-  const report: FileImportReport = { status: "nothing", workflows: 0, workflowVersions: 0, steps: 0, stepVersions: 0, skipped: [] };
+  const report: FileImportReport = { status: "nothing", workflows: 0, workflowVersions: 0, steps: 0, stepVersions: 0, apps: 0, appVersions: 0, skipped: [] };
   const source = new FileWorkspaceStore(dataDir);
   let snap: FileWorkspaceSnapshot | null;
   try {
@@ -108,6 +112,24 @@ export async function importFileWorkspace(dataDir: string, target: GraphWorkspac
       }
       await target.setActiveStepVersion(step.name, step.active);
       report.steps++;
+    }
+    for (const app of snap.apps) {
+      for (const label of Object.keys(app.meta.versions).sort(versionLabelOrder)) {
+        const info = app.meta.versions[label]!;
+        const r = await target.publishApp(app.name, info.hash, info.manifest, {
+          publisher: app.meta.publisher ?? info.publisher,
+          owner: app.meta.owner,
+          upstream: info.upstream ?? null,
+          ...(info.source ? { source: info.source } : {}),
+          ...(info.actor ? { actor: info.actor } : {}),
+        });
+        if (r.version !== label) {
+          throw new Error(`fs_import_conflict: app "${app.name}" ${label} landed as ${r.version} — the graph already holds other versions of it`);
+        }
+        report.appVersions++;
+      }
+      await target.setActiveAppVersion(app.name, app.meta.active);
+      report.apps++;
     }
   } catch (err) {
     return { ...report, status: "failed", error: message(err) };

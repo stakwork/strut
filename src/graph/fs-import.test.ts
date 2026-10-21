@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Automation } from "../automations.js";
 import { FileWorkspaceStore, versionLabelOrder } from "../workspace.js";
+import { manifestSchema } from "../apps/manifest.js";
 import { contentHash } from "../version.js";
 import type { GraphBackend } from "./backend.js";
 import { FS_IMPORT_MIGRATION_PREFIX, importAsideDir, importFileWorkspace } from "./fs-import.js";
@@ -45,8 +46,17 @@ async function seedFileWorkspace(dataDir: string): Promise<FileWorkspaceStore> {
   await fs.publishStep("tools/_shared", "export const x = 1;\n", "helper", "me");
   await mkdir(join(dataDir, "workflows", "alpha", "runs", "1700000000000"), { recursive: true });
   await writeFile(join(dataDir, "workflows", "alpha", "runs", "1700000000000", "events.jsonl"), '{"type":"run.start"}\n');
+  // An app (plans/apps.md §1.3): two versions, the first active, an upstream
+  // on the first (carried onto the second), and the version's files where
+  // every backend reads them — under dataDir, beside the pointer.
+  await fs.publishApp("acme/ui", "hash-a1", manifestSchema.parse({ title: "Kit" }), { publisher: "me", actor: "evan", source: "seed", upstream: APP_UPSTREAM });
+  await fs.publishApp("acme/ui", "hash-a2", manifestSchema.parse({ title: "Kit two" }), { source: "ui", actor: "evan" });
+  await fs.setActiveAppVersion("acme/ui", "v1");
+  await mkdir(join(dataDir, "apps", "acme", "ui", "v1", "dist"), { recursive: true });
+  await writeFile(join(dataDir, "apps", "acme", "ui", "v1", "dist", "index.html"), "<!doctype html>");
   return fs;
 }
+const APP_UPSTREAM = { package: "acme/kit", version: "1.0.0", digest: "d1" };
 
 describe("versionLabelOrder", () => {
   it("v2 before v10; anything else after", () => {
@@ -105,6 +115,17 @@ for (const tb of testBackends()) {
       const steps = await ws.listSteps();
       assert.deepEqual(steps.map((s) => [s.type, s.publisher, s.description]), [["tools/greet", "me", "greets"]], "the active version's description; a helper is never listed");
       assert.deepEqual(await ws.listStepVersions("tools/_shared"), { active: "v1", versions: ["v1"] }, "the helper came along");
+
+      // The app's pointers, labels and stamps as they were; its files untouched.
+      assert.deepEqual([r.apps, r.appVersions], [1, 2]);
+      const app = (await ws.getApp("acme/ui"))!;
+      assert.deepEqual([app.version, app.hash, app.manifest.title, app.publisher, app.owner, app.upstream, Object.keys(app.versions)], ["v1", "hash-a1", "Kit", "me", "evan", APP_UPSTREAM, ["v1", "v2"]]);
+      assert.deepEqual([app.versions["v1"]?.source, app.versions["v2"]?.source, app.versions["v2"]?.actor], ["seed", "ui", "evan"]);
+      assert.deepEqual((await ws.getApp("acme/ui", "v2"))?.upstream, APP_UPSTREAM, "carried forward in the file store, imported as recorded");
+      assert.ok(existsSync(join(dir, "apps", "acme", "ui", "v1", "dist", "index.html")), "the version's directory stays where it is");
+      assert.ok(existsSync(join(r.movedTo!, "apps", "acme", "ui", "_metadata.json")), "the pointer moved aside");
+      assert.ok(!existsSync(join(dir, "apps", "acme", "ui", "_metadata.json")));
+      assert.deepEqual(await new FileWorkspaceStore(dir).listApps(), []);
 
       // The files: workspace files gone from the root, the run record
       // still there, everything readable in the aside folder.

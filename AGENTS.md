@@ -98,10 +98,12 @@ strut/
 │   ├── index.ts           # barrel export — createStrut (primary entry), createRegistry, coreRegistry, all types
 │   ├── yaml.ts            # dumpYaml / loadYaml: js-yaml with strut's own dump options (lineWidth 120, no anchors), on the barrel beside `z` — for a seeded custom step, which resolves `strut` and no other package
 │   ├── workflows/         # the workflows strut SHIPS (YAML, copied into build/ by `npm run build`): job.yaml — job/dir → checkouts (git/checkout into the job dir) → agent (session: the job, structured { text, artifacts, ask? }) → pack; every step strut's own. orchestrator.yaml — one turn of a long conversation: job/dir (no job → the run's artifact dir) → context/concept (the `Job` tree's CHILDREN — the kinds of work a job can do here, `docs: false`, no `tool` — for the end of the prompt, so the turn routes a request by kind and names it in the brief) → agent (session: input.session, one per conversation, compacted in place; its prompt is the first turn's; toolFilter [none], memory/* + job/start, continue, list, get, read + strut/list-peers + strut/run-workflow (a peer's workflow, inside the turn) as tools, job's reply shape) → pack. The turn is the conversation, the work is a job's: it answers from what is already KNOWN, ASKS what a request needs answered first, may run a LOOKUP the deployment grants (a workflow that returns an answer, here or on a peer) to ORIENT — its answer the reply only when it is the whole answer, else a job's brief — and starts jobs detached for anything to be found out or made. params.tools + params.system are the evolvable surface. builder.yaml — a workflow BUILD as a job (plans/builder-job.md): job/dir → context/concept on `Workflow Builder` → if (`input.peer`) → agent (session: the job; toolFilter = params.builtins, the web tools only; agentTools = meta/* + the graph reads + job/list, get, read; job's reply shape) | strut/run-workflow (the PEER's `builder` under this job id — the build happens there, this run waits and reattaches) → pack (+ `peer`); `peer: true`. browser-capture.yaml / browser-explore.yaml / browser-captcha.yaml / browser-watch.yaml — the browser workflows (src/browser/seed.ts): one declared browser/capture call (its `claims:` block checks the PNG on disk), an agent whose tools are `browser/*` (on a captcha it keeps the page for the job and stops, `captcha: { session }`), one round of a captcha a PERSON solves on that kept page (crop + manifest to ask; tap / type the answer, verify, look — never solved by the agent), a scheduled region reader that diffs against `last`
+│   ├── apps/              # APPS (plans/apps.md, work item 1b): a front-end project the builder writes over workflows — a directory with `app.yaml`, `src/`, `public/`, `db/` — built against the KIT into one self-contained document. manifest.ts: the zod shape of `app.yaml` (title, icon, `entry`, `grants` { workflows, steps, sqlite, automations }, `data.graph` types + edges with the `string | number | boolean | date | json` + `?` grammar — parsed and kept, registered by a later item — `csp.resourceDomains`), errors a model reads. build.ts: `buildApp(dir, deps)` (lazy-imported, like a lib step's SDK): esbuild over the kit's import map through `appResolver` — relative imports inside the directory, `@/…` the app's `src/` then the kit (shadcn's model), a bare specifier the vendor file, one naming an INSTALLED APP (`strut/views`, `hive/ui@v3`) that app's `src/` compiled into THIS bundle (§3.4; a cycle refused naming the chain), anything else an error naming the set and the kits; `http(s):` refused; never `node_modules` — the source checks (`dangerouslySetInnerHTML` / `eval` / `new Function` refused, a global `fetch` / `XMLHttpRequest` / `WebSocket` a warning naming the hook, imported apps' sources included), Tailwind 4 `compile()` over the kit's base stylesheet + every `.css` in the directory + the candidates scanned from every bundled source, assets inlined, the §9 CSP, ONE `<style>` + ONE module script (the kit's bootstrap + the bundle) and an EMPTY `<meta name="strut-app-token">` the file route fills when it serves (`withToken`) — `dist/index.html` + `dist/build.json` (kit, builtAt, the tree hash, each imported app's name, version, hash); deterministic. kit.ts: where the kit is (`@strut/kit` when pinned, else the repo's `kit/`; its `vendor/` must be BUILT — `cd kit && yarn build:vendor`). files.ts: the version directories under `<dataDir>/apps/<name>/<vN>/` (name segments as folders; `validateAppName`: workflow-style segments, `/` a package prefix, no `vN` segment, `@` the pin), the file-route guard, the copies. apps.ts: `createApps` → `ctx.services.apps`, what the `/apps` routes and the `app/*` steps are thin over — list / get (`stale`, `missing`, `inertGrants`) / build / publish (BUILDS FIRST, a failing build publishes nothing; `surface: "ai"` refuses `llm`, `agent`, `exec` and anything sealed in the grants; `"person"` grants anything) / checkout / init. templates/: `app/init`'s starters (`default`: a shadcn sidebar, react-router, an empty `db/`), copied into build/ by `npm run build`; `__fixtures__/hello`: the app the build tests drive
 │   ├── steps/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, github/create-pr — open a PR or return the open one for that head, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
 │   │   │   ├── strut/     # strut/list-peers: `self` (this workspace, when set) and the peers on file as an agent chooses one — { self?, peers: [{ id, label?, description?, repos? }] } (what the host said each workspace holds), never a token or URL. strut/run-workflow: dispatch-through (plans/federation.md §2.2) — run a workflow on a PEER and return { peer, workflow, runId, status, output?, error?, durationMs }; waits on the peer's tail, cancel of this run cancels the peer's, `wait: false` returns the handle, `job` is explicit (never this run's own: no shared directory across struts); grantable to an agent as `agentTools: ["strut/*"]`. Two things ride on the tail it reads anyway: the peer run's `step.end.nodes` are folded onto THIS step's `step.end`, each tagged `peer: <id>` (a ref is only meaningful against the graph that recorded it — the projector skips a tagged ref, the flyout badges it, nothing here opens it), and the handle is journaled at launch as a synthetic `step.end` at `<path>#launch` (no stepType) so a resumed caller REATTACHES to the same peer run instead of launching a second one — the child did not die with the caller. A peer run that died there and was not resumed is `peer_run_stale:` (its tail ends with `done { status: "stale" }`, retried with backoff first)
+│   │   │   ├── app/       # app/list, app/get { name, version? }, app/init { path, template? }, app/checkout { name, version?, path }, app/build { path }, app/publish { name, path, job? } — the authoring loop (plans/apps.md §8: a directory, the editor, build, read the errors, publish), thin over `ctx.services.apps` (src/apps/apps.ts). A path is relative to the JOB's directory (or the run's artifact dir) and may not leave it; `job` names another job's. app/publish stamps `publisher: "ai"` under the meta surface's rules (§9): no `llm` / `agent` / `exec` and nothing sealed in the grants — a person's `POST /apps` may. Grantable as `agentTools: ["app/*"]` (the builder's grant, 1c)
 │   │   │   ├── acp/       # acp/prompt: one turn of a LOCAL coding agent over the Agent Client Protocol (JSON-RPC 2.0, one line per message, on the child's stdio; _client.ts, no SDK) — `agent` is a preset (claude and codex through their pinned @agentclientprotocol adapters via npx, goose acp, gemini --experimental-acp, opencode acp) or any ACP command line; the agent brings its own login, model and tools, and the client advertises no fs or terminal. `session` is strut's name for the thread, mapped to the agent's own session id in <dataDir>/acp/sessions/<id>.json and resumed with session/load (its replayed history is ignored); another agent on the same name starts fresh. `mode` plan | edit | auto: set as the agent's own session mode when it offers a matching id, AND enforced on every session/request_permission by tool kind (plan: read/search/think/fetch; edit: + edit/delete/move; auto: all) — refusals come back as `denied` plus an `ask`, so a host can rerun the turn with more room; a refused switch_mode (an agent leaving plan mode) keeps its `plan`, and the ask leads with it. Each tool call is a step.start/step.end (step.error when it failed) at <path>/NNN-<kind> with stepType tool:<kind> and the ACP toolCallId (step.end's output is { title, input, output } — the final title and input, which adapters fill in after the call starts); each stretch of prose a `message` pair. Output { text, session?, stopReason, artifacts (files its edit calls changed, relative to cwd), denied, ask?, toolCalls, cost? (this turn's, from the cumulative usage_update total kept with the session) }. Cancel sends session/cancel. The `job` workflow runs it in place of `agent` when the launch names `input.agent`
 │   │   │   ├── context/   # context/concept: a Concept as an agent's context — the page's docs (capped at 6k) and the name + description of each Concept under it (PARENT_OF), read through graph/graph-get and rendered as a system-prompt section, framed as the workspace's notes, with how to open a child page (`tool`: the agent's name for graph-get; `""` for an agent with none). `docs: false` renders the kinds under the page ALONE — for an agent that routes BY them rather than follows a page's convention; nothing under the page is `""`. The builder's default `chatSystem` is this step on `Workflow Builder`; the `job` workflow puts `{{ concepts.text }}` after `params.system` on `Job`, the `orchestrator` the same page's kinds alone (`docs: false`, `tool: ""`). `{ text: "" }` without a wired graph or the page — never a failed run, never a Neo4j-from-env fallback. Not under `graph/`, so a `graph/*` grant does not hand it to an agent
 │   │   │   ├── job/       # job/dir: the run's JOB directory (jobs.ts) for an agent's cwd — `<dataDir>/jobs/<job>/`, the same path every run launched with that `job`; a run with no job gets its own artifact dir, so a job workflow is also a one-shot. job/list, job/get, job/read: the job INDEX (job-index.ts) as steps — find an earlier job by words, read what it produced and the thread to continue, open one of its files (an image is SHOWN to the model via withMedia) — thin over `ctx.services.jobs`, the same reads `GET /jobs[/:id]` serves. job/start, job/continue: hand work to the `job` workflow DETACHED and return `{ job, runId, callback }` at once (an orchestrator's start_job / continue_job, as Jamie does in Hive) — unlike meta/run-workflow, which waits, so the calling turn ends and its session is free; through `ctx.services.jobs.launch` (createStrut, over launchDetached): the job's `run.end` goes to the LAUNCHING run's own callback (the run store's, never a URL the model wrote), `job_busy:` while a run of the job is in flight, start mints the id and takes a `title`, continue refuses a job not on file
@@ -268,6 +270,8 @@ cd strut && npm run dev        # serves API + UI on :3000
 # a fresh checkout install it before the first test run.
 cd strut/kit && yarn install --frozen-lockfile --ignore-scripts
 yarn build                  # vendor/ (the frozen bundles + import map) and dist/ (the library), ~2 s
+# An APP build (plans/apps.md §2: `app/build`, `POST /apps`, the tests in src/apps/) resolves against
+# kit/vendor/ — unbuilt, the build's error says so; the app tests build it into a temp dir when it is missing.
 
 # Docker — the standalone image (Dockerfile), media tools baked in (ffmpeg,
 # yt-dlp, tesseract, poppler, pandoc, agent python venv, uv), on the GRAPH
@@ -1938,6 +1942,56 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   launch's credential), a step's `describe` hook for a card's preview,
   `approveWait` (a decision awaited inside the turn), expiry, grouping
   (`after`), a `StrutProposal` node.
+- **Apps — a front-end project over workflows** (`plans/apps.md`;
+  `src/apps/`, `src/steps/lib/app/`, the `/apps` routes; work item 1b of
+  the plan — the object, the build, the steps, the routes). An app is a
+  DIRECTORY: `app.yaml` (the manifest — title, `grants` { workflows, steps,
+  sqlite, automations }, the graph types it declares, `csp.resourceDomains`),
+  `src/` (TSX, its own shadcn overrides, CSS), `public/`, `db/`. The BUILD
+  (`buildApp`, lazy-imported) bundles the entry against the KIT — `kit/`,
+  `@strut/kit`: a frozen vendor layer of React, Tailwind, shadcn and the
+  popular chart, motion and data libraries, the MCP Apps bootstrap, the
+  hooks (`kit/README.md`) — into ONE self-contained document,
+  `dist/index.html`, beside `dist/build.json`; never `node_modules`, never
+  fetched at runtime. The resolver's rules are the contract a model learns
+  from its errors: a relative import stays inside the directory, `@/…` is
+  the app's `src/` then the kit's, a bare specifier is the kit's or an
+  INSTALLED APP's `src/` compiled in (`strut/views`, `hive/ui@v3` — a kit is
+  an app other apps import, §3.4; a cycle is an error naming the chain),
+  anything else an error naming the set and the kits. `dangerouslySetInnerHTML`,
+  `eval` and `new Function` are refused; a global `fetch` is a WARNING
+  naming the hook (the document's CSP has `connect-src 'none'`: the page
+  reaches strut only through its bridge). **Versions are TREE HASHES**
+  (`treeHash`, `src/version.ts`: `<path>\0<sha256>\n` per file, sorted;
+  `dist/` and `data.db` left out, the kit never in it — the same function
+  `marketplace.md` uses for a package digest): `publishApp` follows
+  `publishStep` — identical content re-activates (`reactivateKnown`
+  honored), else the next `vN`; `upstream` rides on a version and is
+  carried forward by a publish over the name. **The store holds pointers,
+  the files live under `dataDir`** on every backend: `apps/<name>/_metadata.json`
+  on files; `StrutApp` + `StrutAppVersion` (`exact_key`, `VERSION_OF`,
+  `ACTIVE_VERSION`, `USES_WORKFLOW` → the workflows the grants name) on the
+  graph, manifest and hash and never a file; `materializeAppVersion` is the
+  directory's path, `<dataDir>/apps/<name>/<vN>/`, `dist/` included — a graph
+  copied without its dataDir loses them as it loses artifacts, and
+  `app/get` says `missing`. The fs → graph import carries the pointers; the
+  directories stay. **A publish builds first** (`createApps`,
+  `ctx.services.apps`): a failing build publishes nothing. **The file route
+  is the app's identity**: `GET /apps/:name/:version/files[/<path>]` is
+  served exactly as a run's artifacts are — the listing mints the app's FILE
+  TOKEN (scope `app:<name>@<vN>`, `fileScopeOf` in auth.ts), a file opens
+  with `?t=`, and `dist/index.html` read by token carries the token written
+  into `<meta name="strut-app-token">` (the kit's bootstrap reads it and
+  sends it as `step_run`'s `app` argument, 1c) under `CSP: sandbox
+  allow-scripts`; read by the key it carries no meta and runs no script, so
+  no document ever reads a credential off its URL. **Who may grant what**
+  (§9): `app/publish` — the meta surface, stamped `publisher: "ai"` —
+  refuses `llm`, `agent` and `exec` in `grants.steps` (the workflow is the
+  unit of spend), a sealed step and a sealed workflow; `POST /apps` is a
+  person's door and may grant anything, the `peer: true` precedent. Not yet
+  (1c): the `run/*` steps, `step_run` on the MCP doors, `ctx.app`, strut's
+  UI as a host, the builder's `app/*` grant and editor, `app/report-error`;
+  later items: SQLite, declared graph types, job apps, `strut/views`.
 - **Peers — calling a workflow on another strut** (`plans/federation.md`
   §2.2, §3; `src/peers.ts`, `src/steps/lib/strut/run-workflow.ts`). A strut
   knows nothing about other struts; a host may tell it its OWN workspace (`self`: `PUT /self`, `STRUT_SELF`, `createStrut({ self })` — `{ id?, label?, description?, repos? }`, kept apart from the peers). A **peer** is a
@@ -2296,7 +2350,7 @@ provider-routing gotcha.
 4. Document it in `specs/API.md` — request and response shapes, from the
    types, not retyped.
 5. The Vite dev proxy in `web/vite.config.ts` only proxies known
-   prefixes (`/workflows`, `/steps`, `/secrets`, `/sessions`, `/peers`, `/graph`, `/chat`, `/llm`, `/health`). Runs are
+   prefixes (`/workflows`, `/steps`, `/secrets`, `/sessions`, `/peers`, `/graph`, `/chat`, `/llm`, `/health`, `/jobs`, `/apps`). Runs are
    under `/workflows/` and chat reattach under `/chat/` so they're
    already proxied. SSE responses get `cache-control: no-cache` +
    `x-accel-buffering: no` injected by the shared `sseConfigure` —

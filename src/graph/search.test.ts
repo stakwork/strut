@@ -515,9 +515,9 @@ for (const tb of testBackends()) {
       assert.equal(await reader.getSchema("Nope"), null);
     });
 
-    it("ontology: the registry's ten types and fifteen edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
+    it("ontology: the registry's twelve types and sixteen edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "Evidence", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
+      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "Evidence", "StrutApp", "StrutAppVersion", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");
@@ -530,14 +530,14 @@ for (const tb of testBackends()) {
       assert.equal(concept["domain"], undefined);
       assert.equal(concept["node_key"], "concept-name");
       assert.equal(concept.attributes["file"], "?string");
-      assert.equal(new Set(edges.map((e) => e.edge_type)).size, 15);
+      assert.equal(new Set(edges.map((e) => e.edge_type)).size, 16);
       assert.ok(edges.some((e) => e.edge_type === "CHILD_OF" && e.source_type === "Concept" && e.target_type === "Concept"));
       assert.ok(edges.some((e) => e.edge_type === "PARENT_OF" && e.source_type === "Concept" && e.target_type === "Concept"));
       assert.ok(edges.some((e) => e.edge_type === "ABOUT" && e.source_type === "Claim" && e.target_type === "StrutWorkflow"));
       assert.ok(!edges.some((e) => e.target_type === "Thing" || e.edge_type === "IN_RUN" || e.edge_type === "ACCESSED"));
 
       const only = await reader.listSchemas({ domains: ["STRUT"] });
-      assert.equal(only.schemas.length, 6);
+      assert.equal(only.schemas.length, 8);
       assert.ok(only.edges.every((e) => e.source_type.startsWith("Strut") && e.target_type.startsWith("Strut")));
 
       const single = await reader.getSchema("strutrun");

@@ -17,6 +17,7 @@ import { embeddingsOn, openGraphBackend, openGraphBackendFromEnv } from "./backe
 import { importFileWorkspace, type FileImportReport } from "./fs-import.js";
 import { GraphWorkspaceStore, type GraphWorkspaceStoreOptions } from "./workspace-store.js";
 import { bootEnv } from "../env.js";
+import { appsRoot } from "../apps/files.js";
 
 export type WorkspaceBackend = "neo4j" | "ladybug" | "fs";
 
@@ -66,7 +67,7 @@ export async function graphWorkspaceFromEnv(
 ): Promise<{ backend: GraphBackend; workspace: GraphWorkspaceStore }> {
   const backend = await openGraphBackendFromEnv({ NEO4J_HOST: DEFAULT_NEO4J_HOST, ...env }, opts.backend)!;
   const dataDir = opts.dataDir ?? env["STRUT_WORKSPACE"] ?? "./workspace";
-  const store = { materializeDir: graphMaterializeDir(dataDir), ...opts.store };
+  const store = { materializeDir: graphMaterializeDir(dataDir), appsDir: appsRoot(dataDir), ...opts.store };
   return { backend, workspace: new GraphWorkspaceStore(backend, store) };
 }
 
@@ -112,13 +113,13 @@ export async function ladybugWorkspaceFromEnv(
 ): Promise<{ backend: LadybugBackend; workspace: GraphWorkspaceStore; imported: FileImportReport }> {
   const dataDir = opts.dataDir ?? env["STRUT_WORKSPACE"] ?? "./workspace";
   const backend = await openGraphBackend(ladybugConfigFromEnv(env, dataDir), { embeddings: embeddingsOn(env), ...opts.backend });
-  const store = { materializeDir: graphMaterializeDir(dataDir), ...opts.store };
+  const store = { materializeDir: graphMaterializeDir(dataDir), appsDir: appsRoot(dataDir), ...opts.store };
   const workspace = new GraphWorkspaceStore(backend, store);
   const imported = await importFileWorkspace(dataDir, workspace);
   if (imported.status === "imported") {
     console.warn(
       `[graph] imported the filesystem workspace under ${dataDir} into ${backend.cfg.path}: ` +
-        `${imported.workflows} workflow(s) / ${imported.workflowVersions} version(s), ${imported.steps} step(s) / ${imported.stepVersions} version(s); ` +
+        `${imported.workflows} workflow(s) / ${imported.workflowVersions} version(s), ${imported.steps} step(s) / ${imported.stepVersions} version(s), ${imported.apps} app(s) / ${imported.appVersions} version(s); ` +
         `the files moved to ${imported.movedTo}` +
         (imported.skipped.length ? `; skipped (not active, refused by today's validation): ${imported.skipped.join("; ")}` : ""),
     );

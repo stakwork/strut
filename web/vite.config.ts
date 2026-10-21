@@ -38,6 +38,7 @@ export default defineConfig({
       "/secrets": "http://localhost:3000",
       "/sessions": "http://localhost:3000",
       "/jobs": "http://localhost:3000",
+      "/apps": "http://localhost:3000",
       "/graph": "http://localhost:3000",
       "/health": "http://localhost:3000",
       "/llm": "http://localhost:3000",

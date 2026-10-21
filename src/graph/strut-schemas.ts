@@ -171,10 +171,10 @@ export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "
  *  payloads stay in the run/chat log behind `log_ref`. */
 export const PREVIEW_MAX_CHARS = 500;
 
-// ── The nine Strut node types ────────────────────────────────────────────────
+// ── The eleven Strut node types ──────────────────────────────────────────────
 //
-// Keys. The four WORKSPACE types — `StrutWorkflow`, `StrutWorkflowVersion`,
-// `StrutStep`, `StrutStepVersion` — are `exact_key`: `strutstep-<hex of the
+// Keys. The six WORKSPACE types — `StrutWorkflow`, `StrutWorkflowVersion`,
+// `StrutStep`, `StrutStepVersion`, `StrutApp`, `StrutAppVersion` — are `exact_key`: `strutstep-<hex of the
 // step type>`, `strutworkflowversion-<hex of the name>-<hex of the content
 // hash>`, so two names never share a node (`exact-key-migration.ts` moves
 // the nodes an older strut keyed on the sanitized name). The run/chat types
@@ -283,6 +283,52 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       /** Full step source — deliberately NOT indexed. */
       source: "?string",
       publisher: "?string",
+    },
+  },
+  {
+    ...base,
+    type: "StrutApp",
+    node_key: "strutapp-name",
+    exact_key: true,
+    index: ["name", "title", "description"],
+    title_key: "title",
+    description_key: "description",
+    type_description: "A strut APP by name (plans/apps.md §1.3) — a front-end project over workflows, the stable identity across versions",
+    attributes: {
+      name: "string",
+      /** The active version's manifest title and description, for search. */
+      title: "?string",
+      description: "?string",
+      publisher: "?string",
+      /** The owning actor (the first publish's), as `StrutWorkflow.owner`. */
+      owner: "?string",
+      /** Tree hash of the active version (mirrors `ACTIVE_VERSION`). */
+      active_version: "?string",
+    },
+  },
+  {
+    ...base,
+    type: "StrutAppVersion",
+    node_key: "strutappversion-name-content_hash",
+    exact_key: true,
+    index: ["name", "description"],
+    title_key: "name",
+    description_key: "description",
+    type_description: "One tree-hashed version of a strut app: the manifest and the hash — never a file (the directory is under dataDir)",
+    attributes: {
+      name: "string",
+      /** The TREE hash (`treeHash`, src/version.ts). */
+      content_hash: "string",
+      version_label: "?string",
+      description: "?string",
+      created_at: "datetime",
+      /** The manifest (`app.yaml`), JSON-encoded. */
+      manifest: "?string",
+      publisher: "?string",
+      version_source: "?string",
+      actor: "?string",
+      /** `AppUpstream`, JSON-encoded (marketplace.md §3). */
+      upstream: "?string",
     },
   },
   {
@@ -452,6 +498,10 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "ACTIVE_VERSION", source: "StrutStep", target: "StrutStepVersion" },
   { edge: "USES_STEP", source: "StrutWorkflowVersion", target: "StrutStep" },
   { edge: "DEPENDS_ON", source: "StrutWorkflowVersion", target: "StrutWorkflow" },
+  // Apps (plans/apps.md §1.3): a version's grants name the workflows it reads and launches.
+  { edge: "VERSION_OF", source: "StrutAppVersion", target: "StrutApp" },
+  { edge: "ACTIVE_VERSION", source: "StrutApp", target: "StrutAppVersion" },
+  { edge: "USES_WORKFLOW", source: "StrutAppVersion", target: "StrutWorkflow" },
   { edge: "PUBLISHED_BY", source: "StrutStepVersion", target: "Person", note: "jarvis type; seeded only when Person exists" },
   { edge: "EXECUTED", source: "StrutRun", target: "StrutWorkflowVersion" },
   // Single-step runs (`run_step`), projected only when evidence attaches

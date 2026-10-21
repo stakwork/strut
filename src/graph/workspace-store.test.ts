@@ -41,7 +41,7 @@ for (const tb of testBackends()) {
       await seedStrutDomain(backend);
       await rm(scratch, { recursive: true, force: true });
     };
-    const make = () => new GraphWorkspaceStore(backend, { materializeDir: join(scratch, "steps") });
+    const make = () => new GraphWorkspaceStore(backend, { materializeDir: join(scratch, "steps"), appsDir: join(scratch, "apps") });
 
     workspaceConformance({ name: `GraphWorkspaceStore/${tb.name}`, reset, make });
 

@@ -1,0 +1,6 @@
+/* The app's own styles: @theme tokens, @layer rules, @utility classes.
+   The kit's base stylesheet (Tailwind, shadcn's tokens, the host's theme
+   variables) is compiled in before this file. */
+@theme {
+  --color-brand: oklch(0.6 0.2 250);
+}

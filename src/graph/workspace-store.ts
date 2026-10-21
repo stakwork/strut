@@ -47,6 +47,14 @@ import {
   renderWorkflowYaml,
   validateStepName,
   provenance,
+  appListEntry,
+  appRecord,
+  type AppListEntry,
+  type AppMetadata,
+  type AppRecord,
+  type AppUpstream,
+  type AppVersionInfo,
+  type PublishAppOptions,
   type PublishByContentOptions,
   type PublishOptions,
   type VersionSource,
@@ -57,6 +65,8 @@ import {
   type WorkflowMetadata,
   type WorkspaceStore,
 } from "../workspace.js";
+import type { AppManifest } from "../apps/manifest.js";
+import { appVersionDir, validateAppName } from "../apps/files.js";
 import { readStepSourceFromDisk, type StepSource } from "../steps/registry.js";
 import { contentHash, nextVersionLabel } from "../version.js";
 import type { GraphBackend } from "./backend.js";
@@ -65,6 +75,10 @@ export interface GraphWorkspaceStoreOptions {
   /** Where active custom steps are written for the module loader. Default:
    *  a per-(uri, namespace) dir under the OS temp dir. */
   materializeDir?: string;
+  /** Where app versions' files live — `<dataDir>/apps` (plans/apps.md §1.3;
+   *  `materializeAppVersion` names a directory under it). Default: a
+   *  per-(uri, namespace) dir under the OS temp dir. */
+  appsDir?: string;
 }
 
 interface WorkflowRow {
@@ -127,6 +141,45 @@ interface StepVersionRow {
   publisher?: string;
 }
 
+interface AppRow {
+  ref_id: string;
+  name: string;
+  title?: string;
+  description?: string;
+  publisher?: string;
+  owner?: string;
+  active_version?: string;
+}
+
+interface AppVersionRow {
+  ref_id: string;
+  name: string;
+  content_hash: string;
+  version_label: string;
+  created_at: number;
+  date_added_to_graph?: number;
+  /** JSON `AppManifest`. */
+  manifest?: string;
+  publisher?: string;
+  version_source?: VersionSource;
+  actor?: string;
+  /** JSON `AppUpstream`. */
+  upstream?: string;
+}
+
+const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "active_version"] as const;
+const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "created_at", "manifest", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
+
+/** A JSON attribute, or undefined when absent or unreadable. */
+function parseJson<T>(text: string | undefined): T | undefined {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd"] as const;
 const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "date_added_to_graph"] as const;
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
@@ -182,6 +235,7 @@ function collectStepRefs(node: unknown, out: Array<{ type: string; config: Recor
 export class GraphWorkspaceStore implements WorkspaceStore {
   private readonly ns: string;
   private readonly materializeDir: string;
+  private readonly appsDir: string;
 
   constructor(
     private readonly backend: GraphBackend,
@@ -189,8 +243,9 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   ) {
     this.ns = backend.namespace;
     const where = backend.kind === "neo4j" ? `${backend.cfg.uri}|${backend.cfg.database ?? ""}` : backend.cfg.path;
-    this.materializeDir =
-      opts.materializeDir ?? join(tmpdir(), "strut-graph-steps", createHash("sha256").update(`${where}|${this.ns}`).digest("hex").slice(0, 16));
+    const stamp = createHash("sha256").update(`${where}|${this.ns}`).digest("hex").slice(0, 16);
+    this.materializeDir = opts.materializeDir ?? join(tmpdir(), "strut-graph-steps", stamp);
+    this.appsDir = opts.appsDir ?? join(tmpdir(), "strut-graph-apps", stamp);
   }
 
   /** `WorkspaceStore.graph` — what turns the claims layer on. */
@@ -810,6 +865,200 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       .map(({ step }) => step.step_type);
     for (const n of names) await this.deleteStep(n);
     return names;
+  }
+
+  // ── Apps (plans/apps.md §1.3) ──────────────────────────────────────────
+  //
+  // `StrutApp` and `StrutAppVersion`, `VERSION_OF` + `ACTIVE_VERSION` as the
+  // workflow and step pairs, and `USES_WORKFLOW` from a version to each
+  // workflow its grants name — the pointers. The files are under `appsDir`
+  // (`<dataDir>/apps`), never on a node. Versions are content-addressed by
+  // the TREE hash, labelled `vN` like the others.
+
+  private async appRow(name: string): Promise<AppRow | null> {
+    const d = this.d;
+    const rows = await this.rows<AppRow>(
+      `MATCH ${d.node("a", "StrutApp", { namespace: "$ns", name: "$name" })} WHERE ${d.live("a")} RETURN ${d.project("a", APP_FIELDS)} AS p LIMIT 1`,
+      { ns: this.ns, name },
+    );
+    return rows[0] ?? null;
+  }
+
+  private async appVersionRows(name: string): Promise<AppVersionRow[]> {
+    const d = this.d;
+    const rows = await this.rows<AppVersionRow>(
+      `MATCH ${d.node("v", "StrutAppVersion", { namespace: "$ns", name: "$name" })} WHERE ${d.live("v")} RETURN ${d.project("v", APP_VERSION_FIELDS)} AS p`,
+      { ns: this.ns, name },
+    );
+    return rows.sort(byCreation);
+  }
+
+  /** The record an `AppMetadata` reader expects, from the rows. */
+  private appMetadata(app: AppRow, versions: AppVersionRow[]): AppMetadata | null {
+    const out: AppMetadata = { active: "", versions: {} };
+    for (const v of versions) {
+      const manifest = parseJson<AppManifest>(v.manifest);
+      if (!manifest || !v.version_label) continue;
+      const upstream = parseJson<AppUpstream>(v.upstream);
+      const info: AppVersionInfo = {
+        createdAt: isoFromSeconds(v.created_at),
+        hash: v.content_hash,
+        manifest,
+        ...(v.publisher ? { publisher: v.publisher } : {}),
+        ...(v.version_source ? { source: v.version_source } : {}),
+        ...(v.actor ? { actor: v.actor } : {}),
+        ...(upstream ? { upstream } : {}),
+      };
+      out.versions[v.version_label] = info;
+      if (v.content_hash === app.active_version) out.active = v.version_label;
+    }
+    if (app.publisher) out.publisher = app.publisher;
+    if (app.owner) out.owner = app.owner;
+    return Object.keys(out.versions).length ? out : null;
+  }
+
+  async listApps(): Promise<AppListEntry[]> {
+    const d = this.d;
+    const apps = await this.rows<AppRow>(
+      `MATCH ${d.node("a", "StrutApp", { namespace: "$ns" })} WHERE ${d.live("a")} RETURN ${d.project("a", APP_FIELDS)} AS p`,
+      { ns: this.ns },
+    );
+    const out: AppListEntry[] = [];
+    for (const a of apps.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0))) {
+      const meta = this.appMetadata(a, await this.appVersionRows(a.name));
+      const active = meta?.versions[meta.active];
+      if (!meta || !active) continue;
+      out.push(appListEntry(a.name, meta, active));
+    }
+    return out;
+  }
+
+  async getApp(name: string, version?: string): Promise<AppRecord | null> {
+    validateAppName(name);
+    const a = await this.appRow(name);
+    if (!a) return null;
+    const meta = this.appMetadata(a, await this.appVersionRows(name));
+    if (!meta) return null;
+    const label = version ?? meta.active;
+    const info = meta.versions[label];
+    return info ? appRecord(name, meta, label, info) : null;
+  }
+
+  async publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
+    validateAppName(name);
+    const { nodes } = this.backend;
+    const existing = await this.appRow(name);
+    const versions = existing ? await this.appVersionRows(name) : [];
+    const owner = opts?.owner ?? opts?.actor;
+
+    if (existing) {
+      const match = versions.find((v) => v.content_hash === hash);
+      if (match) {
+        let changed = false;
+        const desired: Record<string, unknown> = {};
+        if (existing.active_version !== hash && opts?.reactivateKnown !== false) {
+          const m = parseJson<AppManifest>(match.manifest);
+          Object.assign(desired, { active_version: hash, title: m?.title, description: m?.description });
+          changed = true;
+        }
+        if (opts?.publisher !== undefined && existing.publisher !== opts.publisher) desired["publisher"] = opts.publisher;
+        if (!existing.owner && owner) desired["owner"] = owner;
+        const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
+        if (patch) await nodes.update(existing.ref_id, patch);
+        if (changed) await this.swapActiveAppEdge(existing.ref_id, match.ref_id);
+        return { version: match.version_label, changed };
+      }
+    }
+
+    const inherited = parseJson<AppUpstream>(versions.find((v) => v.content_hash === existing?.active_version)?.upstream);
+    const upstream = opts?.upstream === null ? undefined : (opts?.upstream ?? inherited);
+    const vid = nextVersionLabel(versions.map((v) => v.version_label));
+    const publisher = opts?.publisher ?? existing?.publisher;
+    const v = await nodes.write({
+      type: "StrutAppVersion",
+      data: compact({
+        name,
+        content_hash: hash,
+        version_label: vid,
+        description: manifest.description,
+        created_at: new Date().toISOString(),
+        manifest: JSON.stringify(manifest),
+        publisher,
+        version_source: opts?.source,
+        actor: opts?.actor,
+        upstream: upstream ? JSON.stringify(upstream) : undefined,
+      }),
+    });
+    let appRef: string;
+    if (!existing) {
+      const a = await nodes.write({
+        type: "StrutApp",
+        data: compact({ name, title: manifest.title, description: manifest.description, publisher, owner, active_version: hash }),
+      });
+      appRef = a.ref_id;
+    } else {
+      appRef = existing.ref_id;
+      const desired: Record<string, unknown> = { active_version: hash, title: manifest.title, description: manifest.description };
+      if (publisher !== undefined) desired["publisher"] = publisher;
+      if (!existing.owner && owner) desired["owner"] = owner;
+      const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
+      if (patch) await nodes.update(appRef, patch);
+    }
+    await this.backend.edges.write({ edge: "VERSION_OF", source_ref_id: v.ref_id, target_ref_id: appRef });
+    await this.swapActiveAppEdge(appRef, v.ref_id);
+    // USES_WORKFLOW → every workflow the grants name that the graph holds.
+    const names = [...new Set(manifest.grants.workflows)];
+    if (names.length) {
+      const d = this.d;
+      const rows = await this.backend.query(
+        `MATCH ${d.node("w", "StrutWorkflow", { namespace: "$ns" })} WHERE w.name IN $names AND ${d.live("w")} RETURN w.ref_id AS ref_id`,
+        { ns: this.ns, names },
+      );
+      for (const r of rows) await this.backend.edges.write({ edge: "USES_WORKFLOW", source_ref_id: v.ref_id, target_ref_id: r["ref_id"] as string });
+    }
+    return { version: vid, changed: true };
+  }
+
+  private async swapActiveAppEdge(appRef: string, versionRef: string): Promise<void> {
+    const d = this.d;
+    await this.backend.query(
+      `MATCH ${d.node("a", "StrutApp", { ref_id: "$a" })}-[r:ACTIVE_VERSION]->${d.node("v", "StrutAppVersion")} WHERE v.ref_id <> $v DELETE r`,
+      { a: appRef, v: versionRef },
+    );
+    await this.backend.edges.write({ edge: "ACTIVE_VERSION", source_ref_id: appRef, target_ref_id: versionRef });
+  }
+
+  async setActiveAppVersion(name: string, version: string): Promise<void> {
+    validateAppName(name);
+    const a = await this.appRow(name);
+    if (!a) throw new Error(`App "${name}" not found`);
+    const versions = await this.appVersionRows(name);
+    const v = versions.find((x) => x.version_label === version);
+    if (!v) throw new Error(`Version "${version}" not found for app "${name}". Available: ${versions.map((x) => x.version_label).join(", ")}`);
+    const m = parseJson<AppManifest>(v.manifest);
+    const patch = patchFor(a as unknown as Record<string, unknown>, { active_version: v.content_hash, title: m?.title, description: m?.description });
+    if (patch) await this.backend.nodes.update(a.ref_id, patch);
+    await this.swapActiveAppEdge(a.ref_id, v.ref_id);
+  }
+
+  /** Soft, like `deleteWorkflow`: the stamps that would ride along on a
+   *  restore are cleared first, then the nodes are marked. */
+  async deleteApp(name: string): Promise<boolean> {
+    validateAppName(name);
+    const a = await this.appRow(name);
+    if (!a) return false;
+    const remove = (["owner", "publisher", "title", "description", "active_version"] as const).filter((k) => a[k] != null);
+    if (remove.length) await this.backend.nodes.update(a.ref_id, { remove: [...remove] });
+    for (const v of await this.appVersionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
+    await this.backend.nodes.softDelete(a.ref_id);
+    return true;
+  }
+
+  async materializeAppVersion(name: string, version: string): Promise<{ path: string; hash: string }> {
+    validateAppName(name);
+    const v = (await this.appVersionRows(name)).find((x) => x.version_label === version);
+    if (!v) throw new Error(`Version "${version}" of app "${name}" not found`);
+    return { path: appVersionDir(this.appsDir, name, version), hash: v.content_hash };
   }
 
   // ── Step source + code loading ─────────────────────────────────────────

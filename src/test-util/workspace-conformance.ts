@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { Automation } from "../automations.js";
 import type { WorkspaceStore } from "../workspace.js";
 import { contentHash } from "../version.js";
+import { manifestSchema } from "../apps/manifest.js";
 
 /**
  * The `WorkspaceStore` contract as tests — one behavioral suite every
@@ -26,6 +27,9 @@ export default defineStep({
 `;
 
 // ── Workspace store ────────────────────────────────────────────────────────
+
+/** An app manifest with the defaults filled (what a build hands the store). */
+const APP = (title: string, workflows: string[] = []) => manifestSchema.parse({ title, grants: { workflows } });
 
 export interface WorkspaceImpl {
   name: string;
@@ -293,6 +297,114 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(await ws.deleteStep("my-step"), false);
       assert.deepEqual(await ws.listSteps(), []);
       assert.deepEqual(await ws.getActiveStepHashes(), {});
+    });
+
+
+    // ── Apps (plans/apps.md §1.3): the pointers ──
+
+    it("app publish → list → get → versions → active switching → delete; the files are the caller's", async () => {
+      await ws.publishWorkflow("wf", "v1", { steps });
+      const one = APP("One", ["wf"]);
+      const two = APP("Two");
+      const v1 = await ws.publishApp("hvac", "h1", one, { publisher: "ai", actor: "alice" });
+      assert.deepEqual(v1, { version: "v1", changed: true });
+      assert.deepEqual(await ws.publishApp("hvac", "h1", one), { version: "v1", changed: false }, "same tree → no new version");
+      const v2 = await ws.publishApp("hvac", "h2", two);
+      assert.deepEqual(v2, { version: "v2", changed: true });
+
+      const list = await ws.listApps();
+      assert.deepEqual(
+        list.map((a) => [a.name, a.activeVersion, a.versions, a.title, a.grants.workflows, a.publisher, a.owner]),
+        [["hvac", "v2", ["v1", "v2"], "Two", [], "ai", "alice"]],
+      );
+      const got = (await ws.getApp("hvac"))!;
+      assert.equal(got.version, "v2");
+      assert.equal(got.hash, "h2");
+      assert.deepEqual(got.manifest, two);
+      assert.equal(got.active, "v2");
+      assert.deepEqual(Object.keys(got.versions), ["v1", "v2"]);
+      assert.equal(got.versions["v1"]?.hash, "h1");
+      assert.equal("manifest" in got.versions["v1"]!, false, "the version list carries no manifests");
+      assert.equal(got.owner, "alice");
+      assert.equal(got.publisher, "ai");
+      const old = (await ws.getApp("hvac", "v1"))!;
+      assert.equal(old.hash, "h1");
+      assert.deepEqual(old.manifest, one);
+      assert.equal(await ws.getApp("nope"), null);
+      assert.equal(await ws.getApp("hvac", "v9"), null);
+
+      // The version's directory: a path, named consistently, never a copy.
+      const dir1 = await ws.materializeAppVersion("hvac", "v1");
+      assert.equal(dir1.hash, "h1");
+      assert.equal(typeof dir1.path, "string");
+      assert.deepEqual(await ws.materializeAppVersion("hvac", "v1"), dir1, "stable");
+      assert.notEqual((await ws.materializeAppVersion("hvac", "v2")).path, dir1.path);
+      assert.ok(dir1.path.endsWith(join("hvac", "v1")), dir1.path);
+      await assert.rejects(ws.materializeAppVersion("hvac", "v9"), /not found/);
+      await assert.rejects(ws.materializeAppVersion("nope", "v1"), /not found/);
+
+      await ws.setActiveAppVersion("hvac", "v1");
+      assert.equal((await ws.getApp("hvac"))?.version, "v1");
+      assert.equal((await ws.listApps())[0]?.title, "One", "the listing follows the active version's manifest");
+      await assert.rejects(ws.setActiveAppVersion("hvac", "v99"), /not found/);
+      await assert.rejects(ws.setActiveAppVersion("nope", "v1"), /not found/);
+
+      assert.equal(await ws.deleteApp("hvac"), true);
+      assert.equal(await ws.deleteApp("hvac"), false);
+      assert.deepEqual(await ws.listApps(), []);
+      assert.equal(await ws.getApp("hvac"), null);
+      // The name starts over, with nothing of the old one riding along.
+      assert.deepEqual(await ws.publishApp("hvac", "h3", two), { version: "v1", changed: true });
+      const fresh = (await ws.getApp("hvac"))!;
+      assert.deepEqual(Object.keys(fresh.versions), ["v1"]);
+      assert.equal(fresh.owner, undefined);
+      assert.equal(fresh.publisher, undefined);
+    });
+
+    it("publishApp: reactivateKnown, the publisher and owner stamps, and upstream carried forward", async () => {
+      const seed = APP("Seed");
+      const edit = APP("Edit");
+      const first = await ws.publishApp("kept", "s1", seed, { publisher: "seed" });
+      const edited = await ws.publishApp("kept", "e1", edit, { actor: "bob" });
+      // Reseeding the unchanged template leaves the edit active …
+      assert.deepEqual(await ws.publishApp("kept", "s1", seed, { publisher: "seed", reactivateKnown: false }), { version: first.version, changed: false });
+      assert.equal((await ws.getApp("kept"))?.version, edited.version);
+      // … a known tree re-activates by default …
+      assert.deepEqual(await ws.publishApp("kept", "s1", seed), { version: first.version, changed: true });
+      assert.equal((await ws.getApp("kept"))?.version, first.version);
+      // … and the stamps: the publisher follows the publish, the owner is the first actor seen.
+      const rec = (await ws.getApp("kept"))!;
+      assert.equal(rec.publisher, "seed");
+      assert.equal(rec.owner, "bob");
+      await ws.publishApp("kept", "s1", seed, { actor: "carol" });
+      assert.equal((await ws.getApp("kept"))?.owner, "bob", "the owner is not re-stamped");
+
+      // Upstream (marketplace.md §3) rides on a version and is carried forward over the name.
+      const upstream = { package: "acme/hvac", version: "1.2.0", digest: "abc" };
+      const installed = await ws.publishApp("kept", "u1", APP("Installed"), { upstream, source: "seed" });
+      assert.deepEqual((await ws.getApp("kept"))?.upstream, upstream);
+      assert.equal((await ws.getApp("kept"))?.versions[installed.version]?.source, "seed");
+      await ws.publishApp("kept", "u2", APP("Forked"), { actor: "bob", source: "ui" });
+      const fork = (await ws.getApp("kept"))!;
+      assert.deepEqual(fork.upstream, upstream, "a publish over the name carries the active version's upstream forward");
+      assert.equal(fork.versions[fork.version]?.actor, "bob");
+      assert.equal(fork.versions[fork.version]?.source, "ui");
+      await ws.publishApp("kept", "u3", APP("Cut loose"), { upstream: null });
+      assert.equal((await ws.getApp("kept"))?.upstream, undefined, "null clears it");
+      assert.equal((await ws.getApp("kept", first.version))?.upstream, undefined, "an older version keeps its own (none)");
+    });
+
+    it("app names carry a package prefix: slashes are segments, and names that differ in punctuation are different apps", async () => {
+      await ws.publishApp("acme/ui", "a1", APP("Kit"));
+      await ws.publishApp("acme_ui", "b1", APP("Other"));
+      await ws.publishApp("acme/ui/charts", "c1", APP("Nested under a name"));
+      assert.deepEqual((await ws.listApps()).map((a) => [a.name, a.title]), [["acme/ui", "Kit"], ["acme/ui/charts", "Nested under a name"], ["acme_ui", "Other"]]);
+      assert.ok((await ws.materializeAppVersion("acme/ui", "v1")).path.endsWith(join("acme", "ui", "v1")));
+      assert.equal(await ws.deleteApp("acme_ui"), true);
+      assert.deepEqual((await ws.listApps()).map((a) => a.name), ["acme/ui", "acme/ui/charts"]);
+      await assert.rejects(ws.publishApp("bad@v1", "x", APP("x")), /reserved/);
+      await assert.rejects(ws.publishApp("acme/v2", "x", APP("x")), /version label/);
+      await assert.rejects(ws.publishApp("../x", "x", APP("x")), /Invalid app name/);
     });
 
     it("names that differ only in punctuation are different steps and workflows: published, read, versioned and deleted apart", async () => {

@@ -800,3 +800,40 @@ curl -s -b jar.txt localhost:3000/workflows                       # a read: the 
 curl -s -b jar.txt -H 'x-strut-ui: 1' -X POST localhost:3000/workflows/hello/run -d '{}'
 curl -s -b jar.txt -X DELETE localhost:3000/auth/session           # → 204, cookie cleared
 ```
+
+## 14. Apps — a front-end project over workflows
+
+`plans/apps.md`. An APP is a directory with an `app.yaml` (title, `grants`,
+the graph types it declares, extra resource domains), `src/` (TSX, its own
+shadcn overrides, CSS), `public/` (assets) and `db/` (migrations, a later
+item), built against the KIT (`kit/`, `@strut/kit`: the frozen vendor layer,
+the bootstrap, the hooks) into ONE self-contained document,
+`dist/index.html`, that any MCP Apps host frames. A workspace app is
+versioned by the TREE HASH of its directory (`treeHash`, `src/version.ts`;
+`dist/` and `data.db` left out, the kit never in it): identical content
+re-activates the version it already is, anything else is the next `vN`. The
+workspace store holds the pointers (`listApps`, `getApp`, `publishApp`,
+`setActiveAppVersion`, `deleteApp`, `materializeAppVersion`); the files live
+under `<dataDir>/apps/<name>/<vN>/` on every backend, `dist/` included. A
+name may carry a package prefix (`acme/hvac/invoices`, `strut/views`) —
+encoded in a URL (`/apps/acme%2Fhvac%2Finvoices`).
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner? }] }` |
+| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist); 404 |
+| GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner? }` |
+| GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it |
+| GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. A token for another app or version is `401` whatever else the request carries |
+| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings }`. Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none |
+| PUT    | `/apps/:name/active` | `{ version }` — rollback; publishes nothing |
+| DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
+
+The same reads and writes as steps — `app/list`, `app/get { name, version? }`,
+`app/init { path, template? }`, `app/checkout { name, version?, path }`,
+`app/build { path }`, `app/publish { name, path, job? }` — are the authoring
+loop (`plans/apps.md` §8): a directory, the editor, build, read the errors,
+publish. `app/publish` stamps `publisher: "ai"` and applies the meta
+surface's rules. Not here yet (work item 1c): the app's calls (`step_run` on
+the MCP doors), the `run/*` steps, `ctx.app`, strut's UI as a host, the
+builder's grant.

@@ -1,6 +1,6 @@
 {
   "name": "@strut/kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The app kit for strut apps (plans/apps.md \u00a73): the frozen vendor layer every app build resolves against, the base stylesheet, the bootstrap and the hooks over one tool, step_run.",
   "type": "module",
   "license": "MIT",

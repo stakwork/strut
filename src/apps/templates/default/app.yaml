@@ -1,0 +1,9 @@
+title: New app
+description: "A starter: a sidebar, two pages, nothing granted yet."
+icon: layout-dashboard
+entry: src/App.tsx
+grants:
+  workflows: []       # the app's ROUTINES — run/* on these: read runs, launch, cancel (useRuns, useLaunch)
+  steps: []           # cheap, deterministic steps it may call with useStep — never llm / agent / exec
+  sqlite: false       # its own database (sqlite/*), when it needs tables
+  automations: []     # automation/* on these workflows' schedules
