@@ -69,7 +69,7 @@ describe("automation/* steps", () => {
       scheduler: false,
       systemWorkflows: false,
       job: false,
-      orchestrator: false,
+      orchestrator: false, builder: false,
       ...(automation ? { automation } : {}),
     });
     for (const name of [WF, OTHER]) await strut.workspace.publishWorkflow(name, "v1", { input: runInputs, steps: logPrompt });
@@ -207,7 +207,7 @@ describe("automation/* steps", () => {
     const peek = defineStep({ type: "test/peek", input: z.any(), output: z.any(), async run(_cfg, ctx) { seen.push(ctx.automation); return {}; } });
     await strut.close();
     registry = await createRegistry([approve, peek]);
-    strut = await createStrut({ workspace: new WorkspaceManager(dir), registry, store, serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, job: false, orchestrator: false });
+    strut = await createStrut({ workspace: new WorkspaceManager(dir), registry, store, serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, job: false, orchestrator: false, builder: false });
     await strut.workspace.publishWorkflow(WF, "v1", { steps: [{ id: "p", type: "test/peek", config: {} }] });
     const made = (await strut.automations.create(WF, { name: "Peek", trigger: weekly, input: {} })) as any;
     const fired = (await strut.automations.fire(WF, made.automation.id)) as any;
@@ -396,7 +396,7 @@ describe("automation/create from a turn", () => {
       scheduler: false,
       systemWorkflows: false,
       job: false,
-      orchestrator: false,
+      orchestrator: false, builder: false,
       automation: { workflow: WF, approve: "test/approve" },
     });
     await strut.workspace.publishWorkflow(WF, "v1", { input: runInputs, steps: logPrompt });
