@@ -53,6 +53,14 @@
 > `buildRegistryTools` as the `agent` step's `agentTools` are, in place of
 > five chat tools that each wrapped one of them (§8).
 >
+> **With stakwork/strut#239** (2026-10-21; the builder job,
+> `plans/builder-job.md`): a second author. Apps are a builder job's kind
+> of work under that plan's ruling; the `builder` seed gains the editor
+> family and `app/*` and still no bash; one authoring path — a directory,
+> the editor, `app/build`, `app/publish` — serves the chat, the builder job
+> and a code job's agent alike; a build on a peer tags its deliverable by
+> peer; the build warns on a global `fetch` (§8, §2.1, §11). Mine, proposed.
+>
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
 > is the tree hash shared with packages and the kit is out of it (§1.3);
@@ -69,6 +77,8 @@
 > - `ladybug-backend.md`: the closed registry this plan opens.
 > - `marketplace.md`: an app is a package member.
 > - `federation.md`: apps stay local, but their workflows may reach peers.
+> - `builder-job.md` (stakwork/strut#239): the `builder` job, the
+>   orchestrator's door to authoring, here and on a peer.
 >
 > Hosts appear below only as the contract they read. Their own repos are
 > adoption, not work items.
@@ -156,6 +166,7 @@ decide, and why; each is open.
 | Routines — where the model runs | **Inside a run, never inside the page** (ruled: an app's agent and LLM workflows are routines, never triggered on their own). The workflow is the unit of spend: `step_run` from a model-written manifest refuses `llm`, `agent` and `exec`, so every model call an app causes is a run — logged, billed to the viewer, cancelable, verified. A routine is a granted workflow; launching one is a mutation the kit exposes only as a function, never as a query, and `run/launch { key }` returns an in-flight run instead of starting a second (§5.1) |
 | How a step knows it runs for an app | **`ctx.app`**, the twin of `ctx.job`: `{ name, version }` for a workspace app, `{ job, path }` for a job's, set by the app door for the call and never by a launch body. The `sqlite/*` steps open the app's file from it, the graph write scope reads the declared types from it, `automation/*` reads `grants.automations` from it, and a run the app launches records `app` on `run.start` as a job run records `job` — so a workflow working for the app finds the app's file the way a job's steps find the job's directory (§5) |
 | Sharing and forking | **A package kind** (ruled: forkable and flexible). `apps/<name>/` in a package (`marketplace.md` §1), the one item that is a directory. One representation everywhere: a job's live directory, a workspace version, a package member, a git repo and an `app/init` template are the same bytes. The fork is the normal path: an edit is a fork carrying `upstream`, an update fast-forwards an untouched app and merges a forked one per file, and the app is the wrapper around bought steps, so a forked UI leaves them fast-forwarding (§11) |
+| Who writes an app | **A builder** — the chat, or the `builder` job of stakwork/strut#239 — and a code job's agent for a job app (§6). One path for all three: a directory, the editor, `app/build`, `app/publish { name, path }` (§8). Apps are a builder job's kind of work under #239's ruling, so a regular job never holds `app/publish`; the builder job gets the editor family and `app/*` and still no bash |
 | Who pays and who acts | **The viewer.** A launch from an app is billed to whoever clicked, and binds actor secrets to them, exactly as if they had pressed Run |
 | How strut knows which app is calling | **The app's file token.** The host relays `tools/call` as it is and names nothing; the served document carries the app's **file token** (`fileToken`, `auth.ts`), scoped to its own directory — the token that lets a page read its own files, written into `dist/index.html` as it is served (§7.2). `step_run` reads which app is calling off its scope; the connection's credential says who. Alone it is worth that directory's files and nothing more |
 | Who may grant sealed or shell-like things | **A person only.** The meta surface (the builder, `meta/*`, a job's agent) may not grant a sealed workflow or step, nor `llm`, `exec` or `agent` as direct step grants (§5.1); it runs those through a workflow, whose YAML is versioned and reviewable. A person on the HTTP door may grant anything, as with `peer: true` |
@@ -270,7 +281,7 @@ csp:
 | | A workspace app | A job's app |
 | --- | --- | --- |
 | Where | `<dataDir>/apps/<name>/<vN>/`, one directory per version, with the pointer in the workspace store (§1.3) | The job's directory: `<dataDir>/jobs/<job>/<path>`, by convention `apps/<name>/` |
-| Who writes it | The builder (`app/checkout`, its editor, `app/publish`), a person (`POST /apps`) | The job's agent, with its editor and bash, in its cwd |
+| Who writes it | A builder — the chat, or a `builder` job (stakwork/strut#239) — with the editor: `app/checkout`, files, `app/build`, `app/publish`; a person (`POST /apps`) | The job's agent, with its editor and bash, in its cwd |
 | Versions | `vN`, tree-hashed (§1.3), an active pointer, rollback, `upstream` when a package installed it | None. One live directory behind one link, the jobs contract; `job.update` says it changed |
 | Its document | `dist/index.html` in the version's directory, written by the publish's build; rebuilt there on a newer kit only when asked | `dist/index.html` in the app's directory, written by `app/build` — the agent builds before it hands the app over, as it verifies before it says done |
 | Its SQLite | `<dataDir>/apps/<name>/data.db`, shared by all its versions | `<path>/data.db`, inside the job's directory, so the agent can `sqlite3` what the person entered |
@@ -279,9 +290,11 @@ csp:
 
 A job's app is **published to the workspace** with `app/publish { name,
 path }`. A person does it from the job timeline ("Publish as an app"), or
-the builder does it on request. The directory becomes the app's next
-version, and `data.db` comes along when the workspace app has none yet. A
-prototype with real data in a job becomes a real app.
+a builder does it on request — the chat, or a `builder` job naming the
+other job's directory; a code job never holds the step (§8). The
+directory becomes the app's next version, and `data.db` comes along when
+the workspace app has none yet. A prototype with real data in a job
+becomes a real app.
 
 ### 1.3 Workspace versions and storage
 
@@ -375,7 +388,12 @@ the directory. A workspace publish calls it (§1.3) and so does `app/build`
   `eval` and `new Function` are refused. Markdown goes through the kit's
   `react-markdown`, which is safe by default. Even with `connect-src 'none'`
   (§9), a script injected into an app could call that app's granted tools
-  as the viewer, so the build closes the door it can see.
+  as the viewer, so the build closes the door it can see. A call to the
+  global `fetch`, `XMLHttpRequest` or `WebSocket` is a WARNING in the
+  result that names the hook to use instead (`useStep`, `useLaunch`): a
+  model writes `fetch('/api/…')` by reflex, the CSP refuses it at runtime,
+  and without the warning only `app/report-error` would say so — step-lint's
+  rule for a step's `fetch`, for the same reason.
 - **Types are not checked in v1**, because esbuild strips them. A `tsc` pass
   against the kit's `.d.ts` comes later (§12). Render errors reach the
   agent through `app/report-error` (§8).
@@ -895,10 +913,20 @@ A host's own pages may also import the kit's library build and give it a
 client over the host's routes. Hive's OpenHealth page could swap its run
 graph for the kit's. That is adoption.
 
-## 8. Authoring — the builder and the job agent are the developers
+## 8. Authoring — the builders and the job agent are the developers
 
-Both write an app the same way: files in a directory, with their editor and
-bash, then a build that answers with errors.
+Three authors, one path. The chat builder, the `builder` JOB that
+stakwork/strut#239 adds (`plans/builder-job.md`: the orchestrator's door to
+authoring, `peer: true`, launched with `job/start { workflow: builder,
+peer? }`) and a code job's agent all write an app the same way: files in a
+directory, with the editor, then `app/build`, which answers with errors,
+then `app/publish { name, path }`. That is the loop models are trained on
+— create, build, read the errors, fix, build — minus the shell on the two
+builders. There is no second, argument-shaped way to author an app (a
+`files` map, an `edits` list): a workflow is one document and travels well
+as a tool argument, a ten-file front-end project does not, and a shape no
+model has seen would fight the very prior the fixed stack was chosen to
+ride.
 
 - **Steps** (one implementation; tools are steps — the builder's too,
   below):
@@ -915,8 +943,9 @@ bash, then a build that answers with errors.
     (`materializeAppVersion`) to a path to edit: the builder's scratch
     (`scratch/apps/<name>/`), or a job's directory.
   - `app/build { path }` (§6).
-  - `app/publish { name, path }` (§1.2), under the meta surface's rules when
-    the caller is the meta surface.
+  - `app/publish { name, path, job? }` (§1.2), under the meta surface's
+    rules when the caller is the meta surface; `job` publishes from another
+    job's directory (a builder job publishing a code job's prototype).
 - **The builder has no app tools of its own.** It gets the `app/*` steps as
   named tools through `buildRegistryTools`, the function the `agent` step
   already uses for `agentTools`: a step's input schema is the tool schema,
@@ -930,15 +959,36 @@ bash, then a build that answers with errors.
   other builder tool, since it serves `buildTools(deps)`. And because
   `app/list` and `app/get` are steps, an app may be granted them: a
   launcher that lists and opens other apps costs nothing.
+- **Apps are a builder job's kind of work.** #239 rules that building
+  workflows is a separate kind of work from a code job, and that the
+  authoring tools are never a grant on a regular `job`. An app is that
+  kind: it is published into the workspace, and the workflows it drives
+  are authored in the same breath. So "build me an invoice tracker" from
+  the orchestrator is `job/start { workflow: builder }`, and the `builder`
+  seed's delta, made by this plan's work item 1, gains `app/*` in
+  `params.tools` and the EDITOR FAMILY in `params.builtins` —
+  `str_replace_based_edit_tool`, `repo_overview`, `fulltext_search`: view,
+  list, grep — and still no `bash`. #239's rule is no SHELL on a workflow
+  another strut may launch; the editor is not one. It is view, create,
+  str_replace and insert sandboxed to the job's directory (`job/dir`, which
+  the builder already has and could not write in), reaching neither the
+  process nor the network, and authoring a custom step is already code
+  loaded into the process. The build is a step, not `npm run build` in a
+  shell, which is what lets a shell-less builder build an app at all. A
+  code job's agent keeps `app/init`, `app/build` and `app/get` on the job
+  seed for a job app (§6) and never `app/publish` or `app/checkout`, the
+  authoring writes: a job app reaches the workspace through a person's
+  click or a builder job on request (§1.2).
 - **The text editor** the `agent` step already has
   (`str_replace_based_edit_tool`, its `textEdit()` handler), sandboxed to
-  the builder's data directory, joins the builder's tools. Today the
-  builder has only `bash`, and a real front-end project wants an editor.
-  This is the one real gap here, not a duplication.
+  the builder's data directory, joins the CHAT builder's tools too. Today
+  the chat has only `bash`, and a real front-end project wants an editor.
 - **The prompt** is an `App` Concept page under `Workflow Builder`
   (`src/concepts/App.md`), seeded by strut and one of the kinds the
   builder's prompt lists. The job workflow reads the same page through
-  `Job`'s tree. It covers:
+  `Job`'s tree, and the `builder` job through `Workflow Builder`'s, the
+  same `context/concept` step (`plans/builder-job.md` §1) — one prompt for
+  every author. It covers:
   - the layout;
   - the kit's imports, the hooks and the components;
   - §4.2's table;
@@ -1064,7 +1114,11 @@ types and the app's SQLite file.
   fast-forwarding. A COPY under a new name (`app/init { template }`) has no
   `upstream`, and no update reaches it.
 - **Peers.** An app is local. A workflow it launches may reach a peer
-  through `strut/run-workflow`.
+  through `strut/run-workflow`. A build on a peer is a builder job there
+  (`job/start { workflow: builder, peer }`, `plans/builder-job.md` §3): the
+  app is published on that strut, its deliverable comes back tagged
+  `{ peer, job }` under that plan's rule, and the host resolves it against
+  that strut. Nothing of an app crosses.
 - **Proposals.** An app acts directly as the viewer. A gated step stays a
   matter for an agent's turn, not a button.
 - **The Mothership.** Nothing new: a launch is a run.
@@ -1107,8 +1161,9 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    - `treeHash` in `src/version.ts`, the one hash for an app version and a
      package digest.
    - `src/apps/manifest.ts` and `build.ts`: esbuild and Tailwind as
-     dependencies, the resolver, assets, the AST refusals, the document
-     written to `dist/` with `build.json`, determinism.
+     dependencies, the resolver, assets, the AST refusals and the `fetch`
+     warning, the document written to `dist/` with `build.json`,
+     determinism.
    - `kit/` v1: §3.1's set minus maps and 3D, the bootstrap, `StrutClient`,
      and the run, launch, workflow and step hooks.
    - The `run/*` lib steps (`src/steps/lib/run/`), thin over the layers the
@@ -1125,7 +1180,9 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
      `/mcp`.
    - The steps `app/init`, `app/build` and `app/publish`, and the template.
    - The `app/*` steps as the builder's tools (`buildRegistryTools` in
-     `buildTools`, grant `app/*`) and its text editor.
+     `buildTools`, grant `app/*`) and the chat's text editor; the `builder`
+     seed's delta (stakwork/strut#239, once merged): `app/*` in
+     `params.tools`, the editor family in `params.builtins`, no bash.
    - `App.md`.
 
    Tests drive a test app through a fake workflow. By hand, rebuild the
@@ -1173,7 +1230,7 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - **The build.** A good directory gives one document, with relative
     imports and `@/` overrides resolved. A non-kit import, an import that
     leaves the directory, `dangerouslySetInnerHTML` and `eval` are each
-    refused with the reason named. The same inputs give the same bytes, into
+    refused with the reason named; a `fetch(` call warns, naming the hook. The same inputs give the same bytes, into
     `dist/`; the hash covers every file but `data.db` and `dist/`, is the
     same with any kit, and equals the package digest `marketplace.md`
     computes over the directory.
@@ -1215,7 +1272,10 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - its line items survive a reload;
   - "Add a due-date column", typed in the app, reaches the chat and makes
     v2, and the frame reloads;
-  - rolling back to v1 works.
+  - rolling back to v1 works;
+  - the same ask as a `builder` job (`POST /workflows/builder/run { job,
+    input: { prompt } }`) writes the app with the editor, builds it with
+    `app/build` and publishes it, with no `bash` call in the run log.
 - **An MCP Apps host.** Add strut's `/mcp` to Claude as a remote connector.
   "Open the invoices app" should render it inline, its tool calls should
   work, and the viewer's actor should be on what it writes. Repeat with
