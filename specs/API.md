@@ -949,7 +949,8 @@ the frame in.
 A job's agent writes an app in the JOB's directory — `apps/<name>/`, laid
 out like any app — with its editor, `app/init { path }` to scaffold it and
 `app/build { path }` to build it (the `job` seed grants those and
-`app/get`, never `app/publish` or `app/checkout`), and hands it over as a
+`app/get`, never `app/publish` or `app/checkout`; strut's `Job App`
+Concept page under `Job` tells it how), and hands it over as a
 deliverable `{ id, kind: "app", title, path: "apps/<name>" }`. It has no
 versions and no pointer: one live directory behind one link. What changes:
 
