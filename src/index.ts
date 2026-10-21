@@ -664,3 +664,13 @@ export {
   ORCHESTRATOR_DESCRIPTION,
   type OrchestratorSeedOptions,
 } from "./orchestrator-seed.js";
+// The `builder` workflow strut ships (plans/builder-job.md): a workflow
+// build as a job, `peer: true`; a host's delta rides on `createStrut({ builder })`.
+export {
+  seedBuilderWorkflow,
+  builderWorkflowYaml,
+  BUILDER_WORKFLOW,
+  BUILDER_CATEGORY,
+  BUILDER_DESCRIPTION,
+  type BuilderSeedOptions,
+} from "./builder-seed.js";

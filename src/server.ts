@@ -8,8 +8,9 @@
 // instead (FileRunStore, workspace loaded from STRUT_WORKSPACE, registry
 // built by scanning steps/) — no graph at all. STRUT_HOST_CONFIG names a
 // JSON file with the host's delta for the workflows strut ships —
-// `{ job?, orchestrator? }`, each `{ tools?, system? }` as createStrut takes
-// it, and `automation?: { workflow, approve?, grants? }` for the automation/* steps —
+// `{ job?, orchestrator?, builder? }`, each `{ tools?, system? }` as createStrut
+// takes it (`builder` also `peer: false`), and `automation?: { workflow,
+// approve?, grants? }` for the automation/* steps —
 // for a host that runs this server rather than embedding createStrut (Peel
 // writes it at launch).
 //
@@ -32,11 +33,13 @@ import { bootEnv, scrubProcessEnv, scrubRequested } from "./env.js";
 let strutInstance: Strut | null = null;
 
 /** The host's delta for the shipped workflows, from the JSON file
- *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator? }`, each `{ tools?,
- *  approve?, system? }`, and `automation?: { workflow, approve?, grants? }`. Nothing when unset. A file that cannot be read or parsed
- *  fails the boot, rather than seeding the workflows without the host's
- *  tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "automation"> {
+ *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator?, builder? }`, each
+ *  `{ tools?, approve?, system?, model? }` (and `peer: false` to close the
+ *  builder to other struts — a file may only close one, never open one),
+ *  and `automation?: { workflow, approve?, grants? }`. Nothing when unset.
+ *  A file that cannot be read or parsed fails the boot, rather than
+ *  seeding the workflows without the host's tools. */
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -45,23 +48,25 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "automation"> = {};
-  for (const key of ["job", "orchestrator"] as const) {
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation"> = {};
+  for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
-    const { tools, approve, system, model } = (delta ?? {}) as { tools?: unknown; approve?: unknown; system?: unknown; model?: unknown };
+    const { tools, approve, system, model, peer } = (delta ?? {}) as { tools?: unknown; approve?: unknown; system?: unknown; model?: unknown; peer?: unknown };
     if (
       (tools !== undefined && !(Array.isArray(tools) && tools.every((t) => typeof t === "string"))) ||
       (approve !== undefined && !(Array.isArray(approve) && approve.every((t) => typeof t === "string"))) ||
       (system !== undefined && typeof system !== "string") ||
-      (model !== undefined && model !== null && typeof model !== "string")
+      (model !== undefined && model !== null && typeof model !== "string") ||
+      (peer !== undefined && peer !== false)
     ) {
-      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null }`);
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }`);
     }
     out[key] = {
       ...(tools ? { tools: tools as string[] } : {}),
       ...(approve ? { approve: approve as string[] } : {}),
       ...(system !== undefined ? { system: system as string } : {}),
+      ...(peer === false ? { peer: false as const } : {}),
       ...(model !== undefined ? { model: model as string | null } : {}),
     };
   }
@@ -96,7 +101,7 @@ async function getDefault(): Promise<Strut> {
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "job" | "orchestrator" | "automation"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "job" | "orchestrator" | "builder" | "automation"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.

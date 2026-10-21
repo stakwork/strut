@@ -211,7 +211,7 @@ describe("proposals", () => {
         scheduler: false,
         systemWorkflows: false,
         job: false,
-        orchestrator: false,
+        orchestrator: false, builder: false,
       });
     });
     afterEach(async () => {
