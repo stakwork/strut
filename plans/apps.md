@@ -984,7 +984,7 @@ Hive, Peel or a customer's portal is an MCP Apps host, one of two ways;
 neither needs a strut change per host, and both end at `/mcp`:
 - **Fetch the document itself.** List `GET /apps` (and a job's `app`
   deliverables), fetch the document from its file route with the token the
-  listing minted, and frame it `sandbox="allow-scripts"`. Run an MCP Apps
+  listing minted, and frame it as `srcdoc` with `sandbox="allow-scripts"` — never a `blob:` URL (§7.3). Run an MCP Apps
   host bridge, and relay `tools/call` to `/mcp` AS IT IS, with its own
   credential and `x-strut-actor`. Hive's `HtmlArtifactFrame` already
   fetches a swarm page into a sandboxed blob and runs a `postMessage` nav
