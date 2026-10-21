@@ -5,6 +5,7 @@ import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
 import { foldAccessedNodes } from "./accessed-nodes";
+import { latestAttempt } from "./step-attempt";
 import { pushUrl, replaceUrl } from "./embed";
 import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";
 import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
@@ -402,7 +403,8 @@ export function App() {
   const flyoutEvents = useMemo(() => {
     if (!flyoutStepId || !viewWorkflow || viewEvents.length === 0) return null;
     const path = `${viewWorkflow}/${flyoutStepId}`;
-    const stepEvts = viewEvents.filter((e) => e.path === path);
+    // The step's latest attempt: a re-run leaves the earlier try in the log.
+    const stepEvts = latestAttempt(viewEvents, path);
     if (stepEvts.length === 0) return null;
     const start = stepEvts.find((e) => e.type === "step.start");
     const end = stepEvts.find((e) => e.type === "step.end");
