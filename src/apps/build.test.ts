@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, type BuildDeps } from "./build.js";
+import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
 import { parseManifest } from "./manifest.js";
 import { loadKit, type KitLocation } from "./kit.js";
 import { treeFiles, treeHash } from "../version.js";
@@ -227,6 +227,18 @@ describe("the app build", () => {
     const entry = await build(await writeApp(fresh(), { "app.yaml": "title: E\nentry: src/Main.tsx\n", "src/App.tsx": "export default () => null;\n" }));
     assert.match(errorsOf(entry).join("\n"), /entry: "src\/Main\.tsx" is not a file in the app/);
     assert.ok(!existsSync(join(entry.ok ? "" : "/nonexistent", "dist")), "nothing written on an error");
+  });
+});
+
+describe("zod's namespace import (plans/apps.md §2.5)", () => {
+  it("rewrites `z` — named, aliased, beside other names, as the default — to `import * as`, and nothing else", () => {
+    assert.equal(zodNamespaceImports(`import { z } from "zod";`), `import * as z from "zod";`);
+    assert.equal(zodNamespaceImports(`import{z as Q}from"zod/v4";Q.object({})`), `import * as Q from "zod/v4";Q.object({})`, "minified, as the MCP Apps SDK ships it");
+    assert.equal(zodNamespaceImports(`import { ZodError, z, type ZodType } from 'zod';`), `import * as z from 'zod';import { ZodError, type ZodType } from 'zod';`);
+    assert.equal(zodNamespaceImports(`import z from "zod";`), `import * as z from "zod";`);
+    for (const untouched of [`import { string } from "zod";`, `import type { z } from "zod";`, `import { z } from "zod-to-json";`, `import { z } from "./zod";`, `const x = 1;`]) {
+      assert.equal(zodNamespaceImports(untouched), untouched);
+    }
   });
 });
 

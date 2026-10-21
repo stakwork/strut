@@ -9,7 +9,7 @@ import { ElicitationForm } from "./ElicitationForm";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { AttachmentList, Transcript } from "./Transcript";
 import { readAttachment, type PendingAttachment } from "../attachments";
-import { attachResult, groupCalls, updateCall, storedOutputToResult, transcriptToEntries, transcriptText, type ChatEntry, type ToolCall, type ToolResult } from "../transcript";
+import { attachResult, groupCalls, updateCall, storedOutputToResult, transcriptToEntries, transcriptText, type ChatEntry, type ToolCall, type ToolResult } from "@strut/kit/folds";
 import { replaceUrl } from "../embed";
 
 // ── Chat Flyout (AI workflow builder) ──────────────────────────────────────

@@ -74,6 +74,7 @@ import { grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { buildAuthoringCapability } from "./authoring.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
+import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -336,6 +337,11 @@ export interface StrutOptions<TServices = unknown> {
    *  the same host delta plus `peer: false` to close it to peers. `false`
    *  seeds nothing. */
   builder?: false | BuilderSeedOptions;
+  /** `strut/views` (`src/apps/views-seed.ts`, plans/apps.md §3.3): strut's
+   *  own components — RunTimeline, RunGraph, LaunchForm, … — as an app other
+   *  apps import, its page the gallery. Seeded at boot by tree hash, as `job`
+   *  is by content hash, when the kit is built. `false` seeds nothing. */
+  views?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -978,6 +984,17 @@ export async function createStrut<TServices = unknown>(
       if (changed) console.log(`[builder] seeded workflow: builder @ ${version}`);
     } catch (err) {
       console.warn(`[builder] could not seed the builder workflow:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  // `strut/views` (src/apps/views-seed.ts): strut's components as an app
+  // other apps import. By tree hash; skipped without a built kit.
+  if (opts.views !== false) {
+    try {
+      const r = await seedViewsApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[views] seeded app: strut/views @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[views] could not seed strut/views:`, err instanceof Error ? err.message : err);
     }
   }
 

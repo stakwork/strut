@@ -1,7 +1,7 @@
 // Files the person attaches to a builder chat message, read in the browser
 // for `POST /chat { attachments }` (the server half: src/ai/attachments.ts,
 // which owns the limits; the ones here only fail early).
-import type { AttachmentView } from "./transcript";
+import type { AttachmentView } from "@strut/kit/folds";
 
 /** A file waiting in the composer: its chip, plus the bytes as a data URL. */
 export type PendingAttachment = AttachmentView & { data: string; bytes: number };

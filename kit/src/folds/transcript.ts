@@ -2,9 +2,28 @@
 // renders: user bubbles, assistant text, tool-call chips with their results
 // attached by `toolCallId`, server notices, and (for a thread read back from
 // a job) the turn boundaries. Shared by the chat flyout (live and replayed)
-// and the job timeline's thread view. Pure; tested.
-import { isNotice } from "./notice";
-import { formatJson } from "./helpers";
+// and the job timeline's thread view (web/), and strut/views' Transcript.
+// Pure; tested.
+
+/** The user-role messages the SERVER appends (src/ai/notifier.ts and
+ *  friends), by prefix: a notice card, never a person's bubble. web/'s
+ *  notice.ts parses them. */
+export const NOTICE_PREFIXES = {
+  "[run-notification]": "run",
+  "[verify-notification]": "verify",
+  "[elicitation-response]": "elicitation",
+  "[compaction]": "compaction",
+  "[restart-notification]": "restart",
+} as const;
+
+export function isNotice(text: string): boolean {
+  return Object.keys(NOTICE_PREFIXES).some((p) => text.startsWith(p));
+}
+
+const formatJson = (v: unknown): string => {
+  if (typeof v === "string") return v;
+  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+};
 
 /** A tool RESULT paired to its call. `isError` = the tool threw. */
 export type ToolResult = { output: unknown; isError: boolean };

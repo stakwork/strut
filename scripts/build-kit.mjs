@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Build the app kit's VENDOR LAYER (plans/apps.md §3) into kit/vendor/ — the
- * frozen browser bundles + import-map.json every app build resolves against
- * (src/apps/kit.ts). Part of `npm run build`, so `prepare` runs it too: a
+ * frozen module tree, its modules.json and import-map.json every app build
+ * resolves against (src/apps/kit.ts). Part of `npm run build`, so `prepare` runs it too: a
  * checkout, a git-dependency install (the mcp host) and the desktop package
  * all end up with the layer. The Docker image builds it in a stage of its own
  * (Dockerfile `kit`).

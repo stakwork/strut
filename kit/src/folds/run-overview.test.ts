@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { foldRunOverview, type OverviewEvent } from "./run-overview";
+import { foldRunOverview, type OverviewEvent } from "./run-overview.js";
 
 const T0 = Date.UTC(2026, 9, 18, 12, 0, 0);
 const ev = (s: number, type: string, path: string, extra: Partial<OverviewEvent> = {}): OverviewEvent => ({

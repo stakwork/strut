@@ -1,0 +1,15 @@
+{
+  "//": "Type-checks strut/views (src/apps/views, plans/apps.md §3.3) against the kit: its own src first for @/, then the kit's; bare packages from the kit's install. `npx tsc -p kit/tsconfig.views.json` — no app build checks types yet (§12).",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "@/*": ["../src/apps/views/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/views/src/**/*"]
+}

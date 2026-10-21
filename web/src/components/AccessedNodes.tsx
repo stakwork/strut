@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import * as api from "../api";
 import { errorMessage } from "../helpers";
 import { nodeTypeFilter } from "../storage";
-import { ALL_NODE_TYPES, filterNodes, nodeLabel, nodeTypeCounts, touchSummary, type TouchedNode } from "../accessed-nodes";
+import { ALL_NODE_TYPES, filterNodes, nodeLabel, nodeTypeCounts, touchSummary, type TouchedNode } from "@strut/kit/folds";
 import { ValueFields } from "./ValueFields";
 
 // ── The Nodes section of the run flyout ────────────────────────────────────

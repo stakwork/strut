@@ -67,16 +67,38 @@ React 19, Tailwind 4, shadcn/ui at `@/components/ui/<name>` and `cn` at
 `@tanstack/react-query`, `@tanstack/react-table`, `@tanstack/react-virtual`,
 `@dnd-kit/*`, `date-fns`, `lodash`, `zod`, `react-hook-form`, `papaparse`,
 `mathjs`, `simple-statistics`, `fuse.js`, `react-markdown` + `remark-gfm`,
-`sonner`, `cmdk`. An import outside this set is a build error naming the set
-— ask for a workflow instead. A `.css` import of a kit stylesheet
-(`@xyflow/react/dist/style.css`) is appended raw.
+`sonner`, `cmdk`, `three` + `@react-three/fiber`, `leaflet` + `react-leaflet`
+(tiles from a domain in `csp.resourceDomains`). An import outside this set is
+a build error naming the set — ask for a workflow instead. A `.css` import of
+a kit stylesheet (`@xyflow/react/dist/style.css`, `leaflet/dist/leaflet.css`)
+is appended raw. Each app keeps only what it uses: three icons are three
+icons, not the library — import what you draw.
 
 **Installed kits** (`app/list` shows them): another app's `src/` imports by
 name — `import { X } from "acme/ui"` resolves to the installed app
 `acme/ui`'s `src/index.ts`, `"acme/ui@v3"` pins a version — and is compiled
-into this app's bundle, running under THIS app's grants. `strut/views` —
-strut's own components (a run graph, a timeline, a transcript, a launch
-form) — is such an app, when this strut has it.
+into this app's bundle, running under THIS app's grants.
+
+**`strut/views`** is strut's own: its components for a run, its log, a
+transcript, a workflow's input, a graph node — import them rather than
+drawing a run by hand:
+
+```tsx
+import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
+<LaunchForm workflow="score" />            // the input: block, deduped launch, last run
+<RunList workflow="score" onSelect={(r) => setRunId(r.runId)} />
+<RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step
+<RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
+```
+
+Also `RunStatus`, `Transcript` (pass `messages`), `ArtifactView` (a run's
+file through `run/files`), `NodeCard`, `NodeSearch`, `NodeGraph`. They run on
+YOUR grants: the run views need the workflow (and a child run's) in
+`grants.workflows`; the graph views need `graph/graph-get-batched`,
+`graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
+`grants.steps`. Its own page is a gallery of all of them. The pure folds
+under them — `foldRunOverview`, `transcriptToEntries`, `projectWithLaunches`
+— come from `@strut/kit`, for a run drawn your own way.
 
 **The hooks** come from `@strut/kit`, each naming a `run/*` step, over one
 tool (`step_run`) the host relays to strut:

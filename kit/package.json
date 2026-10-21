@@ -1,8 +1,11 @@
 {
   "name": "@strut/kit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "The app kit for strut apps (plans/apps.md \u00a73): the frozen vendor layer every app build resolves against, the base stylesheet, the bootstrap and the hooks over one tool, step_run.",
   "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
   "license": "MIT",
   "files": [
     "dist",
@@ -18,6 +21,10 @@
       "types": "./dist/bootstrap.d.ts",
       "import": "./dist/bootstrap.js"
     },
+    "./folds": {
+      "types": "./dist/folds/index.d.ts",
+      "import": "./dist/folds/index.js"
+    },
     "./node": {
       "types": "./dist/node.d.ts",
       "import": "./dist/node.js"
@@ -31,7 +38,7 @@
     "build:vendor": "tsx scripts/build-vendor.ts",
     "build:lib": "tsx scripts/build-lib.ts",
     "shadcn": "shadcn add --all --overwrite --yes",
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --test src/*.test.ts src/folds/*.test.ts src/folds/run-graph/*.test.ts"
   },
   "peerDependencies": {
     "@tanstack/react-query": "5.104.5",
@@ -62,15 +69,18 @@
     "@hookform/resolvers": "6.0.0",
     "@modelcontextprotocol/client": "2.3.1",
     "@modelcontextprotocol/core": "2.3.1",
+    "@react-three/fiber": "9.8.2",
     "@tanstack/react-query": "5.104.5",
     "@tanstack/react-table": "9.3.1",
     "@tanstack/react-virtual": "3.14.21",
     "@types/d3": "7.4.3",
+    "@types/leaflet": "1.9.22",
     "@types/lodash": "4.17.27",
     "@types/node": "22.19.0",
     "@types/papaparse": "5.5.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/three": "0.186.0",
     "@xyflow/react": "12.12.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
@@ -81,6 +91,7 @@
     "fuse.js": "7.5.0",
     "happy-dom": "21.0.4",
     "immer": "11.2.7",
+    "leaflet": "1.9.4",
     "lodash": "4.18.1",
     "lucide-react": "1.61.0",
     "mathjs": "15.2.0",
@@ -92,6 +103,7 @@
     "react-dom": "19.3.1",
     "react-hook-form": "7.90.0",
     "react-is": "19.3.1",
+    "react-leaflet": "5.0.0",
     "react-markdown": "10.1.0",
     "react-resizable-panels": "4.14.8",
     "react-router": "8.5.0",
@@ -101,6 +113,7 @@
     "simple-statistics": "7.12.1",
     "sonner": "2.0.8",
     "tailwind-merge": "3.7.0",
+    "three": "0.186.1",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vaul": "1.1.2",

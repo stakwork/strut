@@ -12,6 +12,8 @@
 // of everything before it, where its memory restarts (plans/compaction.md).
 // `[restart-notification]` (src/ai/notifier.ts) is the fifth: the server
 // restarted mid-turn; the builder was woken to go on from the transcript.
+// Which messages are notices at all is the transcript fold's (@strut/kit).
+import { NOTICE_PREFIXES, isNotice } from "@strut/kit/folds";
 
 export type ClaimStatus = "supported" | "refuted" | "unknown" | "stale";
 
@@ -78,17 +80,9 @@ export interface ParsedNotice {
   notes: string[];
 }
 
-const PREFIXES = {
-  "[run-notification]": "run",
-  "[verify-notification]": "verify",
-  "[elicitation-response]": "elicitation",
-  "[compaction]": "compaction",
-  "[restart-notification]": "restart",
-} as const;
+const PREFIXES = NOTICE_PREFIXES;
 
-export function isNotice(text: string): boolean {
-  return Object.keys(PREFIXES).some((p) => text.startsWith(p));
-}
+export { isNotice };
 
 function parseLedger(json: string): Ledger | undefined {
   try {

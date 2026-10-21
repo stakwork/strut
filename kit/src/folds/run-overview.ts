@@ -13,7 +13,14 @@
 // spent. An agent's other tool calls are the event log's business. Pure;
 // tested.
 
-import type { TokenUsage } from "./api";
+/** A model call's tokens (`withUsage`, src/core.ts). */
+export interface TokenUsage {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
 
 export interface OverviewEvent {
   ts: string;

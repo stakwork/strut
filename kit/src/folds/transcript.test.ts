@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { attachResult, groupStatus, transcriptText, transcriptToEntries } from "./transcript";
+import { attachResult, groupStatus, transcriptText, transcriptToEntries } from "./transcript.js";
 
 // Stored AI SDK model messages, as `GET /chat/:id` and a run's
 // `…/transcripts/<path>?full=1` serve them.
@@ -34,7 +34,7 @@ describe("transcript", () => {
   it("folds messages into bubbles and tool chips, results attached to their calls, the system prompt left out", () => {
     const entries = transcriptToEntries(messages);
     assert.deepEqual(
-      entries.map((e) => (e.kind === "tool" ? ["tool", e.groups.map((g) => [g.name, g.calls.length])] : [e.kind, e.content.slice(0, 12)])),
+      entries.map((e) => (e.kind === "tool" ? ["tool", e.groups.map((g) => [g.name, g.calls.length])] : [e.kind, "content" in e ? e.content.slice(0, 12) : e.label])),
       [["user", "Plan it."], ["text", "Looking."], ["tool", [["bash", 2], ["graph_graph_get", 1]]], ["text", "Done."], ["notice", "[run-notific"], ["text", "Noted."]],
     );
     const tool = entries[2]!;

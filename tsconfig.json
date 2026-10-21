@@ -11,8 +11,9 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "sourceMap": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": { "@strut/kit/folds": ["./kit/src/folds/index.ts"] }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "build", "**/*.test.ts", "src/apps/__fixtures__/**", "src/apps/templates/**"]
+  "exclude": ["node_modules", "build", "**/*.test.ts", "src/apps/__fixtures__/**", "src/apps/templates/**", "src/apps/views/**"]
 }

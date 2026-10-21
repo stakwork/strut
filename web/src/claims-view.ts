@@ -2,7 +2,7 @@
 // section in the job timeline and the panel say the same thing, and a test
 // pins it: what each check did on the latest pass, the one line a Verify
 // leaves behind, and where a verdict's locator leads.
-import { artifactKind, isArtifactPath } from "./artifact-view";
+import { artifactKind, isArtifactPath } from "@strut/kit/folds";
 import type { JobRunView, JobVerifyResult, LastVerify, LedgerClaim } from "./api";
 
 export type OutcomeTone = "ok" | "warn" | "bad" | "muted";

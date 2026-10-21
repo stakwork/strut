@@ -3,7 +3,7 @@ import * as api from "../api";
 import { errorMessage } from "../helpers";
 import { formatTokens } from "../context-meter";
 import { CloseIcon } from "../icons";
-import { extractText, transcriptToEntries, type TranscriptMark } from "../transcript";
+import { extractText, transcriptToEntries, type TranscriptMark } from "@strut/kit/folds";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { Transcript } from "./Transcript";
 import { fmtCost } from "./JobTimeline";

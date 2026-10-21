@@ -8,8 +8,8 @@ One source, two builds:
 
 | Build | What | For |
 | --- | --- | --- |
-| **vendor** (`vendor/`) | One frozen browser bundle per specifier in the dependency set (§3.1), the shadcn components at `@/components/ui/*`, and the kit itself, from ONE esbuild call with code splitting — so the page has one React, one react-query, one radix, one zod. Beside them `import-map.json` (specifier → file, what the app build's `appResolver` consults, §2.1), `candidates.json` (the components' Tailwind classes, for the app build's compile, §2.2) and `manifest.json` (the versions). | The app build (`src/apps/build.ts`, work item 1b) |
-| **package entries** (`dist/`) | `@strut/kit` (the hooks, the provider, the client and host contracts — what `web/` will import the folds from once they move here, §3), `@strut/kit/bootstrap`, and `@strut/kit/node` (the app build's server side), as ESM with `.d.ts`; React, react-dom and react-query are optional peers, never installed by a strut that pins the kit. | The app build (`@strut/kit/node`) and the types. A library build for a HOST's own React pages is deferred (§12): a host that wants strut's views renders an app importing `strut/views` |
+| **vendor** (`vendor/`) | A frozen MODULE TREE (kit 0.2): every module the dependency set (§3.1) reaches, the shadcn components at `@/components/ui/*` and the kit's own sources compiled, copied into `files/` as the packages ship them, with each import's resolution and each module's side-effect flag in `modules.json` — so the app build tree-shakes every app from the original modules, and the page has one React, one react-query, one radix, one zod because every import of each resolves to one file. Beside it `import-map.json` (specifier → the module it starts from, what the app build's `appResolver` consults, §2.1), the bundled stylesheet entries, `candidates.json` (every component's Tailwind classes, for `@strut/kit/node`'s `compileStyles`) and `manifest.json` (the versions). | The app build (`src/apps/build.ts`) |
+| **package entries** (`dist/`) | `@strut/kit` (the hooks, the provider, the client and host contracts, the folds and the run graph's layout), `@strut/kit/folds` (the folds alone: no React, no dependency — what `web/` imports), `@strut/kit/bootstrap`, and `@strut/kit/node` (the app build's server side), as ESM with `.d.ts`; React, react-dom and react-query are optional peers, never installed by a strut that pins the kit. | The app build (`@strut/kit/node`) and the types. A library build for a HOST's own React pages is deferred (§12): a host that wants strut's views renders an app importing `strut/views` |
 
 Neither lands in strut's own `node_modules`, which carries no React: the
 kit's dependencies install into `kit/node_modules`. `vendor/` is built by
@@ -19,8 +19,8 @@ Docker image and the desktop package all carry it — AGENTS.md "Running" says
 where each finds it. The kit may later be published as a package strut pins
 exactly (open question 4); `src/apps/kit.ts` looks for `@strut/kit` first. Per the kit split (plans/apps.md §3, 2026-10-21) the kit is **the
 stack and the bridge, nothing else**: strut's own components are `strut/views`,
-an app other apps import (§3.3), and the pure folds move into `kit/src/folds/`
-with work item 6.
+an app other apps import (§3.3, `src/apps/views/`), and the pure folds are
+`src/folds/` here.
 
 ## Build
 
@@ -30,23 +30,36 @@ From a clean checkout:
 cd kit && yarn install --frozen-lockfile --ignore-scripts && yarn build
 ```
 
-`yarn build` is `build:vendor` (esbuild → `vendor/`, ~1 s) then `build:lib`
+`yarn build` is `build:vendor` (esbuild → `vendor/`, ~2 s) then `build:lib`
 (esbuild + `tsc --emitDeclarationOnly` → `dist/`). Both directories are
-gitignored and listed in `files`, so `npm pack` ships them. A CommonJS
-package in the set (`react`, `react-dom`, the jsx runtimes, `lodash`,
-`papaparse` — `CJS_ENTRIES` in `scripts/manifest.ts`) is built through an
-ESM FACADE naming every export the module has at build time, since esbuild
-cannot enumerate a CJS module's exports and would otherwise emit `export
-default module.exports` alone — `import { useState } from "react"` would find
-nothing. The vendor test fails on any other entry that comes out with no
-named exports.
+gitignored and listed in `files`, so `npm pack` ships them.
+
+How the vendor layer is frozen, and why: kit 0.1 shipped one pre-bundled,
+minified chunk per specifier, and an app build cannot tree-shake inside one
+— module boundaries and every package's `sideEffects` were gone, so an app
+that imported three icons carried all of lucide (649 KB) and `Slot` brought
+every radix primitive; a small app was 1.2 MB, the 1c benchmark app 2.48 MB.
+Now one esbuild pass (production, platform browser) resolves every import
+once and records it; the app build hands esbuild those modules with the
+recorded `sideEffects` (esbuild reads `package.json` for neither
+`sideEffects` nor `type` when a plugin names the path, so a `type: module`
+package's `.js` is frozen as `.mjs` to keep its interop), and CommonJS
+packages are interoped from source — no facades. The app build also rewrites
+`import { z } from "zod"` to `import * as z` (esbuild keeps every member of a
+re-exported namespace, all zod's locales included), scans only the kit
+modules it bundled for Tailwind classes, and minifies the stylesheet. A small
+app is now ~0.6 MB (react-dom 210 KB, the MCP Apps SDK and its zod schemas
+~250 KB of it). Maps and 3D are in the set since 0.2: an app that does not
+import them carries none of them.
 
 Tests run with the repo's `npm test` (they are in the root `test` list) or
 `yarn test` here; either needs this directory's install. The vendor test builds
-the whole layer into a temp dir and checks every import-map entry exists, that
-each shared module (React, react-query, zod, radix's dismissable layer,
-react-router) is in exactly one output, and that the recorded versions are
-`package.json`'s exact pins.
+the whole layer into a temp dir and checks every import-map entry is a module
+of the tree, every recorded link points into it, each shared module (React,
+react-query, zod, radix's dismissable layer, react-router) is in it once,
+the `sideEffects` and `type` rules, and that the recorded versions are
+`package.json`'s exact pins. `npx tsc -p tsconfig.views.json` type-checks
+`strut/views` (`../src/apps/views`) against the kit.
 
 ## What is in it
 
@@ -77,6 +90,15 @@ react-router) is in exactly one output, and that the recorded versions are
   reports its size (`ui/notifications/size-changed`); turns render failures and
   `window.onerror` into `app/report-error { message, stack?, componentStack? }`,
   once per distinct error.
+- **`src/folds/`** — the folds (plans/apps.md §3), pure and dependency-free,
+  one copy for strut's UI, `strut/views` and any app: `run-overview.ts`
+  (`foldRunOverview`: status, cost, model calls, the timeline rows),
+  `transcript.ts` (`transcriptToEntries`), `accessed-nodes.ts`
+  (`foldAccessedNodes`), `artifact-view.ts` (`artifactKind`,
+  `parseWalkthrough`, …), and `run-graph/` — the run graph's model ported
+  from hive with its tests (the projection of a run's log into graph calls,
+  replay, lineage, walk, peer refs, node text; `layout.ts` needs d3, so it is
+  exported from `@strut/kit` and not from `@strut/kit/folds`).
 - **`src/styles/base.css`** — Tailwind, shadcn's tokens, and the mapping of
   MCP Apps `hostContext.styles.variables` onto them: every token is
   `var(--color-…, <shadcn default>)`, read off the inline variables the

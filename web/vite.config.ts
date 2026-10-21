@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import preact from "@preact/preset-vite";
+import { fileURLToPath } from "node:url";
 
 // Pass SSE responses through unbuffered so events stream in real time.
 const sseConfigure = (proxy: any) => {
@@ -22,6 +23,9 @@ export default defineConfig({
   // runs under Preact (the rest of the app stays vanilla Preact).
   resolve: {
     alias: {
+      // The folds live in the kit (plans/apps.md §3): one copy, imported
+      // from source — they are pure TS with no dependencies.
+      "@strut/kit/folds": fileURLToPath(new URL("../kit/src/folds/index.ts", import.meta.url)),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react/jsx-runtime": "preact/jsx-runtime",

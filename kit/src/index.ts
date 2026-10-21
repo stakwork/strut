@@ -1,6 +1,7 @@
 /** `@strut/kit` (plans/apps.md §3): the hooks over one tool, `step_run`, the
  *  provider they run under, the client and host contracts an app's bridge
- *  implements and a host's own page supplies. React, react-dom and
+ *  implements and a host's own page supplies, and the folds (also alone as
+ *  `@strut/kit/folds`, for a page with no React). React, react-dom and
  *  react-query are peers. The bootstrap — the bridge itself — is
  *  `@strut/kit/bootstrap`; Node-side helpers for the app build are
  *  `@strut/kit/node`. */
@@ -24,3 +25,5 @@ export {
   type ErrorBoundaryProps, type ErrorReport, type ErrorReporter,
 } from "./error-boundary.js";
 export { applyHostContext } from "./apply-host-context.js";
+export * from "./folds/index.js";
+export * from "./folds/run-graph/layout.js";

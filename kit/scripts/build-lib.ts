@@ -13,7 +13,7 @@ export async function buildLib({ outdir = join(kitDir, "dist") } = {}) {
   rmSync(outdir, { recursive: true, force: true });
   await build({
     absWorkingDir: kitDir,
-    entryPoints: ["src/index.ts", "src/bootstrap.ts", "src/node.ts"],
+    entryPoints: ["src/index.ts", "src/bootstrap.ts", "src/folds/index.ts", "src/node.ts"],
     bundle: true,
     format: "esm",
     platform: "neutral",
