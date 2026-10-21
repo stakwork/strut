@@ -101,11 +101,13 @@ async function getDefault(): Promise<Strut> {
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "job" | "orchestrator" | "builder" | "automation"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.
       ...(bootEnv()["STRUT_PUBLIC_URL"] ? { publicUrl: bootEnv()["STRUT_PUBLIC_URL"] } : {}),
+      // Where every run's events are POSTed, the envelope only (src/events-sink.ts).
+      ...(bootEnv()["STRUT_EVENTS_SINK"] ? { eventsSink: { url: bootEnv()["STRUT_EVENTS_SINK"]! } } : {}),
       // The host's delta for the shipped workflows (STRUT_HOST_CONFIG).
       ...hostConfigFromEnv(),
     };

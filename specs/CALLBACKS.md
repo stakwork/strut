@@ -286,6 +286,52 @@ kind: "proposal", id, url, state }` (§5). Absent when the run proposed
 nothing; `GET …/runs/:runId/proposals` is the same list for a host that
 missed the callback.
 
+## 7. Every run's events — a listener set once (`STRUT_EVENTS_SINK`)
+
+Everything above is asked for per launch and carries a result to the caller
+that asked. A server that wants to *watch* strut — draw which workflow is
+running, which step lit up, how long it took, what it spent — across every
+run, whoever launched it, is set once on the deployment:
+
+```bash
+STRUT_EVENTS_SINK=https://viz.example/strut?token=s3cret
+```
+
+(`createStrut({ eventsSink: { url } })` for a host that embeds strut.) Strut
+then POSTs every run's events there, batched — about once a second, or every
+100 events — as:
+
+```json
+{
+  "event": "run.events",
+  "events": [
+    { "workflow": "review-pr", "runId": "1790179200000", "path": "review-pr", "type": "run.start", "ts": "…", "actor": "evan", "workflowHash": "…" },
+    { "workflow": "review-pr", "runId": "1790179200000", "path": "review-pr/review", "type": "step.start", "stepType": "agent", "ts": "…" },
+    { "workflow": "review-pr", "runId": "1790179200000", "path": "review-pr/review/001-bash", "type": "step.end", "stepType": "tool:bash", "durationMs": 812, "toolCallId": "…", "ts": "…" },
+    { "workflow": "review-pr", "runId": "1790179200000", "path": "review-pr/review", "type": "step.end", "stepType": "agent", "durationMs": 48100, "modelCalls": 7, "usage": { "inputTokens": 51200, "outputTokens": 2100, "totalTokens": 53300 }, "cost": 0.19, "ts": "…" },
+    { "workflow": "review-pr", "runId": "1790179200000", "path": "review-pr", "type": "run.end", "ts": "…" }
+  ]
+}
+```
+
+Each event is the **envelope** of the one in the run's log: `workflow`,
+`runId`, `path`, `type`, `ts`, `stepType`, `durationMs`, `iteration`, what a
+model-calling step spent (`modelCalls`, `usage`, `cost` — a run's spend is
+their sum over its `step.end`s), which version ran (`workflowHash`,
+`stepVersion`, `subflow`), who and what for (`actor`, `principal`, `job`,
+`origin`, `automation`, `parentRunId`, `verify`), a tool call's `toolCallId`,
+and on a failure `error.message`. **Never** a step's `input`, `output`,
+transcript, params, the nodes it touched, or a stack: nothing the workflow
+handled leaves on it. When you need more, read the run by its id
+(`GET /workflows/:name/runs/:runId/events`, with the key).
+
+Batches land in order (one POST in flight at a time). This is telemetry, not
+the record: a delivery that fails is retried briefly and then **dropped**, and
+a listener that cannot keep up loses the oldest queued events — nothing in a
+run ever waits on it. The log in strut is the source of truth; backfill from
+it when you missed something. The URL is treated as a credential: strut logs
+its origin only.
+
 ## Good to know
 
 - **The URL is your secret.** Put a token in it, like the example. Strut

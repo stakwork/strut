@@ -220,6 +220,19 @@ export {
   type PeerRunResult,
 } from "./peers.js";
 
+// The events sink: every run's events, the envelope only, batched to one
+// URL (`createStrut({ eventsSink })`, STRUT_EVENTS_SINK). The slimmer is
+// what a host's own `services.onRunEvent` listener would apply too.
+export {
+  createEventsSink,
+  slimRunEvent,
+  SINK_FIELDS,
+  type EventsSink,
+  type EventsSinkOptions,
+  type SinkBatch,
+  type SinkEvent,
+} from "./events-sink.js";
+
 // Standard capabilities — the http + secrets + artifacts + shell services adapter steps build on.
 export {
   standardServices,
