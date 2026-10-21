@@ -61,6 +61,16 @@
 > and a code job's agent alike; a build on a peer tags its deliverable by
 > peer; the build warns on a global `fetch` (§8, §2.1, §11). Mine, proposed.
 >
+> **The kit split** (2026-10-21, mine, proposed): strut's kit, `@strut/kit`,
+> is the STACK and the BRIDGE and nothing else — the vendor layer, the
+> bootstrap, `StrutClient`, the hooks, the pure folds — so it knows no
+> deployment. **A kit a deployment shares is an app other apps import** by
+> name (§3.4): no new kind, no new store, one resolver rule. Strut's own
+> components (`RunGraph` first) are `strut/views`, an app strut seeds that
+> the benchmark app imports and the tweet app never sees (§3.3). The kit's
+> library build for a host's own pages is deferred (§12): a host that wants
+> strut's views renders an app.
+>
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
 > is the tree hash shared with packages and the kit is out of it (§1.3);
@@ -157,7 +167,7 @@ decide, and why; each is open.
 | What an app is | **A directory with an `app.yaml`** (ruled): sources, styles, assets and SQL migrations, laid out like a Vite + shadcn project (§1.1). Not a run artifact, since an app spans runs, and not a field on a workflow, since one app drives several workflows (OpenHealth uses four) |
 | Where an app lives | **In the workspace**, published as a versioned object, **or in a job's directory** (ruled), as a live directory the job's agent edits. One build, one kit, one set of tools, both homes (§1.2, §6). A job's app can be published to the workspace. Either way the files are a directory under `dataDir`; the workspace store holds pointers (§1.3) |
 | The stack | **Fixed and opinionated** (ruled): React 19, Tailwind 4, shadcn/ui at the import paths models know, lucide, recharts, d3, React Flow, motion, three, react-router, zustand, react-query, tanstack table, dnd-kit, date-fns, zod, papaparse, leaflet and more (§3.1). One kit version is one frozen set |
-| Shared components | **A strut kit** (ruled): hooks over the bridge plus strut-native components (`RunGraph` first, ported from hive), in the same React and Tailwind stack, so a host's own pages can import them too |
+| Shared components | **A strut kit** (ruled: strut ships strut-native components, the run graph first), in two parts. `@strut/kit` is the STACK and the BRIDGE — the vendor layer, the bootstrap, `StrutClient`, the hooks, the folds — which every app is built against and which knows nothing of any deployment. Strut's components are **`strut/views`**, an app strut seeds that other apps import (§3.3). A deployment shares components the same way: **a kit is an app other apps import** by name, `hive/ui` beside `hive/…` in its package (§3.4). The ruling's "so a host's own pages can import them too" is deferred (§12): a host renders an app |
 | The data stores | **The graph and SQLite** (ruled), beside runs (§4). Runs are history, one row per execution. The graph holds entities and relations that agents, workflows and other apps should also see; the app declares its node and edge types in `app.yaml`. A SQLite file of the app's own holds its tables: many rows, sums, imports, settings. Earlier drafts had a strut-wide "records" store; it is gone |
 | How the fixed set reaches a page | **Compiled in when the app is built**, never fetched at runtime. esbuild bundles the directory and Tailwind 4's pure-JS compiler compiles its classes, both against the kit, into ONE self-contained HTML document. With nothing to fetch, the page works under any host's CSP and offline. A workspace version keeps its document, so a strut upgrade never breaks it |
 | What a build refuses | **Any bare import outside the kit**, a relative import that leaves the directory, URL imports, `dangerouslySetInnerHTML`, `eval` and `new Function`. The errors are the build's result, step-lint's pattern |
@@ -188,9 +198,10 @@ It lives in one of two places:
 self-contained HTML document carrying the MCP Apps bootstrap,
 `dist/index.html`, beside the sources. The kit is a
 frozen set of React, Tailwind, shadcn/ui and the popular chart, graph,
-motion and data libraries, plus strut's own hooks and components (the run
-graph among them). A bare import outside the kit is a build error that
-names the set.
+motion and data libraries, plus strut's own hooks. Strut's components (the
+run graph among them) are `strut/views`, an app other apps import by name,
+and a deployment shares its own the same way (§3.3, §3.4). A bare import
+outside the kit and the installed apps is a build error that names both.
 
 Any MCP Apps host renders the document in a sandboxed frame: strut's own UI
 in an **Apps** section; Claude and the other MCP Apps hosts through
@@ -376,9 +387,16 @@ the directory. A workspace publish calls it (§1.3) and so does `app/build`
     `@/components/ui/button` is the kit's shadcn button unless the app has
     its own, which is shadcn's own model: the components are the project's.
   - A **bare specifier** resolves to the kit's vendor file when it is in the
-    kit's import map (§3.1). Anything else is an error that names the set:
+    kit's import map (§3.1).
+  - A bare specifier that **names an installed app** (`strut/views`,
+    `hive/ui`; `hive/ui@v3` pins a version, else the active one) resolves
+    to that app's `src/` — `src/index.ts`, or the path after the name — and
+    is compiled into THIS app's bundle: a kit is an app other apps import
+    (§3.4). A cycle is an error naming the chain.
+  - Anything else is an error that names the set and the kits:
     `"lodash-fp" is not in the app kit (v1). Available: react, recharts, …
-    For work the kit cannot do, write a workflow and call it with useLaunch`.
+    Installed kits: strut/views, hive/ui. For work the kit cannot do, write
+    a workflow and call it with useLaunch`.
   - **`http(s):` imports** are refused.
 
   Resolution never consults `node_modules`, so a host's own React or zod
@@ -456,16 +474,18 @@ warning.
 
 ## 3. The kit
 
-The kit lives in `kit/` in this repo, with its own `package.json`. It has
-one source and two builds:
-- **The vendor layer:** the frozen browser bundles of the dependency set
-  plus the kit itself. This is what §2 resolves against. It is an artifact
-  of the kit's build, not of `npm install`, so strut's own install carries
-  no React.
-- **The library:** the hooks and components, with React as a peer, for a
-  host's own pages. Hive's `package.json` already lists this exact stack
-  (React 19, Tailwind 4, shadcn, framer-motion, d3 and react-query), so hive
-  can import the kit directly.
+The kit lives in `kit/` in this repo, with its own `package.json`, and it
+is **the stack and the bridge, nothing else**: the vendor layer of §3.1,
+the bootstrap of §2.4, `StrutClient` and the hooks of §3.2, and the pure
+folds (`run-overview.ts`, `transcript.ts`, `accessed-nodes.ts`,
+`artifact-view.ts`, moved from `web/src/` into `kit/src/folds/`, which
+`web/` then imports — one copy). Nothing in it knows what a benchmark or an
+invoice is, and nothing in it renders a run: strut's own components are an
+app, `strut/views` (§3.3), that an app imports when it wants them, as it
+imports a deployment's kit (§3.4). One build: **the vendor layer**, the
+frozen browser bundles of the dependency set plus the kit itself, is what
+§2 resolves against. It is an artifact of the kit's build, not of `npm
+install`, so strut's own install carries no React.
 
 ### 3.1 The dependency set
 
@@ -482,7 +502,7 @@ tables, drag and drop, node graphs.
 | Data | `@tanstack/react-query`, `@tanstack/react-table`, `@tanstack/react-virtual`, `@dnd-kit/core` + `@dnd-kit/sortable`, `date-fns`, `lodash`, `zod`, `react-hook-form` + `@hookform/resolvers`, `papaparse`, `mathjs`, `simple-statistics`, `fuse.js` |
 | Content | `react-markdown` + `remark-gfm` |
 | Maps | `leaflet` + `react-leaflet` (tiles from a domain the manifest declares) |
-| Strut | `@strut/kit`: §3.2 and §3.3 |
+| Strut | `@strut/kit`: the bridge (§3.2) and the folds. Strut's components are not in it: they are `strut/views`, an app (§3.3) |
 
 A new library means a new kit version. Workspace app versions keep the
 documents they were built with; a job's app builds on the kit its strut
@@ -513,9 +533,18 @@ supplies it. Every hook names a STEP TYPE:
 polling OpenHealth does today; push comes later (§12). A graph write
 invalidates the `useNodes` queries for its type.
 
-### 3.3 Strut components — only for strut's own concepts
+### 3.3 `strut/views` — strut's components, an app other apps import
 
-Generic UI is shadcn's and the chart libraries'; the kit writes none of it.
+Generic UI is shadcn's and the chart libraries'; strut writes none of it.
+What strut writes is the views of its OWN concepts — a run, its events, an
+agent's transcript, a workflow's `input:` block, a graph node — and it
+ships them the way a deployment ships its own (§3.4): as an app,
+`strut/views`, seeded at boot by `createStrut` from `src/apps/views/` by
+tree hash, the way `job.yaml` is seeded by content hash (`views: false`
+seeds nothing). Its page is the gallery of its components, rendered over
+fixtures, so a person and the builder can see them. The benchmark app
+imports it; the tweet app never sees it; nothing in strut's core depends
+on it.
 
 | Component | From |
 | --- | --- |
@@ -528,12 +557,12 @@ Generic UI is shadcn's and the chart libraries'; the kit writes none of it.
 | `NodeCard`, `NodeSearch`, `NodeGraph` (React Flow over a node's neighborhood) | `graph/graph-get-batched`, `graph/graph-search`, `graph/graph-neighbors` |
 | `ClaimsBadge` | The ledger (§11) |
 
-- **The pure folds move** from `web/src/` into `kit/src/core/`, and `web/`
-  imports them from there. That leaves one copy for strut's UI, the kit and
-  hosts, and the folds' tests move with them.
+- **The pure folds are the kit's**, not the views': `kit/src/folds/`
+  (§3), imported by `web/`, by `strut/views` and by any app that wants to
+  draw a run its own way. The folds' tests move with them.
 - **The run graph's data path moves into strut.** Hive builds it from the
   run log and hydrates its nodes through stakgraph's `/api/hive/query` on
-  the swarm. In the kit:
+  the swarm. In `strut/views`:
   - its calls come from `run/events` through the accessed-nodes fold;
   - node details come from `graph/graph-get-batched` (up to 50 refs per
     call) through `step_run`, on both engines;
@@ -542,13 +571,52 @@ Generic UI is shadcn's and the chart libraries'; the kit writes none of it.
   - a peer-tagged ref is badged and never opened, which is strut's rule.
 
   Hive's layout, lineage, replay and branch tree come over unchanged.
-- **Strut's own Preact UI** can render kit components later through
-  `preact/compat` (§12), so one `RunGraph` serves everywhere. v1 does not
-  need it: strut's UI hosts apps, and each app brings its own React.
+- **Strut's own Preact UI** can render `strut/views` components later
+  through `preact/compat` (§12), so one `RunGraph` serves everywhere. v1
+  does not need it: strut's UI hosts apps, and each app brings its own
+  React.
 - **`LaunchForm` is the routine's face** (§5.1): the workflow's `input:`
   block as a form, a button, the in-flight run it dedupes onto, and the
   last run's status. An app that only lists its routines and renders their
   output is a complete app.
+
+### 3.4 A kit is an app other apps import
+
+A deployment's apps share components, and the plan's first draft gave them
+no way to: every app imported the one kit, and the one kit was strut's.
+The generic answer needs **no new kind, no new store and no new route**: a
+kit is an app, and an app may import another app's `src/` by name.
+
+- **The import.** `import { EscalationBadge } from "hive/ui"` resolves to
+  the installed app `hive/ui`'s `src/index.ts`; `"hive/ui/charts"` to
+  `src/charts.ts` or `src/charts/index.ts`; `"hive/ui@v3"` pins that
+  version, else the ACTIVE one — the `type: name@vN` pattern. The sources
+  are compiled into the importing app's bundle (tree-shaken), so the
+  document stays one file and nothing loads at runtime.
+- **A kit is an ordinary app.** `apps/ui/` in hive's distro package, with
+  an `app.yaml` that needs no grants and an `App.tsx` that is the gallery
+  of its components over fixtures, which is how every design system
+  already works; versioned, forked and updated as any app (§11); seeded
+  by strut for `strut/views`. The sources it imports are the kit's and
+  other apps'; its own `src/` may not import the app that imports it — a
+  cycle is a build error naming the chain.
+- **The importer's grants apply.** The imported code runs in the importing
+  app's frame as the importing app: a kit has no grants of its own that
+  travel, and a component that launches a workflow launches it on the
+  importer's `grants.workflows`, or fails the call like any ungranted step.
+- **The build treats imported sources as its own.** The AST checks (§2.1)
+  and the Tailwind candidate scan (§2.2) run over them, and
+  `dist/build.json` records each imported app's name and hash beside the
+  kit's, so `app/get` reports `stale` when a kit it imports has moved. An
+  update to `hive/ui` rebuilds nothing by itself; the next `app/build` or
+  publish picks it up, as a kit upgrade does (§1.3).
+- **In a package** (`marketplace.md` §1, §2), a kit travels as the app it
+  is. `buildPackage`'s closure walks an app's imports as it walks its
+  grants: a kit in the same package is an item, one in another package is
+  a `requires.packages` pin, and an import nobody installed fails the
+  build naming the package.
+- **The prompt** (`App.md`, §8) lists the installed kits with one line
+  each, read at build time from `app/list`; the build error names them.
 
 ## 4. Data — runs, the graph, the app's own SQLite
 
@@ -909,9 +977,10 @@ neither needs a strut change per host, and both end at `/mcp`:
   and read the app as a resource. Then every MCP server's apps work there,
   not only strut's.
 
-A host's own pages may also import the kit's library build and give it a
-client over the host's routes. Hive's OpenHealth page could swap its run
-graph for the kit's. That is adoption.
+A host that wants strut's views in a page of its own renders an app that
+imports `strut/views` (§3.3); a library build of the kit for a host's own
+React pages is deferred (§12). Hive's OpenHealth page becomes such an app
+(§10). That is adoption.
 
 ## 8. Authoring — the builders and the job agent are the developers
 
@@ -990,7 +1059,8 @@ ride.
   same `context/concept` step (`plans/builder-job.md` §1) — one prompt for
   every author. It covers:
   - the layout;
-  - the kit's imports, the hooks and the components;
+  - the kit's imports and the hooks, and the installed kits — `strut/views`
+    first — with how to import one (§3.4);
   - §4.2's table;
   - the grant rules;
   - additive migrations;
@@ -1073,7 +1143,10 @@ person's authority over the tools its grants name.
 | **Virality tracker** | `tweet-poll` (`http` plus an `X_BEARER_TOKEN` secret, which the builder's `request_secret` asks for). "Track this tweet" creates an automation on it with `input: { tweetId }`. "Why did this take off?" is a routine, `explain-tweet`: a one-step workflow around `llm`, launched by the button and never by the chart (§5.1) | none | none. **The automations are its state** (one per tracked tweet), and each poll's output is a data point: `run/list { automation }` is the series | recharts, motion, simple-statistics (the growth rate), `useAutomations`, `useLaunch` |
 
 Every row is built from what strut has, plus `graph/find`, declared graph
-types and the app's SQLite file.
+types and the app's SQLite file. `RunList`, `LaunchForm`, `RunGraph`,
+`RunTimeline`, `NodeGraph`, `NodeSearch` and `NodeCard` are `strut/views`
+imports (§3.3), which the first and third rows take and the second and
+fourth never load; the rest of each Kit cell is the stack.
 
 ## 11. How it meets the rest of strut
 
@@ -1145,7 +1218,10 @@ types and the app's SQLite file.
   an `app_` tool for it; its CALLS go through `/mcp` from day one, §7.2),
   and **`ui/message` from a job's app in strut's UI**, which has no send
   box for jobs. Both need a "continue this job" door.
-- **Kit components in strut's own Preact UI** (`preact/compat`).
+- **`strut/views` components in strut's own Preact UI** (`preact/compat`).
+- **A library build of the kit** for a host's own React pages, with React
+  as a peer. A host that wants strut's views renders an app importing
+  `strut/views`; the folds are importable from `@strut/kit` already.
 - **`meta/*` twins** of the builder's app tools. The steps are reachable
   already.
 
@@ -1208,14 +1284,18 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    tools with their `_meta.ui.resourceUri`, so an MCP Apps host opens an
    app a model names (the app-only tool itself landed in item 1). By hand, have Claude render an app
    from strut's `/mcp`.
-6. **Strut components.**
-   - Move the folds to `kit/src/core/`, with `web/` importing them.
-   - `RunTimeline`, `Transcript`, `LaunchForm`, `ArtifactView`, `NodeCard`,
+6. **Kits as apps, and `strut/views`.**
+   - The resolver's installed-app rule (§3.4): the name, the `@vN` pin,
+     the cycle check, imported sources through the AST checks and the
+     Tailwind scan, the imported hashes in `dist/build.json` and the
+     `stale` mark; `buildPackage`'s closure walking imports.
+   - Move the folds to `kit/src/folds/`, with `web/` importing them.
+   - `src/apps/views/`, seeded at boot (`views: false`): the gallery page,
+     `RunTimeline`, `Transcript`, `LaunchForm`, `ArtifactView`, `NodeCard`,
      `NodeSearch` and `NodeGraph`.
    - `RunGraph` ported from hive over `run/events` and
      `graph/graph-get-batched`.
    - The rest of §3.1 (maps, 3D).
-   - The kit's library build.
 7. **Automations and app claims.** `automation/*` under `ctx.app`
    (`grants.automations` as the scope, the viewer's click as the approval),
    the app subject kind and a render check. By hand, build the virality
@@ -1230,7 +1310,11 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - **The build.** A good directory gives one document, with relative
     imports and `@/` overrides resolved. A non-kit import, an import that
     leaves the directory, `dangerouslySetInnerHTML` and `eval` are each
-    refused with the reason named; a `fetch(` call warns, naming the hook. The same inputs give the same bytes, into
+    refused with the reason named; a `fetch(` call warns, naming the hook.
+    An import of an installed app resolves to its `src/`, `@vN` to that
+    version, a cycle is refused naming the chain, an import of an app
+    nobody installed fails naming the package, and the imported app's hash
+    lands in `dist/build.json`. The same inputs give the same bytes, into
     `dist/`; the hash covers every file but `data.db` and `dist/`, is the
     same with any kit, and equals the package digest `marketplace.md`
     computes over the directory.

@@ -162,6 +162,10 @@ requires:
   manifest declares nothing about it. The alternative — a package that IS
   an app, `src/` at its root — was considered and dropped: two shapes for
   one thing, when a package of zero or several apps is the common case.
+  **An app may be a KIT** — components the package's other apps, or anyone's,
+  import by the app's name (`apps.md` §3.4): `hive/ui` is `apps/ui/` beside
+  `apps/climb/`, and nothing in the format says so, because nothing needs
+  to.
 - **A Concept's record is its stamp.** A Concept has no version record;
   its node carries `unique_source_id = pkg/<package>/<file>@<hash>`
   (`seedConcepts`), and the installed directory stays under
@@ -219,7 +223,10 @@ steps?, apps?, concepts? })` writes the directory:
    digest refuses the build); without one, the build is refused naming it
    — package it under your prefix, or install it from its package. Core
    and lib types are recorded nowhere, an app's `graph/*`, `run/*` and
-   `sqlite/*` grants among them. A closure that isn't `resolvable`
+   `sqlite/*` grants among them. **An app's IMPORTS of other apps** are
+   walked the same way (`apps.md` §3.4): a kit under the prefix is an item,
+   one outside it a pin, `strut/views` — strut's own seed — recorded
+   nowhere, like a core step. A closure that isn't `resolvable`
    (a templated `subflow` or grant) is refused, naming the step, unless
    `workflows` / `steps` list what it reaches. A named app itself goes in
    whole — its active version's directory as `materializeAppVersion` gives
@@ -917,7 +924,10 @@ keyed on one workflow's internals, `apps.md`'s opening problem — becomes
 workflows it drives, so hive#5573's `BENCHMARK_RUN_VIEWS` escape hatch
 goes and a benchmark's UI ships with its workflows in the same channel
 commit. Hive renders it through the `apps.md` §7.4 contract and changes
-nothing per benchmark after that.
+nothing per benchmark after that. The components hive's apps share — the
+escalation badge every tracker wants, the score tile every benchmark
+wants — are `apps/ui/` in the same distro, a kit (`apps.md` §3.4), which
+each app imports as `hive/ui`.
 
 **The services are ported, not packaged.** A package cannot carry a live
 object, and a distro does not try. Per lab service:

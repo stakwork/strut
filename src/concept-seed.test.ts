@@ -70,6 +70,20 @@ describe("concept files (pure)", () => {
     assert.ok(job.includes('graph_graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "the tool the agent calls");
     assert.ok(job.includes("- Explore\n"));
   });
+
+  it("renders the kinds alone (docs: false) for an agent that routes by them, with no opener when it has no tool, and nothing when there are no kinds", () => {
+    const page = { name: "Job", docs: "The job agent's instructions.", children: [{ name: "Explore", description: "Finding out." }] };
+    const kinds = renderConceptSection(page, "", { docs: false });
+    assert.match(kinds, /^Workspace knowledge — the "Job" Concept/);
+    assert.ok(kinds.includes("- Explore — Finding out."));
+    assert.ok(!kinds.includes("The job agent's instructions.") && !kinds.includes("(no docs)"), "the page's docs are not for this reader");
+    assert.ok(!kinds.includes("OPEN ITS PAGE") && !kinds.includes("node_type"), "no way to open a page is named");
+    const opener = renderConceptSection(page, "graph_graph_get", { docs: false });
+    assert.ok(opener.includes('A kind\'s page — graph_graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "with a tool, how to open one — never 'follow its convention'");
+    assert.ok(!opener.includes("OPEN ITS PAGE FIRST"));
+    assert.equal(renderConceptSection({ name: "Job", docs: "x", children: [] }, "", { docs: false }), "", "no kinds, nothing to route by");
+    assert.ok(!renderConceptSection(page, "", { docs: true }).includes("OPEN ITS PAGE"), "with docs and no tool, the docs and the kinds, no opener");
+  });
 });
 
 for (const tb of testBackends()) {
@@ -222,6 +236,10 @@ for (const tb of testBackends()) {
       assert.ok(out.text.includes('graph_graph_get({ node_type: "Concept", name: "<name>"'), "opened with the agent's name for graph-get");
       assert.deepEqual(accessedNodesOf(out)?.map((n) => n.ref_id), [strut["Job"]!.ref_id], "the page it read, never its children");
 
+      const kinds = await run({ name: "Job", docs: false, tool: "" });
+      assert.ok(kinds.text.includes("- Explore — Finding out how something works.") && !kinds.text.includes("To record a new kind"), "docs: false — the kinds alone, the orchestrator's read");
+      assert.ok(!kinds.text.includes("graph_graph_get"), "no tool, no opener");
+      assert.deepEqual(await run({ name: "Workflow Builder", docs: false }), { text: "" }, "no kinds under it, nothing");
       assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "no such page");
       assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no graph");
       const viaRegistry = await runSingleStep("context/concept", await createRegistry([]), { graph: b }, { config: { name: "Job", tool: "graph_get" } });
