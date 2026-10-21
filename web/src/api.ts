@@ -1790,7 +1790,8 @@ export function appDocumentPath(name: string, version: string): string {
 /** The document's bytes, read with the scope's token (`?t=`) — the server
  *  writes the app's identity into the page as it serves it under the token
  *  — else with the UI's own credential. The caller frames the TEXT as a
- *  blob: the page runs in an opaque origin, never on this one. */
+ *  sandboxed frame's srcdoc: the page runs in an opaque origin, never on
+ *  this one. */
 export async function fetchAppDocument(name: string, version: string, token: string): Promise<string> {
   const path = appDocumentPath(name, version);
   const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`);

@@ -8,13 +8,18 @@ import { connectAppHost, type AppHostConnection } from "../app-host";
 // The version's document is a FILE of the version: its files are listed
 // (which mints the read token — `useFileScope`, as for a run's artifacts),
 // `dist/index.html` is fetched under that token (the server writes the
-// app's identity into it as it serves it), and the TEXT is framed as a blob
-// URL in `<iframe sandbox="allow-scripts">` — an opaque origin, never
-// `allow-same-origin`, no `src` that carries a credential. The relay
-// (../app-host) is connected over the frame's window BEFORE the document
-// loads, so the page's `ui/initialize` finds a host; its tools/call go to
-// `/mcp` as they are. The same component will render a job's app in the
-// job timeline and the artifact viewer (work item 2).
+// app's identity into it as it serves it), and the TEXT is framed as the
+// `srcdoc` of `<iframe sandbox="allow-scripts">` — an `about:srcdoc`
+// document with an opaque origin (`location.origin` is "null"), never
+// `allow-same-origin`, no `src` that carries a credential. Not a `blob:`
+// URL: a blob document's `location.origin` is its creator's while its
+// pathname is the whole blob URL, and a JSON-schema validator bundled into
+// the MCP SDK does `new URL(location.origin + location.pathname)` at module
+// time — the bundle died before the page could mount (2026-10-21). The
+// relay (../app-host) is connected over the frame's window BEFORE the
+// document loads, so the page's `ui/initialize` finds a host; its
+// tools/call go to `/mcp` as they are. The same component will render a
+// job's app in the job timeline and the artifact viewer (work item 2).
 
 export function AppHost(props: {
   name: string;
@@ -40,7 +45,6 @@ export function AppHost(props: {
     const frame = frameRef.current;
     if (!frame) return;
     let cancelled = false;
-    let blobUrl: string | null = null;
     let conn: AppHostConnection | null = null;
     setState({ status: "loading" });
     void (async () => {
@@ -57,8 +61,7 @@ export function AppHost(props: {
         });
         if (cancelled) { await conn.close(); return; }
         connRef.current = conn;
-        blobUrl = URL.createObjectURL(new Blob([html], { type: "text/html" }));
-        frame.src = blobUrl;
+        frame.srcdoc = html;
         setState({ status: "ready" });
       } catch (err) {
         if (!cancelled) setState({ status: "error", error: err instanceof Error ? err.message : String(err) });
@@ -68,8 +71,7 @@ export function AppHost(props: {
       cancelled = true;
       connRef.current = null;
       void conn?.close();
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-      if (frame) frame.removeAttribute("src");
+      if (frame) frame.removeAttribute("srcdoc");
     };
     // The token is the scope's; a reload re-fetches the document (a new
     // version was published under the same label only on a rebuild).

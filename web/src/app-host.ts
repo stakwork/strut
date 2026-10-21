@@ -1,7 +1,7 @@
 // ── The app host's relay (plans/apps.md §7.3) ──────────────────────────────
 // Strut's own UI is an MCP Apps host: an app's document (a file of its
-// version, fetched by token and framed as a blob in a sandboxed iframe —
-// components/AppHost.tsx) talks to this page over ext-apps' bridge, and
+// version, fetched by token and framed as the srcdoc of a sandboxed iframe
+// — components/AppHost.tsx) talks to this page over ext-apps' bridge, and
 // the page relays every `tools/call` to strut's MCP door AS IT IS — the
 // MCP SDK's client over Streamable HTTP at `/mcp`, with the session cookie
 // (or the key) and the `x-strut-ui: 1` header the UI sends on every call.

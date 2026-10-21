@@ -913,9 +913,12 @@ is one the same way, with no strut change per host:
 
 1. **Fetch the document.** `GET /apps/:name/:version/files` (the active
    version from `GET /apps`) mints the token; `GET …/files/dist/index.html?t=<token>`
-   is the page with its identity written in. Frame the TEXT as a blob URL
-   in `<iframe sandbox="allow-scripts">` — an opaque origin, never
-   `allow-same-origin`, no `src` that carries a credential.
+   is the page with its identity written in. Frame the TEXT as the `srcdoc`
+   of `<iframe sandbox="allow-scripts">` — an opaque origin, never
+   `allow-same-origin`, no `src` that carries a credential. Not a `blob:`
+   URL: a blob document's `location.origin` is its creator's while its
+   pathname is the whole blob URL, and a validator bundled into the MCP
+   SDK builds a URL from the two at module time — the page never mounts.
 2. **Run the bridge.** ext-apps' `AppBridge` over a `PostMessageTransport`
    on the frame's window, connected BEFORE the document loads, over the MCP
    SDK's `Client` + `StreamableHTTPClientTransport` pointed at `/mcp` with
