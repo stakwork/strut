@@ -13,6 +13,8 @@ on:
     paths:
       - "src/**"
       - "web/**"
+      - "kit/**"
+      - "scripts/check-app-build.mjs"
       - "Dockerfile"
       - ".dockerignore"
       - "package.json"

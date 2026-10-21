@@ -13,7 +13,8 @@
  * package-desktop.mjs, says what was staged — a filesystem workspace the
  * package finds under the data dir is imported into the file at the first
  * boot), else the filesystem workspace; the graph's embedder on only when
- * the embeddings stack came along; bind 127.0.0.1 on an OS-picked port;
+ * the embeddings stack came along; the app build's esbuild binary from
+ * native/ (ESBUILD_BINARY_PATH); bind 127.0.0.1 on an OS-picked port;
  * workspace under the platform app-support dir, models under the platform
  * cache dir, a random API key per launch. `--open` launches the web UI in
  * the default browser, which has dictation built in — the quickest way to
@@ -52,7 +53,8 @@ Env overrides (all optional): STRUT_WORKSPACE, STRUT_CACHE_DIR, STRUT_API_KEY,
 STRUT_HOST, STRUT_PORT, STRUT_WORKSPACE_BACKEND (ladybug when the package
 carries it, else fs), STRUT_GRAPH_DB, STRUT_LADYBUG_EXTENSION_DIR,
 STRUT_GRAPH_EMBEDDINGS, STRUT_SECRET_KEY, STRUT_STT_MODEL,
-STRUT_STT_PARTIAL_MODEL, ANTHROPIC_API_KEY.
+STRUT_STT_PARTIAL_MODEL, ESBUILD_BINARY_PATH (native/esbuild when the
+package carries it), ANTHROPIC_API_KEY.
 
 STRUT_EXIT_ON_STDIN_EOF=1 exits when stdin closes: a host that spawns strut
 with a stdin pipe it never writes to gets it shut down when the host dies,
@@ -99,6 +101,10 @@ if (ladybug) {
   // fulltext-only; the default would try to load MiniLM and fail the boot.
   if (!staged.embeddings) dflt("STRUT_GRAPH_EMBEDDINGS", "off");
 }
+// The app build's esbuild: package-desktop.mjs moves its binary into native/
+// (relocateEsbuild), out of the @esbuild/<platform> package esbuild looks in.
+const esbuildBin = join(nativeDir, os === "win32" ? "esbuild.exe" : "esbuild");
+if (existsSync(esbuildBin)) dflt("ESBUILD_BINARY_PATH", esbuildBin);
 dflt("STRUT_HOST", "127.0.0.1");
 dflt("STRUT_PORT", "0");
 dflt("STRUT_WORKSPACE", join(appSupport, "strut", "workspace"));
