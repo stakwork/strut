@@ -74,6 +74,8 @@ export function RunOverview(props: {
   /** Open a step of this run — the flyout on its top-level step. */
   onOpenStep: (path: string) => void;
   onOpenJob: (job: string) => void;
+  /** Open the app the run was launched for (its chip). */
+  onOpenApp?: (name: string) => void;
 }) {
   const runId = props.events[0]?.runId ?? "";
   const [now, setNow] = useState(Date.now());
@@ -166,6 +168,9 @@ export function RunOverview(props: {
           <span class={`ov-status ov-status-${status}`}>{status}</span>
           {o.job && (
             <button class="ov-job" title={`Open job ${o.job}`} onClick={() => props.onOpenJob(o.job!)}>{o.job}</button>
+          )}
+          {o.app && (
+            <button class="ov-app" title={`Launched by the app ${o.app.name} (${o.app.version})`} onClick={() => props.onOpenApp?.(o.app!.name)}>app · {o.app.name}</button>
           )}
         </div>
         <div class="ov-meta">

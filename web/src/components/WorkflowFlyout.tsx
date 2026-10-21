@@ -72,6 +72,9 @@ export function WorkflowFlyout(props: {
   dirty: boolean;
   /** Every run of the workflow, all versions — the footer's totals. */
   runs: api.RunSummary[];
+  /** The apps that grant this workflow (plans/apps.md §1.3): a chip each. */
+  apps?: Array<{ name: string; title: string }>;
+  onOpenApp?: (name: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -118,6 +121,14 @@ export function WorkflowFlyout(props: {
           </button>
         ))}
       </div>
+      {props.apps && props.apps.length > 0 && (
+        <div class="flyout-apps" title="Apps whose grants name this workflow">
+          <span class="flyout-apps-label">Used by</span>
+          {props.apps.map((a) => (
+            <button key={a.name} type="button" class="app-chip" onClick={() => props.onOpenApp?.(a.name)}>{a.title}</button>
+          ))}
+        </div>
+      )}
 
       {props.tab === "params" && (
         <ParamsPanel params={props.params} onChange={props.onParamsChange} onValidChange={props.onParamsValidChange}

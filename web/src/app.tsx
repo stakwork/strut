@@ -38,6 +38,9 @@ import { PromoteFlyout } from "./components/PromoteFlyout";
 import { JobTimeline, fmtTime } from "./components/JobTimeline";
 import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
+import { AppHost } from "./components/AppHost";
+import { AppGlyph } from "./icons";
+import { appMessage } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
@@ -101,6 +104,17 @@ export function App() {
   // breadcrumb leads back. ?job=<id> deep-links into one. The selected
   // workflow stays underneath as the history panel's filter.
   const [selectedJob, setSelectedJob] = useState<string | null>(initialUrl.get("job"));
+  // Apps (plans/apps.md §7.3): the selected app's page takes the canvas
+  // area, as the job timeline does; ?app=<name> deep-links into one. The
+  // frame reloads when the builder publishes a new version of it.
+  const [apps, setApps] = useState<api.AppListEntry[]>([]);
+  const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
+  const [appQuery, setAppQuery] = useState("");
+  const [appReload, setAppReload] = useState(0);
+  // What the host hands the chat: a draft for its composer (Edit with the
+  // builder), a message to send (an app's ui/message).
+  const [chatDraft, setChatDraft] = useState<{ text: string; id: number } | null>(null);
+  const [chatInbound, setChatInbound] = useState<{ text: string; id: number } | null>(null);
   // The back trail (./nav-trail): where the links you followed came from,
   // newest last, kept in the history entry's state so a reload or the back
   // button restores it. `navRef` says how the next selection change happens —
@@ -246,6 +260,7 @@ export function App() {
     put("run", selectedRun);
     put("v", viewVersion);
     put("job", selectedJob);
+    put("app", selectedApp);
     put("secrets", showSecrets ? "1" : null);
     const qs = p.toString();
     const next = `${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`;
@@ -259,7 +274,7 @@ export function App() {
     ) {
       replaceUrl(next, state);
     }
-  }, [selectedWf, selectedRun, viewVersion, selectedJob, showSecrets, trail]);
+  }, [selectedWf, selectedRun, viewVersion, selectedJob, selectedApp, showSecrets, trail]);
 
   // The back (or forward) button: show what that entry's URL says, with
   // the trail it had.
@@ -277,6 +292,7 @@ export function App() {
       setSelectedWf(wf);
       setSelectedRun(run);
       setSelectedJob(job);
+      setSelectedApp(p.get("app"));
       setVersionPin({ wf: v ? wf : null, v });
     };
     window.addEventListener("popstate", onPop);
@@ -304,6 +320,13 @@ export function App() {
   // The Workflows filter is `GET /workflows?q=`'s matcher: every word must hit
   // the name, the category or the description.
   const matchedWorkflows = useMemo(() => searchWorkflows(workflows, wfQuery), [workflows, wfQuery]);
+  // The Apps filter: the same matcher, over the title and description too.
+  const matchedApps = useMemo(
+    () => searchWorkflows(apps.map((a) => ({ ...a, description: [a.title, a.description].filter(Boolean).join(" ") })), appQuery),
+    [apps, appQuery],
+  );
+  const appEntry = selectedApp ? apps.find((a) => a.name === selectedApp) ?? null : null;
+  const appTitle = (name: string) => apps.find((a) => a.name === name)?.title ?? name;
   const wfGroups = useMemo(() => {
     const byCat = new Map<string, api.WorkflowEntry[]>();
     for (const wf of matchedWorkflows) {
@@ -352,7 +375,9 @@ export function App() {
   // topbar is the job's. `wf` is the workflow the canvas shows — none then,
   // while `selectedWf` stays the history panel's filter.
   const timelineOpen = selectedJob != null && selectedRun == null;
-  const wf = timelineOpen ? null : selectedWf;
+  // A selected app: its page in the canvas area, the topbar its own.
+  const appOpen = selectedApp != null;
+  const wf = timelineOpen || appOpen ? null : selectedWf;
 
   // ── View context: what the canvas + flyout operate on ───────────────────
   // Root view = the selected workflow. When drilled into a run's nested
@@ -417,6 +442,9 @@ export function App() {
     const wfs = await api.listWorkflows();
     setWorkflows(wfs);
   }, []);
+  const refreshApps = useCallback(async () => {
+    setApps(await api.listApps().catch(() => []));
+  }, []);
 
   // Every job title the UI has seen — the run rows' chips name a job by it.
   // Filled by the jobs listing, and by a run in flight, whose row carries the
@@ -456,7 +484,7 @@ export function App() {
     return () => api.onUnauthorized(null);
   }, []);
 
-  useEffect(() => { refreshWorkflows(); refreshStepTypes(); }, []);
+  useEffect(() => { refreshWorkflows(); refreshStepTypes(); void refreshApps(); }, []);
 
   // Runs executing right now, in any workflow — the sidebar's running dot.
   // Polled (the server answers from memory) so runs started anywhere — the
@@ -747,10 +775,38 @@ export function App() {
     setPanel(null);
     setInfoStep(null);
     setThreadView(null);
+    setSelectedApp(null);
     setSelectedJob(id);
     setSelectedRun(null);
     setEvents([]);
   }, []);
+  /** Open an app's page (plans/apps.md §7.3): the canvas area is its. */
+  const selectApp = useCallback((name: string | null) => {
+    liveStreamRef.current = false;
+    setRunning(false);
+    setFlyoutStepId(null);
+    setFlyoutStepIndex(null);
+    setPanel(null);
+    setInfoStep(null);
+    setThreadView(null);
+    setSelectedJob(null);
+    setSelectedRun(null);
+    setEvents([]);
+    setSelectedApp(name);
+  }, []);
+  /** A strut deep link the app's page asked to open (`ui/open-link`). */
+  const navigateFromApp = useCallback((params: Record<string, string>) => {
+    if (params["app"]) return selectApp(params["app"]);
+    if (params["job"]) return selectJob(params["job"]);
+    if (params["wf"]) {
+      setSelectedApp(null);
+      setSelectedJob(null);
+      setSelectedWf(params["wf"]);
+      setSelectedRun(params["run"] ?? null);
+      setEvents([]);
+      closeFlyout();
+    }
+  }, [selectApp, selectJob]);
 
   // A run opened from the timeline (or the job's run list): the run canvas
   // you have today, the job kept for the breadcrumb, the flyout on the
@@ -1092,6 +1148,40 @@ export function App() {
       <div class="shell-sidebar">
         <div class="sidebar-brand"><span class="brand-dot" /> strut</div>
 
+        {/* Apps (plans/apps.md §7.3): every workspace app, by title — a click
+            opens its page in the canvas area. Empty, the section is a line. */}
+        <div class="sidebar-section sidebar-apps" data-section="apps" style={apps.length ? undefined : "--grow:0"}>
+          <div class="section-title">Apps</div>
+          {apps.length > 2 && (
+            <input
+              class="sidebar-search"
+              type="search"
+              value={appQuery}
+              placeholder="Filter apps…"
+              aria-label="Filter apps"
+              onInput={(e) => setAppQuery((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setAppQuery("");
+                if (e.key === "Enter" && matchedApps.length === 1) selectApp(matchedApps[0]!.name);
+              }}
+            />
+          )}
+          <div class="sidebar-scroll">
+            {apps.length === 0 && <div class="empty-sidebar">No apps yet — ask the builder for one</div>}
+            {apps.length > 0 && matchedApps.length === 0 && <div class="empty-sidebar">No matching apps</div>}
+            {matchedApps.map((a) => (
+              <div key={a.name} class={`list-item ${selectedApp === a.name ? "is-active" : ""}`} title={a.description ? `${a.name} — ${a.description}` : a.name}
+                onClick={() => selectApp(a.name)}>
+                <span class="app-icon" aria-hidden="true"><AppGlyph /></span>
+                <span class="list-item-name">{a.title}</span>
+                <span class="badge badge-accent">{a.activeVersion}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <SidebarResizer />
+
         <div class="sidebar-section" data-section="workflows">
           <div class="section-title">
             Workflows
@@ -1108,7 +1198,7 @@ export function App() {
               onKeyDown={(e) => {
                 if (e.key === "Escape") setWfQuery("");
                 if (e.key === "Enter" && matchedWorkflows.length === 1) {
-                  setSelectedJob(null); setSelectedWf(matchedWorkflows[0]!.name); setSelectedRun(null); setEvents([]); closeFlyout();
+                  setSelectedApp(null); setSelectedJob(null); setSelectedWf(matchedWorkflows[0]!.name); setSelectedRun(null); setEvents([]); closeFlyout();
                 }
               }}
             />
@@ -1135,8 +1225,8 @@ export function App() {
                     </div>
                   )}
                   {!collapsed && g.wfs.map((wf) => (
-                    <div key={wf.name} class={`list-item ${selectedWf === wf.name ? "is-active" : ""}`}
-                      onClick={() => { setSelectedJob(null); setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
+                    <div key={wf.name} class={`list-item ${selectedWf === wf.name && !appOpen ? "is-active" : ""}`}
+                      onClick={() => { setSelectedApp(null); setSelectedJob(null); setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
                       <span class="list-item-name">{wf.name}</span>
                       {runningByWf.has(wf.name) && (
                         <span class="live-dot" title={`${runningByWf.get(wf.name)} run${runningByWf.get(wf.name) === 1 ? "" : "s"} in progress`} />
@@ -1219,6 +1309,10 @@ export function App() {
                         {run.job && (
                           <span class="job-chip" title={`Job ${run.job}`}
                             onClick={(e) => { e.stopPropagation(); selectJob(run.job!); }}>{jobTitle(run.job)}</span>
+                        )}
+                        {run.origin === "app" && run.app && (
+                          <span class="app-chip" title={`Launched by the app ${run.app.name} (${run.app.version})`}
+                            onClick={(e) => { e.stopPropagation(); selectApp(run.app!.name); }}>{appTitle(run.app.name)}</span>
                         )}
                       </div>
                     ))}
@@ -1323,7 +1417,32 @@ export function App() {
       {/* Topbar */}
       <div class="shell-topbar">
         <span class="topbar-title">
-          {wf ?? (selectedJob ? (job?.title ?? selectedJob) : "Select a workflow")}
+          {wf ?? (selectedJob ? (job?.title ?? selectedJob) : appOpen ? (appEntry?.title ?? selectedApp) : "Select a workflow")}
+          {appOpen && appEntry && (
+            // The version in front of you IS the active one: picking another
+            // here is the rollback (PUT /apps/:name/active), and the frame
+            // reloads on it.
+            <select
+              class="app-version-select"
+              title="The active version — pick another to roll back (or forward)"
+              value={appEntry.activeVersion}
+              onChange={async (e) => {
+                const v = (e.target as HTMLSelectElement).value;
+                if (!v || v === appEntry.activeVersion) return;
+                try {
+                  await api.setActiveAppVersion(appEntry.name, v);
+                  await refreshApps();
+                  setAppReload((n) => n + 1);
+                } catch (err) {
+                  alert(errorMessage(err));
+                }
+              }}
+            >
+              {[...appEntry.versions].sort((a, b) => Number(b.slice(1)) - Number(a.slice(1))).map((v) => (
+                <option key={v} value={v}>{v}{v === appEntry.activeVersion ? " · active" : ""}</option>
+              ))}
+            </select>
+          )}
           {wf && (
             <CategoryEditor
               key={wf}
@@ -1427,6 +1546,16 @@ export function App() {
               onClick={() => { setPanel((p) => (p === "workflow" ? null : "workflow")); setInfoStep(null); closeFlyout(); }}
             >Workflow{wfClaims?.enabled && <span class={`claims-dot claims-dot-${claimsTone(wfClaims)}`} />}</button>
           )}
+          {appOpen && selectedApp && (
+            <button
+              class="btn"
+              title="Open the builder chat with this app named"
+              onClick={() => {
+                setShowChat(true);
+                setChatDraft({ text: `Edit the app "${selectedApp}": `, id: Date.now() });
+              }}
+            >Edit with the builder</button>
+          )}
           <button class="btn" onClick={() => setShowSecrets(true)}>Secrets</button>
           <button class={`btn btn-ai${showChat ? " is-active" : ""}`} onClick={() => setShowChat(!showChat)}>AI</button>
           <button class="btn btn-icon" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
@@ -1484,8 +1613,23 @@ export function App() {
             )}
           </div>
         )}
-        {/* A selected job with no run open: its timeline, not a graph. */}
-        {timelineOpen ? (
+        {/* A selected app: its page, hosted (plans/apps.md §7.3). A selected
+            job with no run open: its timeline, not a graph. */}
+        {appOpen && selectedApp ? (
+          appEntry
+            ? <AppHost
+                key={`${appEntry.name}@${appEntry.activeVersion}`}
+                name={appEntry.name}
+                version={appEntry.activeVersion}
+                reload={appReload}
+                onMessage={(text) => {
+                  setShowChat(true);
+                  setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
+                }}
+                onNavigate={navigateFromApp}
+              />
+            : <div class="empty">{apps.length ? `No app "${selectedApp}"` : "Loading apps…"}</div>
+        ) : timelineOpen ? (
           job
             ? <JobTimeline job={job} onOpenRun={openJobRun} onOpenThread={(thread, turn) => setThreadView({ thread, turn })} onRefresh={refreshJob} />
             : <div class="empty">Loading job…</div>
@@ -1534,6 +1678,7 @@ export function App() {
               onOpenRun={openRun}
               onOpenStep={openRunStep}
               onOpenJob={selectJob}
+              onOpenApp={selectApp}
             />
           }
         />
@@ -1553,6 +1698,14 @@ export function App() {
       {showChat && (
         <ChatFlyout
           stt={sttSettings}
+          draft={chatDraft}
+          inbound={chatInbound}
+          onAppPublished={(name) => {
+            // The list (a new app, a new active version) and, when it is the
+            // one in front of you, the frame.
+            void refreshApps();
+            if (selectedApp === name) setAppReload((n) => n + 1);
+          }}
           onClose={() => setShowChat(false)}
           onWorkflowCreated={async (name) => {
             await refreshWorkflows();
@@ -1597,6 +1750,8 @@ export function App() {
           workflow={selectedWf}
           tab={activeTab}
           tabs={workflowTabs}
+          apps={apps.filter((a) => a.grants.workflows.includes(selectedWf) || a.grants.automations.includes(selectedWf)).map((a) => ({ name: a.name, title: a.title }))}
+          onOpenApp={selectApp}
           onTab={setWfTab}
           onClose={() => setPanel(null)}
           onDelete={handleDeleteWorkflow}

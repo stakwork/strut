@@ -39,6 +39,10 @@ export default defineConfig({
       "/sessions": "http://localhost:3000",
       "/jobs": "http://localhost:3000",
       "/apps": "http://localhost:3000",
+      // The app host's MCP client (src/app-host.ts): a page's tools/call,
+      // relayed to strut's MCP door as it is. JSON-RPC over POST, answered
+      // as SSE.
+      "/mcp": { target: "http://localhost:3000", configure: sseConfigure },
       "/graph": "http://localhost:3000",
       "/health": "http://localhost:3000",
       "/llm": "http://localhost:3000",

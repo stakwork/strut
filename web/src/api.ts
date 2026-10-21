@@ -18,6 +18,9 @@ function deriveBase(): string {
 }
 
 const BASE = deriveBase();
+/** The API's base path ("" at the root, "/lab" under a host's mount) — for
+ *  a caller that builds its own request, such as the app host's MCP client. */
+export const API_BASE = BASE;
 
 // Which strings are served-file paths, and which listing each reads from:
 // with the viewer's other pure helpers.
@@ -202,6 +205,14 @@ export async function signOut(): Promise<void> {
 function authHeaders(): Record<string, string> {
   const key = getSession() ? "" : getApiKey();
   return { "x-strut-ui": "1", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
+}
+
+/** The headers every UI request carries — the UI marker (the server's CSRF
+ *  rule beside the session cookie) and the key, when this browser holds one
+ *  rather than a session. For a request made outside `apiFetch`: the app
+ *  host's MCP client (./app-host). */
+export function apiHeaders(): Record<string, string> {
+  return authHeaders();
 }
 
 // The server refused the key (or the lack of one). The app is told once per
@@ -697,6 +708,11 @@ export interface RunSummary {
   /** A run still in flight: the launch's title for its job, if it gave one.
    *  A finished run's summary has none — the jobs listing names the job. */
   jobTitle?: string;
+  /** Who launched the run when it was not a person or an API call:
+   *  `schedule`, `peer`, `app` (plans/apps.md §11). */
+  origin?: string;
+  /** The app the run was launched for, with `origin: "app"`. */
+  app?: { name: string; version: string };
   /** What the run's model calls spent (absent when none did). */
   totals?: { modelCalls: number; usage: TokenUsage; cost: number };
 }
@@ -1676,3 +1692,109 @@ export const decideProposal = (id: string, action: "accept" | "reject", reason?:
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...(reason ? { reason } : {}) }),
   });
+
+// ── Apps (plans/apps.md §7.2, §7.3) ────────────────────────────────────────
+// A workspace APP: a front-end project over workflows, published as a
+// versioned directory, rendered by strut's own UI as an MCP Apps host
+// (components/AppHost.tsx over ./app-host). The document is a FILE of the
+// version — `dist/index.html` under `/apps/:name/:version/files`, served
+// like a run's artifacts: the listing mints the token, the file opens on it.
+
+export interface AppGrants {
+  workflows: string[];
+  steps: string[];
+  sqlite: boolean;
+  automations: string[];
+}
+
+export interface AppManifest {
+  title: string;
+  description?: string;
+  icon?: string;
+  entry?: string;
+  grants: AppGrants;
+  data?: { graph?: { types: Record<string, unknown>; edges: unknown[] } };
+}
+
+/** `GET /apps`: one row per app. */
+export interface AppListEntry {
+  name: string;
+  activeVersion: string;
+  versions: string[];
+  title: string;
+  description?: string;
+  icon?: string;
+  grants: AppGrants;
+  publisher?: string;
+  owner?: string;
+}
+
+/** One client-side error the app's page reported (`app/report-error`). */
+export interface AppError {
+  at: string;
+  version: string;
+  message: string;
+  stack?: string;
+  componentStack?: string;
+  actor?: string;
+  runId: string;
+}
+
+/** `GET /apps/:name[?version=]`. */
+export interface AppView {
+  name: string;
+  version: string;
+  hash: string;
+  manifest: AppManifest;
+  active: string;
+  versions: Record<string, { createdAt: string; hash: string }>;
+  publisher?: string;
+  owner?: string;
+  dir: string;
+  missing: boolean;
+  files: string[];
+  stale: boolean;
+  inertGrants: string[];
+  errors?: AppError[];
+}
+
+export const listApps = () => fetchJSON<{ apps: AppListEntry[] }>("/apps").then((r) => r.apps);
+
+export const getApp = (name: string, version?: string) =>
+  fetchJSON<AppView>(`/apps/${encodeURIComponent(name)}${version ? `?version=${encodeURIComponent(version)}` : ""}`);
+
+export const getAppVersions = (name: string) =>
+  fetchJSON<{ name: string; active: string; versions: Record<string, { createdAt: string; hash: string }> }>(`/apps/${encodeURIComponent(name)}/versions`);
+
+/** Rollback: make a version the active one (publishes nothing). */
+export const setActiveAppVersion = (name: string, version: string) =>
+  fetchJSON<{ ok: true; name: string; active: string }>(`/apps/${encodeURIComponent(name)}/active`, {
+    method: "PUT",
+    body: JSON.stringify({ version }),
+  });
+
+export const deleteApp = (name: string) =>
+  fetchJSON<{ ok: true; name: string }>(`/apps/${encodeURIComponent(name)}`, { method: "DELETE" });
+
+/** The scope a version's files are listed and read under — what
+ *  `useFileScope` takes, and what `appDocumentPath` is inside. */
+export function appFilesScope(name: string, version: string): string {
+  return `/apps/${encodeURIComponent(name)}/${version}/files`;
+}
+
+/** The version's document, inside its scope. */
+export function appDocumentPath(name: string, version: string): string {
+  return `${appFilesScope(name, version)}/dist/index.html`;
+}
+
+/** The document's bytes, read with the scope's token (`?t=`) — the server
+ *  writes the app's identity into the page as it serves it under the token
+ *  — else with the UI's own credential. The caller frames the TEXT as a
+ *  sandboxed frame's srcdoc: the page runs in an opaque origin, never on
+ *  this one. */
+export async function fetchAppDocument(name: string, version: string, token: string): Promise<string> {
+  const path = appDocumentPath(name, version);
+  const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.text();
+}

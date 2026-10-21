@@ -48,7 +48,7 @@ describe("concept files (pure)", () => {
     assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@cccccccccccc" }, stamp, legacy), "update");
   });
 
-  it("ships Workflow Builder and Job as roots and Workflow Build under Job: workspace-general, the legacy lab stamps named", async () => {
+  it("ships Workflow Builder and Job as roots and Workflow Build under Job: workspace-general, the legacy lab stamps named; and App, a kind under Workflow Builder", async () => {
     const read = async (file: string) => parseConceptFile(file, await readFile(join(STRUT_CONCEPTS.dir, file), "utf-8"), STRUT_CONCEPTS.prefix);
     const wb = await read("Workflow Builder.md");
     const job = await read("Job.md");
@@ -64,6 +64,13 @@ describe("concept files (pure)", () => {
     assert.match(build.description!, /workflow: builder/);
     assert.ok(build.docs!.includes("job/start { workflow: builder }") && build.docs!.includes("Workflow Builder"), build.docs);
     for (const c of [wb, job, build]) assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
+    // The App page (plans/apps.md §8): the builder's prompt for an app, one
+    // of the kinds under Workflow Builder — the layout, the kit's hooks,
+    // the grants, routines, the four shapes.
+    const app = await read("App.md");
+    assert.equal(app.parent, "Workflow Builder");
+    for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish"]) assert.ok(app.docs!.includes(must), must);
+    assert.doesNotMatch(app.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
 
@@ -214,20 +221,26 @@ for (const tb of testBackends()) {
 
     it("strut's pages seed, a host's page hangs under one, and the builder's section reads them", async () => {
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
-      assert.deepEqual([strut["Workflow Builder"]!.action, strut["Job"]!.action, strut["Workflow Build"]!.action], ["create", "create", "create"]);
+      assert.deepEqual(
+        [strut["Workflow Builder"]!.action, strut["Job"]!.action, strut["Workflow Build"]!.action, strut["App"]!.action],
+        ["create", "create", "create", "create"],
+      );
       assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Workflow Build"]!.ref_id], "the kind strut ships hangs under Job");
       await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
       const host = byName(await seedConcepts(b, [set()]));
       const wb = strut["Workflow Builder"]!.ref_id!;
-      assert.deepEqual(await children(wb), [host["Janitor"]!.ref_id]);
+      // Under Workflow Builder: strut's own App page, and the host's Janitor.
+      const under = [strut["App"]!.ref_id!, host["Janitor"]!.ref_id!].sort();
+      assert.deepEqual(await children(wb), under);
       const again = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
-      assert.deepEqual([again["Workflow Builder"]!.action, again["Job"]!.action], ["keep", "keep"]);
-      assert.deepEqual(await children(wb), [host["Janitor"]!.ref_id], "a page another call owns is not strut's to unlink");
+      assert.deepEqual([again["Workflow Builder"]!.action, again["Job"]!.action, again["App"]!.action], ["keep", "keep", "keep"]);
+      assert.deepEqual(await children(wb), under, "a page another call owns is not strut's to unlink");
 
       const text = await builderSystem({ graph: b, registry: await createRegistry([]), services: { graph: b } });
       assert.ok(text?.startsWith('Workspace knowledge — the "Workflow Builder" Concept'), text);
       assert.ok(text!.includes("To record a new kind, add a child Concept here"));
       assert.ok(text!.includes("- Janitor — Cleans something up."));
+      assert.ok(text!.includes("- App — An APP — a front-end project"), "strut's own kind is listed");
       assert.equal(await builderSystem({ registry: await createRegistry([]), services: {} }), undefined, "no graph, no section");
     });
 
@@ -249,7 +262,7 @@ for (const tb of testBackends()) {
       assert.ok(kinds.text.includes("- Explore — Finding out how something works.") && !kinds.text.includes("To record a new kind"), "docs: false — the kinds alone, the orchestrator's read");
       assert.ok(kinds.text.includes("- Workflow Build — Build, change, test or debug a WORKFLOW"), "the kind strut ships is in the orchestrator's list, beside the deployment's");
       assert.ok(!kinds.text.includes("graph_graph_get"), "no tool, no opener");
-      assert.deepEqual(await run({ name: "Workflow Builder", docs: false }), { text: "" }, "no kinds under it, nothing");
+      assert.deepEqual(await run({ name: "App", docs: false }), { text: "" }, "no kinds under it, nothing");
       assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "no such page");
       assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no graph");
       const viaRegistry = await runSingleStep("context/concept", await createRegistry([]), { graph: b }, { config: { name: "Job", tool: "graph_get" } });

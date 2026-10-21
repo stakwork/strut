@@ -72,6 +72,14 @@ export function ChatFlyout(props: {
   onClose: () => void;
   onWorkflowCreated: (name: string) => void;
   onWorkflowRan: (name: string, runId: string) => void;
+  /** An app the builder published (app_publish ok) — the host reloads its frame. */
+  onAppPublished?: (name: string) => void;
+  /** Text to put in the composer (Edit with the builder): applied when `id` changes. */
+  draft?: { text: string; id: number } | null;
+  /** A message to SEND as the user's (an app's `ui/message`, plans/apps.md
+   *  §7.3): sent when `id` changes; while a turn is live it waits in the
+   *  composer instead. */
+  inbound?: { text: string; id: number } | null;
   /** Dictation preferences (SettingsDialog). The mic shows once the chosen
    *  model is confirmed installed on the server. */
   stt: storage.SttSettings;
@@ -365,6 +373,9 @@ export function ChatFlyout(props: {
           props.onWorkflowCreated(tr.output.name);
         }
         if (tr.name === "run_workflow" && !tr.isError) openRun(input?.name, tr.output?.runId);
+        // An app published (the app/publish step as a tool): the host
+        // refreshes its list and reloads the frame showing it.
+        if (tr.name === "app_publish" && !tr.isError && tr.output?.ok && tr.output.name) props.onAppPublished?.(tr.output.name);
       },
       onToolProgress: (p) => {
         if (signal.aborted) return;
@@ -385,7 +396,7 @@ export function ChatFlyout(props: {
         setLoading(false);
       },
     };
-  }, [props.onWorkflowCreated, props.onWorkflowRan]);
+  }, [props.onWorkflowCreated, props.onWorkflowRan, props.onAppPublished]);
 
   /** Attach to a turn's stream (replacing any current attachment) and
    *  follow it to its end. */
@@ -517,12 +528,10 @@ export function ChatFlyout(props: {
     }
   }, [showHistory]);
 
-  const send = useCallback(async () => {
-    const text = input.trim();
-    if ((!text && !files.length) || loading) return;
+  const sendText = useCallback(async (text: string, sent: PendingAttachment[]) => {
+    if ((!text && !sent.length) || loading) return;
     if (dictRef.current) stopDictation();
 
-    const sent = files;
     pinned.current = true;
     setEntries((prev) => [
       ...prev,
@@ -565,7 +574,28 @@ export function ChatFlyout(props: {
       setFiles(sent);
       setLoading(false);
     }
-  }, [input, files, loading, chatId, model, attach, loadChat, stopDictation]);
+  }, [loading, chatId, model, attach, loadChat, stopDictation]);
+  const send = useCallback(() => sendText(input.trim(), files), [sendText, input, files]);
+
+  // The host's two ways in (plans/apps.md §7.3): a draft for the composer
+  // ("Edit with the builder"), and a message to send as the user's — an
+  // app's `ui/message`. Each once per id; a message that arrives while a
+  // turn is live waits in the composer.
+  const lastDraft = useRef<number | null>(null);
+  useEffect(() => {
+    if (!props.draft || props.draft.id === lastDraft.current) return;
+    lastDraft.current = props.draft.id;
+    setInput(props.draft.text);
+    inputRef.current?.focus();
+  }, [props.draft]);
+  const lastInbound = useRef<number | null>(null);
+  useEffect(() => {
+    if (!props.inbound || props.inbound.id === lastInbound.current) return;
+    lastInbound.current = props.inbound.id;
+    if (loading) setInput(props.inbound.text);
+    else void sendText(props.inbound.text, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.inbound]);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {

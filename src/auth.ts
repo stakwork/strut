@@ -188,6 +188,45 @@ export function fileScopeOf(path: string): FileScope | undefined {
   }
 }
 
+// ── The app's identity ───────────────────────────────────────────────────
+//
+// An app's page holds ONE credential, its file token (plans/apps.md §7.2):
+// the file route writes it into `<meta name="strut-app-token">` as it
+// serves `dist/index.html` under a valid `?t=`, and the kit sends it as
+// `step_run`'s `app` argument on every call. The host relays the call as it
+// is and names nothing, so what the meta carries must say WHICH app it is
+// as well as prove it: `app:<name>@<vN>.<token>` — the scope, then the
+// token `fileToken` mints for it. The door splits it at the last `.` (a
+// token is base64url, a version label has no dot), recomputes the token
+// for the scope it names and compares. With no secret to sign under (dev
+// mode, where the gate is open and nothing is minted) the identity is the
+// scope alone, `app:<name>@<vN>.`, and the door takes it at its word —
+// the open posture, where the grants still box the page but nothing
+// proves which page is calling.
+
+/** What the served document carries as the app's identity. */
+export function appIdentity(name: string, version: string): string {
+  return `app:${name}@${version}.${fileToken({ kind: "app", id: `${name}@${version}` }) ?? ""}`;
+}
+
+/** The app an identity names, once its token holds — or undefined: not an
+ *  app's identity, a token strut cannot vouch for, or an unsigned one on a
+ *  strut that signs. */
+export function appOfIdentity(identity: unknown): { name: string; version: string } | undefined {
+  if (typeof identity !== "string") return undefined;
+  const dot = identity.lastIndexOf(".");
+  if (dot < 0) return undefined;
+  const scope = identity.slice(0, dot);
+  const got = identity.slice(dot + 1);
+  const m = scope.match(/^app:(.+)@(v\d+)$/);
+  if (!m) return undefined;
+  const [, name, version] = m as unknown as [string, string, string];
+  const expected = fileToken({ kind: "app", id: `${name}@${version}` });
+  if (expected === undefined) return got === "" ? { name, version } : undefined;
+  if (expected.length !== got.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return undefined;
+  return { name, version };
+}
+
 /** Does this request carry a valid file token (`?t=`) for the scope its
  *  path reads from? A read (GET / HEAD) under a scope only; a token on any
  *  other path, or for another run or job, opens nothing. */

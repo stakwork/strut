@@ -62,11 +62,17 @@
  *
  * On darwin targets sharp's addon + libvips (the browser screenshot's downscale)
  * move into native/ too (`relocateSharp`).
+ *
+ * The app build (plans/apps.md §2) needs two more things, both staged: the
+ * kit's vendor layer at kit/vendor + its base stylesheet (built by `npm run
+ * build`), and esbuild's binary, moved out of @esbuild/<platform> into
+ * native/ (`relocateEsbuild`; desktop.js sets ESBUILD_BINARY_PATH to it).
  */
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -93,6 +99,9 @@ if (!SHERPA_PLATFORMS.includes(platform)) {
 }
 // `.lbug_extension` is a Mach-O dylib under another name (Ladybug's vector + fts).
 const NATIVE_EXT = /\.(node|dylib|so|dll|lbug_extension)$/;
+// esbuild's binary, an executable with no extension (`esbuild.exe` on Windows).
+const ESBUILD_BIN = /^esbuild(\.exe)?$/;
+const isNative = (f) => NATIVE_EXT.test(f) || ESBUILD_BIN.test(f);
 // onnxruntime-node lays its binaries out as bin/napi-v6/<os>/<arch>.
 const [ortOs, ortArch] = platform.replace(/^win-/, "win32-").split("-");
 
@@ -198,12 +207,18 @@ async function stageFiles() {
   await writeFile(join(stage, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
   await cp(join(ROOT, "build"), join(stage, "build"), { recursive: true });
   await cp(join(ROOT, "web", "dist"), join(stage, "web", "dist"), { recursive: true });
+  // The kit as the app build reads it (src/apps/kit.ts: <strut>/kit): the
+  // vendor layer `npm run build` made, and the base stylesheet.
+  if (!(await stat(join(ROOT, "kit", "vendor", "import-map.json")).catch(() => null))) throw new Error("kit/vendor is not built; run `npm run build` (or `npm run build:kit`)");
+  await cp(join(ROOT, "kit", "vendor"), join(stage, "kit", "vendor"), { recursive: true });
+  await mkdir(join(stage, "kit", "src", "styles"), { recursive: true });
+  await copyFile(join(ROOT, "kit", "src", "styles", "base.css"), join(stage, "kit", "src", "styles", "base.css"));
   for (const f of ["desktop.js", "strut"]) {
     await cp(join(ROOT, "scripts", f), join(stage, f));
     await chmod(join(stage, f), 0o755);
   }
   await writeManifest();
-  log(`staged build/ + web/dist/ + desktop.js + strut + desktop.json → ${stage}`);
+  log(`staged build/ + web/dist/ + kit/vendor/ + desktop.js + strut + desktop.json → ${stage}`);
 }
 
 // What this stage holds, for desktop.js's defaults (it never sniffs
@@ -235,9 +250,13 @@ async function writeManifest() {
 // sharp (the browser screenshot's downscale) ships its addon and libvips as two
 // @img packages per platform; only darwin targets relocate them (relocateSharp).
 const sharpPkgs = platform.startsWith("darwin-") ? [`@img/sharp-${platform}`, `@img/sharp-libvips-${platform}`] : [];
+// esbuild (the app build) ships its binary as one package per platform; the
+// target's moves into native/ (relocateEsbuild).
+const esbuildPkg = `@esbuild/${platform.replace(/^win-/, "win32-")}`;
 const OTHER_PLATFORM_PKG = (name) =>
   (/^sherpa-onnx-(darwin|linux|win)-/.test(name) && name !== `sherpa-onnx-${platform}`) ||
   (/^@ladybugdb\/core-/.test(name) && name !== ladybugPlatformPkg) ||
+  (/^@esbuild\//.test(name) && name !== esbuildPkg) ||
   (sharpPkgs.length > 0 && /^@img\/sharp-(libvips-)?(darwin|linux|linuxmusl|win32|freebsd|webcontainers|wasm32)/.test(name) && !sharpPkgs.includes(name));
 
 async function resolveFrom(dir, name) {
@@ -413,22 +432,29 @@ async function installDeps() {
       );
     } else if (got !== version) throw new Error(`${name} is ${got} in the root tree, expected ${version}`);
   }
-  // sharp's wrapper pins both @img packages for each platform; a cross-stage has
-  // the host's in the root tree, so the target's come from npm at those versions.
-  const sharpOptional = JSON.parse(await readFile(join(nm, "sharp", "package.json"), "utf-8")).optionalDependencies ?? {};
-  for (const name of sharpPkgs) {
-    if (!sharpOptional[name]) throw new Error(`sharp pins no ${name}; its platform packages changed — update relocateSharp`);
-    const got = await installedVersion(join(nm, name));
-    if (!got) added.push(await fetchExact(name, sharpOptional[name]));
-    else if (got !== sharpOptional[name]) throw new Error(`${name} is ${got} in the root tree, sharp pins ${sharpOptional[name]}`);
+  // sharp's wrapper pins both @img packages for each platform, esbuild its
+  // @esbuild/<platform>; a cross-stage has the host's in the root tree, so the
+  // target's come from npm at those versions.
+  for (const [wrapper, names, relocate] of [["sharp", sharpPkgs, "relocateSharp"], ["esbuild", [esbuildPkg], "relocateEsbuild"]]) {
+    const pins = JSON.parse(await readFile(join(nm, wrapper, "package.json"), "utf-8")).optionalDependencies ?? {};
+    for (const name of names) {
+      if (!pins[name]) throw new Error(`${wrapper} pins no ${name}; its platform packages changed — update ${relocate}`);
+      const got = await installedVersion(join(nm, name));
+      if (!got) added.push(await fetchExact(name, pins[name]));
+      else if (got !== pins[name]) throw new Error(`${name} is ${got} in the root tree, ${wrapper} pins ${pins[name]}`);
+    }
   }
   if (!stt) stubs.push("sherpa-onnx-node");
   if (!ladybug) stubs.push("@ladybugdb/core");
   if (!embeddings) stubs.push("@huggingface/transformers");
+  // The app build's fallback when esbuild's binary cannot run (src/apps/build.ts
+  // loadEsbuild); this package carries the binary, so the fallback stops here.
+  stubs.push("esbuild-wasm");
   const why = {
     "sherpa-onnx-node": "built with --no-stt",
     "@ladybugdb/core": ladybugSkip,
     "@huggingface/transformers": "the embeddings stack is left out; package:desktop --embeddings keeps it",
+    "esbuild-wasm": "the package carries esbuild's own binary in native/",
   };
   for (const name of stubs) added.push(await writeStub(name, why[name]));
 
@@ -689,6 +715,27 @@ async function relocateSharp() {
   log(`moved sharp.node + ${dylibs[0]} → native/ (rpath @loader_path, ad-hoc signed); ${sharpPkgs[0]} loads ../../../native/sharp.node. Minimum macOS: addon ${minos(addon)}, libvips ${minos(vips)}`);
 }
 
+// esbuild's binary goes into native/ too. esbuild runs it from
+// ESBUILD_BINARY_PATH when that is set — desktop.js sets it to native/esbuild
+// (and src/env.ts keeps it through the env scrub) — so the emptied
+// @esbuild/<platform> package goes. The binary must be byte for byte the one
+// esbuild records for it (`esbuild.binaryHashes`). esbuild's own bin/ — the
+// CLI, which strut never runs, and where its install script may have swapped
+// a copy of the binary in — goes too.
+async function relocateEsbuild() {
+  const nm = join(stage, "node_modules");
+  const sub = platform.startsWith("win-") ? "esbuild.exe" : "bin/esbuild";
+  const bin = join(native, basename(sub));
+  await rename(join(nm, esbuildPkg, sub), bin);
+  await rm(join(nm, esbuildPkg), { recursive: true, force: true });
+  await rm(join(nm, "esbuild", "bin"), { recursive: true, force: true });
+  const esbuildJson = JSON.parse(await readFile(join(nm, "esbuild", "package.json"), "utf-8"));
+  const want = esbuildJson["esbuild.binaryHashes"]?.[`${esbuildPkg}/${sub}`];
+  const got = createHash("sha256").update(await readFile(bin)).digest("hex");
+  if (want !== got) throw new Error(`native/${basename(sub)} has sha256 ${got}; esbuild@${esbuildJson.version} records ${want ?? "no hash"} for ${esbuildPkg}/${sub}`);
+  log(`moved ${esbuildPkg}/${sub} (esbuild ${esbuildJson.version}, sha256 matches esbuild's record) → native/${basename(sub)}; desktop.js points ESBUILD_BINARY_PATH at it`);
+}
+
 // Every Mach-O in native/: no load command may name a build-machine path,
 // every @rpath dependency must be in native/, and every signature present must verify.
 function checkMachO(files) {
@@ -764,18 +811,19 @@ async function report() {
   log(`staged ${stage}: ${mb(total)} total, ${rows.length - 1} packages; largest:`);
   for (const [name, size] of rows.slice(0, 8)) console.log(`    ${mb(size).padStart(7)}  ${name}`);
   // Everything the host must code-sign, in one place: the addons plus the
-  // shared libraries they link (relocateNative, relocateLadybug), all of which must be signed
+  // shared libraries they link (relocateNative, relocateLadybug, relocateSharp) and
+  // esbuild's executable (relocateEsbuild), all of which must be signed
   // and notarized inside the app bundle, not just the .node. Nothing else in
   // the package is a binary — enforced here, because the host's signing step
   // is "sign native/". --embeddings is the one exception: onnxruntime-node
   // keeps its addons in node_modules, where its loader looks.
-  const inNative = (await readdir(native)).filter((f) => NATIVE_EXT.test(f));
+  const inNative = (await readdir(native)).filter(isNative);
   const stray = [];
   const walk = async (d) => {
     for (const e of await readdir(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory()) await walk(p);
-      else if (NATIVE_EXT.test(e.name)) stray.push(p.slice(nm.length + 1));
+      else if (isNative(e.name)) stray.push(p.slice(nm.length + 1));
     }
   };
   await walk(nm);
@@ -884,6 +932,27 @@ export default defineStep({
       if (dl.status !== 501 || !dlBody.includes("stt not available")) failures.push(`--no-stt model download: ${dl.status} ${dlBody.slice(0, 200)}, expected 501 "stt not available"`);
     }
 
+    // An app build through the server (POST /apps builds before it publishes):
+    // the staged kit/vendor, esbuild from native/ through ESBUILD_BINARY_PATH
+    // past the env scrub (no @esbuild package, esbuild-wasm a stub), Tailwind.
+    const appFiles = {};
+    const fixture = join(ROOT, "src", "apps", "__fixtures__", "hello");
+    const readTree = async (d) => {
+      for (const e of await readdir(d, { withFileTypes: true })) {
+        if (e.isDirectory()) await readTree(join(d, e.name));
+        else appFiles[relative(fixture, join(d, e.name))] = await readFile(join(d, e.name), "utf-8");
+      }
+    };
+    await readTree(fixture);
+    const pubApp = await fetch(`${base}/apps`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ name: "smoke-app", files: appFiles }) });
+    const appResult = await pubApp.json().catch(() => ({}));
+    if (pubApp.status !== 201 || !appResult.ok) failures.push(`building the fixture app through POST /apps: ${pubApp.status} ${JSON.stringify(appResult).slice(0, 600)}`);
+    else {
+      const doc = await fetch(`${base}/apps/smoke-app/${appResult.version}/files/dist/index.html`, { headers });
+      if (!doc.ok || !(await doc.text()).includes('<script type="module">')) failures.push(`the built app's dist/index.html did not serve: ${doc.status}`);
+      else log(`smoke: app build OK — the fixture published as smoke-app ${appResult.version}, ${(appResult.bytes / 1e6).toFixed(2)} MB`);
+    }
+
     const ui = await fetch(`${base}/`);
     if (!ui.ok || !(await ui.text()).includes("<div id=\"app\"")) failures.push("web UI index did not serve");
   } catch (e) {
@@ -907,7 +976,7 @@ export default defineStep({
   }
   log(
     `smoke: OK — desktop.js boots with no STRUT_* env beyond the two dirs, ready line carries port + key, ` +
-      `${stt ? "sherpa addon loads" : "/audio answers 501 without sherpa"}, out-of-tree custom step resolves, UI serves, exits on stdin EOF, stubs answer (${stubs.join(", ")})` +
+      `${stt ? "sherpa addon loads" : "/audio answers 501 without sherpa"}, out-of-tree custom step resolves, an app builds with native/esbuild + kit/vendor, UI serves, exits on stdin EOF, stubs answer (${stubs.join(", ")})` +
       `${ladybug ? ", the server boots on the Ladybug workspace, Ladybug opens + queries a database with OpenSSL and both extensions from native/" : ""}`,
   );
 }
@@ -1021,6 +1090,7 @@ if (ladybug) {
   await stageLadybugExtensions();
 }
 await relocateSharp();
+await relocateEsbuild();
 await report();
 if (smoke) await smokeTest();
 if (tar) await tarball();

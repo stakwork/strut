@@ -291,7 +291,8 @@ describe("the /apps routes", () => {
       assert.equal(page.headers.get("content-security-policy"), "sandbox allow-scripts");
       assert.equal(page.headers.get("x-content-type-options"), "nosniff");
       const html = await page.text();
-      assert.ok(html.includes(`<meta name="strut-app-token" content="${listed.token}">`), "the token written in as served");
+      // The app's IDENTITY (auth.ts `appIdentity`): the scope, then the token — what step_run reads the app off.
+      assert.ok(html.includes(`<meta name="strut-app-token" content="app:hello@v1.${listed.token}">`), "the identity written in as served");
       assert.ok(html.includes('<script type="module">'));
       assert.ok(!(await readFile(join(dataDir, "apps", "hello", "v1", "dist", "index.html"), "utf8")).includes(listed.token), "dist/ holds no credential");
       // By key: no meta, no script.

@@ -7,8 +7,10 @@ import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
  * content-hash publish, `reactivateKnown: false`, `source: "seed"`, one
  * seeder per name). One turn of a WORKFLOW BUILD, as a job: `job/dir` →
  * `context/concept` on `Workflow Builder` → `agent` on the job's session
- * with the `meta/*` authoring twins as its tools and the web tools as its
- * only built-ins → `pack` in the job's reply shape. Building workflows is
+ * with the `meta/*` authoring twins and the `app/*` steps as its tools and
+ * the web tools plus the EDITOR family (view, create, str_replace, insert;
+ * a tree listing; a grep — plans/apps.md §8, never bash) as its built-ins
+ * → `pack` in the job's reply shape. Building workflows is
  * a separate kind of work from a code job (ruled 2026-10-20): `job` never
  * carries these tools, and the orchestrator starts a builder job for them.
  *
@@ -31,11 +33,11 @@ export const BUILDER_CATEGORY = "job";
 
 /** The description `list_workflows` / the sidebar show for it. */
 export const BUILDER_DESCRIPTION =
-  "A workflow-building turn, as a job: an agent with the meta/* authoring twins (list/get/search steps and workflows, create/edit a step, validate, publish, run, run a step with a cassette, read runs, claims) and the web tools as its only built-ins, in a thread that remembers every earlier turn (agent with session: {{ input.session || $job }}), with the Workflow Builder page — what this workspace builds — in its prompt. " +
+  "A workflow-building turn, as a job: an agent with the meta/* authoring twins (list/get/search steps and workflows, create/edit a step, validate, publish, run, run a step with a cassette, read runs, claims) and the app/* steps (scaffold, build and publish an APP — a front-end project over workflows), with the web tools and the text editor (never bash) as its built-ins, in a thread that remembers every earlier turn (agent with session: {{ input.session || $job }}), with the Workflow Builder page — what this workspace builds — in its prompt. " +
   "Launch it with `job` on the launch — POST /workflows/builder/run { job, input: { prompt }, callback } — and the same job again to go on with the same build. " +
   "Input: { prompt, workspace? (this strut's workspace slug), session? (the thread: the job id unless given), peer? (a peer's id: the build happens on THAT strut's builder, under this job id — this run waits on it) }. " +
   "Output: { text, artifacts, ask?: { message }, cost, session, peer? }, job's shape. " +
-  "Open to peers (`peer: true`): another strut launches it as published. params.tools (meta/*, the graph reads, job/list, get, read), params.builtins and params.system are the evolvable surface; the host adds its own through createStrut({ builder }).";
+  "Open to peers (`peer: true`): another strut launches it as published. params.tools (meta/*, app/*, the graph reads, job/list, get, read), params.builtins (the web tools, the editor family) and params.system are the evolvable surface; the host adds its own through createStrut({ builder }).";
 
 const BUILDER_YAML = new URL("./workflows/builder.yaml", import.meta.url);
 

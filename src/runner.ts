@@ -1,4 +1,5 @@
 import type {
+  AppRef,
   Flow,
   McpServer,
   Step,
@@ -108,6 +109,11 @@ export interface RunOptions<TServices = unknown> {
    *  the run is already on the list. */
   job?: string;
   title?: string;
+  /** The APP the run works for (plans/apps.md §5): set by `run/launch`
+   *  under `ctx.app` alone — recorded on `run.start` and the summary,
+   *  handed to every step as `ctx.app`, read back by a resume like `job`.
+   *  Nothing a launch body sends can set it. */
+  app?: AppRef;
   /** The launch asked for the result to be posted to a host (`POST …/run
    *  { callback }`). The runner records the URL's ORIGIN on `run.start` / `run.resumed` and
    *  nothing more; the launcher keeps the URL and does the posting. */
@@ -197,6 +203,7 @@ interface Exec {
   actor?: string;
   principal?: string;
   job?: string;
+  app?: AppRef;
   automation?: { id: string };
   mcp?: McpServer[];
   /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
@@ -221,6 +228,8 @@ export async function runWorkflow<TServices = unknown>(
     ...(opts?.actor ? { actor: opts.actor } : {}),
     ...(opts?.principal ? { principal: opts.principal } : {}),
     ...(opts?.job ? { job: opts.job } : {}),
+    ...(opts?.origin ? { origin: opts.origin } : {}),
+    ...(opts?.app ? { app: opts.app } : {}),
     ...(opts?.workflowHash ? { workflowHash: opts.workflowHash } : {}),
   };
   // Default services to an empty object so steps can destructure freely.
@@ -318,6 +327,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.actor ? { actor: opts.actor } : {}),
       ...(opts?.principal ? { principal: opts.principal } : {}),
       ...(opts?.job ? { job: opts.job } : {}),
+      ...(opts?.app ? { app: opts.app } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
       ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
@@ -359,6 +369,7 @@ export async function runWorkflow<TServices = unknown>(
     actor: opts?.actor,
     principal: opts?.principal,
     job: opts?.job,
+    app: opts?.app,
     automation: opts?.automation,
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     disposers: [],
@@ -839,6 +850,7 @@ async function dispatchStep(
         ...(exec.actor ? { actor: exec.actor } : {}),
         ...(exec.principal ? { principal: exec.principal } : {}),
         ...(exec.job ? { job: exec.job } : {}),
+        ...(exec.app ? { app: exec.app } : {}),
         ...(exec.automation ? { automation: exec.automation } : {}),
         ...(exec.mcp ? { mcp: exec.mcp } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the
