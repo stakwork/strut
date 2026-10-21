@@ -1008,10 +1008,15 @@ neither needs a strut change per host, and both end at `/mcp`:
   deliverables), fetch the document from its file route with the token the
   listing minted, and frame it as `srcdoc` with `sandbox="allow-scripts"` — never a `blob:` URL (§7.3). Run an MCP Apps
   host bridge, and relay `tools/call` to `/mcp` AS IT IS, with its own
-  credential and `x-strut-actor`. Hive's `HtmlArtifactFrame` already
-  fetches a swarm page into a sandboxed blob and runs a `postMessage` nav
-  bridge; this swaps the nav-only bridge for an MCP Apps one pointed at
-  `/mcp`. Nothing else hive says to strut changes: runs, jobs, chat and
+  credential and `x-strut-actor`. In hive this is an app frame **beside**
+  `HtmlArtifactFrame`, not instead of it — a new component, or the same
+  one switching mode on a `kind: "app"` deliverable, which is hive's call.
+  An HTML artifact (a page an agent wrote during a run: one file, one
+  run's snapshot, read-only) keeps its frame as it is, the blob URL and
+  the `postMessage` nav bridge included; strut's artifact viewer keeps
+  rendering it too. The app frame differs in two ways only: the document
+  is framed as `srcdoc`, and its bridge is ext-apps' `AppBridge` relaying
+  to `/mcp`. Nothing else hive says to strut changes: runs, jobs, chat and
   files stay on the HTTP API as today.
 - **Let MCP hand it the document.** Connect to `/mcp` as an MCP Apps host
   and read the app as a resource. Then every MCP server's apps work there,
