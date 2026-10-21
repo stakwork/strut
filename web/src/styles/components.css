@@ -4036,8 +4036,7 @@ body.is-resizing-flyout * {
 .prop-actions { display: flex; gap: 6px; margin-top: 6px; }
 
 /* ── Apps (plans/apps.md §7.3) ──────────────────────────────────────────── */
-/* The sidebar's Apps section: a glyph, the title, the active version. Empty,
-   it keeps to its title line (`--grow: 0`). */
+/* The sidebar's Apps section: a glyph, the title, the active version. */
 .sidebar-apps .list-item { gap: 6px; }
 .app-icon { display: inline-flex; align-items: center; color: var(--text-dim); flex: none; }
 .list-item.is-active .app-icon { color: var(--accent); }

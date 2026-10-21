@@ -966,7 +966,8 @@ the job's files. A job's app as a RESOURCE a model can open
 
 ### 7.3 Strut's own UI as a host
 
-- **The sidebar** gains an **Apps** section above Workflows, showing icon
+- **The sidebar** gains an **Apps** section at the bottom, below Tools —
+  collapsible, and only one of Tools / Apps open at a time — showing icon
   and title, with a filter through `src/search.ts`.
 - **Selecting an app** shows it in the canvas area, the way the job timeline
   appears. The topbar shows the title, a version select for rollback, and

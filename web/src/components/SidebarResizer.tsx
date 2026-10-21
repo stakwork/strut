@@ -38,11 +38,22 @@ function restoreOnce() {
   }
 }
 
+// The nearest expanded section on one side of the handle: a collapsed one in
+// between (a title row) keeps its height.
+function nearestOpen(handle: HTMLElement, side: "previousElementSibling" | "nextElementSibling"): HTMLElement | null {
+  let el = handle[side] as HTMLElement | null;
+  while (el && !(el.matches(".sidebar-section[data-section]") && !el.classList.contains("is-collapsed"))) {
+    el = el[side] as HTMLElement | null;
+  }
+  return el;
+}
+
 function onPointerDown(e: PointerEvent) {
   e.preventDefault();
   const handle = e.currentTarget as HTMLElement;
-  const above = handle.previousElementSibling as HTMLElement;
-  const below = handle.nextElementSibling as HTMLElement;
+  const above = nearestOpen(handle, "previousElementSibling");
+  const below = nearestOpen(handle, "nextElementSibling");
+  if (!above || !below) return;
 
   // Snapshot every expanded section's current height as its weight, so the
   // layout doesn't jump when the drag starts.
