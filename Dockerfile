@@ -28,7 +28,7 @@ COPY web ./web
 RUN npm run build --prefix web
 
 # The app kit's vendor layer → kit/vendor (plans/apps.md §3; what every app
-# build resolves against, src/apps/kit.ts): browser bundles, arch-independent,
+# build resolves against, src/apps/kit.ts): a frozen module tree, arch-independent,
 # built once on the build host like web/. Only kit/vendor reaches the image —
 # the kit's own node_modules (React and the rest of the set) stays here.
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS kit
