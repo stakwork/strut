@@ -1175,3 +1175,17 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    approval. One step family with two scopes, or does the app want its own
    `automation/*` twins? My lean is one family: the approval is a step the
    host configures, and an app with none configured simply has none.
+10. **A new app's tool on a stateless door.** `app_<name>` (§7.2) is a tool
+    that did not exist when the host connected. MCP announces that through
+    `notifications/tools/list_changed`, which needs a session, and both
+    doors are deliberately stateless — one SDK `Server` per request
+    (`src/ai/mcp.ts`). So an app the builder publishes mid-conversation
+    shows up in Claude Desktop or Goose only once the host refreshes its
+    tool list: a new chat, a reconnect. Two ways out: a sessionful door
+    (the SDK has one; strut chose stateless for simplicity), or ONE
+    `open_app { name, view?, runId? }` tool — which works only if MCP Apps
+    lets a tool RESULT carry `_meta.ui.resourceUri`, where my reading of
+    SEP-1865 has it on the tool definition alone, so the host can prefetch
+    the resource. Check the spec before work item 5. Until it is settled,
+    the builder's reply names the app and its URL, and a host without the
+    tool shows a link.
