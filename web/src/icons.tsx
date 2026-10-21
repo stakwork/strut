@@ -323,3 +323,13 @@ export function ImageIcon({ size = 14, ...rest }: IconProps) {
     </Outline>
   );
 }
+
+/** An app (plans/apps.md): a window with a sidebar — the Apps section's glyph. */
+export function AppGlyph({ size = 12, ...rest }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" {...rest}>
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+      <path d="M1.5 6h13M6 6v7.5" />
+    </svg>
+  );
+}

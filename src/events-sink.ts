@@ -44,6 +44,7 @@ export const SINK_FIELDS = [
   "actor",
   "principal",
   "job",
+  "app",
   "verify",
   "subflow",
   "parentRunId",

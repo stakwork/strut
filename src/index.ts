@@ -159,7 +159,11 @@ export { manifestSchema, parseManifest, readManifest, MANIFEST_FILE, type AppMan
 export { buildApp, lintAppSource, readBuildInfo, cspFor, withToken, withoutTokenMeta, DOCUMENT_FILE, BUILD_FILE, TOKEN_META, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./apps/build.js";
 export { loadKit, defaultKitDir, type Kit, type KitLocation } from "./apps/kit.js";
 export { appsRoot, appVersionDir, appFilePath, listAppFiles, validateAppName } from "./apps/files.js";
-export { createApps, TEMPLATES_DIR, PAID_OR_SHELL_STEPS, type AppsCapability, type AppView, type AppPublishOptions, type AppPublishResult } from "./apps/apps.js";
+export { createApps, appErrors, TEMPLATES_DIR, PAID_OR_SHELL_STEPS, APP_ERRORS_MAX, type AppsCapability, type AppView, type AppError, type AppPublishOptions, type AppPublishResult } from "./apps/apps.js";
+// The app door (plans/apps.md §5): `step_run`, the one tool a page calls, and
+// its grant checks; the runs capability the run/* steps are thin over.
+export { buildAppTools, grantRefusal, graphWriteRefusal, keptFromApp, STEP_RUN_TOOL, APP_TOOL_META, GRAPH_WRITES, type AppToolDeps } from "./apps/tools.js";
+export { requireRuns, capEvents, fileResult, matchesRunFilter, type RunsCapability, type RunListQuery, type RunListEntry, type RunGetResult, type RunLaunchQuery, type RunLaunchBy, type RunLaunchResult, type RunFile, type WorkflowInfo as RunWorkflowInfo } from "./runs.js";
 
 // LLM token usage (shared by the agent + lab eval/score steps). Pricing and
 // cost live in aieo (`computeSessionCost`); `usageForCost` adapts the shape.
@@ -208,7 +212,7 @@ export {
 } from "./mothership.js";
 
 // Auth: the deployment-key middleware and the default actor resolver.
-export { requireApiKey, apiKeyMatches, actorFromHeader, scopeFromKey, type Scope } from "./auth.js";
+export { requireApiKey, apiKeyMatches, actorFromHeader, scopeFromKey, appIdentity, appOfIdentity, type Scope } from "./auth.js";
 
 // Actor secrets (plans/code-change.md §3.2): per-actor credentials a host
 // pushes, resolved for a run's principal by the ordinary secrets boundary.

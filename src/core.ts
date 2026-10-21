@@ -101,6 +101,12 @@ export interface StepContext<TServices = unknown> {
    *  job shares, whatever its workflow. `job/dir` hands out its directory;
    *  templates see it as `{{ $job }}`. Absent on a plain run. */
   job?: string;
+  /** The APP this call or run works for (plans/apps.md §5), the twin of
+   *  `job`: set by the app door (`step_run`) for a page's call, and carried
+   *  by a run the app launched (`run/launch`) — never by a launch body. A
+   *  step that keeps something per app (its SQLite file, its declared
+   *  graph types, its schedules) finds the app here. Absent otherwise. */
+  app?: AppRef;
   /** The AUTOMATION whose fire this run is (plans/automations.md §6): set
    *  by the scheduler's launch alone, recorded on `run.start`, read back by
    *  a resume. Nothing a caller sends (`POST …/run`, `meta/run-workflow`)
@@ -238,8 +244,19 @@ export type RunEventType =
    *  was being cancelled, not cut off. */
   | "run.cancelling";
 
-/** Who launched a run, when it was not a person or an API call. */
-export type RunOrigin = "verify" | "schedule" | "peer";
+/** Who launched a run, when it was not a person or an API call. `"app"`:
+ *  an APP's page, through `step_run` → `run/launch` (plans/apps.md §5, §11)
+ *  — a person's click in the viewer's name, so the run carries `app` too. */
+export type RunOrigin = "verify" | "schedule" | "peer" | "app";
+
+/** The APP a run or a step works for (plans/apps.md §5): a workspace app at
+ *  a version — what `step_run` sets as `ctx.app` for the page's call, and
+ *  what a run the app launches records on `run.start` as a job run records
+ *  `job`. A job's app (`{ job, path }`) is work item 2. */
+export interface AppRef {
+  name: string;
+  version: string;
+}
 
 /** A single event in the run log. */
 export interface RunEvent {
@@ -292,6 +309,9 @@ export interface RunEvent {
   /** On `run.start`: the job the run was launched under (plans/jobs.md §1),
    *  read back by a resume like `principal`. */
   job?: string;
+  /** On `run.start`: the APP the run was launched for (`origin: "app"`,
+   *  plans/apps.md §5) — read back by a resume like `job`. */
+  app?: AppRef;
   /** On `run.start`: the ORIGIN of the URL the launch asked to have the
    *  result POSTed to (`POST …/run { callback }`, src/callback.ts). The URL
    *  itself is the host's credential and never leaves the launch site. */
@@ -592,6 +612,13 @@ export interface RunSummary {
   /** The job the run was launched under (plans/jobs.md §1) — on the summary
    *  so a job's deliverables resolve from it alone (`…/runs/:runId/artifacts`). */
   job?: string;
+  /** Who launched the run, when it was not a person or an API call (as on
+   *  `run.start`) — on the summary so a run list can badge a scheduled, a
+   *  peer's or an app's run without reading its log. */
+  origin?: RunOrigin;
+  /** The app the run was launched for (plans/apps.md §11) — on the summary
+   *  so a fold by app is a summary scan; `origin: "app"` says who launched. */
+  app?: AppRef;
   /** Content hash of the workflow version the run executed (as on
    *  `run.start`) — on the summary so "runs per version" is a summary scan. */
   workflowHash?: string;

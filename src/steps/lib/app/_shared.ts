@@ -31,8 +31,10 @@ export function requireApps(services: unknown): AppsCapability {
  * Where an app directory a step names lives: relative to the JOB's directory
  * when the run has one (or `job` names another's — a builder job publishing
  * a code job's prototype), else the run's own artifact directory — and
- * never outside it (the job file routes' guard). With neither, an absolute
- * path as given.
+ * never outside it (the job file routes' guard). With neither — the CHAT
+ * builder, whose tools run under no run — relative to the server's data
+ * directory (its scratch, where its editor and bash work), and with no
+ * data directory either, an absolute path as given.
  */
 export async function resolveAppPath(ctx: StepContext<StrutCapabilities>, path: string, job?: string): Promise<string> {
   const services = ctx.services as Partial<StrutCapabilities> | undefined;
@@ -45,12 +47,14 @@ export async function resolveAppPath(ctx: StepContext<StrutCapabilities>, path: 
     base = jobRoot(services.dataDir, jobId);
   } else if (services?.artifacts && ctx.runId) {
     base = await services.artifacts.dir(ctx.runId);
+  } else if (services?.dataDir) {
+    base = services.dataDir;
   }
   if (!base) {
     if (!isAbsolute(path)) throw new Error(`"${path}": with no job and no run directory to resolve against, an app path must be absolute`);
     return resolve(path);
   }
   const abs = resolve(base, path);
-  if (abs !== base && !abs.startsWith(base + sep)) throw new Error(`"${path}" leaves the ${jobId ? "job's" : "run's"} directory (${base})`);
+  if (abs !== base && !abs.startsWith(base + sep)) throw new Error(`"${path}" leaves the ${jobId ? "job's" : ctx.runId ? "run's" : "data"} directory (${base})`);
   return abs;
 }
