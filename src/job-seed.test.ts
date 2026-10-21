@@ -62,7 +62,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     assert.equal(validateWorkflowYaml(delta, { registry: await createRegistry([]) }).ok, true);
   });
 
-  it("createStrut seeds it by content hash: once, as a seed; a reboot is a no-op; a workspace edit stays active; a changed delta publishes; `job: false` seeds nothing", async () => {
+  it("createStrut seeds it by content hash: once, as a seed; a reboot is a no-op; every boot makes git's template active — over a workspace edit, and again when a delta is taken back out; a changed delta publishes; `job: false` seeds nothing", async () => {
     const dir = await mkdtemp(join(tmpdir(), "job-seed-"));
     try {
       const ws = () => new WorkspaceManager(dir);
@@ -84,14 +84,14 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       const b = await createStrut({ workspace: ws(), ...quiet });
       assert.deepEqual((await versionsOf(b)).map((v) => v.version), ["v1"]);
 
-      // A workspace-side edit (the UI, the builder) is the active version and
-      // survives the next boot — the committed template is a KNOWN hash, so
-      // re-seeding it is a no-op.
+      // A seed always matches git: a workspace-side edit (the UI, the
+      // builder) is active until the next boot, which makes the committed
+      // template active again. The edit stays in the history.
       const edited = (await ws().getWorkflowSource(JOB_WORKFLOW, "v1")).replace("maxSteps: 500", "maxSteps: 50");
       await ws().publishWorkflow(JOB_WORKFLOW, "v2", edited, undefined, undefined, undefined, { source: "ui" });
       assert.equal(await activeOf(), "v2");
       const c = await createStrut({ workspace: ws(), ...quiet });
-      assert.equal(await activeOf(), "v2");
+      assert.equal(await activeOf(), "v1", "the boot put git's template back");
       assert.deepEqual((await versionsOf(c)).map((v) => [v.version, v.source]), [["v1", "seed"], ["v2", "ui"]]);
 
       // The host's delta is a new template: published and activated.
@@ -101,6 +101,12 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       const meta = await ws().getWorkflowMetadata(JOB_WORKFLOW);
       assert.equal(meta!.versions["v3"]!.source, "seed");
       assert.equal(meta!.category, "job");
+
+      // The delta taken back out: the template is v1's text again, and v1 is
+      // made active — nothing new published.
+      await createStrut({ workspace: ws(), ...quiet });
+      assert.equal(await activeOf(), "v1");
+      assert.deepEqual((await versionsOf(c)).map((v) => v.version), ["v1", "v2", "v3"]);
 
       // Off.
       const fresh = await mkdtemp(join(tmpdir(), "job-seed-off-"));

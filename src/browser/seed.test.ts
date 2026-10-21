@@ -60,7 +60,7 @@ describe("the browser workflows strut ships", () => {
     }
   });
 
-  it("createStrut seeds them in the browser category, once; a reboot is a no-op, a workspace edit stays active; `browserWorkflows: false` seeds none", async () => {
+  it("createStrut seeds them in the browser category, once; a reboot is a no-op, and makes the committed copy active over a workspace edit; `browserWorkflows: false` seeds none", async () => {
     await withDir(async (dir) => {
       const ws = () => new WorkspaceManager(dir);
       const a = await createStrut({ workspace: ws(), ...quiet });
@@ -77,7 +77,7 @@ describe("the browser workflows strut ships", () => {
       const b = await createStrut({ workspace: ws(), ...quiet });
       const meta = await b.workspace.getWorkflowMetadata("browser-capture");
       assert.deepEqual(Object.keys(meta!.versions).sort(), ["v1", "v2"], "nothing new published");
-      assert.equal(meta!.active, "v2", "the workspace's edit stays active");
+      assert.equal(meta!.active, "v1", "a seed always matches git: the boot put the committed copy back");
     });
     await withDir(async (dir) => {
       const off = await createStrut({ workspace: new WorkspaceManager(dir), ...quiet, browserWorkflows: false });

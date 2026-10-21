@@ -46,10 +46,11 @@
 > orchestrator routing a build to `@second` (and, with no `@`, here), `#launch`,
 > peer-tagged nodes and deliverables, `job/continue` on the peer's thread,
 > kill-and-resume reattaching, cancel forwarded, `peer: false` refusing.
-> Two strut bugs found and fixed on the branch (a peer's job thread was
-> `peer/peer/<job>`; the job view split a peer build into phantom threads);
-> one seeding bug and four observations written up in §9. About $1.53 of
-> model spend.
+> Three strut bugs found and fixed on the branch (a peer's job thread was
+> `peer/peer/<job>`; the job view split a peer build into phantom threads;
+> a reverted host delta was never re-applied, so seeds now always match
+> git, as ruled that day); four observations written up in §9. About $1.53
+> of model spend.
 
 ## Problem
 
@@ -570,8 +571,8 @@ Strut, in order; each a PR of its own, never stacked.
    §4 documents `peer` on a ref. Tests over both. **BUILT 2026-10-21.**
 5. **Live over two struts** (§9) before the mcp bump that carries 1–4.
    **VALIDATED 2026-10-21** — §9 "What the run showed" has the run, what
-   matched, the two fixes (`peerScoped`, the job-threads fold) and what is
-   left open.
+   matched, the three fixes (`peerScoped`, the job-threads fold, seeds
+   that always match git) and what is left open.
 
 Hive, as the contract it reads (§5): delegations on every org swarm; a
 `run.end` with `job` adopted whatever its workflow; a peer-tagged artifact
@@ -682,22 +683,23 @@ callbacks.
 
    After both fixes, a re-run gave B the thread `peer/fixcheck-1` with 2
    turns, and A one thread `@second/peer/fixcheck-1` with turns 0 and 1.
+3. **A reverted delta was never applied (every seed).** After the `peer:
+   false` boot, B was restarted with its normal config and seeded
+   nothing: v1's content was known, and every seeder passed
+   `reactivateKnown: false`, which leaves the active version alone. So v2
+   (`peer: false`) stayed active, and the peer launch stayed 403 until
+   `PUT /workflows/builder/active { version: v1 }`. Ruled 2026-10-21: **a
+   seed always matches git.** Every boot now makes the committed template
+   (with the host's delta) the active version: `job`, `orchestrator`,
+   `builder`, the browser workflows, the system workflows (`tidy-memory`;
+   its automation's on/off and trigger stay the person's) and the
+   `strut/views` app. A text seen before is made active again, nothing new
+   is published, and an edit made since (the UI, the chat builder, a
+   promotion) stays in the history, active until the next boot. The store
+   keeps `reactivateKnown: false` for callers that want an edit kept.
 
 **Found, not fixed.**
 
-- **A reverted delta is never applied (every seed).** After the `peer:
-  false` boot, B was restarted with its normal config and seeded nothing.
-  v1's content is known, and `reactivateKnown: false` leaves the active
-  version alone, so v2 (`peer: false`) stayed active. The peer launch
-  stayed 403 until `PUT /workflows/builder/active { version: v1 }`. The
-  same holds for `job`, `orchestrator`, the browser workflows and the
-  views app: a host that drops a grant from its delta, or a release that
-  reverts a template, keeps the newer version. The recorded `source: seed`
-  cannot separate a revert from a person's rollback to an older seeded
-  version, since a rollback moves only the pointer. The fix needs the
-  seed's last-applied hash kept per workflow: re-point when the template
-  differs from what the seed last applied, and leave alone what it applied
-  at the last boot. That is a field on three backends, a change of its own.
 - **"No bash" is not a boundary in practice.** All six builds that
   published wrote their claim's check as an `exec` running `sh -c`,
   `bash` or `node -e`. One build also published an `exec` step (`tr a-z
@@ -732,12 +734,19 @@ compose image.
 
 **stakgraph#1805.** As far as strut goes, it is safe to merge for
 cross-strut building. Every row above held on code that contains its pin
-(d7d3670): the first turns ran before either fix, which only rename a
-thread and tidy a view. One caution: the first fix renames the peer's
-thread. If a peer build could start between #1805 and a bump past this
-branch, that job's next turn after the bump begins a cold thread on the
-peer (its files are kept). Re-pinning #1805 to this branch's merge before
-it ships avoids that. The lab-specific doors above are #1805's own to test.
+(d7d3670): the first turns ran before any fix. The first two only rename
+a thread and tidy a view. One caution there: the first fix renames the
+peer's thread, so if a peer build could start between #1805 and a bump
+past this branch, that job's next turn after the bump begins a cold
+thread on the peer (its files are kept). Re-pinning #1805 to this
+branch's merge before it ships avoids that. The third changes what a
+boot does: on the first boot past this branch, a strut-seeded workflow
+someone edited on a swarm (`job`, `orchestrator`, `builder`, the browser
+and system workflows) goes back to git's version, the edit kept in its
+history. The lab's own seeders (`SEED_OPTS` in
+`stakgraph/mcp/src/lab/seed-opts.ts`) still pass `reactivateKnown: false`
+and keep edits until mcp makes the same change. The lab-specific doors
+above are #1805's own to test.
 
 ## 10. Open questions (OPEN)
 
