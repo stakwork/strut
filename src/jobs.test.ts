@@ -11,7 +11,7 @@ import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import { fileArtifactsCapability, shellCapability, standardServices, type StrutCapabilities } from "./capabilities.js";
 import { readRunStart } from "./journal.js";
-import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, notifyJob, readJobRecord, releaseWith, setJobCallback, sweepJobs, touchJob } from "./jobs.js";
+import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, notifyJob, readJobRecord, releaseWith, setJobCallback, sweepJobs, touchJob, turnOf, JOB_WORKFLOWS } from "./jobs.js";
 import { RunController } from "./run-control.js";
 import { artifactKind, jobFileUrl, resolveArtifactRefs } from "./artifact-refs.js";
 import { captchaFiles } from "./browser/captcha.js";
@@ -504,6 +504,32 @@ describe("jobs — artifact refs", () => {
       { id: "none", kind: "url", title: "None", error: "one of path, url or content is required" },
       { id: "big", kind: "url", title: "Big", error: "too large" },
     ]);
+  });
+
+  it("leaves an entry tagged with a peer as it came — its path and url are the peer's — and resolves the rest of the list", async () => {
+    const checked: string[] = [];
+    const output = {
+      artifacts: [
+        { id: "plan", title: "Plan", path: "plan.md" },
+        { id: "far", title: "Far plan", path: "plan.md", peer: "acme-web", job: "peer/build-1" },
+        { id: "far-gone", title: "Far ../", path: "../up.md", peer: "acme-web", job: "peer/build-1" },
+        { id: "far-link", kind: "html", title: "Far page", url: "/jobs/peer%2Fbuild-1/files/page.html", peer: "acme-web" },
+        { id: "far-pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", peer: "acme-web", job: "peer/build-1" },
+        { id: "far-inline", title: "Sample", content: "hello", peer: "acme-web" },
+        { id: "far-empty", title: "Nothing", peer: "acme-web" },
+      ],
+    };
+    const refs = await resolveArtifactRefs(output, { runId: "run-1", job: "build-1", exists: async (url) => (checked.push(url), true) });
+    assert.deepEqual(refs, [
+      { id: "plan", kind: "markdown", title: "Plan", url: "/jobs/build-1/files/plan.md" },
+      { id: "far", kind: "markdown", title: "Far plan", path: "plan.md", peer: "acme-web", job: "peer/build-1" },
+      { id: "far-gone", kind: "markdown", title: "Far ../", path: "../up.md", peer: "acme-web", job: "peer/build-1" },
+      { id: "far-link", kind: "html", title: "Far page", url: "/jobs/peer%2Fbuild-1/files/page.html", peer: "acme-web" },
+      { id: "far-pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", peer: "acme-web", job: "peer/build-1" },
+      { id: "far-inline", kind: "url", title: "Sample", content: "hello", peer: "acme-web" },
+      { id: "far-empty", kind: "url", title: "Nothing", error: "one of path, url or content is required" },
+    ]);
+    assert.deepEqual(checked, ["/jobs/build-1/files/plan.md"], "nothing of the peer's is looked for here");
   });
 
   it("is undefined when the output declares none", async () => {
@@ -1110,5 +1136,23 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.equal(JSON.stringify(shot).includes("data"), false, "the bytes ride on the marker, not the output");
     await assert.rejects(() => jobRead.run({ job: "j-c", path: "../j-b/plan.md" }, ctx), /escapes/);
     await assert.rejects(() => jobRead.run({ job: "j-c", path: "nope.md" }, ctx), /No file/);
+  });
+});
+
+describe("jobs — the job's newest turn (turnOf, plans/builder-job.md §2)", () => {
+  const run = (workflow: string, runId: string, parentRunId?: string) => ({ workflow, runId, at: runId, ...(parentRunId ? { parentRunId } : {}) });
+
+  it("is the newest run with no parent that ran a job-shaped workflow — what job/continue launches and GET /jobs/:id reports", () => {
+    assert.deepEqual([...JOB_WORKFLOWS], ["job", "builder"]);
+    assert.equal(turnOf(undefined), undefined);
+    assert.equal(turnOf([]), undefined);
+    assert.equal(turnOf([run("job", "1")])?.workflow, "job");
+    // A builder job stays a builder job across turns.
+    assert.equal(turnOf([run("builder", "1"), run("builder", "2")])?.runId, "2");
+    // What a turn ran under the job (a child, by parentRunId) is not a turn;
+    // nor is a run of some other workflow launched under the job id (a
+    // captcha round, a check): the newest TURN decides.
+    assert.equal(turnOf([run("builder", "1"), run("pod-pr", "2", "1"), run("browser-captcha", "3")])?.runId, "1");
+    assert.equal(turnOf([run("browser-captcha", "1")]), undefined, "no job-shaped turn yet");
   });
 });

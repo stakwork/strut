@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yaml from "js-yaml";
+import { z } from "zod";
 import { contentHash } from "./version.js";
 import { createRegistry } from "./steps/registry.js";
 import { validateWorkflowYaml } from "./validate.js";
@@ -47,6 +48,21 @@ describe("the orchestrator workflow strut ships", () => {
       assert.ok(!t.includes("*"), `strut's own list names steps, never globs: ${t}`);
       assert.ok(registry[t], `a grant strut cannot honor: ${t}`);
     }
+
+    // A workflow build is a builder job (plans/builder-job.md §2, amended):
+    // ONE sentence here — the kind itself is the `Workflow Build` Concept
+    // strut seeds under Job (the kinds list this prompt ends with), and the
+    // rule rides on job/start's own schema, beside the call.
+    const system = (yaml.load(text) as { params: { system: string } }).params.system.replace(/\s+/g, " ");
+    assert.ok(
+      system.includes("A workflow to build, change, test or debug is a BUILDER job (`workflow: builder`), on the strut whose workspace it belongs to (`peer` when that is not this one)."),
+      system,
+    );
+    assert.equal(system.match(/builder/gi)?.length, 2, "one sentence, not a paragraph: `BUILDER job` and `workflow: builder`, nothing more");
+    const start = z.toJSONSchema(registry["job/start"]!.input) as { properties: Record<string, { enum?: string[]; description?: string }> };
+    assert.deepEqual(start.properties["workflow"]!.enum, ["job", "builder"], "a closed set: the model never names an arbitrary workflow");
+    assert.match(start.properties["workflow"]!.description!, /`builder`: the thing to build, change, test or debug is a WORKFLOW/);
+    assert.match(start.properties["peer"]!.description!, /^With workflow: builder only/);
   });
 
   it("the host's delta is appended after strut's tools and prompt, and changes the hash; an empty one does not", async () => {

@@ -15,7 +15,9 @@
  * resolved to links the way a run's own `…/artifacts` are. Nothing is
  * stored; a file a later turn overwrote serves the later bytes behind the
  * same link. A child run's artifacts are never folded — a turn names what
- * it wants shown.
+ * it wants shown. A turn that ran on a peer (the `builder`'s `remote`
+ * branch) folds its deliverables tagged with that peer, as they came: never
+ * a link here, never `not found` (artifact-refs.ts).
  */
 
 import { access, readdir, readFile } from "node:fs/promises";
@@ -24,7 +26,7 @@ import type { RunStore } from "./store.js";
 import type { SessionInfo, SessionStore } from "./session-store.js";
 import { idProblem } from "./session-store.js";
 import { artifactEntriesOf, artifactKind, resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
-import { jobFilePath, jobHolder, jobRoot, listJobFiles, readJobRecord, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
+import { jobFilePath, jobHolder, jobRoot, listJobFiles, readJobRecord, turnOf, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
 import { foldJobThreads, type JobThread, type ThreadRun } from "./job-threads.js";
 import { searchWorkflows } from "./search.js";
 
@@ -55,6 +57,10 @@ export interface JobListing {
   usedAt: string;
   /** The run holding the directory now. */
   busy?: string;
+  /** The workflow the job's newest TURN ran — `job` or `builder`
+   *  (`turnOf`, `JOB_WORKFLOWS`): what the job is, what `job/continue`
+   *  launches next. Absent before the first turn. */
+  workflow?: string;
   runs: number;
   holds: number;
 }
@@ -71,7 +77,8 @@ export interface JobRunView extends JobRun {
 /** One current deliverable: a resolved ref, and the run that last reported it. */
 export interface JobArtifact extends ArtifactRef {
   runId: string;
-  /** Relative to the job's directory, as declared — what `job/read` takes. */
+  /** Relative to the job's directory, as declared — what `job/read` takes.
+   *  With `peer`: relative to that peer's `job` directory, unread here. */
   path?: string;
 }
 
@@ -178,6 +185,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
 
   const listing = (rec: JobRecord): JobListing => {
     const busy = jobHolder(rootOf(rec.name));
+    const turn = turnOf(rec.runs);
     return {
       job: rec.name,
       ...(rec.title ? { title: rec.title } : {}),
@@ -186,6 +194,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       ...(rec.createdAt ? { createdAt: rec.createdAt } : {}),
       usedAt: rec.usedAt,
       ...(busy ? { busy } : {}),
+      ...(turn ? { workflow: turn.workflow } : {}),
       runs: rec.runs?.length ?? 0,
       holds: rec.holds?.length ?? 0,
     };

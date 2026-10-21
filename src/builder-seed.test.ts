@@ -15,7 +15,8 @@ import { hostConfigFromEnv } from "./server.js";
 import { JOB_WORKFLOW } from "./job-seed.js";
 import { ORCHESTRATOR_WORKFLOW } from "./orchestrator-seed.js";
 import type { AuthoringCapability } from "./authoring.js";
-import { BUILDER_WORKFLOW, builderWorkflowYaml, seedBuilderWorkflow } from "./builder-seed.js";
+import { BUILDER_RULES_MARKER, BUILDER_WORKFLOW, builderWorkflowYaml, seedBuilderWorkflow } from "./builder-seed.js";
+import { JOB_TOOLS, builderRules } from "./ai/prompts.js";
 
 type Params = { tools: string[]; builtins: string[]; system: string; concept: string };
 type Doc = { peer?: boolean; params: Params };
@@ -62,6 +63,60 @@ describe("the builder workflow strut ships", () => {
     for (const t of ["meta/publish-workflow", "meta/create-step", "meta/edit-step", "meta/validate-workflow", "meta/run-step", "meta/add-claim"]) assert.ok(twins.includes(t), t);
     assert.ok(twins.length >= 20, `the glob reaches the twins (${twins.length})`);
     assert.ok(!tools.includes("strut/run-workflow"), "the builder on a strut builds for that strut");
+  });
+
+  it("params.system is strut's rules for building — the dialect, the tools and the procedure — in the twins' names, inside the job's own text", async () => {
+    const text = await builderWorkflowYaml();
+    const { system, tools } = paramsOf(text);
+    const rules = builderRules(JOB_TOOLS);
+    assert.ok(!system.includes(BUILDER_RULES_MARKER), "the marker is replaced");
+    assert.ok(system.includes(rules), "rendered whole, from the one source the chat reads");
+    assert.ok(system.startsWith("You are a workflow BUILDER working on a job"), "the job's head first");
+    assert.ok(system.indexOf(rules) < system.indexOf("meta/add-claim with subject"), "then the job's claims, kinds and reply");
+    const loaded = (flowFromYaml(BUILDER_WORKFLOW, "v1", text).params as Params).system;
+    assert.equal(loaded, system, "loaded as written: the rules' {{ params.name }} examples are not param references");
+
+    // The dialect the chat has always had.
+    for (const rule of [
+      "ALWAYS WRAP TEMPLATE VALUES IN QUOTES",
+      `"params" (optional, top level) are the workflow's tunable knobs`,
+      `"input" (optional, top level) declares the run payload's fields`,
+      "Division of labor (LLM vs code):",
+      "Never ask a model to convert or add numbers",
+      "A cap is a runaway guard, not a budget",
+      `The "if" step is a GATE.`,
+      "External capabilities come from ctx.services",
+      "ctx.services.secrets.get(\"ENV_NAME\")",
+    ]) assert.ok(system.includes(rule), rule);
+
+    // The procedure and the tools, in the names the agent holds.
+    for (const said of [
+      "1. Call meta/list-workflows FIRST",
+      "Call meta/get-step for EVERY step type you will use",
+      `meta/run-step(type, config, cassette:"record")`,
+      "Call meta/validate-workflow on the YAML",
+      "Call meta/run-workflow with a sample input",
+      "- meta/publish-workflow(name, yaml, description?, category?)",
+      "No shell here",
+      "app/init scaffolds one at apps/<name> in the job's directory",
+      "say in your reply's `ask` which NAME the person should add under Secrets",
+    ]) assert.ok(system.includes(said), said);
+
+    // Never the chat's: no tool of its, no bash, no mechanics it alone has.
+    for (const chat of ["list_steps", "search_steps", "get_step", "list_secrets", "create_step", "edit_step", "run_step", "list_workflows", "get_workflow", "validate_workflow", "create_workflow", "edit_workflow", "run_workflow", "list_runs", "get_run", "search_runs", "ask_user", "request_secret", "graph_query", "graph_get(", "set_automation", "set_active_version", "cancel_run", "list_peers", "app_build"]) {
+      assert.ok(!system.includes(chat), `the chat's ${chat}`);
+    }
+    assert.doesNotMatch(system, /\bbash\(|where bash runs|clone a repo/, "never told to use a shell");
+    for (const mechanic of ["[run-notification]", "[restart-notification]", "this chat", "scratch/", "`edits`"]) assert.ok(!system.includes(mechanic), mechanic);
+
+    // Every authoring tool it names is a step the agent is granted.
+    const registry = await createRegistry([]);
+    const named = new Set(system.match(/\b(?:meta|app|job|graph)\/[a-z][a-z-]*/g));
+    const granted = (type: string) => tools.some((t) => t === type || (t.endsWith("/*") && type.startsWith(t.slice(0, -1))));
+    for (const type of named) {
+      assert.ok(registry[type], `a step strut has: ${type}`);
+      if (/^(meta|app)\//.test(type) || ["graph/graph-get", "graph/graph-search", "job/read"].includes(type)) assert.ok(granted(type), `granted: ${type}`);
+    }
   });
 
   it("the host's delta is appended after strut's tools and prompt and changes the hash; `peer: false` drops the key", async () => {
@@ -266,6 +321,8 @@ describe("the builder, end to end", () => {
     assert.ok(names.includes("web_search") && names.includes("web_fetch"), "the web tools stay");
     const system = JSON.stringify(req.system);
     assert.ok(system.includes("You are a workflow BUILDER"), "strut's prompt");
+    assert.ok(system.includes("ALWAYS WRAP TEMPLATE VALUES IN QUOTES") && system.includes("1. Call meta/list-workflows FIRST"), "with the builder's rules");
+    assert.ok(system.includes("{{ params.greeting }}: {{ fetch.body }}"), "the dialect's templates reach the model as written, never resolved");
     assert.ok(system.includes("HOSTSECTION"), "the host's section after it");
     assert.ok(system.indexOf("workflow BUILDER") < system.indexOf("HOSTSECTION"));
     const lastUser = JSON.stringify(req.messages.filter((m: any) => m.role === "user").at(-1));

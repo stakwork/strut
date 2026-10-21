@@ -5,15 +5,19 @@ import { launchOnce, requireJobLaunch } from "./_shared.js";
 
 /**
  * The next message of an existing JOB (the orchestrator's `continue_job`):
- * launches the `job` workflow DETACHED under that job — its directory, its
- * thread — and returns at once, like `job/start`. Refused (`job_busy:`)
- * while a run of the job is in flight, and for a job not on file.
+ * launches the job's workflow DETACHED under that job — its directory, its
+ * thread — and returns at once, like `job/start`. WHICH workflow is the
+ * record's, not the caller's: the launcher follows the job's newest turn
+ * (`turnOf`, jobs.ts — a builder job stays a builder job, and one on a peer
+ * carries that turn's `input.peer` along), so the caller names only the
+ * job. Refused (`job_busy:`) while a run of the job is in flight, and for a
+ * job not on file.
  */
 export default defineStep({
   type: "job/continue",
   description:
     "Send an existing JOB its next message — the answer to its question, a change, \"go on\" — and return at once: { job, runId, callback }. " +
-    "It continues in the job's own directory and thread, remembering its earlier turns; this call does not wait for it, and its result reaches the person when it ends. " +
+    "It continues in the job's own directory and thread, remembering its earlier turns, with the same hands it had (a builder job goes on building, where it builds); this call does not wait for it, and its result reaches the person when it ends. " +
     "Refused while the job is still working (job_busy: its result is on the way). The `job` id is the one job/start returned, or one job/list finds.",
   input: z.object({
     job: z.string().min(1).describe("The job id, from job/start or job/list."),

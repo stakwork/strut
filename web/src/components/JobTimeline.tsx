@@ -149,9 +149,9 @@ export function JobTimeline(props: {
         {job.artifacts.length === 0 && <div class="job-empty">Nothing declared yet.</div>}
         <div class="job-arts">
           {job.artifacts.map((a) => (
-            <button key={`${a.id}:${a.runId}`} class="job-art" onClick={() => openArtifact(a)} title={a.summary ?? a.title}>
+            <button key={`${a.id}:${a.runId}`} class="job-art" onClick={() => openArtifact(a)} title={a.peer ? peerArtifactNote(a) : a.summary ?? a.title}>
               <span class="job-art-title"><span class="art-chip-kind">{a.kind}</span> {a.title}</span>
-              <span class="job-art-sub">{a.label ?? a.summary ?? `run ${a.runId}`}{a.error ? ` · ${a.error}` : ""}</span>
+              <span class="job-art-sub">{a.peer ? `on @${a.peer} · ${a.path ?? a.label ?? a.kind}` : a.label ?? a.summary ?? `run ${a.runId}`}{a.error ? ` · ${a.error}` : ""}</span>
             </button>
           ))}
         </div>
@@ -278,9 +278,10 @@ function ThreadRow(props: {
                   {turn.artifacts.map((a) => {
                     const isCurrent = props.current.has(`${a.id}\n${turn.runId}`);
                     return (
-                      <button key={a.id} class={`art-chip${isCurrent ? " is-current" : ""}`} onClick={() => props.onOpenArtifact({ ...a, runId: turn.runId })} title={a.summary ?? a.title}>
+                      <button key={a.id} class={`art-chip${isCurrent ? " is-current" : ""}`} onClick={() => props.onOpenArtifact({ ...a, runId: turn.runId })} title={a.peer ? peerArtifactNote(a) : a.summary ?? a.title}>
                         <span class="art-chip-kind">{a.kind}</span>
                         <span class="art-chip-title">{a.title}</span>
+                        {a.peer && <span class="art-chip-peer">@{a.peer}</span>}
                         {!isCurrent && <span class="art-chip-old">superseded</span>}
                       </button>
                     );
@@ -315,19 +316,31 @@ function findTurnArtifact(threads: api.JobThread[], id: string, runId: string): 
 }
 
 /** Where a deliverable opens: its url, or a url inside small inline JSON
- *  (a pull request ref carries `{ url, number, state }`). */
-export function linkOf(ref: { url?: string; content?: unknown }): string | null {
-  if (ref.url) return ref.url;
+ *  (a pull request ref carries `{ url, number, state }`). A deliverable
+ *  tagged with a `peer` is that strut's: only an absolute link opens from
+ *  here, never a path or a strut-relative url (no read-through yet,
+ *  plans/federation.md §2.1). */
+export function linkOf(ref: { url?: string; content?: unknown; peer?: string }): string | null {
+  let link: string | null = null;
   const c = ref.content;
-  if (typeof c === "string" && c.startsWith("{")) {
+  if (ref.url) link = ref.url;
+  else if (typeof c === "string" && c.startsWith("{")) {
     try {
       const o = JSON.parse(c);
-      if (o && typeof o.url === "string") return o.url;
+      if (o && typeof o.url === "string") link = o.url;
     } catch {}
   } else if (c && typeof c === "object" && typeof (c as { url?: unknown }).url === "string") {
-    return (c as { url: string }).url;
+    link = (c as { url: string }).url;
   }
-  return null;
+  return link && ref.peer && !/^https?:\/\//.test(link) ? null : link;
+}
+
+/** A peer's deliverable's tooltip: where it is, and whether it opens here. */
+export function peerArtifactNote(ref: { peer?: string; path?: string; url?: string; content?: unknown }): string {
+  const link = linkOf(ref);
+  if (link) return `${link} — on @${ref.peer}`;
+  if (ref.content !== undefined) return `Inline, from @${ref.peer}`;
+  return `${ref.path ?? ref.url} on @${ref.peer} — this strut cannot open it yet`;
 }
 
 export function fmtCost(c: number): string {

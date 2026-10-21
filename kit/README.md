@@ -11,10 +11,13 @@ One source, two builds:
 | **vendor** (`vendor/`) | A frozen MODULE TREE (kit 0.2): every module the dependency set (§3.1) reaches, the shadcn components at `@/components/ui/*` and the kit's own sources compiled, copied into `files/` as the packages ship them, with each import's resolution and each module's side-effect flag in `modules.json` — so the app build tree-shakes every app from the original modules, and the page has one React, one react-query, one radix, one zod because every import of each resolves to one file. Beside it `import-map.json` (specifier → the module it starts from, what the app build's `appResolver` consults, §2.1), the bundled stylesheet entries, `candidates.json` (every component's Tailwind classes, for `@strut/kit/node`'s `compileStyles`) and `manifest.json` (the versions). | The app build (`src/apps/build.ts`) |
 | **package entries** (`dist/`) | `@strut/kit` (the hooks, the provider, the client and host contracts, the folds and the run graph's layout), `@strut/kit/folds` (the folds alone: no React, no dependency — what `web/` imports), `@strut/kit/bootstrap`, and `@strut/kit/node` (the app build's server side), as ESM with `.d.ts`; React, react-dom and react-query are optional peers, never installed by a strut that pins the kit. | The app build (`@strut/kit/node`) and the types. A library build for a HOST's own React pages is deferred (§12): a host that wants strut's views renders an app importing `strut/views` |
 
-Both are artifacts of the kit's build, never of strut's `npm install`: strut's
-own `node_modules` carries no React. The kit is built once per kit release and
-published as a package strut pins exactly (open question 4, decided by
-proceeding). Per the kit split (plans/apps.md §3, 2026-10-21) the kit is **the
+Neither lands in strut's own `node_modules`, which carries no React: the
+kit's dependencies install into `kit/node_modules`. `vendor/` is built by
+strut's own `npm run build` (its `build:kit` step, `scripts/build-kit.mjs`:
+this directory's frozen install, then `build:vendor`), so `prepare`, the
+Docker image and the desktop package all carry it — AGENTS.md "Running" says
+where each finds it. The kit may later be published as a package strut pins
+exactly (open question 4); `src/apps/kit.ts` looks for `@strut/kit` first. Per the kit split (plans/apps.md §3, 2026-10-21) the kit is **the
 stack and the bridge, nothing else**: strut's own components are `strut/views`,
 an app other apps import (§3.3, `src/apps/views/`), and the pure folds are
 `src/folds/` here.

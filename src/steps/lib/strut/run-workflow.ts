@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, foldAccessedNodes, withAccessedNodes, type AccessedNode, type RunEvent, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { cancelOnPeer, launchOnPeer, tailPeerRun, type PeerRunHandle, type PeersCapability } from "../../../peers.js";
+import { artifactEntriesOf } from "../../../artifact-refs.js";
 
 const EXAMPLE = `- id: ask
   type: strut/run-workflow
@@ -26,6 +27,21 @@ function launchRecord(v: unknown): LaunchRecord | undefined {
   return { peer: r.peer, workflow: r.workflow, runId: r.runId, launchedAt: typeof r.launchedAt === "number" ? r.launchedAt : Date.now() };
 }
 
+/** The peer output's deliverables, tagged (plans/builder-job.md §3): each
+ *  entry of its `artifacts` gains `peer` and the `job` its files are under
+ *  THERE — a `path` in it is relative to that job's directory on the peer,
+ *  and means nothing here. Never rewritten to a URL: the reader resolves it
+ *  against the peer (the handle rule, plans/federation.md §2.2). An entry
+ *  already tagged — the peer got it from a third strut — keeps its tag. */
+function tagArtifacts(output: unknown, peer: string, job: string | undefined): unknown {
+  const entries = artifactEntriesOf(output);
+  if (!entries) return output;
+  const tagged = entries.map((a) =>
+    a && typeof a === "object" && !Array.isArray(a) && !("peer" in a) ? { ...a, peer, ...(job ? { job } : {}) } : a,
+  );
+  return { ...(output as Record<string, unknown>), artifacts: tagged };
+}
+
 /**
  * Dispatch-through (plans/federation.md §2.2): run a workflow on ANOTHER
  * strut — a peer this one has on file (`GET /peers`) — and wait for its
@@ -39,14 +55,16 @@ function launchRecord(v: unknown): LaunchRecord | undefined {
  * peer's run touched (`step.end.nodes` there) are folded onto THIS step's
  * `step.end`, each tagged with the peer's id — a `ref_id` means something
  * only against the graph that recorded it, so no reader here resolves one
- * locally. And the handle is journaled right after the launch, so a resume
- * of this run (the caller restarted) reattaches instead of relaunching.
+ * locally. The deliverables the peer's output lists (`artifacts`) come back
+ * tagged the same way, with the job they live under there (`tagArtifacts`).
+ * And the handle is journaled right after the launch, so a resume of this
+ * run (the caller restarted) reattaches instead of relaunching.
  */
 export default defineStep({
   type: "strut/run-workflow",
   description:
     `Run a workflow on ANOTHER strut (a PEER this one has on file — GET /peers; in a prompt, @<id>) and return its result: { peer, workflow, runId, status, output?, error?, durationMs }. ` +
-    `The run executes on the peer, under the peer's secrets and billing for this run's principal (forwarded as x-strut-actor); its files and artifacts stay there (an artifact path in its output is the peer's, and a graph ref_id in it is the peer's graph). ` +
+    `The run executes on the peer, under the peer's secrets and billing for this run's principal (forwarded as x-strut-actor); its files and artifacts stay there (an entry of the output's \`artifacts\` comes back tagged { peer, job } — its path is the peer's, in that job there — and a graph ref_id in it is the peer's graph). ` +
     `Waits on the peer's event stream, reattaching if the connection drops; cancelling this run cancels the peer's. wait: false returns { peer, workflow, runId, status: "running" } at once and leaves the run going. ` +
     `A peer runs only a workflow whose YAML says \`peer: true\`, as published (no params), under a job of its own: a refused launch fails this step with the peer's message (not open to peers, job_busy:, an unknown workflow); an unknown peer fails peer_unknown:; a peer's run that died with its process and was not resumed fails peer_run_stale:. ` +
     `\`job\` names a job on the PEER to launch under — this run's own job is never forwarded (no shared directory across struts). Nothing returned is thrown: a child that failed is status "error" with its message.\n\n${EXAMPLE}`,
@@ -151,8 +169,14 @@ export default defineStep({
     // tagged with the peer (a ref the peer itself got from a third strut
     // keeps the peer's tag for it: recorded as it came). A reattach reads
     // the log from its start, so the list is whole either way.
+    // The job the peer recorded the run under (its `run.start`): `peer/<job>`
+    // when launched on its peer key — where the run's files are there.
     const touched = new Map<string, AccessedNode>();
-    const onEvent = (e: RunEvent) => foldAccessedNodes(touched, e, cfg.peer);
+    let peerJob: string | undefined;
+    const onEvent = (e: RunEvent) => {
+      if (e.type === "run.start" && typeof e.job === "string") peerJob = e.job;
+      foldAccessedNodes(touched, e, cfg.peer);
+    };
 
     try {
       const result = await tailPeerRun(peers, handle, { signal: ac.signal, onEvent });
@@ -161,7 +185,7 @@ export default defineStep({
         {
           ...handle,
           status: result.status,
-          ...(result.output !== undefined ? { output: result.output } : {}),
+          ...(result.output !== undefined ? { output: tagArtifacts(result.output, cfg.peer, peerJob ?? cfg.job) } : {}),
           ...(result.error ? { error: { message: result.error.message } } : {}),
           durationMs: Date.now() - launchedAt,
         },

@@ -82,7 +82,7 @@ describe("job/start and job/continue", () => {
   let hostUrl = "";
   let posts: any[] = [];
   /** The requests each agent made, by its system prompt. */
-  let seen: { orch: string[]; job: string[] } = { orch: [], job: [] };
+  let seen: { orch: string[]; job: string[]; builder: string[] } = { orch: [], job: [], builder: [] };
   /** What the orchestrator calls on its first step; its second answers. */
   let orchTool: { name: string; input: unknown } = { name: "job_start", input: {} };
   /** Holds the job agent's reply until released. */
@@ -97,7 +97,7 @@ describe("job/start and job/continue", () => {
     await mkdir(dir, { recursive: true });
     saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
     posts = [];
-    seen = { orch: [], job: [] };
+    seen = { orch: [], job: [], builder: [] };
     gate = undefined;
     drain = async () => {};
     let n = 0;
@@ -117,6 +117,9 @@ describe("job/start and job/continue", () => {
               ? toolUse(id, "final_answer", { text: "On it.", artifacts: [{ id: "note", title: "Note", path: "note.md" }] })
               : toolUse(id, orchTool.name, orchTool.input),
           );
+        } else if (JSON.stringify(body.system).includes("BUILDER")) {
+          seen.builder.push(raw);
+          res.end(toolUse(id, "final_answer", { text: `Built ${seen.builder.length}`, artifacts: [] }));
         } else {
           seen.job.push(raw);
           await gate;
@@ -161,7 +164,7 @@ describe("job/start and job/continue", () => {
   });
   const pack = { id: "result", type: "pack", config: { text: "{{ work.object.text }}", artifacts: "{{ work.object.artifacts }}" } };
 
-  const boot = async () => {
+  const boot = async (opts: { builder?: boolean } = {}) => {
     const store = new MemoryRunStore();
     const strut = await createStrut({
       workspace: new WorkspaceManager(dir),
@@ -170,8 +173,10 @@ describe("job/start and job/continue", () => {
       serveUi: false,
       enableChat: false,
       scheduler: false,
-      // The shape of strut's own `job`, without the seed's model and tools.
+      // The shape of strut's own `job` and `builder`, without the seeds'
+      // models and tools.
       job: false,
+      builder: false,
     });
     await strut.workspace.publishWorkflow("job", "v1", {
       steps: [
@@ -182,6 +187,17 @@ describe("job/start and job/continue", () => {
         pack,
       ],
     });
+    // The builder (plans/builder-job.md): job-shaped, no checkouts, and it
+    // reports the `peer` its launch carried so a test can see it arrive.
+    if (opts.builder !== false) {
+      await strut.workspace.publishWorkflow("builder", "v1", {
+        steps: [
+          { id: "dir", type: "job/dir", config: {} },
+          agent("BUILDER", { session: "{{ input.session || $job }}" }),
+          { id: "result", type: "pack", config: { text: "{{ work.object.text }}", artifacts: "{{ work.object.artifacts }}", peer: "{{ input.peer }}" } },
+        ],
+      });
+    }
     // The orchestrator: a plain run (no job), its files in its own run's
     // directory, granted the two launch steps and nothing else.
     await strut.workspace.publishWorkflow("orch", "v1", {
@@ -236,7 +252,7 @@ describe("job/start and job/continue", () => {
       throw new Error("runs still in flight");
     };
     const jobs = (strut.services as { jobs: JobsCapability }).jobs;
-    return { store, post, launch, settle, until, toolOutput, jobs };
+    return { strut, store, post, launch, settle, until, toolOutput, jobs };
   };
 
   it("start: the turn ends at once, the job runs detached, and its run.end reaches the turn's callback with resolved artifacts", async () => {
@@ -315,6 +331,65 @@ describe("job/start and job/continue", () => {
     assert.equal(ends[1].output.text, "Found 2");
     const view = await jobs.get!(job, { threads: false });
     assert.equal(view?.runs.length, 2, "two turns of one job; the refused ones launched nothing");
+  });
+
+  it("start { workflow: builder, peer }: the builder workflow runs the turn with the peer; the job says which it is; continue names only the job and follows the record, peer included; peer and repos are refused on a code job", async () => {
+    const { strut, launch, settle, until, toolOutput, jobs } = await boot();
+    orchTool = { name: "job_start", input: { prompt: "Build a daily digest workflow", title: "Digest workflow", workflow: "builder", peer: "acme-web" } };
+    const first = await launch({ prompt: "make me a digest workflow on @acme-web" });
+    await settle("orch", first);
+    const started = await toolOutput(first);
+    assert.ok(started.job && started.runId, JSON.stringify(started));
+    const end = await until(() => posts.find((p) => p.workflow === "builder"));
+    assert.equal(end.runId, started.runId);
+    assert.equal(end.job, started.job);
+    assert.equal(end.output.text, "Built 1");
+    assert.equal(end.output.peer, "acme-web", "the builder turn was handed the peer");
+    assert.equal(seen.job.length, 0, "the job workflow never ran");
+    // The job IS a builder job: the view and the listing say so.
+    const view = await jobs.get!(started.job, { threads: false });
+    assert.equal(view?.workflow, "builder");
+    assert.deepEqual(view?.runs.map((r) => r.workflow), ["builder"]);
+    const { jobs: rows } = (await (await strut.app.request("/jobs")).json()) as { jobs: Array<{ job: string; workflow?: string }> };
+    assert.equal(rows.find((r) => r.job === started.job)?.workflow, "builder");
+
+    // Continue names only the job: the launcher follows the record — the
+    // builder again, on the same peer, in the builder's own thread.
+    orchTool = { name: "job_continue", input: { job: started.job, prompt: "Also post it to Slack" } };
+    const second = await launch({ prompt: "also slack" });
+    await settle("orch", second);
+    const ends = await until(() => {
+      const e = posts.filter((p) => p.workflow === "builder");
+      return e.length === 2 ? e : undefined;
+    });
+    assert.equal(ends[1].job, started.job);
+    assert.equal(ends[1].output.text, "Built 2");
+    assert.equal(ends[1].output.peer, "acme-web", "a continue carries the turn's peer along");
+    assert.ok(seen.builder[1]!.includes("Build a daily digest workflow") && seen.builder[1]!.includes("Also post it to Slack"), "the builder's own thread");
+    assert.equal(seen.job.length, 0);
+    assert.equal((await jobs.get!(started.job, { threads: false }))?.workflow, "builder");
+
+    // A code job runs here, with its repositories: `peer` is refused on it,
+    // and `repos` on a builder job — nothing launched either way.
+    orchTool = { name: "job_start", input: { prompt: "Fix the bug", title: "Bug", peer: "acme-web" } };
+    const third = await launch({ prompt: "fix it there" });
+    await settle("orch", third);
+    assert.ok(seen.orch.at(-1)!.includes("only a builder job runs on another strut"), seen.orch.at(-1));
+    orchTool = { name: "job_start", input: { prompt: "Build it", title: "Build", workflow: "builder", repos: ["https://github.com/acme/web"] } };
+    const fourth = await launch({ prompt: "build with the repo" });
+    await settle("orch", fourth);
+    assert.ok(seen.orch.at(-1)!.includes("a builder job checks nothing out"), seen.orch.at(-1));
+    assert.equal(posts.filter((p) => p.workflow === "job").length, 0);
+    assert.equal(posts.filter((p) => p.workflow === "builder").length, 2);
+  });
+
+  it("start { workflow: builder } on a strut with no builder is refused by name, and nothing launches", async () => {
+    const { launch, settle, jobs } = await boot({ builder: false });
+    orchTool = { name: "job_start", input: { prompt: "Build a workflow", title: "Build", workflow: "builder" } };
+    const run = await launch({ prompt: "build one" });
+    await settle("orch", run);
+    assert.ok(seen.orch.at(-1)!.includes('no_workflow: this strut has no \\"builder\\" workflow'), seen.orch.at(-1));
+    assert.deepEqual(await jobs.list!(), [], "no record was written");
   });
 
   it("the caller's MCP servers reach the turn's agent and the job it starts; the logs name them by origin only", async () => {

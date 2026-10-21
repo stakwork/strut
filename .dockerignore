@@ -10,3 +10,6 @@ dist-desktop*
 notes
 notes*.md
 backups
+kit/node_modules
+kit/vendor
+kit/dist

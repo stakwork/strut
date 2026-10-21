@@ -1,5 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -504,6 +506,24 @@ describe("strut/run-workflow across two struts", () => {
   let savedKey: string | undefined;
   const auth = { authorization: `Bearer ${KEY}` };
 
+  // What the peer's stand-in `builder` lists as made (plans/builder-job.md
+  // §3): files in ITS job's directory, a link, and one deliverable it got
+  // from a third strut, tagged already.
+  const PEER_ARTIFACTS = [
+    { id: "plan", title: "Plan", path: "plan.md" },
+    { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/acme/web/pull/7" },
+    { id: "far", title: "Far", path: "x.md", peer: "third", job: "j3" },
+    "not an entry",
+  ];
+  /** The same list as the caller's step returns it: tagged with the peer
+   *  and the job its files are under THERE. */
+  const tagged = (job: string) => [
+    { id: "plan", title: "Plan", path: "plan.md", peer: "cloud", job },
+    { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/acme/web/pull/7", peer: "cloud", job },
+    { id: "far", title: "Far", path: "x.md", peer: "third", job: "j3" },
+    "not an entry",
+  ];
+
   beforeEach(async () => {
     savedKey = process.env["STRUT_API_KEY"];
     process.env["STRUT_API_KEY"] = KEY;
@@ -531,6 +551,9 @@ describe("strut/run-workflow across two struts", () => {
       serveUi: false,
       enableChat: false,
       scheduler: false,
+      job: false,
+      orchestrator: false,
+      builder: false,
     });
     // Open to peers (`peer: true`): what the peer key may launch. `touch` is not.
     await peer.workspace.publishWorkflow("echo", "v1", {
@@ -539,6 +562,10 @@ describe("strut/run-workflow across two struts", () => {
     });
     await peer.workspace.publishWorkflow("touch", "v1", {
       steps: [{ id: "t", type: "test/touch" }, { id: "again", type: "test/touch" }],
+    });
+    await peer.workspace.publishWorkflow("builder", "v1", {
+      steps: [{ id: "result", type: "pack", config: { text: "Built hello there.", artifacts: PEER_ARTIFACTS } }],
+      peer: true,
     });
     await peer.workspace.publishWorkflow("slow", "v1", {
       steps: [{ id: "many", type: "foreach", config: { items: 200, body: { id: "w", type: "wait", config: { durationMs: 50 } } } }],
@@ -562,6 +589,7 @@ describe("strut/run-workflow across two struts", () => {
     await caller.workspace.publishWorkflow("nopeer", "v1", far({ peer: "nope" }));
     await caller.workspace.publishWorkflow("missing", "v1", far({ workflow: "nope" }));
     await caller.workspace.publishWorkflow("calltouch", "v1", far({ workflow: "touch" }));
+    await caller.workspace.publishWorkflow("callarts", "v1", far({ workflow: "builder", input: { prompt: "p" }, job: "job-on-peer" }));
   });
 
   afterEach(async () => {
@@ -629,6 +657,12 @@ describe("strut/run-workflow across two struts", () => {
       const start = (await peer.store.getRunEvents("echo", far.runId)).find((e) => e.type === "run.start")!;
       assert.equal(start.origin, "peer");
       assert.equal(start.actor, "alice-1", "the forwarded principal is honored with the peer key");
+
+      // On the peer key the peer keeps the job as `peer/<job>`, and the
+      // deliverables are tagged with the job as the PEER holds it.
+      const arts = (await settled(caller, "callarts", await launch("callarts", { input: {} }))).output as Far;
+      assert.equal((await settled(peer, "builder", arts.runId)).job, "peer/job-on-peer");
+      assert.deepEqual((arts.output as { artifacts: unknown }).artifacts, tagged("peer/job-on-peer"));
 
       // A workflow that does not say `peer: true` is refused, and the step
       // fails with the peer's word for it.
@@ -748,6 +782,81 @@ describe("strut/run-workflow across two struts", () => {
     assert.equal(far.output, "hi x");
     assert.ok((far.durationMs ?? 0) >= 5000, "timed from the original launch");
     assert.equal((await peer.store.listRuns("echo")).length, 1, "nothing was launched again");
+  });
+
+  it("the peer output's artifacts come back tagged with the peer and the job they live under there — on a launch and on a reattach", async () => {
+    const runId = await launch("callarts", { input: {} });
+    const summary = await settled(caller, "callarts", runId);
+    assert.equal(summary.status, "success", JSON.stringify(summary.error));
+    const far = summary.output as Far;
+    assert.equal((far.output as { text: string }).text, "Built hello there.");
+    assert.deepEqual((far.output as { artifacts: unknown }).artifacts, tagged("job-on-peer"));
+    const theirs = await settled(peer, "builder", far.runId);
+    assert.deepEqual((theirs.output as { artifacts: unknown }).artifacts, PEER_ARTIFACTS, "the peer's own record is untouched");
+
+    // A caller cut off while waiting, resumed: the same run on the peer,
+    // tagged the same way.
+    const stale = "1700000000001";
+    const workflowHash = await caller.workspace.getWorkflowHash("callarts");
+    const at = (i: number) => new Date(Date.now() - 10_000 + i).toISOString();
+    const ev = (i: number, e: Partial<RunEvent> & { type: RunEvent["type"] }): RunEvent => ({ ts: at(i), runId: stale, path: "callarts", ...e });
+    await caller.store.append("callarts", stale, ev(0, { type: "run.start", input: {}, ...(workflowHash ? { workflowHash } : {}) }));
+    await caller.store.append("callarts", stale, ev(1, { type: "step.start", path: "callarts/far", stepType: "strut/run-workflow", input: { peer: "cloud", workflow: "builder" } }));
+    await caller.store.append("callarts", stale, ev(2, {
+      type: "step.end",
+      path: "callarts/far#launch",
+      output: { peer: "cloud", workflow: "builder", runId: far.runId, launchedAt: Date.now() - 5000 },
+    }));
+    const res = await caller.app.request(`/workflows/callarts/runs/${stale}/resume`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" });
+    assert.equal(res.status, 202, await res.text());
+    const again = (await settled(caller, "callarts", stale)).output as Far;
+    assert.equal(again.runId, far.runId, "reattached, not relaunched");
+    assert.deepEqual((again.output as { artifacts: unknown }).artifacts, tagged("job-on-peer"));
+  });
+
+  it("a local `builder` run that took the `remote` branch: run.end, GET …/artifacts and the job's fold carry the peer's deliverables tagged, never resolved here", async () => {
+    const ends: Array<Record<string, any>> = [];
+    const host = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        ends.push(JSON.parse(raw));
+        res.writeHead(204).end();
+      });
+    });
+    await new Promise<void>((r) => host.listen(0, "127.0.0.1", r));
+    try {
+      const url = `http://127.0.0.1:${(host.address() as AddressInfo).port}/run-end`;
+      const runId = await launch("builder", { job: "build-1", input: { prompt: "Build hello on cloud", peer: "cloud" }, callback: { url } }, "alice-1");
+      const summary = await settled(caller, "builder", runId);
+      assert.equal(summary.status, "success", JSON.stringify(summary.error));
+      let end: Record<string, any> | undefined;
+      for (let i = 0; i < 400 && !(end = ends.find((e) => e.runId === runId)); i++) await new Promise((r) => setTimeout(r, 25));
+      assert.ok(end, "run.end reached the host");
+
+      // The work ran there, under the same job id (the full key: no `peer/`).
+      assert.equal(end.output.peer, "cloud");
+      assert.equal(end.output.text, "Built hello there.");
+      const remote = (await caller.store.getRunEvents("builder", runId)).find((e) => e.type === "step.end" && e.path === "builder/remote")!;
+      assert.equal((await settled(peer, "builder", (remote.output as Far).runId)).job, "build-1");
+
+      // Left as they came: the peer's paths, no url made here, no error.
+      const expected = [
+        { id: "plan", kind: "markdown", title: "Plan", path: "plan.md", peer: "cloud", job: "build-1" },
+        { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/acme/web/pull/7", peer: "cloud", job: "build-1" },
+        { id: "far", kind: "markdown", title: "Far", path: "x.md", peer: "third", job: "j3" },
+      ];
+      assert.deepEqual(end.artifacts, expected);
+      const listed = (await (await caller.app.request(`/workflows/builder/runs/${runId}/artifacts`, { headers: auth })).json()) as { artifacts: unknown };
+      assert.deepEqual(listed.artifacts, expected);
+
+      // The job here folds them as its current deliverables, tagged.
+      const view = (await (await caller.app.request("/jobs/build-1", { headers: auth })).json()) as { artifacts: unknown[]; threads: unknown[] };
+      assert.deepEqual(view.artifacts, expected.map((a) => ({ ...a, runId })));
+      assert.ok(!JSON.stringify(view.threads).includes("not found"), "nor does the thread fold");
+    } finally {
+      host.close();
+    }
   });
 
   it("the tail of a run that died on the peer ends with done { status: stale }", async () => {

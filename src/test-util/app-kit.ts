@@ -9,7 +9,7 @@ let located: Promise<KitLocation> | undefined;
 
 /**
  * The kit for a test that builds an app: the repo's `kit/vendor` when it is
- * built (`cd kit && yarn build:vendor`), else the vendor layer built once
+ * built (`npm run build:kit`), else the vendor layer built once
  * into a temp dir from the kit's own script (what the kit's vendor test
  * does; needs the kit's install, as CI has). One build per process.
  */

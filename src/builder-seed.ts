@@ -1,5 +1,6 @@
 import type { WorkspaceStore } from "./workspace.js";
 import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
+import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
 
 /**
  * The `builder` workflow — the third workflow strut ships (plans/builder-job.md),
@@ -13,6 +14,13 @@ import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
  * → `pack` in the job's reply shape. Building workflows is
  * a separate kind of work from a code job (ruled 2026-10-20): `job` never
  * carries these tools, and the orchestrator starts a builder job for them.
+ *
+ * Its system prompt is the builder chat's rules — strut's workflow dialect,
+ * the tools section and the procedure — rendered from the same source in
+ * the twins' names (`builderRules(JOB_TOOLS)`, src/ai/prompts.ts) into the
+ * template's marker line before the host's delta is appended, so the hash
+ * covers it: a change to the rules publishes the next version at the next
+ * boot, as a template edit does.
  *
  * `peer: true` in the template: another strut may launch it as published
  * (plans/federation.md §3) — a build on `@acme-web` is this workflow on
@@ -41,9 +49,23 @@ export const BUILDER_DESCRIPTION =
 
 const BUILDER_YAML = new URL("./workflows/builder.yaml", import.meta.url);
 
-/** The `builder` template with the host's delta applied. */
+/** The line of builder.yaml's `params.system` that the seed replaces with
+ *  strut's rules for building — the dialect, the tools and the procedure,
+ *  in the meta/* names (`builderRules(JOB_TOOLS)`, src/ai/prompts.ts): the
+ *  one source the builder chat's prompt is rendered from too
+ *  (plans/builder-job.md §1). The YAML keeps what is the JOB's — who the
+ *  agent is, claims, the kinds, the reply — around it. */
+export const BUILDER_RULES_MARKER = "<<strut: the builder's rules>>";
+
+function withRules(system: string): string {
+  if (!system.includes(BUILDER_RULES_MARKER)) throw new Error(`builder.yaml: params.system has no "${BUILDER_RULES_MARKER}" line for strut's rules`);
+  return system.replace(BUILDER_RULES_MARKER, () => builderRules(JOB_TOOLS));
+}
+
+/** The `builder` template with strut's rules rendered in and the host's
+ *  delta applied. */
 export async function builderWorkflowYaml(opts?: BuilderSeedOptions): Promise<string> {
-  return templateWithDelta(BUILDER_YAML, opts);
+  return templateWithDelta(BUILDER_YAML, opts, withRules);
 }
 
 /** Seed `builder` into the workspace: the boot step `createStrut` runs. */
