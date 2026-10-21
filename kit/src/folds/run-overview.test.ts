@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { foldRunOverview, type OverviewEvent } from "./run-overview.js";
+import { foldRunOverview, runAppLabel, type OverviewEvent } from "./run-overview.js";
 
 const T0 = Date.UTC(2026, 9, 18, 12, 0, 0);
 const ev = (s: number, type: string, path: string, extra: Partial<OverviewEvent> = {}): OverviewEvent => ({
@@ -135,5 +135,15 @@ describe("foldRunOverview", () => {
     ]);
     assert.equal(o.status, "success");
     assert.equal(o.cost, 1);
+  });
+});
+
+describe("the app a run worked for", () => {
+  it("is a workspace app at a version, or a job's app; the overview carries either from run.start, and a badge names it", () => {
+    const job = { job: "j1", path: "apps/tracker" };
+    const o = foldRunOverview([ev(0, "run.start", "wf", { app: job }), ev(1, "run.end", "wf")]);
+    assert.deepEqual(o.app, job);
+    assert.equal(runAppLabel(job), "apps/tracker");
+    assert.equal(runAppLabel({ name: "bench", version: "v2" }), "bench");
   });
 });

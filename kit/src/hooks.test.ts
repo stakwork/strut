@@ -80,6 +80,15 @@ describe("the run hooks name their step and pass what they were given", () => {
     await h.unmount();
   });
 
+  it("useRuns(null, { job }) → a job's runs across its workflows (a job's app); null alone asks for nothing", async () => {
+    const { client, calls } = fakeClient();
+    const h = await renderHook(() => ({ job: useRuns(null, { job: "j1" }), none: useRuns(null) }), { client });
+    await until(() => h.result().job.data !== undefined, "run/list data");
+    assert.deepEqual(calls, [{ type: "run/list", config: { job: "j1" } }]);
+    assert.equal(h.result().none.fetchStatus, "idle");
+    await h.unmount();
+  });
+
   it("useRun → run/get; live adds `wait` once the run it holds is in flight", async () => {
     let status = "running";
     const { client, calls } = fakeClient({ [RUN_STEPS.get]: (c) => ({ runId: c.config?.runId, workflow: "wf", status }) });

@@ -1282,10 +1282,13 @@ export function App() {
                           <span class="job-chip" title={`Job ${run.job}`}
                             onClick={(e) => { e.stopPropagation(); selectJob(run.job!); }}>{jobTitle(run.job)}</span>
                         )}
-                        {run.origin === "app" && run.app && (
+                        {run.origin === "app" && run.app && ("name" in run.app ? (
                           <span class="app-chip" title={`Launched by the app ${run.app.name} (${run.app.version})`}
-                            onClick={(e) => { e.stopPropagation(); selectApp(run.app!.name); }}>{appTitle(run.app.name)}</span>
-                        )}
+                            onClick={(e) => { e.stopPropagation(); selectApp((run.app as { name: string }).name); }}>{appTitle(run.app.name)}</span>
+                        ) : (
+                          <span class="app-chip" title={`Launched by the app ${run.app.path} of job ${run.app.job}`}
+                            onClick={(e) => { e.stopPropagation(); selectJob((run.app as { job: string }).job); }}>{run.app.path.split("/").pop()}</span>
+                        ))}
                       </div>
                     ))}
                   </>
@@ -1632,8 +1635,7 @@ export function App() {
           appEntry
             ? <AppHost
                 key={`${appEntry.name}@${appEntry.activeVersion}`}
-                name={appEntry.name}
-                version={appEntry.activeVersion}
+                app={{ name: appEntry.name, version: appEntry.activeVersion }}
                 reload={appReload}
                 onMessage={(text) => {
                   setShowChat(true);
@@ -1644,7 +1646,15 @@ export function App() {
             : <div class="empty">{apps.length ? `No app "${selectedApp}"` : "Loading apps…"}</div>
         ) : timelineOpen ? (
           job
-            ? <JobTimeline job={job} onOpenRun={openJobRun} onOpenThread={(thread, turn) => setThreadView({ thread, turn })} onRefresh={refreshJob} />
+            ? <JobTimeline
+                job={job}
+                onOpenRun={openJobRun}
+                onOpenThread={(thread, turn) => setThreadView({ thread, turn })}
+                onRefresh={refreshJob}
+                onNavigate={navigateFromApp}
+                onAppPublished={() => void refreshApps()}
+                onOpenApp={selectApp}
+              />
             : <div class="empty">Loading job…</div>
         ) : canvas
           ? <SystemCanvas

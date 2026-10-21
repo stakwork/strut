@@ -169,9 +169,11 @@ export function RunOverview(props: {
           {o.job && (
             <button class="ov-job" title={`Open job ${o.job}`} onClick={() => props.onOpenJob(o.job!)}>{o.job}</button>
           )}
-          {o.app && (
-            <button class="ov-app" title={`Launched by the app ${o.app.name} (${o.app.version})`} onClick={() => props.onOpenApp?.(o.app!.name)}>app · {o.app.name}</button>
-          )}
+          {o.app && ("name" in o.app ? (
+            <button class="ov-app" title={`Launched by the app ${o.app.name} (${o.app.version})`} onClick={() => props.onOpenApp?.((o.app as { name: string }).name)}>app · {o.app.name}</button>
+          ) : (
+            <button class="ov-app" title={`Launched by the app ${o.app.path} of job ${o.app.job}`} onClick={() => props.onOpenJob((o.app as { job: string }).job)}>app · {o.app.path}</button>
+          ))}
         </div>
         <div class="ov-meta">
           {o.workflow}

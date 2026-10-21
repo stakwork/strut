@@ -106,7 +106,7 @@ tool (`step_run`) the host relays to strut:
 
 | Hook | What it does |
 | --- | --- |
-| `useRuns(workflow, { status?, automation?, limit?, since?, live? })` | `run/list`: the runs, newest first; `live` refetches while any is in flight |
+| `useRuns(workflow, { status?, automation?, job?, limit?, since?, live? })` | `run/list`: the runs, newest first; `live` refetches while any is in flight; `useRuns(null, { job })` a job's runs across workflows |
 | `useRun(workflow, runId, { live? })` | `run/get`: the summary, its whole `input` and `output`, `artifacts` as links; `live` long-polls (`wait`) while in flight |
 | `useRunEvents(workflow, runId, { live? })` | `run/events`: the log, transcripts as links |
 | `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
@@ -115,6 +115,7 @@ tool (`step_run`) the host relays to strut:
 | `useWorkflow(workflow)` | `run/workflow`: description, the `input:` block, params defaults — what a launch form renders |
 | `useStep(type)` → `{ run(config, input) }` | any granted step, as a function |
 | `useToolInput()` | what the model or a deep link opened the app with |
+| `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a strut link in place |
 
 A step's output comes back whole; a refused call or a failed step throws a

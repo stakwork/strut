@@ -21,7 +21,18 @@
  * `markdown | html | image | video | audio | pdf | url | diff |
  * pull_request | code | log | json`), passed through unchecked; the
  * inference below only picks a name from that list.
+ *
+ * One kind is strut's own: `app` (plans/apps.md §6). Its `path` is an APP's
+ * directory in the job's, and it resolves to the app's DOCUMENT —
+ * `/jobs/<job>/files/<path>/dist/index.html` — with `app: { job, path,
+ * hash, builtAt }` beside it, so a host that knows apps renders it through
+ * its bridge (and reloads when the build's hash moves), and one that does
+ * not shows the link. A directory with an `app.yaml` and no kind given is
+ * one too. Not built yet is an error that says so.
  */
+import { scopePath } from "./auth.js";
+import { DOCUMENT_FILE } from "./apps/build.js";
+import { MANIFEST_FILE } from "./apps/manifest.js";
 
 export interface ArtifactEntry {
   /** Stable across turns: the same id later is a newer version of the same thing. */
@@ -62,7 +73,15 @@ export interface ArtifactRef {
   job?: string;
   /** With `peer` only. */
   path?: string;
+  /** A job's APP (`kind: "app"`, plans/apps.md §6): the job and the app's
+   *  directory in it, normalized — what a host's bridge needs to render it
+   *  (`url` is its document) — and the build the document came from
+   *  (`dist/build.json`): a new `hash` is a new document to reload. */
+  app?: { job: string; path: string; hash?: string; builtAt?: string };
 }
+
+/** The kind of a deliverable that is an app's directory. */
+export const APP_KIND = "app";
 
 /** Inline content larger than this is refused (the ref carries `error`). */
 export const ARTIFACT_CONTENT_MAX_CHARS = 50_000;
@@ -120,6 +139,9 @@ export interface ResolveArtifactsAt {
   /** Whether the file behind a strut-relative url exists. Absolute urls are
    *  never checked. */
   exists: (url: string) => Promise<boolean>;
+  /** A job app's `dist/build.json` — its tree hash and when it was built —
+   *  or null; absent, an app ref carries no hash. */
+  appBuild?: (job: string, path: string) => Promise<{ hash: string; builtAt?: string } | null>;
 }
 
 /** The `artifacts` list of a run's output, if it carries one — the raw
@@ -175,10 +197,17 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       Object.assign(ref, { peer, ...(job ? { job } : {}), ...(path !== undefined ? { path } : {}), ...(url !== undefined ? { url } : {}) });
     } else if (path !== undefined) {
       const rel = path.replace(/^\/+/, "");
-      const resolved = at.job ? jobFileUrl(at.job, rel) : `/artifacts/${encodeURIComponent(at.runId)}/${rel}`;
-      if (!text(raw["kind"])) ref.kind = artifactKind(rel);
-      if (rel.split("/").includes("..") || !rel) error = "bad path";
-      else if (await at.exists(resolved)) ref.url = resolved;
+      const fileUrl = (r: string) => (at.job ? jobFileUrl(at.job, r) : `/artifacts/${encodeURIComponent(at.runId)}/${r}`);
+      const bad = rel.split("/").includes("..") || !rel;
+      if (!text(raw["kind"])) {
+        ref.kind = artifactKind(rel);
+        // An extensionless path that holds an app.yaml is an app.
+        const dir = bad ? undefined : scopePath(rel);
+        if (ref.kind === "url" && dir && (await at.exists(fileUrl(`${dir}/${MANIFEST_FILE}`)))) ref.kind = APP_KIND;
+      }
+      if (bad) error = "bad path";
+      else if (ref.kind === APP_KIND) error = await resolveApp(ref, rel, at, fileUrl);
+      else if (await at.exists(fileUrl(rel))) ref.url = fileUrl(rel);
       else error = "not found";
     } else if (url !== undefined) {
       if (!text(raw["kind"])) ref.kind = artifactKind(url);
@@ -196,4 +225,21 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
     out.push(ref);
   }
   return out;
+}
+
+/** An app deliverable: its document's link, and on a job the app's place
+ *  and build — or why there is none. */
+async function resolveApp(ref: ArtifactRef, rel: string, at: ResolveArtifactsAt, fileUrl: (r: string) => string): Promise<string | undefined> {
+  const dir = scopePath(rel);
+  if (!dir) return "bad path";
+  const doc = fileUrl(`${dir}/${DOCUMENT_FILE}`);
+  if (!(await at.exists(doc))) {
+    return (await at.exists(fileUrl(`${dir}/${MANIFEST_FILE}`))) ? `not built: no ${DOCUMENT_FILE} in ${dir} — app/build writes it` : "not found";
+  }
+  ref.url = doc;
+  if (at.job) {
+    const build = await at.appBuild?.(at.job, dir).catch(() => null);
+    ref.app = { job: at.job, path: dir, ...(build?.hash ? { hash: build.hash } : {}), ...(build?.builtAt ? { builtAt: build.builtAt } : {}) };
+  }
+  return undefined;
 }

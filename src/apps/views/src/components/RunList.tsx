@@ -1,4 +1,4 @@
-import { useRuns, type RunSummary } from "@strut/kit";
+import { runAppLabel, useRuns, type RunApp, type RunSummary } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -42,7 +42,7 @@ export function RunList({ workflow, runs: given, limit = 20, status, job, select
           <>
             <RunStatus status={r.status} />
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{r.runId}</span>
-            {r.app && typeof r.app === "object" && <Badge variant="secondary" className="font-normal">app · {(r.app as { name: string }).name}</Badge>}
+            {r.app && typeof r.app === "object" && <Badge variant="secondary" className="font-normal">app · {runAppLabel(r.app as RunApp)}</Badge>}
             {r.origin === "schedule" && <Badge variant="secondary" className="font-normal">scheduled</Badge>}
             {r.origin === "peer" && <Badge variant="secondary" className="font-normal">peer</Badge>}
             {r.job && <Badge variant="outline" className="max-w-32 truncate font-normal">{r.job}</Badge>}

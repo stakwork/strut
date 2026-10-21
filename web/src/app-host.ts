@@ -22,10 +22,13 @@ import { strutLink } from "./app-links";
 export { appMessage, strutLink } from "./app-links";
 
 export interface AppHostHandlers {
-  /** `ui/message`: the text the page sent, for the builder chat. */
-  onMessage: (text: string) => void | Promise<void>;
-  /** `ui/open-link` with a strut link: its deep-link params. */
-  onNavigate: (params: Record<string, string>) => void;
+  /** `ui/message`: the text the page sent, for the builder chat. Absent (a
+   *  job's app: strut's UI has no send box for a job yet, plans/apps.md
+   *  §12), the host does not offer the capability. */
+  onMessage?: (text: string) => void | Promise<void>;
+  /** `ui/open-link` with a strut link: its deep-link params. Absent, a
+   *  strut link opens in a new tab like any other. */
+  onNavigate?: (params: Record<string, string>) => void;
 }
 
 export interface AppHostOptions {
@@ -79,7 +82,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   const bridge = new AppBridge(
     client,
     { name: "strut-ui", version: "0" },
-    { serverTools: {}, openLinks: {}, message: { text: {} } },
+    { serverTools: {}, openLinks: {}, ...(opts.handlers.onMessage ? { message: { text: {} } } : {}) },
     { hostContext: hostContextFor(opts.theme) },
   );
   bridge.onmessage = async (params) => {
@@ -87,12 +90,12 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       .map((c) => (c.type === "text" ? c.text : ""))
       .filter(Boolean)
       .join("\n");
-    if (text) await opts.handlers.onMessage(text);
+    if (text) await opts.handlers.onMessage?.(text);
     return {};
   };
   bridge.onopenlink = async ({ url }) => {
     const params = strutLink(url, opts.here ?? { origin: location.origin, pathname: location.pathname });
-    if (params) opts.handlers.onNavigate(params);
+    if (params && opts.handlers.onNavigate) opts.handlers.onNavigate(params);
     else window.open(url, "_blank", "noopener");
     return {};
   };

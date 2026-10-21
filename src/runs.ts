@@ -21,9 +21,10 @@ import type { ArtifactRef } from "./artifact-refs.js";
 import { slimEvent } from "./run-step.js";
 import type { PartialRunSummary } from "./store.js";
 
-/** `run/list`'s filter. */
+/** `run/list`'s filter: one workflow's runs, or — `job` alone — a job's
+ *  runs across every workflow it ran (its record's run lines). */
 export interface RunListQuery {
-  workflow: string;
+  workflow?: string;
   /** Newest first; default 50, at most 500. */
   limit?: number;
   /** `success | error | cancelled`, or a live state (`running`, `paused`). */
@@ -144,8 +145,9 @@ export interface RunsCapability {
   launch(q: RunLaunchQuery, by: RunLaunchBy): Promise<RunLaunchResult>;
   cancel(q: { workflow: string; runId: string }): Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
   workflow(q: { workflow: string }): Promise<WorkflowInfo>;
-  /** Null when the run or the file is not there. */
-  files(q: { workflow: string; runId: string; path: string }): Promise<RunFile | null>;
+  /** Null when the run or the file is not there. `{ job, path }` reads a
+   *  file of the job's directory with no run in hand (a job's app, §6). */
+  files(q: { workflow: string; runId: string; path: string } | { job: string; path: string }): Promise<RunFile | null>;
   /** One agent's transcript by step path (`wf/review`, a sub-agent's
    *  `wf/review/003-agent`), capped (`capTranscript`). Throws what the route
    *  answers 404 with: no transcript at the path, or (`full`) a session gone. */

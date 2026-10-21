@@ -6,7 +6,7 @@ import {
   useMutation, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
 } from "@tanstack/react-query";
-import type { StrutClient } from "./client.js";
+import type { AppIdentity, StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
 
@@ -134,15 +134,17 @@ export interface UseRunsOptions {
   enabled?: boolean;
 }
 
-/** `run/list`: a workflow's runs, newest first. */
-export function useRuns(workflow: string, opts: UseRunsOptions = {}): UseQueryResult<RunSummary[]> {
+/** `run/list`: a workflow's runs, newest first. `null` with a `job`: the
+ *  job's runs across every workflow it ran — what a JOB's app reads of its
+ *  own job (plans/apps.md §6). */
+export function useRuns(workflow: string | null, opts: UseRunsOptions = {}): UseQueryResult<RunSummary[]> {
   const client = useStrutClient();
   const { live, enabled, ...filter } = opts;
-  const config = compact({ workflow, ...filter });
+  const config = compact({ ...(workflow ? { workflow } : {}), ...filter });
   return useQuery({
-    queryKey: runKeys.list(workflow, compact(filter)),
+    queryKey: runKeys.list(workflow ?? "", compact(filter)),
     queryFn: () => client.run<RunSummary[]>(RUN_STEPS.list, config),
-    enabled: (enabled ?? true) && !!workflow,
+    enabled: (enabled ?? true) && (!!workflow || !!filter.job),
     refetchInterval: live ? (q) => (anyInFlight(q.state.data) ? LIVE_INTERVAL_MS : false) : false,
   });
 }
@@ -291,6 +293,14 @@ export function useStep<T = unknown>(type: string): UseStep<T> {
 function useHostState(): HostState {
   const host = useStrutHost();
   return useSyncExternalStore(host.subscribe, host.getState, host.getState);
+}
+
+/** Which app this page is (plans/apps.md §7.2), off its identity: a
+ *  workspace app `{ name, version }`, or a JOB's app `{ job, path }` — whose
+ *  own job it reads with no grant (`useRuns(null, { job })`, §6). Undefined
+ *  under a host's own client. */
+export function useApp(): AppIdentity | undefined {
+  return useStrutClient().app;
 }
 
 /** What the model or a link opened the app with (`ui/notifications/tool-input`,

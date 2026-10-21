@@ -5,9 +5,9 @@ import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AnyStepDef, Flow, McpServer, StepRegistry, RunEvent, RunResult } from "./core.js";
@@ -33,7 +33,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, jobAppIdentity, fileTokenScope, scopePath, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -76,8 +76,9 @@ import { buildAuthoringCapability } from "./authoring.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
-import { listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
-import { DOCUMENT_FILE, withToken, withoutTokenMeta } from "./apps/build.js";
+import { copyAppDir, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
+import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
+import { MANIFEST_FILE } from "./apps/manifest.js";
 import type { AppUpstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -2363,31 +2364,57 @@ export async function createStrut<TServices = unknown>(
 
   // Publish from a files map: `{ name, files: { "app.yaml": "…", "src/App.tsx": "…", "public/logo.png": { base64 } }, publisher?, upstream? }`.
   // Written to a scratch directory, built, recorded, copied into place.
+  // Or from a JOB's app (plans/apps.md §1.2, "Publish as an app" in the job
+  // timeline): `{ name, job, path }` publishes that directory of the job as
+  // the workspace app's next version — a person's door like the files map,
+  // so its grants are unrestricted — and its `data.db` comes along when the
+  // workspace app has none yet. The job's directory stays as it is.
   app.post("/apps", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as {
       name?: unknown;
       files?: unknown;
+      job?: unknown;
+      path?: unknown;
       publisher?: unknown;
       upstream?: unknown;
       reactivateKnown?: unknown;
     };
     if (typeof body.name !== "string" || !body.name) return c.json({ error: "name is required" }, 400);
-    if (!body.files || typeof body.files !== "object" || Array.isArray(body.files) || !Object.keys(body.files).length) {
-      return c.json({ error: "files is required: a path → content map (text, or { base64 } for a binary file), app.yaml among them" }, 400);
+    const fromJob = body.job !== undefined || body.path !== undefined;
+    if (fromJob && body.files !== undefined) return c.json({ error: "files, or job + path — not both" }, 400);
+    if (!fromJob && (!body.files || typeof body.files !== "object" || Array.isArray(body.files) || !Object.keys(body.files).length)) {
+      return c.json({ error: "files is required: a path → content map (text, or { base64 } for a binary file), app.yaml among them — or job + path, a job's app" }, 400);
     }
     try {
       validateAppName(body.name);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+    let jobDir: string | undefined;
+    if (fromJob) {
+      const job = body.job;
+      const path = typeof body.path === "string" ? scopePath(body.path) : undefined;
+      if (typeof job !== "string" || idProblem(job)) return c.json({ error: `job is required: a job id${typeof job === "string" ? ` ("${job}" ${idProblem(job)})` : ""}` }, 400);
+      if (!path) return c.json({ error: "path is required: the app's directory in the job's" }, 400);
+      try {
+        jobDir = jobFilePath(jobRoot(dataDir, job), path);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (!existsSync(join(jobDir, MANIFEST_FILE))) return c.json({ error: `no app at "${path}" in job "${job}" (no ${MANIFEST_FILE})` }, 404);
+    }
+    // Built in a scratch copy either way: the job's own `dist/` is the
+    // agent's, never rewritten by a publish.
     const scratch = await mkdtemp(join(tmpdir(), "strut-app-publish-"));
     let result: AppPublishResult;
     try {
-      await writeAppFiles(scratch, body.files as Record<string, string | { base64: string }>);
+      if (jobDir) await copyAppDir(jobDir, scratch, { dist: false });
+      else await writeAppFiles(scratch, body.files as Record<string, string | { base64: string }>);
       const actor = await resolveActor(c);
       result = await apps.publish(scratch, body.name, {
         surface: "person",
         source: "api",
+        ...(jobDir ? { dataFrom: jobDir } : {}),
         ...(typeof body.publisher === "string" ? { publisher: body.publisher } : {}),
         ...(actor ? { actor } : {}),
         ...(body.upstream === null || (body.upstream && typeof body.upstream === "object") ? { upstream: body.upstream as AppUpstream | null } : {}),
@@ -2484,11 +2511,31 @@ export async function createStrut<TServices = unknown>(
     return c.json(claims ? { ...view, claims } : view);
   });
 
+  // `?path=<dir>` NARROWS the listing to a directory of the job (a job's
+  // APP, plans/apps.md §6, §7.2): its files, relative to it, and a token
+  // that opens reads under that subtree and nothing else of the job —
+  // what the app's document carries as its identity.
   app.get("/jobs/:id/files", async (c) => {
     const refused = badToken(c);
     if (refused) return refused;
     const at = jobRoute(c);
     if (at instanceof Response) return at;
+    const asked = c.req.query("path");
+    if (asked !== undefined) {
+      const path = scopePath(asked);
+      if (!path) return c.json({ error: `"${asked}" is not a directory path in the job` }, 400);
+      let dir: string;
+      try {
+        dir = jobFilePath(at.root, path);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (!(await stat(dir).then((st) => st.isDirectory(), () => false))) return c.json({ error: `no directory "${path}" in job "${at.id}"` }, 404);
+      const prefix = `${path}/`;
+      const files = (await listJobFiles(at.root, await readJobRecord(at.root))).filter((f) => f.split(sep).join("/").startsWith(prefix)).map((f) => f.split(sep).join("/").slice(prefix.length));
+      const token = fileToken({ kind: "job", id: at.id, path });
+      return c.json({ job: at.id, path, files, ...(token ? { token } : {}) });
+    }
     const token = fileToken({ kind: "job", id: at.id });
     return c.json({ job: at.id, files: await listJobFiles(at.root, await readJobRecord(at.root)), ...(token ? { token } : {}) });
   });
@@ -2501,10 +2548,26 @@ export async function createStrut<TServices = unknown>(
     const relPath = c.req.param("path");
     try {
       const bytes = new Uint8Array(await readFile(jobFilePath(at.root, relPath)));
+      const tokenScope = fileTokenScope(c);
+      // A job APP's document (§6, §7.2): read by the token narrowed to its
+      // directory, it carries the app's identity — the scope and that
+      // token, what `step_run` reads the app off — as a workspace app's
+      // does; on a strut with no secret to sign one (nothing minted, the
+      // gate open), the unsigned scope. Read any other way — the whole
+      // job's token, the key — it is a file like any other.
+      const appPath = relPath.endsWith(`/${DOCUMENT_FILE}`) ? scopePath(relPath.slice(0, -DOCUMENT_FILE.length - 1)) : undefined;
+      if (appPath) {
+        const signs = fileToken({ kind: "job", id: at.id, path: appPath }) !== undefined;
+        const own = tokenScope?.path === appPath;
+        if ((own || !signs) && existsSync(join(jobFilePath(at.root, appPath), MANIFEST_FILE))) {
+          const html = withToken(Buffer.from(bytes).toString("utf8"), jobAppIdentity(at.id, appPath));
+          return c.body(html, 200, artifactHeaders(relPath, own));
+        }
+      }
       return c.body(
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
         200,
-        artifactHeaders(relPath, carriesFileToken(c)),
+        artifactHeaders(relPath, tokenScope !== undefined),
       );
     } catch (err: any) {
       if (err?.code === "ENOENT" || err?.code === "EISDIR") {
@@ -3343,8 +3406,13 @@ export async function createStrut<TServices = unknown>(
   /** A run's declared deliverables, resolved to links on this server
    *  (plans/jobs.md §3; src/artifact-refs.ts). Undefined when the output
    *  declares none. */
+  /** A job app's build (`dist/build.json`): its deliverable's `app.hash`. */
+  const jobAppBuild = async (job: string, path: string) => {
+    const build = await readBuildInfo(jobFilePath(jobRoot(dataDir, job), path));
+    return build ? { hash: build.hash, builtAt: build.builtAt } : null;
+  };
   const artifactRefs = (runId: string, output: unknown, job: string | undefined): Promise<ArtifactRef[] | undefined> =>
-    resolveArtifactRefs(output, { runId, ...(job ? { job } : {}), exists: artifactFileExists });
+    resolveArtifactRefs(output, { runId, ...(job ? { job } : {}), exists: artifactFileExists, appBuild: jobAppBuild });
 
   // ── Runs as a capability (src/runs.ts; plans/apps.md §5) ──────────────
   // What the `run/*` steps are thin over — list, read, launch, cancel, a
@@ -3365,17 +3433,36 @@ export async function createStrut<TServices = unknown>(
     if (flow.sealed) throw new Error(`workflow "${name}" is sealed — its runs are not readable or launchable from here`);
     return flow;
   };
+  /** A job's runs, newest first, off its record — every workflow it ran;
+   *  a sealed workflow's runs left out (a model's door). */
+  const jobRunLines = async (job: string): Promise<Array<{ workflow: string; runId: string }>> => {
+    const problem = idProblem(job);
+    if (problem) throw new Error(`job "${job}" ${problem}`);
+    const lines = [...((await readJobRecord(jobRoot(dataDir, job)))?.runs ?? [])].reverse();
+    const sealed = new Map<string, boolean>();
+    const out: Array<{ workflow: string; runId: string }> = [];
+    for (const line of lines) {
+      if (!sealed.has(line.workflow)) sealed.set(line.workflow, !!(await workspace.getWorkflow(line.workflow).catch(() => null))?.sealed);
+      if (!sealed.get(line.workflow)) out.push({ workflow: line.workflow, runId: line.runId });
+    }
+    return out;
+  };
   const runsCap: RunsCapability = {
     async list(q) {
-      await openFlow(q.workflow);
+      if (!q.workflow && !q.job) throw new Error("run/list needs `workflow`, or `job` for a job's runs");
+      if (q.workflow) await openFlow(q.workflow);
       const limit = Math.min(RUN_LIST_MAX_LIMIT, Math.max(1, q.limit ?? RUN_LIST_DEFAULT_LIMIT));
+      // One workflow's runs, or a job's across its workflows (its record).
+      const rows = q.workflow
+        ? (await store.listRuns(q.workflow)).map((runId) => ({ workflow: q.workflow!, runId }))
+        : await jobRunLines(q.job!);
       const out: RunListEntry[] = [];
-      for (const runId of await store.listRuns(q.workflow)) {
+      for (const { workflow, runId } of rows) {
         if (out.length >= limit) break;
-        const summary = await store.getRunSummary(q.workflow, runId);
+        const summary = await store.getRunSummary(workflow, runId);
         const row: RunListEntry & { jobTitle?: string } = summary
           ? listEntryOf(summary)
-          : { runId, workflow: q.workflow, status: liveStatus(q.workflow, runId), ...liveJob(controllers.get(`${q.workflow}/${runId}`)) } as RunListEntry;
+          : { runId, workflow, status: liveStatus(workflow, runId), ...liveJob(controllers.get(`${workflow}/${runId}`)), ...(q.workflow ? {} : { job: q.job }) } as RunListEntry;
         if (!matchesRunFilter(row, q)) continue;
         const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
         out.push({ ...row, ...(artifacts ? { artifacts } : {}) });
@@ -3456,6 +3543,17 @@ export async function createStrut<TServices = unknown>(
       };
     },
     async files(q) {
+      if ("job" in q) {
+        // A file of the job's directory, no run in hand (a job's app, §6).
+        const problem = idProblem(q.job);
+        if (problem) throw new Error(`job "${q.job}" ${problem}`);
+        try {
+          return fileResult(q.path, new Uint8Array(await readFile(jobFilePath(jobRoot(dataDir, q.job), q.path))));
+        } catch (err: any) {
+          if (err?.code === "ENOENT" || err?.code === "EISDIR") return null;
+          throw err;
+        }
+      }
       await openFlow(q.workflow);
       const summary = await store.getRunSummary(q.workflow, q.runId);
       let job = summary?.job;

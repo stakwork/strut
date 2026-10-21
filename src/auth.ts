@@ -1,6 +1,8 @@
 import type { Context, Next } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { AppRef } from "./core.js";
 import { bootEnv } from "./env.js";
+import { idProblem } from "./session-store.js";
 
 /**
  * Deployment-scoped shared-secret auth. `createStrut` puts `requireApiKey`
@@ -138,10 +140,11 @@ export function scopeFromKey(c: Context): Scope {
 // always read its own `location`, so a page an agent wrote could have lifted
 // the key and sent it anywhere. A file token is the deployment key
 // ATTENUATED to one scope — the files of one run (`/artifacts/:runId` and
-// everything under it) or of one job (`/jobs/:id/files` and under) — reads
-// only. Leaked, it is worth exactly the files the page already shows. It is
-// an HMAC of the scope under a deployment secret, so it needs no store and
-// is minted by the listing routes (`GET /artifacts/:runId`,
+// everything under it) or of one job (`/jobs/:id/files` and under), or of
+// one directory inside a job (a job's app: `GET /jobs/:id/files?path=` mints
+// it) — reads only. Leaked, it is worth exactly the files the page already
+// shows. It is an HMAC of the scope under a deployment secret, so it needs
+// no store and is minted by the listing routes (`GET /artifacts/:runId`,
 // `GET /jobs/:id/files` → `token`) for whoever got past the gate.
 //
 // The secret is `STRUT_API_KEY`, else `STRUT_SECRET_KEY` when set: a strut
@@ -153,8 +156,11 @@ export function scopeFromKey(c: Context): Scope {
 
 /** What a file token opens: one run's artifacts, one job's files, or one
  *  app VERSION's directory (`app:<name>@<vN>`, plans/apps.md §7.2 — the
- *  token the served document carries as the app's identity). */
-export type FileScope = { kind: "run" | "job" | "app"; id: string };
+ *  token the served document carries as the app's identity). A job's scope
+ *  may be NARROWED to a directory inside it (`path`: a job's app, §6 — the
+ *  token its document carries opens reads under that subtree and nothing
+ *  else of the job). */
+export type FileScope = { kind: "run" | "job" | "app"; id: string; path?: string };
 
 const SECRET_ENV = "STRUT_SECRET_KEY";
 
@@ -166,11 +172,27 @@ function tokenSecret(): string | undefined {
 }
 
 /** The read token for a scope; undefined with no secret to sign it (dev
- *  mode: everything is open, there is nothing to attenuate). */
+ *  mode: everything is open, there is nothing to attenuate). A narrowed
+ *  scope signs `job:<id>\0<path>` — no id or path holds a NUL, so it is
+ *  never another scope's input (`job:a` + `b` is not job `a/b`). */
 export function fileToken(scope: FileScope): string | undefined {
   const secret = tokenSecret();
   if (!secret) return undefined;
-  return createHmac("sha256", secret).update(`${scope.kind}:${scope.id}`).digest("base64url");
+  const input = `${scope.kind}:${scope.id}${scope.path ? `\0${scope.path}` : ""}`;
+  return createHmac("sha256", secret).update(input).digest("base64url");
+}
+
+/** A path inside a job's directory as a narrowed scope names it: `/`
+ *  segments with the empty and `.` ones dropped (`./apps/tracker/` is
+ *  `apps/tracker`) — undefined for nothing left, a `..`, or a NUL. */
+export function scopePath(path: string): string | undefined {
+  const segs: string[] = [];
+  for (const seg of path.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === ".." || seg.includes("\0")) return undefined;
+    segs.push(seg);
+  }
+  return segs.length ? segs.join("/") : undefined;
 }
 
 /** The scope a path reads from — `/artifacts/<runId>[/…]`,
@@ -186,6 +208,28 @@ export function fileScopeOf(path: string): FileScope | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Every scope a token for a read of `path` could carry: the scope the path
+ *  reads from, and — for a job's file — each directory on the way to it,
+ *  the narrowed scopes (`apps`, `apps/tracker`, …). The job files LISTING
+ *  narrowed by `?path=` (`listingPath`) reads from that directory. A path
+ *  with a `..` in it opens under the whole job's token only. */
+export function fileScopesOf(path: string, listingPath?: string): FileScope[] {
+  const scope = fileScopeOf(path);
+  if (!scope) return [];
+  if (scope.kind !== "job") return [scope];
+  const m = path.match(/^\/jobs\/[^/]+\/files(?:\/(.*))?$/);
+  let rel: string | undefined;
+  try {
+    rel = m?.[1] ? decodeURIComponent(m[1]) : listingPath;
+  } catch {
+    return [scope];
+  }
+  const within = rel === undefined ? undefined : scopePath(rel);
+  if (!within) return [scope];
+  const segs = within.split("/");
+  return [scope, ...segs.map((_, i) => ({ kind: "job" as const, id: scope.id, path: segs.slice(0, i + 1).join("/") }))];
 }
 
 // ── The app's identity ───────────────────────────────────────────────────
@@ -209,36 +253,73 @@ export function appIdentity(name: string, version: string): string {
   return `app:${name}@${version}.${fileToken({ kind: "app", id: `${name}@${version}` }) ?? ""}`;
 }
 
+/** What a JOB's app document carries (plans/apps.md §6, §7.2): the job's
+ *  scope narrowed to the app's directory, `job:<encoded id>/<path>`, and
+ *  its token — the one the narrowed listing minted, which also opens the
+ *  app's own files. The id is encoded, so its first `/` ends it. */
+export function jobAppIdentity(job: string, path: string): string {
+  return `job:${encodeURIComponent(job)}/${path}.${fileToken({ kind: "job", id: job, path }) ?? ""}`;
+}
+
 /** The app an identity names, once its token holds — or undefined: not an
  *  app's identity, a token strut cannot vouch for, or an unsigned one on a
- *  strut that signs. */
-export function appOfIdentity(identity: unknown): { name: string; version: string } | undefined {
+ *  strut that signs. A workspace app at a version, or a job's app. */
+export function appOfIdentity(identity: unknown): AppRef | undefined {
   if (typeof identity !== "string") return undefined;
   const dot = identity.lastIndexOf(".");
   if (dot < 0) return undefined;
   const scope = identity.slice(0, dot);
   const got = identity.slice(dot + 1);
-  const m = scope.match(/^app:(.+)@(v\d+)$/);
-  if (!m) return undefined;
-  const [, name, version] = m as unknown as [string, string, string];
-  const expected = fileToken({ kind: "app", id: `${name}@${version}` });
-  if (expected === undefined) return got === "" ? { name, version } : undefined;
+  let ref: AppRef;
+  let expected: string | undefined;
+  const app = scope.match(/^app:(.+)@(v\d+)$/);
+  const job = scope.match(/^job:([^/]+)\/(.+)$/);
+  if (app) {
+    const [, name, version] = app as unknown as [string, string, string];
+    ref = { name, version };
+    expected = fileToken({ kind: "app", id: `${name}@${version}` });
+  } else if (job) {
+    let id: string;
+    try {
+      id = decodeURIComponent(job[1]!);
+    } catch {
+      return undefined;
+    }
+    const path = scopePath(job[2]!);
+    // The canonical spelling only: the token was minted over it.
+    if (idProblem(id) || !path || path !== job[2]) return undefined;
+    ref = { job: id, path };
+    expected = fileToken({ kind: "job", id, path });
+  } else {
+    return undefined;
+  }
+  if (expected === undefined) return got === "" ? ref : undefined;
   if (expected.length !== got.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return undefined;
-  return { name, version };
+  return ref;
+}
+
+/** The scope this request's file token (`?t=`) opens for the path it reads
+ *  — the whole scope, or (a job's file) the narrowed one it was minted for
+ *  — or undefined: no token, a token for another run, job, path or app, a
+ *  write. What a file route reads to tell a job app's document read by its
+ *  own token from any other read. */
+export function fileTokenScope(c: Context): FileScope | undefined {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") return undefined;
+  const got = c.req.query("t")?.trim();
+  if (!got) return undefined;
+  for (const scope of fileScopesOf(c.req.path, c.req.query("path"))) {
+    const expected = fileToken(scope);
+    if (expected && expected.length === got.length && timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return scope;
+  }
+  return undefined;
 }
 
 /** Does this request carry a valid file token (`?t=`) for the scope its
- *  path reads from? A read (GET / HEAD) under a scope only; a token on any
- *  other path, or for another run or job, opens nothing. */
+ *  path reads from — or, a job's file, for a directory on the way to it?
+ *  A read (GET / HEAD) under a scope only; a token on any other path, or
+ *  for another run, job or subtree, opens nothing. */
 export function carriesFileToken(c: Context): boolean {
-  if (c.req.method !== "GET" && c.req.method !== "HEAD") return false;
-  const got = c.req.query("t")?.trim();
-  if (!got) return false;
-  const scope = fileScopeOf(c.req.path);
-  if (!scope) return false;
-  const expected = fileToken(scope);
-  if (!expected || expected.length !== got.length) return false;
-  return timingSafeEqual(Buffer.from(expected), Buffer.from(got));
+  return fileTokenScope(c) !== undefined;
 }
 
 /** Does this request carry a `?t=` strut cannot vouch for? The file routes

@@ -227,9 +227,14 @@ describe("step_run — the app door", () => {
     await refused({ type: "meta/run-workflow", config: {}, app: paid }, /sealed/);
     await refused({ type: "sqlite/query", config: { sql: "select 1" }, app: paid }, /not available in this strut yet: .*work item 3/);
     await refused({ type: "automation/list", config: {}, app: paid }, /not available in this strut yet: .*work item 7/);
-    await refused({ type: "job/start", config: {}, app: paid }, /work item 2/);
+    await refused({ type: "job/start", config: {}, app: paid }, /continue this job/);
     await refused({ type: "app/publish", config: {}, app: paid }, /does not author apps/);
-    await refused({ type: "run/list", config: { workflow: "score-wf", job: "j" }, app: identity }, /work item 2/);
+    // A workspace app may filter a granted workflow's runs by job; it holds
+    // no job of its own to read past its grants, and launches no job's turn.
+    assert.deepEqual(await ok({ type: "run/list", config: { workflow: "score-wf", job: "j" }, app: identity }), []);
+    await refused({ type: "run/list", config: { job: "j" }, app: identity }, /needs `workflow`/);
+    await refused({ type: "run/files", config: { job: "j", path: "x.md" }, app: identity }, /a job's files are its own app's/);
+    await refused({ type: "run/launch", config: { workflow: "score-wf", job: "j" }, app: identity }, /does not launch a job's turn/);
     await refused({ type: "run/launch", config: { workflow: "agentish", params: { tools: ["app/list"] } }, app: identity }, /params may not grant/);
     await refused({ type: "nope/step", config: {}, app: identity }, /not granted/);
     // The pure check, on a manifest alone.
