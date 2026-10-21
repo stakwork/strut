@@ -88,6 +88,7 @@ import { createChatNotifier, formatRestartNotification, formatRunNotification } 
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { attachmentParts, parseAttachments, saveAttachments, type Attachment } from "./ai/attachments.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
+import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { parseMcpServers } from "./mcp-servers.js";
 import { briefOf, decideProposal, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
@@ -223,6 +224,13 @@ export interface StrutOptions<TServices = unknown> {
    *  are here. Seeded at boot after `STRUT_SELF` (this wins); `PUT /self` is
    *  the same door. No baseUrl or token: nothing is dispatched to self. */
   self?: SelfInfo;
+  /** The events sink (src/events-sink.ts; `STRUT_EVENTS_SINK` for the
+   *  default server): every run's events — the ENVELOPE only, never a
+   *  step's input, output or transcript — batched and POSTed to this one
+   *  URL as `{ event: "run.events", events }`. Telemetry for a listener set
+   *  once: nothing in a run waits on a delivery, and one that fails is
+   *  dropped. A URL that is not http(s) fails the boot. */
+  eventsSink?: { url: string };
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -780,6 +788,28 @@ export async function createStrut<TServices = unknown>(
   // Building it touches nothing: the first step that opens a page connects.
   // Each run's contexts close when the run ends; a bad BROWSER_* value is a
   // warning here and an error in those steps, never a failed boot.
+  // The events sink (src/events-sink.ts; STRUT_EVENTS_SINK): every run's
+  // events, the envelope only, batched to one URL the deployment names —
+  // hung on the bag as `onRunEvent`, the twin of `onRunEnd` the runner
+  // calls at every emit, after a host's own. A bad URL fails the boot, like
+  // STRUT_PEERS; nothing in a run waits on a delivery.
+  let ownSink: EventsSink | undefined;
+  if (opts.eventsSink) {
+    const url = parseSinkUrl(opts.eventsSink.url);
+    const sink = createEventsSink({ url });
+    const bag = services as Record<string, unknown>;
+    const prior = (bag["onRunEvent"] as ((workflow: string, event: RunEvent) => unknown) | undefined)?.bind(bag);
+    bag["onRunEvent"] = async (workflow: string, event: RunEvent) => {
+      try {
+        await prior?.(workflow, event);
+      } finally {
+        sink.push(workflow, event);
+      }
+    };
+    ownSink = sink;
+    console.log(`[events-sink] posting every run's events to ${callbackOrigin(url)}`);
+  }
+
   let ownBrowser: BrowserService | undefined;
   if (!(services as Record<string, unknown>)["browser"]) {
     try {
@@ -4542,6 +4572,8 @@ export async function createStrut<TServices = unknown>(
     automations.stop();
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();
+    // What the sink still holds goes out before the process does.
+    await ownSink?.close();
     const s = httpServer;
     if (!s) return;
     httpServer = null;

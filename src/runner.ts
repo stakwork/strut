@@ -235,6 +235,11 @@ export async function runWorkflow<TServices = unknown>(
   );
 
   const onEvent = opts?.onEvent;
+  // The deployment-wide twin of the bag's `onRunEnd`: every event of every
+  // run, for a listener set once — createStrut's events sink
+  // (src/events-sink.ts) or a host's own. Guarded: a listener's failure is
+  // its own, never the run's.
+  const onRunEvent = (services as { onRunEvent?: (workflow: string, event: RunEvent) => unknown } | null)?.onRunEvent;
   // `RunSummary.stepCounts` and `totals`, kept as events are emitted. A
   // resume continues the same log, so it starts from what that log counted.
   const before = opts?.resume ? await store.getRunEvents(wfName, runId) : [];
@@ -251,6 +256,13 @@ export async function runWorkflow<TServices = unknown>(
     await store.append(wfName, runId, full);
     tallyStep(stepCounts, full);
     tallyUsage(totals, full);
+    if (onRunEvent) {
+      try {
+        await onRunEvent(wfName, full);
+      } catch (err) {
+        console.error(`[runner] services.onRunEvent failed for run ${runId}:`, err);
+      }
+    }
     await onEvent?.(full);
   };
 
