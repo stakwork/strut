@@ -249,13 +249,27 @@ export type RunEventType =
  *  — a person's click in the viewer's name, so the run carries `app` too. */
 export type RunOrigin = "verify" | "schedule" | "peer" | "app";
 
-/** The APP a run or a step works for (plans/apps.md §5): a workspace app at
- *  a version — what `step_run` sets as `ctx.app` for the page's call, and
- *  what a run the app launches records on `run.start` as a job run records
- *  `job`. A job's app (`{ job, path }`) is work item 2. */
-export interface AppRef {
+/** The APP a run or a step works for (plans/apps.md §5): what `step_run`
+ *  sets as `ctx.app` for the page's call, and what a run the app launches
+ *  records on `run.start` as a job run records `job`. A workspace app at a
+ *  version, or a JOB's app (§6): the directory `path` inside the job's
+ *  directory, with no versions. */
+export type AppRef = WorkspaceAppRef | JobAppRef;
+
+export interface WorkspaceAppRef {
   name: string;
   version: string;
+}
+
+export interface JobAppRef {
+  job: string;
+  /** Relative to the job's directory, normalized (`apps/tracker`). */
+  path: string;
+}
+
+/** Is this a job's app (`{ job, path }`)? */
+export function isJobApp(app: AppRef): app is JobAppRef {
+  return "job" in app;
 }
 
 /** A single event in the run log. */

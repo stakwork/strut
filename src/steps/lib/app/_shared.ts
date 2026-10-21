@@ -1,5 +1,6 @@
-import { isAbsolute, resolve, sep } from "node:path";
-import type { StepContext } from "../../../core.js";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import type { JobAppRef, StepContext } from "../../../core.js";
+import { scopePath } from "../../../auth.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { AppsCapability } from "../../../apps/apps.js";
 import { jobRoot } from "../../../jobs.js";
@@ -57,4 +58,19 @@ export async function resolveAppPath(ctx: StepContext<StrutCapabilities>, path: 
   const abs = resolve(base, path);
   if (abs !== base && !abs.startsWith(base + sep)) throw new Error(`"${path}" leaves the ${jobId ? "job's" : ctx.runId ? "run's" : "data"} directory (${base})`);
   return abs;
+}
+
+/**
+ * The job's app a resolved directory is (plans/apps.md §6): `{ job, path }`
+ * when it sits inside a job's directory — the run's job, or the one `job`
+ * names — with `path` as the job's file token scopes it; undefined for a
+ * run's or the builder's scratch directory.
+ */
+export function jobAppOf(ctx: StepContext<StrutCapabilities>, dir: string, job?: string): JobAppRef | undefined {
+  const jobId = job ?? ctx.job;
+  const dataDir = (ctx.services as Partial<StrutCapabilities> | undefined)?.dataDir;
+  if (!jobId || !dataDir || idProblem(jobId)) return undefined;
+  const rel = relative(jobRoot(dataDir, jobId), dir);
+  const path = rel && !rel.startsWith("..") && !isAbsolute(rel) ? scopePath(rel.split(sep).join("/")) : undefined;
+  return path ? { job: jobId, path } : undefined;
 }

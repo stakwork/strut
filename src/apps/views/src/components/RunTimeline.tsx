@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, Brain, GitBranch, Repeat, Sparkles, SquareArrowOutUpRight, Workflow } from "lucide-react";
-import { foldRunOverview, useRunEvents, type OverviewEvent, type OverviewRow, type RowKind, type RunEvent } from "@strut/kit";
+import { foldRunOverview, runAppLabel, useRunEvents, type OverviewEvent, type OverviewRow, type RowKind, type RunEvent } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -74,7 +74,7 @@ export function RunTimeline({ workflow, runId, events: given, onOpenStep, onOpen
       <div className="flex flex-wrap items-center gap-2">
         <RunStatus status={o.status} />
         <span className="font-medium">{o.workflow}</span>
-        {o.app && <Badge variant="secondary" className="font-normal">app · {o.app.name}</Badge>}
+        {o.app && <Badge variant="secondary" className="font-normal">app · {runAppLabel(o.app)}</Badge>}
         {o.job && <Badge variant="outline" className="font-normal">{o.job}</Badge>}
         <span className="text-xs text-muted-foreground">
           {o.actor && <>by {displayActor(o.actor)} · </>}

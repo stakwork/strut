@@ -33,6 +33,31 @@ manifest, files, build and its latest CLIENT ERRORS (`errors`: what the
 page's error boundary reported) — read them after a change the person says
 broke. `app/checkout { name, path }` copies a version out to edit it.
 
+## A job's app
+
+A job's agent writes an app in its OWN directory — `apps/<name>/`, laid out
+as above — when the person wants something to use rather than read: a
+tracker over the spreadsheet they gave you, a dashboard over a workflow's
+runs. `app/init { path }`, the editor, then `app/build { path }`: BUILD
+BEFORE YOU HAND IT OVER, as you verify before you say done — the person
+sees the page the last build wrote, and a directory with no build is "not
+built". Fix every error and build again. Then list it in your artifacts:
+`{ id, kind: "app", title, path: "apps/<name>" }`. It has no versions: the
+directory is live, and the person's view reloads when a build changes it.
+
+Beyond its manifest's grants a job's app holds its OWN JOB — and no other:
+`useRuns(null, { job })` (`run/list { job }`: every run of the job, across
+workflows), `useRun` / `run/get` and `run/events` on any of them,
+`run/files { job, path }` (the job's files: the CSV the person gave you),
+`job/get` and `job/read` — so a tracker over the job's data needs no grant
+at all. `useApp()` says which app the page is — `{ job, path }` for a
+job's app — so its job's runs are `useRuns(null, { job })` with that `job`.
+Its grants are a model's: never `llm`, `agent`, `exec` or anything sealed
+(the build refuses them). `app/get { path }` reads it back — `stale` when
+the document is older than the files, `errors` what its page reported. You
+do not publish it: the person does from the job ("Publish as an app"), or
+a builder job on request.
+
 ## The manifest
 
 ```yaml
@@ -106,7 +131,7 @@ tool (`step_run`) the host relays to strut:
 
 | Hook | What it does |
 | --- | --- |
-| `useRuns(workflow, { status?, automation?, limit?, since?, live? })` | `run/list`: the runs, newest first; `live` refetches while any is in flight |
+| `useRuns(workflow, { status?, automation?, job?, limit?, since?, live? })` | `run/list`: the runs, newest first; `live` refetches while any is in flight; `useRuns(null, { job })` a job's runs across workflows |
 | `useRun(workflow, runId, { live? })` | `run/get`: the summary, its whole `input` and `output`, `artifacts` as links; `live` long-polls (`wait`) while in flight |
 | `useRunEvents(workflow, runId, { live? })` | `run/events`: the log, transcripts as links |
 | `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
@@ -115,6 +140,7 @@ tool (`step_run`) the host relays to strut:
 | `useWorkflow(workflow)` | `run/workflow`: description, the `input:` block, params defaults — what a launch form renders |
 | `useStep(type)` → `{ run(config, input) }` | any granted step, as a function |
 | `useToolInput()` | what the model or a deep link opened the app with |
+| `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a strut link in place |
 
 A step's output comes back whole; a refused call or a failed step throws a

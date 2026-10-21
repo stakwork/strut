@@ -44,6 +44,14 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     }
   });
 
+  it("a job's app (plans/apps.md §6, §8): the agent may scaffold, build and read one — never publish or check one out, the authoring writes", async () => {
+    const { tools, system } = paramsOf(await jobWorkflowYaml());
+    for (const t of ["app/init", "app/build", "app/get"]) assert.ok(tools.includes(t), `the job agent holds ${t}`);
+    for (const t of ["app/publish", "app/checkout"]) assert.ok(!tools.includes(t), `the job agent never holds ${t}`);
+    assert.match(system, /kind: "app"/, "the prompt says how to hand one over");
+    assert.match(system, /app\/build/);
+  });
+
   it("the host's delta is appended — its grants after strut's, its section after strut's prompt — and changes the hash; nothing else does", async () => {
     const plain = await jobWorkflowYaml();
     const section = "Before you act, open the `Job` Concept and follow the kind's page.";

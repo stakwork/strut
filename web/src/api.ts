@@ -1,4 +1,4 @@
-import { fileScopeOf, type AccessedNode, type TokenUsage } from "@strut/kit/folds";
+import { fileScopeOf, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -710,8 +710,9 @@ export interface RunSummary {
   /** Who launched the run when it was not a person or an API call:
    *  `schedule`, `peer`, `app` (plans/apps.md §11). */
   origin?: string;
-  /** The app the run was launched for, with `origin: "app"`. */
-  app?: { name: string; version: string };
+  /** The app the run was launched for, with `origin: "app"`: a workspace
+   *  app at a version, or a job's app (`{ job, path }`). */
+  app?: RunApp;
   /** What the run's model calls spent (absent when none did). */
   totals?: { modelCalls: number; usage: TokenUsage; cost: number };
 }
@@ -795,6 +796,17 @@ export interface ArtifactRef {
   peer?: string;
   job?: string;
   path?: string;
+  /** A job's APP (`kind: "app"`, plans/apps.md §6): its job and directory,
+   *  and the build its document is — a new `hash` is a new page. */
+  app?: JobAppRef;
+}
+
+/** A job's app: the directory in the job's, and the build it was handed over at. */
+export interface JobAppRef {
+  job: string;
+  path: string;
+  hash?: string;
+  builtAt?: string;
 }
 
 /** A current deliverable of a job: the ref and the run that last reported it. */
@@ -1784,6 +1796,42 @@ export function appFilesScope(name: string, version: string): string {
 /** The version's document, inside its scope. */
 export function appDocumentPath(name: string, version: string): string {
   return `${appFilesScope(name, version)}/dist/index.html`;
+}
+
+/** A JOB's app (plans/apps.md §6, §7.2): its files, listed with the job's
+ *  token NARROWED to its directory (`GET /jobs/:id/files?path=`) — the token
+ *  its document is fetched with, which the server writes into the page as
+ *  its identity, and which opens nothing else of the job. */
+export async function jobAppScope(job: string, path: string): Promise<FileScope> {
+  const res = await apiFetch(`/jobs/${encodeURIComponent(job)}/files?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const body = (await res.json()) as { files?: unknown; token?: unknown };
+  return {
+    files: Array.isArray(body.files) ? body.files.filter((f): f is string => typeof f === "string") : [],
+    token: typeof body.token === "string" ? body.token : "",
+  };
+}
+
+/** A job app's document as a served path (`/jobs/<id>/files/<path>/dist/index.html`). */
+export function jobAppDocumentPath(job: string, path: string): string {
+  return `/jobs/${encodeURIComponent(job)}/files/${path}/dist/index.html`;
+}
+
+/** A job app's document, read with its narrowed token — as a workspace
+ *  app's is, for the caller to frame as a sandboxed srcdoc. */
+export async function fetchJobAppDocument(job: string, path: string, token: string): Promise<string> {
+  const res = await apiFetch(`${jobAppDocumentPath(job, path)}${token ? `?t=${encodeURIComponent(token)}` : ""}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.text();
+}
+
+/** "Publish as an app": a job's app becomes the workspace app `name`'s next
+ *  version (`POST /apps { name, job, path }`, a person's door). */
+export async function publishJobApp(name: string, job: string, path: string): Promise<{ ok: true; name: string; version: string; changed: boolean; warnings: string[] }> {
+  const res = await apiFetch("/apps", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, job, path }) });
+  const body = (await res.json().catch(() => ({}))) as { error?: string; errors?: string[] } & Record<string, unknown>;
+  if (!res.ok) throw new Error([body.error ?? `${res.status} ${res.statusText}`, ...(body.errors ?? [])].join("\n"));
+  return body as unknown as { ok: true; name: string; version: string; changed: boolean; warnings: string[] };
 }
 
 /** The document's bytes, read with the scope's token (`?t=`) — the server

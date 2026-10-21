@@ -83,11 +83,11 @@ steps:
               required: [id, title]
               properties:
                 id: { type: string, description: "Stable across turns: the same id next turn means a newer version of the same thing (\"plan\", not \"plan-v3\")." }
-                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …). Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
+                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …); `app` for an app directory you built. Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
                 title: { type: string }
                 label: { type: string, description: "What it is to the reader: Plan, Page, Screenshot" }
                 summary: { type: string, description: "One sentence about what is in it" }
-                path: { type: string, description: "A file you wrote, relative to the working directory" }
+                path: { type: string, description: "A file you wrote (an app: its directory), relative to the working directory" }
                 url: { type: string, description: "Instead of a file you wrote: an absolute link, or the url job/get gave an earlier job's deliverable" }
                 content: { type: string, description: "Small inline content instead of a file (a diff, short JSON)" }
           ask:
@@ -141,9 +141,15 @@ params:
   # a page (browser/walkthrough for a flow, a frame per step), http/verify
   # for an endpoint, exec for a command — or a person's look when nothing
   # here runs it, never a check over the agent's own diff; and verify the
-  # job before saying done. A host appends its own (`createStrut({ job: {
-  # tools } })`): the lab adds `pod/*`. Held back until running works:
-  # meta/publish-workflow (a bespoke check workflow), meta/create-step.
+  # job before saying done. A JOB'S APP (plans/apps.md §6): app/init to
+  # scaffold one in the job's directory, app/build to build it (its errors,
+  # its page's client errors, `job.update { kind: app }` to the host),
+  # app/get to read it back — never app/publish or app/checkout, the
+  # authoring writes: a job's app reaches the workspace through a person's
+  # "Publish as an app" or a builder job (§8). A host appends its own
+  # (`createStrut({ job: { tools } })`): the lab adds `pod/*`. Held back
+  # until running works: meta/publish-workflow (a bespoke check workflow),
+  # meta/create-step.
   tools:
     - graph/graph-search
     - graph/graph-get
@@ -166,6 +172,9 @@ params:
     - job/list
     - job/get
     - job/read
+    - app/init
+    - app/build
+    - app/get
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. None of strut's own; a host
@@ -207,6 +216,19 @@ params:
     which peers there are and what each holds, and also names THIS
     workspace (`self`) and its repositories — code there is here. When no workflow fits,
     the work is yours — a plan, a page, notes — as files in your directory.
+
+    When the person wants something to USE rather than read — a tracker, a
+    form, a dashboard over a file or a workflow's runs — write an APP: a
+    small front-end project in your directory, apps/<name>/. app/init
+    scaffolds it; edit it with your editor; app/build builds it into one
+    page and answers with its errors — fix them and build again before
+    you hand it over, as you verify before you say done. List it as `{
+    id, kind: "app", title, path: "apps/<name>" }`; the person opens it
+    where they see the job, and it reads your job's runs and files by
+    itself. The `App` page in the graph (graph/graph-get { node_type:
+    Concept, name: App }) says what it may import and call. After a
+    change the person says broke it, app/get { path } shows what its page
+    reported.
 
     Seeing what a page shows is a workflow too. You have no browser to look
     around with: to look at a site or a running app, run browser-explore —

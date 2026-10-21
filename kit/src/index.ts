@@ -6,8 +6,8 @@
  *  `@strut/kit/bootstrap`; Node-side helpers for the app build are
  *  `@strut/kit/node`. */
 export {
-  STEP_RUN_TOOL, REPORT_ERROR_STEP, StrutError, createBridgeClient, unwrapToolResult,
-  type StrutClient, type ToolCaller, type ToolResult,
+  STEP_RUN_TOOL, REPORT_ERROR_STEP, StrutError, appOfToken, createBridgeClient, unwrapToolResult,
+  type AppIdentity, type StrutClient, type ToolCaller, type ToolResult,
 } from "./client.js";
 export {
   BridgeHost, StaticHost, createStaticHost, DEFAULT_HOST_STATE,
@@ -16,7 +16,7 @@ export {
 export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, type StrutProviderProps } from "./provider.js";
 export {
   RUN_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, runKeys, isInFlight, anyInFlight, eventsSettled,
-  useRuns, useRun, useRunEvents, useTranscript, useLaunch, useCancel, useWorkflow, useStep, useToolInput, useHost,
+  useRuns, useRun, useRunEvents, useTranscript, useLaunch, useCancel, useWorkflow, useStep, useToolInput, useHost, useApp,
   type RunSummary, type RunEvent, type RunTranscript, type WorkflowInfo, type LaunchResult,
   type UseRunsOptions, type UseRunOptions, type UseRunEventsOptions, type UseTranscriptOptions, type UseLaunch, type UseCancel, type UseStep, type UseHost,
 } from "./hooks.js";

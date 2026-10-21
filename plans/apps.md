@@ -1325,13 +1325,30 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    Tests drive a test app through a fake workflow. By hand, rebuild the
    OpenHealth climb view as an app against a scratch workflow with the
    same output shape.
-2. **Job apps.** The `kind: "app"` deliverable in `artifact-refs.ts`
+2. **Job apps.** **BUILT** (2026-10-21). The `kind: "app"` deliverable in `artifact-refs.ts`
    resolving to `dist/index.html` under the job's files, the job token
    narrowed to an app's path (and `step_run` reading a job app off it),
    the implicit job grant, `job.update { kind: "app" }`, `app/build` in the job seed's grants, the job timeline's
    render, and "Publish as an app". By hand, ask a job for "a tracker for
    the visits in this spreadsheet" and watch it build, open, and publish
-   one.
+   one. As built: `AppRef` is `{ name, version } | { job, path }`; the
+   narrowed scope signs `job:<id>\0<path>` and a read tries every
+   directory on the way to the file; the identity is `job:<encoded
+   id>/<path>.<token>`; the implicit grant also covers `run/transcript` on
+   a run of the job; `run/list { job }` with no workflow and `run/files {
+   job, path }` are new forms; `app/get { path }` reads a directory back;
+   `app/build` in a job checks the grants under the meta rules (nothing
+   publishes it) and answers with `clientErrors`; the kit gained `useApp()`
+   (the page's identity) and `useRuns(null, { job })`; a publish from a job
+   builds in a scratch copy, so the job's own `dist/` is the agent's. By
+   hand (Ladybug, a key, the `job` seed on Sonnet 5.5): the turn read the
+   `App` page, scaffolded, wrote the files, built once and listed the app,
+   in 41 s for $0.30, with EMPTY grants: it read the CSV through `run/files
+   { job, path }` and its runs through `useRuns(null, { job })`. It opened
+   in the timeline and the viewer; a second turn's build reloaded the frame
+   by its hash; "Publish as an app" made `visits` v1, which opens under
+   Apps — and reads no job, since the implicit grant is the job app's
+   alone: a prototype's data reaches the workspace as `data.db` (item 3).
 3. **SQLite.** The file per app, migrations at publish and at build, the
    `sqlite/*` steps and their refusals (the file from `ctx.app`, or named
    when there is none), the export, writes kept as step runs, and the

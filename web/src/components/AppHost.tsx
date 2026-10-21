@@ -18,30 +18,43 @@ import { connectAppHost, type AppHostConnection } from "../app-host";
 // time — the bundle died before the page could mount (2026-10-21). The
 // relay (../app-host) is connected over the frame's window BEFORE the
 // document loads, so the page's `ui/initialize` finds a host; its
-// tools/call go to `/mcp` as they are. The same component will render a
-// job's app in the job timeline and the artifact viewer (work item 2).
+// tools/call go to `/mcp` as they are. The same component renders a JOB's
+// app (plans/apps.md §6) in the job timeline and the artifact viewer: its
+// files listed with the job's token NARROWED to its directory, which is
+// what its document is fetched with and what the page then carries as its
+// identity — one live directory, reloaded when its build's hash moves.
+
+/** What the host renders: a workspace app at a version, or a job's app. */
+export type HostedApp = { name: string; version: string } | api.JobAppRef;
 
 export function AppHost(props: {
-  name: string;
-  version: string;
-  /** Bumped to reload the frame (a new version published). */
+  app: HostedApp;
+  /** Bumped to reload the frame (a new version published, the Reload button). */
   reload?: number;
   theme?: "light" | "dark";
-  /** `ui/message` from the page: for the builder chat. */
-  onMessage: (text: string) => void | Promise<void>;
-  /** `ui/open-link` with a strut deep link: its params. */
-  onNavigate: (params: Record<string, string>) => void;
+  /** `ui/message` from the page: for the builder chat. None for a job's app
+   *  (no send box for a job here yet, §12). */
+  onMessage?: (text: string) => void | Promise<void>;
+  /** `ui/open-link` with a strut deep link: its params (absent: a new tab). */
+  onNavigate?: (params: Record<string, string>) => void;
 }) {
-  const scope = useFileScope(api.appFilesScope(props.name, props.version));
+  const app = props.app;
+  const job = "job" in app ? app : null;
+  const ws = "job" in app ? null : app;
+  const wsScope = useFileScope(ws ? api.appFilesScope(ws.name, ws.version) : null);
+  // A workspace version's token comes from its (cached) listing; a job's
+  // app is listed at each load — its directory is live.
+  const ready = job ? true : !!wsScope;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; error?: string }>({ status: "loading" });
   const connRef = useRef<AppHostConnection | null>(null);
   const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate });
   handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate };
+  const messages = !!props.onMessage;
   const theme = props.theme ?? "dark";
 
   useEffect(() => {
-    if (!scope) return;
+    if (!ready) return;
     const frame = frameRef.current;
     if (!frame) return;
     let cancelled = false;
@@ -49,14 +62,16 @@ export function AppHost(props: {
     setState({ status: "loading" });
     void (async () => {
       try {
-        const html = await api.fetchAppDocument(props.name, props.version, scope.token);
+        const html = job
+          ? await api.fetchJobAppDocument(job.job, job.path, (await api.jobAppScope(job.job, job.path)).token)
+          : await api.fetchAppDocument(ws!.name, ws!.version, wsScope!.token);
         if (cancelled) return;
         conn = await connectAppHost({
           frame,
           theme,
           handlers: {
-            onMessage: (text) => handlers.current.onMessage(text),
-            onNavigate: (params) => handlers.current.onNavigate(params),
+            ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),
+            ...(handlers.current.onNavigate ? { onNavigate: (params: Record<string, string>) => handlers.current.onNavigate?.(params) } : {}),
           },
         });
         if (cancelled) { await conn.close(); return; }
@@ -74,9 +89,10 @@ export function AppHost(props: {
       if (frame) frame.removeAttribute("srcdoc");
     };
     // The token is the scope's; a reload re-fetches the document (a new
-    // version was published under the same label only on a rebuild).
+    // version was published under the same label only on a rebuild; a job's
+    // app was built again — its hash moved).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.name, props.version, props.reload, scope?.token]);
+  }, [ws?.name, ws?.version, job?.job, job?.path, job?.hash, props.reload, wsScope?.token, ready]);
 
   useEffect(() => {
     connRef.current?.setTheme(theme);
@@ -84,7 +100,7 @@ export function AppHost(props: {
 
   return (
     <div class="app-host">
-      <iframe ref={frameRef} class="app-frame" sandbox="allow-scripts" title={props.name} />
+      <iframe ref={frameRef} class="app-frame" sandbox="allow-scripts" title={ws ? ws.name : job!.path} />
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

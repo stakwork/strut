@@ -22,6 +22,16 @@ export interface TokenUsage {
   totalTokens: number;
 }
 
+/** The app a run worked for (plans/apps.md §5): a workspace app at a
+ *  version, or a JOB's app — its directory in the job's (§6). */
+export type RunApp = { name: string; version: string } | { job: string; path: string };
+
+/** A run's app as a badge names it: a workspace app's name, a job's app's
+ *  directory. */
+export function runAppLabel(app: RunApp): string {
+  return "name" in app ? app.name : app.path;
+}
+
 export interface OverviewEvent {
   ts: string;
   type: string;
@@ -32,7 +42,7 @@ export interface OverviewEvent {
   error?: { message: string };
   actor?: string;
   job?: string;
-  app?: { name: string; version: string };
+  app?: RunApp;
   modelCalls?: number;
   usage?: TokenUsage;
   cost?: number;
@@ -73,7 +83,7 @@ export interface RunOverview {
   actor?: string;
   job?: string;
   /** The app the run was launched for (plans/apps.md §11). */
-  app?: { name: string; version: string };
+  app?: RunApp;
   cost: number;
   modelCalls: number;
   toolCalls: number;

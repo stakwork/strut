@@ -126,7 +126,7 @@ pull request, a pod. Each entry names one:
 | Field     | Meaning |
 | --------- | ------- |
 | `id`      | stable across runs: the same `id` from a later run is a newer version of the same thing (turn 12's `plan` replaces turn 3's) |
-| `kind`    | how to show it — the host's renderer names (`markdown`, `html`, `image`, `video`, `audio`, `pdf`, `url`, `diff`, `pull_request`, `code`, `log`, `json`). Read off the file's extension when omitted (`url` when that says nothing) — or a manifest's name: `walkthrough.json` → `walkthrough`, `captcha-<round>.json` → `captcha` |
+| `kind`    | how to show it — the host's renderer names (`markdown`, `html`, `image`, `video`, `audio`, `pdf`, `url`, `diff`, `pull_request`, `code`, `log`, `json`), or `app` (below). Read off the file's extension when omitted (`url` when that says nothing) — or a manifest's name: `walkthrough.json` → `walkthrough`, `captcha-<round>.json` → `captcha`; a `path` with no extension that holds an `app.yaml` → `app` |
 | `title`   | shown on the card |
 | `label`, `summary` | optional: what it is to the reader ("Plan", "Screenshot"), and a sentence about it |
 | `path`    | a file, relative to the run's directory — the **job's** for a run launched with `job` (see below), else the run's own artifact directory |
@@ -144,6 +144,29 @@ behind the key like every read — see `API.md` §5 — and takes the place of a
 unavailable. Entries with no `id` or `title` are dropped. The same
 list is at `GET /workflows/:name/runs/:runId/artifacts` for a callback you
 missed.
+
+**An app — `kind: "app"`.** A job's agent may hand over an APP it wrote in
+the job's directory (`plans/apps.md` §6): a small front-end project, built
+into one page with `app/build`. Its `path` is the app's DIRECTORY, and it
+resolves to the app's document, with `app` beside the `url`:
+
+```json
+{ "id": "tracker", "kind": "app", "title": "Visit tracker",
+  "url": "/jobs/j-123/files/apps/tracker/dist/index.html",
+  "app": { "job": "j-123", "path": "apps/tracker", "hash": "9f2c…", "builtAt": "2026-10-21T18:04:11.201Z" } }
+```
+
+`app.hash` is the tree hash the document was built from: a later turn that
+changed the app comes back with a new one — reload your frame then. A
+directory never built is an entry with `error: "not built: …"`. A host
+that knows apps renders it the way strut's UI does (`API.md` §14.3, "A
+job's app"): list `GET /jobs/<job>/files?path=<app.path>` (it mints the
+job's token NARROWED to that directory), fetch the `url` with that token
+as `?t=` — the page comes back carrying the token as its identity — frame
+the TEXT as a sandboxed `srcdoc`, and relay its `tools/call` to `/mcp`. A
+host that does not shows the link: the page opens, with no host behind it,
+and says so. A run with no job resolves an app's `path` under its own
+artifacts, with no `app`.
 
 **A deliverable from another strut — `peer` and `job`.** A run that did
 its work on another strut (`strut/run-workflow`; the `builder` workflow
@@ -272,6 +295,7 @@ What strut sends today:
 | the hold's kind (`pod`, `browser` — a page the job keeps, `id: browser:<session>`) | a hold is taken, or let go (by its tool, a delete, the idle sweep; a kept page also when it goes idle) | `held` / `released` |
 | `evidence` | a check writes evidence about the job (`detail: { claim, check }`; `url` = what it pointed at, a screenshot) | `supported` / `refuted` / `planned` (a slot for a person) |
 | `verify` | a verify of the job ended (`detail: { evidence, slots, claims: [{ id, status }] }`) | `done` |
+| `app` | `app/build` built a job's app (`id` = its directory, `url` = its document, `title` = its manifest's; `detail: { path, hash, bytes }`, or `{ path, errors }` when the build failed) — reload a frame showing it | `built` / `failed` |
 | anything a step names | a step called `ctx.services.jobs.notify` — the lab's browser steps for a screenshot (`image`) and every frame of a walkthrough (`walkthrough`, its manifest's url); never a captcha's crop, which its own card shows | the step's |
 
 **An event is a notification, never the record.** Each points at something
