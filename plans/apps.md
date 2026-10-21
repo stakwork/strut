@@ -48,7 +48,10 @@
 > `/mcp` as it is, so the frame's call reaches strut in the shape it left
 > the frame in and no host translates anything (§7). Hive's other calls to
 > strut, runs, jobs, chat and files over the HTTP API, are untouched: this
-> is only where an app frame's calls go.
+> is only where an app frame's calls go. And **no builder app tools**
+> (2026-10-21): the `app/*` steps are the builder's tools by name, through
+> `buildRegistryTools` as the `agent` step's `agentTools` are, in place of
+> five chat tools that each wrapped one of them (§8).
 >
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
@@ -156,7 +159,7 @@ decide, and why; each is open.
 | Who pays and who acts | **The viewer.** A launch from an app is billed to whoever clicked, and binds actor secrets to them, exactly as if they had pressed Run |
 | How strut knows which app is calling | **The app's file token.** The host relays `tools/call` as it is and names nothing; the served document carries the app's **file token** (`fileToken`, `auth.ts`), scoped to its own directory — the token that lets a page read its own files, written into `dist/index.html` as it is served (§7.2). `step_run` reads which app is calling off its scope; the connection's credential says who. Alone it is worth that directory's files and nothing more |
 | Who may grant sealed or shell-like things | **A person only.** The meta surface (the builder, `meta/*`, a job's agent) may not grant a sealed workflow or step, nor `llm`, `exec` or `agent` as direct step grants (§5.1); it runs those through a workflow, whose YAML is versioned and reviewable. A person on the HTTP door may grant anything, as with `peer: true` |
-| How an agent learns its app broke | **In a result:** the build's errors (from `app/build`, the publish), and the app's client-side errors (the kit's error boundary calls `app/report-error`, a step kept as a run), returned by `get_app` and `app/build` |
+| How an agent learns its app broke | **In a result:** the build's errors (from `app/build`, the publish), and the app's client-side errors (the kit's error boundary calls `app/report-error`, a step kept as a run), returned by `app/get` and `app/build` |
 
 ## Design in one paragraph
 
@@ -267,7 +270,7 @@ csp:
 | | A workspace app | A job's app |
 | --- | --- | --- |
 | Where | `<dataDir>/apps/<name>/<vN>/`, one directory per version, with the pointer in the workspace store (§1.3) | The job's directory: `<dataDir>/jobs/<job>/<path>`, by convention `apps/<name>/` |
-| Who writes it | The builder (`checkout_app`, `publish_app`), a person (`POST /apps`) | The job's agent, with its editor and bash, in its cwd |
+| Who writes it | The builder (`app/checkout`, its editor, `app/publish`), a person (`POST /apps`) | The job's agent, with its editor and bash, in its cwd |
 | Versions | `vN`, tree-hashed (§1.3), an active pointer, rollback, `upstream` when a package installed it | None. One live directory behind one link, the jobs contract; `job.update` says it changed |
 | Its document | `dist/index.html` in the version's directory, written by the publish's build; rebuilt there on a newer kit only when asked | `dist/index.html` in the app's directory, written by `app/build` — the agent builds before it hands the app over, as it verifies before it says done |
 | Its SQLite | `<dataDir>/apps/<name>/data.db`, shared by all its versions | `<path>/data.db`, inside the job's directory, so the agent can `sqlite3` what the person entered |
@@ -309,7 +312,7 @@ prototype with real data in a job becomes a real app.
   off `dataDir`, whatever the workspace's kind. The workspace store keeps
   only the POINTERS, so a version is never a 20 MB graph property, and
   `materializeAppVersion(name, version)` is the directory's path, not a copy
-  (`checkout_app` copies from it to edit). Closes open question 3.
+  (`app/checkout` copies from it to edit). Closes open question 3.
   - **`WorkspaceStore` gains** `listApps`, `getApp(name, version?)` (the
     manifest, the hash, the versions, the active one, `publisher`, `owner`,
     `upstream`), `publishApp(name, hash, manifest, opts)`,
@@ -326,11 +329,11 @@ prototype with real data in a job becomes a real app.
     (`fs-import.ts`: pointers only, the directories stay where they are),
     and a run of `npm run test:graph`, per the AGENTS.md convention.
   - A graph copied without its `dataDir` loses the app files, as it loses
-    artifacts today; `get_app` says so for a version whose directory is
+    artifacts today; `app/get` says so for a version whose directory is
     missing.
 - **Workflows do not name apps.** The grants are the link. Granting a
   workflow that does not exist is a build error. If a granted workflow is
-  deleted later, the grant goes inert, and `get_app` says so.
+  deleted later, the grant goes inert, and `app/get` says so.
 
 ## 2. The build
 
@@ -897,7 +900,10 @@ graph for the kit's. That is adoption.
 Both write an app the same way: files in a directory, with their editor and
 bash, then a build that answers with errors.
 
-- **Steps** (one implementation; tools are steps):
+- **Steps** (one implementation; tools are steps — the builder's too,
+  below):
+  - `app/list` and `app/get { name, version? }`: the manifest, the files
+    list, build info, recent client errors, `stale` for a job app (§6).
   - `app/init { path, template? }` scaffolds a starter directory: `app.yaml`
     and an `App.tsx` with a shadcn sidebar layout, react-router and an
     empty `db/`, shipped under `src/apps/templates/`, so a model starts from
@@ -905,22 +911,30 @@ bash, then a build that answers with errors.
     under `src/apps/templates/`, or any workspace or installed app by name
     (`template: acme/hvac/invoices`), its directory copied under the new
     name with no `upstream` — a COPY, not a fork (§11).
+  - `app/checkout { name, version?, path }` copies a version's directory
+    (`materializeAppVersion`) to a path to edit: the builder's scratch
+    (`scratch/apps/<name>/`), or a job's directory.
   - `app/build { path }` (§6).
   - `app/publish { name, path }` (§1.2), under the meta surface's rules when
     the caller is the meta surface.
-- **The builder chat:**
-  - `list_apps` and `get_app { name, version? }` (manifest, files list,
-    build info, recent client errors);
-  - `checkout_app { name, version? }` copies the version into its scratch
-    (`scratch/apps/<name>/`, through `materializeAppVersion`);
-  - `build_app { path }` and `publish_app { name, path }`, thin over the
-    steps;
-  - the **text editor** the `agent` step already has
-    (`str_replace_based_edit_tool`, its `textEdit()` handler), sandboxed to
-    the builder's data directory. Today the builder has only `bash`, and a
-    real front-end project wants an editor.
-
-  The MCP builder door carries these like every other builder tool.
+- **The builder has no app tools of its own.** It gets the `app/*` steps as
+  named tools through `buildRegistryTools`, the function the `agent` step
+  already uses for `agentTools`: a step's input schema is the tool schema,
+  its `run()` the executor. The builder is a ToolLoopAgent like the agent
+  step, so `buildTools(deps)` makes the same call with one fixed grant,
+  `app/*`. A job agent gets them through `agentTools: ["app/*"]`, and
+  anyone through `run_step`: one implementation, three doors, no wrapper.
+  The first draft had five builder tools here (`list_apps`, `get_app`,
+  `checkout_app`, `build_app`, `publish_app`), each "thin over a step" —
+  the §5 duplication again. The MCP builder door carries them like every
+  other builder tool, since it serves `buildTools(deps)`. And because
+  `app/list` and `app/get` are steps, an app may be granted them: a
+  launcher that lists and opens other apps costs nothing.
+- **The text editor** the `agent` step already has
+  (`str_replace_based_edit_tool`, its `textEdit()` handler), sandboxed to
+  the builder's data directory, joins the builder's tools. Today the
+  builder has only `bash`, and a real front-end project wants an editor.
+  This is the one real gap here, not a duplication.
 - **The prompt** is an `App` Concept page under `Workflow Builder`
   (`src/concepts/App.md`), seeded by strut and one of the kinds the
   builder's prompt lists. The job workflow reads the same page through
@@ -939,7 +953,7 @@ bash, then a build that answers with errors.
   `window.onerror` call `app/report-error`, a step like any other, through
   `step_run` — and a KEPT one (`keep: true`, the `run_step` surface's own
   rule, plans/claims.md §3): the run lands under `step:app/report-error`
-  with the actor, the time, the message and `app` on its summary. `get_app`
+  with the actor, the time, the message and `app` on its summary. `app/get`
   and `app/build` read the app's last 50 from the run store. No file of its
   own. An app that crashes on a run's real output
   therefore reaches the agent in a result it reads. That is the step-lint
@@ -1110,7 +1124,8 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    - The strut UI host (§7.3): `AppBridge` wired to the MCP `Client` over
      `/mcp`.
    - The steps `app/init`, `app/build` and `app/publish`, and the template.
-   - The builder's tools and its text editor.
+   - The `app/*` steps as the builder's tools (`buildRegistryTools` in
+     `buildTools`, grant `app/*`) and its text editor.
    - `App.md`.
 
    Tests drive a test app through a fake workflow. By hand, rebuild the

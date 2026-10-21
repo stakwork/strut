@@ -342,7 +342,7 @@ its base.
 new local version (door `builder` / `ui`) whose `upstream` is inherited.
 Its hash differs from the installed one, so the fold says `modified`.
 Nothing else changes. For an app the edit is to a directory —
-`checkout_app`, files, `publish_app`, or a job agent's editor and `app/publish`
+`app/checkout`, files, `app/publish`, by the builder or a job agent alike
 (`apps.md` §8) — and the new tree hash says `modified` the same way.
 
 **An update is an install of the same package from its recorded ref.**
@@ -386,7 +386,7 @@ publish. The merged directory must BUILD: a result that does not build is
 a conflict for the builder like a marker is. A clean result is published
 as a local version upstreamed to the new one; `data.db` is untouched
 throughout, which is the whole reason to update in place rather than
-reinstall. (`checkout_app`, `app/build` and `publish_app` are the builder's
+reinstall. (`app/checkout`, `app/build` and `app/publish` are the builder's
 hands here, `apps.md` §8.)
 
 **Wrap rather than edit** is what the builder's prompt should prefer for a
