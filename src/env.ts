@@ -64,6 +64,9 @@ export const KEEP_ENV: readonly string[] = [
   "XDG_CACHE_HOME",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
+  // esbuild reads it when the app build first loads it: where its binary is
+  // when no @esbuild/<platform> package holds it (the desktop package's native/).
+  "ESBUILD_BINARY_PATH",
   // Windows cannot spawn without these.
   "SystemRoot",
   "SYSTEMROOT",
