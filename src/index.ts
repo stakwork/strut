@@ -333,6 +333,11 @@ export {
   listJobFiles,
   jobFilePath,
   setJobCallback,
+  // The job-shaped workflows a job's turns may run (`job`, `builder`) and
+  // the job's newest turn among them (plans/builder-job.md §2).
+  JOB_WORKFLOWS,
+  type JobWorkflow,
+  turnOf,
 } from "./jobs.js";
 // Proposals (plans/proposals.md) — a tool call a person approves before it
 // runs: the record a gated `agent` tool writes, the decision that applies it.

@@ -85,6 +85,31 @@ export interface JobRun {
 }
 
 /**
+ * The job-shaped workflows strut ships — the ones a job's TURNS may run
+ * (plans/builder-job.md §2): `job` (code and research: a working directory,
+ * repositories, the shell) and `builder` (a workflow build: the authoring
+ * twins, no shell). What `job/start`'s `workflow` offers, what the launcher
+ * reads, what `turnOf` recognizes as a turn. Closed on purpose: a job never
+ * runs an arbitrary workflow as a turn — that is meta/run-workflow's, from
+ * inside one.
+ */
+export const JOB_WORKFLOWS = ["job", "builder"] as const;
+export type JobWorkflow = (typeof JOB_WORKFLOWS)[number];
+
+/** The job's newest TURN: its newest run with no parent that ran one of
+ *  `JOB_WORKFLOWS` — so, the workflow the job IS. What `job/continue`
+ *  launches (a builder job stays a builder job) and what `GET /jobs/:id`
+ *  reports as `workflow`. A run of any other workflow under the job (a
+ *  captcha round, a check) is not a turn. Undefined before the first. */
+export function turnOf(runs: readonly JobRun[] | undefined): JobRun | undefined {
+  for (let i = (runs?.length ?? 0) - 1; i >= 0; i--) {
+    const r = runs![i]!;
+    if (!r.parentRunId && (JOB_WORKFLOWS as readonly string[]).includes(r.workflow)) return r;
+  }
+  return undefined;
+}
+
+/**
  * Something a job keeps alive beyond a run (plans/jobs.md §6): a pod, later
  * a browser or a VM. Recorded by the tool that claimed it, through
  * `ctx.services.jobs.hold`, with the way to let it go — a registry step and
@@ -312,7 +337,14 @@ export interface JobLaunch {
   job: string;
   /** Names the job (`POST …/run { title }`). */
   title?: string;
-  /** The `job` workflow's input: `prompt`, and `session`, `repos`, `workspace`. */
+  /** Which job-shaped workflow runs the turn (`JOB_WORKFLOWS`). `job/start`
+   *  names one (`job` by default); `job/continue` leaves it out and the
+   *  launcher follows the job's record — the workflow its newest turn ran,
+   *  with that turn's `input.peer` carried along — so a builder job on a
+   *  peer stays one without the caller remembering where it lives. */
+  workflow?: JobWorkflow;
+  /** The workflow's input: `prompt`, and `session`, `repos`, `workspace`,
+   *  `peer` (a builder job on another strut). */
   input: Record<string, unknown>;
   /** The launching run (`ctx.runId`): whose callback the job's run.end goes
    *  to, and whose `jobCallback` the job inherits (CALLBACKS.md §5). */

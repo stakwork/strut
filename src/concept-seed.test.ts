@@ -48,14 +48,22 @@ describe("concept files (pure)", () => {
     assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@cccccccccccc" }, stamp, legacy), "update");
   });
 
-  it("ships Workflow Builder and Job: roots, workspace-general, the legacy lab stamps named", async () => {
-    const wb = parseConceptFile("Workflow Builder.md", await readFile(join(STRUT_CONCEPTS.dir, "Workflow Builder.md"), "utf-8"), STRUT_CONCEPTS.prefix);
-    const job = parseConceptFile("Job.md", await readFile(join(STRUT_CONCEPTS.dir, "Job.md"), "utf-8"), STRUT_CONCEPTS.prefix);
+  it("ships Workflow Builder and Job as roots and Workflow Build under Job: workspace-general, the legacy lab stamps named", async () => {
+    const read = async (file: string) => parseConceptFile(file, await readFile(join(STRUT_CONCEPTS.dir, file), "utf-8"), STRUT_CONCEPTS.prefix);
+    const wb = await read("Workflow Builder.md");
+    const job = await read("Job.md");
+    const build = await read("Workflow Build.md");
     for (const c of [wb, job]) {
       assert.equal(c.parent, undefined, `${c.name} is a root`);
       assert.ok(c.description && c.docs?.includes("PARENT_OF"), c.name);
-      assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
     }
+    // The kind a workflow build is (plans/builder-job.md §2): under Job, so
+    // the orchestrator's kinds list carries it like every other kind. Its
+    // one line names the door; its docs tell a job agent it is not theirs.
+    assert.equal(build.parent, "Job");
+    assert.match(build.description!, /workflow: builder/);
+    assert.ok(build.docs!.includes("job/start { workflow: builder }") && build.docs!.includes("Workflow Builder"), build.docs);
+    for (const c of [wb, job, build]) assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
 
@@ -206,7 +214,8 @@ for (const tb of testBackends()) {
 
     it("strut's pages seed, a host's page hangs under one, and the builder's section reads them", async () => {
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
-      assert.deepEqual([strut["Workflow Builder"]!.action, strut["Job"]!.action], ["create", "create"]);
+      assert.deepEqual([strut["Workflow Builder"]!.action, strut["Job"]!.action, strut["Workflow Build"]!.action], ["create", "create", "create"]);
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Workflow Build"]!.ref_id], "the kind strut ships hangs under Job");
       await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
       const host = byName(await seedConcepts(b, [set()]));
       const wb = strut["Workflow Builder"]!.ref_id!;
@@ -238,6 +247,7 @@ for (const tb of testBackends()) {
 
       const kinds = await run({ name: "Job", docs: false, tool: "" });
       assert.ok(kinds.text.includes("- Explore — Finding out how something works.") && !kinds.text.includes("To record a new kind"), "docs: false — the kinds alone, the orchestrator's read");
+      assert.ok(kinds.text.includes("- Workflow Build — Build, change, test or debug a WORKFLOW"), "the kind strut ships is in the orchestrator's list, beside the deployment's");
       assert.ok(!kinds.text.includes("graph_graph_get"), "no tool, no opener");
       assert.deepEqual(await run({ name: "Workflow Builder", docs: false }), { text: "" }, "no kinds under it, nothing");
       assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "no such page");
@@ -285,7 +295,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     await make();
-    assert.deepEqual(await names(), ["Job", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["Job", "Workflow Build", "Workflow Builder"]);
   });
 
   it("puts the Job page at the end of the job agent's system prompt", async () => {
