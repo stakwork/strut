@@ -87,6 +87,8 @@ describe("job/start and job/continue", () => {
   let orchTool: { name: string; input: unknown } = { name: "job_start", input: {} };
   /** Holds the job agent's reply until released. */
   let gate: Promise<void> | undefined;
+  /** Waits for every run this strut still has in flight; set by `boot`. */
+  let drain: () => Promise<void> = async () => {};
   let saved: Record<string, string | undefined> = {};
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
 
@@ -97,6 +99,7 @@ describe("job/start and job/continue", () => {
     posts = [];
     seen = { orch: [], job: [] };
     gate = undefined;
+    drain = async () => {};
     let n = 0;
     provider = http.createServer((req, res) => {
       let raw = "";
@@ -138,6 +141,10 @@ describe("job/start and job/continue", () => {
     delete process.env["STRUT_API_KEY"];
   });
   afterEach(async () => {
+    // A job runs detached, and its job.update / run.end reach the test before
+    // its agent has committed its session under <dataDir>/sessions/: the tree
+    // goes only once nothing is writing to it.
+    await drain();
     provider.close();
     host.close();
     await rm(dir, { recursive: true, force: true });
@@ -217,6 +224,16 @@ describe("job/start and job/continue", () => {
       const end = (await store.getRunEvents("orch", runId)).find((e) => e.type === "step.end" && /^tool:job_/.test(String(e.stepType)));
       // The log keeps a tool's output as its JSON text.
       return end ? JSON.parse((end as any).output) : undefined;
+    };
+    // /runs/active is the controllers' own list: a run leaves it after its
+    // teardown, the detached job runs the turns started included.
+    drain = async () => {
+      for (let i = 0; i < 1500; i++) {
+        const active = (await (await strut.app.request("/runs/active")).json()) as unknown[];
+        if (!active.length) return;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error("runs still in flight");
     };
     const jobs = (strut.services as { jobs: JobsCapability }).jobs;
     return { store, post, launch, settle, until, toolOutput, jobs };
