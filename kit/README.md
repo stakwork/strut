@@ -9,12 +9,15 @@ One source, two builds:
 | Build | What | For |
 | --- | --- | --- |
 | **vendor** (`vendor/`) | One frozen browser bundle per specifier in the dependency set (§3.1), the shadcn components at `@/components/ui/*`, and the kit itself, from ONE esbuild call with code splitting — so the page has one React, one react-query, one radix, one zod. Beside them `import-map.json` (specifier → file, what the app build's `appResolver` consults, §2.1), `candidates.json` (the components' Tailwind classes, for the app build's compile, §2.2) and `manifest.json` (the versions). | The app build (`src/apps/build.ts`, work item 1b) |
-| **library** (`dist/`) | The hooks, the provider, the client and host contracts, and the bootstrap, as ESM with React, react-dom and react-query as peers. | A host's own pages (hive imports it); the app build's Node side (`@strut/kit/node`) |
+| **package entries** (`dist/`) | `@strut/kit` (the hooks, the provider, the client and host contracts — what `web/` will import the folds from once they move here, §3), `@strut/kit/bootstrap`, and `@strut/kit/node` (the app build's server side), as ESM with `.d.ts`; React, react-dom and react-query are optional peers, never installed by a strut that pins the kit. | The app build (`@strut/kit/node`) and the types. A library build for a HOST's own React pages is deferred (§12): a host that wants strut's views renders an app importing `strut/views` |
 
 Both are artifacts of the kit's build, never of strut's `npm install`: strut's
 own `node_modules` carries no React. The kit is built once per kit release and
 published as a package strut pins exactly (open question 4, decided by
-proceeding).
+proceeding). Per the kit split (plans/apps.md §3, 2026-10-21) the kit is **the
+stack and the bridge, nothing else**: strut's own components are `strut/views`,
+an app other apps import (§3.3), and the pure folds move into `kit/src/folds/`
+with work item 6.
 
 ## Build
 
