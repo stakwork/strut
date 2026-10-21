@@ -1,0 +1,29 @@
+# PROPOSED — not installed. The `brainstorm`, `brainstorm-round`, `brainstorm-audit`
+# workflows and the choice/add, choice/apply-draft, choice/tree, choice/ensure-schema
+# steps are NOT in this repo (they live in the live registry), so this file only shows
+# the additions to make there. The four steps it uses ship in src/steps/lib/choice/.
+#
+# 1. In the draft/writer schema for an Effect, add (both optional, v1 enforces nothing):
+#      score:   number, -1..1   (signed, absolute — impact and direction stay)
+#      against: [string]        (Requirement ref_ids / requirement_ids)
+#    then after each Effect is written call choice/score-effect { effect_ref_id, score, against }.
+#    brainstorm-audit's effects check: accept an absent score; if present require -1..1
+#    (src/steps/lib/choice/_fgc.ts `checkScore`).
+# 2. In the Option draft add optional rated_on { fast, good, cheap } (each -1..1) and call
+#    choice/rate-option { option_ref_id, rated_on } after the Option is written.
+# 3. Phase priorities are set by a person/agent with choice/set-priorities
+#    { scope_ref_id, preset: stage1|stage2|stage3 } — never applied by default.
+# 4. Add the step below at the end of `brainstorm` and expose its output as `recommendation`.
+#    It is skipped (output null) when nothing carries PRIORITISES, so existing flows are unchanged.
+steps:
+  - id: recommendation
+    type: choice/recommend
+    config:
+      option_ref_ids: "{{ steps.options.output.option_ref_ids }}"      # adjust to the live step ids
+      feature_ref_id: "{{ steps.question.output.feature_ref_id }}"      # Question -ABOUT-> InitiativeFeature
+      milestone_ref_id: "{{ steps.question.output.milestone_ref_id }}"
+      initiative_ref_id: "{{ steps.question.output.initiative_ref_id }}"
+    # optionally add an `onError` fallback step so a failed recommendation never fails the brainstorm
+# result: { …existing result…, recommendation: "{{ steps.recommendation.output }}" }
+# recommendation = { weights, good_min, ranked: [{ id, total, contributions, excluded, warnings }],
+#                    recommended, warnings }   # warnings: "all_three_above_0.5" (documented, not enforced)
