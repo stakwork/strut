@@ -1,9 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appMessage, strutLink } from "./app-host";
+import { appMessage, strutLink } from "./app-links";
 
-/** The pure parts of the app host's relay (./app-host): where a link leads,
- *  what a page's message becomes. The bridge itself is ext-apps'. */
+/** The pure parts of the app host's relay (./app-links, what ./app-host
+ *  decides without the bridge): where a link leads, what a page's message
+ *  becomes. The bridge itself is ext-apps'. */
 describe("the app host", () => {
   const here = { origin: "https://strut.test", pathname: "/" };
   const lab = { origin: "https://swarm.test", pathname: "/lab/" };

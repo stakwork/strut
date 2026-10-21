@@ -40,7 +40,7 @@ import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppHost } from "./components/AppHost";
 import { AppGlyph } from "./icons";
-import { appMessage } from "./app-host";
+import { appMessage } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
