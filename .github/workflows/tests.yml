@@ -9,8 +9,10 @@ name: tests
 # install into minutes (2026-10-13: 3.5 and 7.4 min). Install mirrors the
 # Dockerfile: yarn.lock is the lockfile, and --ignore-scripts skips the root
 # `prepare` (tsc + web install + web build) — tsx runs the .ts tests directly,
-# and the two web tests only import root sources. The graph and STT suites need
-# Neo4j / a model download and stay opt-in (see AGENTS.md).
+# and the web tests only import root sources. The kit's tests (kit/src, in the
+# same list) import React and the kit's dependency set, so the kit gets its own
+# install from kit/yarn.lock — a second lockfile the cache key covers. The graph
+# and STT suites need Neo4j / a model download and stay opt-in (see AGENTS.md).
 
 on:
   pull_request:
@@ -36,9 +38,15 @@ jobs:
         with:
           node-version: "22"
           cache: yarn
+          cache-dependency-path: |
+            yarn.lock
+            kit/yarn.lock
 
       - name: Install
         run: yarn install --frozen-lockfile --ignore-scripts
+
+      - name: Install the kit
+        run: yarn --cwd kit install --frozen-lockfile --ignore-scripts
 
       - name: Test
         run: npm test
