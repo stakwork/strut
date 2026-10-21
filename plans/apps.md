@@ -43,6 +43,12 @@
 > workspace store holding pointers only (§1.3, closing open question 3);
 > and an app's writes and its error reports are KEPT STEP RUNS, so there is
 > no audit file, no error file, and no tool but `step_run` (§5, §8, §9).
+> And **one door** (2026-10-21): there is no `POST …/call` route. Every
+> host — strut's own UI, hive, Claude — relays the frame's `tools/call` to
+> `/mcp` as it is, so the frame's call reaches strut in the shape it left
+> the frame in and no host translates anything (§7). Hive's other calls to
+> strut, runs, jobs, chat and files over the HTTP API, are untouched: this
+> is only where an app frame's calls go.
 >
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
@@ -142,14 +148,14 @@ decide, and why; each is open.
 | The data stores | **The graph and SQLite** (ruled), beside runs (§4). Runs are history, one row per execution. The graph holds entities and relations that agents, workflows and other apps should also see; the app declares its node and edge types in `app.yaml`. A SQLite file of the app's own holds its tables: many rows, sums, imports, settings. Earlier drafts had a strut-wide "records" store; it is gone |
 | How the fixed set reaches a page | **Compiled in when the app is built**, never fetched at runtime. esbuild bundles the directory and Tailwind 4's pure-JS compiler compiles its classes, both against the kit, into ONE self-contained HTML document. With nothing to fetch, the page works under any host's CSP and offline. A workspace version keeps its document, so a strut upgrade never breaks it |
 | What a build refuses | **Any bare import outside the kit**, a relative import that leaves the directory, URL imports, `dangerouslySetInnerHTML`, `eval` and `new Function`. The errors are the build's result, step-lint's pattern |
-| Where an app's data comes from | **The registry, through one tool** (ruled: an endpoint is a tool is a workflow). `step_run` under the app's grants, served over MCP (app-only) and over HTTP (`…/call`), §5. Runs, launches, the graph, the app's SQLite, schedules and files are all STEPS — `run/*`, `graph/*`, `sqlite/*`, `automation/*`, `job/*` — the same steps a workflow or an agent calls, one implementation each. The app adds no tool of its own: even its error report is a step, `app/report-error` (§8) |
+| Where an app's data comes from | **The registry, through one tool** (ruled: an endpoint is a tool is a workflow). `step_run` under the app's grants, an app-only tool on the MCP door and nowhere else — every host relays the frame's `tools/call` to `/mcp` as it is (§5, §7). Runs, launches, the graph, the app's SQLite, schedules and files are all STEPS — `run/*`, `graph/*`, `sqlite/*`, `automation/*`, `job/*` — the same steps a workflow or an agent calls, one implementation each. The app adds no tool of its own: even its error report is a step, `app/report-error` (§8) |
 | What an app may touch | **Its manifest's `grants`**: step types, plus a scope per family — which workflows (`run/*`), which graph types (`graph/*` writes), its own file (`sqlite/*`), which schedules (`automation/*`) — checked by strut on every call in every host. So an app can never rewrite a Concept or a `StrutWorkflow` node. Grants box model-written code acting as the viewer; they never raise the viewer, who already holds a full credential |
 | Routines — where the model runs | **Inside a run, never inside the page** (ruled: an app's agent and LLM workflows are routines, never triggered on their own). The workflow is the unit of spend: `step_run` from a model-written manifest refuses `llm`, `agent` and `exec`, so every model call an app causes is a run — logged, billed to the viewer, cancelable, verified. A routine is a granted workflow; launching one is a mutation the kit exposes only as a function, never as a query, and `run/launch { key }` returns an in-flight run instead of starting a second (§5.1) |
 | How a step knows it runs for an app | **`ctx.app`**, the twin of `ctx.job`: `{ name, version }` for a workspace app, `{ job, path }` for a job's, set by the app door for the call and never by a launch body. The `sqlite/*` steps open the app's file from it, the graph write scope reads the declared types from it, `automation/*` reads `grants.automations` from it, and a run the app launches records `app` on `run.start` as a job run records `job` — so a workflow working for the app finds the app's file the way a job's steps find the job's directory (§5) |
 | Sharing and forking | **A package kind** (ruled: forkable and flexible). `apps/<name>/` in a package (`marketplace.md` §1), the one item that is a directory. One representation everywhere: a job's live directory, a workspace version, a package member, a git repo and an `app/init` template are the same bytes. The fork is the normal path: an edit is a fork carrying `upstream`, an update fast-forwards an untouched app and merges a forked one per file, and the app is the wrapper around bought steps, so a forked UI leaves them fast-forwarding (§11) |
 | Who pays and who acts | **The viewer.** A launch from an app is billed to whoever clicked, and binds actor secrets to them, exactly as if they had pressed Run |
-| How strut knows which app is calling | **The host names it** on the HTTP door: the frame it loaded and the path it called. On the MCP door, where the host relays `tools/call` as-is, the served document carries the app's **file token** (`fileToken`, `auth.ts`), scoped to its own directory — the token that lets a page read its own files, written into `dist/index.html` as it is served (§7.2). `step_run` reads which app is calling off its scope; the connection's credential says who. Alone it is worth that directory's files and nothing more |
-| Who may grant sealed or shell-like things | **A person only.** The meta surface (the builder, `meta/*`, a job's agent) may not grant a sealed workflow or step, nor `exec` or `agent` as direct step grants; it runs those through a workflow, whose YAML is versioned and reviewable. A person on the HTTP door may grant anything, as with `peer: true` |
+| How strut knows which app is calling | **The app's file token.** The host relays `tools/call` as it is and names nothing; the served document carries the app's **file token** (`fileToken`, `auth.ts`), scoped to its own directory — the token that lets a page read its own files, written into `dist/index.html` as it is served (§7.2). `step_run` reads which app is calling off its scope; the connection's credential says who. Alone it is worth that directory's files and nothing more |
+| Who may grant sealed or shell-like things | **A person only.** The meta surface (the builder, `meta/*`, a job's agent) may not grant a sealed workflow or step, nor `llm`, `exec` or `agent` as direct step grants (§5.1); it runs those through a workflow, whose YAML is versioned and reviewable. A person on the HTTP door may grant anything, as with `peer: true` |
 | How an agent learns its app broke | **In a result:** the build's errors (from `app/build`, the publish), and the app's client-side errors (the kit's error boundary calls `app/report-error`, a step kept as a run), returned by `get_app` and `app/build` |
 
 ## Design in one paragraph
@@ -174,11 +180,12 @@ names the set.
 
 Any MCP Apps host renders the document in a sandboxed frame: strut's own UI
 in an **Apps** section; Claude and the other MCP Apps hosts through
-strut's `/mcp`; hive or any portal through the file route plus a relay.
+strut's `/mcp`; hive or any portal through the file route plus a relay to
+`/mcp`.
 
 The page holds no credential. Its `tools/call`s go to its host, which
-forwards them with its own credential to strut's one app tool, `step_run`,
-and strut checks each call against the app's grants. Every call is a
+forwards them as they are to `/mcp` with its own credential — strut's one
+app tool, `step_run` — and strut checks each call against the app's grants. Every call is a
 registry step — the same steps a workflow or an agent runs:
 - `run/*`: list, read, launch (billed to the viewer) and cancel runs;
 - `graph/*`: read and write the graph (writes limited to the types it
@@ -655,8 +662,9 @@ steps as their twins for workflows; that was two implementations of one
 backend.
 
 `src/apps/tools.ts` holds `buildAppTools(app, deps)`: `step_run` with the
-grant checks, one tool. It is served two ways (§7): as an app-only tool
-over MCP, and as `POST …/call { type, config?, input? }` over HTTP.
+grant checks, one tool. It is served one way (§7.2): as an app-only tool on
+the MCP doors. Every host, strut's own UI included, relays the frame's
+`tools/call` there as it is; there is no HTTP call route.
 `step_run` calls `runStep` with the viewer as actor and **`ctx.app` set**
 (`RunStepOptions.app`, the twin of `RunStepOptions.job`); the step is kept
 only by the usual rule (claims or `keep`). Results are whole data, never
@@ -754,13 +762,13 @@ same way it hands over a plan or a screenshot:
   warnings, the size and the latest client errors, so the agent iterates
   inside its turn the way it does with `browser/verify`. `app/init { path, template? }` scaffolds a starter
   directory (§8).
-- **The routes.** The document and the manifest are the job's FILES —
+- **No route is new.** The document and the manifest are the job's FILES —
   `GET /jobs/:id/files/<path>/dist/index.html`, `…/<path>/app.yaml` — on
   the file route that exists, behind the job's file token narrowed to the
-  app's path (§7.2). One route is new, behind the key:
-  `POST /jobs/:id/app/call?path=`: `{ type, config?, input? }`, §5. The
-  path goes through `jobFilePath` (`jobs.ts`), the job file routes' guard:
-  nothing outside the job's directory.
+  app's path (§7.2); the frame's calls go to `/mcp` like every app's, and
+  that token names the job and the path. The path goes through
+  `jobFilePath` (`jobs.ts`), the job file routes' guard: nothing outside
+  the job's directory.
 - **Grants.** An app's `app.yaml` states its grants under the meta
   surface's rules, since a model wrote them. Every job app also gets its
   own job: that job's runs (`run/list { job }`, `run/get`), its record
@@ -778,7 +786,7 @@ same way it hands over a plan or a screenshot:
 | Message | Use |
 | --- | --- |
 | `ui/initialize` → `hostContext` | Theme, `styles.variables`, `displayMode`, locale and time zone, which the kit applies |
-| `tools/call` (app → host) | The §5 tools |
+| `tools/call` (app → host) | The §5 tool, relayed by the host to `/mcp` as it is |
 | `ui/notifications/tool-input` | What the app was opened with, `{ view?, runId?, … }`, from the model or a deep link (`useToolInput`; react-router navigates to `view`) |
 | `ui/message` | A message to the host's conversation (§6, §8) |
 | `ui/open-link` | Host-native views: a strut deep link (a run, a job, a workflow) opens in strut's UI; anything else opens in a new tab |
@@ -788,6 +796,7 @@ same way it hands over a plan or a screenshot:
 
 **HTTP.** Every route sits behind the key gate. `createStrut.test.ts`'s
 sweep covers new routes by itself, and the Vite dev proxy gains `/apps`.
+There is no call route: an app's calls go to the MCP door, below.
 
 | Route | |
 | --- | --- |
@@ -797,8 +806,6 @@ sweep covers new routes by itself, and the Vite dev proxy gains `/apps`.
 | `GET /apps/:name/data` | The app's SQLite file |
 | `POST /apps` | Publish `{ name, files }`, with files as a path → content map (base64 for binary). This is a person's door, so grants are unrestricted (§9). Build errors are a 400 |
 | `PUT /apps/:name/active`, `DELETE /apps/:name` | Rollback; delete (a soft delete on the graph; the database file is kept until it is purged) |
-| `POST /apps/:name/call` | `{ type, config?, input? }` → `step_run` (§5). The path names the app: the host that framed the document vouches for which one it loaded |
-| `POST /jobs/:id/app/call?path=` | A job's app (§6); its document and manifest are the job's files |
 
 **MCP.** Both doors, `/mcp` and `/mcp/builder`, gain three things:
 - `resources/list` and `resources/read` for `ui://strut/app/<name>`, with
@@ -827,8 +834,11 @@ own files. Alone it is worth those files, since the call still needs the
 MCP connection's credential.
 
 `toolsetServer` gains `resources` and a per-tool `_meta` side map, which
-`mcpToolsFrom` passes through; the SDK is already lazy-imported there.
-Job apps over MCP come later (§12).
+`mcpToolsFrom` passes through; the SDK is already lazy-imported there. A
+job's app CALLS through this door from day one, since there is no other —
+its token names the job and the path, and strut reads the manifest from
+the job's files. A job's app as a RESOURCE a model can open
+(`ui://strut/job/<id>/<path>`, an `app_` tool for it) comes later (§12).
 
 ### 7.3 Strut's own UI as a host
 
@@ -847,7 +857,11 @@ Job apps over MCP come later (§12).
 - **The relay**, `web/src/app-host.ts`, is ext-apps' host bridge
   (`AppBridge`, plain TypeScript with no framework in it, so it sits in
   Preact as it is — nothing is hand-rolled):
-  - `tools/call` → the app's `…/call` route;
+  - `tools/call` → `/mcp`, as it is: the MCP SDK's `Client` over
+    `StreamableHTTPClientTransport` pointed at `/mcp`, with the session
+    cookie or the key and the `x-strut-ui: 1` header the UI sends on every
+    call, wired to `AppBridge` — the pairing ext-apps is built for. Every
+    other screen of the UI keeps the HTTP API as it is;
   - `ui/message` → `sendChat` on the builder chat (a workspace app);
   - `ui/open-link` → the SPA's own navigation for a strut link;
   - a theme change → `host-context-changed`.
@@ -859,17 +873,20 @@ Job apps over MCP come later (§12).
 
 ### 7.4 Any other host — the contract
 
-Hive, Peel or a customer's portal does one of two things; neither needs a
-strut change per host:
-- **The HTTP route.** List `GET /apps` (and a job's `app` deliverables),
-  fetch the document from its file route with the token the listing minted,
-  and frame it `sandbox="allow-scripts"`. Run an MCP Apps
-  host bridge, and relay `tools/call` to `…/call` with its own credential
-  and `x-strut-actor`. Hive's `HtmlArtifactFrame` already fetches a swarm
-  page into a sandboxed blob and runs a `postMessage` nav bridge; this swaps
-  the nav-only bridge for an MCP Apps one.
-- **MCP.** Connect to `/mcp` as an MCP Apps host. Then every MCP server's
-  apps work there, not only strut's.
+Hive, Peel or a customer's portal is an MCP Apps host, one of two ways;
+neither needs a strut change per host, and both end at `/mcp`:
+- **Fetch the document itself.** List `GET /apps` (and a job's `app`
+  deliverables), fetch the document from its file route with the token the
+  listing minted, and frame it `sandbox="allow-scripts"`. Run an MCP Apps
+  host bridge, and relay `tools/call` to `/mcp` AS IT IS, with its own
+  credential and `x-strut-actor`. Hive's `HtmlArtifactFrame` already
+  fetches a swarm page into a sandboxed blob and runs a `postMessage` nav
+  bridge; this swaps the nav-only bridge for an MCP Apps one pointed at
+  `/mcp`. Nothing else hive says to strut changes: runs, jobs, chat and
+  files stay on the HTTP API as today.
+- **Let MCP hand it the document.** Connect to `/mcp` as an MCP Apps host
+  and read the app as a resource. Then every MCP server's apps work there,
+  not only strut's.
 
 A host's own pages may also import the kit's library build and give it a
 client over the host's routes. Hive's OpenHealth page could swap its run
@@ -1056,9 +1073,10 @@ types and the app's SQLite file.
 - **`connectDomains`.**
 - **Shared SQLite**, where one app reads another's file. The graph is the
   shared store.
-- **Job apps over MCP**, and **`ui/message` from a job's app in strut's
-  UI**, which has no send box for jobs. Both need a "continue this job"
-  door.
+- **A job's app as an MCP resource** a model can open (`ui://strut/job/…`,
+  an `app_` tool for it; its CALLS go through `/mcp` from day one, §7.2),
+  and **`ui/message` from a job's app in strut's UI**, which has no send
+  box for jobs. Both need a "continue this job" door.
 - **Kit components in strut's own Preact UI** (`preact/compat`).
 - **`meta/*` twins** of the builder's app tools. The steps are reachable
   already.
@@ -1083,10 +1101,14 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
      routes call.
    - `src/apps/tools.ts`: `step_run` with the grant checks and `ctx.app`
      (`RunStepOptions.app`); the `app/report-error` step, kept.
+   - `step_run` on the MCP doors as an app-only tool: `toolsetServer`'s
+     per-tool `_meta` for the visibility flag, the file token as its `app`
+     argument. The first host needs it, so it is here, not in item 5.
    - The §7.2 HTTP routes for workspace apps — the version's file route
-     with the app's file-token scope, the call route — with `/apps` in the
-     Vite proxy.
-   - The strut UI host (§7.3).
+     with the app's file-token scope, the publish and the pointers — with
+     `/apps` in the Vite proxy.
+   - The strut UI host (§7.3): `AppBridge` wired to the MCP `Client` over
+     `/mcp`.
    - The steps `app/init`, `app/build` and `app/publish`, and the template.
    - The builder's tools and its text editor.
    - `App.md`.
@@ -1096,8 +1118,8 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    same output shape.
 2. **Job apps.** The `kind: "app"` deliverable in `artifact-refs.ts`
    resolving to `dist/index.html` under the job's files, the job token
-   narrowed to an app's path, the call route, the implicit job grant,
-   `job.update { kind: "app" }`, `app/build` in the job seed's grants, the job timeline's
+   narrowed to an app's path (and `step_run` reading a job app off it),
+   the implicit job grant, `job.update { kind: "app" }`, `app/build` in the job seed's grants, the job timeline's
    render, and "Publish as an app". By hand, ask a job for "a tracker for
    the visits in this spreadsheet" and watch it build, open, and publish
    one.
@@ -1110,8 +1132,9 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    tables, and the conflict rule. This reverses ruling 6 for app-declared
    types only. Also `graph/find` on both engines (`testBackends()`) and the
    write scope. By hand, build the invoice tracker.
-5. **MCP.** `toolsetServer` resources and `_meta`, the per-app tools, the
-   app-only tool reading the app off its file token. By hand, have Claude render an app
+5. **MCP for models.** `toolsetServer` resources, the per-app `app_<name>`
+   tools with their `_meta.ui.resourceUri`, so an MCP Apps host opens an
+   app a model names (the app-only tool itself landed in item 1). By hand, have Claude render an app
    from strut's `/mcp`.
 6. **Strut components.**
    - Move the folds to `kit/src/core/`, with `web/` importing them.
@@ -1165,7 +1188,9 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
   - **The MCP door.** `resources/list` and `resources/read` work,
     `app_<name>` is listed, the app-only tool is flagged, and a missing
     or foreign token is refused. A document served by token carries it;
-    the bytes in `dist/` do not.
+    the bytes in `dist/` do not. A `tools/call` of `step_run` on `/mcp`
+    with a job app's token reads that app's manifest from the job's files
+    and applies its grants.
   - **The key-gate sweep.**
 - **By hand, with no host.** Start a scratch strut (`STRUT_WORKSPACE_BACKEND=ladybug`
   and a key). Tell the builder: "build me an invoice tracker for an HVAC
