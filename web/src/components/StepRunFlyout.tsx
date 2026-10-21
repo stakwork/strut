@@ -8,7 +8,7 @@ import { ValueFields } from "./ValueFields";
 import { FlyoutResizer } from "./FlyoutResizer";
 import { ConfirmButton } from "./ConfirmButton";
 import { AccessedNodes } from "./AccessedNodes";
-import type { TouchedNode } from "../accessed-nodes";
+import type { TouchedNode } from "@strut/kit/folds";
 import yaml from "js-yaml";
 
 export interface StepRunEvents {

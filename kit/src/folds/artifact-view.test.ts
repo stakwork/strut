@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   artifactKind, artifactLabel, artifactRel, directoryEntries, fileScopeOf, findArtifacts, isArtifactPath,
   isDirectory, parseWalkthrough, resolveArtifactLink, viewerKind,
-} from "./artifact-view";
+} from "./artifact-view.js";
 
 describe("artifactKind", () => {
   it("maps the obvious file types by extension, case-insensitively", () => {

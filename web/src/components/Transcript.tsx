@@ -1,5 +1,5 @@
 import { formatJson } from "../helpers";
-import { groupStatus, STATUS_TITLE, type AttachmentView, type ChatEntry } from "../transcript";
+import { groupStatus, STATUS_TITLE, type AttachmentView, type ChatEntry } from "@strut/kit/folds";
 import { CloseIcon, FileIcon } from "../icons";
 import { ToolResultView } from "./ToolResultView";
 import { NoticeView } from "./NoticeView";

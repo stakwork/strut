@@ -1,5 +1,4 @@
-import type { AccessedNode } from "./accessed-nodes";
-import { fileScopeOf } from "./artifact-view";
+import { fileScopeOf, type AccessedNode, type TokenUsage } from "@strut/kit/folds";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -24,7 +23,7 @@ export const API_BASE = BASE;
 
 // Which strings are served-file paths, and which listing each reads from:
 // with the viewer's other pure helpers.
-export { isArtifactPath, fileScopeOf } from "./artifact-view";
+export { isArtifactPath, fileScopeOf } from "@strut/kit/folds";
 
 /** Browser URL for an artifact path. Mount-path aware (works under `/lab`).
  *  An `<a href>` / `<img src>` cannot set a header, so the read token for
@@ -778,13 +777,7 @@ export const listActiveRuns = () => fetchJSON<ActiveRun[]>("/runs/active");
 // / `JobTurn` in src/job-threads.ts); written out here because those modules
 // pull node types the web build has no business resolving.
 
-export interface TokenUsage {
-  inputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-}
+export type { TokenUsage } from "@strut/kit/folds";
 
 /** One resolved deliverable (`src/artifact-refs.ts`). */
 export interface ArtifactRef {

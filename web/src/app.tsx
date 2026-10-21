@@ -4,7 +4,7 @@ import type { CanvasData, CanvasNode, CanvasEdge } from "system-canvas";
 import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
-import { foldAccessedNodes } from "./accessed-nodes";
+import { foldAccessedNodes } from "@strut/kit/folds";
 import { latestAttempt } from "./step-attempt";
 import { pushUrl, replaceUrl } from "./embed";
 import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";

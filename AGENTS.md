@@ -906,7 +906,7 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   Never what came back as a list: `graph-search` reports nothing,
   `graph-neighbors` the expanded node only, `graph-get` never its
   `children`, a `walk` hop the node it expanded and what it kept. The run
-  flyout lists them per step (`web/src/accessed-nodes.ts` folds an agent's
+  flyout lists them per step (`kit/src/folds/accessed-nodes.ts` folds an agent's
   tool calls; filtered to `Concept` by default) and opens one in place
   through `GET /graph/nodes/:ref_id`. The same
   marker mechanism carries an agent step's transcript: `withMessages(output,

@@ -18,7 +18,7 @@ import { basename, extname, join, resolve } from "node:path";
  * Each file is announced by one text part whose first line is
  * `[attachment] <name> (<media type>, <size>) — saved at <path>`; text and
  * Word content follow it in the same part, an image or a PDF comes as the
- * next part. The UI folds those parts into chips (`web/src/transcript.ts`).
+ * next part. The UI folds those parts into chips (`kit/src/folds/transcript.ts`).
  * The bytes ride in the history the chat replays every turn, so the caps
  * below keep a message well under a provider's request limit (Anthropic:
  * 32 MB); the web UI downscales a large image before it sends it.

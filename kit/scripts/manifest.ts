@@ -60,6 +60,7 @@ export const ALIASES: Record<string, string> = {
 export const KIT_ENTRIES: Record<string, string> = {
   "@strut/kit": "src/index.ts",
   "@strut/kit/bootstrap": "src/bootstrap.ts",
+  "@strut/kit/folds": "src/folds/index.ts",
   "@/lib/utils": "src/lib/utils.ts",
   "@/hooks/use-mobile": "src/hooks/use-mobile.ts",
   "@/hooks/use-theme": "src/hooks/use-theme.ts",

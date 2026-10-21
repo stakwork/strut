@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "preact/hooks";
 import { formatJson, humanize } from "../helpers";
 import { CopyButton } from "./CopyButton";
 import { ArtifactViewer } from "./ArtifactViewer";
-import { artifactLabel, findArtifacts, isArtifactPath, viewerKind } from "../artifact-view";
+import { artifactLabel, findArtifacts, isArtifactPath, viewerKind } from "@strut/kit/folds";
 import { EyeIcon } from "../icons";
 import { useDismiss } from "../use-dismiss";
 import { useArtifactUrl, useFileScope } from "../use-artifact-url";

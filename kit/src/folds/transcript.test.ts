@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { attachResult, groupStatus, transcriptText, transcriptToEntries } from "./transcript";
+import { attachResult, groupStatus, transcriptText, transcriptToEntries } from "./transcript.js";
 
 // Stored AI SDK model messages, as `GET /chat/:id` and a run's
 // `…/transcripts/<path>?full=1` serve them.

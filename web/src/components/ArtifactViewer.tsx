@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { createPortal } from "preact/compat";
 import { artifactUrl, fetchArtifactText, fileScopeOf } from "../api";
-import { artifactKind, artifactRel, directoryEntries, parseWalkthrough, resolveArtifactLink, viewerKind } from "../artifact-view";
+import { artifactKind, artifactRel, directoryEntries, parseWalkthrough, resolveArtifactLink, viewerKind } from "@strut/kit/folds";
 import { ArrowLeftIcon, CloseIcon } from "../icons";
 import { useFileScope } from "../use-artifact-url";
 import { Markdown, type MarkdownLink } from "./Markdown";

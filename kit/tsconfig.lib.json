@@ -8,6 +8,6 @@
     "rootDir": "./src",
     "outDir": "./dist"
   },
-  "include": ["src/index.ts", "src/bootstrap.ts", "src/node.ts"],
+  "include": ["src/index.ts", "src/bootstrap.ts", "src/folds/index.ts", "src/node.ts"],
   "exclude": ["src/**/*.test.ts"]
 }
