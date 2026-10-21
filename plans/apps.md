@@ -467,9 +467,36 @@ never at build, so rotating the signing secret rebuilds nothing.
 
 ### 2.5 Size
 
-esbuild tree-shakes per app, and a typical app lands at 300 KB–1.5 MB.
-three and mathjs tree-shake poorly, so an app that uses either imports it
-whole. A document over 6 MB is still built, and the result carries a
+esbuild tree-shakes per app — which works only because the vendor layer is
+a frozen MODULE TREE (kit 0.2, §3): every module as its package ships it,
+each import's resolution and `sideEffects` flag recorded once. The first kit
+froze pre-bundled chunks instead, and nothing inside a chunk could be
+dropped. Measured on 2026-10-21 (the document, minified, with its CSS):
+
+| App | Kit 0.1 (chunks) | Kit 0.2 (module tree) | First paint, headless Chrome |
+| --- | --- | --- | --- |
+| The build tests' fixture (a button, a badge, a router) | 1.28 MB | 0.60 MB | — |
+| A small app (tabs, runs, a host message) | 1.24 MB | 0.60 MB (172 KB gzipped) | 89 → 64 ms |
+| The 1c benchmark app (recharts, run list, launch form) | 2.48 MB | 0.96 MB (278 KB gzipped) | 138 → 82 ms |
+| An app importing `strut/views`' RunTimeline, RunGraph, LaunchForm and RunList | — | 0.96 MB | 87 ms |
+| `strut/views`' own gallery (every component) | — | 1.15 MB | 94 ms |
+
+First paint is from setting the frame's `srcdoc` to the page's first
+content-sized `size-changed`, behind ext-apps' `AppBridge`, median of five
+(a cold first load is about three times that). The 1c by-hand run saw ~8 s in the
+browser pane, which ran as a background page; it does not reproduce in a
+foreground browser.
+
+What the old 1.2 MB floor was: all of lucide (649 KB, through three icons),
+every radix primitive behind `Slot`, zod's locales (its `z` is a re-exported
+namespace esbuild cannot shake — the app build rewrites `import { z }` to
+`import * as z`), and every shadcn component's 1 023 classes compiled into
+every stylesheet (the build now scans only the kit modules it bundled, and
+minifies). What a small app still carries: react-dom (210 KB), the MCP Apps
+SDK with its zod schemas (~250 KB), react-query, tailwind-merge. three and
+mathjs tree-shake poorly, so an app that uses either imports most of it (a
+map and a three.js scene: 1.6 MB); an app that does not import them carries
+none. A document over 6 MB is still built, and the result carries a
 warning.
 
 ## 3. The kit
@@ -483,7 +510,7 @@ folds (`run-overview.ts`, `transcript.ts`, `accessed-nodes.ts`,
 invoice is, and nothing in it renders a run: strut's own components are an
 app, `strut/views` (§3.3), that an app imports when it wants them, as it
 imports a deployment's kit (§3.4). One build: **the vendor layer**, the
-frozen browser bundles of the dependency set plus the kit itself, is what
+frozen module tree of the dependency set plus the kit itself (§2.5), is what
 §2 resolves against. It is an artifact of the kit's build, not of `npm
 install`, so strut's own install carries no React.
 

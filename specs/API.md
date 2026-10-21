@@ -823,7 +823,11 @@ workspace store holds the pointers (`listApps`, `getApp`, `publishApp`,
 `setActiveAppVersion`, `deleteApp`, `materializeAppVersion`); the files live
 under `<dataDir>/apps/<name>/<vN>/` on every backend, `dist/` included. A
 name may carry a package prefix (`acme/hvac/invoices`, `strut/views`) —
-encoded in a URL (`/apps/acme%2Fhvac%2Finvoices`).
+encoded in a URL (`/apps/acme%2Fhvac%2Finvoices`). Every strut with a built
+kit lists `strut/views` (publisher `strut`, no grants): strut's own
+components as an app other apps import (`import { RunTimeline } from
+"strut/views"`), seeded at boot by tree hash (`createStrut({ views: false
+})` seeds none); its page is a gallery over fixtures.
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
