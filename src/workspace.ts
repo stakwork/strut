@@ -386,10 +386,10 @@ export function versionLabelOrder(a: string, b: string): number {
 export interface PublishByContentOptions extends PublishOptions {
   /** What to do when the content matches an OLDER, non-active version.
    *  `true` (default) re-points active at it — "this exact content should be
-   *  live" (the author's intent). `false` leaves the active pointer alone —
-   *  the boot-time seeder's setting, so an edit made through the UI/API
-   *  survives every reseed until the committed template itself changes (a
-   *  never-seen hash still publishes the next `vN` and activates it). */
+   *  live" (the author's intent, and every boot-time seeder's: a seed always
+   *  matches git). `false` leaves the active pointer alone, for a caller
+   *  that wants an edit made since to stay live (a never-seen hash still
+   *  publishes the next `vN` and activates it). */
   reactivateKnown?: boolean;
 }
 

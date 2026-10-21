@@ -46,6 +46,16 @@ describe("concept files (pure)", () => {
     assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@aaaaaaaaaaaa" }, stamp), "skip", "a legacy path counts only when the set names it");
     assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@aaaaaaaaaaaa" }, stamp, legacy), "keep", "same text: kept, stamp and all");
     assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "lab/job/concepts/Job.md@cccccccccccc" }, stamp, legacy), "update");
+
+    // A seed always matches git: the same stamp over text edited in the
+    // graph is put back; a field the file does not set is not the seed's.
+    const file = { description: "The job.", docs: "How a job works." };
+    const node = { ref_id: "r", unique_source_id: stamp, description: "The job.", docs: "How a job works." };
+    assert.equal(planConceptSeed(node, stamp, [], file), "keep", "the file's text: nothing to write");
+    assert.equal(planConceptSeed({ ...node, docs: "Edited in the graph." }, stamp, [], file), "update", "edited docs are put back");
+    assert.equal(planConceptSeed({ ...node, description: "Edited." }, stamp, [], file), "update", "an edited description is put back");
+    assert.equal(planConceptSeed({ ...node, description: "Added in the graph." }, stamp, [], { docs: file.docs }), "keep", "a field the file does not set is left as it is");
+    assert.equal(planConceptSeed({ ref_id: "r", docs: "A person wrote this." }, stamp, [], file), "skip", "a person's page stays theirs");
   });
 
   it("ships Workflow Builder and Job as roots and Workflow Build under Job: workspace-general, the legacy lab stamps named; and App, a kind under Workflow Builder", async () => {
@@ -134,7 +144,7 @@ for (const tb of testBackends()) {
       await rm(dir, { recursive: true, force: true });
     });
 
-    it("creates the pages and their tree, then keeps them — a graph-side edit survives until the file changes", async () => {
+    it("creates the pages and their tree, then keeps them; every boot puts a graph-side edit back to the file's text", async () => {
       await page("Root", "The root page.", { description: "The root." });
       await page("Child", "A kind.", { description: "One kind.", parent: "Root" });
       const first = byName(await seedConcepts(b, [set()]));
@@ -148,10 +158,14 @@ for (const tb of testBackends()) {
       assert.equal(p["description"], "The root.");
       assert.match(String(p["unique_source_id"]), /^test\/concepts\/Root\.md@[0-9a-f]{12}$/);
 
+      const again = byName(await seedConcepts(b, [set()]));
+      assert.deepEqual([again["Root"]!.action, again["Child"]!.action], ["keep", "keep"], "the file's text: nothing written");
+
       await b.nodes.update(root, { set: { docs: "Edited in the graph." } });
       const second = byName(await seedConcepts(b, [set()]));
-      assert.deepEqual([second["Root"]!.action, second["Child"]!.action], ["keep", "keep"]);
-      assert.equal((await props(root))["docs"], "Edited in the graph.");
+      assert.deepEqual([second["Root"]!.action, second["Child"]!.action], ["update", "keep"]);
+      assert.equal(second["Root"]!.ref_id, root, "same node");
+      assert.equal((await props(root))["docs"], "The root page.", "a seed always matches git");
       assert.deepEqual(await children(root), [child], "the edge is merged, never duplicated");
 
       await page("Root", "The root page, revised.", { description: "The root." });
@@ -183,7 +197,7 @@ for (const tb of testBackends()) {
       const text = "---\ndescription: Same.\n---\nSame text.\n";
       await writeFile(join(dir, "Same.md"), text);
       await page("Moved", "New text.");
-      const same = await concept("Same", { docs: "Same text.", unique_source_id: stampOf("Same.md", text, "old/") });
+      const same = await concept("Same", { description: "Same.", docs: "Same text.", unique_source_id: stampOf("Same.md", text, "old/") });
       const moved = await concept("Moved", { docs: "Old text.", unique_source_id: "old/Moved.md@000000000000" });
       const out = byName(await seedConcepts(b, [set({ legacyPrefixes: ["old/"] })]));
       assert.equal(out["Same"]!.action, "keep");

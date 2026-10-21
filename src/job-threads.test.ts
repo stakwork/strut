@@ -215,4 +215,36 @@ describe("job threads (plans/jobs-sidebar.md §1)", () => {
     const alone = foldJobThreads([runC]);
     assert.deepEqual(alone.map((t) => t.id), ["C/explore/agent"]);
   });
+
+  it("a build on a peer: the skipped local agent is no turn, and the peer's turns are ONE thread (its session there)", () => {
+    // Two turns of a builder job whose work is on @acme (builder.yaml's
+    // shape: `here` gates the local `build` off, `remote` runs it there).
+    const turn = (runId: string, peerRun: string, n: number): ThreadRun => {
+      const at = ts();
+      const events: RunEvent[] = [
+        ev(runId, "run.start", "builder", { job: "J" }),
+        ev(runId, "step.start", "builder/here", { stepType: "if" }),
+        ev(runId, "step.end", "builder/here", { stepType: "if", output: false }),
+        ev(runId, "step.skipped", "builder/build", { stepType: "agent" }),
+        ev(runId, "step.start", "builder/remote", { stepType: "strut/run-workflow" }),
+        ev(runId, "step.end", "builder/remote#launch", { output: { peer: "acme", workflow: "builder", runId: peerRun } }),
+        ev(runId, "step.end", "builder/remote", {
+          stepType: "strut/run-workflow",
+          durationMs: 20_000,
+          output: { peer: "acme", workflow: "builder", runId: peerRun, status: "success", output: { text: "built", cost: 0.3, session: { id: "peer/J", turn: n, offset: 0 } } },
+        }),
+        ev(runId, "run.end", "builder", { output: { text: "built" } }),
+      ];
+      return { workflow: "builder", runId, at, summary: summary(runId, "builder", "success"), events };
+    };
+    const folded = foldJobThreads([turn("R2", "P2", 1), turn("R1", "P1", 0)]);
+    assert.deepEqual(folded.map((t) => [t.id, t.label, t.turns.length]), [["@acme/peer/J", "@acme builder", 2]]);
+    assert.deepEqual(
+      folded[0]!.turns.map((t) => [t.turn, t.runId, t.status, t.cost, t.peer]),
+      [
+        [0, "R1", "success", 0.3, { id: "acme", workflow: "builder", runId: "P1", status: "success", session: "peer/J" }],
+        [1, "R2", "success", 0.3, { id: "acme", workflow: "builder", runId: "P2", status: "success", session: "peer/J" }],
+      ],
+    );
+  });
 });

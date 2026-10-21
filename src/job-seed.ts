@@ -10,14 +10,15 @@ import type { WorkspaceStore } from "./workspace.js";
  * `POST …/run { job }`, the Jobs sidebar. This is the workflow those exist
  * to serve — `job/dir → checkouts → agent (session: the job) → pack`, every
  * step strut's own — seeded into the workspace when `createStrut` boots,
- * through the same content-hash publish a lab seeder uses
- * (`publishWorkflowByContent`, `reactivateKnown: false`, `source: "seed"`):
- * a changed committed copy publishes the next version and activates it; an
- * unchanged one leaves a workspace-side edit (the UI, the builder, a
- * promotion) active across boots. Exactly ONE seeder per name: a host that
- * wants more on the job agent passes its DELTA here rather than publishing
- * on top — two seeders over one name would each leave the other's version
- * active until one file changed, then fight.
+ * through a content-hash publish (`publishWorkflowByContent`,
+ * `source: "seed"`), and a seed always matches git: every boot makes the
+ * committed template (with the host's delta) the active version — a new
+ * text publishes the next `vN`, a text seen before (a delta taken back out,
+ * a template reverted) is made active again, and a workspace-side edit (the
+ * UI, the chat builder, a promotion) lasts until the next boot, kept in the
+ * history. Exactly ONE seeder per name: a host that wants more on the job
+ * agent passes its DELTA here rather than publishing on top — two seeders
+ * over one name would swap the active version at every boot.
  *
  * The delta (`createStrut({ job })`) is the twin of `chatSystem`: strut
  * owns how a job turn works, the host owns what its deployment adds —
@@ -95,5 +96,5 @@ export async function jobWorkflowYaml(opts?: JobSeedOptions): Promise<string> {
 /** Seed `job` into the workspace: the boot step `createStrut` runs. */
 export async function seedJobWorkflow(workspace: WorkspaceStore, opts?: JobSeedOptions): Promise<{ version: string; changed: boolean }> {
   const text = await jobWorkflowYaml(opts);
-  return workspace.publishWorkflowByContent(JOB_WORKFLOW, text, JOB_DESCRIPTION, JOB_CATEGORY, undefined, { reactivateKnown: false, source: "seed" });
+  return workspace.publishWorkflowByContent(JOB_WORKFLOW, text, JOB_DESCRIPTION, JOB_CATEGORY, undefined, { source: "seed" });
 }

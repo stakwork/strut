@@ -138,7 +138,7 @@ describe("the builder workflow strut ships", () => {
     assert.notEqual(contentHash(closed), contentHash(plain));
   });
 
-  it("createStrut seeds it by content hash beside job and orchestrator: once, as a seed; a reboot is a no-op; a changed delta publishes; `builder: false` seeds nothing", async () => {
+  it("createStrut seeds it by content hash beside job and orchestrator: once, as a seed; a reboot is a no-op; a changed delta publishes, and taking it back out makes the first version active again; `builder: false` seeds nothing", async () => {
     const dir = await mkdtemp(join(tmpdir(), "builder-seed-"));
     const fresh = await mkdtemp(join(tmpdir(), "builder-seed-off-"));
     try {
@@ -163,6 +163,13 @@ describe("the builder workflow strut ships", () => {
       assert.deepEqual(await versions(), [["v1", "seed"], ["v2", "seed"]]);
       assert.equal((await ws().getWorkflowMetadata(BUILDER_WORKFLOW))!.active, "v2");
       assert.equal((await ws().getWorkflow(BUILDER_WORKFLOW)).peer, undefined, "closed to peers by the delta");
+
+      // The delta taken back out (the plans/builder-job.md §9 run): the
+      // template is v1's text again, so v1 is active again — open to peers.
+      await createStrut({ workspace: ws(), ...quiet() });
+      assert.deepEqual(await versions(), [["v1", "seed"], ["v2", "seed"]], "nothing new published");
+      assert.equal((await ws().getWorkflowMetadata(BUILDER_WORKFLOW))!.active, "v1");
+      assert.equal((await ws().getWorkflow(BUILDER_WORKFLOW)).peer, true, "open to peers again");
 
       const off = await createStrut({ workspace: new WorkspaceManager(fresh), ...quiet(), builder: false });
       const names = ((await (await off.app.request("/workflows")).json()) as Array<{ name: string }>).map((w) => w.name);

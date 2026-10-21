@@ -15,12 +15,13 @@ import type { WorkspaceStore } from "./workspace.js";
  * src/workflows) holding `workflow.yaml` and `automation.json`. On boot each
  * is installed as a workflow of category "system" plus its automation, OFF.
  *
- * A shipped version is labelled `s-<content hash>`, so "is the active
- * version still a shipped one?" is its label. The rules:
+ * A shipped version is labelled `s-<content hash>`. A seed always matches
+ * git, so the rules are:
  * - no workflow: create it at the shipped version, with its automation off;
- * - active is an older shipped version: publish the new one and activate it;
- * - active is not a shipped version (edited in strut): publish the shipped
- *   one but leave the user's version active;
+ * - otherwise the shipped version is the active one: published when new,
+ *   made active again when it is not (an older shipped version, or a
+ *   version edited in strut — kept in the history, active until the next
+ *   boot);
  * - no automation on the workflow: recreate it, off;
  * - a workflow of the same name that was never shipped (no `s-` version,
  *   not category system) is the user's own and is left alone.
@@ -49,7 +50,7 @@ export function shippedVersionLabel(yamlText: string): string {
 /** automation.json: an automation draft plus the names strut shipped it under before. */
 const shippedAutomationSchema = automationDraftSchema.extend({ formerNames: z.array(z.string()).default([]) });
 
-export type InstallAction = "created" | "updated" | "published" | "unchanged" | "skipped";
+export type InstallAction = "created" | "updated" | "unchanged" | "skipped";
 type Installed = { version: string; action: InstallAction; automation?: string };
 
 /** Install one system workflow. `automationJson` is the parsed automation.json. */
@@ -74,15 +75,10 @@ export async function installSystemWorkflow(
     return { version: meta.active, action: "skipped" };
   } else {
     if (meta.category !== SYSTEM_CATEGORY) await workspace.setWorkflowCategory(name, SYSTEM_CATEGORY);
-    const activeShipped = meta.active.startsWith("s-");
     if (!meta.versions[label]) {
       await publish(); // activates it
-      if (activeShipped) action = "updated";
-      else {
-        await workspace.setActiveVersion(name, meta.active);
-        action = "published";
-      }
-    } else if (activeShipped && meta.active !== label) {
+      action = "updated";
+    } else if (meta.active !== label) {
       await workspace.setActiveVersion(name, label);
       action = "updated";
     }

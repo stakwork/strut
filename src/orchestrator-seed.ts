@@ -4,7 +4,7 @@ import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
 /**
  * The `orchestrator` workflow — a workflow strut ships, seeded at
  * boot exactly as `job` is (src/job-seed.ts: content-hash publish,
- * `reactivateKnown: false`, `source: "seed"`, one seeder per name). One
+ * `source: "seed"`, always the committed template, one seeder per name). One
  * turn of a long conversation: `job/dir` (no job → the run's artifact
  * folder) → `context/concept` (the `Job` Concept's children — the kinds
  * of work a job can do here, the kinds alone — for the end of the prompt)
@@ -46,5 +46,5 @@ export async function orchestratorWorkflowYaml(opts?: OrchestratorSeedOptions): 
 /** Seed `orchestrator` into the workspace: the boot step `createStrut` runs. */
 export async function seedOrchestratorWorkflow(workspace: WorkspaceStore, opts?: OrchestratorSeedOptions): Promise<{ version: string; changed: boolean }> {
   const text = await orchestratorWorkflowYaml(opts);
-  return workspace.publishWorkflowByContent(ORCHESTRATOR_WORKFLOW, text, ORCHESTRATOR_DESCRIPTION, ORCHESTRATOR_CATEGORY, undefined, { reactivateKnown: false, source: "seed" });
+  return workspace.publishWorkflowByContent(ORCHESTRATOR_WORKFLOW, text, ORCHESTRATOR_DESCRIPTION, ORCHESTRATOR_CATEGORY, undefined, { source: "seed" });
 }

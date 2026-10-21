@@ -5,8 +5,8 @@ import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
 /**
  * The `builder` workflow — the third workflow strut ships (plans/builder-job.md),
  * seeded at boot exactly as `job` and `orchestrator` are (src/job-seed.ts:
- * content-hash publish, `reactivateKnown: false`, `source: "seed"`, one
- * seeder per name). One turn of a WORKFLOW BUILD, as a job: `job/dir` →
+ * content-hash publish, `source: "seed"`, always the committed template,
+ * one seeder per name). One turn of a WORKFLOW BUILD, as a job: `job/dir` →
  * `context/concept` on `Workflow Builder` → `agent` on the job's session
  * with the `meta/*` authoring twins and the `app/*` steps as its tools and
  * the web tools plus the EDITOR family (view, create, str_replace, insert;
@@ -71,5 +71,5 @@ export async function builderWorkflowYaml(opts?: BuilderSeedOptions): Promise<st
 /** Seed `builder` into the workspace: the boot step `createStrut` runs. */
 export async function seedBuilderWorkflow(workspace: WorkspaceStore, opts?: BuilderSeedOptions): Promise<{ version: string; changed: boolean }> {
   const text = await builderWorkflowYaml(opts);
-  return workspace.publishWorkflowByContent(BUILDER_WORKFLOW, text, BUILDER_DESCRIPTION, BUILDER_CATEGORY, undefined, { reactivateKnown: false, source: "seed" });
+  return workspace.publishWorkflowByContent(BUILDER_WORKFLOW, text, BUILDER_DESCRIPTION, BUILDER_CATEGORY, undefined, { source: "seed" });
 }
