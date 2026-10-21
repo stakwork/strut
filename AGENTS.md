@@ -2043,8 +2043,9 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   steps see `ctx.app`; `key` dedupes in flight; `run/transcript` reads an
   agent's session by step path — the run log hands one out as a link, and
   a page cannot fetch. **Strut's UI is a host**
-  (`web/src/app-host.ts`, `components/AppHost.tsx`): an Apps section above
-  Workflows, the page in the canvas area (`?app=`), the document fetched by
+  (`web/src/app-host.ts`, `components/AppHost.tsx`): an Apps section at the
+  bottom of the sidebar, below Tools (collapsible; one of the two open at a
+  time), the page in the canvas area (`?app=`), the document fetched by
   token and framed as srcdoc under `sandbox="allow-scripts"`, ext-apps'
   `AppBridge` over the MCP SDK's client at `/mcp` with the UI's credential,
   `ui/message` → the builder chat, `ui/open-link` → the SPA, the version
