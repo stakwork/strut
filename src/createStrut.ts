@@ -101,7 +101,7 @@ import { parseMcpServers } from "./mcp-servers.js";
 import { briefOf, decideProposal, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, type JobsCapability } from "./jobs.js";
+import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -3189,10 +3189,24 @@ export async function createStrut<TServices = unknown>(
     return root ? store.getRunJobCallback(root.workflow, root.runId) : null;
   }
   if (launchCap) {
-    launchCap.launch = async ({ job, title, input, from, actor, principal, mcp }) => {
+    launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, workflow: wanted }) => {
       const problem = idProblem(job);
       if (problem) throw new Error(`job "${job}" ${problem}`);
-      const flow = await workspace.getWorkflow("job");
+      // Which job-shaped workflow runs the turn (plans/builder-job.md §2):
+      // the launch's (job/start), else the one the job's newest turn ran
+      // (job/continue: a builder job stays a builder job), else `job`. A
+      // builder turn on a peer carries `input.peer`; a continue inherits it
+      // from that turn's `run.start`, so the caller names only the job.
+      const last = wanted ? undefined : turnOf((await readJobRecord(jobRoot(dataDir, job)))?.runs);
+      const workflow = wanted ?? last?.workflow ?? "job";
+      if (last && input["peer"] === undefined) {
+        const start = (await store.getRunEvents(last.workflow, last.runId)).find((e) => e.type === "run.start") as { input?: unknown } | undefined;
+        const peer = (start?.input as Record<string, unknown> | undefined)?.["peer"];
+        if (typeof peer === "string") input = { ...input, peer };
+      }
+      const flow = await workspace.getWorkflow(workflow).catch((e: unknown) => {
+        throw new Error(`no_workflow: this strut has no "${workflow}" workflow to run the job on (${(e as Error).message})`);
+      });
       const url = await rootCallbackOf(from);
       const live = await rootJobCallbackOf(from);
       // The job INHERITS the launching run's job callback: on file before

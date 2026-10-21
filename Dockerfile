@@ -27,6 +27,17 @@ COPY src ./src
 COPY web ./web
 RUN npm run build --prefix web
 
+# The app kit's vendor layer → kit/vendor (plans/apps.md §3; what every app
+# build resolves against, src/apps/kit.ts): browser bundles, arch-independent,
+# built once on the build host like web/. Only kit/vendor reaches the image —
+# the kit's own node_modules (React and the rest of the set) stays here.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS kit
+WORKDIR /usr/src/strut
+COPY kit/package.json kit/yarn.lock ./kit/
+RUN yarn --cwd kit install --frozen-lockfile --ignore-scripts --production=false && yarn cache clean
+COPY kit ./kit
+RUN yarn --cwd kit build:vendor
+
 FROM node:22-bookworm-slim
 
 WORKDIR /usr/src/strut
@@ -78,12 +89,22 @@ RUN yarn install --frozen-lockfile --ignore-scripts && yarn cache clean \
     && node -e "require('@ladybugdb/core')"
 
 # Engine build: tsc plus the src/workflows copy (job.yaml, the `job` workflow
-# seeded at boot), via package.json's build script.
+# seeded at boot), via package.json's build:engine script (`build` would also
+# build the kit, which the `kit` stage did).
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+RUN npm run build:engine
 
 COPY --from=web /usr/src/strut/web/dist ./web/dist
+
+# The kit as the app build reads it: the vendor layer + the base stylesheet,
+# at <strut>/kit where src/apps/kit.ts looks. Then the fixture app is built
+# with the compiled engine, the image's esbuild and tailwindcss — an image in
+# which `app/build` cannot produce a document fails here.
+COPY --from=kit /usr/src/strut/kit/vendor ./kit/vendor
+COPY kit/src/styles/base.css ./kit/src/styles/base.css
+COPY scripts/check-app-build.mjs ./scripts/
+RUN node scripts/check-app-build.mjs
 
 ENV STRUT_WORKSPACE_BACKEND=fs \
     STRUT_WORKSPACE=/data/workspace \

@@ -11,7 +11,7 @@ import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import { fileArtifactsCapability, shellCapability, standardServices, type StrutCapabilities } from "./capabilities.js";
 import { readRunStart } from "./journal.js";
-import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, notifyJob, readJobRecord, releaseWith, setJobCallback, sweepJobs, touchJob } from "./jobs.js";
+import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, notifyJob, readJobRecord, releaseWith, setJobCallback, sweepJobs, touchJob, turnOf, JOB_WORKFLOWS } from "./jobs.js";
 import { RunController } from "./run-control.js";
 import { artifactKind, jobFileUrl, resolveArtifactRefs } from "./artifact-refs.js";
 import { captchaFiles } from "./browser/captcha.js";
@@ -1136,5 +1136,23 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.equal(JSON.stringify(shot).includes("data"), false, "the bytes ride on the marker, not the output");
     await assert.rejects(() => jobRead.run({ job: "j-c", path: "../j-b/plan.md" }, ctx), /escapes/);
     await assert.rejects(() => jobRead.run({ job: "j-c", path: "nope.md" }, ctx), /No file/);
+  });
+});
+
+describe("jobs — the job's newest turn (turnOf, plans/builder-job.md §2)", () => {
+  const run = (workflow: string, runId: string, parentRunId?: string) => ({ workflow, runId, at: runId, ...(parentRunId ? { parentRunId } : {}) });
+
+  it("is the newest run with no parent that ran a job-shaped workflow — what job/continue launches and GET /jobs/:id reports", () => {
+    assert.deepEqual([...JOB_WORKFLOWS], ["job", "builder"]);
+    assert.equal(turnOf(undefined), undefined);
+    assert.equal(turnOf([]), undefined);
+    assert.equal(turnOf([run("job", "1")])?.workflow, "job");
+    // A builder job stays a builder job across turns.
+    assert.equal(turnOf([run("builder", "1"), run("builder", "2")])?.runId, "2");
+    // What a turn ran under the job (a child, by parentRunId) is not a turn;
+    // nor is a run of some other workflow launched under the job id (a
+    // captcha round, a check): the newest TURN decides.
+    assert.equal(turnOf([run("builder", "1"), run("pod-pr", "2", "1"), run("browser-captcha", "3")])?.runId, "1");
+    assert.equal(turnOf([run("browser-captcha", "1")]), undefined, "no job-shaped turn yet");
   });
 });

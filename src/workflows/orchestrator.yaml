@@ -173,7 +173,10 @@ params:
     Start a JOB (job/start) with everything it needs in its prompt, since
     it does not see this conversation — the request in full, links,
     names, what a lookup found, the peer that holds the code when you
-    know it — and a short title. Several jobs may run at once. Never wait
+    know it — and a short title. A workflow to build, change, test or
+    debug is a BUILDER job (`workflow: builder`), on the strut whose
+    workspace it belongs to (`peer` when that is not this one). Several
+    jobs may run at once. Never wait
     on a job: tell the person in a line what you started and end your
     turn. Its result (a reply, files, or a question) reaches the person
     when it ends.
