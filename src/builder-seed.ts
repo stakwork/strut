@@ -11,9 +11,13 @@ import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
  * with the `meta/*` authoring twins and the `app/*` steps as its tools and
  * the web tools plus the EDITOR family (view, create, str_replace, insert;
  * a tree listing; a grep — plans/apps.md §8, never bash) as its built-ins
- * → `pack` in the job's reply shape. Building workflows is
- * a separate kind of work from a code job (ruled 2026-10-20): `job` never
- * carries these tools, and the orchestrator starts a builder job for them.
+ * → `pack` in the job's reply shape. A workflow lives on one strut, so a
+ * build runs on the strut it belongs to (here, or a peer through its
+ * `input.peer` branch), while code is checked out wherever a job runs:
+ * `job` never carries these tools, the orchestrator starts a builder job
+ * for a build, and a job agent that meets one runs this workflow itself
+ * (the `Workflow Build` page). The missing shell is focus, not a boundary
+ * (builder.yaml's header).
  *
  * Its system prompt is the builder chat's rules — strut's workflow dialect,
  * the tools section and the procedure — rendered from the same source in

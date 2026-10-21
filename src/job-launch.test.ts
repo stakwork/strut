@@ -164,7 +164,7 @@ describe("job/start and job/continue", () => {
   });
   const pack = { id: "result", type: "pack", config: { text: "{{ work.object.text }}", artifacts: "{{ work.object.artifacts }}" } };
 
-  const boot = async (opts: { builder?: boolean } = {}) => {
+  const boot = async (opts: { builder?: boolean; self?: { id: string; label?: string } } = {}) => {
     const store = new MemoryRunStore();
     const strut = await createStrut({
       workspace: new WorkspaceManager(dir),
@@ -177,6 +177,7 @@ describe("job/start and job/continue", () => {
       // models and tools.
       job: false,
       builder: false,
+      ...(opts.self ? { self: opts.self } : {}),
     });
     await strut.workspace.publishWorkflow("job", "v1", {
       steps: [
@@ -184,7 +185,8 @@ describe("job/start and job/continue", () => {
         { id: "report", type: "test/write", config: { path: "{{ dir.path }}/report.md", text: "# Flights" } },
         { id: "tell", type: "test/tell", config: { path: "report.md" } },
         agent("JOBAGENT", { session: "{{ input.session || $job }}" }),
-        pack,
+        // The job's pack also reports the workspace its launch carried.
+        { ...pack, config: { ...pack.config, workspace: "{{ input.workspace }}" } },
       ],
     });
     // The builder (plans/builder-job.md): job-shaped, no checkouts, and it
@@ -194,7 +196,7 @@ describe("job/start and job/continue", () => {
         steps: [
           { id: "dir", type: "job/dir", config: {} },
           agent("BUILDER", { session: "{{ input.session || $job }}" }),
-          { id: "result", type: "pack", config: { text: "{{ work.object.text }}", artifacts: "{{ work.object.artifacts }}", peer: "{{ input.peer }}" } },
+          { id: "result", type: "pack", config: { text: "{{ work.object.text }}", artifacts: "{{ work.object.artifacts }}", peer: "{{ input.peer }}", workspace: "{{ input.workspace }}" } },
         ],
       });
     }
@@ -290,6 +292,32 @@ describe("job/start and job/continue", () => {
     ]);
     // The job's prompt is what the orchestrator wrote, not the person's words.
     assert.ok(seen.job[0]!.includes("Research flights to Lisbon in May"));
+    assert.equal(jobEnd.output.workspace, undefined, "no self record on file: no workspace named");
+  });
+
+  it("a job the orchestrator starts or continues names this strut's workspace — its self record — as a host's own launch does, a builder job too", async () => {
+    const { launch, settle, until, toolOutput } = await boot({ self: { id: "acme", label: "Acme" } });
+    orchTool = { name: "job_start", input: { prompt: "Research flights", title: "Flights" } };
+    const first = await launch({ prompt: "research flights" });
+    await settle("orch", first);
+    const { job } = await toolOutput(first);
+    const started = await until(() => posts.find((p) => p.workflow === "job"));
+    assert.equal(started.output.workspace, "acme", "job/start: the workspace from self");
+
+    orchTool = { name: "job_continue", input: { job, prompt: "Only direct flights" } };
+    const second = await launch({ prompt: "only direct ones" });
+    await settle("orch", second);
+    const ends = await until(() => {
+      const e = posts.filter((p) => p.workflow === "job");
+      return e.length === 2 ? e : undefined;
+    });
+    assert.equal(ends[1].output.workspace, "acme", "job/continue: the same");
+
+    orchTool = { name: "job_start", input: { prompt: "Build a digest workflow", title: "Digest", workflow: "builder" } };
+    const third = await launch({ prompt: "build a digest workflow" });
+    await settle("orch", third);
+    const built = await until(() => posts.find((p) => p.workflow === "builder"));
+    assert.equal(built.output.workspace, "acme", "a builder job: the same");
   });
 
   it("continue: the next turn of the same job and thread; refused while it runs and for a job not on file", async () => {

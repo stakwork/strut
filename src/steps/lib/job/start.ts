@@ -20,10 +20,11 @@ import { launchOnce, requireJobLaunch } from "./_shared.js";
  * is a WORKFLOW — the authoring twins, no shell. The rule lives here, on
  * the field, where the model reads it beside the call; the `Workflow
  * Build` Concept strut seeds under `Job` is the same kind in the table the
- * orchestrator routes by. `peer` goes with `builder` only: a workflow is
- * published on the strut whose workspace it belongs to, and the local
- * `builder` run dispatches there (builder.yaml's `remote` branch); a code
- * job carries repositories and a person's token and runs here.
+ * orchestrator routes by. `peer` goes with `builder` only: a workflow
+ * lives on one strut (its graph, secrets and services), so it is built on
+ * the strut whose workspace it belongs to, and the local `builder` run
+ * dispatches there (builder.yaml's `remote` branch); code lives in its
+ * repository and is checked out here, so a code job runs here.
  */
 export default defineStep({
   type: "job/start",

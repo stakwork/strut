@@ -159,7 +159,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(out.ask, undefined);
       assert.equal(turns[0]!.cwd, join(dir, "jobs", job), "the job's directory");
       assert.equal(turns[0]!.session, job, "the job's thread");
-      assert.equal(turns[0]!.prompt, "Workspace: @acme, the one this strut belongs to. Plan dark mode.");
+      assert.equal(turns[0]!.prompt, `Workspace: @acme, the one this strut belongs to. Your job id: ${job}. Plan dark mode.`, "the workspace line, then the job's id");
       assert.deepEqual(turns[0]!.tools, paramsOf(await jobWorkflowYaml()).tools, "params.tools reaches agentTools");
       assert.equal(turns[0]!.system.trimEnd(), paramsOf(await jobWorkflowYaml()).system.trimEnd(), "no graph: strut's prompt alone, no Concept section");
       assert.ok(existsSync(join(dir, "jobs", job, "plan.md")));
@@ -179,6 +179,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(alone.status, "success", JSON.stringify(alone.error));
       assert.equal(turns[2]!.session, undefined);
       assert.equal(turns[2]!.cwd, join(dir, "artifacts", alone.runId));
+      assert.equal(turns[2]!.prompt, "Just a note.", "no job, no id line");
       const own = ((await (await strut.app.request(`/workflows/${JOB_WORKFLOW}/runs/${alone.runId}/artifacts`)).json()) as { artifacts: Array<{ url?: string }> }).artifacts;
       assert.deepEqual(own.map((l) => l.url), [`/artifacts/${alone.runId}/plan.md`]);
     } finally {

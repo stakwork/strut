@@ -65,7 +65,9 @@ steps:
       system: |-
         {{ params.system }}
         {{ concepts.text }}
-      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ input.prompt }}"
+      # The workspace line, then the job's id (what a claim's subject and the
+      # builder's thread are named by), then the checkouts, then the message.
+      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
       schema:
@@ -148,9 +150,11 @@ params:
   # app/get to read it back — never app/publish or app/checkout, the
   # authoring writes: a job's app reaches the workspace through a person's
   # "Publish as an app" or a builder job (§8). A host appends its own
-  # (`createStrut({ job: { tools } })`): the lab adds `pod/*`. Held back
-  # until running works: meta/publish-workflow (a bespoke check workflow),
-  # meta/create-step.
+  # (`createStrut({ job: { tools } })`): the lab adds `pod/*`. Never the
+  # authoring writes (meta/publish-workflow, meta/create-step, edit-step):
+  # a workflow to build is the `builder` workflow's, which this agent runs
+  # through meta/run-workflow when such a request reaches it (the `Workflow
+  # Build` page under `Job`).
   tools:
     - graph/graph-search
     - graph/graph-get

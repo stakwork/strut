@@ -12,18 +12,29 @@ name: builder
 # at boot by createStrut (src/builder-seed.ts); `params.tools`,
 # `params.builtins` and `params.system` are the evolvable surface, and a
 # host appends its own through `createStrut({ builder })`. Every step here
-# is strut's own. Building workflows is a separate kind of work from a code
-# job (ruled 2026-10-20): `job` never carries these tools.
+# is strut's own.
+#
+# Why a workflow of its own beside `job`: a WORKFLOW lives on one strut —
+# that strut's graph, secrets and services — so a build runs on the strut
+# it belongs to, here or on a peer (`input.peer`, below); code lives in its
+# repository and is checked out wherever a job runs, so a code job runs
+# here. The hands differ too: the authoring twins and strut's workflow
+# dialect, not a shell and checkouts. A job agent that meets a build runs
+# this workflow itself (meta/run-workflow; the `Workflow Build` page).
 #
 # Open to other struts: `peer: true` lets a PEER (plans/federation.md §3)
-# launch this workflow as published — no `params`, so no launch can hand
-# the agent bash — under `peer/<job>`, as the forwarded person. What a peer
-# reaches through it is an AUTHORING surface: `ai`-stamped workflows and
-# steps, published only over names so stamped, never a sealed one, run in
-# this process with this strut's services — exactly what this strut's own
-# chat builder could always do (plans/builder-job.md §4). This file vouches
-# for that within the org a peer token is minted for. A deployment that will
-# not have it drops the key: `createStrut({ builder: { peer: false } })`.
+# launch this workflow as published — no `params` — under `peer/<job>`, as
+# the forwarded person. That is no sandbox: authoring is code execution on
+# this strut. The agent can publish and run a workflow with an `exec` step,
+# write a custom step over `ctx.services.shell`, or run any unsealed
+# workflow through meta/run-workflow, `job` included. So this file says: a
+# person the org's strut forwards may run code here, as this strut's own
+# chat builder always let them (plans/builder-job.md §4), within the org a
+# peer token is minted for. A deployment that will not have it drops the
+# key, `createStrut({ builder: { peer: false } })`, or puts a person's hand
+# on every publish through `approve`. `job` stays closed to peers: its
+# input takes `agent` (any ACP command line) and `cwd` (any folder), which
+# are a host's to pass.
 #
 # A build on ANOTHER strut is the same launch with `input.peer`: the one
 # step is then strut/run-workflow to that peer's `builder`, under this job
@@ -71,9 +82,9 @@ steps:
       prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ input.prompt }}"
       # The web tools (API documentation while authoring) and the EDITOR
       # family — view, create, str_replace, insert on the job's directory,
-      # a tree listing, a grep — for an app's files (plans/apps.md §8).
-      # Never bash on a workflow another strut may launch: the editor
-      # reaches neither the process nor the network.
+      # a tree listing, a grep — for an app's files (plans/apps.md §8). No
+      # bash: it keeps the agent authoring through its tools. It is no
+      # sandbox (the header says why).
       toolFilter: "{{ params.builtins }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
@@ -146,10 +157,10 @@ params:
   # The built-ins the agent keeps (the agent step's toolFilter): the web
   # tools, for API documentation while authoring, and the editor family
   # for an APP's files in the job's directory (plans/apps.md §8) — view,
-  # create, str_replace, insert; a tree listing; a grep. Never bash on a
-  # workflow another strut may launch: the editor is not a shell. What the
-  # chat builder did with bash is meta/run-step with a cassette,
-  # meta/get-run and job/read.
+  # create, str_replace, insert; a tree listing; a grep. No bash: what the
+  # chat builder did with it is meta/run-step with a cassette, meta/get-run
+  # and job/read. It keeps the agent authoring; it is no sandbox (the
+  # header).
   builtins: [web_search, web_fetch, str_replace_based_edit_tool, repo_overview, fulltext_search]
   # THE evolvable surface: registry steps granted to the agent as tools.
   # `meta/*` is the whole authoring surface as steps — the reads, the runs,
