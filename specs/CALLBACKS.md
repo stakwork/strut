@@ -154,11 +154,15 @@ files behind the same links: that is how a plan gets iterated on across
 twenty turns. `plans/jobs.md` is the design.
 
 **A job your run started.** A workflow whose agent is granted `job/start`
-and `job/continue` hands bigger work to strut's `job` workflow and ends
-its turn without waiting. That job's run carries YOUR run's callback, so
-your URL gets a second `run.end` when the job ends: `workflow: "job"`,
-the `job` id, and its artifacts resolved in the job's directory. Tell the
-two apart by `workflow` and `job`. A run launched with no callback starts
+and `job/continue` hands bigger work to strut's `job` workflow — or to
+`builder`, when what is to be made or changed is a workflow (`job/start {
+workflow: builder }`, `plans/builder-job.md`; `GET /jobs/:id` says which a
+job is) — and ends its turn without waiting. That job's run carries YOUR
+run's callback, so your URL gets a second `run.end` when the job ends:
+`workflow: "job"` (or `"builder"`), the `job` id, and its artifacts
+resolved in the job's directory. Tell the two apart by `workflow` and
+`job`: a `run.end` carrying `job` is a job turn whatever its workflow. A
+run launched with no callback starts
 jobs with none. The same goes for live updates: the jobs a run starts
 inherit its `jobCallback` (§5).
 

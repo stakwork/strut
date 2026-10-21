@@ -7,7 +7,15 @@
 > `feature/builder-prompt-source`: the builder's rules in `src/ai/prompts.ts`
 > render from a role → tool-name map (`CHAT_TOOLS`, `JOB_TOOLS`), the
 > chat's byte-identical (`src/ai/prompts.test.ts`), the job's rendered into
-> builder.yaml's `params.system` by the seed. Written against strut
+> builder.yaml's `params.system` by the seed. **Work item 3 BUILT
+> 2026-10-21, amended first** (ruled that day): the orchestrator learns the
+> kind the way it learns every other kind — a Concept strut seeds under `Job`
+> (`src/concepts/Workflow Build.md`) — with the routing rule on `job/start`'s
+> `workflow` field and ONE sentence in its prompt, not the paragraph §2 first
+> proposed. The reason: Jamie's "what can I do" answer IS the `Job` tree
+> (`context/concept`, the kinds alone), so a kind that lives only in prose
+> never appears in it, and the model routes everything else from that table.
+> Written against strut
 > `main` @4b19438 (this worktree), hive `master` @250154f6e and stakgraph
 > `main` @be2cde00; citations are `file:line` on those commits. The question:
 > Jamie's chats are now turns of strut's `orchestrator` workflow
@@ -72,6 +80,7 @@ that strut ships, `peer: true` from the start, is the kind of work ruled in
 | Where the authoring tools live | **A third seeded workflow, `builder`** (ruled: separate from `job`). `job.yaml` is untouched: a code job never sees a `meta/*` write. The orchestrator starts a builder job as it starts any job |
 | Cross-strut in v1 | **Yes** (ruled). The builder is `peer: true` in its seed, launched on another strut through `strut/run-workflow` from a branch inside the same YAML (§3) |
 | The door | `job/start` gains `workflow` (`job` \| `builder`, default `job`) and `peer` (§2); `job/continue` follows the job's record. Mine |
+| How the orchestrator learns it | **A kind under `Job`, seeded by strut** (`Workflow Build`), the routing rule in `job/start`'s own schema, one prompt sentence (§2). Ruled 2026-10-21: a workflow build IS a kind of job to the person, and the kinds table is what the orchestrator routes by and recites; `builder` vs `job` is a trust split (`peer: true` is per workflow), never something the person names |
 | The builder's built-ins | **web_search + web_fetch only** (`toolFilter`), as the lab's `explore` keeps bash off a workflow another strut may launch (`stakgraph/mcp/src/lab/explore/workflows/explore.yaml:25-32,78,133`). What the chat used bash for goes through `meta/run-step` with a cassette and `meta/get-run` / `job/read` (§1). Mine |
 | The builder's tools | `meta/*` as a glob — every authoring twin, and a twin added later lands with no seed edit — plus the graph reads and the `job/*` reads (§1). Mine |
 | The builder's prompt | **One source.** The dialect rules and the procedure in `src/ai/prompts.ts` are factored to render with the chat's tool names for the chat and with `meta/*` names for the seed; the `Workflow Builder` page comes in through `context/concept` exactly as the chat reads it (§1). Mine |
@@ -259,15 +268,38 @@ name through `ctx.services.jobs.launch`, which reads it off the workspace
   record keeps it with the run's input, so `job/continue` finds it and
   the orchestrator need not remember it.
 
-The orchestrator's prompt (`orchestrator.yaml:116-151`) gains one
-paragraph, the old tool's "a workflow request goes here by default"
-(`strutTools.ts:238-241`) in strut's words: a workflow to build, change,
-run for a test or debug is a BUILDER job — `job/start { workflow: builder
-}` — and when the person names another workspace (`@slug`), or the code or
-graph the workflow needs is on a peer, `peer` is that strut's id, from
-`strut/list-peers`. Its `retain` already keeps the jobs started by id and
-title. Nothing else in the orchestrator changes: no authoring tool, no
-builder prompt, no new grant.
+**How the orchestrator learns it** (amended 2026-10-21; built so). Not a
+prompt paragraph. The orchestrator's list of what a job can do here is the
+`Job` Concept's children, rendered by `context/concept` at the end of every
+turn's prompt (`orchestrator.yaml`, `docs: false`), and that list is what it
+routes by and what it recites when asked what it can do. A kind that lives
+only in prose never shows up there. So the kind lives where every other kind
+lives, in three small pieces:
+
+1. **A Concept strut seeds under `Job`**: `src/concepts/Workflow Build.md`,
+   `parent: Job`, in `STRUT_CONCEPTS` beside the two roots — strut ships the
+   builder on every strut, so the kind is workspace-general. Its one-line
+   `description` is what the orchestrator sees (the kinds are name + line):
+   a workflow to build, change, test or debug is a builder job, on the strut
+   whose workspace it belongs to. Its docs are for the job agent that reads
+   the `Job` tree WITH docs and lands here by mistake: this kind is not a
+   job agent's, say so in the reply, do not improvise YAML.
+2. **The routing rule on the tool**: `job/start`'s `workflow` field says in
+   its own description when it is `builder` and when `peer` goes with it —
+   the model reads a tool's schema more reliably than prose, and the rule
+   sits beside the call it governs.
+3. **One sentence in the orchestrator prompt**, in the job paragraph: a
+   workflow to build, change, test or debug is a builder job (`workflow:
+   builder`), on the strut whose workspace it belongs to (`peer` when that
+   is not this one). The old tool's "a workflow request goes here by
+   default" (`strutTools.ts:238-241`) in strut's words, and no more.
+
+Its `retain` already keeps the jobs started by id and title. Nothing else in
+the orchestrator changes: no authoring tool, no builder prompt, no new grant.
+`GET /jobs/:id` (and each `GET /jobs` row) carries `workflow`: the one its
+newest top-level turn ran, among the job-shaped workflows strut ships
+(`JOB_WORKFLOWS`, `src/jobs.ts`) — what `job/continue` launches, and what a
+host shows.
 
 ## 3. Another strut — the `input.peer` branch
 
@@ -505,9 +537,12 @@ Strut, in order; each a PR of its own, never stacked.
    {{ params.name }}") were blanked — it now leaves them as written.
 3. **`job/start { workflow, peer }`**, `job/continue` following the record,
    `JobLaunch.workflow`, the launcher reading that workflow; `GET /jobs/:id`
-   says which workflow a job is. The orchestrator prompt paragraph.
-   Tests: a builder job launches `builder`; continue launches what the
-   last run was; `peer` is refused with `workflow: job`.
+   says which workflow a job is. The kind as a Concept strut seeds under
+   `Job` (`Workflow Build`), the rule on the `workflow` field, one prompt
+   sentence (§2, amended). Tests: a builder job launches `builder`;
+   continue launches what the last turn was and carries its `peer`; `peer`
+   is refused with `workflow: job`; the page seeds under `Job` and the
+   orchestrator's kinds list it. **BUILT 2026-10-21.**
 4. **Deliverables tagged**: `strut/run-workflow` tags the peer output's
    `artifacts`; `resolveArtifactRefs` leaves a tagged ref alone; the
    `run.end` callback and `GET …/artifacts` carry it; `specs/CALLBACKS.md`

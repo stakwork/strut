@@ -15,10 +15,14 @@
   },
   "files": [
     "build",
-    "web/dist"
+    "web/dist",
+    "kit/vendor",
+    "kit/src/styles/base.css"
   ],
   "scripts": {
-    "build": "tsc && node -e \"fs.cpSync('src/workflows', 'build/workflows', { recursive: true }); fs.cpSync('src/concepts', 'build/concepts', { recursive: true }); fs.cpSync('src/apps/templates', 'build/apps/templates', { recursive: true })\"",
+    "build": "npm run build:engine && npm run build:kit",
+    "build:engine": "tsc && node -e \"fs.cpSync('src/workflows', 'build/workflows', { recursive: true }); fs.cpSync('src/concepts', 'build/concepts', { recursive: true }); fs.cpSync('src/apps/templates', 'build/apps/templates', { recursive: true })\"",
+    "build:kit": "node scripts/build-kit.mjs",
     "prepare": "npm run build && npm --prefix web install && npm --prefix web run build",
     "build:web": "npm --prefix web run build",
     "package:desktop": "node scripts/package-desktop.mjs",
@@ -28,7 +32,8 @@
     "test:stt": "STRUT_TEST_STT=1 tsx --test src/audio/stt.live.test.ts",
     "test:browser": "tsx --test src/browser/service.live.test.ts",
     "test:gateway": "tsx scripts/gateway-smoke.ts",
-    "test:graph": "node scripts/test-graph.mjs"
+    "test:graph": "node scripts/test-graph.mjs",
+    "test:app-build": "node scripts/check-app-build.mjs"
   },
   "dependencies": {
     "@ai-sdk/provider-utils": "^5.0.44",
