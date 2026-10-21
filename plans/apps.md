@@ -71,6 +71,14 @@
 > library build for a host's own pages is deferred (§12): a host that wants
 > strut's views renders an app.
 >
+> **Work item 1 is BUILT** (2026-10-21): stakwork/strut#246 the kit, #248
+> the app object and the build, #250 the backend and the hosts (§13). Two
+> findings from its by-hand run are written in: the frame is `srcdoc`, not
+> a `blob:` URL (§7.3), and the first app's document measured 2.4 MB
+> against §2.5's estimate — the size pass opens work item 6. Items 2–8 are
+> open; the packaging of the kit's vendor layer and esbuild's binary into
+> the image and the desktop package is its own small PR.
+>
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
 > is the tree hash shared with packages and the kit is out of it (§1.3);
@@ -469,7 +477,12 @@ never at build, so rotating the signing secret rebuilds nothing.
 
 esbuild tree-shakes per app, and a typical app lands at 300 KB–1.5 MB.
 three and mathjs tree-shake poorly, so an app that uses either imports it
-whole. A document over 6 MB is still built, and the result carries a
+whole. **Measured (2026-10-21, #250's by-hand run):** the first app built —
+a runs list, a launch form and one recharts chart — came out at **2.4 MB**
+and took about 8 s to show in the frame, above this estimate; work item 6
+opens with the size pass that finds out why (the vendor layer bundled
+whole, the CJS facades defeating tree-shaking, the compiled CSS) and brings
+it down, and rewrites this paragraph with what it found. A document over 6 MB is still built, and the result carries a
 warning.
 
 ## 3. The kit
@@ -939,10 +952,15 @@ the job's files. A job's app as a RESOURCE a model can open
   deep link is `?app=<name>`, which joins `embed.ts`'s params.
 - **The frame.** `api.ts` lists the version's files (which mints the
   token — `useFileScope`, as for a run's artifacts), fetches
-  `dist/index.html?t=…` and frames the bytes as a blob URL in `<iframe
-  sandbox="allow-scripts">`, as hive's `HtmlArtifactFrame` does. No `src`
-  ever carries a credential, and the app runs in an opaque origin, never
-  same-origin.
+  `dist/index.html?t=…` and frames the bytes as **`srcdoc`** in `<iframe
+  sandbox="allow-scripts">` — not a `blob:` URL, which the first draft said
+  and hive's `HtmlArtifactFrame` uses: a blob document's `location.origin`
+  is its creator's while its `pathname` is the whole blob URL, and a
+  JSON-schema validator bundled into the MCP SDK does `new URL(origin +
+  pathname)` at module time, so the page died before it mounted (found by
+  #250's by-hand run). No `src` ever carries a credential, and the app runs
+  in an opaque origin, never same-origin. A 2.4 MB document takes about
+  8 s to parse and hand-shake, which a loading overlay covers (§2.5).
 - **The relay**, `web/src/app-host.ts`, is ext-apps' host bridge
   (`AppBridge`, plain TypeScript with no framework in it, so it sits in
   Preact as it is — nothing is hand-rolled):
@@ -1231,7 +1249,28 @@ One PR each, merged in order, never stacked. Each carries its tests and its
 docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
 `package.json`'s explicit test list.
 
-1. **The app object, the build, the first host.**
+1. **The app object, the build, the first host.** **BUILT** (2026-10-21)
+   as three PRs, never stacked: stakwork/strut#246 the kit (1a: the vendor
+   layer and import map, the base stylesheet, the bootstrap over ext-apps,
+   `StrutClient`, the run hooks), #248 the app object and the build (1b:
+   `treeHash`, the manifest, `build.ts` with the resolver and the §3.4
+   import rule, the store pointers on both backends with files under
+   `dataDir`, the `app/*` steps, the `/apps` routes with the `app:` file
+   token scope — and a kit fix: the CJS vendor entries now export their
+   names through an ESM facade), #250 the backend and the hosts (1c:
+   `step_run` on both MCP doors, the `run/*` steps, `ctx.app`, kept writes
+   and `app/report-error`, strut's UI as a host over `/mcp`, the builder's
+   `app/*` tools and editor, the `builder` seed delta, `App.md`). The
+   by-hand check of §14 ran as written, in #250's body: the chat built a
+   benchmark app for a scratch workflow in one turn; a launch from the page
+   produced an `origin: "app"` run with the chip on its row; the app
+   crashed on an in-flight run and the crash came back as a kept
+   `app/report-error` run the builder read and fixed into v2, the frame
+   reloading on publish; a message typed in the app reached the chat and
+   made v3; rollback worked; the same ask as a `builder` job built a second
+   app with no `bash` in its log, for $0.29. Two findings changed the plan:
+   the frame is `srcdoc` (§7.3), and the document was 2.4 MB (§2.5). What
+   the three PRs covered, as planned:
    - `WorkspaceStore` app methods on files and the graph: schemas, the
      Ladybug registry, conformance cases, the fs import.
    - `treeHash` in `src/version.ts`, the one hash for an app version and a
