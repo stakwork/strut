@@ -9,6 +9,7 @@ import type {
 } from "system-canvas";
 import { midnightTheme, resolveTheme } from "system-canvas";
 import { PALETTE, paletteKey } from "./step-colors";
+import { latestAttempt } from "./step-attempt";
 
 /**
  * Step data as returned by the API (serialized from the Flow object).
@@ -333,7 +334,7 @@ function stepStatus(
   runEvents?: RunEventData[],
 ): string | undefined {
   if (!runEvents) return undefined;
-  const stepEvts = runEvents.filter((e) => e.path === stepPath);
+  const stepEvts = latestAttempt(runEvents, stepPath);
   if (stepEvts.length === 0) return "pending";
   const hasError = stepEvts.some((e) => e.type === "step.error");
   const hasEnd = stepEvts.some((e) => e.type === "step.end");

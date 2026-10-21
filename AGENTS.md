@@ -188,6 +188,7 @@ strut/
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── step-depends.ts # dependsForSave: what the step editor saves as `depends` — a checked list, `[]` when the step had an explicit `depends` and nothing is checked (a parallel step stays parallel; unchecking every dep means none), omitted when it never had one (still implicitly sequential)
+        ├── step-attempt.ts # latestAttempt: a step's events from its last `step.start` / `step.skipped` on — a resume continues the same log, so a re-run step's earlier `step.error` is still in it; the canvas status and the run flyout read only the latest attempt (pure; tested)
         ├── walk-graph.ts  # foldWalk: graph_walk's hop events → nodes/edges/current/next (pure; tested against the real walk)
         ├── run-overview.ts # foldRunOverview: a run's events → the run at a glance — status, duration, cost / model calls / tokens / tool calls (each `step.end`'s `withUsage` fields, an older log's agent / llm output), the failing step, and the TIMELINE rows: one per top-level step (a foreach's iterations folded in, ×N), under each what it started that a person opens — an agent, a sub-agent, an llm call, a child run (the launcher steps' `runId`) — with its span, cost and calls (pure; tested)
         ├── accessed-nodes.ts # foldAccessedNodes: a run's events → the graph nodes one step read or wrote (an agent's, through its tool calls), with the calls that touched each; type counts + filter (pure; tested)
