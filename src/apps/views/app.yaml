@@ -1,0 +1,10 @@
+title: strut views
+description: >-
+  Strut's own components, as an app other apps import (plans/apps.md §3.3):
+  import { RunTimeline, RunGraph, LaunchForm, … } from "strut/views". Its page
+  is the gallery, every component drawn over fixtures. A component that reads
+  or launches does it on the IMPORTING app's grants.
+icon: layout-grid
+grants:
+  workflows: []
+  steps: []

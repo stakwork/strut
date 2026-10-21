@@ -360,8 +360,10 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
   const rootOf = (file: string): Root | undefined => roots.filter((r) => inside(r.dir, file)).sort((a, b) => b.dir.length - a.dir.length)[0];
   const label = (r: Pick<Root, "name" | "version">) => (r.name ? `${r.name}${r.version ? `@${r.version}` : ""}` : "the app");
   const rel = (r: Root, abs: string) => `${r === main ? "" : `${label(r)}:`}${relative(r.dir, abs).split(sep).join("/")}`;
-  /** Vendor CSS the code imported, in first-import order (appended raw). */
-  const vendorCss: string[] = [];
+  /** Each import of a kit stylesheet, with its importer: appended raw when
+   *  the importer is in the document (a component the app does not use
+   *  brings no stylesheet). */
+  const vendorCssImports: Array<{ css: string; importer: string }> = [];
   const installedCache = new Map<string, Promise<InstalledApp | null>>();
   const resolveInstalled = (name: string, version?: string) => {
     const key = `${name}@${version ?? ""}`;
@@ -378,6 +380,10 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
    *  declares — esbuild reads no package.json for a path a plugin hands it,
    *  and without the flag nothing an app leaves unused could be dropped (§2.5). */
   const vendorModule = (path: string): OnResolveResult => (kit.modules[path]?.pure ? { path, sideEffects: false } : { path });
+  /** A module of the app, or of an installed app it imports (§3.4) — which
+   *  is a library to the importer: side-effect free, so a component it does
+   *  not use is not in its document. */
+  const ownModule = (path: string, from: Root): OnResolveResult => (from !== main && !path.endsWith(".css") ? { path, sideEffects: false } : { path });
 
   /** The §3.4 rule: `name[@vN][/sub]`, the longest installed name first. */
   async function resolveApp(spec: string, from: Root): Promise<OnResolveResult | null> {
@@ -410,7 +416,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
       const sub = segs.slice(n).join("/");
       const file = await resolveFile(join(appRoot.dir, "src", sub || "index"));
       if (!file) return err(`"${spec}": the installed app ${label(appRoot)} has no src/${sub || "index.ts"}`);
-      return { path: file };
+      return ownModule(file, appRoot);
     }
     return null;
   }
@@ -442,17 +448,20 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
           }
           const file = await resolveFile(abs);
           if (!file) return err(`"${spec}" from ${rel(from, args.importer)}: no such file`);
-          return { path: file };
+          return ownModule(file, from);
         }
         if (spec.startsWith("@/")) {
           const own = await resolveFile(join(from.dir, "src", spec.slice(2)));
-          if (own) return { path: own };
+          if (own) return ownModule(own, from);
           const kitFile = kit.imports[spec];
           if (kitFile) return vendorModule(kitFile);
           return err(`"${spec}" is neither in ${label(from)}'s src/ nor in the kit (its @/ modules: @/components/ui/<name>, @/lib/utils, @/hooks/use-mobile)`);
         }
         const mapped = kit.imports[spec];
-        if (mapped) return vendorModule(mapped);
+        if (mapped) {
+          if (mapped.endsWith(".css")) vendorCssImports.push({ css: mapped, importer: args.importer });
+          return vendorModule(mapped);
+        }
         const app = await resolveApp(spec, from);
         if (app) return app;
         return err(notInKit(spec, kit, deps.installedApps ? await deps.installedApps() : []));
@@ -469,17 +478,14 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
       // A stylesheet: an app's own goes through the Tailwind compile (every
       // .css in the directory does — below), the kit's is appended raw; the
       // import itself becomes an empty module.
-      build.onLoad({ filter: /\.css$/ }, async (args) => {
-        if (inside(kit.vendorDir, args.path) && !vendorCss.includes(args.path)) vendorCss.push(args.path);
-        return { contents: "", loader: "js" };
-      });
+      build.onLoad({ filter: /\.css$/ }, () => ({ contents: "", loader: "js" }));
     },
   };
 
   const esbuild = await loadEsbuild();
   const entryRel = relative(root, entryAbs).split(sep).join("/");
   let js: string;
-  /** Every module the bundle holds, by absolute path. */
+  /** Every module the document holds, by absolute path. */
   const bundled = new Set<string>();
   try {
     const result = await esbuild.build({
@@ -515,7 +521,10 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
       logLevel: "silent",
     });
     js = result.outputFiles.find((f) => f.path.endsWith(".js"))?.text ?? "";
-    for (const input of Object.keys(result.metafile.inputs)) if (!input.includes(":") && input !== "<stdin>") bundled.add(resolve(root, input));
+    // What the document holds: the modules that put bytes in it, not every one visited.
+    for (const output of Object.values(result.metafile.outputs)) {
+      for (const [input, info] of Object.entries(output.inputs)) if (info.bytesInOutput > 0 && !input.includes(":") && input !== "<stdin>") bundled.add(resolve(root, input));
+    }
     // A warning inside the kit's modules is not the app author's to act on
     // (esbuild says nothing about code under a node_modules; the tree is not one).
     for (const w of result.warnings) if (!w.location || !inside(kit.vendorDir, resolve(root, w.location.file))) warnings.push(formatMessage(w, root));
@@ -559,6 +568,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     const compiler = await tw.compile(stylesheet, tailwindOptions(dirname(kit.baseCssPath)) as Parameters<typeof tw.compile>[1]);
     const candidates = await scanCandidates(tw, kit, stylesheet, sources);
     css = compiler.build(candidates);
+    const vendorCss = [...new Set(vendorCssImports.filter((i) => i.importer === "<stdin>" || bundled.has(i.importer)).map((i) => i.css))];
     for (const f of vendorCss) css += `\n${await readFile(f, "utf8")}`;
     css = (await esbuild.transform(css, { loader: "css", minify: true, legalComments: "none" })).code;
   } catch (e) {

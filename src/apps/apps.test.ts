@@ -235,7 +235,7 @@ describe("the /apps routes", () => {
 
   it("publish from a files map, read back, serve the document with its token, roll back, delete", async () => {
     const dataDir = fresh("http");
-    const strut = await createStrut({ workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit, scheduler: false, enableChat: false, serveUi: false });
+    const strut = await createStrut({ workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit, scheduler: false, enableChat: false, serveUi: false, views: false });
     const savedKey = process.env["STRUT_API_KEY"];
     try {
       const files: Record<string, string | { base64: string }> = {};
