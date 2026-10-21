@@ -1,23 +1,29 @@
 name: orchestrator
 # The orchestrator workflow — one turn of a long conversation with a person.
-# A host (Peel's agent contact, one day Hive's Jamie) launches it once per
-# message, with the conversation's `session`. ONE line between the two: the
-# agent answers from what already EXISTS — memory, the graph, earlier jobs, a
-# lookup (a workflow that returns an answer, here or on a peer) — inside the
-# turn, and anything that needs a WORKING DIRECTORY (files, a shell, git,
-# the web, a checkout to change) is a job: the `job` workflow, started
-# DETACHED (job/start, job/continue), several at once if need be. The
-# turn ends while a job works; the job's `run.end` goes to the callback this
-# turn was launched with. One conversation is one session, for good: the
-# agent step compacts it in place when it nears the window. Its system prompt
-# is the session's first turn's. It writes no files (no built-ins): its
-# `artifacts` point at jobs' deliverables or carry small inline content, in
-# job's reply shape. `dir` (job/dir with no job: the run's artifact folder)
-# is only the agent's cwd. Seeded at boot by
-# createStrut (src/orchestrator-seed.ts); `params.tools` and `params.system`
-# are the evolvable surface, and a host appends its own grants and prompt
-# section through `createStrut({ orchestrator })`. Every step here is strut's
-# own.
+# A host (Peel's agent contact, Hive's Jamie) launches it once per message,
+# with the conversation's `session`. The turn is the CONVERSATION; the work
+# is a JOB's. Inside the turn the agent answers from what is already known
+# — memory, the conversation, what earlier jobs delivered — asks the
+# question a request needs answered before anyone works on it, and may run
+# a LOOKUP (a workflow that returns an answer, here or on a peer; which
+# ones is the deployment's to grant) to orient: a lookup's answer is the
+# reply only when it is the whole answer, otherwise it is what a job's
+# brief starts from. Anything to be found out or made is the `job`
+# workflow's, started DETACHED (job/start, job/continue), several at once
+# if need be: the turn ends while a job works, and the job's `run.end`
+# goes to the callback this turn was launched with. The kinds of work a
+# job can do here — the `Job` Concept's children, which a deployment and
+# its workspace grow — close the system prompt (context/concept, the
+# kinds alone), so a turn routes a request by kind and names it in the
+# brief. One conversation is one session, for good: the agent step
+# compacts it in place when it nears the window. Its system prompt is the
+# session's first turn's. It writes no files (no built-ins): its
+# `artifacts` point at jobs' deliverables or carry small inline content,
+# in job's reply shape. `dir` (job/dir with no job: the run's artifact
+# folder) is only the agent's cwd. Seeded at boot by createStrut
+# (src/orchestrator-seed.ts); `params.tools` and `params.system` are the
+# evolvable surface, and a host appends its own grants and prompt section
+# through `createStrut({ orchestrator })`. Every step here is strut's own.
 # Sealed: the meta surface (a job's meta/run-workflow) never runs it or reads
 # its runs. Its tools are a host's private ones (a person's chats, sends as
 # them), which only the host's own launches may reach.
@@ -29,6 +35,20 @@ input:
 steps:
   - id: dir
     type: job/dir
+  # The kinds of work a JOB can do here: the `Job` Concept's children, name
+  # + description — the page's own docs left out, they are the job agent's
+  # instructions — rendered for the end of the system prompt, so a turn
+  # routes a request by kind and names it in the job's brief. The same tree
+  # the job agent reads; a deployment and its workspace grow it. Read every
+  # turn; the session keeps its first turn's prompt. Empty without a graph,
+  # the page, or any kind under it. No `tool`: this agent has no graph-get
+  # of its own (a host that grants one says so in its section).
+  - id: concepts
+    type: context/concept
+    config:
+      name: "{{ params.concept }}"
+      docs: false
+      tool: ""
   - id: turn
     type: agent
     config:
@@ -37,7 +57,10 @@ steps:
       cacheTtl: 1h
       model: "{{ params.model }}"
       maxSteps: "{{ params.maxSteps }}"
-      system: "{{ params.system }}"
+      # strut's prompt (with the host's section), then the kinds of job.
+      system: |-
+        {{ params.system }}
+        {{ concepts.text }}
       retain: "{{ params.retain }}"
       prompt: "{{ input.context?.line || '' }}{{ input.prompt }}"
       toolFilter: [none]
@@ -82,15 +105,20 @@ steps:
 params:
   model: claude-sonnet-5-5
   maxSteps: 50
+  # The Concept whose children (the kinds of work a job can do here) close
+  # the system prompt: strut seeds `Job` (src/concepts/Job.md), and each
+  # deployment grows the tree under it — the one the job agent reads.
+  concept: Job
   # THE evolvable surface: registry steps granted to the agent as tools. It
   # has no built-ins (toolFilter: [none]): no bash, no files, no web — work
   # that needs them is a job's. Memory; the job launchers (detached: the
   # turn ends while the job works); the job/* reads, to find a job to
   # continue or point the person to what one delivered; strut/list-peers +
   # strut/run-workflow, a workflow on a PEER strut (plans/federation.md
-  # §2.2), to ask another workspace inside the turn. A host appends its
-  # own (`createStrut({ orchestrator: { tools } })`): Peel adds sphinx/*,
-  # calendar/* and its automation steps.
+  # §2.2) — a lookup on another workspace inside the turn. A host appends
+  # its own (`createStrut({ orchestrator: { tools } })`): its lookups (a
+  # graph explorer, a logs reader), Peel's sphinx/*, calendar/* and its
+  # automation steps.
   tools:
     - memory/remember
     - memory/recall
@@ -117,21 +145,38 @@ params:
     You are a person's assistant, in one long conversation with them. Each
     turn you get one message; you remember the conversation before it.
 
-    One line divides your work. You answer from what already EXISTS, inside
-    the turn: what you remember (memory/recall, memory/get; memory/remember
-    keeps something new), earlier work (job/list, job/get, job/read), and
-    lookups — a workflow that returns an answer, here or on a peer.
-    Anything that needs a WORKING DIRECTORY is a job's: files to write or
-    deliver, a shell, git or gh (a pull request, a branch, a diff,
-    commits), the web, a checkout to read at a ref or to change. When in
-    doubt, it is a job's; never answer from a guess.
+    Your turn is the conversation; the work is a JOB's. Inside the turn
+    you answer from what is already KNOWN: what you remember
+    (memory/recall, memory/get; memory/remember keeps something new), what
+    the person has said, and what earlier jobs delivered (job/list,
+    job/get, job/read). You ASK when a request needs a decision or a
+    detail before anyone works on it — one question, in `ask`, before
+    starting anything. Anything that has to be FOUND OUT or MADE —
+    searched for, read, run, written, checked — is a job's, however small
+    it looks: start one, and never answer from a guess.
 
-    Start a JOB (job/start) for that work, however small. Give it everything
-    it needs in its prompt, since it does not see this conversation —
-    links, names, the peer that holds the code when you know it — and a
-    short title. Several jobs may run at once. Never wait on a job: tell
-    the person in a line what you started and end your turn. Its result
-    (a reply, files, or a question) reaches the person when it ends.
+    A LOOKUP is a workflow that returns an answer, run inside the turn —
+    here, or on a peer (strut/run-workflow). Which lookups you have, if
+    any, this deployment says below. Use them to ORIENT: which workspace
+    or repository holds the code, what a thing is called, whether
+    something exists, what a job's brief should say. A lookup's answer is
+    your reply only when it is the whole answer; a thin, partial or
+    uncertain one is what the job starts from, never what the person
+    gets.
+
+    The kinds of work a job can do here are listed at the end of this
+    prompt, from the workspace's knowledge graph — each a name and a
+    line. When a request is one of them, name the kind in the job's
+    prompt. When none fits, or there is no list, a job still does the
+    work.
+
+    Start a JOB (job/start) with everything it needs in its prompt, since
+    it does not see this conversation — the request in full, links,
+    names, what a lookup found, the peer that holds the code when you
+    know it — and a short title. Several jobs may run at once. Never wait
+    on a job: tell the person in a line what you started and end your
+    turn. Its result (a reply, files, or a question) reaches the person
+    when it ends.
 
     To send a job its next message (the answer to its question, a change,
     "go on"), use job/continue with its job id; job/list finds a job by
@@ -141,14 +186,13 @@ params:
     Another strut is a PEER, named by its id (`@<id>` in a message).
     strut/list-peers lists them with what each holds (its repositories),
     and also names THIS workspace (`self`) and its repositories: code
-    there is here;
-    strut/run-workflow runs a lookup there inside the turn and returns its
-    output. A question about another workspace, or about code that is not
-    here, is asked THERE: list the peers when you do not know which holds
-    it, never answer from what you have here. A peer's lookups read a
+    there is here. A question about another workspace, or about code that
+    is not here, is asked THERE — a lookup on the peer, or a job told
+    which peer holds the code; list the peers when you do not know which,
+    never answer from what you have here. A peer's lookups read a
     repository's default branch alone; anything past that is a job's.
 
     Answer with `text`, your reply to the person. Point them to a job's
     deliverable in `artifacts`, by the `url` job/get gave it, never as a
-    path in `text`. If you cannot go on without a decision from the person,
-    put the question in `ask`.
+    path in `text`. If you cannot go on without a decision from the
+    person, put the question in `ask`.
