@@ -106,7 +106,7 @@ function wrapInts(schema: NodeSchema, map: Record<string, unknown>): Record<stri
   for (const [k, v] of Object.entries(map)) {
     const t = schema.attributes[k];
     const base = t ? (t.startsWith("?") ? t.slice(1) : t) : undefined;
-    out[k] = typeof v === "number" && (k === "date_added_to_graph" || base === "int" || base === "datetime") ? int(v) : v;
+    out[k] = typeof v === "number" && (k === "date_added_to_graph" || k === "updated_at" || base === "int" || base === "datetime") ? int(v) : v;
   }
   return out;
 }
@@ -144,22 +144,34 @@ class Neo4jNodes implements NodeEngine {
     const rows = await tx.run(
       `UNWIND $rows AS row
        OPTIONAL MATCH (prior:${q(type)} {node_key: row.node_key, namespace: $ns})
-       WITH row, prior IS NOT NULL AND NOT ${NODE_LIVE("prior")} AS restore
+       WITH row, prior IS NOT NULL AND NOT ${NODE_LIVE("prior")} AS restore,
+            prior IS NOT NULL AND coalesce(all(k IN keys(row.attrs) WHERE prior[k] = row.attrs[k]), false) AS same
        MERGE (node:${labels} {node_key: row.node_key, namespace: $ns})
        ON CREATE SET node += row.on_create
        ON MATCH SET
          node += CASE WHEN $mode = 'upsert' OR restore THEN row.on_match ELSE {} END,
+         node.updated_at = CASE WHEN restore OR ($mode = 'upsert' AND NOT same) THEN row.stamp ELSE node.updated_at END,
          node.deleted_at = CASE WHEN restore THEN null ELSE node.deleted_at END,
          node.is_deleted = CASE WHEN restore THEN null ELSE node.is_deleted END
        RETURN row.node_key AS node_key, node.ref_id AS ref_id, node.ref_id = row.on_create.ref_id AS created`,
       {
         rows: nodes.map((n) => {
+          // The system stamp rides beside the payload: it moves on a restore,
+          // or when an upsert changes an attribute (`attrs`; Data_Bank and the
+          // vectors follow from them).
           const onMatch: Record<string, unknown> = {};
-          for (const [k, v] of Object.entries(n.props)) if (!PRESERVED.has(k)) onMatch[k] = v;
+          const attrs: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(n.props)) {
+            if (PRESERVED.has(k) || k === "updated_at") continue;
+            onMatch[k] = v;
+            if (k in schema.attributes) attrs[k] = v;
+          }
           return {
             node_key: n.node_key,
-            on_create: wrapInts(schema, { ...n.props, ref_id: n.ref_id, node_key: n.node_key, namespace, date_added_to_graph: Date.now() }),
+            stamp: int(n.props["updated_at"] as number),
+            on_create: wrapInts(schema, { ...n.props, ref_id: n.ref_id, node_key: n.node_key, namespace }),
             on_match: wrapInts(schema, onMatch),
+            attrs: wrapInts(schema, attrs),
           };
         }),
         ns: namespace,

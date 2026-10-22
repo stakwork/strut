@@ -280,3 +280,16 @@ export interface GraphEngine {
 /** What the writers, resolver and seeds take: an engine, or a bare `Bolt`
  *  (the Neo4j engine over it — `asEngine` in `neo4j-engine.ts`). */
 export type EngineLike = GraphEngine | Bolt;
+
+/** A stored attribute value against the writer's, for whether a write changes
+ *  the node (`updated_at`): scalars by value (bigint / number alike), lists
+ *  elementwise; null, absent and "" are all no value, as the writer drops "". */
+export function sameStored(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => sameStored(x, b[i]));
+  }
+  const none = (v: unknown) => v === null || v === undefined || v === "";
+  if (none(a) || none(b)) return none(a) && none(b);
+  return String(a) === String(b);
+}

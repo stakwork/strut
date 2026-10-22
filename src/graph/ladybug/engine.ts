@@ -44,6 +44,7 @@ import type {
   WriteMode,
   WriteOutcome,
 } from "../engine.js";
+import { sameStored } from "../engine.js";
 import { GraphValidationError } from "../node-writer.js";
 import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
@@ -131,7 +132,6 @@ class LadybugNodes implements NodeEngine {
       { keys: nodes.map((n) => n.node_key), type: schema.type },
     );
     const hits = new Map(found.map((r) => [String(r["node_key"]), { ref_id: String(r["ref_id"]), deleted: r["deleted"] === true }]));
-    const now = Date.now();
 
     const misses = nodes.filter((n) => !hits.has(n.node_key));
     if (misses.length) {
@@ -140,7 +140,6 @@ class LadybugNodes implements NodeEngine {
         node_key: n.node_key,
         namespace,
         node_type: schema.type,
-        date_added_to_graph: now,
         ...this.columns(schema, n.props),
       }));
       // One row shape for the batch; a column null on every row is left out.
@@ -154,6 +153,7 @@ class LadybugNodes implements NodeEngine {
       const hit = hits.get(n.node_key);
       if (!hit || (mode !== "upsert" && !hit.deleted)) continue;
       const set = this.columns(schema, n.props);
+      if (!hit.deleted && !(await this.changed(tx, schema, hit.ref_id, set))) delete set["updated_at"]; // a resync that changes nothing keeps its stamp
       const params: Params = { ref_id: hit.ref_id };
       const assigns: string[] = [];
       let i = 0;
@@ -175,6 +175,14 @@ class LadybugNodes implements NodeEngine {
       else outcome = "existing";
       return { ref_id: hit?.ref_id ?? n.ref_id, node_key: n.node_key, outcome };
     });
+  }
+
+  /** Would writing `set` over the stored row change an attribute? Data_Bank
+   *  and the vectors follow from the attributes. */
+  private async changed(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>): Promise<boolean> {
+    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id}) RETURN n`, { ref_id });
+    const stored = (rows[0]?.["n"] ?? {}) as Record<string, unknown>;
+    return Object.entries(set).some(([k, v]) => k in schema.attributes && k !== "updated_at" && !sameStored(stored[k], v));
   }
 
   async readRaw(tx: GraphTx, ref_id: string): Promise<RawNode | null> {
