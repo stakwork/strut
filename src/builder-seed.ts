@@ -8,7 +8,8 @@ import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
  * content-hash publish, `source: "seed"`, always the committed template,
  * one seeder per name). One turn of a WORKFLOW BUILD, as a job: `job/dir` →
  * `context/concept` on `Workflow Builder` → `agent` on the job's session
- * with the `meta/*` authoring twins and the `app/*` steps as its tools and
+ * with the `meta/*` authoring twins, the `app/*` steps and `git/checkout` (a
+ * repository to learn from, into the job's directory) as its tools and
  * the web tools plus the EDITOR family (view, create, str_replace, insert;
  * a tree listing; a grep — plans/apps.md §8, never bash) as its built-ins
  * → `pack` in the job's reply shape. A workflow lives on one strut, so a
@@ -49,7 +50,7 @@ export const BUILDER_DESCRIPTION =
   "Launch it with `job` on the launch — POST /workflows/builder/run { job, input: { prompt }, callback } — and the same job again to go on with the same build. " +
   "Input: { prompt, workspace? (this strut's workspace slug), session? (the thread: the job id unless given), peer? (a peer's id: the build happens on THAT strut's builder, under this job id — this run waits on it) }. " +
   "Output: { text, artifacts, ask?: { message }, cost, session, peer? }, job's shape. " +
-  "Open to peers (`peer: true`): another strut launches it as published. params.tools (meta/*, app/*, the graph reads, job/list, get, read), params.builtins (the web tools, the editor family) and params.system are the evolvable surface; the host adds its own through createStrut({ builder }).";
+  "Open to peers (`peer: true`): another strut launches it as published. params.tools (meta/*, app/*, the graph reads, job/list, get, read, git/checkout — a repository to learn from, checked out into the job's directory), params.builtins (the web tools, the editor family) and params.system are the evolvable surface; the host adds its own through createStrut({ builder }).";
 
 const BUILDER_YAML = new URL("./workflows/builder.yaml", import.meta.url);
 

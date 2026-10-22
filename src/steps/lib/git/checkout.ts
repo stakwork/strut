@@ -119,7 +119,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        'KEEP the working copy in this JOB\'s directory (<dataDir>/jobs/<name>/<repo>; usually "{{ $job }}", the job the run was launched with): it is not removed when the run ends, and the next run that names it gets the same path exactly as it was left (output `reused: true`; `ref` only applies when the copy is created, `sha` is its current HEAD). One run at a time per job (a second fails with `job_busy:`). Names are GLOBAL, like session ids; letters, digits and ". _ -" in `/`-separated segments. A job idle for STRUT_WORKDIR_TTL_DAYS (default 7) loses its repositories, not its other files — the next run starts from a fresh copy (`reused: false`). Omit for a fresh copy per run.',
+        'KEEP the working copy in this JOB\'s directory (<dataDir>/jobs/<name>/<repo>; usually "{{ $job }}", the job the run was launched with — an agent calling this as a tool passes its job id itself): it is not removed when the run ends, and the next run that names it gets the same path exactly as it was left (output `reused: true`; `ref` only applies when the copy is created, `sha` is its current HEAD). One run at a time per job (a second fails with `job_busy:`). Names are GLOBAL, like session ids; letters, digits and ". _ -" in `/`-separated segments. A job idle for STRUT_WORKDIR_TTL_DAYS (default 7) loses its repositories, not its other files — the next run starts from a fresh copy (`reused: false`). Omit for a fresh copy per run.',
       ),
     timeoutMs: z.number().int().positive().default(600_000).describe("per git command (default 10 min)"),
   }),

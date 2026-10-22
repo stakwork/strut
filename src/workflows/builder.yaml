@@ -3,8 +3,8 @@ name: builder
 # BUILD, as a job: the orchestrator's door to authoring (what hive's
 # dispatch_strut did by calling the builder chat), launched with `job` on
 # the launch like `job` and continued by the same job id. job/dir hands the
-# agent the job's directory (it writes nothing there itself — no shell, no
-# file tools — but a child run it starts under the job may leave files),
+# agent the job's directory (no shell: it writes there with the editor — an
+# app's files — and git/checkout puts a repository there to read from),
 # context/concept puts the `Workflow Builder` page — what THIS workspace
 # builds and each kind's convention — at the end of its prompt, the agent
 # authors through the meta/* twins (the chat builder's tools as registry
@@ -79,7 +79,7 @@ steps:
       system: |-
         {{ params.system }}
         {{ concepts.text }}
-      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ input.prompt }}"
+      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ input.prompt }}"
       # The web tools (API documentation while authoring) and the EDITOR
       # family — view, create, str_replace, insert on the job's directory,
       # a tree listing, a grep — for an app's files (plans/apps.md §8). No
@@ -183,6 +183,11 @@ params:
     # build and publish a front-end project over workflows — the editor
     # writes its files in the job's directory.
     - app/*
+    # Code to learn from — a UI to port, a client to copy: a repository
+    # checked out INTO the job's directory (`workdir` = the job id, which
+    # the prompt names), where the editor family reads it. A copy without
+    # `workdir` lands in the run's own directory, out of the editor's reach.
+    - git/checkout
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. None by default; a deployment
@@ -203,7 +208,9 @@ params:
     you remember the turns before it. You have no shell: a workflow or a
     step is published through your tools, an app is a directory you write
     with the editor in the job's directory, and everything you learn comes
-    back as a tool result.
+    back as a tool result. To learn from code in a repository, check it out
+    with git/checkout, `workdir` your job id: it lands in your directory,
+    where the editor reads it.
 
     <<strut: the builder's rules>>
 
