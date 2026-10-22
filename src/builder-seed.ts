@@ -1,6 +1,7 @@
 import type { WorkspaceStore } from "./workspace.js";
 import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
 import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
+import type { BuilderReach } from "./reach.js";
 
 /**
  * The `builder` workflow — the third workflow strut ships (plans/builder-job.md),
@@ -39,7 +40,11 @@ import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
  * model, peer } })` — the same delta `job` takes — and the bundled server
  * reads it from the file `STRUT_HOST_CONFIG` names (src/server.ts).
  */
-export type BuilderSeedOptions = JobSeedOptions;
+export type BuilderSeedOptions = JobSeedOptions & {
+  /** Not part of the template: what the meta surface may publish and what
+   *  the code it publishes may read (src/reach.ts). */
+  reach?: BuilderReach;
+};
 
 export const BUILDER_WORKFLOW = "builder";
 export const BUILDER_CATEGORY = "job";

@@ -57,13 +57,21 @@ export interface FlowClosure {
   resolvable: boolean;
 }
 
-export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: SubflowResolver): Promise<FlowClosure> {
+/** `onStep` sees every step the closure walks, the children's included —
+ *  for a reader that needs more than the types (src/reach.ts: the secret
+ *  names in a step's config). */
+export async function flowClosure(
+  flow: Pick<Flow, "steps">,
+  workspace?: SubflowResolver,
+  onStep?: (step: Step) => void,
+): Promise<FlowClosure> {
   const out: FlowClosure = { types: new Set(), agentTools: new Set(), workflows: [], resolvable: true };
   const seen = new Set<string>();
 
   const visitFlow = async (steps: readonly Step[]): Promise<void> => {
     const children: FlowClosure["workflows"] = [];
     walkSteps(steps, (s) => {
+      onStep?.(s);
       out.types.add(baseType(s.type));
       const cfg = (s.config ?? {}) as Record<string, unknown>;
       const tools = cfg["agentTools"];

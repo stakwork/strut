@@ -9,7 +9,7 @@
 // built by scanning steps/) — no graph at all. STRUT_HOST_CONFIG names a
 // JSON file with the host's delta for the workflows strut ships —
 // `{ job?, orchestrator?, builder? }`, each `{ tools?, system? }` as createStrut
-// takes it (`builder` also `peer: false`), and `automation?: { workflow,
+// takes it (`builder` also `peer: false` and `reach`), and `automation?: { workflow,
 // approve?, grants? }` for the automation/* steps —
 // for a host that runs this server rather than embedding createStrut (Peel
 // writes it at launch).
@@ -29,6 +29,7 @@ import { FileChatStore } from "./chat-store.js";
 import { FileSecretStore } from "./secret-store.js";
 import { workspaceBackendFromEnv } from "./graph/wiring.js";
 import { bootEnv, scrubProcessEnv, scrubRequested } from "./env.js";
+import type { BuilderReach } from "./reach.js";
 
 let strutInstance: Strut | null = null;
 
@@ -62,7 +63,9 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
     ) {
       throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }`);
     }
+    const reach = key === "builder" ? reachFromConfig((delta ?? {}) as Record<string, unknown>, file) : undefined;
     out[key] = {
+      ...(reach ? { reach } : {}),
       ...(tools ? { tools: tools as string[] } : {}),
       ...(approve ? { approve: approve as string[] } : {}),
       ...(system !== undefined ? { system: system as string } : {}),
@@ -87,6 +90,24 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
     };
   }
   return out;
+}
+
+/** `builder.reach` (src/reach.ts): `{ tools?, builtins?, secrets? }`, each a
+ *  string list. A malformed one fails the boot, as any bad delta does —
+ *  read as "no reach" it would lift the limit it was written to set. */
+function reachFromConfig(builder: Record<string, unknown>, file: string): BuilderReach | undefined {
+  const reach = builder["reach"];
+  if (reach === undefined) return undefined;
+  const lists = ["tools", "builtins", "secrets"] as const;
+  const ok =
+    !!reach && typeof reach === "object" && !Array.isArray(reach) &&
+    Object.keys(reach).every((k) => (lists as readonly string[]).includes(k)) &&
+    lists.every((k) => {
+      const v = (reach as Record<string, unknown>)[k];
+      return v === undefined || (Array.isArray(v) && v.every((t) => typeof t === "string"));
+    });
+  if (!ok) throw new Error(`STRUT_HOST_CONFIG: ${file}: "builder.reach" must be { tools?: string[], builtins?: string[], secrets?: string[] }`);
+  return reach as BuilderReach;
 }
 
 /** Lazily build the default Strut instance. Kept lazy so importing this

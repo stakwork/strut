@@ -8,6 +8,7 @@ import { runWorkflow } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { isSealedStep, sealedInClosure } from "./sealed.js";
+import { reachRefusal, stepInReach, type BuilderReach } from "./reach.js";
 import {
   mergeClaimSpecs,
   toSubjectRef,
@@ -562,6 +563,12 @@ export interface AuthoringDeps extends StepPublishDeps {
   claims?: ClaimsAuthoring | null;
   /** The verify pass, wherever `claims` is. */
   verifier?: import("./verify.js").Verifier | null;
+  /** The host's `builder.reach` (src/reach.ts): a publish outside it is
+   *  refused. Absent: no limit beyond the sealed gate. */
+  reach?: BuilderReach;
+  /** Was this step type published by the meta surface? (In reach whatever
+   *  `reach.tools` says: it runs under the secret scope.) */
+  aiStep?: (type: string) => boolean;
 }
 
 export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapability {
@@ -685,6 +692,11 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
         return { error: (e as Error).message };
       }
       if (isSealedStep(baseType(type), registry)) return { error: sealedStep(type, "run it") };
+      // With a reach, a test run is held to it as a publish is: the model
+      // wrote the config (src/reach.ts).
+      if (deps.reach && !stepInReach(baseType(type), deps.reach, deps.aiStep ?? (() => false))) {
+        return { error: `Nothing was run — "${type}" is outside what this strut lets the AI run (builder.reach).` };
+      }
       if (args.cassette && !deps.dataDir) {
         return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
       }
@@ -698,6 +710,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           params: coerceJsonArg(args.params) as Record<string, unknown> | undefined,
           workspace,
           keep: args.keep === true,
+          ...(deps.reach ? { aiAuthored: true } : {}),
           ...(args.cassette
             ? {
                 cassette: {
@@ -771,6 +784,10 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       const reached = sealedInClosure(await flowClosure(candidate, workspace), await deps.getRegistry());
       if (reached) {
         return { error: `Nothing was published — "${name}" reaches a sealed ${reached}: a candidate may never run, subflow, or grant a grader (EVOLVE_SPEC §6).` };
+      }
+      if (deps.reach) {
+        const outside = await reachRefusal(candidate, deps.reach, await deps.getRegistry(), deps.aiStep ?? (() => false), workspace);
+        if (outside) return { error: `Nothing was published — "${name}": ${outside}.` };
       }
       try {
         const result = await workspace.publishWorkflowByContent(
