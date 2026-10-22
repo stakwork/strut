@@ -91,6 +91,11 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal((yaml.load(await orchestratorWorkflowYaml()) as { sealed?: boolean }).sealed, true);
   });
 
+  it("is open to another strut only through a person's credential (`peer: person`); a host's delta may close it", async () => {
+    assert.equal((yaml.load(await orchestratorWorkflowYaml()) as { peer?: unknown }).peer, "person");
+    assert.ok(!("peer" in (yaml.load(await orchestratorWorkflowYaml({ peer: false })) as object)));
+  });
+
   it("the host's delta may name the model, or none (null), so the turn runs on the connected model", async () => {
     assert.equal(paramsOf(await orchestratorWorkflowYaml({ model: "openai/gpt-5" })).model, "openai/gpt-5");
     assert.ok(!("model" in paramsOf(await orchestratorWorkflowYaml({ model: null }))));

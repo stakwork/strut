@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, RunAttachment, StepRegistry, RunEvent, RunResult } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -33,7 +33,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, jobAppIdentity, fileTokenScope, scopePath, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, jobAppIdentity, fileTokenScope, scopePath, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -870,9 +870,12 @@ export async function createStrut<TServices = unknown>(
   // the workflow's owner (an automation has no actor, so the owner pays).
   const resolveActor = opts.resolveActor ?? actorFromHeader;
   // And what it may do: a `peer` (another strut) reads, launches, and
-  // controls the runs a peer launched (plans/federation.md §3).
+  // controls the runs a peer launched (plans/federation.md §3); a
+  // `peer:person` (a person's credential through one) the same, and more
+  // (auth.ts `Scope`).
   const resolveScope = opts.resolveScope ?? scopeFromKey;
-  const isPeer = async (c: Context) => (await resolveScope(c)) === "peer";
+  const scopeOf = async (c: Context): Promise<Scope> => (await resolveScope(c)) ?? "full";
+  const isPeer = async (c: Context) => isPeerScope(await scopeOf(c));
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
     if (actor) return actor;
     return (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.owner;
@@ -1177,8 +1180,9 @@ export async function createStrut<TServices = unknown>(
   // served page can read.
   //
   // Past the credential, the SCOPE (plans/federation.md §3): a `peer` —
-  // another strut, holding `STRUT_PEER_KEY` or whatever the host's
-  // `resolveScope` maps (mcp's `lab:peer` JWT) — may read every route,
+  // another strut, holding `STRUT_PEER_KEY` or a person token (scope
+  // `peer:person`) or whatever the host's `resolveScope` maps (mcp's
+  // `lab:peer` JWT) — may read every route,
   // launch a run, and cancel / pause / resume one; the control routes then
   // refuse it a run no peer launched. Anything else is 403, a route a host
   // mounts later included. Launch is not narrowed by workflow: a workflow
@@ -1199,7 +1203,7 @@ export async function createStrut<TServices = unknown>(
       ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c)
       : path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE");
     if (open) return next();
-    if (!carriesApiKey(c) && !carriesPeerKey(c)) return unauthorized(c);
+    if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
     if (!read && !(c.req.method === "POST" && PEER_POST.test(path)) && (await isPeer(c))) {
       return c.json({ error: "forbidden: a peer may read, launch a run, and control a run a peer launched" }, 403);
     }
@@ -1295,7 +1299,7 @@ export async function createStrut<TServices = unknown>(
       params?: Record<string, unknown>;
       claims?: ClaimsBlock;
       sealed?: boolean;
-      peer?: boolean;
+      peer?: boolean | PeerOpen;
       yaml?: string;
       description?: string;
       category?: string;
@@ -1659,6 +1663,7 @@ export async function createStrut<TServices = unknown>(
         ...(p.version ? { version: p.version } : {}),
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
+        ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -1913,8 +1918,16 @@ export async function createStrut<TServices = unknown>(
     const prepared = await prepareDurableResume(name, runId, body);
     if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
     // A forced resume runs the ACTIVE version when none matches the run's:
-    // a peer resumes only into one that is open to peers.
-    if (!prepared.flow.peer && (await isPeer(c))) return c.json({ error: notForPeers(name) }, 403);
+    // a peer resumes only into one that is open to it. A run a person's
+    // credential launched opens that person's sessions, so only the same
+    // person's credential resumes it.
+    const scope = await scopeOf(c);
+    if (isPeerScope(scope)) {
+      if (!opensTo(prepared.flow.peer, scope)) return c.json({ error: notForPeers(name, prepared.flow.peer) }, 403);
+      if (prepared.runStart.peerPerson && (scope !== "peer:person" || (await resolveActor(c)) !== prepared.runStart.actor)) {
+        return c.json({ error: "forbidden: a person's credential launched this run — only the same person's resumes it" }, 403);
+      }
+    }
 
     // Re-check liveness after the awaits above: two concurrent resume
     // requests must not both launch onto the same log.
@@ -2088,7 +2101,7 @@ export async function createStrut<TServices = unknown>(
         ...(flow.params != null ? { params: flow.params } : {}),
         ...(flow.promotes != null ? { promotes: flow.promotes } : {}),
         ...(flow.sealed ? { sealed: true } : {}),
-        ...(flow.peer ? { peer: true } : {}),
+        ...(flow.peer ? { peer: flow.peer } : {}),
       });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
@@ -2121,7 +2134,7 @@ export async function createStrut<TServices = unknown>(
       params?: Record<string, unknown>;
       claims?: ClaimsBlock;
       sealed?: boolean;
-      peer?: boolean;
+      peer?: boolean | PeerOpen;
       yaml?: string;
       description?: string;
       source?: string;
@@ -2788,6 +2801,25 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/peers", async (c) => c.json({ peers: await peerRecords.list() }));
 
+  // A PERSON TOKEN (auth.ts "Person tokens"; plans/chained-orchestrators.md
+  // §4): what a person's own strut puts in its peer record for this one,
+  // so a request through it is `peer:person` — its actor the one named
+  // here, never a header. A `full` caller mints it (the gate keeps a peer
+  // off every POST but a launch); nothing is stored, and rotating the
+  // signing secret revokes every one.
+  app.post("/peers/tokens", async (c) => {
+    const body = await c.req.json<{ actor?: unknown; days?: unknown }>().catch(() => ({}) as { actor?: unknown; days?: unknown });
+    const actor = typeof body.actor === "string" ? body.actor.trim() : "";
+    if (!actor || actor.length > 120 || /[\r\n]/.test(actor)) {
+      return c.json({ error: "actor is required: a short string, the person the token stands for" }, 400);
+    }
+    const days = body.days ?? PERSON_TOKEN_DAYS;
+    if (typeof days !== "number" || !(days > 0) || days > 365) return c.json({ error: "days must be a positive number, at most 365" }, 400);
+    const minted = personToken(actor, days * 86_400_000);
+    if (!minted) return c.json({ error: "nothing to sign a person token with: set STRUT_API_KEY or STRUT_SECRET_KEY" }, 400);
+    return c.json({ token: minted.token, actor, exp: minted.exp });
+  });
+
   app.put("/peers/:id", async (c) => {
     const id = c.req.param("id");
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
@@ -3134,6 +3166,9 @@ export async function createStrut<TServices = unknown>(
       /** An automation's fire (plans/automations.md §3), a peer's launch
        *  (plans/federation.md §3), or an app's (plans/apps.md §5). */
       origin?: "schedule" | "peer" | "app";
+      /** A peer's launch through a PERSON's credential (scope
+       *  `peer:person`): the run may open its actor's own sessions. */
+      peerPerson?: boolean;
       automation?: { id: string };
       /** The app the run is launched for (`run/launch` under `ctx.app`):
        *  recorded with `origin: "app"`, handed to every step as `ctx.app`. */
@@ -3204,6 +3239,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
         ...(extra?.origin ? { origin: extra.origin } : {}),
+        ...(extra?.origin === "peer" && extra.peerPerson ? { peerPerson: true } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
         ...(extra?.app ? { app: extra.app } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
@@ -3415,14 +3451,21 @@ export async function createStrut<TServices = unknown>(
    *  hand a workflow's agents tools its author never gave them — and its
    *  `job` is kept under `PEER_NAMESPACE`, so a name a peer chooses never
    *  opens a local job's directory, files or holds. The body to launch, or
-   *  why not. Which workflows a peer may launch is `peer: true` (`notForPeers`). */
+   *  why not. Which workflows a peer may launch is their YAML's `peer:`
+   *  (`opensTo`, `notForPeers`). */
   const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
     const set = (["params", "paramOverrides", "runId"] as const).filter((k) => body[k] != null);
     if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
     return typeof body.job === "string" ? { ...body, job: `${PEER_NAMESPACE}${body.job}` } : body;
   };
-  const notForPeers = (name: string) =>
-    `forbidden: workflow "${name}" is not open to peers — its YAML does not say \`peer: true\``;
+  /** May a peer request of `scope` launch a workflow whose YAML says
+   *  `peer: <open>`? `true` takes any peer; `person` only a credential that
+   *  names a person (plans/chained-orchestrators.md §2). */
+  const opensTo = (open: PeerOpen | undefined, scope: Scope) => open === true || (open === "person" && scope === "peer:person");
+  const notForPeers = (name: string, open?: PeerOpen) =>
+    open === "person"
+      ? `forbidden: workflow "${name}" is open to a person's credential only — its YAML says \`peer: person\`, and this request names its actor by header, not by its credential`
+      : `forbidden: workflow "${name}" is not open to peers — its YAML does not say \`peer: true\``;
 
   /** Whether the file behind a strut-relative artifact url is here: a job's
    *  file on disk, a run's through the artifacts capability (whatever
@@ -3590,7 +3633,7 @@ export async function createStrut<TServices = unknown>(
         ...(flow.inputBlock != null ? { input: flow.inputBlock as Record<string, unknown> } : {}),
         ...(flow.params != null ? { params: flow.params } : {}),
         ...(flow.sealed ? { sealed: true as const } : {}),
-        ...(flow.peer ? { peer: true as const } : {}),
+        ...(flow.peer ? { peer: flow.peer } : {}),
       };
     },
     async files(q) {
@@ -3720,7 +3763,8 @@ export async function createStrut<TServices = unknown>(
   // 202 carries `callback: true` — the host's proof this server honors it.
   app.post("/workflows/:name/run", async (c) => {
     const name = c.req.param("name");
-    const peer = await isPeer(c);
+    const scope = await scopeOf(c);
+    const peer = isPeerScope(scope);
     let body = await c.req.json<RunBody>();
     if (peer) {
       const launch = peerLaunchBody(body);
@@ -3746,12 +3790,13 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-    if (peer && !flow.peer) return c.json({ error: notForPeers(name) }, 403);
+    if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(name, flow.peer) }, 403);
     // On file before the run starts, so its first update finds it.
     if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       actor: await resolveActor(c),
       ...(peer ? { origin: "peer" as const } : {}),
+      ...(scope === "peer:person" ? { peerPerson: true } : {}),
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),
@@ -3771,7 +3816,8 @@ export async function createStrut<TServices = unknown>(
 
   app.post("/workflows/:name/:version/run", async (c) => {
     const { name, version } = c.req.param();
-    const peer = await isPeer(c);
+    const scope = await scopeOf(c);
+    const peer = isPeerScope(scope);
     let body = await c.req.json<RunBody>();
     if (peer) {
       const launch = peerLaunchBody(body);
@@ -3799,13 +3845,14 @@ export async function createStrut<TServices = unknown>(
     }
     // The version launched must say it, not the active one: an older
     // version is not open to peers because a newer one is.
-    if (peer && !flow.peer) return c.json({ error: notForPeers(`${name}@${version}`) }, 403);
+    if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(`${name}@${version}`, flow.peer) }, 403);
     // On file before the run starts, so its first update finds it.
     if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       version,
       actor: await resolveActor(c),
       ...(peer ? { origin: "peer" as const } : {}),
+      ...(scope === "peer:person" ? { peerPerson: true } : {}),
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),

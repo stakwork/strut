@@ -61,6 +61,17 @@ export function peerScoped(id: string): string {
   return id.startsWith(PEER_NAMESPACE) ? id : `${PEER_NAMESPACE}${id}`;
 }
 
+/** Where a peer run's session `id` opens: under `PEER_NAMESPACE`, unless
+ *  the run was launched by a PERSON's credential (`person`: its actor,
+ *  scope `peer:person`) and the id is that person's own — `<person>` or
+ *  `<person>/…` — which opens as it is: the person's thread with this
+ *  strut, the one their host's launches use too
+ *  (plans/chained-orchestrators.md §2). */
+export function peerSessionId(id: string, person?: string): string {
+  if (person && (id === person || id.startsWith(`${person}/`))) return id;
+  return peerScoped(id);
+}
+
 /** The one directory (or file stem) an id is stored under: flat, so
  *  `abc/review` is a sibling of `abc`, never its child. */
 export function encodeId(id: string): string {

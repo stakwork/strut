@@ -25,7 +25,8 @@ import { idProblem } from "./session-store.js";
  * this one (plans/federation.md §3): it authenticates like the deployment
  * key, but the request it carries is `peer`-scoped (`scopeFromKey`) — the
  * gate in createStrut lets it read, launch a run, and control a run a peer
- * launched, nothing else.
+ * launched, nothing else. A PERSON TOKEN (`POST /peers/tokens`, "Person
+ * tokens" below) is the same key attenuated to one actor: `peer:person`.
  */
 
 const ENV_VAR = "STRUT_API_KEY";
@@ -88,12 +89,12 @@ export function unauthorized(c: Context) {
 
 /**
  * Hono middleware that gates a route on the deployment key — or, for a
- * read, the peer key (a peer may read every route). Permissive when
- * `STRUT_API_KEY` is unset.
+ * read, the peer key or a person token (a peer may read every route).
+ * Permissive when `STRUT_API_KEY` is unset.
  */
 export async function requireApiKey(c: Context, next: Next) {
   const read = c.req.method === "GET" || c.req.method === "HEAD";
-  if (!carriesApiKey(c) && !(read && carriesPeerKey(c))) return unauthorized(c);
+  if (!carriesApiKey(c) && !(read && (carriesPeerKey(c) || personOf(c) !== undefined))) return unauthorized(c);
   return next();
 }
 
@@ -123,13 +124,30 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
  * "peer"` on its `run.start`); every other route answers 403. Enforced by
  * the one gate in createStrut; a host decides it per request through
  * `createStrut({ resolveScope })`, as it decides the actor.
+ *
+ * `peer:person` (plans/chained-orchestrators.md §2): a peer request whose
+ * actor is its CREDENTIAL's own subject — a person token here, mcp's
+ * `lab:peer` JWT with a `sub` — never a header. A plain `peer`'s actor is
+ * `x-strut-actor`, which the calling strut sets to whoever its run is for,
+ * so any strut holding the key can name anyone. Everything a `peer` may do
+ * a `peer:person` may (`isPeerScope`), and more: launch a workflow that
+ * says `peer: person`, open its own actor's sessions (runner.ts
+ * `bindPeer`), and — once rooms land (§3) — join its actor's room.
  */
-export type Scope = "full" | "peer";
+export type Scope = "full" | "peer" | "peer:person";
 
-/** The default `resolveScope`: `peer` for a request that carries the peer
- *  key and not the deployment key, else `full`. */
+/** Is this a peer's request — a strut's, or a person's through one? */
+export function isPeerScope(scope: Scope | undefined): boolean {
+  return scope === "peer" || scope === "peer:person";
+}
+
+/** The default `resolveScope`: `full` for the deployment key (or its
+ *  session), else `peer:person` for a person token, `peer` for the peer
+ *  key, and `full` for the rest (dev mode). */
 export function scopeFromKey(c: Context): Scope {
-  return carriesPeerKey(c) && !(configuredKey() && carriesApiKey(c)) ? "peer" : "full";
+  if (configuredKey() && carriesApiKey(c)) return "full";
+  if (personOf(c)) return "peer:person";
+  return carriesPeerKey(c) ? "peer" : "full";
 }
 
 // ── File read tokens ─────────────────────────────────────────────────────
@@ -336,9 +354,12 @@ export function carriesBadFileToken(c: Context): boolean {
  * peer's launch names the person it is for (`strut/run-workflow` sends its
  * run's principal), never the machine. With neither key configured nothing
  * is honored — an unauthenticated caller must never pick who pays. A host
- * that authenticates requests itself (mcp's JWT) passes its own hook.
+ * that authenticates requests itself (mcp's JWT) passes its own hook. A
+ * person token names its actor itself, and no header changes that.
  */
 export function actorFromHeader(c: Context): string | undefined {
+  const person = personOf(c);
+  if (person) return person.actor;
   const keyed = configuredKey() && apiKeyMatches(c.req.header("authorization"), c.req.query("key"));
   // A session names its actor itself: who signed in, not a header the page
   // could set to anything.
@@ -397,29 +418,33 @@ export function sessionTtlMs(): number {
   return (Number.isFinite(h) && h > 0 ? h : DEFAULT_SESSION_HOURS) * 3_600_000;
 }
 
-function sign(payload: string, secret: string): string {
-  return createHmac("sha256", secret).update(`session:${payload}`).digest("base64url");
+/** A signed token's two kinds: a session cookie and a person token. The
+ *  kind is in the HMAC input, so one is never accepted as the other. */
+type ClaimsKind = "session" | "person";
+
+function sign(kind: ClaimsKind, payload: string, secret: string): string {
+  return createHmac("sha256", secret).update(`${kind}:${payload}`).digest("base64url");
 }
 
-/** The signed token for a session — `base64url(json).hmac` — or undefined
- *  with no secret to sign it. */
-export function sessionToken(session: Session): string | undefined {
+/** `base64url(json).hmac` over `claims` under the token secret, or
+ *  undefined with no secret to sign it. */
+function signClaims(kind: ClaimsKind, claims: Record<string, unknown>): string | undefined {
   const secret = tokenSecret();
   if (!secret) return undefined;
-  const payload = Buffer.from(JSON.stringify({ ...(session.actor ? { actor: session.actor } : {}), exp: session.exp })).toString("base64url");
-  return `${payload}.${sign(payload, secret)}`;
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  return `${payload}.${sign(kind, payload, secret)}`;
 }
 
-/** The session a token names, if the signature holds and it has not
- *  expired; undefined otherwise (and always with no secret). */
-export function verifySessionToken(token: string, now = Date.now()): Session | undefined {
+/** The claims a signed token holds, if the signature holds and its `exp`
+ *  has not passed; undefined otherwise (and always with no secret). */
+function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number; actor?: unknown } | undefined {
   const secret = tokenSecret();
   if (!secret) return undefined;
   const dot = token.indexOf(".");
   if (dot <= 0) return undefined;
   const payload = token.slice(0, dot);
   const got = token.slice(dot + 1);
-  const expected = sign(payload, secret);
+  const expected = sign(kind, payload, secret);
   if (expected.length !== got.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return undefined;
   let parsed: unknown;
   try {
@@ -430,6 +455,21 @@ export function verifySessionToken(token: string, now = Date.now()): Session | u
   if (!parsed || typeof parsed !== "object") return undefined;
   const { actor, exp } = parsed as { actor?: unknown; exp?: unknown };
   if (typeof exp !== "number" || !(exp > now)) return undefined;
+  return { actor, exp };
+}
+
+/** The signed token for a session — `base64url(json).hmac` — or undefined
+ *  with no secret to sign it. */
+export function sessionToken(session: Session): string | undefined {
+  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp });
+}
+
+/** The session a token names, if the signature holds and it has not
+ *  expired; undefined otherwise (and always with no secret). */
+export function verifySessionToken(token: string, now = Date.now()): Session | undefined {
+  const claims = readClaims("session", token, now);
+  if (!claims) return undefined;
+  const { actor, exp } = claims;
   if (actor !== undefined && typeof actor !== "string") return undefined;
   return actor ? { actor, exp } : { exp };
 }
@@ -488,6 +528,56 @@ export function sessionOf(c: Context): Session | undefined {
   if (c.req.header(UI_HEADER) === "1") return session;
   const read = c.req.method === "GET" || c.req.method === "HEAD";
   return read && !fileScopeOf(c.req.path) ? session : undefined;
+}
+
+// ── Person tokens ────────────────────────────────────────────────────────
+//
+// The peer key stands for a STRUT, and its request names a person only by
+// `x-strut-actor`, which the calling strut sets to whoever its run is for:
+// any strut holding the key can name anyone. A PERSON TOKEN is the peer key
+// attenuated to one actor (plans/chained-orchestrators.md §2, §4): its
+// request is `peer:person`, its actor is the one it was minted for, and no
+// header changes that. It is what a person's own strut (a laptop) holds in
+// its peer record for this one, the standalone twin of mcp's `lab:peer`
+// JWT with a `sub`. `POST /peers/tokens { actor, days? }` mints one (`full`
+// scope only). Signed like a session — `strut-person.<claims>.<hmac>` under
+// the file token's secret — and stateless like one: no store, and rotating
+// the secret revokes every one. Bearer only: a token a machine holds for
+// weeks never rides in a URL.
+
+const PERSON_PREFIX = "strut-person.";
+/** A person token's default life, mcp's `lab:peer` default. */
+export const PERSON_TOKEN_DAYS = 60;
+
+/** What a person token holds: the actor, and when it ends (ms). */
+export interface PersonToken {
+  actor: string;
+  exp: number;
+}
+
+/** A person token for `actor`, living `ttlMs` — or undefined with no
+ *  secret to sign it (dev mode with no `STRUT_SECRET_KEY`). */
+export function personToken(actor: string, ttlMs = PERSON_TOKEN_DAYS * 86_400_000): { token: string; exp: number } | undefined {
+  const exp = Date.now() + ttlMs;
+  const signed = signClaims("person", { actor, exp });
+  return signed ? { token: `${PERSON_PREFIX}${signed}`, exp } : undefined;
+}
+
+/** The person a token names, if it is one, its signature holds and it has
+ *  not expired; undefined otherwise. */
+export function verifyPersonToken(token: string, now = Date.now()): PersonToken | undefined {
+  if (!token.startsWith(PERSON_PREFIX)) return undefined;
+  const claims = readClaims("person", token.slice(PERSON_PREFIX.length), now);
+  if (!claims || typeof claims.actor !== "string" || !claims.actor) return undefined;
+  return { actor: claims.actor, exp: claims.exp };
+}
+
+/** The person token this request carries as `Authorization: Bearer`,
+ *  verified — never `?key=`. */
+export function personOf(c: Context): PersonToken | undefined {
+  const match = (c.req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim();
+  return token ? verifyPersonToken(token) : undefined;
 }
 
 /**

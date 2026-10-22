@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey } from "./auth.js";
+import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey } from "./auth.js";
 
 /**
  * Tests for the deployment-scoped shared-secret middleware.
@@ -217,6 +217,66 @@ describe("the peer key (plans/federation.md §3)", () => {
     // ...but a configured peer key still marks its request a peer's.
     process.env["STRUT_PEER_KEY"] = "peer";
     assert.deepEqual(await (await a.request("/r", as("peer", "alice-1"))).json(), { scope: "peer", actor: "alice-1" });
+  });
+});
+
+describe("person tokens (plans/chained-orchestrators.md §2, §4)", () => {
+  const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"], secret: process.env["STRUT_SECRET_KEY"] };
+  beforeEach(() => {
+    delete process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_PEER_KEY"];
+    delete process.env["STRUT_SECRET_KEY"];
+  });
+  afterEach(() => {
+    for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer], ["STRUT_SECRET_KEY", saved.secret]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const app = () => {
+    const a = new Hono();
+    const seen = (c: Context) => c.json({ scope: scopeFromKey(c), actor: actorFromHeader(c) ?? null });
+    a.get("/r", requireApiKey, seen);
+    a.post("/w", requireApiKey, seen);
+    return a;
+  };
+  const as = (key: string, actor?: string) => ({
+    headers: { authorization: `Bearer ${key}`, ...(actor ? { "x-strut-actor": actor } : {}) },
+  });
+
+  it("names its actor itself: `peer:person`, a peer's read and never its write, and no header changes who", async () => {
+    process.env["STRUT_API_KEY"] = "api";
+    process.env["STRUT_PEER_KEY"] = "peer";
+    const { token } = personToken("tom-1")!;
+    const a = app();
+    assert.deepEqual(await (await a.request("/r", as(token, "mallory-9"))).json(), { scope: "peer:person", actor: "tom-1" });
+    assert.equal((await a.request("/w", { method: "POST", ...as(token) })).status, 401);
+    // Bearer only: a token a machine holds for weeks never rides in a URL.
+    assert.equal((await a.request(`/r?key=${encodeURIComponent(token)}`)).status, 401);
+    // The peer key beside it is still a strut's.
+    assert.deepEqual(await (await a.request("/r", as("peer", "tom-1"))).json(), { scope: "peer", actor: "tom-1" });
+  });
+
+  it("forged, expired or under a rotated secret it is no token; a session's signature never makes one, nor one a session", () => {
+    process.env["STRUT_API_KEY"] = "api";
+    const { token, exp } = personToken("tom-1")!;
+    assert.deepEqual(verifyPersonToken(token), { actor: "tom-1", exp });
+    assert.equal(verifyPersonToken(token, exp + 1), undefined, "expired");
+    const [prefix, , mac] = token.split(".") as [string, string, string];
+    const claims = Buffer.from(JSON.stringify({ actor: "ann-2", exp })).toString("base64url");
+    assert.equal(verifyPersonToken(`${prefix}.${claims}.${mac}`), undefined, "another actor under tom's signature");
+    assert.equal(verifyPersonToken(`strut-person.${sessionToken({ actor: "tom-1", exp })!}`), undefined);
+    assert.equal(verifySessionToken(token.slice("strut-person.".length)), undefined);
+    process.env["STRUT_API_KEY"] = "rotated";
+    assert.equal(verifyPersonToken(token), undefined, "rotating the secret revokes every one");
+  });
+
+  it("signs under STRUT_SECRET_KEY behind a host's gate; with no secret there is nothing to mint", async () => {
+    assert.equal(personToken("tom-1"), undefined);
+    process.env["STRUT_SECRET_KEY"] = "s3cret";
+    const { token } = personToken("tom-1")!;
+    assert.deepEqual(await (await app().request("/r", as(token, "mallory-9"))).json(), { scope: "peer:person", actor: "tom-1" });
   });
 });
 

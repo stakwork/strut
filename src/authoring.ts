@@ -766,7 +766,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // Nor open itself to peers: what another strut may launch here is a
       // person's call (plans/federation.md §3), never an agent's in a run.
       if (candidate.peer) {
-        return { error: `Nothing was published — "${name}" declares \`peer: true\`. Only a person opens a workflow to other struts; drop the key.` };
+        return { error: `Nothing was published — "${name}" declares \`peer: ${candidate.peer}\`. Only a person opens a workflow to other struts; drop the key.` };
       }
       const reached = sealedInClosure(await flowClosure(candidate, workspace), await deps.getRegistry());
       if (reached) {

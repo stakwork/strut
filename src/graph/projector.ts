@@ -42,7 +42,7 @@
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatStore, StoredMessage } from "../chat-store.js";
-import { idProblem, peerScoped } from "../session-store.js";
+import { idProblem, peerSessionId } from "../session-store.js";
 import type { JobIndex, JobView } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
@@ -195,8 +195,10 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   const ends = new Map<string, RunEvent>();
   for (const e of events) if ((e.type === "step.end" || e.type === "step.error") && e.stepType === "agent") ends.set(keyOf(e), e);
   // A peer's run opened its sessions under PEER_NAMESPACE (runner.ts
-  // `bindPeer`), not under the id its config names.
-  const threadOf = start?.origin === "peer" ? peerScoped : (id: string) => id;
+  // `bindPeer`), not under the id its config names — but for a person's
+  // own ids, when a person's credential launched it.
+  const person = start?.peerPerson ? start.actor : undefined;
+  const threadOf = start?.origin === "peer" ? (id: string) => peerSessionId(id, person) : (id: string) => id;
   for (const e of events) {
     if (e.type !== "step.start" || e.stepType !== "agent") continue;
     const end = ends.get(keyOf(e));
