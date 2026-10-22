@@ -305,6 +305,9 @@ export interface DecideDeps {
    *  a token may have expired since the launch). */
   mcpOf?: (workflow: string, runId: string) => Promise<McpServer[] | null>;
   notify?: (job: string, update: JobUpdateInput) => void;
+  /** A gated tool that is not a registry step — an MCP server's
+   *  (`mcp/<server>/<tool>`, src/mcp-registry.ts) — as a def to apply. */
+  stepFor?: (type: string) => Promise<AnyStepDef | undefined>;
 }
 
 export type DecideOutcome = { status: 200 | 400 | 404 | 409; body: Proposal | { error: string; proposal?: Proposal } };
@@ -336,7 +339,8 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   }
 
   if (rec.status !== "pending" && rec.status !== "failed") return { status: 409, body: { error: `Proposal "${id}" is ${rec.status}`, proposal: rec } };
-  const def = deps.registry[rec.step];
+  // `stepFor` first: a name it answers for is never a registry step's.
+  const def = (await deps.stepFor?.(rec.step)) ?? deps.registry[rec.step];
   if (!def) return { status: 400, body: { error: `The step "${rec.step}" is not in this strut's registry; the proposal cannot be applied.`, proposal: rec } };
   const merged = decision.input && typeof rec.input === "object" && rec.input !== null ? { ...(rec.input as object), ...decision.input } : decision.input ?? rec.input;
   let input: unknown;

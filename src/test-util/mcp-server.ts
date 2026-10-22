@@ -5,6 +5,7 @@ export interface StandInTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean };
   call: (args: Record<string, unknown>) => unknown;
 }
 
@@ -44,6 +45,7 @@ export async function standInMcp(tools: StandInTool[], opts: { token?: string } 
         tools: tools.map((t) => ({
           name: t.name,
           ...(t.description ? { description: t.description } : {}),
+          ...(t.annotations ? { annotations: t.annotations } : {}),
           inputSchema: (t.inputSchema ?? { type: "object", properties: {} }) as { type: "object" },
         })),
       }));

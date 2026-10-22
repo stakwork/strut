@@ -71,7 +71,7 @@ import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orches
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
 import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
-import { grantWidenedBy, stepHashesFor } from "./closure.js";
+import { globToRegExp, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { AI_PUBLISHER, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
@@ -104,7 +104,8 @@ import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { attachmentParts, parseAttachments, saveAttachments, saveRunAttachments, type Attachment } from "./ai/attachments.js";
 import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomActorOf, roomTarget } from "./callback.js";
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
-import { parseMcpServers } from "./mcp-servers.js";
+import { listServerTools, parseMcpServers } from "./mcp-servers.js";
+import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
 import { briefOf, decideProposal, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
@@ -649,6 +650,7 @@ export async function createStrut<TServices = unknown>(
     opts.dataDir ??
     (fileBacked ? workspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
+  const mcpRegistry = fileMcpRegistry(dataDir);
   // Controllers for runs currently executing **in this process** (keyed
   // `${workflow}/${runId}`) — RUN_CONTROL_SPEC §2.2. A controller's presence
   // IS "in-flight" (superseding the old `activeRuns` set): detached execution
@@ -821,6 +823,9 @@ export async function createStrut<TServices = unknown>(
     // and the proposal/* steps read; a job's host hears each as a
     // `job.update` through the jobs capability's notify (read lazily: the
     // bag is being built).
+    // The registered MCP servers (src/mcp-registry.ts), which an agent's
+    // `agentTools: [mcp/<server>/*]` reaches.
+    mcpRegistry,
     proposals: proposalsCapability(dataDir, {
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
     }),
@@ -2676,6 +2681,7 @@ export async function createStrut<TServices = unknown>(
         registry,
         services,
         mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
+        stepFor: (type) => mcpStepDef(type, mcpRegistry),
         notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
       },
     );
@@ -2803,6 +2809,65 @@ export async function createStrut<TServices = unknown>(
     const existed = await secretStore.delete(name);
     if (!existed) return c.json({ error: `secret "${name}" not found` }, 404);
     return c.json({ ok: true, name });
+  });
+
+  // ── MCP servers (src/mcp-registry.ts) ────────────────────────────────────
+  //
+  // Registered once, their values by secret NAME; an agent reaches one's
+  // tools through `agentTools: [mcp/<server>/*]`. Nothing here returns a
+  // value. A per-launch `mcp` (POST …/run) is a different thing, untouched.
+  // A peer reads which servers there are and where, never a full URL (a
+  // path can carry a key the way a query would).
+  const regView = async (c: Context, reg: McpRegistration) => ((await isPeer(c)) ? { name: reg.name, origin: new URL(reg.url).origin } : reg);
+  app.get("/mcp-servers", async (c) => c.json({ servers: await Promise.all((await mcpRegistry.list()).map((r) => regView(c, r))) }));
+
+  app.get("/mcp-servers/:name", async (c) => {
+    const reg = await mcpRegistry.get(c.req.param("name"));
+    return reg ? c.json(await regView(c, reg)) : c.json({ error: `MCP server "${c.req.param("name")}" is not registered` }, 404);
+  });
+
+  app.put("/mcp-servers/:name", async (c) => {
+    let reg: McpRegistration;
+    try {
+      reg = parseRegistration(c.req.param("name"), await c.req.json().catch(() => ({})), { allowLocal: bootEnv()["STRUT_MCP_LOCAL"] === "1" });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+    await mcpRegistry.put(reg);
+    return c.json(reg);
+  });
+
+  app.delete("/mcp-servers/:name", async (c) => {
+    const name = c.req.param("name");
+    if (!(await mcpRegistry.remove(name))) return c.json({ error: `MCP server "${name}" is not registered` }, 404);
+    return c.json({ ok: true, name });
+  });
+
+  // A probe: connect as the request's actor would (their own secret first)
+  // and list the tools, each with whether it asks first. `ok: false` with the
+  // reason when it cannot connect — a missing secret, a 401, a timeout.
+  app.post("/mcp-servers/:name/test", async (c) => {
+    const reg = await mcpRegistry.get(c.req.param("name"));
+    if (!reg) return c.json({ error: `MCP server "${c.req.param("name")}" is not registered` }, 404);
+    const actor = await resolveActor(c);
+    const secrets = (services as { secrets?: SecretsCapability }).secrets;
+    const bound = actor && secrets?.forPrincipal ? secrets.forPrincipal(actor) : secrets;
+    try {
+      const { client, tools } = await listServerTools(await resolveRegistration(reg, bound));
+      await client.close().catch(() => {});
+      const kept = reg.toolFilter?.length ? tools.filter((t) => reg.toolFilter!.some((p) => globToRegExp(p).test(t.name))) : tools;
+      return c.json({
+        ok: true,
+        tools: kept.map((t) => ({
+          name: t.name,
+          ...(t.description ? { description: t.description } : {}),
+          readOnly: t.annotations?.readOnlyHint === true,
+          gated: gatedByDefault(reg, t),
+        })),
+      });
+    } catch (err) {
+      return c.json({ ok: false, error: (err as Error).message });
+    }
   });
 
   // ── Peers (plans/federation.md §3) ───────────────────────────────────────

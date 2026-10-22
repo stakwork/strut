@@ -612,6 +612,29 @@ export async function streamRun(
   return result;
 }
 
+// ── MCP servers (registered; src/mcp-registry.ts) ─────────────────────────
+
+export interface McpRegistration {
+  name: string;
+  url: string;
+  tokenSecret?: string;
+  headerSecrets?: Record<string, string>;
+  toolFilter?: string[];
+  ungated?: string[];
+}
+
+export const listMcpServers = () => fetchJSON<{ servers: McpRegistration[] }>("/mcp-servers");
+export const putMcpServer = (reg: McpRegistration) => {
+  const { name, ...body } = reg;
+  return fetchJSON<McpRegistration>(`/mcp-servers/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(body) });
+};
+export const deleteMcpServer = (name: string) => fetchJSON<{ ok: boolean; name: string }>(`/mcp-servers/${encodeURIComponent(name)}`, { method: "DELETE" });
+export const testMcpServer = (name: string) =>
+  fetchJSON<{ ok: true; tools: { name: string; description?: string; readOnly: boolean; gated: boolean }[] } | { ok: false; error: string }>(
+    `/mcp-servers/${encodeURIComponent(name)}/test`,
+    { method: "POST" },
+  );
+
 // ── Steps ──────────────────────────────────────────────────────────────────
 
 export interface StepsResponse {

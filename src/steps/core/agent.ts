@@ -4,7 +4,7 @@ import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
+import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
 import { GATE_NOTE, gatedSchema, proposalResultLines, proposalsOf, proposeCall } from "../../proposals.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
@@ -12,6 +12,7 @@ import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
 import { connectMcpTools } from "../../mcp-servers.js";
 import { withinReach } from "../../reach.js";
+import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
 import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
@@ -1427,10 +1428,16 @@ export default defineStep({
     const toolCtx: StepContext | undefined = ctx && { ...(!cfg.mcp && ctx.mcp ? withoutMcp(ctx) : ctx) };
     // The gate (plans/proposals.md §1): `approve` names types among the
     // grants; one that is not granted has nothing to gate (a warning).
+    // `mcp/<server>/<tool>` entries name a registered MCP server's tools
+    // (src/mcp-registry.ts), connected below; the rest are registry steps.
+    const isMcp = (t: string) => t.startsWith(MCP_GRANT_PREFIX);
+    const stepGrants = cfg.agentTools.filter((t) => !isMcp(t));
+    const mcpGrants = cfg.agentTools.filter(isMcp);
+    const mcpApprove = cfg.approve.filter(isMcp);
     const approve = new Set<string>();
-    if (cfg.approve.length && ctx?.registry) {
-      const granted = new Set(expandAgentTools(cfg.agentTools, ctx.registry));
-      for (const t of expandAgentTools(cfg.approve, ctx.registry)) {
+    if (cfg.approve.some((t) => !isMcp(t)) && ctx?.registry) {
+      const granted = new Set(expandAgentTools(stepGrants, ctx.registry));
+      for (const t of expandAgentTools(cfg.approve.filter((t) => !isMcp(t)), ctx.registry)) {
         if (granted.has(t)) approve.add(t);
         else console.warn(`[agent] approve: "${t}" is not in agentTools — nothing to gate`);
       }
@@ -1438,7 +1445,7 @@ export default defineStep({
         throw new Error("agent: `approve` needs strut's proposals (ctx.services.proposals); the standard strut server provides them.");
       }
     }
-    const registryTools = buildRegistryTools(cfg.agentTools, ctx?.registry, toolCtx, tool, approve.size ? { approve, session: cfg.session } : undefined);
+    const registryTools = buildRegistryTools(stepGrants, ctx?.registry, toolCtx, tool, approve.size ? { approve, session: cfg.session } : undefined);
     // A tool-step whose output is marked `withStop` (core.ts) ends the turn
     // after this tool round (a device that has not answered, an approval
     // waiting on a person): the loop stops, and the one answer turn below
@@ -1581,6 +1588,53 @@ export default defineStep({
         wrapToolsWithMask(mcp.tools, [...secretValues, ...mcp.secretValues]);
         wrapToolsWithEmit(mcp.tools, ctx, calls);
         Object.assign(tools, mcp.tools);
+      }
+      // The registered servers it is granted (`agentTools: [mcp/linear/*]`),
+      // their secrets read through the run's (the principal's own first).
+      // A tool the server does not mark read-only, or one `approve:` names,
+      // records a proposal instead of running (src/mcp-registry.ts).
+      const mcpRegistry = (ctx?.services as { mcpRegistry?: McpRegistry } | undefined)?.mcpRegistry;
+      if (mcpGrants.length && mcpRegistry && ctx) {
+        const serverPatterns = mcpGrants.map((g) => globToRegExp(g.slice(MCP_GRANT_PREFIX.length).split("/")[0]!));
+        const regs = (await mcpRegistry.list()).filter((r) => serverPatterns.some((re) => re.test(r.name)));
+        const secrets = (ctx.services as { secrets?: SecretsCapability } | undefined)?.secrets;
+        const servers: McpServer[] = [];
+        for (const r of regs) {
+          try {
+            servers.push(await resolveRegistration(r, secrets));
+          } catch (err) {
+            console.warn(`[mcp] ${(err as Error).message} — its tools are skipped`);
+          }
+        }
+        const byName = new Map(regs.map((r) => [r.name, r]));
+        const registered = await connectMcpTools(servers, {
+          tool,
+          jsonSchema,
+          toModelOutput: registryToolModelOutput,
+          taken: Object.keys(tools),
+          maxChars: () => resultCap,
+          only: (server, t) => grantsTool(mcpGrants, server.name, t.name),
+          gate: (server, t) => {
+            const reg = byName.get(server.name);
+            if (!reg || !(grantsTool(mcpApprove, server.name, t.name) || gatedByDefault(reg, t))) return undefined;
+            const type = mcpGrantName(server.name, t.name);
+            // The card's title names the server and where it is, so a person sees what they allow.
+            const def = { type, description: `${t.title ?? t.name} on ${server.name} (${new URL(server.url).origin}). ${t.description ?? ""}`, input: z.any(), output: z.any(), run: async () => undefined };
+            return (input, rationale, options) => {
+              const path = (options as { strutToolPath?: string } | undefined)?.strutToolPath;
+              return proposeCall(type, def, input, rationale, { ...ctx, agentTool: true, ...(path ? { path } : {}) }, { session: cfg.session });
+            };
+          },
+          gateNote: GATE_NOTE,
+        });
+        const closeLaunch = closeMcp;
+        closeMcp = async () => {
+          await closeLaunch?.();
+          await registered.close();
+        };
+        wrapToolsWithMask(registered.tools, [...secretValues, ...registered.secretValues]);
+        wrapToolsWithEmit(registered.tools, ctx, calls);
+        Object.assign(tools, registered.tools);
       }
       // Steps that completed BEFORE a mid-stream failure are unreachable through
       // the stream's result promises — `steps`, `responseMessages`, `usage` and

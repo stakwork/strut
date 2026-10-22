@@ -1565,6 +1565,9 @@ export function validateStepName(name: string): void {
   if (name.includes("@")) {
     throw new Error(`Invalid step name "${name}": "@" is reserved for version pins (type@vN)`);
   }
+  if (name.startsWith("mcp/")) {
+    throw new Error(`Invalid step name "${name}": "mcp/" names a registered MCP server's tools (src/mcp-registry.ts)`);
+  }
   const segments = name.split("/");
   for (const seg of segments) {
     if (!seg || seg === "." || seg === "..") {

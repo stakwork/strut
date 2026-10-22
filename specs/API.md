@@ -796,6 +796,36 @@ client, so `get_run` takes `wait` (ms, at most 55000) — it holds until the
 run settles or the wait is up, then reads the run as it stands, and the
 caller calls again until `status` is terminal.
 
+### 11.3 Registered MCP servers — strut as a client (`src/mcp-registry.ts`)
+
+The other direction: MCP servers strut CALLS, registered once rather than
+handed over per launch (`POST …/run { mcp }`, §3, is unchanged). A
+registration holds secret NAMES, never values: `tokenSecret` (sent as
+`Authorization: Bearer <value>`) and `headerSecrets` (header → secret name)
+resolve through the run's secrets when an agent connects, so a person's
+actor secret (`/actors/:actor/secrets`) wins over the deployment's. Kept in
+`<dataDir>/mcp-servers.json`.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/mcp-servers` | `{ servers: McpRegistration[] }`, by name; a peer gets `{ name, origin }` of each |
+| GET    | `/mcp-servers/:name` | one registration; 404 |
+| PUT    | `/mcp-servers/:name` | `{ url, tokenSecret?, headerSecrets?, toolFilter?, ungated? }` → the registration. `name`: 1-32 letters, digits, `_`, `-`; `url` http(s) with no credentials, query or fragment, and not on loopback or link-local unless `STRUT_MCP_LOCAL=1`; secret names as `PUT /secrets/:name` takes them, never `STRUT_*`; `toolFilter` / `ungated`: tool names or globs. Any other field (a `token`) is a 400 |
+| DELETE | `/mcp-servers/:name` | `{ ok, name }`; 404 |
+| POST   | `/mcp-servers/:name/test` | connect as the request's actor would and list the tools: `{ ok: true, tools: [{ name, description?, readOnly, gated }] }`, or `{ ok: false, error }` (a secret not set, a 401, a timeout — masked of the credential); 404 |
+
+An `agent` step reaches a server's tools through `agentTools`:
+`mcp/<server>/<tool>` (globs: `mcp/linear/*`, `mcp/*`), as
+`<server>_<tool>` tools. Every tool asks first — the call records a
+proposal (§12), `mcp/<server>/<tool>` its step — unless the server marks
+it `readOnlyHint` or the registration lists it in `ungated`; `approve:`
+naming one gates it regardless. The proposal's title names the server and
+its origin. Accepting it calls the tool once, through the registration as
+it is then, with the proposing run's principal's secrets. A params override
+may narrow an `mcp/` grant, never widen it; `mcp/` is no custom step's name.
+`mcp: false` on an agent stops the launcher's servers, not its registry
+grants.
+
 ## 12. Proposals — a tool call a person approves before it runs
 
 `plans/proposals.md`. An `agent` step's `approve:` list gates registry

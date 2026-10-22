@@ -126,6 +126,14 @@ export interface McpToolDeps {
   taken?: Iterable<string>;
   /** The most text one result may hand the model, read when a tool runs. */
   maxChars?: () => number;
+  /** Only the tools this keeps (a registry grant, src/mcp-registry.ts). */
+  only?: (server: McpServer, tool: McpToolInfo) => boolean;
+  /** A tool this answers for asks the person first: the model's call
+   *  records a proposal through the function returned, which gets the
+   *  input without `rationale`, the rationale, and the call's options.
+   *  The tool's schema gains `rationale` and its description `gateNote`. */
+  gate?: (server: McpServer, tool: McpToolInfo) => ((input: unknown, rationale: string | undefined, options: unknown) => Promise<unknown>) | undefined;
+  gateNote?: string;
 }
 
 export interface McpTools {
@@ -139,7 +147,61 @@ export interface McpTools {
 }
 
 type Client = import("@modelcontextprotocol/sdk/client/index.js").Client;
-type McpToolInfo = { name: string; description?: string; title?: string; inputSchema: Record<string, unknown> };
+/** A tool as `tools/list` gives it; `annotations.readOnlyHint` is the
+ *  server's word that the tool changes nothing (src/mcp-registry.ts gates
+ *  every other tool of a registered server). */
+export type McpToolInfo = {
+  name: string;
+  description?: string;
+  title?: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean };
+};
+
+/** Connect to one server and list its tools. Throws, masked of its
+ *  credentials, when it cannot be reached, refuses them or does not answer
+ *  in time; the caller closes the client. */
+export async function listServerTools(server: McpServer): Promise<{ client: Client; tools: McpToolInfo[] }> {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const client = new Client({ name: "strut", version: "1" });
+  try {
+    const transport = new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: mcpHeaders(server) } });
+    await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
+    const tools: McpToolInfo[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await client.listTools(cursor ? { cursor } : {}, { timeout: CONNECT_TIMEOUT_MS });
+      tools.push(...(page.tools as McpToolInfo[]));
+      cursor = page.nextCursor;
+    } while (cursor);
+    return { client, tools };
+  } catch (err) {
+    await client.close().catch(() => {});
+    throw new Error(maskWith(credentialValues(server))(err instanceof Error ? err.message : String(err)));
+  }
+}
+
+/** One call to one tool of one server, outside an agent (a proposal's
+ *  apply): connect, call, close. The result as `connectMcpTools` gives it. */
+export async function callMcpTool(server: McpServer, tool: string, args: Record<string, unknown>, maxChars?: number): Promise<unknown> {
+  const { client } = await listServerTools(server);
+  const masked = maskWith(credentialValues(server));
+  try {
+    const result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS, resetTimeoutOnProgress: true });
+    const out = mcpResult(result, maxChars);
+    if (typeof out === "string") return masked(out);
+    const o = out as { text?: unknown };
+    if (typeof o.text === "string") o.text = masked(o.text);
+    return out;
+  } catch (err) {
+    throw new Error(`${server.name} ${tool} failed: ${masked(err instanceof Error ? err.message : String(err))}`);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+const maskWith = (values: string[]) => (s: string) => values.reduce((out, v) => out.split(v).join("***"), s);
 
 /**
  * Connect to each server and list its tools as AI SDK tools. A server that
@@ -156,30 +218,17 @@ export async function connectMcpTools(servers: McpServer[], deps: McpToolDeps): 
     await Promise.all(all.map((c) => c.close().catch(() => {})));
   };
   if (!servers.length) return { tools: {}, secretValues: [], close };
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
   const secretValues = [...new Set(servers.flatMap(credentialValues))];
-  const masked = (s: string) => secretValues.reduce((out, v) => out.split(v).join("***"), s);
+  const masked = maskWith(secretValues);
 
   const listed = await Promise.all(
     servers.map(async (server) => {
-      const where = `${server.name} (${callbackOrigin(server.url)})`;
-      const client = new Client({ name: "strut", version: "1" });
       try {
-        const transport = new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: mcpHeaders(server) } });
-        await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
+        const { client, tools } = await listServerTools(server);
         clients.push(client);
-        const tools: McpToolInfo[] = [];
-        let cursor: string | undefined;
-        do {
-          const page = await client.listTools(cursor ? { cursor } : {}, { timeout: CONNECT_TIMEOUT_MS });
-          tools.push(...(page.tools as McpToolInfo[]));
-          cursor = page.nextCursor;
-        } while (cursor);
         return { server, client, tools };
       } catch (err) {
-        await client.close().catch(() => {});
-        console.warn(`[mcp] ${where}: skipped — ${masked(err instanceof Error ? err.message : String(err))}`);
+        console.warn(`[mcp] ${server.name} (${callbackOrigin(server.url)}): skipped — ${err instanceof Error ? err.message : String(err)}`);
         return undefined;
       }
     }),
@@ -193,17 +242,36 @@ export async function connectMcpTools(servers: McpServer[], deps: McpToolDeps): 
     const allow = server.toolFilter?.length ? server.toolFilter.map(globToRegExp) : undefined;
     for (const t of tools) {
       if (allow && !allow.some((re) => re.test(t.name))) continue;
+      if (deps.only && !deps.only(server, t)) continue;
       const name = mcpToolName(server.name, t.name);
       if (taken.has(name)) {
         console.warn(`[mcp] ${server.name}: tool "${t.name}" skipped — the agent already has a tool named ${name}`);
         continue;
       }
       taken.add(name);
+      const description = t.description ?? t.title ?? `The "${t.name}" tool of ${server.name}.`;
+      const schema = t.inputSchema ?? { type: "object", properties: {} };
+      const propose = deps.gate?.(server, t);
+      if (propose) {
+        entries.push([
+          name,
+          deps.tool({
+            description: description + (deps.gateNote ?? ""),
+            inputSchema: deps.jsonSchema(withRationale(schema)),
+            execute: async (input: unknown, options?: unknown) => {
+              const { rationale, ...rest } = (input ?? {}) as { rationale?: unknown };
+              return propose(rest, typeof rationale === "string" && rationale.trim() ? rationale.trim() : undefined, options);
+            },
+            toModelOutput: ({ output }: { output: unknown }) => deps.toModelOutput(output),
+          }),
+        ]);
+        continue;
+      }
       entries.push([
         name,
         deps.tool({
-          description: t.description ?? t.title ?? `The "${t.name}" tool of ${server.name}.`,
-          inputSchema: deps.jsonSchema(t.inputSchema ?? { type: "object", properties: {} }),
+          description,
+          inputSchema: deps.jsonSchema(schema),
           execute: async (input: unknown, options?: { abortSignal?: AbortSignal }) => {
             const signal = options?.abortSignal;
             try {
@@ -225,6 +293,12 @@ export async function connectMcpTools(servers: McpServer[], deps: McpToolDeps): 
   }
   entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return { tools: Object.fromEntries(entries), secretValues, close };
+}
+
+/** A gated tool's schema: the server's, plus the `rationale` the card shows. */
+function withRationale(schema: Record<string, unknown>): Record<string, unknown> {
+  const properties = (schema["properties"] ?? {}) as Record<string, unknown>;
+  return { ...schema, type: "object", properties: { ...properties, rationale: { type: "string", description: "One sentence for the person: why this call." } } };
 }
 
 type ContentBlock =
