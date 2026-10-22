@@ -627,6 +627,7 @@ kept encrypted; the token has no read route.
 | GET    | `/peers` | `{ peers: [{ id, baseUrl, label?, description?, repos? }] }` — never a token |
 | PUT    | `/peers/:id` | `{ baseUrl, token, label?, description?, repos? }` → `{ ok, id, baseUrl, label?, description?, repos? }` (`repos`: the workspace's repository URLs — what `strut/list-peers` shows an agent choosing a peer); replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
 | DELETE | `/peers/:id` | `{ ok, id }`; 404 |
+| GET    | `/peers/:id/jobs/:job/files[/<path>]`, `/peers/:id/artifacts/:runId[/<path>]` | READ-THROUGH: that peer's job files and run artifacts, fetched with THIS strut's token for it — the listing (JSON) or the file, the peer's status passed on. Prefix `peers/<id>/` for one more hop: `/peers/acme/peers/billing/jobs/<job>/files/report.md` reads `billing`'s file through `acme`, each hop with its own token — how an entry tagged `{ peer, via, job }` opens (`CALLBACKS.md` §4). Files only (anything else 404); a peer not on file 404 (`peer_unknown:`), unreachable 502. Served under this strut's artifact headers (sandboxed, no scripts); this strut's `?key=` is never forwarded. A read like any other: a peer may call it |
 | POST   | `/peers/tokens` | `{ actor, days? }` → `{ token, actor, exp }` — a PERSON token for this strut (Auth): what a person's own strut puts in its peer record for this one. `days` defaults to 60 (at most 365); nothing is stored, and rotating the signing secret (`STRUT_API_KEY`, else `STRUT_SECRET_KEY`) revokes every one. The deployment's call only (a peer is 403); 400 for a missing actor, bad `days`, or no secret to sign with |
 | GET    | `/self` | `{ self: { id?, label?, description?, repos? } \| null }` — this strut's OWN workspace (never in `/peers`) |
 | PUT    | `/self` | `{ id?, label?, description?, repos? }` → `{ ok, id?, label?, description?, repos? }`; 400 on a bad shape. `STRUT_SELF` / `createStrut({ self })` seed it |
@@ -678,7 +679,10 @@ durationMs }` — the peer's `RunResult` under the handle; each entry of
 an `artifacts` list in it comes back tagged `{ peer, job }` — `job` the
 job the peer recorded the run under — so its `path` stays the peer's
 (`/jobs/<job>/files/…` THERE; `CALLBACKS.md` §4), and a graph `ref_id` in
-it is the peer's graph's. `wait: false`
+it is the peer's graph's. An entry the peer itself got from a third strut
+(already tagged) comes back as the NEXT HOP: `{ peer: <this peer>, via:
+<the third, as the peer names it>, job: <the third's> }`, opened through
+the peer's read-through (above). `wait: false`
 returns `{ peer, workflow, runId, status: "running" }` at once. Cancelling
 the caller's run POSTs `…/cancel` on the peer. `job` names a job ON THE
 PEER (kept there as `peer/<job>`, §3); the caller's own job is never

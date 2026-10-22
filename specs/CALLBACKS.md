@@ -200,8 +200,18 @@ know as `peer`, read with your own credential for that strut; a `url`
 starting with `/` is a link on that strut too; an absolute `url` and a
 `content` are what they are anywhere. A host that cannot reach the peer
 shows the entry as foreign — its title and where it lives — rather than as
-unavailable. An entry the peer itself got from a third strut keeps the tag
-the peer gave it (the peer's id for that strut). The output's own `peer`
+unavailable. An entry the peer itself got from a third strut comes as the
+NEXT HOP (`plans/chained-orchestrators.md` §5): `peer` is the strut you
+know, `via` the third as THAT strut names it, `job` the third's. Open its
+`path` through the peer's read-through: `GET /peers/<via>/jobs/<job,
+percent-encoded>/files/<path>` on the strut you know as `peer`, which reads
+it from the third with its own token (`API.md` §10). Or ask your own strut,
+which has a record for `peer`: `GET /peers/<peer>/peers/<via>/jobs/<job>/files/<path>`.
+
+```json
+{ "id": "report", "kind": "markdown", "title": "Report", "path": "report.md", "peer": "acme", "via": "billing", "job": "peer/build-1" }
+```
+ The output's own `peer`
 (the `builder`'s reply) says the same of the whole turn. A link is never
 written into the entry: a URL would be a second identity for one thing,
 stale once the peer moves (the handle rule, `plans/federation.md` §2.2).
