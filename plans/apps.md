@@ -904,13 +904,20 @@ same way it hands over a plan or a screenshot:
 - **Publishing to the workspace** is `app/publish` (§1.2) — a person's
   "Publish as an app" click (`POST /apps { name, job, path }`), or a
   builder job on request; the job agent never holds the step (§8).
-- **What the job agent is told** is the `Job App` Concept page under
-  `Job` (`src/concepts/Job App.md`): its one line is in every job turn's
-  kinds list, and the page says the above in the agent's terms — the
-  directory, build before handover, the deliverable, what the app sees,
-  who publishes — and sends it to `App` (under `Workflow Builder`, §8) for
-  how to build one. The `job` seed's prompt carries no app text of its
-  own.
+- **What the job agent is told — RETIRED 2026-10-22.** The `Job App`
+  Concept page under `Job` and the job seed's `app/init` / `app/build` /
+  `app/get` are gone: a job agent that wants to show the person something
+  over the job's own results writes an HTML page in its directory, and an
+  app that should exist is the builder's, which hands it over BY NAME —
+  `{ id, kind: "app", title, app: "<name>", version? }` → the version's
+  document with `app: { name, version, hash, builtAt }` (`artifact-refs.ts`,
+  `CALLBACKS.md` §4) — and a job that ran the builder passes the entry
+  on. Three doors to an app confused the orchestrator (it answered that
+  apps could not be built on a peer); two is the number. The runtime in
+  this section (the narrowed token, `ctx.app = { job, path }`, the
+  implicit own-job grant, the timeline's panel) is kept until hive's
+  job-app path (stakwork/hive#5585's `StrutAppFrame`) is confirmed dead,
+  then removed whole.
 
 ## 7. The bridge and the hosts
 

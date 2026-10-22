@@ -463,6 +463,29 @@ describe("jobs — artifact refs", () => {
     exists: async (url: string) => !url.endsWith("/nope.md"),
   });
 
+  it("an app by name ({ kind: app, app }, the builder's deliverable) resolves to the version's document with app: { name, version, hash }", async () => {
+    const appVersion = async (name: string, version?: string) =>
+      name === "visits" && (!version || version === "v2") ? { version: "v2", hash: "abc", builtAt: "2026-10-22T10:00:00.000Z" } : null;
+    const output = { artifacts: [
+      { id: "a", title: "Visits", kind: "app", app: "visits" },
+      { id: "b", title: "Visits v2", app: "visits", version: "v2" },
+      { id: "c", title: "Gone", app: "visits", version: "v9" },
+      { id: "d", title: "Nope", kind: "app", app: "nope" },
+      { id: "e", title: "Far", app: "theirs", version: "v3", peer: "acme-web", job: "peer/j" },
+    ] };
+    assert.deepEqual(await resolveArtifactRefs(output, { ...at("j-1"), appVersion }), [
+      { id: "a", kind: "app", title: "Visits", url: "/apps/visits/v2/files/dist/index.html", app: { name: "visits", version: "v2", hash: "abc", builtAt: "2026-10-22T10:00:00.000Z" } },
+      { id: "b", kind: "app", title: "Visits v2", url: "/apps/visits/v2/files/dist/index.html", app: { name: "visits", version: "v2", hash: "abc", builtAt: "2026-10-22T10:00:00.000Z" } },
+      { id: "c", kind: "app", title: "Gone", error: "no such app version: visits v9" },
+      { id: "d", kind: "app", title: "Nope", error: "no such app: nope" },
+      // A peer's: the name as given, resolved by nothing here.
+      { id: "e", kind: "app", title: "Far", peer: "acme-web", job: "peer/j", app: { name: "theirs", version: "v3" } },
+    ]);
+    // Without apps (a bare bag), an app entry says so.
+    assert.deepEqual(await resolveArtifactRefs({ artifacts: [{ id: "a", title: "A", app: "visits" }] }, at()), [{ id: "a", kind: "app", title: "A", error: "no apps here" }]);
+    assert.deepEqual(await resolveArtifactRefs({ artifacts: [{ id: "x", title: "X" }] }, at()), [{ id: "x", kind: "url", title: "X", error: "one of path, url, app or content is required" }]);
+  });
+
   it("resolves a path into the job's directory, or the run's artifact directory without a job", async () => {
     const output = { text: "done", artifacts: [{ id: "plan", title: "Plan", path: "plan.md" }] };
     assert.deepEqual(await resolveArtifactRefs(output, at("j-1")), [
@@ -501,7 +524,7 @@ describe("jobs — artifact refs", () => {
       { id: "both", kind: "markdown", title: "Both", url: "/jobs/j-1/files/a.md" },
       { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", content: '{"url":"https://github.com/a/b/pull/5","repo":"a/b","number":5,"state":"open"}' },
       { id: "gone-but-inline", kind: "markdown", title: "Gone", content: "# still here" },
-      { id: "none", kind: "url", title: "None", error: "one of path, url or content is required" },
+      { id: "none", kind: "url", title: "None", error: "one of path, url, app or content is required" },
       { id: "big", kind: "url", title: "Big", error: "too large" },
     ]);
   });
@@ -527,7 +550,7 @@ describe("jobs — artifact refs", () => {
       { id: "far-link", kind: "html", title: "Far page", url: "/jobs/peer%2Fbuild-1/files/page.html", peer: "acme-web" },
       { id: "far-pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/5", peer: "acme-web", job: "peer/build-1" },
       { id: "far-inline", kind: "url", title: "Sample", content: "hello", peer: "acme-web" },
-      { id: "far-empty", kind: "url", title: "Nothing", error: "one of path, url or content is required" },
+      { id: "far-empty", kind: "url", title: "Nothing", error: "one of path, url, app or content is required" },
     ]);
     assert.deepEqual(checked, ["/jobs/build-1/files/plan.md"], "nothing of the peer's is looked for here");
   });

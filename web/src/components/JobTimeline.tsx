@@ -9,6 +9,7 @@ import { checkOutcomes, ledgerSignature, newestTurn, verifySummary } from "../cl
 import type { TouchedNode } from "@strut/kit/folds";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { JobAppPanel } from "./JobAppPanel";
+import type { HostedApp } from "./AppHost";
 import { AccessedNodes } from "./AccessedNodes";
 import { ClaimsPanel } from "./ClaimsPanel";
 import { ProposalList } from "./ProposalList";
@@ -68,12 +69,13 @@ export function JobTimeline(props: {
   // opened large in the viewer. Kept by id: a refresh brings the newest
   // build of the same app.
   const [appOpen, setAppOpen] = useState<{ id: string; ref: api.ArtifactRef } | null>(null);
-  const [appLarge, setAppLarge] = useState<{ title: string; app: api.JobAppRef } | null>(null);
+  const [appLarge, setAppLarge] = useState<{ title: string; app: HostedApp } | null>(null);
   useEffect(() => {
-    const first = job.artifacts.find((a) => a.kind === "app" && a.app);
+    const first = job.artifacts.find((a) => a.kind === "app" && api.hostableApp(a.app));
     setAppOpen(first ? { id: first.id, ref: first } : null);
   }, [job.job]);
-  const openAppRef = appOpen ? job.artifacts.find((a) => a.id === appOpen.id && a.app) ?? appOpen.ref : null;
+  const openAppRef = appOpen ? job.artifacts.find((a) => a.id === appOpen.id && api.hostableApp(a.app)) ?? appOpen.ref : null;
+  const openApp = openAppRef ? api.hostableApp(openAppRef.app) : null;
 
   // Claims: the panel's listing (for the dot), the last Verify, and a key
   // that makes the panel re-read when the ledger or the newest turn moves.
@@ -132,7 +134,7 @@ export function JobTimeline(props: {
   }, [threads]);
 
   const openArtifact = (ref: api.ArtifactRef & { runId?: string }) => {
-    if (ref.kind === "app" && ref.app) return setAppOpen((o) => (o?.id === ref.id ? null : { id: ref.id, ref }));
+    if (ref.kind === "app" && api.hostableApp(ref.app)) return setAppOpen((o) => (o?.id === ref.id ? null : { id: ref.id, ref }));
     const link = linkOf(ref);
     if (link && isArtifactPath(link)) return setViewing(link);
     if (link) return void window.open(link, "_blank", "noopener");
@@ -174,20 +176,20 @@ export function JobTimeline(props: {
           {job.artifacts.map((a) => (
             <button key={`${a.id}:${a.runId}`} class="job-art" onClick={() => openArtifact(a)} title={a.peer ? peerArtifactNote(a) : a.summary ?? a.title}>
               <span class="job-art-title"><span class="art-chip-kind">{a.kind}</span> {a.title}</span>
-              <span class="job-art-sub">{a.peer ? `on @${a.peer} · ${a.path ?? a.label ?? a.kind}` : a.app ? `${openAppRef?.id === a.id ? "open below" : "open"} · ${a.app.path}` : a.label ?? a.summary ?? `run ${a.runId}`}{a.error ? ` · ${a.error}` : ""}</span>
+              <span class="job-art-sub">{a.peer ? `on @${a.peer} · ${a.path ?? a.label ?? a.kind}` : api.hostableApp(a.app) ? `${openAppRef?.id === a.id ? "open below" : "open"} · ${"job" in a.app! ? a.app.path : `${a.app!.name} ${a.app!.version}`}` : a.label ?? a.summary ?? `run ${a.runId}`}{a.error ? ` · ${a.error}` : ""}</span>
             </button>
           ))}
         </div>
         {inlineContent && (
           <pre class="flyout-json" style="margin-top:8px;max-height:280px;overflow:auto;">{typeof inlineContent.content === "string" ? inlineContent.content : JSON.stringify(inlineContent.content, null, 2)}</pre>
         )}
-        {openAppRef?.app && (
+        {openAppRef && openApp && (
           <JobAppPanel
-            key={`${openAppRef.app.job}/${openAppRef.app.path}`}
+            key={"job" in openApp ? `${openApp.job}/${openApp.path}` : `${openApp.name}@${openApp.version}`}
             title={openAppRef.title}
-            app={openAppRef.app}
+            app={openApp}
             onClose={() => setAppOpen(null)}
-            onExpand={() => setAppLarge({ title: openAppRef.title, app: openAppRef.app! })}
+            onExpand={() => setAppLarge({ title: openAppRef.title, app: openApp })}
             {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
             {...(props.onOpenApp ? { onOpenApp: props.onOpenApp } : {})}
             {...(props.onAppPublished ? { onPublished: props.onAppPublished } : {})}
@@ -256,7 +258,7 @@ export function JobTimeline(props: {
       {viewing && <ArtifactViewer path={viewing} onClose={() => setViewing(null)} {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})} />}
       {appLarge && (
         <ArtifactViewer
-          path={api.jobAppDocumentPath(appLarge.app.job, appLarge.app.path)}
+          path={"job" in appLarge.app ? api.jobAppDocumentPath(appLarge.app.job, appLarge.app.path) : api.appDocumentPath(appLarge.app.name, appLarge.app.version)}
           app={appLarge.app}
           onClose={() => setAppLarge(null)}
           {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}

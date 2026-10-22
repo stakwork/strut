@@ -58,7 +58,7 @@ describe("concept files (pure)", () => {
     assert.equal(planConceptSeed({ ref_id: "r", docs: "A person wrote this." }, stamp, [], file), "skip", "a person's page stays theirs");
   });
 
-  it("ships Workflow Builder and Job as roots, Job App under Job and App under Workflow Builder: one tree per agent, workspace-general, the legacy lab stamps named, Workflow Build retired", async () => {
+  it("ships Workflow Builder and Job as roots and App under Workflow Builder: one tree per agent, workspace-general, the legacy lab stamps named, Workflow Build and Job App retired", async () => {
     const read = async (file: string) => parseConceptFile(file, await readFile(join(STRUT_CONCEPTS.dir, file), "utf-8"), STRUT_CONCEPTS.prefix);
     const wb = await read("Workflow Builder.md");
     const job = await read("Job.md");
@@ -71,7 +71,7 @@ describe("concept files (pure)", () => {
     // job agent's way to the builder is in Job's own docs: a workflow or an
     // app that lives in a workspace, met on a job, it runs the builder for,
     // on a thread of its own, rather than bouncing it back to the person.
-    assert.deepEqual(STRUT_CONCEPTS.retired, ["Workflow Build.md"]);
+    assert.deepEqual(STRUT_CONCEPTS.retired, ["Workflow Build.md", "Job App.md"]);
     assert.ok(job.docs!.includes('meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }'), job.docs);
     assert.ok(job.docs!.includes("an APP that lives in a workspace") && job.docs!.includes("`Workflow Builder` Concept"), job.docs);
     for (const c of [wb, job]) assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
@@ -82,18 +82,16 @@ describe("concept files (pure)", () => {
     assert.equal(app.parent, "Workflow Builder");
     for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish"]) assert.ok(app.docs!.includes(must), must);
     assert.doesNotMatch(app.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
-    // The job side of an app (plans/apps.md §6, §8): a kind under Job, so
-    // every job turn sees its one line in the kinds list; its page is the
-    // job's contract and sends the agent to App for the how-to.
-    const jobApp = await read("Job App.md");
-    assert.equal(jobApp.parent, "Job");
-    assert.match(jobApp.description!, /interactive app/);
-    // Narrow: a job's app shows that job's own results. Anything that should
-    // exist in a workspace is the builder's (the Workflow Builder tree), not a rule here.
-    assert.match(jobApp.description!, /shows this job's own results/);
-    assert.ok(!jobApp.description!.includes("\n"), "one line");
-    for (const must of ["apps/<name>/", "app/init", "app/build", "BEFORE you hand it over", 'kind: "app"', "run/list { job }", "run/files { job, path }", "useApp()", "Publish as an app", "open the `App` page"]) assert.ok(jobApp.docs!.includes(must), must);
-    assert.doesNotMatch(jobApp.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
+    // No job side of an app (retired 2026-10-22, with the `Job App` page):
+    // an app is the builder's, handed over by NAME — the job agent passes
+    // the builder's deliverable on — and a page over the job's own results
+    // is an HTML file in its directory. The App page says the same to the
+    // builder: hand it over by name, never as a directory.
+    assert.ok(job.docs!.includes('{ kind: "app", app: "<name>" }'), job.docs);
+    assert.ok(job.docs!.includes("HTML page in your directory"), job.docs);
+    assert.ok(!job.docs!.includes("Job App") && !job.docs!.includes("app/init"), "nothing points at the retired kind");
+    assert.ok(app.docs!.includes('{ id, kind:\n"app", title, app: "<name>" }') || app.docs!.includes('app: "<name>"'), "the builder hands an app over by name");
+    assert.ok(app.docs!.includes("never hand over an app directory"), "an app is never a file deliverable");
     assert.ok(!app.docs!.includes("## A job's app"), "App stays the builders' manual");
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
@@ -256,16 +254,26 @@ for (const tb of testBackends()) {
       assert.equal(old.action, "create");
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Job App"]!.ref_id!], "Job keeps only what strut ships under it");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [], "Job keeps only what strut ships under it — nothing, since Job App went too");
+    });
+
+    it("the `Job App` page an earlier strut seeded under Job goes at the next boot", async () => {
+      await page("Job App", "Hand over an app.", { description: "Hand over an interactive app as a deliverable.", parent: "Job" });
+      const old = byName(await seedConcepts(b, [set({ prefix: STRUT_CONCEPTS.prefix })]))["Job App"]!;
+      assert.equal(old.action, "create");
+      const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
+      assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), []);
     });
 
     it("strut's pages seed, a host's page hangs under one, and the builder's section reads them", async () => {
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.deepEqual(
-        [strut["Workflow Builder"]!.action, strut["Job"]!.action, strut["App"]!.action, strut["Job App"]!.action],
-        ["create", "create", "create", "create"],
+        [strut["Workflow Builder"]!.action, strut["Job"]!.action, strut["App"]!.action],
+        ["create", "create", "create"],
       );
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Job App"]!.ref_id!], "the kind strut ships under Job");
+      assert.equal(strut["Job App"], undefined, "no job side of an app ships");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [], "strut ships no kind under Job; a deployment grows that tree");
       await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
       const host = byName(await seedConcepts(b, [set()]));
       const wb = strut["Workflow Builder"]!.ref_id!;
@@ -300,10 +308,10 @@ for (const tb of testBackends()) {
 
       const kinds = await run({ name: "Job", docs: false, tool: "" });
       assert.ok(kinds.text.includes("- Explore — Finding out how something works.") && !kinds.text.includes("To record a new kind"), "docs: false — the kinds alone, the orchestrator's read");
-      assert.ok(kinds.text.includes("- Job App — Hand over an interactive app"), "the kind strut ships is in the orchestrator's list, beside the deployment's");
+      assert.ok(!kinds.text.includes("Job App"), "no third way to an app in the orchestrator's list");
       const builds = await run({ name: "Workflow Builder", docs: false, tool: "" });
       assert.ok(builds.text.includes("- App — An APP") && !builds.text.includes("To record a new kind"), "the builder's kinds, the orchestrator's second list");
-      assert.ok(out.text.includes("- Job App — Hand over an interactive app as a deliverable"), "the job agent's kinds list carries the job app's one line");
+      assert.ok(!out.text.includes("Job App"), "nor in the job agent's");
       assert.ok(!kinds.text.includes("graph_graph_get"), "no tool, no opener");
       assert.deepEqual(await run({ name: "App", docs: false }), { text: "" }, "no kinds under it, nothing");
       assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "no such page");
@@ -351,12 +359,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     await make();
-    assert.deepEqual(await names(), ["Job", "Job App", "Workflow Builder"]);
-    // Job App hangs under Job: the job agent's kinds list carries it.
-    const hits = await b.reader.namesLike("Concept", "Job", 10);
-    const ref = (n: string) => hits.find((h) => h.name === n)!.ref_id;
-    const under = await b.tx((tx) => b.edgeEngine.liveEdgesOf(tx, ref("Job"), "PARENT_OF", true));
-    assert.ok((under?.edges ?? []).some((e) => e.other === ref("Job App")), "Job App under Job after boot");
+    assert.deepEqual(await names(), ["Job", "Workflow Builder"]);
   });
 
   it("puts the Job page at the end of the job agent's system prompt", async () => {
