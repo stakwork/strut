@@ -122,8 +122,9 @@ export interface RunOptions<TServices = unknown> {
   app?: AppRef;
   /** The launch asked for the result to be posted to a host (`POST …/run
    *  { callback }`). The runner records the URL's ORIGIN on `run.start` / `run.resumed` and
-   *  nothing more; the launcher keeps the URL and does the posting. */
-  callback?: { origin: string };
+   *  nothing more; the launcher keeps the URL and does the posting. A ROOM
+   *  callback (`{ room: true }`, src/rooms.ts) is recorded as that. */
+  callback?: { origin: string } | { room: true };
   /** The caller's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts),
    *  credentials included: handed to every step as `ctx.mcp`, recorded on
    *  `run.start` / `run.resumed` by name and origin only. The launcher keeps

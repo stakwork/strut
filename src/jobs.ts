@@ -42,6 +42,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { postCallback } from "./callback.js";
+import { roomsFor } from "./rooms.js";
 import type { McpServer, StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
@@ -222,7 +223,8 @@ function callbackFile(root: string): string {
 
 /** Record (or, with `null`, clear) the URL a job's updates are POSTed to —
  *  `POST …/run { job, jobCallback }`, the latest launch that carries one
- *  winning. Owner-only, like the other files holding a credential. */
+ *  winning — or the room they go to (`room:<actor>`, callback.ts).
+ *  Owner-only, like the other files holding a credential. */
 export async function setJobCallback(root: string, url: string | null): Promise<void> {
   const file = callbackFile(root);
   if (url === null) {
@@ -280,7 +282,13 @@ async function drainOutbox(root: string, box: { pending: Map<string, { url: stri
     for (let next = box.pending.entries().next(); !next.done; next = box.pending.entries().next()) {
       const [key, { url, update }] = next.value;
       box.pending.delete(key);
-      await postCallback(url, update, { tag: `[job ${update.job}] callback job.update`, retryDelaysMs: LIVE_RETRY_MS });
+      await postCallback(url, update, {
+        tag: `[job ${update.job}] callback job.update`,
+        retryDelaysMs: LIVE_RETRY_MS,
+        // A room target (`jobCallback: { room: true }`): the rooms of the
+        // strut whose data directory holds the job (`jobRoot`).
+        room: (actor, payload) => roomsFor(dirname(dirname(root))).deliver(actor, payload),
+      });
     }
   } finally {
     box.draining = false;

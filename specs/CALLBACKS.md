@@ -398,6 +398,56 @@ run ever waits on it. The log in strut is the source of truth; backfill from
 it when you missed something. The URL is treated as a credential: strut logs
 its origin only.
 
+## 8. Rooms — callbacks to a client that cannot be called
+
+Everything above posts to a URL, so the caller must be reachable. A
+person's laptop behind NAT is not: it opens a socket to strut and keeps it
+open, and strut delivers the same payloads there
+(`plans/chained-orchestrators.md` §3). A **room** is a person: the actor the
+request authenticates as.
+
+**Join** with a WebSocket on `GET /rooms` (under a host's mount: `/lab/rooms`
+on mcp), with the credential in the `Authorization` header:
+
+```bash
+websocat -H "Authorization: Bearer $PERSON_TOKEN" wss://strut.example/rooms
+```
+
+Only a request whose actor strut can vouch for joins: the deployment key with
+`x-strut-actor`, a signed-in session, a host's own credential, or a person's
+credential through a peer (a person token, `POST /peers/tokens`; mcp's
+`lab:peer` JWT with a `sub`). The shared peer key is `403`, since its actor
+is a header any strut can set; a request with no actor is `403`; no
+credential is `401`. You never name the room: two devices of the same person
+share one. Plain HTTP on `/rooms` answers `426`.
+
+**Ask for it on the launch** in place of a URL, on either callback:
+
+```bash
+curl -X POST https://strut.example/workflows/orchestrator/run \
+  -H "Authorization: Bearer $PERSON_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{ "input": { "prompt": "…", "session": "tom-1/acme" },
+        "callback": { "room": true }, "jobCallback": { "room": true } }'
+```
+
+`{ "room": true }` means "the launching actor's room". It takes no `url`
+beside it, and it is a `400` when the request could not join that room under
+the rule above. The run's `run.end` and every `job.update` arrive on each
+socket of the room as one JSON text message, the bodies of §2 and §5 exactly.
+The jobs the run starts inherit the room as they would a URL (§5), so their
+`run.end`s arrive there too. `run.start` records `callback: { room: true }`,
+never whose.
+
+**Away and back.** While no socket of the room is open, strut queues its
+messages (the newest 1 000 per room, in memory) and sends them in order to the
+next socket that joins. The queue is not durable: a restart drops it. On
+reconnect, also reconcile by reading `GET /jobs?mine=1` and `GET /jobs/:id`.
+Strut pings an open socket every 30 s so a proxy does not close it as idle.
+
+From another strut, `strut/run-workflow { room: true }` asks the peer for this
+on its launch. The peer record's token must be a person's credential.
+
 ## Good to know
 
 - **The URL is your secret.** Put a token in it, like the example. Strut

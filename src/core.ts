@@ -358,8 +358,9 @@ export interface RunEvent {
   app?: AppRef;
   /** On `run.start`: the ORIGIN of the URL the launch asked to have the
    *  result POSTed to (`POST …/run { callback }`, src/callback.ts). The URL
-   *  itself is the host's credential and never leaves the launch site. */
-  callback?: { origin: string };
+   *  itself is the host's credential and never leaves the launch site. Or
+   *  `{ room: true }`: delivered to the launching actor's room (src/rooms.ts). */
+  callback?: { origin: string } | { room: true };
   /** On `run.start` / `run.resumed`: the caller's MCP servers
    *  (`POST …/run { mcp }`), by name and ORIGIN only — the URL's path and
    *  the credentials are the caller's, kept by the run store beside the log

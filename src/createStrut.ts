@@ -89,7 +89,11 @@ import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
 import { createStt, type SttService } from "./audio/stt.js";
 import { audioRoutes } from "./audio/routes.js";
-import { attachAudioWebSocket } from "./audio/ws.js";
+import { createAudioUpgradeHandler } from "./audio/ws.js";
+import { roomsFor } from "./rooms.js";
+import { WebSocketServer } from "ws";
+import { STATUS_CODES, type IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { bootEnv } from "./env.js";
 import { lintStepSource } from "./step-lint.js";
 // Static import is safe: notifier depends only on chat-store, never the AI
@@ -97,7 +101,7 @@ import { lintStepSource } from "./step-lint.js";
 import { createChatNotifier, formatRestartNotification, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { attachmentParts, parseAttachments, saveAttachments, saveRunAttachments, type Attachment } from "./ai/attachments.js";
-import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
+import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomActorOf, roomTarget } from "./callback.js";
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { parseMcpServers } from "./mcp-servers.js";
 import { briefOf, decideProposal, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
@@ -501,6 +505,16 @@ export interface Strut<TServices = unknown> {
    *  host that mounts `app` itself must call `attachAudioWebSocket(server,
    *  strut.stt)` to get the dictation socket; `listen()` does it. */
   stt: SttService | null;
+
+  /** Strut's WebSocket paths for a Node server's `upgrade` event: `/rooms`
+   *  (plans/chained-orchestrators.md §3, src/rooms.ts). The upgrade request
+   *  runs through `app`'s own gate and hooks — `resolveScope` and
+   *  `resolveActor` see `c.env.incoming`, the Node request, as on HTTP — and
+   *  the socket joins the actor's room, or is refused with the gate's status.
+   *  False (nothing touched) for a path that is not strut's. `listen()`
+   *  hooks it; a host that owns the server routes its upgrades here, with
+   *  its mount prefix as `basePath` (mcp: `/lab`). */
+  upgrade: (req: IncomingMessage, socket: Duplex, head: Buffer, opts?: { basePath?: string }) => boolean;
 
   /** Automations (plans/automations.md): the policy layer behind the
    *  `/automations` routes and the chat tools — list / create / update /
@@ -2861,6 +2875,78 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true });
   });
 
+  // ── Rooms (src/rooms.ts; plans/chained-orchestrators.md §3) ─────────────
+  //
+  // A client that cannot be called (a laptop behind NAT) holds a socket open
+  // here and hears its runs' callbacks on it: `GET /rooms` upgrades into the
+  // request's actor's room, and a launch's `callback` / `jobCallback`
+  // `{ room: true }` delivers there. The upgrade runs through this app — the
+  // one gate, `resolveScope`, `resolveActor` — the same in a standalone
+  // strut (`listen()` hooks `upgrade`) and behind a host that owns the Node
+  // server (it routes the upgrade here; its hooks read their stash off
+  // `env.incoming` as on HTTP).
+
+  /** Whose room a request may use: its actor, when the gate resolved one it
+   *  can vouch for — a `full` request (the key, a session, a host's own
+   *  credential) or a person's credential through a peer (`peer:person`). A
+   *  plain peer's actor is a header any strut sets, so it has no room. */
+  const roomActorFor = async (c: Context): Promise<{ actor: string } | { error: string }> => {
+    if ((await scopeOf(c)) === "peer") {
+      return { error: "a room is a person's — a strut's credential names its actor by header; use a person's credential" };
+    }
+    const actor = await resolveActor(c);
+    return actor ? { actor } : { error: "this request names no actor, and a room is a person's" };
+  };
+
+  const rooms = roomsFor(dataDir);
+  const roomsWss = new WebSocketServer({ noServer: true });
+  /** In the env of an upgrade `upgrade` runs through the app: where the route
+   *  puts the actor it admitted. Env comes from the server, never from the
+   *  request, so a plain `GET /rooms` has none. */
+  const ROOM_SLOT = Symbol("strut.room");
+  type RoomSlot = { actor?: string };
+
+  app.get("/rooms", async (c) => {
+    const slot = (c.env as Record<symbol, RoomSlot | undefined> | undefined)?.[ROOM_SLOT];
+    if (!slot) return c.json({ error: "upgrade required: GET /rooms is a WebSocket" }, 426);
+    const room = await roomActorFor(c);
+    if ("error" in room) return c.json({ error: `forbidden: ${room.error}` }, 403);
+    slot.actor = room.actor;
+    return c.body(null, 204);
+  });
+
+  function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, opts: { basePath?: string } = {}): boolean {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname !== `${opts.basePath ?? ""}/rooms`) return false;
+    const refuse = (status: number, body: string) => {
+      if (socket.destroyed) return;
+      socket.write(
+        `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? ""}\r\nContent-Type: application/json\r\n` +
+          `Content-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+      );
+      socket.destroy();
+    };
+    void (async () => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(req.headers)) {
+        for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) headers.append(name, v);
+      }
+      const slot: RoomSlot = {};
+      const res = await app.fetch(new Request(`http://localhost/rooms${url.search}`, { headers }), {
+        incoming: req,
+        [ROOM_SLOT]: slot,
+      });
+      const actor = slot.actor;
+      if (res.status !== 204 || !actor) return refuse(res.status === 204 ? 500 : res.status, await res.text());
+      if (socket.destroyed) return;
+      roomsWss.handleUpgrade(req, socket, head, (ws) => rooms.join(actor, ws));
+    })().catch((err: unknown) => {
+      console.error("[rooms] upgrade failed:", err);
+      refuse(500, JSON.stringify({ error: "the upgrade failed" }));
+    });
+    return true;
+  }
+
   // ── Actor secrets (plans/code-change.md §3.2) ────────────────────────────
   //
   // A host pushes a PERSON's credential here (hive: the user's GitHub token,
@@ -3117,8 +3203,9 @@ export async function createStrut<TServices = unknown>(
     params?: Record<string, unknown>;
     paramOverrides?: Record<string, Record<string, unknown>>;
     runId?: string;
-    /** Where to POST the result when the run settles (src/callback.ts). */
-    callback?: { url: string } | null;
+    /** Where to POST the result when the run settles (src/callback.ts), or
+     *  `{ room: true }`: the launching actor's room (src/rooms.ts). */
+    callback?: { url: string } | { room: true } | null;
     /** The job to launch the run under (plans/jobs.md §1): a flat, global
      *  id the caller minted, the format of a session id. */
     job?: string;
@@ -3134,7 +3221,7 @@ export async function createStrut<TServices = unknown>(
      *  starts (`job/start`, `job/continue`) inherit it: an orchestrator
      *  turn launched with none of its own hands its host's URL to every
      *  job it starts. Kept by the run store beside the log for that. */
-    jobCallback?: { url: string } | null;
+    jobCallback?: { url: string } | { room: true } | null;
     /** The caller's MCP servers (src/mcp-servers.ts): its door back into
      *  itself for this run's agents, the pull-direction twin of `callback`.
      *  Kept beside the log like the callback URL, never in it. */
@@ -3246,7 +3333,7 @@ export async function createStrut<TServices = unknown>(
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
-        ...(callback ? { callback: { origin: callbackOrigin(callback.url) } } : {}),
+        ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
       });
@@ -3297,7 +3384,7 @@ export async function createStrut<TServices = unknown>(
           ...(proposals.length ? { proposals } : {}),
           durationMs,
         },
-        { tag: `[run ${res.runId}] callback run.end` },
+        { tag: `[run ${res.runId}] callback run.end`, room: rooms.deliver },
       );
     })();
   }
@@ -3407,16 +3494,27 @@ export async function createStrut<TServices = unknown>(
     }));
   }
 
-  /** A run body's `callback`, validated; absent or `null` = none. */
-  const runCallbackOf = (body: RunBody): { url: string } | undefined =>
-    body.callback == null ? undefined : parseCallback(body.callback);
+  /** A launch's callback target: `{ url }`, or `{ room: true }` resolved
+   *  to the launching actor's room — kept as `room:<actor>` where a URL is
+   *  kept (callback.ts) — when the request may use one (`roomActorFor`). */
+  const launchCallbackTarget = async (raw: unknown, c: Context): Promise<{ url: string }> => {
+    const parsed = parseLaunchCallback(raw);
+    if ("url" in parsed) return parsed;
+    const room = await roomActorFor(c);
+    if ("error" in room) throw new Error(`callback.room: ${room.error}`);
+    return { url: roomTarget(room.actor) };
+  };
 
-  /** A run body's `jobCallback`: a URL, `null` (clear the job's), or
-   *  absent (leave what is on file). With `job` it is the job's; either
+  /** A run body's `callback`, validated; absent or `null` = none. */
+  const runCallbackOf = async (body: RunBody, c: Context): Promise<{ url: string } | undefined> =>
+    body.callback == null ? undefined : launchCallbackTarget(body.callback, c);
+
+  /** A run body's `jobCallback`: a URL or a room, `null` (clear the job's),
+   *  or absent (leave what is on file). With `job` it is the job's; either
    *  way it is what the jobs this run starts inherit. */
-  const jobCallbackOf = (body: RunBody): { url: string } | null | undefined => {
+  const jobCallbackOf = async (body: RunBody, c: Context): Promise<{ url: string } | null | undefined> => {
     if (body.jobCallback === undefined) return undefined;
-    return body.jobCallback === null ? null : parseCallback(body.jobCallback);
+    return body.jobCallback === null ? null : launchCallbackTarget(body.jobCallback, c);
   };
 
   /** A run body's `job`, validated (the session-id format); absent = none.
@@ -3776,9 +3874,9 @@ export async function createStrut<TServices = unknown>(
     let mcp: McpServer[] | undefined;
     let attachments: Attachment[];
     try {
-      callback = runCallbackOf(body);
+      callback = await runCallbackOf(body, c);
       runJobOf(body);
-      jobCallback = jobCallbackOf(body);
+      jobCallback = await jobCallbackOf(body, c);
       mcp = parseMcpServers(body.mcp);
       attachments = runAttachmentsOf(body);
     } catch (err) {
@@ -3829,9 +3927,9 @@ export async function createStrut<TServices = unknown>(
     let mcp: McpServer[] | undefined;
     let attachments: Attachment[];
     try {
-      callback = runCallbackOf(body);
+      callback = await runCallbackOf(body, c);
       runJobOf(body);
-      jobCallback = jobCallbackOf(body);
+      jobCallback = await jobCallbackOf(body, c);
       mcp = parseMcpServers(body.mcp);
       attachments = runAttachmentsOf(body);
     } catch (err) {
@@ -5137,8 +5235,14 @@ export async function createStrut<TServices = unknown>(
     console.log(`strut steps: ${Object.keys(registry).length} registered`);
     const server = serve({ fetch: app.fetch, port: requested, ...(hostname ? { hostname } : {}) }) as unknown as import("node:http").Server;
     httpServer = server;
-    // The dictation socket upgrades on the Node server, not inside Hono.
-    if (stt) attachAudioWebSocket(server, stt);
+    // The sockets upgrade on the Node server, not inside Hono: a room, then
+    // dictation; anything else is a 404, never a socket left hanging open.
+    const audio = stt ? createAudioUpgradeHandler(stt) : null;
+    server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+      if (upgrade(req, socket, head) || audio?.handle(req, socket, head)) return;
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+    });
     // Resolve on the *bound* port (requested may be 0) — and surface a bind
     // failure (EADDRINUSE etc.) as a rejection instead of an unhandled error.
     const bound = await new Promise<number>((resolvePort, reject) => {
@@ -5166,6 +5270,8 @@ export async function createStrut<TServices = unknown>(
     await ownBrowser?.close();
     // What the sink still holds goes out before the process does.
     await ownSink?.close();
+    // A room's sockets close with the server; their rooms queue what follows.
+    for (const ws of roomsWss.clients) ws.terminate();
     const s = httpServer;
     if (!s) return;
     httpServer = null;
@@ -5211,6 +5317,7 @@ export async function createStrut<TServices = unknown>(
     run,
     apps,
     stt,
+    upgrade,
     automations,
     claims,
     verifier,
