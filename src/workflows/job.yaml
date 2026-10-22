@@ -15,6 +15,7 @@ name: job
 input:
   prompt: { type: string, description: "What to do this turn" }
   workspace: { type: string, required: false, description: "The workspace this strut belongs to, by its slug. Another workspace is a peer, @<slug>" }
+  kind: { type: string, required: false, description: "The kind of work, by the name of its page under the Job Concept (\"Code Change\"): the turn opens with that page. job/continue carries the last turn's" }
   session: { type: string, required: false, description: "The agent's thread (a session id). Defaults to the job id — one thread across every turn of the job. Pass one to work on the job's files with a different thread (a fresh one, or a second beside the first)" }
   repos: { type: json, required: false, description: "Repository URLs to check out into the job's directory, one subdirectory each, kept there turn to turn (a private one needs the launching person's GITHUB_TOKEN here)" }
   agent: { type: string, required: false, description: "A local coding agent to do the turn over ACP instead of strut's own: claude, codex, goose, gemini, opencode, or an ACP command line. It uses its own login, model and tools" }
@@ -46,6 +47,17 @@ steps:
     type: context/concept
     config:
       name: "{{ params.concept }}"
+  # The KIND of work this job is (`input.kind`: a page under the `Job`
+  # Concept, the name the orchestrator routed the request by): its page and
+  # the pages under it, at the head of THIS turn's prompt, so the agent
+  # starts from the kind's convention — when to plan, where to build —
+  # rather than having to open it. In the prompt, not the system prompt:
+  # the thread keeps its first turn's, and a job's kind can change
+  # (job/continue). Nothing without a kind, a graph or the page.
+  - id: kindPage
+    type: context/concept
+    config:
+      name: "{{ input.kind }}"
   # strut's own agent, unless the launch names a local one.
   - id: own
     type: if
@@ -66,8 +78,9 @@ steps:
         {{ params.system }}
         {{ concepts.text }}
       # The workspace line, then the job's id (what a claim's subject and the
-      # builder's thread are named by), then the checkouts, then the message.
-      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ input.prompt }}"
+      # builder's thread are named by), then the checkouts, then the kind's
+      # page, then the message.
+      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ kindPage.text ? params.kindLead + kindPage.text + params.kindEnd : '' }}{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
       schema:
@@ -130,6 +143,10 @@ params:
   # system prompt: strut seeds `Job` (src/concepts/Job.md), and each
   # deployment grows the tree under it.
   concept: Job
+  # Around the page of the job's KIND (`input.kind`) at the head of a turn's
+  # prompt. Text, so the framing evolves like `system`.
+  kindLead: "\n\nThis job is the kind of work below, and its page is how that work is done here:\n\n"
+  kindEnd: "\n\nThe message:\n\n"
   # THE evolvable surface: registry steps granted to the agent as tools
   # (agentTools), on top of its built-ins — repo_overview, fulltext_search,
   # bash, str_replace_based_edit_tool, web_search, web_fetch — which are
@@ -202,11 +219,12 @@ params:
 
     The kinds of work this workspace has a way to do are listed at the end
     of this prompt, from its knowledge graph: each a page saying which
-    workflow does it, or how to work. Before you act on a message, match it
-    against them. When the request is one of these kinds, open that page
-    and follow it: prefer running the workflow it names over doing the work
-    by hand, and say in `text` which page you followed. No list there (no
-    graph, or no page yet): go on without it.
+    workflow does it, or how to work. A message that opens with a kind's
+    page is that kind: follow the page. Otherwise, before you act on a
+    message, match it against them. When the request is one of these
+    kinds, open that page and follow it: prefer running the workflow it
+    names over doing the work by hand, and say in `text` which page you
+    followed. No list there (no graph, or no page yet): go on without it.
 
     Running a workflow: meta/list-workflows lists what this strut can do;
     meta/get-workflow shows a workflow's input and output;

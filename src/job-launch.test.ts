@@ -185,8 +185,8 @@ describe("job/start and job/continue", () => {
         { id: "report", type: "test/write", config: { path: "{{ dir.path }}/report.md", text: "# Flights" } },
         { id: "tell", type: "test/tell", config: { path: "report.md" } },
         agent("JOBAGENT", { session: "{{ input.session || $job }}" }),
-        // The job's pack also reports the workspace its launch carried.
-        { ...pack, config: { ...pack.config, workspace: "{{ input.workspace }}" } },
+        // The job's pack also reports the workspace and the kind its launch carried.
+        { ...pack, config: { ...pack.config, workspace: "{{ input.workspace }}", kind: "{{ input.kind }}" } },
       ],
     });
     // The builder (plans/builder-job.md): job-shaped, no checkouts, and it
@@ -359,6 +359,36 @@ describe("job/start and job/continue", () => {
     assert.equal(ends[1].output.text, "Found 2");
     const view = await jobs.get!(job, { threads: false });
     assert.equal(view?.runs.length, 2, "two turns of one job; the refused ones launched nothing");
+  });
+
+  it("kind: start hands the job its kind; continue carries the last turn's unless it names another; a builder job is refused one", async () => {
+    const { launch, settle, until, toolOutput } = await boot();
+    orchTool = { name: "job_start", input: { prompt: "Add a page-context line", title: "Page context", kind: "Code Change" } };
+    const first = await launch({ prompt: "add the line" });
+    await settle("orch", first);
+    const { job } = await toolOutput(first);
+    const ends = async (n: number) =>
+      until(() => {
+        const e = posts.filter((p) => p.workflow === "job");
+        return e.length === n ? e : undefined;
+      });
+    assert.equal((await ends(1))[0].output.kind, "Code Change", "start: the job's kind");
+
+    orchTool = { name: "job_continue", input: { job, prompt: "Push it" } };
+    const second = await launch({ prompt: "push it" });
+    await settle("orch", second);
+    assert.equal((await ends(2))[1].output.kind, "Code Change", "continue: the last turn's kind, carried");
+
+    orchTool = { name: "job_continue", input: { job, prompt: "Plan it first", kind: "Plan Mode" } };
+    const third = await launch({ prompt: "plan it first" });
+    await settle("orch", third);
+    assert.equal((await ends(3))[2].output.kind, "Plan Mode", "continue: a kind it names replaces it");
+
+    orchTool = { name: "job_start", input: { prompt: "Build a digest", title: "Digest", workflow: "builder", kind: "Code Change" } };
+    const fourth = await launch({ prompt: "build a digest" });
+    await settle("orch", fourth);
+    assert.ok(seen.orch.at(-1)!.includes("a builder job reads its own page"), seen.orch.at(-1));
+    assert.equal(posts.filter((p) => p.workflow === "builder").length, 0, "nothing launched");
   });
 
   it("start { workflow: builder, peer }: the builder workflow runs the turn with the peer; the job says which it is; continue names only the job and follows the record, peer included; peer and repos are refused on a code job", async () => {

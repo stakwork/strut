@@ -3302,14 +3302,16 @@ export async function createStrut<TServices = unknown>(
       // Which job-shaped workflow runs the turn (plans/builder-job.md §2):
       // the launch's (job/start), else the one the job's newest turn ran
       // (job/continue: a builder job stays a builder job), else `job`. A
-      // builder turn on a peer carries `input.peer`; a continue inherits it
-      // from that turn's `run.start`, so the caller names only the job.
+      // builder turn on a peer carries `input.peer`, a code job its `kind`;
+      // a continue inherits each from that turn's `run.start` unless it
+      // names its own, so the caller names only the job.
       const last = wanted ? undefined : turnOf((await readJobRecord(jobRoot(dataDir, job)))?.runs);
       const workflow = wanted ?? last?.workflow ?? "job";
-      if (last && input["peer"] === undefined) {
+      const carried = (["peer", "kind"] as const).filter((k) => input[k] === undefined);
+      if (last && carried.length) {
         const start = (await store.getRunEvents(last.workflow, last.runId)).find((e) => e.type === "run.start") as { input?: unknown } | undefined;
-        const peer = (start?.input as Record<string, unknown> | undefined)?.["peer"];
-        if (typeof peer === "string") input = { ...input, peer };
+        const was = start?.input as Record<string, unknown> | undefined;
+        for (const k of carried) if (typeof was?.[k] === "string") input = { ...input, [k]: was[k] };
       }
       // A builder job on a peer runs there (builder.yaml's `remote`
       // branch), and strut/run-workflow carries no files.
