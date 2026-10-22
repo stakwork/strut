@@ -7,7 +7,10 @@
 > - **MCP Apps is the protocol** (more hosts).
 > - **An app is its own object, and it is a directory** that can be as
 >   sophisticated as a real front-end project, not a single file.
-> - **Jobs have apps:** directories in the job's directory.
+> - **Jobs have apps:** directories in the job's directory. *(Retired
+>   2026-10-22, plans/chained-orchestrators.md §6: the kind, then the
+>   runtime of work item 2. A page over a job's results is an HTML file in
+>   its directory; an app is the builder's, handed over by name.)*
 > - **The stack is fixed and opinionated.** React, Tailwind and the popular
 >   chart, motion and data libraries are pre-loaded and cannot change, so the
 >   model writes the code it is used to.

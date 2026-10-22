@@ -22,22 +22,17 @@
  * pull_request | code | log | json`), passed through unchecked; the
  * inference below only picks a name from that list.
  *
- * One kind is strut's own: `app`. Two forms. `app: "<name>"` (+ `version?`)
- * is an app PUBLISHED in this workspace — what the builder hands over
- * (plans/builder-job.md; 2026-10-22) — and resolves to that version's
+ * One kind is strut's own: `app`, `app: "<name>"` (+ `version?`) — an app
+ * PUBLISHED in this workspace, what the builder hands over
+ * (plans/builder-job.md; 2026-10-22) — resolved to that version's
  * document, `/apps/<name>/<vN>/files/dist/index.html` (the active version
  * unless one is named), with `app: { name, version, hash, builtAt }`
- * beside it. `path` is the older form (plans/apps.md §6): an APP's
- * directory in the job's, resolved to `/jobs/<job>/files/<path>/dist/index.html`
- * with `app: { job, path, hash, builtAt }`; a directory with an `app.yaml`
- * and no kind given is one too, and not built yet is an error that says
- * so. Either way a host that knows apps renders the document through its
- * bridge (and reloads when the build's hash moves), and one that does not
- * shows the link.
+ * beside it. A host that knows apps renders the document through its
+ * bridge (and reloads when the build's hash moves); one that does not shows
+ * the link. A directory (`path`) is no app: a job's app is retired
+ * (plans/chained-orchestrators.md §6).
  */
-import { scopePath } from "./auth.js";
 import { DOCUMENT_FILE } from "./apps/build.js";
-import { MANIFEST_FILE } from "./apps/manifest.js";
 
 export interface ArtifactEntry {
   /** Stable across turns: the same id later is a newer version of the same thing. */
@@ -90,18 +85,15 @@ export interface ArtifactRef {
   path?: string;
   /** An APP (`kind: "app"`): what a host's bridge needs to render it (`url`
    *  is its document) and the build the document came from (`dist/build.json`
-   *  — a new `hash` is a new document to reload). A WORKSPACE app by name
-   *  and version (the builder's deliverable), or a job's app by the job and
-   *  the app's directory in it (plans/apps.md §6). On a peer's entry the
-   *  name and version as given, nothing resolved. */
-  app?: WorkspaceAppRef | JobAppRef;
+   *  — a new `hash` is a new document to reload): the published app by name
+   *  and version. On a peer's entry the name and version as given, nothing
+   *  resolved. */
+  app?: WorkspaceAppRef;
 }
 
 /** A published app at a version (`version` is unresolved, so absent when
  *  not given, only on a peer's entry). */
 export interface WorkspaceAppRef { name: string; version?: string; hash?: string; builtAt?: string }
-/** A job's app: its directory in the job's. */
-export interface JobAppRef { job: string; path: string; hash?: string; builtAt?: string }
 
 /** The kind of a deliverable that is an app. */
 export const APP_KIND = "app";
@@ -167,9 +159,6 @@ export interface ResolveArtifactsAt {
   /** Whether the file behind a strut-relative url exists. Absolute urls are
    *  never checked. */
   exists: (url: string) => Promise<boolean>;
-  /** A job app's `dist/build.json` — its tree hash and when it was built —
-   *  or null; absent, an app ref carries no hash. */
-  appBuild?: (job: string, path: string) => Promise<{ hash: string; builtAt?: string } | null>;
   /** A published app's version — the active one, or the one named — with
    *  its build; null for no such app or version. Absent where there are no
    *  apps: an `app` entry is then an error. */
@@ -247,14 +236,9 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       const rel = path.replace(/^\/+/, "");
       const fileUrl = (r: string) => (at.job ? jobFileUrl(at.job, r) : `/artifacts/${encodeURIComponent(at.runId)}/${r}`);
       const bad = rel.split("/").includes("..") || !rel;
-      if (!text(raw["kind"])) {
-        ref.kind = artifactKind(rel);
-        // An extensionless path that holds an app.yaml is an app.
-        const dir = bad ? undefined : scopePath(rel);
-        if (ref.kind === "url" && dir && (await at.exists(fileUrl(`${dir}/${MANIFEST_FILE}`)))) ref.kind = APP_KIND;
-      }
+      if (!text(raw["kind"])) ref.kind = artifactKind(rel);
       if (bad) error = "bad path";
-      else if (ref.kind === APP_KIND) error = await resolveApp(ref, rel, at, fileUrl);
+      else if (ref.kind === APP_KIND) error = `an app is handed over by name once published — { kind: "app", app: "<name>" } after app/publish; a directory is no app`;
       else if (await at.exists(fileUrl(rel))) ref.url = fileUrl(rel);
       else error = "not found";
     } else if (url !== undefined) {
@@ -273,21 +257,4 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
     out.push(ref);
   }
   return out;
-}
-
-/** An app deliverable: its document's link, and on a job the app's place
- *  and build — or why there is none. */
-async function resolveApp(ref: ArtifactRef, rel: string, at: ResolveArtifactsAt, fileUrl: (r: string) => string): Promise<string | undefined> {
-  const dir = scopePath(rel);
-  if (!dir) return "bad path";
-  const doc = fileUrl(`${dir}/${DOCUMENT_FILE}`);
-  if (!(await at.exists(doc))) {
-    return (await at.exists(fileUrl(`${dir}/${MANIFEST_FILE}`))) ? `not built: no ${DOCUMENT_FILE} in ${dir} — app/build writes it` : "not found";
-  }
-  ref.url = doc;
-  if (at.job) {
-    const build = await at.appBuild?.(at.job, dir).catch(() => null);
-    ref.app = { job: at.job, path: dir, ...(build?.hash ? { hash: build.hash } : {}), ...(build?.builtAt ? { builtAt: build.builtAt } : {}) };
-  }
-  return undefined;
 }

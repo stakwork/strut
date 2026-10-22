@@ -484,6 +484,11 @@ describe("jobs — artifact refs", () => {
     // Without apps (a bare bag), an app entry says so.
     assert.deepEqual(await resolveArtifactRefs({ artifacts: [{ id: "a", title: "A", app: "visits" }] }, at()), [{ id: "a", kind: "app", title: "A", error: "no apps here" }]);
     assert.deepEqual(await resolveArtifactRefs({ artifacts: [{ id: "x", title: "X" }] }, at()), [{ id: "x", kind: "url", title: "X", error: "one of path, url, app or content is required" }]);
+    // A directory is no app (a job's app directory is retired, plans/chained-orchestrators.md §6).
+    const [dir] = (await resolveArtifactRefs({ artifacts: [{ id: "t", title: "Tracker", kind: "app", path: "apps/tracker" }] }, { ...at("j-1"), appVersion }))!;
+    assert.equal(dir!.kind, "app");
+    assert.match(dir!.error!, /handed over by name/);
+    assert.equal(dir!.url, undefined);
   });
 
   it("resolves a path into the job's directory, or the run's artifact directory without a job", async () => {
@@ -1066,6 +1071,13 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.deepEqual([capped.threads.length, capped.omittedRuns], [1, 1]);
     assert.equal((await api("/jobs/nope")).status, 404);
     assert.equal((await api("/jobs/bad%20id")).status, 400);
+  });
+
+  it("GET /jobs/:id resolves a published app by name through the server's apps, as run.end does — never `no apps here`", async () => {
+    const { api, turn } = await boot();
+    await turn("j-app", { name: "notes.md", text: "x", reply: "built", artifacts: [{ id: "visits", kind: "app", title: "Visits", app: "visits" }] }, { title: "App" });
+    const v = (await api("/jobs/j-app")).json;
+    assert.equal(v.artifacts.find((a: any) => a.id === "visits")?.error, "no such app: visits", "the apps were asked");
   });
 
   it("GET /jobs/:id passes the holds through, url included, and folds `urls` by kind — the first hold of each kind with one wins, one without is skipped", async () => {

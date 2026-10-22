@@ -169,15 +169,9 @@ is the tree hash the version was built from — a new one is a new document.
 A name no app has is an entry with `error: "no such app: …"` (`no such
 app version: …` for a pinned version).
 
-The older form is a job's APP DIRECTORY (`plans/apps.md` §6): `path` is a
-directory in the job's holding an `app.yaml`, resolved to its document
-with `app: { job, path, hash, builtAt }` (`/jobs/<job>/files/<path>/dist/index.html`;
-host it through `GET /jobs/<job>/files?path=<app.path>`, the job's token
-NARROWED to that directory — `API.md` §14.4). Nothing strut ships produces
-one since 2026-10-22 (the job agent has no app tools; a page over a job's
-own results is an HTML file in its directory), but a directory handed over
-that way still resolves; never built is `error: "not built: …"`. A run with
-no job resolves such a `path` under its own artifacts, with no `app`.
+A directory is no app: `{ kind: "app", path }` is an entry with an
+`error` saying to hand the app over by name once published (a JOB's app
+directory is retired, `plans/chained-orchestrators.md` §6).
 
 **A deliverable from another strut — `peer` and `job`.** A run that did
 its work on another strut (`strut/run-workflow`; the `builder` workflow
@@ -316,7 +310,6 @@ What strut sends today:
 | the hold's kind (`pod`, `browser` — a page the job keeps, `id: browser:<session>`) | a hold is taken, or let go (by its tool, a delete, the idle sweep; a kept page also when it goes idle) | `held` / `released` |
 | `evidence` | a check writes evidence about the job (`detail: { claim, check }`; `url` = what it pointed at, a screenshot) | `supported` / `refuted` / `planned` (a slot for a person) |
 | `verify` | a verify of the job ended (`detail: { evidence, slots, claims: [{ id, status }] }`) | `done` |
-| `app` | `app/build` built a job's app (`id` = its directory, `url` = its document, `title` = its manifest's; `detail: { path, hash, bytes }`, or `{ path, errors }` when the build failed) — reload a frame showing it | `built` / `failed` |
 | anything a step names | a step called `ctx.services.jobs.notify` — the lab's browser steps for a screenshot (`image`) and every frame of a walkthrough (`walkthrough`, its manifest's url); never a captcha's crop, which its own card shows | the step's |
 
 **An event is a notification, never the record.** Each points at something

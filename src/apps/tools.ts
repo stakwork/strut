@@ -22,32 +22,19 @@
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
  * not. Results are whole data, never trimmed for a model; past 5 MB they
  * are an error naming the cap.
- *
- * A JOB's app (§6) calls through the same tool: its identity is the job's
- * file token narrowed to the app's directory (`jobAppIdentity`), its
- * manifest is read from `<job dir>/<path>/app.yaml` at each call (one live
- * directory, no versions), and `ctx.app` is `{ job, path }`. A model wrote
- * its grants, and the call-time refusals above are the meta surface's
- * rules. On top of them every job app holds its OWN JOB, implicitly: its
- * runs (`run/list { job }`; `run/get`, `run/events`, `run/transcript`,
- * `run/files` on a run launched under it), its files (`run/files { job,
- * path }`, `job/read`) and its record (`job/get`) — of that job only,
- * never another's, whatever the manifest says.
  */
 import { z } from "zod";
 import { tool, type ToolSet } from "ai";
 import { appOfIdentity } from "../auth.js";
 import { globToRegExp } from "../closure.js";
-import { isJobApp, type AppRef, type JobAppRef, type StepRegistry } from "../core.js";
+import type { AppRef, StepRegistry } from "../core.js";
 import type { GraphReader } from "../graph/search.js";
-import { jobFilePath, jobRoot } from "../jobs.js";
-import type { RunStore } from "../store.js";
 import { runStep, type RunStepDeps } from "../run-step.js";
 import { isSealedStep } from "../sealed.js";
 import { baseType } from "../step-ref.js";
 import { resolveStep } from "../steps/registry.js";
 import type { AppsCapability } from "./apps.js";
-import { readManifest, type AppManifest } from "./manifest.js";
+import type { AppManifest } from "./manifest.js";
 
 export const STEP_RUN_TOOL = "step_run";
 
@@ -96,13 +83,6 @@ const NOT_YET: Array<[prefix: string, what: string]> = [
   ["job/continue", "a job's turn starts from its host, not a page — a \"continue this job\" door is later (plans/apps.md §12)"],
 ];
 
-/** The reads of ONE run a job's app holds on the runs of its own job (§6),
- *  whatever `grants.workflows` says. */
-export const JOB_RUN_READS: ReadonlySet<string> = new Set(["run/get", "run/events", "run/transcript", "run/files"]);
-
-/** A job's own record and files, granted to that job's app implicitly. */
-const JOB_READS: ReadonlySet<string> = new Set(["job/get", "job/read"]);
-
 /** Always granted: the page's own door for its failures (§8). */
 export const ALWAYS_GRANTED: ReadonlySet<string> = new Set(["app/report-error"]);
 
@@ -116,12 +96,10 @@ export function granted(list: readonly string[], type: string): boolean {
 
 /**
  * The grant check, pure: the reason a call is refused, or null. `type` is
- * the bare type. `app` is who calls: a job's app holds its own job beyond
- * its manifest (§6). The graph-write TYPE check is `graphWriteRefusal` (it
- * reads nodes), and a job app's read of one of its job's runs on an
- * ungranted workflow is `appCallRefusal`'s (it reads the run).
+ * the bare type. The graph-write TYPE check is `graphWriteRefusal` (it
+ * reads nodes).
  */
-export function grantRefusal(type: string, config: Record<string, unknown>, manifest: AppManifest, registry: StepRegistry, app?: AppRef): string | null {
+export function grantRefusal(type: string, config: Record<string, unknown>, manifest: AppManifest, registry: StepRegistry): string | null {
   if (ALWAYS_GRANTED.has(type)) return null;
   if (PAID_OR_SHELL.includes(type) || PAID_OR_SHELL.some((p) => p.endsWith("/*") && type.startsWith(p.slice(0, -1)))) {
     return `"${type}" is a paid or shell-shaped step: a page never calls it, whatever the manifest grants — put it in a workflow and launch that (run/launch), the workflow is the unit of spend (plans/apps.md §5.1)`;
@@ -130,24 +108,12 @@ export function grantRefusal(type: string, config: Record<string, unknown>, mani
   for (const [prefix, what] of NOT_YET) if (type === prefix || type.startsWith(prefix)) return `"${type}" is not available in this strut yet: ${what}`;
   const never = NOT_A_PAGES[type];
   if (never) return `"${type}" is not a thing a page does: ${never}`;
-  const own = app && isJobApp(app) ? app.job : undefined;
   const job = config["job"];
   if (job !== undefined && (typeof job !== "string" || hasTemplate(job))) return `${type}: \`job\` must be a literal job id, not a template`;
-  // A job's app reads its own job, whatever the manifest says — and no
-  // other job, whatever it says (§6).
-  if (JOB_READS.has(type) && own !== undefined) {
-    return job === own ? null : `${type}: a job's app reads its own job (${own}) and no other — \`job: "${own}"\``;
-  }
   if (type.startsWith("run/")) {
     const wf = config["workflow"];
-    if (job !== undefined) {
-      if (type === "run/launch") return `run/launch with \`job\`: a page does not launch a job's turn — its host does (plans/apps.md §12)`;
-      if (own !== undefined && job !== own) return `${type}: a job's app reads its own job (${own}) and no other`;
-      // A job's own runs and files: the job app's, implicitly.
-      if (own !== undefined && (type === "run/list" || (type === "run/files" && wf === undefined))) return null;
-      if (type === "run/files" && wf === undefined) return `run/files { job, path }: a job's files are its own app's to read`;
-    }
-    if (typeof wf !== "string" || !wf) return `${type} needs \`workflow\`${own !== undefined && type === "run/list" ? " (or `job`: your own job's runs)" : ""}`;
+    if (job !== undefined && type === "run/launch") return `run/launch with \`job\`: a page does not launch a job's turn — its host does (plans/apps.md §12)`;
+    if (typeof wf !== "string" || !wf) return `${type} needs \`workflow\``;
     if (hasTemplate(wf)) return `${type}: \`workflow\` must be a literal name, not a template`;
     if (!manifest.grants.workflows.includes(wf)) {
       return `workflow "${wf}" is not granted to this app — its grants.workflows: ${manifest.grants.workflows.length ? manifest.grants.workflows.join(", ") : "(none)"}`;
@@ -158,30 +124,6 @@ export function grantRefusal(type: string, config: Record<string, unknown>, mani
     return `step "${type}" is not granted to this app — its grants.steps: ${manifest.grants.steps.length ? manifest.grants.steps.join(", ") : "(none)"}`;
   }
   return null;
-}
-
-/**
- * The whole check before dispatch, the reads it needs included: the pure
- * `grantRefusal`, except that a job's app reading ONE run of its own job
- * (`JOB_RUN_READS` with `workflow` + `runId`) passes on an ungranted
- * workflow once the run is found to be its job's (`runJobOf`).
- */
-export async function appCallRefusal(
-  type: string,
-  config: Record<string, unknown>,
-  manifest: AppManifest,
-  registry: StepRegistry,
-  app: AppRef,
-  runJobOf: (workflow: string, runId: string) => Promise<string | undefined>,
-): Promise<string | null> {
-  const refused = grantRefusal(type, config, manifest, registry, app);
-  if (!refused || !isJobApp(app) || !JOB_RUN_READS.has(type)) return refused;
-  const wf = config["workflow"];
-  const runId = config["runId"];
-  if (typeof wf !== "string" || !wf || hasTemplate(wf) || typeof runId !== "string" || !runId || hasTemplate(runId)) return refused;
-  if (manifest.grants.workflows.includes(wf)) return refused;
-  if ((await runJobOf(wf, runId).catch(() => undefined)) === app.job) return null;
-  return `${refused} — nor is run ${runId} one of this app's job (${app.job})`;
 }
 
 /** The node types a graph write touches, read from its config and — for a
@@ -291,56 +233,21 @@ export interface AppToolDeps {
   reader?: Pick<GraphReader, "getNode">;
   /** `runStep`'s deps: the real store (kept runs), the workspace, claims, the verify trigger. */
   runStepDeps: RunStepDeps;
-  /** The job a run was launched under, for a job app's implicit grant on
-   *  its own job's runs. Default: the run's summary, else its `run.start`,
-   *  in `runStepDeps.store`. */
-  runJobOf?: (workflow: string, runId: string) => Promise<string | undefined>;
-  /** The server's data directory, where a job's directory is (`jobRoot`).
-   *  Default: the bag's `dataDir`. */
-  dataDir?: string;
 }
 
-/** The job a run was launched under, off the store: the summary's `job`,
- *  else (in flight) its `run.start`'s. */
-export function runJobFromStore(store: Pick<RunStore, "getRunSummary" | "getRunEvents">) {
-  return async (workflow: string, runId: string): Promise<string | undefined> => {
-    const summary = await store.getRunSummary(workflow, runId);
-    if (summary) return summary.job;
-    return (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start")?.job;
-  };
-}
-
-/** The app a call names, with its manifest — or why there is none. A job's
- *  app is read from the job's directory at each call: one live directory. */
+/** The app a call names, with its manifest — or why there is none. */
 async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest } | { error: string }> {
-  if (!isJobApp(app)) {
-    const view = await deps.apps.get(app.name, app.version).catch(() => null);
-    return view ? { manifest: view.manifest } : { error: `step_run: no app ${app.name}@${app.version} on this strut` };
-  }
-  const dataDir = deps.dataDir ?? (deps.services as { dataDir?: string } | undefined)?.dataDir;
-  if (!dataDir) return { error: "step_run: a job's app needs the server's data directory" };
-  let dir: string;
-  try {
-    dir = jobFilePath(jobRoot(dataDir, app.job), app.path);
-  } catch (err) {
-    return { error: `step_run: ${err instanceof Error ? err.message : String(err)}` };
-  }
-  const read = await readManifest(dir);
-  if (!read.ok) return { error: `step_run: no app at ${app.path} in job ${app.job} — ${read.errors.join("; ")}` };
-  return { manifest: read.manifest };
+  const view = await deps.apps.get(app.name, app.version).catch(() => null);
+  return view ? { manifest: view.manifest } : { error: `step_run: no app ${app.name}@${app.version} on this strut` };
 }
-
-/** How an app is named in an error. */
-const appLabel = (app: AppRef) => (isJobApp(app) ? `${app.path} in job ${app.job}` : `${app.name}@${app.version}`);
 
 /** `{ step_run }` — the app tool set a door spreads beside its own. */
 export function buildAppTools(deps: AppToolDeps): ToolSet {
   const reader = deps.reader ?? (deps.services as { graph?: { reader?: Pick<GraphReader, "getNode"> } } | undefined)?.graph?.reader;
-  const runJobOf = deps.runJobOf ?? runJobFromStore(deps.runStepDeps.store);
   return {
     [STEP_RUN_TOOL]: tool({
       description:
-        "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files on a granted workflow; graph/* and any step grants.steps names; app/report-error always; a job's app also its own job — run/list { job }, a run of it, run/files { job, path }, job/get, job/read), " +
+        "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files on a granted workflow; graph/* and any step grants.steps names; app/report-error always), " +
         "`config` its fields, `input` the scope its {{ input.* }} templates read, `app` the app's identity — the token the served document carries in <meta name=\"strut-app-token\">. " +
         "A refused call is an error naming the grant; a step's own failure is an error with its message. The result is the step's whole output.",
       inputSchema: z.object({
@@ -351,19 +258,19 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       }),
       execute: async ({ type, config, input, app: identity }) => {
         const app = appOfIdentity(identity);
-        if (!app) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's whole files, a forged or unsigned one, opens nothing" };
+        if (!app) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
         const found = await appOf(app, deps);
         if ("error" in found) return found;
         const cfg = isRecord(config) ? config : {};
         const base = baseType(type);
-        const refused = await appCallRefusal(base, cfg, found.manifest, deps.registry, app, runJobOf);
+        const refused = grantRefusal(base, cfg, found.manifest, deps.registry);
         if (refused) return { error: `step_run refused: ${refused}` };
         if (GRAPH_WRITES.has(base)) {
           const bad = await graphWriteRefusal(base, cfg, found.manifest, reader);
           if (bad) return { error: `step_run refused: ${bad}` };
         }
-        if (!(await resolveStep(deps.registry, type).catch(() => null))) return { error: `step_run: step type "${type}" not found (${appLabel(app)})` };
-        const ref: AppRef = isJobApp(app) ? { job: app.job, path: app.path } : { name: app.name, version: app.version };
+        if (!(await resolveStep(deps.registry, type).catch(() => null))) return { error: `step_run: step type "${type}" not found (${app.name}@${app.version})` };
+        const ref: AppRef = { name: app.name, version: app.version };
         const result = await runStep(
           type,
           deps.registry,

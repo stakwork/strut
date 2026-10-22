@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { createPortal } from "preact/compat";
-import { artifactUrl, fetchArtifactText, fileScopeOf, type JobAppRef } from "../api";
+import { artifactUrl, fetchArtifactText, fileScopeOf } from "../api";
 import { artifactKind, artifactRel, directoryEntries, parseWalkthrough, resolveArtifactLink, viewerKind } from "@strut/kit/folds";
 import { ArrowLeftIcon, CloseIcon } from "../icons";
 import { useFileScope } from "../use-artifact-url";
@@ -26,21 +26,8 @@ import { AppHost, type HostedApp } from "./AppHost";
 // stacking contexts, so a backdrop rendered inside one would sit under the
 // other.
 //
-// A job's APP (plans/apps.md §6) renders through the app host, not as an
-// HTML page: when the caller names it (`app`), and when the viewer lands on
-// the document of a directory in a job's files that holds an `app.yaml`.
-
-/** The job's app whose document `path` is — `/jobs/<id>/files/<dir>/dist/index.html`
- *  with `<dir>/app.yaml` among the job's files — or null. */
-export function jobAppAt(path: string, files: string[] | null): JobAppRef | null {
-  const m = path.match(/^\/jobs\/([^/]+)\/files\/(.+)\/dist\/index\.html$/);
-  if (!m || !files?.includes(`${m[2]}/app.yaml`)) return null;
-  try {
-    return { job: decodeURIComponent(m[1]!), path: m[2]! };
-  } catch {
-    return null;
-  }
-}
+// An APP the caller names (`app`: a published app, its document the path)
+// renders through the app host, not as an HTML page.
 
 export function ArtifactViewer(props: {
   path: string;
@@ -58,7 +45,7 @@ export function ArtifactViewer(props: {
   const files = scope?.files ?? null;
   const kind = viewerKind(path, files);
   const url = scope ? artifactUrl(path, scope.token) : undefined;
-  const hosted = props.app && path === props.path ? props.app : jobAppAt(path, files);
+  const hosted = props.app && path === props.path ? props.app : null;
   const wantsText = !hosted && (kind === "markdown" || kind === "text" || kind === "walkthrough");
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState("");
