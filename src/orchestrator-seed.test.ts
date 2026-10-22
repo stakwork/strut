@@ -14,7 +14,7 @@ import { createStrut } from "./createStrut.js";
 import { MemoryRunStore } from "./store.js";
 import { hostConfigFromEnv } from "./server.js";
 import { JOB_WORKFLOW } from "./job-seed.js";
-import { ORCHESTRATOR_WORKFLOW, orchestratorWorkflowYaml, seedOrchestratorWorkflow } from "./orchestrator-seed.js";
+import { ORCHESTRATOR_WORKFLOW, orchestratorWorkflowYaml, personalOrchestratorSystem, seedOrchestratorWorkflow } from "./orchestrator-seed.js";
 
 type Params = { tools: string[]; system: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
@@ -89,6 +89,21 @@ describe("the orchestrator workflow strut ships", () => {
 
   it("is sealed: a job's meta/run-workflow never reaches a host's private tools through it", async () => {
     assert.equal((yaml.load(await orchestratorWorkflowYaml()) as { sealed?: boolean }).sealed, true);
+  });
+
+  it("a person's own strut's section (plans/chained-orchestrators.md §1): where a request belongs, the org's orchestrator on the person's thread with a room, the reply relayed", async () => {
+    const section = personalOrchestratorSystem("tom-1");
+    const strutsOwn = paramsOf(await orchestratorWorkflowYaml()).system.trimEnd();
+    const text = await orchestratorWorkflowYaml({ system: section });
+    assert.equal(paramsOf(text).system, `${strutsOwn}\n\n${section.trim()}\n`, "appended after strut's own, as any host's");
+    assert.ok(section.includes('strut/run-workflow { peer: <org>, workflow: "orchestrator", input: { prompt, session: "tom-1/<org>" }, room: true }'));
+    assert.match(section, /`text` is your `text`, word for word; its `ask` is your `ask`; its `artifacts` are your `artifacts`/);
+    // It renders a valid workflow, no `{{ }}` for the params resolver to touch.
+    assert.ok(!section.includes("{{"));
+    assert.equal(paramsOf(text).system, flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text).params!["system"]);
+    // The person's id heads a session id, so it must be one's segment.
+    assert.throws(() => personalOrchestratorSystem("tom 1"), /first segment of a session id/);
+    assert.throws(() => personalOrchestratorSystem(""), /first segment of a session id/);
   });
 
   it("is open to another strut only through a person's credential (`peer: person`); a host's delta may close it", async () => {
