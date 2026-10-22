@@ -1574,13 +1574,22 @@ describe("run control endpoints", () => {
       workspace: WorkspaceManager,
       store: RunStore,
       runId: string,
-      extra: { ts?: string; parentRunId?: string; markers?: RunEvent["type"][]; terminal?: RunEvent["type"] } = {},
+      extra: { ts?: string; parentRunId?: string; markers?: RunEvent["type"][]; terminal?: RunEvent["type"]; attachments?: RunEvent["attachments"] } = {},
     ) {
       const ts = extra.ts ?? new Date().toISOString();
       const ev = (type: RunEvent["type"], path: string, more: Partial<RunEvent> = {}) =>
         ({ ts, runId, path, type, ...more }) as RunEvent;
       const workflowHash = (await workspace.getWorkflowHash("boot")) ?? undefined;
-      await store.append("boot", runId, ev("run.start", "boot", { input: {}, workflowHash, ...(extra.parentRunId ? { parentRunId: extra.parentRunId } : {}) }));
+      await store.append(
+        "boot",
+        runId,
+        ev("run.start", "boot", {
+          input: {},
+          workflowHash,
+          ...(extra.parentRunId ? { parentRunId: extra.parentRunId } : {}),
+          ...(extra.attachments ? { attachments: extra.attachments } : {}),
+        }),
+      );
       await store.append("boot", runId, ev("step.end", "boot/one", { stepType: "counter", output: 1 }));
       for (const m of extra.markers ?? []) await store.append("boot", runId, ev(m, "boot"));
       await store.append("boot", runId, ev("step.start", "boot/two", { stepType: "flakey" }));
@@ -1810,6 +1819,32 @@ describe("run control endpoints", () => {
         assert.ok(!JSON.stringify(events).includes("s3cret"));
       } finally {
         await cleanup();
+      }
+    });
+
+    it("a cut-off run launched with attachments resumes with them: its steps see the files run.start recorded", async () => {
+      let seen: unknown;
+      const spy = defineStep({
+        type: "flakey",
+        input: z.any(),
+        output: z.any(),
+        async run(_cfg, ctx) {
+          seen = ctx.attachments;
+          return 1;
+        },
+      });
+      const made = await makeServer({ counter: createCounterStep().stepDef, flakey: spy });
+      try {
+        await made.workspace.publishWorkflowByContent("boot", WF);
+        const attachments = [{ name: "shot.png", mediaType: "image/png", size: 3, path: "attachments/shot.png" }];
+        await writeCutOffLog(made.workspace, made.store, "1000", { attachments });
+        assert.deepEqual(readRunStart(await made.store.getRunEvents("boot", "1000"))!.attachments, attachments);
+        const report = await made.strut.autoResumeStaleRuns();
+        assert.equal(report[0]!.action, "resumed");
+        assert.equal((await waitForSummary(made.store, "boot", "1000")).status, "success");
+        assert.deepEqual(seen, attachments);
+      } finally {
+        await made.cleanup();
       }
     });
 

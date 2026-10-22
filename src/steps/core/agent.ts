@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { SecretsCapability } from "../../capabilities.js";
+import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
+import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
@@ -759,6 +760,15 @@ export function buildRegistryTools(
   return out;
 }
 
+/** The run's attachments (`ctx.attachments`) as user-message parts, read
+ *  back from the run's artifacts. */
+async function attachedParts(ctx: StepContext): Promise<unknown[]> {
+  const artifacts = (ctx.services as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
+  if (!artifacts) throw new Error("agent: this run has attachments but no artifacts capability to read them from");
+  const loaded = await loadRunAttachments(artifacts, ctx.runId, ctx.attachments ?? []);
+  return (await Promise.all(loaded.map((a) => attachmentParts(a, a.savedAt)))).flat();
+}
+
 /** `ctx` without the caller's MCP servers — what an agent with `mcp: false`
  *  hands its tools. */
 function withoutMcp(ctx: StepContext): StepContext {
@@ -1097,6 +1107,12 @@ export default defineStep({
       .default(true)
       .describe(
         "give this agent the CALLER's MCP servers as tools — the ones its run was launched with (`POST …/run { mcp }`), named `<server>_<tool>`; a run launched without any has none, whatever this says. `false` keeps an agent to its own tools (a judge, a narrow researcher), and the sub-agents and jobs it launches get none either.",
+      ),
+    attachments: z
+      .boolean()
+      .default(true)
+      .describe(
+        "put the files the run was launched with (`POST …/run { attachments }`) on this agent's prompt, after its text — an image or a PDF as a file the model sees, text inline, anything else by its saved path; a run launched without any has none. `false` for an agent that should not see them (a judge, a second agent of the workflow). A sub-agent (an agent called as a tool) never gets them.",
       ),
     model: z
       .string()
@@ -1610,7 +1626,12 @@ export default defineStep({
       // Streaming keeps bytes flowing; we drain the stream and then await the
       // aggregate fields, which have the same shapes generate() returned.
       const basePrompt = preamble ? `${preamble}\n\n${cfg.prompt}` : cfg.prompt;
-      const task = { role: "user" as const, content: basePrompt };
+      // The files the run was launched with, after the prompt's text — the
+      // parts the builder chat makes of a message's attachments. A
+      // sub-agent's prompt is its caller's words: the files stay with the
+      // caller.
+      const files = cfg.attachments && !ctx?.agentTool && ctx?.attachments?.length ? await attachedParts(ctx) : [];
+      const task = { role: "user" as const, content: files.length ? [{ type: "text", text: basePrompt }, ...files] : basePrompt };
       // The REQUEST and the RECORD (plans/compaction.md §3). This turn's
       // record is `lead` (a compaction at open, if any), the task, then
       // `bankedMessages`: everything generated, plus the user turns the

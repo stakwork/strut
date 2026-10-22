@@ -6,7 +6,7 @@
  * and implements the `from` invalidation ("re-run from this step", §5.2).
  */
 
-import type { Flow, RunEvent, Step } from "./core.js";
+import type { Flow, RunAttachment, RunEvent, Step } from "./core.js";
 import type { SubflowResolver } from "./runner.js";
 
 /** Completed units: last `step.end` per path wins — a resumed log may carry
@@ -42,6 +42,9 @@ export function readRunStart(
   /** Who launched it, when not a person or an API call — a peer's run stays
    *  the peer's to control after a resume (plans/federation.md §3). */
   origin?: RunEvent["origin"];
+  /** The files the launch attached, saved under the run's artifacts — a
+   *  resume hands them to its steps again. */
+  attachments?: RunAttachment[];
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -56,6 +59,7 @@ export function readRunStart(
     principal: start.principal,
     job: start.job,
     origin: start.origin,
+    attachments: start.attachments,
   };
 }
 

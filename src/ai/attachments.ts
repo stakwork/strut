@@ -1,5 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
+import type { ArtifactsCapability } from "../capabilities.js";
+import type { RunAttachment } from "../core.js";
 
 /**
  * Files a person attaches to a builder chat message (`POST /chat {
@@ -22,6 +24,12 @@ import { basename, extname, join, resolve } from "node:path";
  * The bytes ride in the history the chat replays every turn, so the caps
  * below keep a message well under a provider's request limit (Anthropic:
  * 32 MB); the web UI downscales a large image before it sends it.
+ *
+ * A RUN takes the same files (`POST …/run { attachments }` — a host's
+ * message to the orchestrator): validated with the same caps, saved under
+ * the run's artifacts instead (`saveRunAttachments`), recorded on
+ * `run.start` without the bytes, and put on each `agent` step's prompt as
+ * the same parts (`loadRunAttachments`).
  */
 
 export const ATTACHMENT_PREFIX = "[attachment]";
@@ -166,6 +174,49 @@ function safeName(name: string): string {
     .slice(-120)
     .trim();
   return s || "attachment";
+}
+
+/** A RUN's attachments (`POST …/run { attachments }`): written under the
+ *  run's artifacts as `attachments/<name>` when the run starts — a name
+ *  repeated in the launch numbered as above — and served with the run's
+ *  other files. Returns what the run records: never the bytes. */
+export async function saveRunAttachments(
+  artifacts: ArtifactsCapability,
+  runId: string,
+  list: Attachment[],
+): Promise<RunAttachment[]> {
+  const taken = new Set<string>();
+  const saved: RunAttachment[] = [];
+  for (const a of list) {
+    const safe = safeName(a.name);
+    const ext = extname(safe);
+    const stem = safe.slice(0, safe.length - ext.length);
+    let file = safe;
+    for (let n = 2; taken.has(file); n++) file = `${stem}-${n}${ext}`;
+    taken.add(file);
+    const path = `attachments/${file}`;
+    await artifacts.write(runId, path, a.bytes);
+    saved.push({ name: a.name, mediaType: a.mediaType, size: a.bytes.length, path });
+  }
+  return saved;
+}
+
+/** A run's saved attachments read back from its artifacts, bytes and all:
+ *  for the agent's prompt, and for a job they are handed on to. */
+export async function loadRunAttachments(
+  artifacts: ArtifactsCapability,
+  runId: string,
+  list: RunAttachment[],
+): Promise<Array<Attachment & { savedAt: string }>> {
+  const dir = await artifacts.dir(runId);
+  return Promise.all(
+    list.map(async (r) => ({
+      name: r.name,
+      mediaType: r.mediaType,
+      bytes: Buffer.from(await artifacts.read(runId, r.path)),
+      savedAt: join(dir, r.path),
+    })),
+  );
 }
 
 /** The user-message parts for one saved attachment (see the module doc). */

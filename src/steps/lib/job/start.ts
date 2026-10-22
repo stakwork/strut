@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { JOB_WORKFLOWS } from "../../../jobs.js";
-import { launchOnce, requireJobLaunch } from "./_shared.js";
+import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
 
 /**
  * Hand work to a new JOB and return at once (the orchestrator's
@@ -53,6 +53,7 @@ export default defineStep({
         "With workflow: builder only — the strut the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
       ),
     repos: z.array(z.string()).optional().describe("Repository URLs to check out into the job's directory (workflow: job only — workflow: builder checks nothing out)."),
+    attachments: attachmentsField,
   }),
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
   async run(cfg, ctx: StepContext) {
@@ -64,11 +65,13 @@ export default defineStep({
     if (cfg.repos?.length && workflow === "builder") {
       throw new Error(`repos: a builder job checks nothing out — it authors workflows through its tools; leave repos out, or start a job (workflow: job) for work on a repository`);
     }
+    const attachments = await handedOn(ctx, cfg.attachments);
     return launchOnce(ctx, launch, {
       job: randomUUID(),
       title: cfg.title,
       ...(cfg.workflow ? { workflow: cfg.workflow } : {}),
       input: { prompt: cfg.prompt, ...(cfg.repos?.length ? { repos: cfg.repos } : {}), ...(cfg.peer ? { peer: cfg.peer } : {}) },
+      ...(attachments ? { attachments } : {}),
     });
   },
 });

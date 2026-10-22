@@ -59,6 +59,19 @@ export interface McpServer {
   toolFilter?: string[];
 }
 
+/** A file the caller attached to a launch (`POST …/run { attachments }`,
+ *  src/ai/attachments.ts): saved under the run's artifacts when the run
+ *  starts, so the bytes are never in the log — only this. */
+export interface RunAttachment {
+  name: string;
+  mediaType: string;
+  /** Bytes. */
+  size: number;
+  /** Where it is saved, relative to the run's artifact directory
+   *  (`attachments/<name>`). */
+  path: string;
+}
+
 /** Context passed to every step's `run` function.
  *
  * `services` is the consumer-defined capabilities bag — typically a
@@ -127,6 +140,12 @@ export interface StepContext<TServices = unknown> {
    *  never logged. An agent with `mcp: false` hands its tools a context
    *  without it. Absent on a run launched without. */
   mcp?: McpServer[];
+  /** The files the launch attached (`POST …/run { attachments }`), saved
+   *  under the run's artifacts: an `agent` step of the workflow puts them on
+   *  its prompt (`attachments`, default true), and job/start / job/continue
+   *  hand the ones the model names on to the job. Absent on a run launched
+   *  without. */
+  attachments?: RunAttachment[];
   /** Register a run-scoped disposer: the runner calls every registered `fn`
    *  in its `finally` when the run settles — success, error AND cancel —
    *  newest first, each guarded, BEFORE the services bag's own `onRunEnd`.
@@ -335,6 +354,10 @@ export interface RunEvent {
    *  the credentials are the caller's, kept by the run store beside the log
    *  (`RunStore.setRunMcp`) and read by nothing that serves a request. */
   mcp?: Array<{ name: string; origin: string }>;
+  /** On `run.start`: the files the launch attached (`POST …/run
+   *  { attachments }`) — names, types, sizes and where the run's artifacts
+   *  keep them, never the bytes. Read back by a resume. */
+  attachments?: RunAttachment[];
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its
