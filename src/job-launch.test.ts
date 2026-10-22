@@ -261,17 +261,25 @@ describe("job/start and job/continue", () => {
   };
 
   it("start: the turn ends at once, the job runs detached, and its run.end reaches the turn's callback with resolved artifacts", async () => {
-    const { launch, settle, until, toolOutput, jobs } = await boot();
+    const { launch, settle, until, toolOutput, jobs, store } = await boot();
     let release!: () => void;
     gate = new Promise((r) => (release = r));
     orchTool = { name: "job_start", input: { prompt: "Research flights to Lisbon in May", title: "Flights to Lisbon" } };
 
-    const turn = await launch({ prompt: "research flights to Lisbon" });
+    const turn = await launch({ prompt: "research flights to Lisbon", session: "conv-1" });
     const summary = await settle("orch", turn);
     assert.equal(summary.status, "success", JSON.stringify(summary));
     const started = await toolOutput(turn);
     assert.equal(started.callback, true);
     assert.ok(started.job && started.runId, JSON.stringify(started));
+    // The job's run names the TURN that started it and the conversation the
+    // turn was launched on (CALLBACKS.md §5): on its run.start, on the job's
+    // record, and on its run.end below — how a host hearing it on a
+    // per-person channel finds the conversation.
+    const startedBy = { workflow: "orch", runId: turn, session: "conv-1" };
+    const jobStart = (await store.getRunEvents("job", started.runId)).find((e) => e.type === "run.start")!;
+    assert.deepEqual(jobStart.startedBy, startedBy);
+    assert.deepEqual((await jobs.get!(started.job, { threads: false }))?.runs.map((r) => r.startedBy), [startedBy]);
 
     // The turn's run.end, with its OWN artifacts resolved in its run's
     // directory — while the job is still working.
@@ -288,6 +296,8 @@ describe("job/start and job/continue", () => {
     const jobEnd = await until(() => posts.find((p) => p.workflow === "job"));
     assert.equal(jobEnd.runId, started.runId);
     assert.equal(jobEnd.job, started.job);
+    assert.deepEqual(jobEnd.startedBy, startedBy);
+    assert.equal(orchEnd.startedBy, undefined, "a run the host launched itself was started by no turn");
     assert.equal(jobEnd.status, "success");
     assert.equal(jobEnd.output.text, "Found 1");
     assert.deepEqual(jobEnd.artifacts, [

@@ -285,6 +285,14 @@ export type RunOrigin = "verify" | "schedule" | "peer" | "app";
  *  records on `run.start` as a job run records `job`. A workspace app at a
  *  version. (A JOB's app, a directory in a job's with no versions, is
  *  retired: plans/chained-orchestrators.md §6.) */
+/** The turn that started a job (`RunEvent.startedBy`). */
+export interface StartedBy {
+  workflow: string;
+  runId: string;
+  /** The launching run's `input.session`, when it named one. */
+  session?: string;
+}
+
 export type AppRef = WorkspaceAppRef;
 
 export interface WorkspaceAppRef {
@@ -385,6 +393,14 @@ export interface RunEvent {
    *  for a root run. Boot-time auto-resume (§5.3) resumes only roots: a
    *  parent re-executing its launching step relaunches its children. */
   parentRunId?: string;
+  /** On a JOB run's `run.start`: the TURN that started it through
+   *  `job/start` / `job/continue` (CALLBACKS.md §5) — the root run the host
+   *  launched, and the `session` that launch named (the conversation). The
+   *  job's `run.end` carries it, so a host hearing it on a per-person
+   *  channel (a room) can find the conversation the job belongs to; a URL
+   *  per conversation needs nothing. Absent when a host launched the job
+   *  itself. */
+  startedBy?: StartedBy;
   /** Graph nodes this step reported touching (the provenance convention,
    *  plans/generic-storage.md "v2") — lifted verbatim from the output's
    *  `_nodes` marker on `step.end`, exempt from any truncation. The graph

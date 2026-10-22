@@ -13,7 +13,7 @@ import type {
   StepCounts,
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
-import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage } from "./core.js";
+import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage, type StartedBy } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -115,6 +115,10 @@ export interface RunOptions<TServices = unknown> {
    *  the run is already on the list. */
   job?: string;
   title?: string;
+  /** A job run: the TURN that started it (`RunEvent.startedBy`) — recorded
+   *  on `run.start` and on the job's record; the job launcher is the one
+   *  site that sets it. */
+  startedBy?: StartedBy;
   /** The APP the run works for (plans/apps.md §5): set by `run/launch`
    *  under `ctx.app` alone — recorded on `run.start` and the summary,
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
@@ -350,6 +354,7 @@ export async function runWorkflow<TServices = unknown>(
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
+      ...(opts?.startedBy ? { startedBy: opts.startedBy } : {}),
       // Recorded so a durable resume re-executes with the same knob values.
       ...(opts?.params ? { params: opts.params } : {}),
       ...(opts?.paramOverrides ? { paramOverrides: opts.paramOverrides } : {}),
@@ -367,6 +372,7 @@ export async function runWorkflow<TServices = unknown>(
           workflow: wfName,
           runId,
           ...(parent ? { parentRunId: parent } : {}),
+          ...(opts.startedBy ? { startedBy: opts.startedBy } : {}),
           ...(opts.actor ? { actor: opts.actor } : {}),
           ...(opts.title ? { title: opts.title } : {}),
         })

@@ -53,7 +53,7 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
-import type { AppRef } from "./core.js";
+import type { AppRef, StartedBy } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
@@ -3261,6 +3261,9 @@ export async function createStrut<TServices = unknown>(
        *  (`setRunJobCallback`), read by the job launcher
        *  (`rootJobCallbackOf`). Never in the log. */
       jobCallback?: { url: string };
+      /** A job run started by a turn (`job/start`, the job launcher below):
+       *  recorded on `run.start`, carried on its `run.end` (CALLBACKS.md §2). */
+      startedBy?: StartedBy;
       /** The files the launch attached (`POST …/run { attachments }`),
        *  validated: saved under the run's artifacts before the first event
        *  and handed to its steps as `ctx.attachments` — or, on a resume,
@@ -3314,6 +3317,7 @@ export async function createStrut<TServices = unknown>(
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
+        ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
         ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
@@ -3321,7 +3325,7 @@ export async function createStrut<TServices = unknown>(
     })()
       .then(
         (res) => {
-          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt, body.job);
+          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt, body.job, extra?.startedBy);
         },
         // runWorkflow finalizes its own errors into a resolved result; a
         // rejection is an unexpected throw (e.g. a store write failure).
@@ -3330,7 +3334,7 @@ export async function createStrut<TServices = unknown>(
           console.error(`[run ${runId}] launch failed:`, err);
           if (callback) {
             const message = err instanceof Error ? err.message : String(err);
-            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt, body.job);
+            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt, body.job, extra?.startedBy);
           }
         },
       )
@@ -3342,7 +3346,7 @@ export async function createStrut<TServices = unknown>(
    *  one POST, detached from the run's teardown and never awaited — a slow
    *  or dead host holds nothing up, and `postCallback` retries then warns,
    *  never throws. The payload mirrors the run's summary, minus the stack. */
-  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number, job?: string): void {
+  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number, job?: string, startedBy?: StartedBy): void {
     const durationMs = Date.now() - launchedAt;
     void (async () => {
       const transcripts = await transcriptLinks(workflow, res.runId).catch(() => []);
@@ -3357,6 +3361,7 @@ export async function createStrut<TServices = unknown>(
           workflow,
           runId: res.runId,
           ...(job ? { job } : {}),
+          ...(startedBy ? { startedBy } : {}),
           status: res.status,
           ...(res.output !== undefined ? { output: res.output } : {}),
           ...(res.error ? { error: { message: res.error.message } } : {}),
@@ -3399,6 +3404,16 @@ export async function createStrut<TServices = unknown>(
     const root = rootRunOf(runId);
     return root ? store.getRunJobCallback(root.workflow, root.runId) : null;
   }
+  /** The TURN the run `runId` belongs to, for the jobs it starts
+   *  (`RunEvent.startedBy`): the root run and the `session` its launch
+   *  named — read off its `run.start`, the one record of the input. */
+  async function startedByOf(runId: string): Promise<StartedBy | undefined> {
+    const root = rootRunOf(runId);
+    if (!root) return undefined;
+    const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
+    const session = (start?.input as Record<string, unknown> | undefined)?.["session"];
+    return { workflow: root.workflow, runId: root.runId, ...(typeof session === "string" && session ? { session } : {}) };
+  }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
       const problem = idProblem(job);
@@ -3434,6 +3449,11 @@ export async function createStrut<TServices = unknown>(
       });
       const url = await rootCallbackOf(from);
       const live = await rootJobCallbackOf(from);
+      // The TURN this job belongs to (CALLBACKS.md §5): the root run the host
+      // launched and the conversation it named, so a host that hears the
+      // job's run.end on a per-person channel (a room) finds the
+      // conversation — a URL per conversation carries that by itself.
+      const startedBy = await startedByOf(from);
       // The job INHERITS the launching run's job callback: on file before
       // the run starts, so its first update finds it — the latest launch
       // that carries one wins, as over HTTP; a run launched with none
@@ -3449,6 +3469,7 @@ export async function createStrut<TServices = unknown>(
       const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}) }, {
         ...(actor ? { actor } : {}),
         ...(principal ? { principal } : {}),
+        ...(startedBy ? { startedBy } : {}),
         ...(url ? { callback: { url } } : {}),
         ...(live ? { jobCallback: { url: live } } : {}),
         // The launching turn's caller, reachable from the job's agents too.

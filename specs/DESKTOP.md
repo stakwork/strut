@@ -125,8 +125,13 @@ curl -X POST http://127.0.0.1:<port>/workflows/orchestrator/run \
 ```
 
 - `session` is the conversation's thread. Mint one id per conversation (the
-  session-id format, `API.md` §9) and keep it for good. One conversation per
-  person is the simple start, and the wake (§5) assumes it.
+  session-id format, `API.md` §9) and keep it for good. The app has
+  conversations the way hive's chat does: a list, each its own session.
+- Name the conversation in `context.line`, after the time: `"Thu 23 Oct
+  09:14, Europe/London. Conversation c-8f2a. "` — the same id as `session`.
+  The orchestrator's prompt section (`personalOrchestratorSystem`, §2) is
+  static text, and this is how a turn knows which conversation it is in
+  when it names the org thread below.
 - One turn at a time per session: a second launch while a turn runs fails
   `session_busy:`. Queue the next message until the turn's `run.end`
   arrives.
@@ -138,12 +143,13 @@ curl -X POST http://127.0.0.1:<port>/workflows/orchestrator/run \
   if you want to show the turn as it runs.
 
 Behind the reply, an org request went to that org's orchestrator through
-`strut/run-workflow` on the session `<person>/<org id>`. That is the
-laptop's own thread on that strut — one more conversation the person has
-with the org, beside the ones hive's web chat keeps for them there, each
-on its own session. Its reply comes back in the local turn's `output`,
-and the jobs it starts report on that org's room. What the person did in
-a web conversation reaches this one as it reaches another web
+`strut/run-workflow` on the session `<person>/<conversation id>`. That is
+this conversation's own thread on that strut — one more conversation the
+person has with the org, beside the ones hive's web chat keeps for them
+there and beside the app's other conversations, each on its own session.
+Its reply comes back in the local turn's `output`, and the jobs it starts
+report on that org's room. What the person did in another conversation,
+here or on the web, reaches this one as it reaches another web
 conversation: through the org's job index, which its orchestrator reads.
 
 ## 5. When a job finishes, wake the conversation
@@ -154,10 +160,16 @@ later. Their events arrive on the room of the strut they ran on:
 - **`job.update`** while it works: a screenshot landed, a hold was taken, a
   check ran. Show it as progress on the job.
 - **`run.end` with a `job`** (`workflow` is `job` or `builder`) when a turn
-  of it ends. Wake the conversation: launch one more local orchestrator turn
-  (§4) on the same session, with a WAKE prompt in place of a person's
-  message. Without that turn, the conversation never sees the job's reply,
-  and a later "ok, do it" reaches an agent that never saw the question.
+  of it ends. Its `startedBy` (`CALLBACKS.md` §2) names the turn that
+  started the job and the `session` that turn was launched on: on the local
+  room that session IS the conversation id; on an org's room it is
+  `<person>/<conversation id>`, so strip your actor and the slash. Wake
+  THAT conversation: launch one more local orchestrator turn (§4) on its
+  session, with a WAKE prompt in place of a person's message. Without that
+  turn, the conversation never sees the job's reply, and a later "ok, do
+  it" reaches an agent that never saw the question. A `run.end` with no
+  `startedBy` is a job the person started another way; show it under no
+  conversation.
 
 The wake mirrors hive's (`src/services/strut-orchestrator-wake.ts` in hive):
 the job's reply goes inline, because the local orchestrator sees only its own
