@@ -96,6 +96,23 @@ describe("grantWidenedBy", () => {
     assert.equal(grantWidenedBy(flow, { tools: ["not-a-step", "clip/trim"] }, reg), null, "a word that names no step reaches nothing");
   });
 
+  it("approve may only grow: an override keeps every step the flow's own approve keys gate", () => {
+    const gatedFlow = (params: Record<string, unknown>, approve: unknown = "{{ params.approve }}") => ({
+      params,
+      steps: [step("a", "agent", { agentTools: "{{ params.tools }}", approve })],
+    });
+    const flow = gatedFlow({ tools: ["log", "exec", "clip/trim"], approve: ["exec"] });
+    assert.equal(grantWidenedBy(flow, { approve: [] }, reg), '"exec" taken out of approval (params.approve: approve may only grow)');
+    assert.equal(grantWidenedBy(flow, { approve: ["clip/trim"] }, reg), '"exec" taken out of approval (params.approve: approve may only grow)');
+    assert.equal(grantWidenedBy(flow, { approve: ["exec", "clip/trim"] }, reg), null, "more approvals");
+    assert.equal(grantWidenedBy(flow, { approve: ["*"] }, reg), null, "a glob that covers it");
+    assert.equal(grantWidenedBy(flow, { tools: ["log"] }, reg), null, "fewer tools, the gate untouched");
+    assert.equal(grantWidenedBy(gatedFlow({ tools: ["log"], approve: [] }), { approve: [] }, reg), null, "nothing gated, nothing to keep");
+    // Every key the list reads holds the whole gate: `gates` cannot empty it through `||`.
+    const either = gatedFlow({ tools: ["exec"], approve: ["exec"] }, "{{ params.gates || params.approve }}");
+    assert.match(grantWidenedBy(either, { gates: ["log"] }, reg) ?? "", /"exec" taken out of approval \(params\.gates/);
+  });
+
   it("both sides expand through the registry: a glob narrowed to one of its members is narrower", () => {
     const flow = agentFlow({ tools: ["browser/*"] });
     assert.equal(grantWidenedBy(flow, { tools: ["browser/screenshot"] }, reg), null);

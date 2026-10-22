@@ -104,9 +104,19 @@ export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: Subflow
  *  or an entry like `"{{ params.ns }}/*"`): the knobs that are GRANTS. Its own
  *  steps only — a subflow's params are the child's. */
 export function grantParams(flow: Pick<Flow, "steps">): Set<string> {
+  return paramsReadBy(flow, "agentTools");
+}
+
+/** The params keys a flow's own `approve` lists read (`approve: "{{ params.approve }}"`):
+ *  the knobs that GATE — what an agent may only do once a person says yes. */
+export function approveParams(flow: Pick<Flow, "steps">): Set<string> {
+  return paramsReadBy(flow, "approve");
+}
+
+function paramsReadBy(flow: Pick<Flow, "steps">, field: "agentTools" | "approve"): Set<string> {
   const keys = new Set<string>();
   walkSteps(flow.steps, (s) => {
-    const tools = (s.config as Record<string, unknown> | undefined)?.["agentTools"];
+    const tools = (s.config as Record<string, unknown> | undefined)?.[field];
     for (const t of Array.isArray(tools) ? tools : [tools]) {
       if (typeof t !== "string") continue;
       for (const m of t.matchAll(/params\.([A-Za-z_$][\w$]*)/g)) keys.add(m[1]!);
@@ -140,7 +150,8 @@ function grantedTypes(value: unknown, registry: StepRegistry): Set<string> {
  * through the registry, so `browser/*` narrowed to `browser/screenshot` is
  * fine and `gaia/*` over nothing is not. A launcher may narrow what a
  * flow's agents hold, never widen it — or a child of a job would hold
- * tools its parent was never given, sealed or not.
+ * tools its parent was never given, sealed or not. Nor may it take a step
+ * out of what the flow's agents must ask before running (`approve`).
  */
 export function grantWidenedBy(flow: Pick<Flow, "steps" | "params">, override: Record<string, unknown>, registry: StepRegistry): string | null {
   for (const key of grantParams(flow)) {
@@ -148,6 +159,20 @@ export function grantWidenedBy(flow: Pick<Flow, "steps" | "params">, override: R
     const own = grantedTypes(flow.params?.[key], registry);
     for (const type of grantedTypes(override[key], registry)) {
       if (!own.has(type)) return `"${type}" (params.${key})`;
+    }
+  }
+  // And the gate only grows: an override of a key an `approve` list reads
+  // keeps every step the flow's own approve keys gate (all of them, so
+  // `"{{ params.gates || params.approve }}"` cannot be emptied through
+  // `gates`). Else a launcher — a builder through meta/run-workflow — runs
+  // the seeded builder with `approve: []` and publishes with no proposal.
+  const approveKeys = [...approveParams(flow)];
+  const gated = new Set(approveKeys.flatMap((k) => [...grantedTypes(flow.params?.[k], registry)]));
+  for (const key of approveKeys) {
+    if (!(key in override)) continue;
+    const kept = grantedTypes(override[key], registry);
+    for (const type of gated) {
+      if (!kept.has(type)) return `"${type}" taken out of approval (params.${key}: approve may only grow)`;
     }
   }
   return null;

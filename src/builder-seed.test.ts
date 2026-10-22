@@ -184,6 +184,30 @@ describe("the builder workflow strut ships", () => {
     }
   });
 
+  it("a builder may not run the builder again with fewer approvals: meta/run-workflow keeps the host's gate", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "builder-gate-"));
+    try {
+      const strut = await createStrut({ workspace: new WorkspaceManager(dir), ...quiet(), builder: { approve: ["meta/publish-workflow", "meta/create-step"] } });
+      const authoring = (strut.services as { authoring: AuthoringCapability }).authoring;
+      for (const approve of [[], ["meta/create-step"]]) {
+        const res = (await authoring.runWorkflow(BUILDER_WORKFLOW, { prompt: "publish x" }, { approve })) as { error?: string; runId?: string };
+        assert.match(res.error ?? "", /"meta\/(publish-workflow|create-step)" taken out of approval \(params\.approve: approve may only grow\)/);
+        assert.equal(res.runId, undefined, "nothing ran");
+      }
+      // More approvals, or none overridden, pass the gate (checked off the seeded YAML itself).
+      const { grantWidenedBy } = await import("./closure.js");
+      const flow = await strut.workspace.getWorkflow(BUILDER_WORKFLOW);
+      assert.equal(grantWidenedBy(flow, { approve: ["meta/publish-workflow", "meta/create-step", "meta/edit-step"] }, strut.getRegistry()), null);
+      assert.equal(grantWidenedBy(flow, { system: "a knob" }, strut.getRegistry()), null);
+
+      // A host with no approvals (Hive's builder today): nothing gated, nothing to keep.
+      const hive = await createStrut({ workspace: new WorkspaceManager(join(dir, "hive")), ...quiet() });
+      assert.equal(grantWidenedBy(await hive.workspace.getWorkflow(BUILDER_WORKFLOW), { approve: [] }, hive.getRegistry()), null);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("the meta surface may not publish the template: `peer: true` is a person's call (a seed's), never an agent's", async () => {
     const dir = await mkdtemp(join(tmpdir(), "builder-meta-"));
     try {

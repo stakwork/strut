@@ -235,7 +235,7 @@ describe("step_run — the app door", () => {
     await refused({ type: "run/list", config: { job: "j" }, app: identity }, /needs `workflow`/);
     await refused({ type: "run/files", config: { job: "j", path: "x.md" }, app: identity }, /needs `workflow`/);
     await refused({ type: "run/launch", config: { workflow: "score-wf", job: "j" }, app: identity }, /does not launch a job's turn/);
-    await refused({ type: "run/launch", config: { workflow: "agentish", params: { tools: ["app/list"] } }, app: identity }, /params may not grant/);
+    await refused({ type: "run/launch", config: { workflow: "agentish", params: { tools: ["app/list"] } }, app: identity }, /params may not widen/);
     await refused({ type: "nope/step", config: {}, app: identity }, /not granted/);
     // The pure check, on a manifest alone.
     const m = parseManifest("title: T\ngrants: { steps: ['graph/*'] }\n");

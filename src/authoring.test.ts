@@ -216,7 +216,7 @@ describe("authoring capability (the meta surface)", () => {
       "name: pod-agent\nparams:\n  tools: []\nsteps:\n  - id: a\n    type: agent\n    config:\n      prompt: hi\n      agentTools: \"{{ params.tools }}\"\n",
     );
     const widened = (await authoring.runWorkflow("pod-agent", {}, { tools: ["log"] })) as any;
-    assert.match(String(widened.error), /params may not grant a step the workflow "pod-agent" does not already: "log" \(params\.tools\)/);
+    assert.match(String(widened.error), /params may not widen what the workflow "pod-agent" allows — more tools, or fewer approvals: "log" \(params\.tools\)/);
     assert.equal(((await authoring.runWorkflow("cand-flow", {}, { tools: ["log"] })) as any).status, "success", "cand-flow reads no grant from params.tools");
 
     // The stamped candidate runs, and its run history reads back.
