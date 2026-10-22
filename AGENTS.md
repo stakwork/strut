@@ -32,7 +32,7 @@ server without a rebuild (proposed).
 
 ```
 strut/
-├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions; API.md is the client how-to for the HTTP API (every endpoint, response shapes, a worked run); CALLBACKS.md the one for `POST …/run { callback }`
+├── specs/                 # design specs — read SPEC.md first; EVAL_, EVOLVE_, RUN_CONTROL_ companions; API.md is the client how-to for the HTTP API (every endpoint, response shapes, a worked run); CALLBACKS.md the one for `POST …/run { callback }`; DESKTOP.md the desktop app's how-to for the chain to a person's orgs (pairing records, rooms, the wake turn, deliverables through the read-through)
 ├── package.json           # engine deps (hono, zod, ai sdk)
 ├── Dockerfile             # standalone server image: node + media/document CLIs + agent venv + uv, fs backend on a bare `docker run`
 ├── docker-compose.yml     # the standalone compose: the PUBLISHED image (ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}, pushed from main by .github/workflows/publish-image.yml) on the graph backend + a neo4j:5 container + the browser (named volumes for neo4j data, /data/workspace, /data/models, uv cache) — nothing built
