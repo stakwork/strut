@@ -135,8 +135,7 @@ export interface UseRunsOptions {
 }
 
 /** `run/list`: a workflow's runs, newest first. `null` with a `job`: the
- *  job's runs across every workflow it ran — what a JOB's app reads of its
- *  own job (plans/apps.md §6). */
+ *  job's runs across every workflow it ran. */
 export function useRuns(workflow: string | null, opts: UseRunsOptions = {}): UseQueryResult<RunSummary[]> {
   const client = useStrutClient();
   const { live, enabled, ...filter } = opts;
@@ -295,10 +294,8 @@ function useHostState(): HostState {
   return useSyncExternalStore(host.subscribe, host.getState, host.getState);
 }
 
-/** Which app this page is (plans/apps.md §7.2), off its identity: a
- *  workspace app `{ name, version }`, or a JOB's app `{ job, path }` — whose
- *  own job it reads with no grant (`useRuns(null, { job })`, §6). Undefined
- *  under a host's own client. */
+/** Which app this page is (plans/apps.md §7.2), off its identity: the
+ *  workspace app `{ name, version }`. Undefined under a host's own client. */
 export function useApp(): AppIdentity | undefined {
   return useStrutClient().app;
 }

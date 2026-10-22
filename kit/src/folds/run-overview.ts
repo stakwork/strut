@@ -23,13 +23,12 @@ export interface TokenUsage {
 }
 
 /** The app a run worked for (plans/apps.md §5): a workspace app at a
- *  version, or a JOB's app — its directory in the job's (§6). */
-export type RunApp = { name: string; version: string } | { job: string; path: string };
+ *  version. */
+export type RunApp = { name: string; version: string };
 
-/** A run's app as a badge names it: a workspace app's name, a job's app's
- *  directory. */
+/** A run's app as a badge names it: its name. */
 export function runAppLabel(app: RunApp): string {
-  return "name" in app ? app.name : app.path;
+  return app.name;
 }
 
 export interface OverviewEvent {

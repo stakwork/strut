@@ -4127,9 +4127,9 @@ body.is-resizing-flyout * {
 }
 .app-host-overlay.is-error { color: var(--danger); }
 
-/* A job's app (plans/apps.md §6): the deliverable's page in the job
-   timeline, under a bar with Reload and "Publish as an app"
-   (components/JobAppPanel.tsx); large, in the artifact viewer. */
+/* An app a job delivered (the builder's, by name): its page in the job
+   timeline, under a bar with Reload (components/JobAppPanel.tsx); large,
+   in the artifact viewer. */
 .job-app {
   margin-top: var(--sp-3);
   max-width: 1100px;
@@ -4149,29 +4149,6 @@ body.is-resizing-flyout * {
 .job-app-sub { flex: 1; min-width: 0; font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-app-actions { display: flex; gap: var(--sp-1); flex-shrink: 0; }
 .job-app-actions .btn { text-transform: none; letter-spacing: 0; }
-.job-app-publish {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-.job-app-publish label { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-muted); }
-.job-app-publish input {
-  width: 200px;
-  font: inherit;
-  font-size: 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  color: var(--text);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--r-md);
-}
-.job-app-publish input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.job-app-note { font-size: 12px; color: var(--text-muted); padding: var(--sp-2) var(--sp-3); }
-.job-app-publish .job-app-note { padding: 0; }
 .job-app .claim-error { padding: var(--sp-2) var(--sp-3); }
 .job-app-frame { height: 560px; }
 .artifact-dialog-body .app-host { height: 74vh; }

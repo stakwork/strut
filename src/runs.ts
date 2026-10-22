@@ -145,9 +145,8 @@ export interface RunsCapability {
   launch(q: RunLaunchQuery, by: RunLaunchBy): Promise<RunLaunchResult>;
   cancel(q: { workflow: string; runId: string }): Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
   workflow(q: { workflow: string }): Promise<WorkflowInfo>;
-  /** Null when the run or the file is not there. `{ job, path }` reads a
-   *  file of the job's directory with no run in hand (a job's app, §6). */
-  files(q: { workflow: string; runId: string; path: string } | { job: string; path: string }): Promise<RunFile | null>;
+  /** Null when the run or the file is not there. */
+  files(q: { workflow: string; runId: string; path: string }): Promise<RunFile | null>;
   /** One agent's transcript by step path (`wf/review`, a sub-agent's
    *  `wf/review/003-agent`), capped (`capTranscript`). Throws what the route
    *  answers 404 with: no transcript at the path, or (`full`) a session gone. */

@@ -31,10 +31,10 @@ import { claimsTitle, claimsTone } from "./WorkflowFlyout";
 // `POST /jobs/:id/verify` — which runs every check against that turn now. A
 // verdict's screenshot is one of the job's files and opens in the viewer.
 //
-// A deliverable of `kind: "app"` (plans/apps.md §6) is a job's APP: it opens
-// in place under the cards — the first one already open — through the app
-// host, with Reload and "Publish as an app", and reloads by itself when a
-// refresh brings a new build hash.
+// A deliverable of `kind: "app"` is an app the builder published, by name:
+// it opens in place under the cards — the first one already open — through
+// the app host, with Reload, and reloads by itself when a refresh brings a
+// new build hash.
 
 export function JobTimeline(props: {
   job: api.JobView;
@@ -44,10 +44,8 @@ export function JobTimeline(props: {
   onOpenThread: (thread: api.JobThread, turn?: api.JobTurn) => void;
   /** Re-read the job — after a verify wrote evidence (and screenshots). */
   onRefresh?: () => void;
-  /** A strut link a job's app opened (`ui/open-link`). */
+  /** A strut link an app opened (`ui/open-link`). */
   onNavigate?: (params: Record<string, string>) => void;
-  /** A job's app was published to the workspace (the Apps list moved). */
-  onAppPublished?: (name: string) => void;
   /** Open a workspace app under Apps. */
   onOpenApp?: (name: string) => void;
 }) {
@@ -65,7 +63,7 @@ export function JobTimeline(props: {
     return () => { alive = false; };
   }, [job.job, job.usedAt, proposalsKey]);
   const [inline, setInline] = useState<string | null>(null);
-  // The job's app open under the cards (the first one, by default), and one
+  // The app open under the cards (the first one, by default), and one
   // opened large in the viewer. Kept by id: a refresh brings the newest
   // build of the same app.
   const [appOpen, setAppOpen] = useState<{ id: string; ref: api.ArtifactRef } | null>(null);
@@ -176,7 +174,7 @@ export function JobTimeline(props: {
           {job.artifacts.map((a) => (
             <button key={`${a.id}:${a.runId}`} class="job-art" onClick={() => openArtifact(a)} title={a.peer ? peerArtifactNote(a) : a.summary ?? a.title}>
               <span class="job-art-title"><span class="art-chip-kind">{a.kind}</span> {a.title}</span>
-              <span class="job-art-sub">{a.peer ? `on @${a.peer} · ${a.path ?? a.label ?? a.kind}` : api.hostableApp(a.app) ? `${openAppRef?.id === a.id ? "open below" : "open"} · ${"job" in a.app! ? a.app.path : `${a.app!.name} ${a.app!.version}`}` : a.label ?? a.summary ?? `run ${a.runId}`}{a.error ? ` · ${a.error}` : ""}</span>
+              <span class="job-art-sub">{a.peer ? `on @${a.peer} · ${a.path ?? a.label ?? a.kind}` : api.hostableApp(a.app) ? `${openAppRef?.id === a.id ? "open below" : "open"} · ${a.app!.name} ${a.app!.version}` : a.label ?? a.summary ?? `run ${a.runId}`}{a.error ? ` · ${a.error}` : ""}</span>
             </button>
           ))}
         </div>
@@ -185,14 +183,13 @@ export function JobTimeline(props: {
         )}
         {openAppRef && openApp && (
           <JobAppPanel
-            key={"job" in openApp ? `${openApp.job}/${openApp.path}` : `${openApp.name}@${openApp.version}`}
+            key={`${openApp.name}@${openApp.version}`}
             title={openAppRef.title}
             app={openApp}
             onClose={() => setAppOpen(null)}
             onExpand={() => setAppLarge({ title: openAppRef.title, app: openApp })}
             {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
             {...(props.onOpenApp ? { onOpenApp: props.onOpenApp } : {})}
-            {...(props.onAppPublished ? { onPublished: props.onAppPublished } : {})}
           />
         )}
       </div>
@@ -258,7 +255,7 @@ export function JobTimeline(props: {
       {viewing && <ArtifactViewer path={viewing} onClose={() => setViewing(null)} {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})} />}
       {appLarge && (
         <ArtifactViewer
-          path={"job" in appLarge.app ? api.jobAppDocumentPath(appLarge.app.job, appLarge.app.path) : api.appDocumentPath(appLarge.app.name, appLarge.app.version)}
+          path={api.appDocumentPath(appLarge.app.name, appLarge.app.version)}
           app={appLarge.app}
           onClose={() => setAppLarge(null)}
           {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}

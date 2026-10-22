@@ -246,8 +246,8 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/jobs/:id`                                            | the job read back: `{ job, title?, createdBy?, createdAt?, usedAt, busy?, workflow?, holds: [{ id, kind, since, note?, url? }], urls, repos, files, runs: [{ workflow, runId, at, parentRunId?, status, durationMs?, error?, sealed? }], sessions: [{ id, turns, …, busy? }], artifacts: [{ id, kind, title, summary?, url?, content?, runId, path? }], text?, claims? }` — `workflow` is what the job IS: the one its newest turn ran, `job` or `builder` (a run under the job of any other workflow is not a turn), the one `job/continue` launches next; `claims` is the job's ledger (§5.5), present only where the claims layer is on; `runs` newest first, `status` from the run's summary (`running` without one); a run with a `parentRunId` is one a turn launched, not a turn; a sealed workflow's run shows `sealed: true` and nothing past its status. `holds` are what the job keeps alive beyond a run (`plans/jobs.md` §6), each with a `url` when what it holds has an address; `urls` is the first hold of each kind that has one (`{ pod: "https://…" }`). `sessions` are the threads made under the job (a turn line's `job`, §9) or named after it. `artifacts` are the job's CURRENT deliverables — its successful top-level runs' `artifacts[]`, newest first, the first of each `id` winning, resolved as `…/runs/:runId/artifacts` resolves them, each with the run that last reported it and, for a file, its `path` in the directory (what `job/read` takes); `text` is the newest such run's `output.text`. `threads` (`plans/jobs-sidebar.md`, `src/job-threads.ts`) is the job's execution as a tree: every agent execution in its runs' logs — a `step.end` carrying `messages`, or an attempt of the core `agent` step — grouped by session into `[{ id, session, label, startedAt, updatedAt, turns, totals: { turns, usage, cost, toolCalls, context? } }]`, each turn `{ runId, workflow, path, stepType, label, at, durationMs?, status, turn?, session?, usage?, cost?, context?, toolCalls, transcript?, artifacts?, nodeCount, nodes?, spawned, peer? }` — `transcript` the §5 link (`?full=1` for a session turn), `artifacts` the run's declared deliverables on its last top-level turn, `spawned` the threads the turn caused (a sub-agent under its path, a child run it launched, a `strut/run-workflow` peer run with `peer: { id, workflow, runId, status }`), a run with no agent one turn of `stepType: "run"`. Chronological at every level. `?threads=0` leaves it out, `?nodes=1` adds each turn's touched graph nodes, `?limit=N` bounds the runs the fold reads (newest first; `omittedRuns` counts the rest). 404 for an unknown job |
 | GET    | `/jobs/:id/claims`                                     | `{ enabled, job, claims: LedgerClaim[] }` — the job's ledger alone (§5.5): what the work must deliver and whether it does, as of its newest turn. `{ enabled: false, claims: [] }` without the claims layer; 404 for a job not on file |
 | POST   | `/jobs/:id/verify`                                     | `{ claims?: [<claim id>], detach?: boolean }` (gated) → `{ job, key, runId, subjects, checks: [{ subject, path, claimId, checkId, lastVerify }], evidence, slots, costUsd, claims: LedgerClaim[] }` — verify the job NOW against its newest turn (`runId`): every check on every claim about the job fires, `manual` ones included, and evidence on an already verified turn is appended, not skipped; the ledger comes back with each check's `lastVerify`. `claims` narrows to ids; no body is every claim. `detach: true` answers 202 `{ job, started: true }` at once instead — each check's evidence and the pass's end reach the job's `jobCallback` (`CALLBACKS.md` §5), the ledger is `GET /jobs/:id/claims` after; a detached verify while one runs joins it. 404 for a job not on file, 409 without the claims layer |
-| GET    | `/jobs/:id/files`                                      | `{ job, files: ["plan.md", …], token? }` — every file in a job's directory (`job/dir`, `plans/jobs.md`), recursive, skipping the repositories checked out into it, and the job's file token, as `/artifacts/:runId` mints the run's; 404 for a job with no directory, 400 for a malformed id (percent-encode a `/`). `?path=<dir>` NARROWS it to a directory of the job (a job's app, §14.4): `{ job, path, files (relative to it), token? }` — a token that opens reads under that directory and nothing else of the job; 404 for no such directory, 400 for a path that leaves the job |
-| GET    | `/jobs/:id/files/<path>`                               | the file, served exactly like `/artifacts/:runId/<path>` — same content types, same headers, the job's token (or a token narrowed to a directory on the way to the file) as `?t=`. A job app's document — `<dir>/dist/index.html` beside `<dir>/app.yaml` — read by the token narrowed to `<dir>` carries the app's identity in `<meta name="strut-app-token">` and gets `sandbox allow-scripts`, as a workspace app's does (§14.4) |
+| GET    | `/jobs/:id/files`                                      | `{ job, files: ["plan.md", …], token? }` — every file in a job's directory (`job/dir`, `plans/jobs.md`), recursive, skipping the repositories checked out into it, and the job's file token, as `/artifacts/:runId` mints the run's; 404 for a job with no directory, 400 for a malformed id (percent-encode a `/`). |
+| GET    | `/jobs/:id/files/<path>`                               | the file, served exactly like `/artifacts/:runId/<path>` — same content types, same headers, the job's token as `?t=` |
 | DELETE | `/jobs/:id`                                            | `{ ok: true, job, released: [<hold id>, …] }` — close a job (`plans/jobs.md` §6): every hold a tool registered on it (a pod) is released through its release step, then the repositories, the directory and the record are removed; runs, chats and sessions are records of their own and stay. 409 while a run holds the job; 500 and nothing removed when a hold will not release (the error names it — call again); 404 for a job with neither a directory nor a record |
 
 ### 5.1 Summary (`RunSummary`, `src/core.ts`)
@@ -864,7 +864,7 @@ shadcn overrides, CSS), `public/` (assets) and `db/` (migrations, a later
 item), built against the KIT (`kit/`, `@strut/kit`: the frozen vendor layer,
 the bootstrap, the hooks) into ONE self-contained document,
 `dist/index.html`, that any MCP Apps host frames. An app lives in the
-workspace (below) or in a JOB's directory (§14.4). A workspace app is
+workspace (below; a JOB's app directory is retired, §14.4). A workspace app is
 versioned by the TREE HASH of its directory (`treeHash`, `src/version.ts`;
 `dist/` and `data.db` left out, the kit never in it): identical content
 re-activates the version it already is, anything else is the next `vN`. The
@@ -885,11 +885,11 @@ components as an app other apps import (`import { RunTimeline } from
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner? }` |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. A token for another app or version is `401` whatever else the request carries |
-| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings }`. Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. **Or `{ name, job, path }`** in place of `files` — "Publish as an app": a job's app (§14.4) becomes the workspace app `name`'s next version (v1 for a new name), built in a copy so the job's own `dist/` is untouched; the job's `<path>/data.db` comes along when the workspace app has none yet (`<dataDir>/apps/<name>/data.db`), never over one. 404 for a directory with no `app.yaml`, 400 for a bad job id or a path that leaves the job, or both `files` and `job` |
+| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings }`. Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | `{ version }` — rollback; publishes nothing |
 | DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
 
-The same reads and writes as steps — `app/list`, `app/get { name, version? }` (or `{ path, job? }`, an app directory — a job's app, §14.4),
+The same reads and writes as steps — `app/list`, `app/get { name, version? }` (or `{ path, job? }`, an app directory you are working on),
 `app/init { path, template? }`, `app/checkout { name, version?, path }`,
 `app/build { path }`, `app/publish { name, path, job? }` — are the authoring
 loop (`plans/apps.md` §8): a directory, the editor, build, read the errors,
@@ -921,12 +921,12 @@ the call against that app's manifest, in every host:
 
 | Call | Rule |
 | ---- | ---- |
-| `run/*` | only on a workflow in `grants.workflows` (`job` on `run/list` filters them); a sealed workflow refused by name; `run/launch { job }` refused — a page launches no job's turn. A job's app also holds its own job (§14.4) |
+| `run/*` | only on a workflow in `grants.workflows` (`job` on `run/list` filters them); a sealed workflow refused by name; `run/launch { job }` refused — a page launches no job's turn |
 | any other type | only when `grants.steps` names it (globs as `agentTools` takes them) |
 | `llm`, `agent`, `exec`, `acp/prompt` | refused whatever the manifest says — the workflow is the unit of spend (§5.1): a paid or shell-shaped step runs inside a workflow the app launches |
 | a sealed step | refused |
 | a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare — the type from the config for a create, the node read first for an edit or delete by `ref_id`; every value checked must be a literal, an edge is located by its endpoints |
-| `job/get`, `job/read` | a workspace app: only when `grants.steps` names them; a job's app: its own job, whatever the manifest says, and no other job, whatever it says (§14.4) |
+| `job/get`, `job/read` | only when `grants.steps` names them |
 | `sqlite/*`, `automation/*`, `job/start`, `job/continue` | "not available in this strut yet" (work items 3, 7; a "continue this job" door, §12 of the plan) |
 | `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `job/dir` | not a thing a page does |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
@@ -958,7 +958,7 @@ as `agentTools: ["run/*"]`, and the §3 … §7 routes' layers one more way
 | `run/launch` | `{ workflow, input?, params?, job?, title?, key? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }` |
 | `run/cancel` | `{ workflow, runId }` | `{ ok: true, runId, state }`; a run that is not live is an error |
 | `run/workflow` | `{ workflow }` | `{ name, description?, category?, activeVersion?, input? (the \`input:\` block), params?, peer? }` |
-| `run/files` | `{ workflow, runId, path }`, or `{ job, path }` — a file of a job's directory with no run in hand | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
+| `run/files` | `{ workflow, runId, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
 
 ### 14.3 Hosting an app (plans/apps.md §7.3, §7.4)
 
@@ -990,56 +990,15 @@ Nothing else a host says to strut changes: runs, jobs, chat and files stay
 on the HTTP API. A page's `tools/call` reaches strut in the shape it left
 the frame in.
 
-### 14.4 A job's app (plans/apps.md §6, §7.2)
+### 14.4 A published app as a deliverable
 
-**A published app as a deliverable (2026-10-22).** The `builder` workflow
-publishes an app in the workspace and hands it over by NAME in its reply's
-`artifacts`: `{ id, kind: "app", title, app: "<name>", version? }`, resolved
-to the version's document with `app: { name, version, hash, builtAt }`
-beside the `url` (`CALLBACKS.md` §4) — on `run.end`, `…/runs/:runId/artifacts`
-and `GET /jobs/:id`; a job that ran the builder passes the entry on. Host
-it as §14.3: the version's listing mints its token. The `job` seed grants
-no `app/*` step and strut seeds no `Job App` Concept any more (both
-retired that day: a page over a job's own results is an HTML file in its
-directory, and an app that should exist is the builder's); what follows
-is the runtime for a job's app DIRECTORY, which still serves a directory
-handed over as `{ kind: "app", path }` and is slated for removal.
-
-A job's agent could write an app in the JOB's directory — `apps/<name>/`,
-laid out like any app — with its editor, `app/init { path }` to scaffold it
-and `app/build { path }` to build it, and hand it over as a deliverable
-`{ id, kind: "app", title, path: "apps/<name>" }`. It has no versions and
-no pointer: one live directory behind one link. What changes:
-
-- **The deliverable** resolves to the app's document with `app: { job,
-  path, hash, builtAt }` beside the `url` (`CALLBACKS.md` §4) — on
-  `run.end`, `…/runs/:runId/artifacts` and `GET /jobs/:id`.
-- **The build tells the job's host**: `app/build` in a job's directory
-  sends `job.update { kind: "app", id: <path>, url: <document>, state:
-  built | failed, detail: { path, hash, bytes } }` (`CALLBACKS.md` §5). Its
-  result carries `clientErrors`, what the page reported since. A model
-  wrote the grants and nothing publishes it, so the build checks them under
-  the meta surface's rules: `llm`, `agent`, `exec` or anything sealed in
-  them is a build error.
-- **Its identity is the job's token NARROWED to its directory**:
-  `GET /jobs/:id/files?path=<dir>` mints it; the document read by it
-  carries `job:<id, percent-encoded>/<dir>.<token>` in its meta (unsigned,
-  `job:<id>/<dir>.`, on a strut with no secret, as for a workspace app),
-  and the token opens that directory's files and nothing else of the job.
-- **`step_run`** reads the app off that identity, its manifest from
-  `<job dir>/<dir>/app.yaml` at each call, and runs the step with `ctx.app
-  = { job, path }`. The manifest's grants apply as for any app, and every
-  job app also holds ITS OWN JOB, implicitly: `run/list { job }`; `run/get`,
-  `run/events`, `run/transcript`, `run/files` on a run launched under it,
-  whatever workflow it ran; `run/files { job, path }`; `job/get`,
-  `job/read` — of that job, never another's, whatever the manifest says.
-  An error report and a kept write carry `app: { job, path }`; `app/get {
-  path }` (from inside the job) reads them back with `stale` — the
-  document is older than the directory, so `app/build` is due.
-- **Hosting it** is §14.3 with the narrowed listing in place of the
-  version's: strut's job timeline opens the first app deliverable in place
-  (Reload, Expand into the viewer, "Publish as an app" — `POST /apps {
-  name, job, path }`), reloading when a refresh brings a new `app.hash`.
-  `ui/message` from a job's app has no destination in strut's UI yet (a
-  job has no send box, §12 of the plan); a host such as hive puts it in
-  the job's conversation.
+The `builder` workflow publishes an app in the workspace and hands it over
+by NAME in its reply's `artifacts`: `{ id, kind: "app", title, app:
+"<name>", version? }`, resolved to the version's document with `app: {
+name, version, hash, builtAt }` beside the `url` (`CALLBACKS.md` §4) — on
+`run.end`, `…/runs/:runId/artifacts` and `GET /jobs/:id`; a job that ran
+the builder passes the entry on. Host it as §14.3: the version's listing
+mints its token. A directory is no app: a JOB's app (a live directory in a
+job's, with an identity of its own) is retired, runtime and all
+(`plans/chained-orchestrators.md` §6). A page over a job's own results is
+an HTML file in its directory, served as any job file is.

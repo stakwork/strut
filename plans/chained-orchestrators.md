@@ -13,8 +13,9 @@
 > 2026-10-22: strut#271, #274, #276 and item 4's `personalOrchestratorSystem`,
 > with stakwork/stakgraph#1811 for the lab's half of items 2 and 3 (each
 > item says what was built differently), and item 5 after them. Left:
-> item 6, hive's pairing, the desktop app. The desktop app's how-to is
-> `specs/DESKTOP.md`. Companion to `federation.md` (peers, dispatch-through, the
+> hive's pairing, the desktop app. Item 6 (the job-app runtime) is removed
+> on strut's side; hive drops its job-app path in its own PR. The desktop
+> app's how-to is `specs/DESKTOP.md`. Companion to `federation.md` (peers, dispatch-through, the
 > deferred read-through, `peer: true`), `builder-job.md` (the `job` /
 > `builder` split and the peer build), `jobs.md` + `live-artifacts.md` +
 > `specs/CALLBACKS.md` (what a run tells its host, and when),
@@ -500,7 +501,18 @@ checkout as strut#261 did (a third for the spoke in item 5).
    `/peers/:id/artifacts/:runId/…` proxied with the peer's token
    (`federation.md` §2.1, the files slice only). Test: three struts, a
    spoke's deliverable opened from the laptop through central.
-6. **Remove the job-app runtime** (§6, the whole half), after the hive
+6. **BUILT (strut side).** As built: the `{ job, path }` identity, the
+   job's narrowed file tokens (`GET /jobs/:id/files?path=`), the path form
+   of `kind: "app"` (now an error naming the by-name form), the implicit
+   own-job grant on `step_run`, `run/files { job, path }`, `app/build`'s
+   job-directory branch (meta rules, `clientErrors`, `job.update { kind:
+   "app" }`), "Publish as an app" (`POST /apps { name, job, path }`) and
+   the kit's job identity are gone; the job timeline's panel hosts the
+   builder's published app. Done before hive's half, at the owner's ask:
+   nothing produces job-app entries, so hive's old path finds none. Found
+   on the way: the job index resolved deliverables without the published-app
+   lookup, so a builder's app in `GET /jobs/:id` was `no apps here`; fixed.
+   **Remove the job-app runtime** (§6, the whole half), after the hive
    check.
 
 Hive: the pairing endpoints and device credential (§4), person-scoped

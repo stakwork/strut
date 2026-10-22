@@ -12,19 +12,11 @@
  * is the unit of spend. A person's `POST /apps` (`surface: "person"`) may
  * grant anything, the `peer: true` precedent. Built by `createStrut` into
  * `ctx.services.apps`; an embedder builds one with `createApps`.
- *
- * A JOB's app (§6) is a directory in the job's, with no versions and no
- * pointer: `getDir` reads it back as `app/get { path }` returns it (its
- * build, `stale`, its client errors keyed by `{ job, path }`), and a build
- * of one runs under the meta surface's rules first — a model wrote its
- * grants and nothing publishes it. A person publishes one to the workspace
- * (`POST /apps { name, job, path }`, "Publish as an app"): its `data.db`
- * comes along when the workspace app has none yet (§1.2, `dataFrom`).
  */
-import { copyFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isJobApp, type AppRef, type JobAppRef, type StepRegistry } from "../core.js";
+import type { AppRef, StepRegistry } from "../core.js";
 import { globToRegExp } from "../closure.js";
 import { isSealedStep } from "../sealed.js";
 import { treeHash } from "../version.js";
@@ -66,8 +58,8 @@ export interface AppView extends AppRecord {
 /** One client-side error an app's page reported (`app/report-error`). */
 export interface AppError {
   at: string;
-  /** The workspace app's version; absent for a job's app, which has none. */
-  version?: string;
+  /** The app's version the page ran. */
+  version: string;
   message: string;
   stack?: string;
   componentStack?: string;
@@ -79,14 +71,11 @@ export interface AppError {
 /** How many of an app's errors `app/get` carries. */
 export const APP_ERRORS_MAX = 50;
 
-/** A directory read back as an app (`app/get { path }`, a JOB's app §6):
- *  what it holds, its build, and whether the build is behind its sources. */
+/** A directory read back as an app (`app/get { path }`): what it holds,
+ *  its build, and whether the build is behind its sources. */
 export interface AppDirView {
   /** The directory on this host. */
   dir: string;
-  /** For a job's app: the job and the app's path in it. */
-  job?: string;
-  path?: string;
   /** Null when `app.yaml` is missing or does not parse (`manifestErrors`). */
   manifest: AppManifest | null;
   manifestErrors?: string[];
@@ -97,8 +86,6 @@ export interface AppDirView {
    *  is due before the person sees the change. */
   stale: boolean;
   inertGrants: string[];
-  /** A job app's latest client-side errors, newest first. */
-  errors?: AppError[];
 }
 
 export type PublishSurface = "person" | "ai";
@@ -111,9 +98,6 @@ export interface AppPublishOptions {
   source?: VersionSource;
   upstream?: AppUpstream | null;
   reactivateKnown?: boolean;
-  /** A directory whose `data.db` comes along when the workspace app has
-   *  none yet (§1.2: a job's prototype with real data becomes a real app). */
-  dataFrom?: string;
 }
 
 export type AppPublishResult =
@@ -126,15 +110,13 @@ export interface AppsCapability {
   /** A version's directory (the active one by default), or null. */
   versionDir(name: string, version?: string): Promise<{ path: string; version: string; hash: string } | null>;
   /** Build the directory in place (`dist/`), with the installed apps and the
-   *  workspace's workflows in reach; `name` is the app's, when known. Under
-   *  `surface: "ai"` (a job's app, which nothing publishes) the meta
-   *  surface's grant rules are checked first, as a publish checks them. */
-  build(dir: string, opts?: { name?: string; surface?: PublishSurface }): Promise<BuildResult>;
-  /** A directory read back as an app — a job's (`app`), or any other. */
-  getDir(dir: string, app?: JobAppRef): Promise<AppDirView>;
-  /** An app's latest client-side errors (§8), newest first: a workspace app
-   *  by name, a job's app by `{ job, path }`. Empty with no run store. */
-  errorsOf(app: string | JobAppRef): Promise<AppError[]>;
+   *  workspace's workflows in reach; `name` is the app's, when known. */
+  build(dir: string, opts?: { name?: string }): Promise<BuildResult>;
+  /** A directory read back as an app. */
+  getDir(dir: string): Promise<AppDirView>;
+  /** An app's latest client-side errors (§8), newest first, by name. Empty
+   *  with no run store. */
+  errorsOf(app: string): Promise<AppError[]>;
   /** Build, then record the version and copy the directory into place. */
   publish(dir: string, name: string, opts: AppPublishOptions): Promise<AppPublishResult>;
   /** Copy a version's directory to an empty `to`, to edit. */
@@ -157,22 +139,10 @@ export interface AppsDeps {
   templatesDir?: string;
   now?: () => Date;
   /** The app's latest client-side errors, newest first (§8) — createStrut
-   *  reads them off the run store (`appErrors`); absent, `get` carries none.
-   *  A workspace app by name, a job's app by `{ job, path }`. */
-  errors?: (app: string | JobAppRef, max: number) => Promise<AppError[]>;
+   *  reads them off the run store (`appErrors`); absent, `get` carries none. */
+  errors?: (app: string, max: number) => Promise<AppError[]>;
 }
 
-/** An app's own SQLite file (§4.4): `<path>/data.db` in a job, beside the
- *  versions (`<dataDir>/apps/<name>/data.db`) in the workspace. */
-const DATA_FILE = "data.db";
-
-const isFile = async (p: string) => {
-  try {
-    return (await stat(p)).isFile();
-  } catch {
-    return false;
-  }
-};
 
 const isDir = async (p: string) => {
   try {
@@ -259,7 +229,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     return out;
   };
 
-  const errorsOf = async (app: string | JobAppRef) => (deps.errors ? await deps.errors(app, APP_ERRORS_MAX).catch(() => []) : []);
+  const errorsOf = async (app: string) => (deps.errors ? await deps.errors(app, APP_ERRORS_MAX).catch(() => []) : []);
 
   return {
     list: () => workspace.listApps(),
@@ -280,24 +250,16 @@ export function createApps(deps: AppsDeps): AppsCapability {
     versionDir,
 
     async build(dir, opts) {
-      if (opts?.surface === "ai") {
-        const read = await readManifest(dir);
-        if (read.ok) {
-          const refused = await refusedGrants(read.manifest);
-          if (refused.length) return { ok: false, errors: refused, warnings: [] };
-        }
-      }
       return buildApp(dir, buildDeps(opts?.name));
     },
 
-    async getDir(dir, app) {
+    async getDir(dir) {
       const missing = !(await isDir(dir));
       const read = missing ? null : await readManifest(dir);
       const manifest = read?.ok ? read.manifest : null;
       const build = missing ? null : await readBuildInfo(dir);
       return {
         dir,
-        ...(app ? { job: app.job, path: app.path } : {}),
         manifest,
         ...(read && !read.ok ? { manifestErrors: read.errors } : {}),
         missing,
@@ -305,7 +267,6 @@ export function createApps(deps: AppsDeps): AppsCapability {
         build,
         stale: missing || (await isStale(dir, build)),
         inertGrants: manifest ? await inert(manifest) : [],
-        ...(app && deps.errors ? { errors: await errorsOf(app) } : {}),
       };
     },
 
@@ -334,13 +295,6 @@ export function createApps(deps: AppsDeps): AppsCapability {
       // rebuild of a known version (§1.3). Publishing from the version's own
       // directory copies nothing.
       if (resolve(dir) !== resolve(path)) await copyAppDir(dir, path, { dist: true });
-      // The app's database is the APP's, beside its versions: a job's comes
-      // along only when there is none yet — never over the workspace's data.
-      if (opts.dataFrom) {
-        const from = join(opts.dataFrom, DATA_FILE);
-        const to = join(dirname(path), DATA_FILE);
-        if ((await isFile(from)) && !(await isFile(to))) await copyFile(from, to);
-      }
       return { ok: true, name, version: r.version, changed: r.changed, hash: built.hash, bytes: built.bytes, warnings: built.warnings };
     },
 
@@ -388,33 +342,31 @@ export function createApps(deps: AppsDeps): AppsCapability {
 
 /**
  * An app's latest client-side errors off the run store (§8): the kept
- * `step:app/report-error` runs whose summary carries the app — a workspace
- * app by name, a job's app by `{ job, path }` — newest first: what
+ * `step:app/report-error` runs whose summary carries the app, by name —
+ * newest first: what
  * `createApps({ errors })` is given on the standard server. One summary
  * read per kept run, newest first, stopping at `max` hits or `scanned`
  * runs.
  */
 export async function appErrors(
   store: { listRuns(key: string): Promise<string[]>; getRunSummary(key: string, runId: string): Promise<{ startedAt: string; output?: unknown; actor?: string; app?: AppRef } | null> },
-  app: string | JobAppRef,
+  app: string,
   max = APP_ERRORS_MAX,
   scanned = 1000,
 ): Promise<AppError[]> {
   const key = "step:app/report-error";
   const out: AppError[] = [];
   const ids = (await store.listRuns(key).catch(() => [])).slice(0, scanned);
-  const same = (got: AppRef): boolean =>
-    typeof app === "string" ? !isJobApp(got) && got.name === app : isJobApp(got) && got.job === app.job && got.path === app.path;
   for (const runId of ids) {
     if (out.length >= max) break;
     const s = await store.getRunSummary(key, runId).catch(() => null);
-    if (!s?.app || !same(s.app)) continue;
+    if (s?.app?.name !== app) continue;
     // The report rides on the step's output (a summary keeps the run's
     // input, never a step's config).
     const report = (s.output ?? {}) as { message?: unknown; stack?: unknown; componentStack?: unknown };
     out.push({
       at: s.startedAt,
-      ...(isJobApp(s.app) ? {} : { version: s.app.version }),
+      version: s.app.version,
       message: typeof report.message === "string" ? report.message : "",
       ...(typeof report.stack === "string" ? { stack: report.stack } : {}),
       ...(typeof report.componentStack === "string" ? { componentStack: report.componentStack } : {}),
