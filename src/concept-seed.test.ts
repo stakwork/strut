@@ -108,6 +108,11 @@ describe("concept files (pure)", () => {
     assert.ok(job.includes("- Explore\n"));
   });
 
+  it("context/concept with no name renders nothing, graph or not (a template naming no page)", async () => {
+    assert.deepEqual(await conceptStep.run(conceptStep.input.parse({}), { services: {} } as never), { text: "" });
+    assert.deepEqual(await conceptStep.run(conceptStep.input.parse({ name: undefined }), { services: { graph: {} } } as never), { text: "" });
+  });
+
   it("renders the kinds alone (docs: false) for an agent that routes by them, with no opener when it has no tool, and nothing when there are no kinds", () => {
     const page = { name: "Job", docs: "The job agent's instructions.", children: [{ name: "Explore", description: "Finding out." }] };
     const kinds = renderConceptSection(page, "", { docs: false });

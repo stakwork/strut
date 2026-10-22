@@ -17,7 +17,8 @@ name: orchestrator
 # the `Job` Concept's children — and the kinds of thing the builder builds
 # here — the `Workflow Builder` Concept's — each the tree its own agent
 # reads, grown by a deployment and its workspace, so a turn routes a
-# request by kind and names it in the brief. One conversation is one session, for good: the agent step
+# request by kind: a job's as `kind` on job/start (the job opens every turn
+# with that page), a build's named in the brief. One conversation is one session, for good: the agent step
 # compacts it in place when it nears the window. Its system prompt is the
 # session's first turn's. It writes no files (no built-ins): its
 # `artifacts` point at jobs' deliverables or carry small inline content,
@@ -46,7 +47,7 @@ steps:
   # The kinds of work a JOB can do here: the `Job` Concept's children, name
   # + description — the page's own docs left out, they are the job agent's
   # instructions — rendered for the end of the system prompt, so a turn
-  # routes a request by kind and names it in the job's brief. The same tree
+  # routes a request by kind and passes it as the job's `kind`. The same tree
   # the job agent reads; a deployment and its workspace grow it. Read every
   # turn; the session keeps its first turn's prompt. Empty without a graph,
   # the page, or any kind under it. No `tool`: this agent has no graph-get
@@ -190,9 +191,11 @@ params:
     Two lists close this prompt, from the workspace's knowledge graph,
     each kind a name and a line: under `Job`, the kinds of work a job does
     here; under `Workflow Builder`, the kinds of workflow built here, and
-    the apps over them. When a request is one of them, name the kind in
-    the job's prompt. When none fits, or there are no lists, a job still
-    does the work.
+    the apps over them. When a request is one of the kinds under `Job`,
+    pass its name as the job's `kind`: the job starts from that kind's
+    page. When it is one under `Workflow Builder`, name it in the job's
+    prompt. When none fits, or there are no lists, a job still does the
+    work.
 
     Start a JOB (job/start) with everything it needs in its prompt, since
     it does not see this conversation — the request in full, links,

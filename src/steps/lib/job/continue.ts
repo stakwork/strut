@@ -10,8 +10,10 @@ import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_sha
  * record's, not the caller's: the launcher follows the job's newest turn
  * (`turnOf`, jobs.ts — a builder job stays a builder job, and one on a peer
  * carries that turn's `input.peer` along), so the caller names only the
- * job. Refused (`job_busy:`) while a run of the job is in flight, and for a
- * job not on file.
+ * job. The job's `kind` comes along the same way, unless the caller names
+ * another (a plan the person approved, now a Code Change). Refused
+ * (`job_busy:`) while a run of the job is in flight, and for a job not on
+ * file.
  */
 export default defineStep({
   type: "job/continue",
@@ -23,6 +25,10 @@ export default defineStep({
     job: z.string().min(1).describe("The job id, from job/start or job/list."),
     prompt: z.string().min(1).describe("The message for the job. It does not see this conversation: include what it needs."),
     session: z.string().optional().describe("Another of the job's threads to continue (job/get lists them). Defaults to the job's own."),
+    kind: z
+      .string()
+      .optional()
+      .describe("Only when the work has become another kind (a plan the person approved, now a code change): its name in the list of the kinds of work a job does here. Left out, the job keeps the kind it has."),
     attachments: attachmentsField,
   }),
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
@@ -36,7 +42,7 @@ export default defineStep({
       launch,
       {
         job: cfg.job,
-        input: { prompt: cfg.prompt, ...(cfg.session ? { session: cfg.session } : {}) },
+        input: { prompt: cfg.prompt, ...(cfg.session ? { session: cfg.session } : {}), ...(cfg.kind ? { kind: cfg.kind } : {}) },
         ...(attachments ? { attachments } : {}),
       },
       cfg.job,

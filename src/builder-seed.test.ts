@@ -1,7 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yaml from "js-yaml";
@@ -55,6 +57,7 @@ describe("the builder workflow strut ships", () => {
     assert.deepEqual(builtins, ["web_search", "web_fetch", "str_replace_based_edit_tool", "repo_overview", "fulltext_search"], "the web tools and the editor family; never bash (plans/apps.md §8)");
     assert.ok(!builtins.includes("bash"), "no shell on a workflow another strut may launch");
     assert.ok(tools.includes("app/*"), "apps are a builder job's kind of work");
+    assert.ok(tools.includes("git/checkout"), "a repository to learn from, checked out into the job's directory");
     assert.equal(concept, "Workflow Builder");
     assert.ok(tools.includes("meta/*"), "the whole authoring surface, by glob");
     for (const t of ["graph/graph-get", "job/list", "job/get", "job/read"]) assert.ok(tools.includes(t), t);
@@ -320,7 +323,7 @@ describe("the builder, end to end", () => {
     assert.equal(seen.length, 1, "one model call: the answer");
     const req = seen[0];
     const names: string[] = req.tools.map((t: any) => t.name);
-    for (const t of ["meta_list_workflows", "meta_get_step", "meta_create_step", "meta_run_step", "meta_validate_workflow", "meta_publish_workflow", "meta_run_workflow", "meta_add_claim", "graph_graph_get", "job_list", "app_init", "app_build", "app_publish", "app_get", "final_answer"]) {
+    for (const t of ["meta_list_workflows", "meta_get_step", "meta_create_step", "meta_run_step", "meta_validate_workflow", "meta_publish_workflow", "meta_run_workflow", "meta_add_claim", "graph_graph_get", "job_list", "app_init", "app_build", "app_publish", "app_get", "git_checkout", "final_answer"]) {
       assert.ok(names.includes(t), `${t} in ${names.join(",")}`);
     }
     for (const t of ["bash", "file_summary"]) assert.ok(!names.includes(t), `no ${t}`);
@@ -333,6 +336,46 @@ describe("the builder, end to end", () => {
     assert.ok(system.includes("HOSTSECTION"), "the host's section after it");
     assert.ok(system.indexOf("workflow BUILDER") < system.indexOf("HOSTSECTION"));
     const lastUser = JSON.stringify(req.messages.filter((m: any) => m.role === "user").at(-1));
-    assert.ok(lastUser.includes("Workspace: @acme, the one this strut belongs to. Build a hello-world workflow"), lastUser);
+    assert.ok(lastUser.includes("Workspace: @acme, the one this strut belongs to. Your job id: build-1. Build a hello-world workflow"), lastUser);
+    assert.ok(system.includes("git/checkout, `workdir` your job id"), "how a repository reaches the editor");
+  });
+
+  it("a repository to learn from: git/checkout with the job id as `workdir` lands in the job's directory, where the editor reads it", async () => {
+    const origin = join(dir, "origin");
+    const git = (args: string[]) => {
+      const r = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", ...args], { cwd: origin, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    };
+    await mkdir(origin, { recursive: true });
+    git(["init", "-q", "-b", "main"]);
+    await writeFile(join(origin, "Panel.tsx"), "export function Panel() { return <p>PORT ME</p>; }\n");
+    git(["add", "-A"]);
+    git(["commit", "-q", "-m", "init"]);
+
+    const seen: any[] = [];
+    process.env["ANTHROPIC_BASE_URL"] = await listen((body) => {
+      seen.push(body);
+      if (seen.length === 1) return toolUse("toolu_1", "git_checkout", { repo: `file://${origin}`, workdir: "build-2" });
+      if (seen.length === 2) return toolUse("toolu_2", "str_replace_based_edit_tool", { command: "view", path: "origin/Panel.tsx" });
+      return toolUse("toolu_3", "final_answer", { text: "Read the panel.", artifacts: [] });
+    });
+    const ends: any[] = [];
+    const callback = `${await listen((body) => void ends.push(body))}/run-end`;
+    const strut = await createStrut({ workspace: new WorkspaceManager(dir), ...quiet(), job: false, orchestrator: false });
+    const res = await strut.app.request(`/workflows/${BUILDER_WORKFLOW}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ job: "build-2", input: { prompt: "Port the panel" }, callback: { url: callback } }),
+    });
+    assert.equal(res.status, 202);
+    const { runId } = (await res.json()) as { runId: string };
+    const end = await until(() => ends.find((e) => e.runId === runId));
+    assert.equal(end.status, "success", JSON.stringify(end));
+
+    assert.equal(seen.length, 3);
+    const results = JSON.stringify(seen[2].messages);
+    assert.ok(results.includes(join(dir, "jobs", "build-2", "origin")), `checked out into the job's directory: ${results}`);
+    assert.ok(results.includes("PORT ME"), "the editor read the checked-out file by its path in the job's directory");
+    assert.ok(existsSync(join(dir, "jobs", "build-2", "origin", "Panel.tsx")), "kept for the next turn");
   });
 });

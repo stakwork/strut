@@ -3,7 +3,7 @@ import { mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import type { StrutCapabilities } from "../../../capabilities.js";
+import type { ShellCapability, StrutCapabilities } from "../../../capabilities.js";
 import { idProblem } from "../../../session-store.js";
 import { holdJob, jobRoot, jobTtlMs, readJobRecord, releaseWith, sweepJobs, touchJob } from "../../../jobs.js";
 import {
@@ -17,7 +17,50 @@ import {
   withLock,
   worktreeRoot,
   type GitCtx,
+  type GitOpts,
 } from "./_shared.js";
+
+/** Where the cache keeps the remote's branches: `origin/<name>`, as any
+ *  clone does. Its own `refs/heads/*` are the branches agents make in its
+ *  working copies, which a fetch never touches. */
+const TRACKING = "+refs/heads/*:refs/remotes/origin/*";
+
+/**
+ * A cache from before TRACKING mirrored the remote into `refs/heads/*`
+ * (`clone --bare`) and fetched with `--prune` into them — so a branch an
+ * agent made in a kept working copy was deleted by the next run's fetch,
+ * whoever ran it, and that copy's next commit was a root commit holding
+ * every file. Moved over once: the mirrored heads go, except one a working
+ * copy has checked out, and the fetch tracks the remote from then on.
+ */
+async function trackRemoteBranches(shell: ShellCapability, cacheDir: string, url: string, o: Omit<GitOpts, "cwd">): Promise<void> {
+  const at = { cwd: cacheDir, ...o };
+  const spec = await git(shell, ["config", "--get", "remote.origin.fetch"], at);
+  if (spec.code === 0 && spec.stdout.trim() === TRACKING) return;
+  if ((await git(shell, ["config", "--get", "remote.origin.url"], at)).code !== 0) {
+    await gitOk(shell, ["config", "remote.origin.url", url], at); // a cache cut off before its remote was added
+  }
+  const heads = (await gitOk(shell, ["for-each-ref", "--format=%(refname)", "refs/heads/"], at)).split("\n").filter(Boolean);
+  const checkedOut = new Set(
+    (await gitOk(shell, ["worktree", "list", "--porcelain"], at))
+      .split("\n")
+      .filter((l) => l.startsWith("branch "))
+      .map((l) => l.slice("branch ".length)),
+  );
+  const mirrored = heads.filter((h) => !checkedOut.has(h));
+  if (mirrored.length) {
+    const del = await shell({
+      cmd: "git",
+      args: ["update-ref", "--stdin"],
+      cwd: cacheDir,
+      stdin: mirrored.map((h) => `delete ${h}\n`).join(""),
+      timeoutMs: o.timeoutMs ?? 60_000,
+      ...(o.signal ? { signal: o.signal } : {}),
+    });
+    if (del.code !== 0) throw new Error(`git update-ref failed: ${(del.stderr || del.stdout).trim().slice(-2000)}`);
+  }
+  await gitOk(shell, ["config", "remote.origin.fetch", TRACKING], at);
+}
 
 const EXAMPLE = `- id: checkout
   type: git/checkout
@@ -32,7 +75,9 @@ const EXAMPLE = `- id: checkout
 /**
  * A fresh, isolated working copy of a repository at a ref — what an `agent`
  * or `exec` step works in (`cwd`). Internally a credential-free bare cache
- * per remote under `<dataDir>/repos/` (cloned once, fetched after) plus a
+ * per remote under `<dataDir>/repos/` (made once, fetched every run; the
+ * remote's branches as `origin/<name>`, so a branch an agent makes in a
+ * working copy is its own and outlives other runs' fetches) plus a
  * detached worktree per run INSIDE THE RUN'S OWN DIRECTORY — its artifact
  * dir, `<artifacts>/<runId>/<repo>`, the directory `job/dir` hands a run
  * that has no job, so `cwd: "{{ dir.path }}"` holds the repositories either
@@ -57,7 +102,8 @@ export default defineStep({
   type: "git/checkout",
   description:
     `Check out a git repository into a fresh, isolated working copy for this run and return its path — the cwd for an agent or exec step. ` +
-    `Clones once into a credential-free cache and fetches on later runs; the working copy lives inside the run's own directory (the one job/dir returns on a run without a job: <artifacts>/<runId>/<repo>) and is removed when the run ends. ` +
+    `Keeps one credential-free cache per repository, fetched every run; the working copy lives inside the run's own directory (the one job/dir returns on a run without a job: <artifacts>/<runId>/<repo>) and is removed when the run ends. ` +
+    `In the working copy the remote's branches are origin/<name>, as in any clone; a branch made there is the copy's own. ` +
     `ref: a branch, tag or commit sha (default: the remote's default branch). ` +
     `workdir: the JOB whose directory keeps the working copy (usually "{{ $job }}") — the next run naming it finds the same path with every edit, untracked and ignored file in place (reused: true), which is how the files follow an agent's \`session\`. ` +
     `Auth: the tokenSecret secret (default GITHUB_TOKEN), needed for private repos — the value only ever reaches git's child env, never the log or the checkout. ` +
@@ -73,7 +119,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        'KEEP the working copy in this JOB\'s directory (<dataDir>/jobs/<name>/<repo>; usually "{{ $job }}", the job the run was launched with): it is not removed when the run ends, and the next run that names it gets the same path exactly as it was left (output `reused: true`; `ref` only applies when the copy is created, `sha` is its current HEAD). One run at a time per job (a second fails with `job_busy:`). Names are GLOBAL, like session ids; letters, digits and ". _ -" in `/`-separated segments. A job idle for STRUT_WORKDIR_TTL_DAYS (default 7) loses its repositories, not its other files — the next run starts from a fresh copy (`reused: false`). Omit for a fresh copy per run.',
+        'KEEP the working copy in this JOB\'s directory (<dataDir>/jobs/<name>/<repo>; usually "{{ $job }}", the job the run was launched with — an agent calling this as a tool passes its job id itself): it is not removed when the run ends, and the next run that names it gets the same path exactly as it was left (output `reused: true`; `ref` only applies when the copy is created, `sha` is its current HEAD). One run at a time per job (a second fails with `job_busy:`). Names are GLOBAL, like session ids; letters, digits and ". _ -" in `/`-separated segments. A job idle for STRUT_WORKDIR_TTL_DAYS (default 7) loses its repositories, not its other files — the next run starts from a fresh copy (`reused: false`). Omit for a fresh copy per run.',
       ),
     timeoutMs: z.number().int().positive().default(600_000).describe("per git command (default 10 min)"),
   }),
@@ -135,15 +181,15 @@ export default defineStep({
         const o = { token, timeoutMs: cfg.timeoutMs, signal: cancel.signal };
         await mkdir(dirname(cacheDir), { recursive: true });
         if (!existsSync(join(cacheDir, "HEAD"))) {
-          await rm(cacheDir, { recursive: true, force: true }); // a half-finished clone
-          await gitOk(shell, ["clone", "--bare", "--quiet", r.url, cacheDir], { cwd: dirname(cacheDir), ...o });
+          await rm(cacheDir, { recursive: true, force: true }); // a half-made cache
+          await gitOk(shell, ["init", "--bare", "--quiet", cacheDir], { cwd: dirname(cacheDir), ...o });
+          await gitOk(shell, ["remote", "add", "origin", r.url], { cwd: cacheDir, ...o }); // fetches into TRACKING
         } else {
-          await gitOk(
-            shell,
-            ["fetch", "--quiet", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"],
-            { cwd: cacheDir, ...o },
-          );
+          await trackRemoteBranches(shell, cacheDir, r.url, o);
         }
+        // --prune drops what the remote deleted — under origin/, never a
+        // branch an agent made.
+        await gitOk(shell, ["fetch", "--quiet", "--prune", "origin", TRACKING, "+refs/tags/*:refs/tags/*"], { cwd: cacheDir, ...o });
         await ctx.control?.checkpoint();
 
         // The remote's default branch — asked of the remote, so a change on
@@ -165,9 +211,13 @@ export default defineStep({
         }
 
         const ref = cfg.ref ?? branch;
+        // The remote's branch of that name first, then a tag or a sha.
         const revParse = async (): Promise<string> => {
-          const rp = await git(shell, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: cacheDir, ...o });
-          return rp.code === 0 ? rp.stdout.trim() : "";
+          for (const name of [`refs/remotes/origin/${ref}`, ref]) {
+            const rp = await git(shell, ["rev-parse", "--verify", "--quiet", `${name}^{commit}`], { cwd: cacheDir, ...o });
+            if (rp.code === 0) return rp.stdout.trim();
+          }
+          return "";
         };
         let sha = await revParse();
         if (!sha && /^[0-9a-f]{7,40}$/i.test(ref)) {
