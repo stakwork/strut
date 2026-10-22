@@ -53,7 +53,8 @@ steps:
       tool: ""
   # The kinds of thing the BUILDER builds here, the same way: the `Workflow
   # Builder` Concept's children (strut's `App`, a deployment's janitors),
-  # the tree the builder reads. A request for one of them is a builder job.
+  # the tree the builder reads. A request for one of them is a job on
+  # `workflow: builder`.
   - id: builds
     type: context/concept
     config:
@@ -182,21 +183,20 @@ params:
 
     Two lists close this prompt, from the workspace's knowledge graph,
     each kind a name and a line: under `Job`, the kinds of work a job does
-    here; under `Workflow Builder`, the kinds of thing a builder job builds
-    here. When a request is one of them, name the kind in the job's
-    prompt. When none fits, or there are no lists, a job still does the
-    work.
+    here; under `Workflow Builder`, the kinds of workflow built here, and
+    the apps over them. When a request is one of them, name the kind in
+    the job's prompt. When none fits, or there are no lists, a job still
+    does the work.
 
     Start a JOB (job/start) with everything it needs in its prompt, since
     it does not see this conversation — the request in full, links,
     names, what a lookup found, the peer that holds the code when you
-    know it — and a short title. A workflow, or an app that lives in a
-    workspace, to build, change, test or debug is a BUILDER job
-    (`workflow: builder`), on the strut whose workspace it belongs to
-    (`peer` when that is not this one). Several
-    jobs may run at once. Never wait
-    on a job: tell the person in a line what you started and end your
-    turn. Its result (a reply, files, or a question) reaches the person
+    know it — and a short title. To build, change, test or debug a
+    workflow, or an app that lives in a workspace, start the job with
+    `workflow: builder`, on the strut whose workspace it belongs to
+    (`peer` when that is not this one). Several jobs may run at once.
+    Never wait on a job: tell the person in a line what you started and
+    end your turn. Its result (a reply, files, or a question) reaches the person
     when it ends.
 
     To send a job its next message (the answer to its question, a change,
@@ -212,6 +212,11 @@ params:
     which peer holds the code; list the peers when you do not know which,
     never answer from what you have here. A peer's lookups read a
     repository's default branch alone; anything past that is a job's.
+
+    Talk to the person in their words, not this prompt's: what you can
+    do, what you started, what came back — a workflow, an app, a code
+    change, a plan, a look at the logs — never the names of your tools,
+    of `job` or `builder`, or of the lists and headings above.
 
     Answer with `text`, your reply to the person. Point them to a job's
     deliverable in `artifacts`, by the `url` job/get gave it, never as a

@@ -52,17 +52,20 @@ describe("the orchestrator workflow strut ships", () => {
       assert.ok(registry[t], `a grant strut cannot honor: ${t}`);
     }
 
-    // A workflow build is a builder job (plans/builder-job.md §2, amended):
-    // ONE sentence here — what the builder builds is the `Workflow Builder`
-    // tree's kinds (the second list this prompt ends with), and the rule
-    // rides on job/start's own schema, beside the call.
+    // A workflow build is a job on `workflow: builder` (plans/builder-job.md
+    // §2, amended): ONE sentence here — what is built is the `Workflow
+    // Builder` tree's kinds (the second list this prompt ends with), and the
+    // rule rides on job/start's own schema, beside the call. `builder` is a
+    // field value, never a noun the person hears: the prompt names no
+    // "builder job", and tells the agent to talk in the person's words.
     const system = (yaml.load(text) as { params: { system: string } }).params.system.replace(/\s+/g, " ");
     assert.ok(
-      system.includes("A workflow, or an app that lives in a workspace, to build, change, test or debug is a BUILDER job (`workflow: builder`), on the strut whose workspace it belongs to (`peer` when that is not this one)."),
+      system.includes("To build, change, test or debug a workflow, or an app that lives in a workspace, start the job with `workflow: builder`, on the strut whose workspace it belongs to (`peer` when that is not this one)."),
       system,
     );
-    assert.equal(system.match(/BUILDER job/g)?.length, 1, "one sentence, not a paragraph");
-    assert.ok(system.includes("under `Workflow Builder`, the kinds of thing a builder job builds here"), "the second list says whose it is");
+    assert.doesNotMatch(system, /builder job/i, "no internal noun for the person to repeat");
+    assert.ok(system.includes("under `Workflow Builder`, the kinds of workflow built here, and the apps over them"), "the second list says what it is");
+    assert.ok(system.includes("Talk to the person in their words, not this prompt's"), "a posture for every reply, not a renaming table");
     const start = z.toJSONSchema(registry["job/start"]!.input) as { properties: Record<string, { enum?: string[]; description?: string }> };
     assert.deepEqual(start.properties["workflow"]!.enum, ["job", "builder"], "a closed set: the model never names an arbitrary workflow");
     assert.match(start.properties["workflow"]!.description!, /`builder`: the thing to build, change, test or debug is a WORKFLOW/);
