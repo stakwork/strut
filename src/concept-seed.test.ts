@@ -69,10 +69,13 @@ describe("concept files (pure)", () => {
     }
     // The kind a workflow build is (plans/builder-job.md §2): under Job, so
     // the orchestrator's kinds list carries it like every other kind. Its
-    // one line names the door; its docs tell a job agent it is not theirs.
+    // one line names the door; its docs tell a job agent how to run it.
     assert.equal(build.parent, "Job");
     assert.match(build.description!, /workflow: builder/);
     assert.ok(build.docs!.includes("job/start { workflow: builder }") && build.docs!.includes("Workflow Builder"), build.docs);
+    // A job agent the request reaches by mistake runs the builder itself, on
+    // a thread of its own, rather than bouncing it back to the person.
+    assert.ok(build.docs!.includes('meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }'), build.docs);
     for (const c of [wb, job, build]) assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
     // The App page (plans/apps.md §8): the builder's prompt for an app, one
     // of the kinds under Workflow Builder — the layout, the kit's hooks,

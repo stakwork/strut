@@ -3295,6 +3295,13 @@ export async function createStrut<TServices = unknown>(
         const peer = (start?.input as Record<string, unknown> | undefined)?.["peer"];
         if (typeof peer === "string") input = { ...input, peer };
       }
+      // The workspace this strut belongs to (its `self` record): both
+      // job-shaped workflows put it on the agent's first line, so a job the
+      // orchestrator starts knows it as a host's own launch would.
+      if (input["workspace"] === undefined) {
+        const self = await peersCap.self();
+        if (self?.id) input = { ...input, workspace: self.id };
+      }
       const flow = await workspace.getWorkflow(workflow).catch((e: unknown) => {
         throw new Error(`no_workflow: this strut has no "${workflow}" workflow to run the job on (${(e as Error).message})`);
       });

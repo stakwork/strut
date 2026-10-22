@@ -51,6 +51,18 @@
 > a reverted host delta was never re-applied, so seeds now always match
 > git, as ruled that day); four observations written up in §9. About $1.53
 > of model spend.
+>
+> **Amended 2026-10-21, after the day's review:** the split is WHERE the work
+> lives and which hands it gets — not trust. A workflow lives on one strut
+> (its graph, secrets, services) and is built there; code lives in its
+> repository and is checked out wherever a job runs. No bash on the builder
+> is focus, not a boundary: §9 found every build reaching a shell through an
+> `exec` check, and `meta/run-workflow` runs any unsealed workflow, `job`
+> included. So: a job agent that meets a build runs `builder` itself
+> (`meta/run-workflow`, the `Workflow Build` page) instead of bouncing it
+> with "this is a builder job"; a job started through `job/start` gets
+> `input.workspace` from the strut's `self` record; the job's prompt carries
+> its id (what a claim's subject and the build's thread are named by).
 
 ## Problem
 
@@ -99,12 +111,12 @@ that strut ships, `peer: true` from the start, is the kind of work ruled in
 | Where the authoring tools live | **A third seeded workflow, `builder`** (ruled: separate from `job`). `job.yaml` is untouched: a code job never sees a `meta/*` write. The orchestrator starts a builder job as it starts any job |
 | Cross-strut in v1 | **Yes** (ruled). The builder is `peer: true` in its seed, launched on another strut through `strut/run-workflow` from a branch inside the same YAML (§3) |
 | The door | `job/start` gains `workflow` (`job` \| `builder`, default `job`) and `peer` (§2); `job/continue` follows the job's record. Mine |
-| How the orchestrator learns it | **A kind under `Job`, seeded by strut** (`Workflow Build`), the routing rule in `job/start`'s own schema, one prompt sentence (§2). Ruled 2026-10-21: a workflow build IS a kind of job to the person, and the kinds table is what the orchestrator routes by and recites; `builder` vs `job` is a trust split (`peer: true` is per workflow), never something the person names |
+| How the orchestrator learns it | **A kind under `Job`, seeded by strut** (`Workflow Build`), the routing rule in `job/start`'s own schema, one prompt sentence (§2). Ruled 2026-10-21: a workflow build IS a kind of job to the person, and the kinds table is what the orchestrator routes by and recites; `builder` vs `job` is where the work lives and which hands it gets (amended that day, above), never something the person names. A job the orchestrator misroutes still gets built: its agent runs `builder` (`Workflow Build`'s docs) |
 | The builder's built-ins | **web_search + web_fetch only** (`toolFilter`), as the lab's `explore` keeps bash off a workflow another strut may launch (`stakgraph/mcp/src/lab/explore/workflows/explore.yaml:25-32,78,133`). What the chat used bash for goes through `meta/run-step` with a cassette and `meta/get-run` / `job/read` (§1). Mine |
 | The builder's tools | `meta/*` as a glob — every authoring twin, and a twin added later lands with no seed edit — plus the graph reads and the `job/*` reads (§1). Mine |
 | The builder's prompt | **One source.** The dialect rules and the procedure in `src/ai/prompts.ts` are factored to render with the chat's tool names for the chat and with `meta/*` names for the seed; the `Workflow Builder` page comes in through `context/concept` exactly as the chat reads it (§1). Mine |
 | Deliverables from a peer | **Tagged by peer id, never resolved locally** (`federation.md` §2.2's handle rule applied to an artifact): `strut/run-workflow` tags the peer output's `artifacts` with `peer`, `artifact-refs` leaves a tagged ref alone (§3). Mine |
-| The trust statement | `peer: true` on the builder says: a person the org strut forwards may AUTHOR here, which is code in this process (§4). A deployment drops the key through the seed delta; `approve` turns every publish into a proposal. Mine |
+| The trust statement | `peer: true` on the builder says: a person the org strut forwards may AUTHOR here, which is code in this process (§4) — an `exec` step, a custom step over `ctx.services.shell`, `meta/run-workflow` of any unsealed workflow, `job` included. A deployment drops the key through the seed delta; `approve` turns every publish into a proposal. Mine |
 
 ## Design in one paragraph
 
@@ -223,7 +235,9 @@ are `meta/get-run` and `job/read`. Authoring a step is code execution in
 the target's process whatever the built-ins are (§4), so keeping bash
 would buy nothing the surface does not already imply, and dropping it
 removes the casual path. The standing rule that a seeded GENERAL agent keeps every built-in is
-about the job agent; `explore` filters, and so does this.
+about the job agent; `explore` filters, and so does this. (Amended: the
+editor family joined with plans/apps.md §8, and "no bash" turned out to be
+focus, not a boundary — §9.)
 
 **Knowledge.** `context/concept` on `Workflow Builder` (`params.concept`),
 rendered for the system prompt with the agent's own name for
@@ -281,9 +295,11 @@ name through `ctx.services.jobs.launch`, which reads it off the workspace
   `job/continue` launches the workflow the job's last run was, and
   `GET /jobs/:id` shows which a job is.
 - `peer`: the id of the strut the build belongs on, as `strut/list-peers`
-  lists them (`@acme-web` → `acme-web`). Only with `workflow: builder` in
-  v1 — a code job on a peer carries repositories and a person's token,
-  which §4 does not vouch for. Passed into the launch's `input.peer`; the
+  lists them (`@acme-web` → `acme-web`). Only with `workflow: builder`: a
+  workflow lives on one strut and is built there, while code is checked
+  out wherever the job runs, so a code job runs here (amended 2026-10-21;
+  `job` also stays closed to peers, its `agent` and `cwd` inputs being a
+  host's). Passed into the launch's `input.peer`; the
   record keeps it with the run's input, so `job/continue` finds it and
   the orchestrator need not remember it.
 
@@ -421,8 +437,10 @@ org's default swarm. The builder is a person-level authoring surface, and
 `peer: true` on its seed says, in its header comment: a person the org
 strut forwards may author here, as they could in this strut's own UI.
 Within the org boundary hive draws when it pushes peers, that is the
-intended statement. Dropping bash (§1) does not change it; it removes the
-path that needs no authoring.
+intended statement. Dropping bash (§1) does not change it: §9 found every
+build reaching a shell through an `exec` check with no step authored, and
+`meta/run-workflow` runs any unsealed workflow on the target, `job`
+included, with `params`.
 
 **Levers.**
 
@@ -517,9 +535,10 @@ turn as it does today (`hive/src/services/strut-orchestrator.ts:101-107`).
 
 ## 7. Left out
 
-- A code job on a peer (`job/start { workflow: job, peer }`): repositories
-  and the person's token on a strut whose `job` would have to say
-  `peer: true` — a different statement, not made here.
+- A code job on a peer (`job/start { workflow: job, peer }`): not needed —
+  code is checked out wherever the job runs, and a job reaches another
+  workspace through that strut's lookups. `job` would also have to drop its
+  host-only inputs (`agent`, `cwd`) before it could say `peer: true`.
 - The builder reaching a THIRD strut from inside a build (`strut/*` in its
   tools): the orchestrator chooses the strut before the job starts.
 - Read-through of the peer's runs and files from the org strut's own UI
