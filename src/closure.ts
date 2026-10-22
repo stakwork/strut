@@ -10,8 +10,12 @@
  * `subflow` check is opaque by type, so whether it is paid, `observed`, or
  * reaches a grader is read off its closure (§4).
  *
- * A `subflow` whose `workflow` (or `version`) is a template, a child that
- * does not resolve, or a templated `agentTools` makes the closure
+ * A grant read from params alone (`agentTools: "{{ params.tools }}"`, or
+ * `params.a || params.b`) is read off every params object the flow may run
+ * under — its own defaults, and what a `subflow` step hands a child — since
+ * a launch may only narrow it (`grantWidenedBy`). Any other templated grant
+ * (`"{{ input.tools }}"`), a `subflow` whose `workflow` (or `version`) is a
+ * template, or a child that does not resolve makes the closure
  * UNRESOLVABLE: what was collected is then a lower bound, and each consumer
  * takes its own conservative reading. A reached child that declares
  * `sealed: true` is marked, so `src/sealed.ts` can refuse a flow that
@@ -55,14 +59,39 @@ export interface FlowClosure {
   workflows: Array<{ workflow: string; version?: string; sealed?: true }>;
   /** False = a lower bound (see module doc). */
   resolvable: boolean;
+  /** Templated grants the closure could not read (`"{{ input.tools }}"`):
+   *  what they hand an agent is known only once the run starts. */
+  unreadGrants: string[];
+  /** Some grant was read off params, which a person's own launch may widen. */
+  paramGrants: boolean;
 }
 
-export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: SubflowResolver): Promise<FlowClosure> {
-  const out: FlowClosure = { types: new Set(), agentTools: new Set(), workflows: [], resolvable: true };
+export async function flowClosure(flow: Pick<Flow, "steps"> & { params?: Flow["params"] }, workspace?: SubflowResolver): Promise<FlowClosure> {
+  const out: FlowClosure = { types: new Set(), agentTools: new Set(), workflows: [], resolvable: true, unreadGrants: [], paramGrants: false };
   const seen = new Set<string>();
+  const unread = (t: string) => {
+    out.resolvable = false;
+    out.unreadGrants.push(t);
+  };
+  // A grant from params: the strings every key it reads holds, in every
+  // params object the frame may run under. `null` = a subflow handed params
+  // the closure cannot read.
+  const grant = (t: string, params: Array<Record<string, unknown> | null>) => {
+    const keys = paramsGrantKeys(t);
+    if (!keys || params.includes(null)) return unread(t);
+    out.paramGrants = true;
+    for (const p of params) {
+      for (const k of keys) {
+        for (const g of stringsIn(p?.[k])) {
+          if (hasTemplates(g)) unread(g);
+          else out.agentTools.add(g);
+        }
+      }
+    }
+  };
 
-  const visitFlow = async (steps: readonly Step[]): Promise<void> => {
-    const children: FlowClosure["workflows"] = [];
+  const visitFlow = async (steps: readonly Step[], params: Array<Record<string, unknown> | null>): Promise<void> => {
+    const children: Array<{ workflow: string; version?: string; params?: unknown }> = [];
     walkSteps(steps, (s) => {
       out.types.add(baseType(s.type));
       const cfg = (s.config ?? {}) as Record<string, unknown>;
@@ -70,35 +99,61 @@ export async function flowClosure(flow: Pick<Flow, "steps">, workspace?: Subflow
       if (Array.isArray(tools)) {
         for (const t of tools) {
           if (typeof t === "string" && !hasTemplates(t)) out.agentTools.add(t);
+          else if (typeof t === "string") grant(t, params);
           else out.resolvable = false;
         }
-      } else if (tools !== undefined && tools !== null) out.resolvable = false;
+      } else if (typeof tools === "string") grant(tools, params);
+      else if (tools !== undefined && tools !== null) out.resolvable = false;
       if (s.type !== "subflow") return;
       const wf = cfg["workflow"];
       const version = cfg["version"];
       const literal = (v: unknown): v is string => typeof v === "string" && v.length > 0 && !hasTemplates(v);
       if (!literal(wf) || (version !== undefined && version !== null && !literal(version))) out.resolvable = false;
-      else children.push({ workflow: wf, ...(literal(version) ? { version } : {}) });
+      else children.push({ workflow: wf, ...(literal(version) ? { version } : {}), params: cfg["params"] });
     });
     for (const c of children) {
-      const key = `${c.workflow}@${c.version ?? ""}`;
+      // The same child under other params is another reading of its grants.
+      const key = `${c.workflow}@${c.version ?? ""}${c.params === undefined ? "" : JSON.stringify(c.params)}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.workflows.push(c);
+      let entry = out.workflows.find((w) => w.workflow === c.workflow && w.version === c.version);
+      if (!entry) out.workflows.push((entry = { workflow: c.workflow, ...(c.version ? { version: c.version } : {}) }));
       try {
         if (!workspace) throw new Error("no workspace");
         const child = c.version ? await workspace.getWorkflowVersion(c.workflow, c.version) : await workspace.getWorkflow(c.workflow);
-        if (child.sealed) c.sealed = true;
-        await visitFlow(child.steps);
+        if (child.sealed) entry.sealed = true;
+        // A subflow step's own `params` override the child's for that call
+        // (a templated value in a key a grant reads is caught in `grant`).
+        const handed = c.params === undefined ? [] : isPlainObject(c.params) ? [c.params] : [null];
+        await visitFlow(child.steps, [child.params ?? {}, ...handed]);
       } catch {
         out.resolvable = false;
       }
     }
   };
 
-  await visitFlow(flow.steps);
+  await visitFlow(flow.steps, [flow.params ?? {}]);
   return out;
 }
+
+/** The params keys a grant template reads when it reads nothing else: one
+ *  `{{ }}` that is a chain of `params.<key>` joined by `||` or `??`. Null for
+ *  anything else — `"{{ input.tools }}"`, `"{{ params.ns }}/*"`, a `map` — whose
+ *  grants cannot be read before the run. */
+function paramsGrantKeys(t: string): string[] | null {
+  const m = /^\{\{\s*(params\.[A-Za-z_$][\w$]*(?:\s*(?:\|\||\?\?)\s*params\.[A-Za-z_$][\w$]*)*)\s*\}\}$/.exec(t);
+  return m ? [...m[1]!.matchAll(/params\.([A-Za-z_$][\w$]*)/g)].map((k) => k[1]!) : null;
+}
+
+/** Every string in a value, however it is shaped. */
+function stringsIn(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  if (value && typeof value === "object") return Object.values(value).flatMap(stringsIn);
+  return [];
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** The params keys a flow's own `agentTools` read (`agentTools: "{{ params.tools }}"`,
  *  or an entry like `"{{ params.ns }}/*"`): the knobs that are GRANTS. Its own
@@ -206,7 +261,7 @@ export async function stepHashesFor(
     const closure = await flowClosure(flow, workspace);
     const out: Record<string, string> = {};
     for (const [type, hash] of Object.entries(active)) {
-      if (!closure.resolvable || closureIncludes(closure, type)) out[type] = hash;
+      if (!closure.resolvable || closure.paramGrants || closureIncludes(closure, type)) out[type] = hash;
     }
     return Object.keys(out).length ? out : undefined;
   } catch (err) {

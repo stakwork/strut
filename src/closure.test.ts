@@ -5,6 +5,7 @@ import type { Flow, Step, RunEvent } from "./core.js";
 import { defineStep } from "./core.js";
 import { closureIncludes, flowClosure, globToRegExp, grantParams, grantWidenedBy, stepHashesFor, walkSteps } from "./closure.js";
 import { runWorkflow } from "./runner.js";
+import { sealedInClosure } from "./sealed.js";
 import { MemoryRunStore } from "./store.js";
 
 const step = (id: string, type: string, config: Record<string, unknown> = {}, options?: Step["options"]): Step => ({ id, type, config, ...(options ? { options } : {}) });
@@ -66,8 +67,37 @@ describe("flowClosure", () => {
     assert.equal((await flowClosure(flow("f", [step("s", "subflow", { workflow: "gone" })]), resolver({}))).resolvable, false);
     assert.equal((await flowClosure(flow("f", [step("s", "subflow", { workflow: "child", version: "{{ params.v }}" })]), resolver({}))).resolvable, false);
     assert.equal((await flowClosure(flow("f", [step("s", "subflow", { workflow: "child" })]))).resolvable, false, "no workspace to resolve through");
-    assert.equal((await flowClosure(flow("f", [step("a", "agent", { agentTools: "{{ params.tools }}" })]))).resolvable, false);
+    assert.equal((await flowClosure(flow("f", [step("a", "agent", { agentTools: "{{ input.tools }}" })]))).resolvable, false);
     assert.equal((await flowClosure(flow("f", [step("a", "agent", { agentTools: ["{{ params.ns }}/*"] })]))).resolvable, false);
+  });
+
+  it("a grant read from params is read off every params it may run under: its own, and what a subflow hands it", async () => {
+    const own = await flowClosure({ ...flow("f", [step("a", "agent", { agentTools: "{{ params.tools }}" })]), params: { tools: ["meta/*", "log"] } });
+    assert.deepEqual([[...own.agentTools], own.resolvable, own.paramGrants], [["meta/*", "log"], true, true]);
+    const either = await flowClosure({ ...flow("f", [step("a", "agent", { agentTools: "{{ params.a || params.b }}" })]), params: { a: ["x"], b: ["y"] } });
+    assert.deepEqual([...either.agentTools], ["x", "y"], "every key the chain reads");
+
+    const child = { ...flow("child", [step("a", "agent", { agentTools: "{{ params.tools }}" })]), params: { tools: ["log"] } };
+    const handed = await flowClosure(flow("p", [step("s", "subflow", { workflow: "child", params: { tools: ["meta/publish-workflow"] } })]), resolver({ child }));
+    assert.deepEqual([...handed.agentTools], ["log", "meta/publish-workflow"], "the child's own, and what the subflow hands it");
+
+    // What cannot be read before the run: kept as unread, the closure a lower bound.
+    const viaInput = await flowClosure(flow("f", [step("a", "agent", { agentTools: "{{ input.tools }}" })]));
+    assert.deepEqual([viaInput.unreadGrants, viaInput.resolvable], [["{{ input.tools }}"], false]);
+    const handedTemplate = await flowClosure(flow("p", [step("s", "subflow", { workflow: "child", params: { tools: "{{ input.t }}" } })]), resolver({ child }));
+    assert.deepEqual(handedTemplate.unreadGrants, ["{{ input.t }}"]);
+    const handedWhole = await flowClosure(flow("p", [step("s", "subflow", { workflow: "child", params: "{{ input.p }}" })]), resolver({ child }));
+    assert.deepEqual(handedWhole.unreadGrants, ["{{ params.tools }}"]);
+  });
+
+  it("the sealed check sees a grant read off params, and refuses one it cannot read", async () => {
+    const reg = Object.fromEntries(["log", "agent", "meta/publish-workflow"].map((t) => [t, defineStep({ type: t, input: z.any(), output: z.any(), run: async () => ({}) })]));
+    const viaParams = await flowClosure({ ...flow("f", [step("a", "agent", { agentTools: "{{ params.tools }}" })]), params: { tools: ["meta/publish-workflow"] } });
+    assert.equal(sealedInClosure(viaParams, reg), 'grant "meta/publish-workflow"');
+    const viaInput = await flowClosure(flow("f", [step("a", "agent", { agentTools: "{{ input.tools }}" })]));
+    assert.match(sealedInClosure(viaInput, reg) ?? "", /grant "\{\{ input\.tools \}\}" \(read only when the run starts/);
+    const harmless = await flowClosure({ ...flow("f", [step("a", "agent", { agentTools: "{{ params.tools }}" })]), params: { tools: ["log"] } });
+    assert.equal(sealedInClosure(harmless, reg), null);
   });
 });
 
@@ -134,6 +164,9 @@ describe("stepHashesFor", () => {
 
   it("an unresolvable closure records every active hash — a superset is still true, a subset loses a version", async () => {
     assert.deepEqual(await stepHashesFor(ws({}), flow("f", [step("s", "subflow", { workflow: "{{ input.wf }}" })])), active);
+    // So does a grant read off params: a person's own launch may widen it.
+    const viaParams = { ...flow("f", [step("a", "agent", { agentTools: "{{ params.tools }}" })]), params: { tools: ["clip/trim"] } };
+    assert.deepEqual(await stepHashesFor(ws({}), viaParams), active);
   });
 
   it("built-in-only flows, an empty workspace, no workspace, or a failing read → undefined (the run still launches)", async () => {
