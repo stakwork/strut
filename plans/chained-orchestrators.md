@@ -9,8 +9,11 @@
 > stakgraph `origin/main` and hive `origin/master`: `peer: person` ruled
 > (§2), rooms ruled the same standalone and embedded in stakgraph (§3),
 > both callbacks room-capable (§3), the re-tag moved to the caller (§5),
-> and a peer-tagged app in hive's mapper (§6). **Item 1 BUILT** in
-> strut#271 (merged 2026-10-22); hive's mapper case is its own PR. Companion to `federation.md` (peers, dispatch-through, the
+> and a peer-tagged app in hive's mapper (§6). **Items 1–4 BUILT**
+> 2026-10-22: strut#271, #274, #276 and item 4's `personalOrchestratorSystem`,
+> with stakwork/stakgraph#1811 for the lab's half of items 2 and 3 (each
+> item says what was built differently). Left: items 5 and 6, hive's
+> pairing and its mapper case, the desktop app. Companion to `federation.md` (peers, dispatch-through, the
 > deferred read-through, `peer: true`), `builder-job.md` (the `job` /
 > `builder` split and the peer build), `jobs.md` + `live-artifacts.md` +
 > `specs/CALLBACKS.md` (what a run tells its host, and when),
@@ -51,8 +54,8 @@ checkouts. Today:
 | Who may launch an orchestrator from another strut? | **Ruled: `peer: person`.** A workflow's top-level `peer:` takes a second value, a keyword: `peer: true` accepts any peer request, a strut's or a person's (`explore`, `logs`); `peer: person` accepts only a peer request whose CREDENTIAL names a person, a third scope, `peer:person`, that the host's `resolveScope` returns (mcp: a `lab:peer` JWT with a `sub`). Never a user name in the YAML: the workflow is the whole org's, and its YAML is content (hashed, put back by the seed at every boot); which people may call is the credential's business. `orchestrator.yaml` says `peer: person` (§2). |
 | Which session does the laptop's call open on central? | **Ruled: the person's own.** The same `peer:person` signal lets the request name a session under its own actor, `<actor>/…`; every other id still lands in `peer/`. The laptop and hive's web share one conversation per org; Tom's credential opens Tom's threads and nobody else's (§2). |
 | Where do rooms run? | **Ruled: the same in a standalone strut and in strut embedded in stakgraph**; a stakgraph PR is fine. One upgrade handler on the strut instance, run through that instance's own gate and hooks; a host that owns the Node server only routes the upgrade to it (§3). |
-| Who is a room? | *Proposed:* the actor of a `full` or `peer:person` request, never of a plain `peer` one, whose actor is a header any strut sets. The room id is never chosen by the client; a second device of the same person joins the same room. `callback: { room: true }` and `jobCallback: { room: true }` mean "the launching actor's room" (§3). |
-| How does a standalone central give a person such a credential? | *Proposed:* a person token strut mints itself, the shared peer key attenuated to one actor (the file token's mechanism), the standalone twin of mcp's `lab:peer` with a `sub` (§4). |
+| Who is a room? | *Proposed, built as proposed (strut#276):* the actor of a `full` or `peer:person` request, never of a plain `peer` one, whose actor is a header any strut sets. The room id is never chosen by the client; a second device of the same person joins the same room. `callback: { room: true }` and `jobCallback: { room: true }` mean "the launching actor's room" (§3). |
+| How does a standalone central give a person such a credential? | *Proposed, built as proposed (strut#274):* a person token strut mints itself, the shared peer key attenuated to one actor (the file token's mechanism), the standalone twin of mcp's `lab:peer` with a `sub` (§4). |
 | Where does the laptop's own model call bill? | *Proposed:* the person's own key under Secrets, or a delegation from their default org's gateway carried in the pairing payload (§4). Which org bills a local turn before an org is chosen is a product call. |
 | How does a spoke's deliverable open from the laptop? | *Proposed:* as a link through central, never a copy: a tag means the NEXT hop, and central's read-through (`federation.md` §2.1, deferred) serves a spoke's file (§5). |
 
@@ -428,7 +431,13 @@ checkout as strut#261 did (a third for the spoke in item 5).
    `resolveArtifactRefs` with `app: { name, version }` beside the url,
    the `App` page's handover line, a test on the resolution. Hive's
    mapper case lands beside it so a conversation never loses the frame.
-2. **`peer: person`, and the orchestrator open to it on the person's
+2. **BUILT (strut#274, stakgraph#1811).** As built: the person token is
+   `strut-person.<claims>.<hmac>`, signed like a session, Bearer only, 60
+   days unless `days` says otherwise (`POST /peers/tokens`, `full` scope
+   only); only a RESUME of a person-launched run checks it is the same
+   person (cancel and pause keep the any-peer rule); the session tests
+   drive a step that opens a session, not a model turn.
+   **`peer: person`, and the orchestrator open to it on the person's
    session** (§2, §4). The `peer:person` scope through the gate (a peer
    everywhere, plus the three things §2 lists); `Flow.peer: true |
    "person"` and its 403; `run.start.peerPerson`; the `bindPeer`
@@ -442,7 +451,14 @@ checkout as strut#261 did (a third for the spoke in item 5).
    naming `<person>/b`, and a person token naming another person's
    session, both land in `peer/`. Stakgraph beside it: `peer:person` for
    a `lab:peer` JWT with a `sub`.
-3. **Rooms** (§3). `GET /rooms` behind the gate and `strut.upgrade`,
+3. **BUILT (strut#276, stakgraph#1811).** As built: a room target is the
+   string `room:<actor>`, kept wherever a URL is (not `{ url } | { room }`),
+   so no store, resume or inheritance code changed; rooms are found per
+   data directory (`roomsFor`, src/rooms.ts), the job updates' deliverer
+   deriving it from the job's root; `strut/run-workflow { room: true }`
+   sends both callbacks; an open socket is pinged every 30 s; mcp routes
+   `/lab/rooms` through `upgradeLabRoom`.
+   **Rooms** (§3). `GET /rooms` behind the gate and `strut.upgrade`,
    hooked by `listen()`; the join rule (`full` or `peer:person`, an
    actor); `callback: { room: true }` and `jobCallback: { room: true }`
    through `parseCallback`, the run store, the job's callback file and
@@ -456,7 +472,15 @@ checkout as strut#261 did (a third for the spoke in item 5).
    with B behind a stub host that owns its Node server the way mcp does
    (its own `upgrade` listener, a stash read by its hooks, `basePath`).
    Stakgraph beside it: `/lab/rooms` routed to `strut.upgrade`.
-4. **The local orchestrator's host section** (§1). Nothing in strut but
+4. **BUILT.** As built: `personalOrchestratorSystem(person)`
+   (src/orchestrator-seed.ts, on the barrel) renders the section with the
+   person's actor id in it — the `sub` of the pairing's tokens — so the
+   session it names, `<person>/<org>`, is concrete: where a request
+   belongs (this machine, or which org), an org's to its orchestrator
+   through `strut/run-workflow { …, room: true }`, the reply relayed word
+   for word. The desktop app writes it as `STRUT_HOST_CONFIG`'s
+   `orchestrator.system`. Its test renders the seed with it.
+   **The local orchestrator's host section** (§1). Nothing in strut but
    a documented delta: the desktop app's `STRUT_HOST_CONFIG.orchestrator`
    text ("my machine, or one of my orgs; relay verbatim"). A fixture test
    that the seed renders it. The desktop side is `local-desktop-and-stt.md`'s.

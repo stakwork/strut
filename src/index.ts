@@ -695,6 +695,7 @@ export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./bro
 export {
   seedOrchestratorWorkflow,
   orchestratorWorkflowYaml,
+  personalOrchestratorSystem,
   ORCHESTRATOR_WORKFLOW,
   ORCHESTRATOR_CATEGORY,
   ORCHESTRATOR_DESCRIPTION,
