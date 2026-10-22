@@ -8,14 +8,16 @@ name: orchestrator
 # a LOOKUP (a workflow that returns an answer, here or on a peer; which
 # ones is the deployment's to grant) to orient: a lookup's answer is the
 # reply only when it is the whole answer, otherwise it is what a job's
-# brief starts from. Anything to be found out or made is the `job`
-# workflow's, started DETACHED (job/start, job/continue), several at once
-# if need be: the turn ends while a job works, and the job's `run.end`
-# goes to the callback this turn was launched with. The kinds of work a
-# job can do here — the `Job` Concept's children, which a deployment and
-# its workspace grow — close the system prompt (context/concept, the
-# kinds alone), so a turn routes a request by kind and names it in the
-# brief. One conversation is one session, for good: the agent step
+# brief starts from. Anything to be found out or made is a job's — the
+# `job` workflow's, or the `builder`'s for a workflow or an app — started
+# DETACHED (job/start, job/continue), several at once if need be: the turn
+# ends while a job works, and the job's `run.end` goes to the callback this
+# turn was launched with. Two lists close the system prompt
+# (context/concept, the kinds alone): the kinds of work a job does here —
+# the `Job` Concept's children — and the kinds of thing the builder builds
+# here — the `Workflow Builder` Concept's — each the tree its own agent
+# reads, grown by a deployment and its workspace, so a turn routes a
+# request by kind and names it in the brief. One conversation is one session, for good: the agent step
 # compacts it in place when it nears the window. Its system prompt is the
 # session's first turn's. It writes no files (no built-ins): its
 # `artifacts` point at jobs' deliverables or carry small inline content,
@@ -49,6 +51,15 @@ steps:
       name: "{{ params.concept }}"
       docs: false
       tool: ""
+  # The kinds of thing the BUILDER builds here, the same way: the `Workflow
+  # Builder` Concept's children (strut's `App`, a deployment's janitors),
+  # the tree the builder reads. A request for one of them is a builder job.
+  - id: builds
+    type: context/concept
+    config:
+      name: "{{ params.buildConcept }}"
+      docs: false
+      tool: ""
   - id: turn
     type: agent
     config:
@@ -57,10 +68,12 @@ steps:
       cacheTtl: 1h
       model: "{{ params.model }}"
       maxSteps: "{{ params.maxSteps }}"
-      # strut's prompt (with the host's section), then the kinds of job.
+      # strut's prompt (with the host's section), then the kinds of job and
+      # the kinds of build.
       system: |-
         {{ params.system }}
         {{ concepts.text }}
+        {{ builds.text }}
       retain: "{{ params.retain }}"
       prompt: "{{ input.context?.line || '' }}{{ input.prompt }}"
       toolFilter: [none]
@@ -105,10 +118,13 @@ steps:
 params:
   model: claude-sonnet-5-5
   maxSteps: 50
-  # The Concept whose children (the kinds of work a job can do here) close
-  # the system prompt: strut seeds `Job` (src/concepts/Job.md), and each
-  # deployment grows the tree under it — the one the job agent reads.
+  # The Concepts whose children close the system prompt: the kinds of work
+  # a job does here (`Job`, src/concepts/Job.md, the tree the job agent
+  # reads) and the kinds of thing the builder builds (`Workflow Builder`,
+  # the tree the builder reads). Strut seeds both roots; each deployment
+  # grows the trees under them.
   concept: Job
+  buildConcept: Workflow Builder
   # THE evolvable surface: registry steps granted to the agent as tools. It
   # has no built-ins (toolFilter: [none]): no bash, no files, no web — work
   # that needs them is a job's. Memory; the job launchers (detached: the
@@ -164,19 +180,20 @@ params:
     uncertain one is what the job starts from, never what the person
     gets.
 
-    The kinds of work a job can do here are listed at the end of this
-    prompt, from the workspace's knowledge graph — each a name and a
-    line. When a request is one of them, name the kind in the job's
-    prompt. When none fits, or there is no list, a job still does the
+    Two lists close this prompt, from the workspace's knowledge graph,
+    each kind a name and a line: under `Job`, the kinds of work a job does
+    here; under `Workflow Builder`, the kinds of thing a builder job builds
+    here. When a request is one of them, name the kind in the job's
+    prompt. When none fits, or there are no lists, a job still does the
     work.
 
     Start a JOB (job/start) with everything it needs in its prompt, since
     it does not see this conversation — the request in full, links,
     names, what a lookup found, the peer that holds the code when you
-    know it — and a short title. A workflow to build, change, test or
-    debug, or an app to publish over one, is a BUILDER job (`workflow:
-    builder`), on the strut whose workspace it belongs to (`peer` when
-    that is not this one). Several
+    know it — and a short title. A workflow, or an app that lives in a
+    workspace, to build, change, test or debug is a BUILDER job
+    (`workflow: builder`), on the strut whose workspace it belongs to
+    (`peer` when that is not this one). Several
     jobs may run at once. Never wait
     on a job: tell the person in a line what you started and end your
     turn. Its result (a reply, files, or a question) reaches the person

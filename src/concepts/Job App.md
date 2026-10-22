@@ -1,10 +1,11 @@
 ---
-description: "Hand over an interactive app as a deliverable — when the ask is for a tracker, dashboard or tool over this job's own results that the person will use, not just read. An app to publish in a workspace, or on another strut, is a Workflow Build."
+description: "Hand over an interactive app as a deliverable that shows this job's own results — a tracker, dashboard or tool over what the job made or was given, for the person to use, not just read."
 parent: Job
 ---
-Hand over an interactive APP as a deliverable — when the person wants
-something to USE, not just read: a tracker over a spreadsheet they gave
-you, a dashboard over a workflow's runs, a small form.
+Hand over an interactive APP as a deliverable that shows THIS job's own
+results — when the person wants something to USE, not just read: a tracker
+over a spreadsheet they gave you, a dashboard over the runs this job made,
+a small form over its files.
 
 - Build it in YOUR directory, by convention `apps/<name>/`: `app/init {
   path }` starts one, then edit its files.

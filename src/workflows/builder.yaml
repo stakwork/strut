@@ -20,7 +20,7 @@ name: builder
 # repository and is checked out wherever a job runs, so a code job runs
 # here. The hands differ too: the authoring twins and strut's workflow
 # dialect, not a shell and checkouts. A job agent that meets a build runs
-# this workflow itself (meta/run-workflow; the `Workflow Build` page).
+# this workflow itself (meta/run-workflow; the `Job` page's docs).
 #
 # Open to other struts: `peer: true` lets a PEER (plans/federation.md §3)
 # launch this workflow as published — no `params` — under `peer/<job>`, as
@@ -96,18 +96,18 @@ steps:
           text: { type: string, description: "Your reply to the person, markdown: what you published (name, version), what the test run showed, what is left." }
           artifacts:
             type: array
-            description: "Usually none: name workflows and runs in `text`. An app you built, by its directory (`kind: app`), so the person can open it in place. A small inline `content` when it helps (a sample output, a diff), or an earlier job's deliverable by the `url` job/get gave it."
+            description: "Usually none: name workflows and runs in `text`. A small inline `content` when it helps (a sample output, a diff), or an earlier job's deliverable by the `url` job/get gave it."
             items:
               type: object
               additionalProperties: false
               required: [id, title]
               properties:
                 id: { type: string, description: "Stable across turns: the same id next turn means a newer version of the same thing." }
-                kind: { type: string, description: "`app` for an app's directory you built. Otherwise only when the link would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
+                kind: { type: string, description: "Only when the link would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
                 title: { type: string }
-                label: { type: string, description: "What it is to the reader: Sample output, Diff, App" }
+                label: { type: string, description: "What it is to the reader: Sample output, Diff" }
                 summary: { type: string, description: "One sentence about what is in it" }
-                path: { type: string, description: "A file a run you started left in the job's directory, or an app's directory you built there (`apps/<name>`), relative to it" }
+                path: { type: string, description: "A file a run you started left in the job's directory, relative to it" }
                 url: { type: string, description: "An absolute link, or the url job/get gave an earlier job's deliverable" }
                 content: { type: string, description: "Small inline content instead of a file" }
           ask:
@@ -220,8 +220,7 @@ params:
 
     Answer with `text`: what you published (name, version), what the test
     run showed, and what is left. `artifacts` usually stays empty: name
-    workflows and runs in `text`; an app you built goes there by its
-    directory (`{ id, kind: "app", title, path: "apps/<name>" }`), and a
-    small inline `content` (a sample output) when it helps. If you cannot
-    go on without the person's decision, stop and put the question in
-    `ask`; their answer is the next turn's message.
+    workflows and runs in `text`; a small inline `content` (a sample
+    output) when it helps. If you cannot go on without the person's
+    decision, stop and put the question in `ask`; their answer is the next
+    turn's message.

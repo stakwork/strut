@@ -16,7 +16,7 @@ import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
  * `input.peer` branch), while code is checked out wherever a job runs:
  * `job` never carries these tools, the orchestrator starts a builder job
  * for a build, and a job agent that meets one runs this workflow itself
- * (the `Workflow Build` page). The missing shell is focus, not a boundary
+ * (the `Job` page's docs). The missing shell is focus, not a boundary
  * (builder.yaml's header).
  *
  * Its system prompt is the builder chat's rules — strut's workflow dialect,

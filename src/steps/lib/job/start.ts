@@ -17,12 +17,12 @@ import { launchOnce, requireJobLaunch } from "./_shared.js";
  *
  * `workflow` picks the hands (plans/builder-job.md §2): `job` (the default)
  * for code, research and pages (and an app over the job's own results);
- * `builder` when the thing to make or change is a WORKFLOW, or an APP
- * published over a workspace's workflows — the authoring twins and app/*,
+ * `builder` when the thing to make or change is a WORKFLOW, or an APP that
+ * lives in a workspace (new, changed, or on a peer) — the authoring twins and app/*,
  * no shell. The rule lives here, on
- * the field, where the model reads it beside the call; the `Workflow
- * Build` Concept strut seeds under `Job` is the same kind in the table the
- * orchestrator routes by. `peer` goes with `builder` only: a workflow (or
+ * the field, where the model reads it beside the call; the kinds under the
+ * `Workflow Builder` Concept, in the orchestrator's prompt beside the kinds
+ * under `Job`, are what it routes here. `peer` goes with `builder` only: a workflow (or
  * an app) lives on one strut (its graph, secrets and services), so it is built on
  * the strut whose workspace it belongs to, and the local `builder` run
  * dispatches there (builder.yaml's `remote` branch); code lives in its
@@ -43,8 +43,8 @@ export default defineStep({
       .optional()
       .describe(
         "Which hands the job gets. `job` (the default): code, research, pages, plans, an app over this job's own results — a working directory, repositories, the shell. " +
-          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP published over a workspace's workflows — the authoring tools, no shell. " +
-          "A workflow or a published app belongs to one strut's workspace: a builder job builds on this strut unless `peer` names another.",
+          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP that lives in a workspace (new, changed, or on another strut) — the authoring tools, no shell. " +
+          "A workflow or a workspace's app belongs to one strut's workspace: a builder job builds on this strut unless `peer` names another.",
       ),
     peer: z
       .string()
