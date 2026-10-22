@@ -206,6 +206,17 @@ describe("launchOnPeer", () => {
     assert.deepEqual(body, { input: { prompt: "how?", repos: ["a"] }, params: { p: 2 } });
   });
 
+  it("room: true asks the peer for the person's room there, for the run's callbacks and its jobs' (plans/chained-orchestrators.md §3)", async () => {
+    let body: unknown;
+    const { cap, ready } = capabilityOver(async (_url, init) => {
+      body = JSON.parse(init?.body ?? "");
+      return json({ runId: "r1" }, 202);
+    });
+    await ready;
+    await launchOnPeer(cap, { peer: "cloud", workflow: "orchestrator", input: { prompt: "hi", session: "tom-1/cloud" }, room: true });
+    assert.deepEqual(body, { input: { prompt: "hi", session: "tom-1/cloud" }, callback: { room: true }, jobCallback: { room: true } });
+  });
+
   it("a refusal throws with the peer's message", async () => {
     const { cap, ready } = capabilityOver(async () => json({ error: "job_busy: job j1 is held by run 5" }, 409));
     await ready;

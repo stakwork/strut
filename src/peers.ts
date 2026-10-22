@@ -293,6 +293,11 @@ export interface PeerLaunch {
   job?: string;
   /** Forwarded as `x-strut-actor`: who the peer bills and binds secrets to. */
   actor?: string;
+  /** Ask the peer to deliver the run's callbacks, and its jobs', to the
+   *  person's ROOM there (`callback` / `jobCallback` `{ room: true }`,
+   *  plans/chained-orchestrators.md §3). A URL of this strut's would mean
+   *  nothing there; a room is the peer's own. */
+  room?: boolean;
 }
 
 /** What a peer's run came back as — the step's output shape. */
@@ -337,6 +342,7 @@ export async function launchOnPeer(peers: PeersCapability, launch: PeerLaunch): 
       input: coerceJsonArg(launch.input) ?? {},
       ...(launch.params ? { params: coerceJsonArg(launch.params) } : {}),
       ...(launch.job ? { job: launch.job } : {}),
+      ...(launch.room ? { callback: { room: true }, jobCallback: { room: true } } : {}),
     }),
   });
   if (!res.ok) {

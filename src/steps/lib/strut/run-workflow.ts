@@ -82,6 +82,10 @@ export default defineStep({
       .optional()
       .describe("Launch under this JOB on the peer (its files, thread and holds live there). Explicit only — this run's own job is never forwarded."),
     wait: z.boolean().default(true).describe("false → return the handle at once; the peer's run goes on without this step."),
+    room: z
+      .boolean()
+      .optional()
+      .describe("true → the peer delivers this run's callbacks, and those of the jobs it starts, to the person's ROOM there (callback and jobCallback { room: true }): for a run whose jobs finish after it returns — another strut's orchestrator. The peer record's token must be a person's credential, or the peer refuses the launch."),
   }),
   output: z.object({
     peer: z.string(),
@@ -122,6 +126,7 @@ export default defineStep({
         input: cfg.input ?? {},
         ...(cfg.params ? { params: cfg.params } : {}),
         ...(cfg.job ? { job: cfg.job } : {}),
+        ...(cfg.room ? { room: true } : {}),
         // Billed like this run (the principal rule) — exactly what
         // meta/run-workflow forwards within one process.
         ...(ctx.principal ? { actor: ctx.principal } : {}),

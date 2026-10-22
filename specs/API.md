@@ -134,10 +134,10 @@ returns everything.
 | `params`         | shallow-merged over the workflow's `params:` defaults for this run only |
 | `paramOverrides` | `{ "<workflow name>": { … } }` — the same, per workflow, reaching subflows |
 | `runId`          | your own id (unique within the workflow); default a millisecond timestamp, e.g. `"1790436489808"` |
-| `callback`       | `{ url }` (http/https) — the result is POSTed there when the run settles; see `CALLBACKS.md`. Any other scheme is a 400 and nothing launches |
+| `callback`       | `{ url }` (http/https) — the result is POSTed there when the run settles; see `CALLBACKS.md`. Any other scheme is a 400 and nothing launches. Or `{ room: true }`: delivered to the launching actor's ROOM, a socket the client holds open (`GET /rooms`, §10; `CALLBACKS.md` §8) — 400 for a request that names no actor or carries the shared peer key |
 | `job`            | the job to launch under (`plans/jobs.md`): an id you mint, the format of a session id (§9); a bad one is a 400 and nothing launches. Recorded on the run, handed to steps as `ctx.job` and to templates as `{{ $job }}`; `job/dir` gives the run the job's directory, and the callback resolves the output's `artifacts[]` into it (`CALLBACKS.md` §4). The run is also recorded on the job — `GET /jobs/:id` (§5) lists it |
 | `title`          | the job's name (`plans/job-index.md`), recorded on the JOB, never on the run: the host's label for it, kept until a later launch carries another. 400 without `job` |
-| `jobCallback`    | `{ url }` (http/https) — the JOB's live updates (`job.update`: a hold taken or let go, a check's evidence, a verify ended, a step's screenshot or walkthrough frame) are POSTed there as they happen, from every run under the job; see `CALLBACKS.md` §5. Kept on the job, never returned; the latest launch that carries one wins, `null` clears it, absent keeps it. With or without `job`, the jobs THIS run starts (`job/start`, `job/continue`) inherit it — an orchestrator turn's host hears every job it starts at one URL, each event naming its `job` and `runId`. 400 for another scheme |
+| `jobCallback`    | `{ url }` (http/https) — the JOB's live updates (`job.update`: a hold taken or let go, a check's evidence, a verify ended, a step's screenshot or walkthrough frame) are POSTed there as they happen, from every run under the job; see `CALLBACKS.md` §5. Kept on the job, never returned; the latest launch that carries one wins, `null` clears it, absent keeps it. With or without `job`, the jobs THIS run starts (`job/start`, `job/continue`) inherit it — an orchestrator turn's host hears every job it starts at one URL, each event naming its `job` and `runId`. 400 for another scheme. `{ room: true }` as for `callback` |
 | `mcp`            | `[{ name, url, token?, headers?, toolFilter? }]` (`McpServer`, `src/core.ts`; at most 10) — YOUR MCP servers, the way back into you for this run's agents: every `agent` step gets their tools as `<name>_<tool>` unless it says `mcp: false`, and so do the jobs a turn starts (`job/start`, `job/continue`) and the runs it launches (`meta/run-workflow`) — never a peer. `url` is a Streamable HTTP endpoint (http/https); `token` is sent as `Authorization: Bearer <token>`, `headers` for any other scheme; `toolFilter` keeps those tools only (names or globs). `name`: letters, digits, `_`, `-`, unique. A bad entry is a 400 and nothing launches. The log records `mcp: [{ name, origin }]` only; the entries are kept beside it for a resume and returned by nothing. A server that cannot be reached when an agent starts is skipped, the agent going on without its tools |
 | `attachments`    | `[{ name, mediaType?, data }]` (`src/ai/attachments.ts`) — files for the run's agents, the person's message's: `data` is base64 or a data URL, `mediaType` defaults from the data URL, else the extension. At most 10, 10 MB each, 5 MB an image, 15 MB together; a bad one is a 400 and nothing launches. Saved under the run's artifacts as `attachments/<name>` (`GET /artifacts/:runId` lists them) and put on every `agent` step's prompt after its text — an image or a PDF as a file the model sees, text and Word inline, anything else announced by its path — unless the step says `attachments: false`; a sub-agent never gets them. `run.start` records `attachments: [{ name, mediaType, size, path }]`, never the bytes (the agent's transcript keeps what the model saw). An orchestrator turn hands a job the ones it needs by name (`job/start` / `job/continue` `attachments`) — not to a builder job on a peer |
 
@@ -634,6 +634,20 @@ kept encrypted; the token has no read route.
 
 `STRUT_PEERS` (a JSON array of the same records) puts peers on file at boot
 for a strut nobody pushes to — a desktop strut behind NAT.
+
+**Rooms** — how a strut nobody can call hears its runs here
+(`plans/chained-orchestrators.md` §3; `CALLBACKS.md` §8). `GET /rooms` is a
+WebSocket: the upgrade passes the gate like any request, and the socket
+joins the request's actor's room — a `full` request with an actor (the key
+with `x-strut-actor`, a session, a host's credential) or a person's
+credential (`peer:person`); the shared peer key and a request with no actor
+are `403`, plain HTTP `426`. A launch's `callback` / `jobCallback` `{ room:
+true }` (§3) delivers that run's `run.end` and its jobs' `job.update`s and
+`run.end`s to every socket in the room, one JSON text message each; with
+none open the newest 1 000 wait in memory for the next join. A host that owns
+the Node server routes its upgrades to `strut.upgrade(req, socket, head, {
+basePath })`. `strut/run-workflow { room: true }` asks a peer for this on its
+launch.
 
 **The token** is whatever the peer accepts as a bearer. Give it the peer's
 `STRUT_PEER_KEY` (Auth), not its deployment key: that is everything a call
