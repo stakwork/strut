@@ -946,13 +946,24 @@ the frame in.
 
 ### 14.4 A job's app (plans/apps.md §6, §7.2)
 
-A job's agent writes an app in the JOB's directory — `apps/<name>/`, laid
-out like any app — with its editor, `app/init { path }` to scaffold it and
-`app/build { path }` to build it (the `job` seed grants those and
-`app/get`, never `app/publish` or `app/checkout`; strut's `Job App`
-Concept page under `Job` tells it how), and hands it over as a
-deliverable `{ id, kind: "app", title, path: "apps/<name>" }`. It has no
-versions and no pointer: one live directory behind one link. What changes:
+**A published app as a deliverable (2026-10-22).** The `builder` workflow
+publishes an app in the workspace and hands it over by NAME in its reply's
+`artifacts`: `{ id, kind: "app", title, app: "<name>", version? }`, resolved
+to the version's document with `app: { name, version, hash, builtAt }`
+beside the `url` (`CALLBACKS.md` §4) — on `run.end`, `…/runs/:runId/artifacts`
+and `GET /jobs/:id`; a job that ran the builder passes the entry on. Host
+it as §14.3: the version's listing mints its token. The `job` seed grants
+no `app/*` step and strut seeds no `Job App` Concept any more (both
+retired that day: a page over a job's own results is an HTML file in its
+directory, and an app that should exist is the builder's); what follows
+is the runtime for a job's app DIRECTORY, which still serves a directory
+handed over as `{ kind: "app", path }` and is slated for removal.
+
+A job's agent could write an app in the JOB's directory — `apps/<name>/`,
+laid out like any app — with its editor, `app/init { path }` to scaffold it
+and `app/build { path }` to build it, and hand it over as a deliverable
+`{ id, kind: "app", title, path: "apps/<name>" }`. It has no versions and
+no pointer: one live directory behind one link. What changes:
 
 - **The deliverable** resolves to the app's document with `app: { job,
   path, hash, builtAt }` beside the `url` (`CALLBACKS.md` §4) — on

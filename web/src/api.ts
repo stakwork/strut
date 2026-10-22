@@ -796,9 +796,20 @@ export interface ArtifactRef {
   peer?: string;
   job?: string;
   path?: string;
-  /** A job's APP (`kind: "app"`, plans/apps.md §6): its job and directory,
-   *  and the build its document is — a new `hash` is a new page. */
-  app?: JobAppRef;
+  /** An APP (`kind: "app"`): a workspace app by name and version (what
+   *  the builder hands over), or a job's app by its job and directory
+   *  (plans/apps.md §6) — and the build its document is: a new `hash` is a
+   *  new page. On a peer's entry the name as given, unresolved. */
+  app?: WorkspaceAppRef | JobAppRef;
+}
+
+/** A published app at a version. */
+export interface WorkspaceAppRef {
+  name: string;
+  /** Absent only on a peer's entry (nothing resolved here). */
+  version?: string;
+  hash?: string;
+  builtAt?: string;
 }
 
 /** A job's app: the directory in the job's, and the build it was handed over at. */
@@ -807,6 +818,13 @@ export interface JobAppRef {
   path: string;
   hash?: string;
   builtAt?: string;
+}
+
+/** An app deliverable this strut can host: a job's, or a workspace app whose version resolved. */
+export function hostableApp(app: WorkspaceAppRef | JobAppRef | undefined): JobAppRef | { name: string; version: string } | null {
+  if (!app) return null;
+  if ("job" in app) return app;
+  return app.version ? { name: app.name, version: app.version } : null;
 }
 
 /** A current deliverable of a job: the ref and the run that last reported it. */

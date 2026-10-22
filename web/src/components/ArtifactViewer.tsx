@@ -5,7 +5,7 @@ import { artifactKind, artifactRel, directoryEntries, parseWalkthrough, resolveA
 import { ArrowLeftIcon, CloseIcon } from "../icons";
 import { useFileScope } from "../use-artifact-url";
 import { Markdown, type MarkdownLink } from "./Markdown";
-import { AppHost } from "./AppHost";
+import { AppHost, type HostedApp } from "./AppHost";
 
 // ── Artifact viewer ────────────────────────────────────────────────────────
 //
@@ -45,8 +45,8 @@ export function jobAppAt(path: string, files: string[] | null): JobAppRef | null
 export function ArtifactViewer(props: {
   path: string;
   onClose: () => void;
-  /** A job's app to render through the host (the path is its document). */
-  app?: JobAppRef;
+  /** An app to render through the host (the path is its document). */
+  app?: HostedApp;
   /** A strut link the app opened (`ui/open-link`). */
   onNavigate?: (params: Record<string, string>) => void;
 }) {

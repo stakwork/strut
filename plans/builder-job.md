@@ -76,7 +76,14 @@
 > a job agent that meets a workflow or a workspace's app to run `builder`.
 > (2) **The app split.** Anything about an app that should exist in a
 > workspace — a new one, a change to one, one on a peer — is a builder job;
-> `Job App` is only an app that shows THIS job's own results. `job/start`'s
+> `Job App` is only an app that shows THIS job's own results — and, later
+> that day, RETIRED: a page over a job's results is an HTML file in its
+> directory, an app is the builder's, and the builder hands it over BY
+> NAME — `{ id, kind: "app", title, app: "<name>", version? }`, resolved
+> to the version's document with `app: { name, version, hash }`
+> (`artifact-refs.ts`; hive's frame already takes `{ app, version }`). The
+> job seed grants no `app/*`; the job-app runtime stays until hive's job
+> path is confirmed dead. `job/start`'s
 > `workflow` field and the orchestrator's one sentence say "a workflow, or
 > an app that lives in a workspace"; the builder names an app it published
 > (name, version) in its `text` and hands back no unpublished app

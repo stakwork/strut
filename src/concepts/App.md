@@ -180,7 +180,11 @@ with `useLaunch`. The document's size over 6 MB is a warning.
   this take off?" a one-step workflow around `llm`, launched by a button and
   never by the chart.
 
-Describe the app's pages in `text` when you publish: the person opens it
-under Apps in strut's UI, where "Edit with the builder" brings a request
-back here, and a message typed inside the app ("add a column") arrives in
-this chat naming the app.
+Describe the app's pages in `text` when you publish, and where your reply
+carries `artifacts` (a job's), hand the app over by NAME — `{ id, kind:
+"app", title, app: "<name>" }`, its active version — so the person opens
+it where they are: under Apps in strut's UI, where "Edit with the builder"
+brings a request back here, and a message typed inside the app ("add a
+column") arrives in this chat naming the app; or in a host's own frame.
+An app lives in the workspace: never hand over an app directory as a
+file.

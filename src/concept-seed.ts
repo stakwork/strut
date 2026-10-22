@@ -109,12 +109,16 @@ export interface ConceptSeedOutcome {
  *  stakgraph lab seeded the same two files, under its own prefixes.
  *  `Workflow Build` was the builder's entry under `Job`, there only because
  *  the orchestrator read `Job` alone; it reads both roots now, and the job
- *  agent's way to the builder is in `Job`'s own docs. */
+ *  agent's way to the builder is in `Job`'s own docs. `Job App` (an app a
+ *  job wrote in its own directory, plans/apps.md §6) was a third way to an
+ *  app, retired 2026-10-22: a page over a job's results is an HTML file in
+ *  its directory, and an app is the builder's, published and handed over
+ *  by name (`{ kind: "app", app }`, artifact-refs.ts). */
 export const STRUT_CONCEPTS: ConceptSet = {
   dir: fileURLToPath(new URL("./concepts/", import.meta.url)),
   prefix: "strut/concepts/",
   legacyPrefixes: ["lab/builder/concepts/", "lab/job/concepts/"],
-  retired: ["Workflow Build.md"],
+  retired: ["Workflow Build.md", "Job App.md"],
 };
 
 export function stampOf(file: string, text: string, prefix: string): string {

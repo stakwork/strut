@@ -44,14 +44,13 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     }
   });
 
-  it("a job's app (plans/apps.md §6, §8): the agent may scaffold, build and read one — never publish or check one out, the authoring writes; the reply hands one over as kind app", async () => {
+  it("no app tools (2026-10-22): an app is the builder's, handed over by name; the reply passes one on as { kind: app, app }", async () => {
     const text = await jobWorkflowYaml();
-    const { tools } = paramsOf(text);
-    for (const t of ["app/init", "app/build", "app/get"]) assert.ok(tools.includes(t), `the job agent holds ${t}`);
-    for (const t of ["app/publish", "app/checkout"]) assert.ok(!tools.includes(t), `the job agent never holds ${t}`);
-    assert.ok(text.includes("`app` for an app directory you built"), "the reply's artifact kind names it");
-    // How to hand one over is the `Job App` page under `Job` (concept-seed.test.ts), not prompt text.
-    assert.doesNotMatch(paramsOf(text).system, /app\/init|kind: "app"/);
+    const { tools, system } = paramsOf(text);
+    for (const t of tools) assert.ok(!t.startsWith("app/"), `the job agent never holds ${t}`);
+    assert.ok(JSON.stringify(yaml.load(text)).includes("An app in this workspace, by name"), "the reply's `app` field");
+    assert.ok(!text.includes("an app directory you built"), "no app directory as a deliverable");
+    assert.doesNotMatch(system, /app\/init|Job App/);
   });
 
   it("the host's delta is appended — its grants after strut's, its section after strut's prompt — and changes the hash; nothing else does", async () => {

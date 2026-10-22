@@ -132,8 +132,9 @@ pull request, a pod. Each entry names one:
 | `path`    | a file, relative to the run's directory — the **job's** for a run launched with `job` (see below), else the run's own artifact directory |
 | `url`     | an absolute URL, or a strut-relative one starting with `/` (another run's `/artifacts/<runId>/clip.mp4`) |
 | `content` | inline, up to 50 KB: a diff, a JSON value, short markdown |
+| `app`     | an APP published in this workspace, by name (`kind: "app"`): its active version, or the one `version` names (below) |
 
-At least one of `path`, `url`, `content`; they are not exclusive (a pull
+At least one of `path`, `url`, `app`, `content`; they are not exclusive (a pull
 request may carry its link and its fields — both are delivered). `output`
 is delivered as the workflow packed it; the resolved list rides beside it
 as the callback's top-level `artifacts`, each entry with a `url` (a `path`
@@ -145,28 +146,38 @@ unavailable. Entries with no `id` or `title` are dropped. The same
 list is at `GET /workflows/:name/runs/:runId/artifacts` for a callback you
 missed.
 
-**An app — `kind: "app"`.** A job's agent may hand over an APP it wrote in
-the job's directory (`plans/apps.md` §6): a small front-end project, built
-into one page with `app/build`. Its `path` is the app's DIRECTORY, and it
-resolves to the app's document, with `app` beside the `url`:
+**An app — `kind: "app"`.** An APP (`plans/apps.md`) is a front-end
+project built into one page; the `builder` workflow publishes one in the
+workspace and hands it over BY NAME — `{ id, kind: "app", title, app:
+"visits" }`, its active version, or `version: "v2"` for one — and a job
+that ran the builder passes that entry on. It resolves to that version's
+document, with `app` beside the `url`:
 
 ```json
-{ "id": "tracker", "kind": "app", "title": "Visit tracker",
-  "url": "/jobs/j-123/files/apps/tracker/dist/index.html",
-  "app": { "job": "j-123", "path": "apps/tracker", "hash": "9f2c…", "builtAt": "2026-10-21T18:04:11.201Z" } }
+{ "id": "visits", "kind": "app", "title": "Visits",
+  "url": "/apps/visits/v2/files/dist/index.html",
+  "app": { "name": "visits", "version": "v2", "hash": "9f2c…", "builtAt": "2026-10-22T10:04:11.201Z" } }
 ```
 
-`app.hash` is the tree hash the document was built from: a later turn that
-changed the app comes back with a new one — reload your frame then. A
-directory never built is an entry with `error: "not built: …"`. A host
-that knows apps renders it the way strut's UI does (`API.md` §14.3, "A
-job's app"): list `GET /jobs/<job>/files?path=<app.path>` (it mints the
-job's token NARROWED to that directory), fetch the `url` with that token
-as `?t=` — the page comes back carrying the token as its identity — frame
-the TEXT as a sandboxed `srcdoc`, and relay its `tools/call` to `/mcp`. A
-host that does not shows the link: the page opens, with no host behind it,
-and says so. A run with no job resolves an app's `path` under its own
-artifacts, with no `app`.
+A host that knows apps renders it the way strut's UI does (`API.md` §14.3):
+list `GET /apps/<name>/<version>/files` (it mints the version's file
+token), fetch the `url` with that token as `?t=` — the page comes back
+carrying the token as its identity — frame the TEXT as a sandboxed
+`srcdoc`, and relay its `tools/call` to `/mcp`. A host that does not shows
+the link: the page opens, with no host behind it, and says so. `app.hash`
+is the tree hash the version was built from — a new one is a new document.
+A name no app has is an entry with `error: "no such app: …"` (`no such
+app version: …` for a pinned version).
+
+The older form is a job's APP DIRECTORY (`plans/apps.md` §6): `path` is a
+directory in the job's holding an `app.yaml`, resolved to its document
+with `app: { job, path, hash, builtAt }` (`/jobs/<job>/files/<path>/dist/index.html`;
+host it through `GET /jobs/<job>/files?path=<app.path>`, the job's token
+NARROWED to that directory — `API.md` §14.4). Nothing strut ships produces
+one since 2026-10-22 (the job agent has no app tools; a page over a job's
+own results is an HTML file in its directory), but a directory handed over
+that way still resolves; never built is `error: "not built: …"`. A run with
+no job resolves such a `path` under its own artifacts, with no `app`.
 
 **A deliverable from another strut — `peer` and `job`.** A run that did
 its work on another strut (`strut/run-workflow`; the `builder` workflow

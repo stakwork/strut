@@ -3418,8 +3418,16 @@ export async function createStrut<TServices = unknown>(
     const build = await readBuildInfo(jobFilePath(jobRoot(dataDir, job), path));
     return build ? { hash: build.hash, builtAt: build.builtAt } : null;
   };
+  /** A published app's version (the active one, or the one named) and its
+   *  build: a `{ kind: "app", app: <name> }` deliverable's document. */
+  const appVersionOf = async (name: string, version?: string) => {
+    const v = await apps.versionDir(name, version);
+    if (!v) return null;
+    const build = await readBuildInfo(v.path);
+    return { version: v.version, hash: build?.hash ?? v.hash, ...(build?.builtAt ? { builtAt: build.builtAt } : {}) };
+  };
   const artifactRefs = (runId: string, output: unknown, job: string | undefined): Promise<ArtifactRef[] | undefined> =>
-    resolveArtifactRefs(output, { runId, ...(job ? { job } : {}), exists: artifactFileExists, appBuild: jobAppBuild });
+    resolveArtifactRefs(output, { runId, ...(job ? { job } : {}), exists: artifactFileExists, appBuild: jobAppBuild, appVersion: appVersionOf });
 
   // ── Runs as a capability (src/runs.ts; plans/apps.md §5) ──────────────
   // What the `run/*` steps are thin over — list, read, launch, cancel, a

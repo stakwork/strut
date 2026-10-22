@@ -48,8 +48,14 @@ meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/bu
   published and what its test run showed; its `ask` is yours to put to the
   person, and their answer goes back to it next turn on the same session.
 
-Never write workflow YAML into a file or publish one another way. An app
-that shows THIS job's own results is yours: the `Job App` kind.
+Never write workflow YAML into a file or publish one another way. What
+the builder publishes it names in its reply — a workflow, an app by name
+— and you hand it on as it gave it (an app: `{ kind: "app", app: "<name>" }`
+in your `artifacts`).
+
+Something for the person to LOOK AT or use over this job's own results — a
+tracker, a chart, a small tool — is an HTML page in your directory
+(`index.html`, its data beside it), handed over as a file like any other.
 
 To record a new kind, add a child Concept here with how to do it as its
 docs.

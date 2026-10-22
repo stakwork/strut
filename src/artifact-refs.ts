@@ -22,13 +22,18 @@
  * pull_request | code | log | json`), passed through unchecked; the
  * inference below only picks a name from that list.
  *
- * One kind is strut's own: `app` (plans/apps.md §6). Its `path` is an APP's
- * directory in the job's, and it resolves to the app's DOCUMENT —
- * `/jobs/<job>/files/<path>/dist/index.html` — with `app: { job, path,
- * hash, builtAt }` beside it, so a host that knows apps renders it through
- * its bridge (and reloads when the build's hash moves), and one that does
- * not shows the link. A directory with an `app.yaml` and no kind given is
- * one too. Not built yet is an error that says so.
+ * One kind is strut's own: `app`. Two forms. `app: "<name>"` (+ `version?`)
+ * is an app PUBLISHED in this workspace — what the builder hands over
+ * (plans/builder-job.md; 2026-10-22) — and resolves to that version's
+ * document, `/apps/<name>/<vN>/files/dist/index.html` (the active version
+ * unless one is named), with `app: { name, version, hash, builtAt }`
+ * beside it. `path` is the older form (plans/apps.md §6): an APP's
+ * directory in the job's, resolved to `/jobs/<job>/files/<path>/dist/index.html`
+ * with `app: { job, path, hash, builtAt }`; a directory with an `app.yaml`
+ * and no kind given is one too, and not built yet is an error that says
+ * so. Either way a host that knows apps renders the document through its
+ * bridge (and reloads when the build's hash moves), and one that does not
+ * shows the link.
  */
 import { scopePath } from "./auth.js";
 import { DOCUMENT_FILE } from "./apps/build.js";
@@ -48,6 +53,9 @@ export interface ArtifactEntry {
   url?: string;
   /** Inline: a diff, a JSON value, short markdown. */
   content?: unknown;
+  /** A published app, by name (`kind: "app"`): its active version, or `version`. */
+  app?: string;
+  version?: string;
   /** Another strut's deliverable: the peer's id, as this strut names it. */
   peer?: string;
   /** With `peer`: the job its files are under on that peer. */
@@ -73,15 +81,28 @@ export interface ArtifactRef {
   job?: string;
   /** With `peer` only. */
   path?: string;
-  /** A job's APP (`kind: "app"`, plans/apps.md §6): the job and the app's
-   *  directory in it, normalized — what a host's bridge needs to render it
-   *  (`url` is its document) — and the build the document came from
-   *  (`dist/build.json`): a new `hash` is a new document to reload. */
-  app?: { job: string; path: string; hash?: string; builtAt?: string };
+  /** An APP (`kind: "app"`): what a host's bridge needs to render it (`url`
+   *  is its document) and the build the document came from (`dist/build.json`
+   *  — a new `hash` is a new document to reload). A WORKSPACE app by name
+   *  and version (the builder's deliverable), or a job's app by the job and
+   *  the app's directory in it (plans/apps.md §6). On a peer's entry the
+   *  name and version as given, nothing resolved. */
+  app?: WorkspaceAppRef | JobAppRef;
 }
 
-/** The kind of a deliverable that is an app's directory. */
+/** A published app at a version (`version` is unresolved, so absent when
+ *  not given, only on a peer's entry). */
+export interface WorkspaceAppRef { name: string; version?: string; hash?: string; builtAt?: string }
+/** A job's app: its directory in the job's. */
+export interface JobAppRef { job: string; path: string; hash?: string; builtAt?: string }
+
+/** The kind of a deliverable that is an app. */
 export const APP_KIND = "app";
+
+/** The link strut serves an app version's document at. */
+export function appDocumentUrl(name: string, version: string): string {
+  return `/apps/${encodeURIComponent(name)}/${version}/files/${DOCUMENT_FILE}`;
+}
 
 /** Inline content larger than this is refused (the ref carries `error`). */
 export const ARTIFACT_CONTENT_MAX_CHARS = 50_000;
@@ -142,6 +163,10 @@ export interface ResolveArtifactsAt {
   /** A job app's `dist/build.json` — its tree hash and when it was built —
    *  or null; absent, an app ref carries no hash. */
   appBuild?: (job: string, path: string) => Promise<{ hash: string; builtAt?: string } | null>;
+  /** A published app's version — the active one, or the one named — with
+   *  its build; null for no such app or version. Absent where there are no
+   *  apps: an `app` entry is then an error. */
+  appVersion?: (name: string, version?: string) => Promise<{ version: string; hash?: string; builtAt?: string } | null>;
 }
 
 /** The `artifacts` list of a run's output, if it carries one — the raw
@@ -178,9 +203,11 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
     };
     const path = text(raw["path"]);
     const url = text(raw["url"]);
+    const appName = text(raw["app"]);
+    const appVersion = text(raw["version"]);
     const hasContent = raw["content"] !== undefined && raw["content"] !== null;
-    if (path === undefined && url === undefined && !hasContent) {
-      out.push({ ...ref, error: "one of path, url or content is required" });
+    if (path === undefined && url === undefined && appName === undefined && !hasContent) {
+      out.push({ ...ref, error: "one of path, url, app or content is required" });
       continue;
     }
     // The three are not exclusive: a model names a pull request by its
@@ -193,8 +220,21 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       // Another strut's: kept as it came. Its path and url are the peer's,
       // for the reader to resolve there — nothing here checks either.
       const job = text(raw["job"]);
-      if (!text(raw["kind"])) ref.kind = artifactKind((path ?? url) ?? "");
+      if (!text(raw["kind"])) ref.kind = appName ? APP_KIND : artifactKind((path ?? url) ?? "");
       Object.assign(ref, { peer, ...(job ? { job } : {}), ...(path !== undefined ? { path } : {}), ...(url !== undefined ? { url } : {}) });
+      if (appName) ref.app = { name: appName, ...(appVersion ? { version: appVersion } : {}) };
+    } else if (appName !== undefined && path === undefined && url === undefined) {
+      // A published app, by name: the version's document, or why not.
+      ref.kind = APP_KIND;
+      if (!at.appVersion) error = "no apps here";
+      else {
+        const v = await at.appVersion(appName, appVersion).catch(() => null);
+        if (!v) error = appVersion ? `no such app version: ${appName} ${appVersion}` : `no such app: ${appName}`;
+        else {
+          ref.url = appDocumentUrl(appName, v.version);
+          ref.app = { name: appName, version: v.version, ...(v.hash ? { hash: v.hash } : {}), ...(v.builtAt ? { builtAt: v.builtAt } : {}) };
+        }
+      }
     } else if (path !== undefined) {
       const rel = path.replace(/^\/+/, "");
       const fileUrl = (r: string) => (at.job ? jobFileUrl(at.job, r) : `/artifacts/${encodeURIComponent(at.runId)}/${r}`);

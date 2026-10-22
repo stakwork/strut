@@ -85,13 +85,15 @@ steps:
               required: [id, title]
               properties:
                 id: { type: string, description: "Stable across turns: the same id next turn means a newer version of the same thing (\"plan\", not \"plan-v3\")." }
-                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …); `app` for an app directory you built. Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
+                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …; `app` with `app: <name>` for an app the builder published). Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
                 title: { type: string }
                 label: { type: string, description: "What it is to the reader: Plan, Page, Screenshot" }
                 summary: { type: string, description: "One sentence about what is in it" }
-                path: { type: string, description: "A file you wrote (an app: its directory), relative to the working directory" }
+                path: { type: string, description: "A file you wrote, relative to the working directory" }
                 url: { type: string, description: "Instead of a file you wrote: an absolute link, or the url job/get gave an earlier job's deliverable" }
                 content: { type: string, description: "Small inline content instead of a file (a diff, short JSON)" }
+                app: { type: string, description: "An app in this workspace, by name, as the builder's reply gave it (with kind: app); its active version unless `version` names one" }
+                version: { type: string, description: "With `app`: a version to pin (v3)" }
           ask:
             type: object
             description: "Only when you need a decision from the person before going on: the question, in prose. The answer comes as the next turn's prompt."
@@ -143,14 +145,13 @@ params:
   # a page (browser/walkthrough for a flow, a frame per step), http/verify
   # for an endpoint, exec for a command — or a person's look when nothing
   # here runs it, never a check over the agent's own diff; and verify the
-  # job before saying done. A JOB'S APP (plans/apps.md §6; how to hand one
-  # over is the `Job App` page under `Job`, in the kinds list): app/init to
-  # scaffold one in the job's directory, app/build to build it (its errors,
-  # its page's client errors, `job.update { kind: app }` to the host),
-  # app/get to read it back — never app/publish or app/checkout, the
-  # authoring writes: a job's app reaches the workspace through a person's
-  # "Publish as an app" or a builder job (§8). A host appends its own
-  # (`createStrut({ job: { tools } })`): the lab adds `pod/*`. Never the
+  # job before saying done. No app/* (2026-10-22): an APP is the builder's
+  # — published in the workspace and handed over by name (`{ kind: "app",
+  # app }`) — and a page over this job's own results is an HTML file in
+  # its directory; the job-app runtime (plans/apps.md §6) is still served
+  # for a directory with an app.yaml, but nothing here scaffolds or builds
+  # one. A host appends its own (`createStrut({ job: { tools } })`): the
+  # lab adds `pod/*`. Never the
   # authoring writes (meta/publish-workflow, meta/create-step, edit-step):
   # a workflow, or an app that lives in a workspace, is the `builder`
   # workflow's, which this agent runs through meta/run-workflow when such a
@@ -177,9 +178,6 @@ params:
     - job/list
     - job/get
     - job/read
-    - app/init
-    - app/build
-    - app/get
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. None of strut's own; a host
