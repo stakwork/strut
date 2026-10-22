@@ -55,13 +55,17 @@ describe("the orchestrator workflow strut ships", () => {
     // rule rides on job/start's own schema, beside the call.
     const system = (yaml.load(text) as { params: { system: string } }).params.system.replace(/\s+/g, " ");
     assert.ok(
-      system.includes("A workflow to build, change, test or debug is a BUILDER job (`workflow: builder`), on the strut whose workspace it belongs to (`peer` when that is not this one)."),
+      system.includes("A workflow to build, change, test or debug, or an app to publish over one, is a BUILDER job (`workflow: builder`), on the strut whose workspace it belongs to (`peer` when that is not this one)."),
       system,
     );
     assert.equal(system.match(/builder/gi)?.length, 2, "one sentence, not a paragraph: `BUILDER job` and `workflow: builder`, nothing more");
     const start = z.toJSONSchema(registry["job/start"]!.input) as { properties: Record<string, { enum?: string[]; description?: string }> };
     assert.deepEqual(start.properties["workflow"]!.enum, ["job", "builder"], "a closed set: the model never names an arbitrary workflow");
     assert.match(start.properties["workflow"]!.description!, /`builder`: the thing to build, change, test or debug is a WORKFLOW/);
+    // An app published over a workspace's workflows is a builder's too — on
+    // a peer as here — and an app over a job's own results stays the job's.
+    assert.match(start.properties["workflow"]!.description!, /or an APP published over a workspace's workflows/);
+    assert.match(start.properties["workflow"]!.description!, /`job` \(the default\):[^.]*an app over this job's own results/);
     assert.match(start.properties["peer"]!.description!, /^With workflow: builder only/);
   });
 

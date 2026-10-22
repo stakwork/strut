@@ -1,5 +1,5 @@
 ---
-description: "Hand over an interactive app as a deliverable — when the ask is for a tracker, dashboard or tool the person will use, not just read."
+description: "Hand over an interactive app as a deliverable — when the ask is for a tracker, dashboard or tool over this job's own results that the person will use, not just read. An app to publish in a workspace, or on another strut, is a Workflow Build."
 parent: Job
 ---
 Hand over an interactive APP as a deliverable — when the person wants

@@ -63,6 +63,15 @@
 > with "this is a builder job"; a job started through `job/start` gets
 > `input.workspace` from the strut's `self` record; the job's prompt carries
 > its id (what a claim's subject and the build's thread are named by).
+>
+> **Amended 2026-10-22:** the builder builds APPS too (plans/apps.md §8:
+> `app/*` and the editor are on its seed), and the orchestrator was never
+> told: asked for an app on a peer, it answered that apps run here. The
+> `Workflow Build` line, `job/start`'s `workflow` field and the orchestrator's
+> one sentence now say "a workflow, or an app published over one", and the
+> `Job App` line says an app to publish in a workspace or on a peer is a
+> Workflow Build — a job's own app stays the job's. The builder's reply
+> lists an app it built by its directory (`kind: "app"`).
 
 ## Problem
 

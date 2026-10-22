@@ -72,6 +72,9 @@ describe("concept files (pure)", () => {
     // one line names the door; its docs tell a job agent how to run it.
     assert.equal(build.parent, "Job");
     assert.match(build.description!, /workflow: builder/);
+    // Apps are a builder job's too (plans/apps.md §8), here or on a peer:
+    // the one line says so, or the orchestrator keeps them local.
+    assert.match(build.description!, /or an APP published over a workspace's workflows/);
     assert.ok(build.docs!.includes("job/start { workflow: builder }") && build.docs!.includes("Workflow Builder"), build.docs);
     // A job agent the request reaches by mistake runs the builder itself, on
     // a thread of its own, rather than bouncing it back to the person.
@@ -90,6 +93,7 @@ describe("concept files (pure)", () => {
     const jobApp = await read("Job App.md");
     assert.equal(jobApp.parent, "Job");
     assert.match(jobApp.description!, /interactive app/);
+    assert.match(jobApp.description!, /An app to publish in a workspace, or on another strut, is a Workflow Build\./, "the two app kinds tell each other apart");
     assert.ok(!jobApp.description!.includes("\n"), "one line");
     for (const must of ["apps/<name>/", "app/init", "app/build", "BEFORE you hand it over", 'kind: "app"', "run/list { job }", "run/files { job, path }", "useApp()", "Publish as an app", "open the `App` page"]) assert.ok(jobApp.docs!.includes(must), must);
     assert.doesNotMatch(jobApp.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
