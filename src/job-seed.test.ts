@@ -30,11 +30,11 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     const flow = flowFromYaml(JOB_WORKFLOW, "v1", text);
     assert.deepEqual(
       flow.steps.map((s) => s.type),
-      ["job/dir", "foreach", "context/concept", "if", "agent", "acp/prompt", "pack"],
-      "job/dir → checkouts → the Job page → strut's agent, or a local one over ACP → pack",
+      ["job/dir", "foreach", "context/concept", "context/concept", "if", "agent", "acp/prompt", "pack"],
+      "job/dir → checkouts → the Job page → the kind's page → strut's agent, or a local one over ACP → pack",
     );
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
-    for (const k of ["workspace", "session", "repos", "agent", "mode", "model", "cwd"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
+    for (const k of ["workspace", "kind", "session", "repos", "agent", "mode", "model", "cwd"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
 
     const { tools } = paramsOf(text);
     assert.ok(tools.length > 0);
@@ -127,6 +127,45 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       } finally {
         await rm(fresh, { recursive: true, force: true });
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a job's kind opens the turn's prompt with that kind's page, after the job's own lines and before the message; a kind with no page adds nothing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "job-seed-kind-"));
+    try {
+      const prompts: string[] = [];
+      const fakeAgent = defineStep({
+        type: "agent",
+        input: z.object({ prompt: z.string() }).passthrough(),
+        output: z.any(),
+        async run(cfg) {
+          prompts.push(cfg.prompt);
+          return { result: "ok", object: { text: "ok", artifacts: [] }, steps: 1, usage: {}, cost: 0 };
+        },
+      });
+      // Stands in for context/concept over a graph holding one kind's page.
+      const fakeConcept = defineStep({
+        type: "context/concept",
+        input: z.object({ name: z.string().optional() }).passthrough(),
+        output: z.any(),
+        async run(cfg) {
+          return { text: cfg.name === "Code Change" ? "PAGE: how a code change is done here." : "" };
+        },
+      });
+      const strut = await createStrut({ workspace: new WorkspaceManager(dir), registry: await createRegistry([fakeAgent, fakeConcept]), ...quiet });
+      const { kindLead, kindEnd } = (yaml.load(await jobWorkflowYaml()) as { params: { kindLead: string; kindEnd: string } }).params;
+      const job = "job-kind-test";
+
+      const coded = await strut.run(JOB_WORKFLOW, { prompt: "Add the line.", workspace: "acme", kind: "Code Change" }, { job });
+      assert.equal(coded.status, "success", JSON.stringify(coded.error));
+      assert.equal(prompts[0], `Workspace: @acme, the one this strut belongs to. Your job id: ${job}. ${kindLead}PAGE: how a code change is done here.${kindEnd}Add the line.`);
+      assert.ok(kindLead.includes("\n\n") && kindEnd.includes("\n\n"), "the page stands apart from the lines around it");
+
+      const unknown = await strut.run(JOB_WORKFLOW, { prompt: "Again.", kind: "Nope" }, { job });
+      assert.equal(unknown.status, "success", JSON.stringify(unknown.error));
+      assert.equal(prompts[1], `Your job id: ${job}. Again.`, "no page for the kind: the prompt as without one");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
