@@ -35,11 +35,25 @@ export interface StepDef<
    *  may never run this step or publish anything that reaches it. The
    *  grader namespaces are sealed by name; this seals one step anywhere. */
   sealed?: boolean;
+  /** The secrets this step can take its credential from when its config
+   *  passes none (`SLACK_BOT_TOKEN`); it works when ANY one is set (gdrive:
+   *  an access token or a service account). Credentials only, never an
+   *  optional setting. Listed by `GET /steps`, so a host can tell which
+   *  connectors are set up; strut itself never reads it. */
+  secrets?: string[];
+  /** Whether running this step changes anything outside the run: `write`
+   *  for one that posts, sends or edits, `read` for one that only fetches.
+   *  Listed by `GET /steps`, so a host can fill its `approve:` lists. Absent
+   *  (or any other value): not declared, which a host treats as `write`. */
+  effect?: StepEffect;
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
   ) => Promise<z.infer<TOutput>>;
 }
+
+/** What running a step does outside the run (`StepDef.effect`). */
+export type StepEffect = "read" | "write";
 
 /** One of the caller's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts)
  *  — Hive's `McpServerConfig`, field for field. HTTP only: a caller names a
@@ -704,6 +718,10 @@ export interface AnyStepDef {
   source?: string;
   /** Sealed from the meta surface (see `StepDef.sealed`, `src/sealed.ts`). */
   sealed?: boolean;
+  /** Secret names it reads (see `StepDef.secrets`). */
+  secrets?: string[];
+  /** Read or write (see `StepDef.effect`). */
+  effect?: StepEffect;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
 }
 

@@ -2464,7 +2464,10 @@ with that move.
 3. Add the SDK to `strut/package.json` dependencies.
 4. Read credentials via `cfg.<field> ?? await ctx?.services?.secrets?.get("NAME")`
    (type `ctx` as `StepContext<StrutCapabilities>`) — never `process.env`
-   directly. See "Lib step credentials".
+   directly. See "Lib step credentials". Declare the credential secrets it can
+   read in `secrets: [...]` (any one suffices; no optional settings) and whether it acts (`effect: "write"`) or only fetches
+   (`effect: "read"`): `GET /steps` lists both, and a host builds its
+   connector list and its `approve:` defaults from them.
 5. Shared helpers go in a leading-underscore file (`lib/<ns>/_shared.ts`) —
    imported by siblings, skipped by registry discovery.
 6. Map the type or its namespace to a `PALETTE` entry in `web/src/step-colors.ts` if you want a

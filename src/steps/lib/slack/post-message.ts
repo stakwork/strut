@@ -12,6 +12,8 @@ const EXAMPLE = `- id: notify
 
 export default defineStep({
   type: "slack/post-message",
+  secrets: ["SLACK_BOT_TOKEN"],
+  effect: "write",
   description: `Post a message to a Slack channel or thread. Auth: token, else the SLACK_BOT_TOKEN secret; the bot needs the chat:write scope and must be a member of the channel. To thread replies, post once and pass the returned ts as a later step's thread_ts.\n\n${EXAMPLE}`,
   input: z.object({
     channel: z.string().min(1).describe("channel ID (e.g. C0123ABCD, recommended) or a #channel name"),

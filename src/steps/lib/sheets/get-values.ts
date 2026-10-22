@@ -5,6 +5,8 @@ import { SHEETS_API, errorResult, serviceAccountField, sheetsCtx } from "./_shar
 
 export default defineStep({
   type: "sheets/get-values",
+  secrets: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "read",
   description:
     "Read a range of a spreadsheet (A1 notation). render='computed' (default) returns calculated " +
     "numbers — use it to read the results of formulas you wrote; 'formatted' returns display strings " +

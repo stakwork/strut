@@ -19,6 +19,8 @@ export interface SlackMessage {
 
 export default defineStep({
   type: "slack/read-channel",
+  secrets: ["SLACK_BOT_TOKEN"],
+  effect: "read",
   description: `Read recent messages from a Slack channel as markdown for LLM consumption (oldest → newest, author names resolved), with the raw messages alongside. Auth: token, else the SLACK_BOT_TOKEN secret; the bot needs channels:history (and users:read to resolve names) and must be a member of the channel. hasMore means older messages exist beyond limit — narrow with oldest/latest to page.\n\n${EXAMPLE}`,
   input: z.object({
     channel: z.string().min(1).describe("channel ID (e.g. C0123ABCD)"),

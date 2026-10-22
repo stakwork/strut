@@ -11,6 +11,8 @@ const EXAMPLE = `- id: list
 
 export default defineStep({
   type: "gdrive/list-files",
+  secrets: ["GOOGLE_ACCESS_TOKEN", "GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "read",
   description: `List Google Drive files — in a folder, modified after a timestamp, of a MIME type, or by raw query — for incremental indexing; pair with foreach → gdrive/export-file to process each. Auth as gdrive/export-file (OAuth accessToken, or the GOOGLE_ACCESS_TOKEN / GOOGLE_SERVICE_ACCOUNT_JSON secret, or ADC). Incremental sync: feed one run's newestModifiedTime into the next run's modifiedAfter; page with nextPageToken → pageToken.\n\n${EXAMPLE}`,
   input: z.object({
     folderId: z.string().optional().describe("only files whose parent is this folder ID"),

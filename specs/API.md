@@ -503,7 +503,7 @@ the step has claims. 404 for an unknown type.
 
 | Method | Path                            | Description |
 | ------ | ------------------------------- | ----------- |
-| GET    | `/steps`                        | every step type: core, lib and workspace custom, with its source tier |
+| GET    | `/steps`                        | every step type: core, lib and workspace custom, with its source tier — `{ core: [{ type, source, description?, secrets?, effect? }], workspace }`. `secrets` names the secrets the step can take its credential from when its config passes none (it works when any one is set) and `effect` is `read` or `write` (does running it change anything outside the run); each is absent when the step does not declare it, or declares it malformed — treat a missing `effect` as `write` |
 | GET    | `/steps/:type/schema`           | Zod-derived field descriptors for a step's config |
 | GET    | `/steps/:type/source`           | source code |
 | GET    | `/steps/:type/versions`         | a custom step's versions + active id |

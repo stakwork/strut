@@ -14,6 +14,8 @@ const spreadsheetUrl = (id: string) => `https://docs.google.com/spreadsheets/d/$
 
 export default defineStep({
   type: "sheets/create-spreadsheet",
+  secrets: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "write",
   description:
     "Create a new Google Spreadsheet and return its spreadsheet_id and url. " +
     "When a shared Drive folder is configured (GOOGLE_DRIVE_FOLDER_ID), it is created inside " +
