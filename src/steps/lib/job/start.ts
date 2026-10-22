@@ -44,7 +44,7 @@ export default defineStep({
       .describe(
         "Which hands the job gets. `job` (the default): code, research, pages, plans, an app over this job's own results — a working directory, repositories, the shell. " +
           "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP that lives in a workspace (new, changed, or on another strut) — the authoring tools, no shell. " +
-          "A workflow or a workspace's app belongs to one strut's workspace: a builder job builds on this strut unless `peer` names another.",
+          "A workflow or a workspace's app belongs to one strut's workspace: it is built on this strut unless `peer` names another.",
       ),
     peer: z
       .string()
@@ -52,7 +52,7 @@ export default defineStep({
       .describe(
         "With workflow: builder only — the strut the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
       ),
-    repos: z.array(z.string()).optional().describe("Repository URLs to check out into the job's directory (workflow: job only — a builder job checks nothing out)."),
+    repos: z.array(z.string()).optional().describe("Repository URLs to check out into the job's directory (workflow: job only — workflow: builder checks nothing out)."),
   }),
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
   async run(cfg, ctx: StepContext) {
