@@ -1533,11 +1533,18 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   step as `ctx.attachments`. Every `agent` step of the run puts them on its
   prompt as the parts above (`attachments`, default true; a sub-agent never
   gets them — its prompt is its caller's words); in a session they are that
-  turn's message, replayed like the chat's. `job/start` / `job/continue`
-  take `attachments: [name]`: the turn's files the job needs, read back from
-  the run's artifacts and launched with the job's run, which keeps its own
-  copies — the job does not see the conversation. Refused for a builder job
-  on a peer (strut/run-workflow carries no files).
+  turn's message, replayed like the chat's, and the turn line records them
+  (`SessionTurn.attachments`). `job/start` / `job/continue` take
+  `attachments: [name]`: the files the job needs — this turn's, or, from an
+  agent with a `session`, one an EARLIER turn of its thread carried (the
+  agent hands its tools those too, newest turn first, each with the `runId`
+  that holds it; a name attached twice is the newest), so a file the
+  person attached before answering a question still goes with the job.
+  Read back from the artifacts of the run each came with and launched with
+  the job's run, which keeps its own copies — the job does not see the
+  conversation. A name no turn had is refused with the ones the
+  conversation has. Refused for a builder job on a peer
+  (strut/run-workflow carries no files).
 - **Claims, checks, evidence — the truth layer** (`plans/claims.md`; graph
   workspaces only, on by default there — on `STRUT_WORKSPACE_BACKEND=fs`,
   or with `STRUT_CLAIMS=0` / `createStrut({ claims: false })`, no claim

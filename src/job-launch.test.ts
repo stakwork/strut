@@ -108,7 +108,9 @@ describe("job/start and job/continue", () => {
         const id = `toolu_${++n}`;
         const body = JSON.parse(raw);
         const last = body.messages.at(-1);
-        const answered = Array.isArray(last?.content) && last.content.some((b: any) => b.type === "tool_result");
+        // The last BLOCK: in a session the previous turn's last tool result and
+        // this turn's prompt are one user message.
+        const answered = Array.isArray(last?.content) && last.content.at(-1)?.type === "tool_result";
         res.writeHead(200, { "content-type": "text/event-stream" });
         if (JSON.stringify(body.system).includes("ORCH")) {
           seen.orch.push(raw);
@@ -206,7 +208,8 @@ describe("job/start and job/continue", () => {
       steps: [
         { id: "dir", type: "job/dir", config: {} },
         { id: "note", type: "test/write", config: { path: "{{ dir.path }}/note.md", text: "noted" } },
-        agent("ORCH", { agentTools: ["job/start", "job/continue"] }),
+        // A conversation when the launch names one, as strut's own orchestrator.
+        agent("ORCH", { agentTools: ["job/start", "job/continue"], session: "{{ input.session }}" }),
         pack,
       ],
     });
@@ -542,7 +545,67 @@ describe("job/start and job/continue", () => {
     const again = (await (await post({ input: { prompt: "again" }, attachments })).json()) as any;
     await settle("orch", again.runId);
     const refused = (await store.getRunEvents("orch", again.runId)).find((e) => e.type === "step.error" && /^tool:job_/.test(String(e.stepType)));
-    assert.match(String(refused?.error?.message), /no file named "nope\.png" on this message — it has "shot\.png", "notes\.md"/);
+    assert.match(String(refused?.error?.message), /no file named "nope\.png" on this message or an earlier one — this conversation has "shot\.png", "notes\.md"/);
+  });
+
+  it("a file attached to an EARLIER turn of the orchestrator's thread is handed on by a later one, from the run it came with; the newest of a name wins, and a name no turn had is refused with the ones the conversation has", async () => {
+    const { strut, store, post, settle, until, toolOutput } = await boot();
+    const session = `conv-${randomUUID()}`;
+    const v1 = Buffer.from("%PDF-1.4 the first report");
+    const v2 = Buffer.from("%PDF-1.4 the second report");
+    const turn = async (prompt: string, files?: Buffer) => {
+      const res = await post({
+        input: { prompt, session },
+        callback: { url: hostUrl },
+        ...(files ? { attachments: [{ name: "report.pdf", data: files.toString("base64") }] } : {}),
+      });
+      assert.equal(res.status, 202);
+      const { runId } = (await res.json()) as any;
+      assert.equal((await settle("orch", runId)).status, "success");
+      return runId as string;
+    };
+    const jobEnds = async (n: number) =>
+      until(() => {
+        const e = posts.filter((p) => p.workflow === "job");
+        return e.length === n ? e : undefined;
+      });
+
+    // Turn 1: the file comes with the message, and the orchestrator asks a
+    // question first. Its turn line records the file it carried.
+    orchTool = { name: "final_answer", input: { text: "Which section?", artifacts: [] } };
+    const first = await turn("fix what this report says", v1);
+    const log = (await (await strut.app.request(`/sessions?id=${session}`)).json()) as any;
+    assert.deepEqual(log.turnLog[0].attachments, [{ name: "report.pdf", mediaType: "application/pdf", size: v1.length, path: "attachments/report.pdf" }]);
+    assert.equal(log.turnLog[0].runId, first);
+
+    // Turn 2, a new run with no files of its own: the model names the file it
+    // still sees in its history, and the job gets it from turn 1's run.
+    orchTool = { name: "job_start", input: { prompt: "Fix section 2 of the report", title: "Report", attachments: ["report.pdf"] } };
+    const second = await turn("section 2");
+    const started = await toolOutput(second);
+    assert.ok(started?.runId, JSON.stringify(started));
+    await jobEnds(1);
+    const jobRunStart = (await store.getRunEvents("job", started.runId)).find((e) => e.type === "run.start")!;
+    assert.deepEqual(jobRunStart.attachments, [{ name: "report.pdf", mediaType: "application/pdf", size: v1.length, path: "attachments/report.pdf" }]);
+    assert.ok(seen.job[0]!.includes(v1.toString("base64")), "the job's agent saw the file");
+    assert.equal(await strut.app.request(`/artifacts/${started.runId}/attachments/report.pdf`).then((r) => r.text()), v1.toString());
+
+    // Turn 3 attaches a newer file of the same name and names one no turn had:
+    // refused, listing the conversation's files once each.
+    orchTool = { name: "job_start", input: { prompt: "Again", title: "Again", attachments: ["nope.pdf"] } };
+    const third = await turn("and this one", v2);
+    const refused = (await store.getRunEvents("orch", third)).find((e) => e.type === "step.error" && /^tool:job_/.test(String(e.stepType)));
+    assert.equal(
+      String(refused?.error?.message),
+      'attachments: no file named "nope.pdf" on this message or an earlier one — this conversation has "report.pdf"',
+    );
+
+    // Turn 4: the name is the newest file that had it, turn 3's.
+    orchTool = { name: "job_start", input: { prompt: "Use the new one", title: "New", attachments: ["report.pdf"] } };
+    const fourth = await turn("use the new one");
+    const next = await toolOutput(fourth);
+    await jobEnds(2);
+    assert.equal(await strut.app.request(`/artifacts/${next.runId}/attachments/report.pdf`).then((r) => r.text()), v2.toString());
   });
 
   it("a turn launched with a jobCallback and no job of its own hands it to the jobs it starts: their job.update events reach it, each naming the job and the run (CALLBACKS.md §5)", async () => {

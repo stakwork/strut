@@ -2,9 +2,9 @@ import { z } from "zod";
 import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
 import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
-import { idProblem, type OpenSession, type SessionsCapability } from "../../session-store.js";
+import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
+import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
 import { GATE_NOTE, gatedSchema, proposalResultLines, proposalsOf, proposeCall } from "../../proposals.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
@@ -769,6 +769,12 @@ async function attachedParts(ctx: StepContext): Promise<unknown[]> {
   return (await Promise.all(loaded.map((a) => attachmentParts(a, a.savedAt)))).flat();
 }
 
+/** The files a thread's turns carried (`SessionTurn.attachments`), newest
+ *  turn first, each with the run whose artifacts hold it. */
+function threadAttachments(turns: SessionTurn[]): RunAttachment[] {
+  return [...turns].reverse().flatMap((t) => (t.attachments ?? []).map((a) => ({ ...a, runId: t.runId })));
+}
+
 /** `ctx` without the caller's MCP servers — what an agent with `mcp: false`
  *  hands its tools. */
 function withoutMcp(ctx: StepContext): StepContext {
@@ -1385,8 +1391,9 @@ export default defineStep({
     // lookup below finds it (src/step-ref.ts).
     if (ctx?.registry) for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(ctx.registry, name);
     // `mcp: false`: the caller's servers stop here — a sub-agent, a job or a
-    // child run this agent launches through its tools gets none.
-    const toolCtx = !cfg.mcp && ctx?.mcp ? withoutMcp(ctx) : ctx;
+    // child run this agent launches through its tools gets none. A copy of
+    // its own: a session's earlier files join it once the thread is open.
+    const toolCtx: StepContext | undefined = ctx && { ...(!cfg.mcp && ctx.mcp ? withoutMcp(ctx) : ctx) };
     // The gate (plans/proposals.md §1): `approve` names types among the
     // grants; one that is not granted has nothing to gate (a warning).
     const approve = new Set<string>();
@@ -1494,6 +1501,10 @@ export default defineStep({
     // verbatim — with its messages it heads every request, and the prompt
     // cache (and thinking blocks bound to the prefix) need it byte for byte.
     const session = cfg.session ? await openSession(cfg.session, ctx, resolved, compactAt) : undefined;
+    // The files the thread's earlier turns carried are in its history, so its
+    // tools may hand them on (job/start): after this run's own, newest first.
+    const earlierFiles = session ? threadAttachments(session.turns) : [];
+    if (toolCtx && earlierFiles.length) toolCtx.attachments = [...(toolCtx.attachments ?? []), ...earlierFiles];
     const system = session?.system ?? cfg.system;
     // What the requests send: the same text, with its own cache breakpoint.
     const instructions = cachedSystem(system, providerOptions) as any;
@@ -1810,6 +1821,7 @@ export default defineStep({
               ...(ctx?.actor ? { actor: ctx.actor } : {}),
               ...(ctx?.principal ? { principal: ctx.principal } : {}),
               ...(ctx?.job ? { job: ctx.job } : {}),
+              ...(files.length ? { attachments: ctx!.attachments } : {}),
               provider: resolved.provider,
               model: resolved.name,
               routed: resolved.routed,

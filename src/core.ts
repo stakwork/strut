@@ -70,6 +70,10 @@ export interface RunAttachment {
   /** Where it is saved, relative to the run's artifact directory
    *  (`attachments/<name>`). */
   path: string;
+  /** The run whose artifacts hold it, when not this one: a file an earlier
+   *  turn of an agent's thread carried, which the agent hands its tools
+   *  (`ctx.attachments`). Absent on what a run records. */
+  runId?: string;
 }
 
 /** Context passed to every step's `run` function.
@@ -143,8 +147,10 @@ export interface StepContext<TServices = unknown> {
   /** The files the launch attached (`POST …/run { attachments }`), saved
    *  under the run's artifacts: an `agent` step of the workflow puts them on
    *  its prompt (`attachments`, default true), and job/start / job/continue
-   *  hand the ones the model names on to the job. Absent on a run launched
-   *  without. */
+   *  hand the ones the model names on to the job. An agent with a `session`
+   *  hands its tools the files its thread's earlier turns carried too, after
+   *  these, newest turn first, each with the `runId` that holds it. Absent on
+   *  a run launched without. */
   attachments?: RunAttachment[];
   /** Register a run-scoped disposer: the runner calls every registered `fn`
    *  in its `finally` when the run settles — success, error AND cancel —
