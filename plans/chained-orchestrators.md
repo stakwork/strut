@@ -9,7 +9,8 @@
 > stakgraph `origin/main` and hive `origin/master`: `peer: person` ruled
 > (§2), rooms ruled the same standalone and embedded in stakgraph (§3),
 > both callbacks room-capable (§3), the re-tag moved to the caller (§5),
-> and a peer-tagged app in hive's mapper (§6). Companion to `federation.md` (peers, dispatch-through, the
+> and a peer-tagged app in hive's mapper (§6). **Item 1 BUILT** in
+> strut#271 (merged 2026-10-22); hive's mapper case is its own PR. Companion to `federation.md` (peers, dispatch-through, the
 > deferred read-through, `peer: true`), `builder-job.md` (the `job` /
 > `builder` split and the peer build), `jobs.md` + `live-artifacts.md` +
 > `specs/CALLBACKS.md` (what a run tells its host, and when),
@@ -419,8 +420,10 @@ app, the builder's by the 2026-10-22 ruling. The middle is empty.
 Strut, in order; each its own PR, each testable with two struts from one
 checkout as strut#261 did (a third for the spoke in item 5).
 
-1. **Retire the `Job App` kind, and ship the workspace-app deliverable
-   in the same PR** (§6). Concept retired, seed tools dropped, `Job.md`
+1. **BUILT (strut#271).** **Retire the `Job App` kind, and ship the
+   workspace-app deliverable in the same PR** (§6). As built, `app`
+   beside the url also carries the version's `hash` and `builtAt`, and a
+   peer-tagged entry keeps its name unresolved. Concept retired, seed tools dropped, `Job.md`
    reworded, tests on the seeds; `{ kind: "app", app, version? }` through
    `resolveArtifactRefs` with `app: { name, version }` beside the url,
    the `App` page's handover line, a test on the resolution. Hive's
