@@ -252,7 +252,9 @@ STRUT_WORKSPACE_BACKEND=ladybug npm run dev   # the workspace on one LadybugDB f
 # ~90MB of ONNX weights into ~/.cache/strut-models on first run). One run per
 # database at a time: a second run (another worktree) waits for the first
 # (scripts/test-graph.mjs). One file: `npm run test:graph -- src/graph/claims.test.ts`.
-docker run -d --name strut-neo4j-test -p 7688:7687 -e NEO4J_AUTH=neo4j/struttest neo4j:5
+# 5.19.0 is what the swarms run: a newer 5.x parses Cypher 5.19 refuses
+# (`coalesce(all(…))`, 2026-10-22 — every node write failed on a swarm).
+docker run -d --name strut-neo4j-test -p 7688:7687 -e NEO4J_AUTH=neo4j/struttest neo4j:5.19.0
 STRUT_TEST_NEO4J_URI=bolt://localhost:7688 STRUT_TEST_NEO4J_PASSWORD=struttest npm run test:graph
 
 # Speech-to-text live test — needs the sherpa addon (optionalDependency,
