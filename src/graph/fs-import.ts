@@ -129,6 +129,7 @@ export async function importFileWorkspace(dataDir: string, target: GraphWorkspac
         report.appVersions++;
       }
       await target.setActiveAppVersion(app.name, app.meta.active);
+      if (app.meta.pinned) await target.setAppPinned(app.name, true);
       report.apps++;
     }
   } catch (err) {

@@ -1745,6 +1745,8 @@ export interface AppListEntry {
   grants: AppGrants;
   publisher?: string;
   owner?: string;
+  /** Shown as a tab by a host that lists this workspace's apps (true only when set). */
+  pinned?: boolean;
 }
 
 /** One client-side error the app's page reported (`app/report-error`). */
@@ -1789,6 +1791,13 @@ export const setActiveAppVersion = (name: string, version: string) =>
   fetchJSON<{ ok: true; name: string; active: string }>(`/apps/${encodeURIComponent(name)}/active`, {
     method: "PUT",
     body: JSON.stringify({ version }),
+  });
+
+/** Show the app as a tab where this workspace's apps are listed, or stop (`PUT /apps/:name/pin`). */
+export const setAppPinned = (name: string, pinned: boolean) =>
+  fetchJSON<{ ok: true; name: string; pinned: boolean }>(`/apps/${encodeURIComponent(name)}/pin`, {
+    method: "PUT",
+    body: JSON.stringify({ pinned }),
   });
 
 export const deleteApp = (name: string) =>

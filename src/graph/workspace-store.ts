@@ -148,6 +148,7 @@ interface AppRow {
   description?: string;
   publisher?: string;
   owner?: string;
+  pinned?: boolean;
   active_version?: string;
 }
 
@@ -167,7 +168,7 @@ interface AppVersionRow {
   upstream?: string;
 }
 
-const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "active_version"] as const;
+const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "pinned", "active_version"] as const;
 const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "created_at", "manifest", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
 
 /** A JSON attribute, or undefined when absent or unreadable. */
@@ -914,6 +915,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     }
     if (app.publisher) out.publisher = app.publisher;
     if (app.owner) out.owner = app.owner;
+    if (app.pinned) out.pinned = true;
     return Object.keys(out.versions).length ? out : null;
   }
 
@@ -1041,13 +1043,21 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     await this.swapActiveAppEdge(a.ref_id, v.ref_id);
   }
 
+  async setAppPinned(name: string, pinned: boolean): Promise<void> {
+    validateAppName(name);
+    const a = await this.appRow(name);
+    if (!a) throw new Error(`App "${name}" not found`);
+    if (pinned && !a.pinned) await this.backend.nodes.update(a.ref_id, { set: { pinned: true } });
+    if (!pinned && a.pinned != null) await this.backend.nodes.update(a.ref_id, { remove: ["pinned"] });
+  }
+
   /** Soft, like `deleteWorkflow`: the stamps that would ride along on a
    *  restore are cleared first, then the nodes are marked. */
   async deleteApp(name: string): Promise<boolean> {
     validateAppName(name);
     const a = await this.appRow(name);
     if (!a) return false;
-    const remove = (["owner", "publisher", "title", "description", "active_version"] as const).filter((k) => a[k] != null);
+    const remove = (["owner", "publisher", "pinned", "title", "description", "active_version"] as const).filter((k) => a[k] != null);
     if (remove.length) await this.backend.nodes.update(a.ref_id, { remove: [...remove] });
     for (const v of await this.appVersionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
     await this.backend.nodes.softDelete(a.ref_id);

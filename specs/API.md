@@ -880,18 +880,19 @@ components as an app other apps import (`import { RunTimeline } from
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner? }] }` |
-| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist); 404 |
-| GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner? }` |
+| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned? }] }` — `pinned: true` only on an app pinned as a tab |
+| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist); 404 |
+| GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned? }` |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. A token for another app or version is `401` whatever else the request carries |
 | POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings }`. Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | `{ version }` — rollback; publishes nothing |
+| PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. `400` without a boolean, `404` for an unknown app |
 | DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
 
 The same reads and writes as steps — `app/list`, `app/get { name, version? }` (or `{ path, job? }`, an app directory you are working on),
 `app/init { path, template? }`, `app/checkout { name, version?, path }`,
-`app/build { path }`, `app/publish { name, path, job? }` — are the authoring
+`app/build { path }`, `app/publish { name, path, job? }`, `app/pin { name, pinned? }` — are the authoring
 loop (`plans/apps.md` §8): a directory, the editor, build, read the errors,
 publish. `app/publish` stamps `publisher: "ai"` and applies the meta
 surface's rules. `app/get` (and `GET /apps/:name`) also carries `errors`:
@@ -968,7 +969,8 @@ is one the same way, with no strut change per host:
 
 1. **Fetch the document.** `GET /apps/:name/:version/files` (the active
    version from `GET /apps`) mints the token; `GET …/files/dist/index.html?t=<token>`
-   is the page with its identity written in. Frame the TEXT as the `srcdoc`
+   is the page with its identity written in. A host that shows apps as
+   tabs takes the ones `GET /apps` marks `pinned`. Frame the TEXT as the `srcdoc`
    of `<iframe sandbox="allow-scripts">` — an opaque origin, never
    `allow-same-origin`, no `src` that carries a credential. Not a `blob:`
    URL: a blob document's `location.origin` is its creator's while its

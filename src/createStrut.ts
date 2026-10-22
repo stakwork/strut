@@ -2345,7 +2345,7 @@ export async function createStrut<TServices = unknown>(
     if (at instanceof Response) return at;
     const rec = await workspace.getApp(at.name);
     if (!rec) return c.json({ error: `App "${at.name}" not found` }, 404);
-    return c.json({ name: at.name, active: rec.active, versions: rec.versions, ...(rec.publisher ? { publisher: rec.publisher } : {}), ...(rec.owner ? { owner: rec.owner } : {}) });
+    return c.json({ name: at.name, active: rec.active, versions: rec.versions, ...(rec.publisher ? { publisher: rec.publisher } : {}), ...(rec.owner ? { owner: rec.owner } : {}), ...(rec.pinned ? { pinned: true } : {}) });
   });
 
   /** The version's directory, or the 404 / 400 that says why not. */
@@ -2449,6 +2449,23 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     return c.json({ ok: true, name: at.name, active: body.version });
+  });
+
+  // Pin the app as a TAB, or unpin it: `{ pinned: boolean }` — the record's
+  // flag a host reads off `GET /apps` (hive's sidebar for the workspace this
+  // strut is the swarm of). A person's door, like `/active`; `app/pin` is
+  // the builder's.
+  app.put("/apps/:name/pin", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const body = (await c.req.json().catch(() => ({}))) as { pinned?: unknown };
+    if (typeof body.pinned !== "boolean") return c.json({ error: "pinned is required: true or false" }, 400);
+    try {
+      await apps.pin(at.name, body.pinned);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+    }
+    return c.json({ ok: true, name: at.name, pinned: body.pinned });
   });
 
   app.delete("/apps/:name", async (c) => {
