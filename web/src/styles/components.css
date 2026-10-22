@@ -4038,7 +4038,10 @@ body.is-resizing-flyout * {
 /* ── Apps (plans/apps.md §7.3) ──────────────────────────────────────────── */
 /* The sidebar's Apps section: a glyph, the title, the active version. */
 .sidebar-apps .list-item { gap: 6px; }
-.app-icon { display: inline-flex; align-items: center; color: var(--text-dim); flex: none; }
+.app-icon { display: inline-flex; align-items: center; color: var(--text-dim); flex: none; margin-right: 6px; }
+/* The name takes the row's free space, so the badges sit right (the row is
+   space-between, which centred a lone name between icon and badge). */
+.sidebar-apps .list-item-name { flex: 1; min-width: 0; }
 .list-item.is-active .app-icon { color: var(--accent); }
 
 /* A run an app launched: the chip on its row, beside the job's. */
@@ -4096,6 +4099,33 @@ body.is-resizing-flyout * {
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   padding: 1px 4px;
+}
+
+/* Beside it, the app as a TAB where this workspace's apps are listed: dim
+   off, lit on — the record's flag, not a version. */
+.app-tab-toggle {
+  margin-left: 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.app-tab-toggle:hover { color: var(--text-muted); }
+.app-tab-toggle.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(110, 168, 255, 0.12);
+}
+/* The sidebar's marker on a pinned app. */
+.app-tab-badge {
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  margin-right: 4px;
 }
 
 /* The app's page: the frame fills the canvas area; an opaque origin, no
