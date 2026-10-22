@@ -341,8 +341,8 @@ export interface StrutOptions<TServices = unknown> {
    *  built-ins, the `Workflow Builder` page in its prompt — `peer: true`,
    *  so another strut may launch it as published. Seeded as `job` is, with
    *  the same host delta plus `peer: false` to close it to peers, and
-   *  `reach`: what a workflow or step it publishes may touch (src/reach.ts;
-   *  none set = no limit, as before). `false` seeds nothing. */
+   *  `reach`: what a workflow it publishes may touch, and no step code
+   *  (src/reach.ts; none set = no limit, as before). `false` seeds nothing. */
   builder?: false | BuilderSeedOptions;
   /** `strut/views` (`src/apps/views-seed.ts`, plans/apps.md §3.3): strut's
    *  own components — RunTimeline, RunGraph, LaunchForm, … — as an app other
@@ -972,16 +972,13 @@ export async function createStrut<TServices = unknown>(
   const chatSystem: StrutOptions["chatSystem"] =
     opts.chatSystem ?? (graph ? () => builderSystem({ graph, registry, services }) : undefined);
 
-  // What the AI may publish, when the host says (src/reach.ts): the steps it
-  // published, refreshed with the registry, are the ones that run scoped.
+  // What the AI may publish, when the host says (src/reach.ts).
   const reach = opts.builder ? opts.builder.reach : undefined;
-  let aiSteps = new Set<string>();
   async function rebuildRegistry(): Promise<void> {
     if (registryWasInjected) return; // consumer owns the registry
     const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
     registry = bundle.registry;
     stepSources = bundle.sources;
-    if (reach) aiSteps = new Set((await workspace.listSteps({ publisher: AI_PUBLISHER })).map((s) => s.type));
   }
 
   if (!registryWasInjected) {
@@ -1169,9 +1166,12 @@ export async function createStrut<TServices = unknown>(
   if (reach) {
     // Frozen, and a copy: a step holds the bag, and must not widen it.
     const policy: ReachPolicy = Object.freeze({
-      secrets: Object.freeze([...(reach.secrets ?? [])]),
+      reach: Object.freeze({
+        tools: Object.freeze([...(reach.tools ?? [])]) as string[],
+        builtins: Object.freeze([...(reach.builtins ?? [])]) as string[],
+        secrets: Object.freeze([...(reach.secrets ?? [])]) as string[],
+      }),
       aiWorkflow: async (name: string) => (await workspace.getWorkflowMetadata(name))?.publisher === AI_PUBLISHER,
-      aiStep: (type: string) => aiSteps.has(type),
     });
     Object.defineProperty(services, "reach", { value: policy, enumerable: true, writable: false, configurable: false });
   }
@@ -1190,7 +1190,7 @@ export async function createStrut<TServices = unknown>(
         return registry;
       },
       ...(secretsInjected ? {} : { secrets: secretStore }),
-      ...(reach ? { reach, aiStep: (type: string) => aiSteps.has(type) } : {}),
+      ...(reach ? { reach } : {}),
     });
   }
 

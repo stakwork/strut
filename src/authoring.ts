@@ -563,12 +563,10 @@ export interface AuthoringDeps extends StepPublishDeps {
   claims?: ClaimsAuthoring | null;
   /** The verify pass, wherever `claims` is. */
   verifier?: import("./verify.js").Verifier | null;
-  /** The host's `builder.reach` (src/reach.ts): a publish outside it is
-   *  refused. Absent: no limit beyond the sealed gate. */
+  /** The host's `builder.reach` (src/reach.ts): a workflow publish or a
+   *  test run outside it is refused, and so is every step publish. Absent:
+   *  no limit beyond the sealed gate. */
   reach?: BuilderReach;
-  /** Was this step type published by the meta surface? (In reach whatever
-   *  `reach.tools` says: it runs under the secret scope.) */
-  aiStep?: (type: string) => boolean;
 }
 
 export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapability {
@@ -617,6 +615,10 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
   const sealedWorkflow = (name: string, verb: string) =>
     `Workflow "${name}" is sealed (a grading harness: its run log records what its graders were handed) — the meta surface may not ${verb}.`;
   const sealedStep = (type: string, verb: string) => `Step "${type}" is sealed (a grader) — the meta surface may not ${verb}.`;
+  // Under a reach the AI writes workflows, never step code: a step is code
+  // in this process, past any scope (src/reach.ts).
+  const noStepCode = (type: string) =>
+    `Nothing was published — "${type}": this strut does not let the AI publish step code (builder.reach). Build the workflow from the steps it has.`;
 
   return {
     async listSteps(path = "steps") {
@@ -647,6 +649,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
     },
 
     async createStep(name, code, description, contract) {
+      if (deps.reach) return { error: noStepCode(name) };
       if (isSealedStep(name)) return { error: `"${name}" is in a sealed namespace (a grader's) — author candidates under another name.` };
       const invalid = await claimsGate(contract);
       if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
@@ -665,6 +668,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
     },
 
     async editStep(type, code, description, contract) {
+      if (deps.reach) return { error: noStepCode(type) };
       const invalid = await claimsGate(contract);
       if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
       const published = await publishStepVersion(deps, type, code, description, {
@@ -694,7 +698,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       if (isSealedStep(baseType(type), registry)) return { error: sealedStep(type, "run it") };
       // With a reach, a test run is held to it as a publish is: the model
       // wrote the config (src/reach.ts).
-      if (deps.reach && !stepInReach(baseType(type), deps.reach, deps.aiStep ?? (() => false))) {
+      if (deps.reach && !stepInReach(baseType(type), deps.reach)) {
         return { error: `Nothing was run — "${type}" is outside what this strut lets the AI run (builder.reach).` };
       }
       if (args.cassette && !deps.dataDir) {
@@ -786,7 +790,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
         return { error: `Nothing was published — "${name}" reaches a sealed ${reached}: a candidate may never run, subflow, or grant a grader (EVOLVE_SPEC §6).` };
       }
       if (deps.reach) {
-        const outside = await reachRefusal(candidate, deps.reach, await deps.getRegistry(), deps.aiStep ?? (() => false), workspace);
+        const outside = await reachRefusal(candidate, deps.reach, await deps.getRegistry(), workspace);
         if (outside) return { error: `Nothing was published — "${name}": ${outside}.` };
       }
       try {

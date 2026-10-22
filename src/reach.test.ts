@@ -14,10 +14,9 @@ import type { StepContext } from "./core.js";
 
 /**
  * Reach (src/reach.ts): what code the AI published may touch, when the host
- * sets `builder.reach`. Publish is refused outside it; at run time a step
- * the AI published reads only reach's secrets, and a workflow the AI
- * published names only reach's secrets in its config. Without a reach
- * nothing changes.
+ * sets `builder.reach`. No step code is published under it, a workflow
+ * outside it is refused, and at run time every step inside a workflow the
+ * AI published is held to the same rule. Without a reach nothing changes.
  */
 
 // A custom step that reads the secret its config names (no imports: the
@@ -90,33 +89,22 @@ describe("builder.reach", () => {
     await refused("r-token", stepYaml("g", "git/checkout", "      repo: https://example.com/r.git\n"), /the secret "GITHUB_TOKEN"/);
   });
 
-  it("publishes what is inside: reach's steps and globs, its built-ins, its secrets, control flow, and steps the AI published", async () => {
-    assert.ok(!("error" in (await authoring.createStep("cand/reads", readsSecret("cand/reads")))));
+  it("publishes what is inside: reach's steps and globs, its built-ins, its secrets, control flow", async () => {
     const steps =
       stepYaml("read", "slack/read-channel", "      channel: C1\n") +
       stepYaml("say", "log", "      message: hi\n") +
-      stepYaml("mine", "cand/reads", "      name: OK_KEY\n") +
-      stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [web_search, web_fetch]\n      agentTools: [x/*, cand/reads]\n      secretsEnv: [OK_KEY]\n");
+      stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [web_search, web_fetch]\n      agentTools: [x/*]\n      secretsEnv: [OK_KEY]\n");
     const r = (await authoring.publishWorkflow("r-inside", flow("r-inside", steps))) as { ok?: boolean; error?: string };
     assert.equal(r.error, undefined);
     assert.equal(r.ok, true);
   });
 
-  it("a step the AI published reads reach's secrets and fails on any other, whoever runs it", async () => {
-    await authoring.createStep("cand/peek", readsSecret("cand/peek"));
-    await authoring.publishWorkflow("r-peek-ok", flow("r-peek-ok", stepYaml("p", "cand/peek", "      name: OK_KEY\n")));
-    const ok = (await authoring.runWorkflow("r-peek-ok")) as { status: string; output?: unknown };
-    assert.equal(ok.status, "success");
-    assert.deepEqual(ok.output, { value: "ok-value" });
-
-    // Published by a person (no stamp): still the AI's step, still scoped.
-    await strut.workspace.publishWorkflowByContent("r-peek-human", flow("r-peek-human", stepYaml("p", "cand/peek", "      name: PEEL_BRIDGE_TOKEN\n")), undefined, undefined, undefined);
-    const bad = (await authoring.runWorkflow("r-peek-human")) as { status: string; error?: { message: string } };
-    assert.equal(bad.status, "error");
-    assert.match(bad.error!.message, /may not read the secret "PEEL_BRIDGE_TOKEN"/);
+  it("publishes no step code: a step is code in this process, past any scope", async () => {
+    assert.match(((await authoring.createStep("cand/peek", readsSecret("cand/peek"))) as { error?: string }).error ?? "", /does not let the AI publish step code/);
+    assert.match(((await authoring.editStep("cand/peek", readsSecret("cand/peek"))) as { error?: string }).error ?? "", /does not let the AI publish step code/);
   });
 
-  it("a step a person published reads any secret, reach or not", async () => {
+  it("a step a person published reads any secret in a person's workflow, reach or not", async () => {
     await strut.workspace.publishStep("human/peek", readsSecret("human/peek"), undefined, "harness-seed");
     await strut.workspace.publishWorkflowByContent("r-human", flow("r-human", stepYaml("p", "human/peek", "      name: PEEL_BRIDGE_TOKEN\n")), undefined, undefined, undefined);
     const r = (await authoring.runWorkflow("r-human")) as { status: string; output?: unknown };
@@ -124,13 +112,13 @@ describe("builder.reach", () => {
     assert.deepEqual(r.output, { value: "bridge-value" });
   });
 
-  it("a workflow the AI published may not name a secret outside reach at run time, a subflow's steps included; a person's may", async () => {
+  it("a workflow the AI published is held to reach at run time, a subflow's steps included; a person's is not", async () => {
     const execStep = stepYaml("e", "exec", "      cmd: printenv\n      args: [PEEL_BRIDGE_TOKEN]\n      secretsEnv: [PEEL_BRIDGE_TOKEN]\n");
     // Stamped `ai` past the gate (an older publish, or a host's import).
     await strut.workspace.publishWorkflowByContent("r-ai-exec", flow("r-ai-exec", execStep), undefined, undefined, "ai");
     const ai = (await authoring.runWorkflow("r-ai-exec")) as { status: string; error?: { message: string } };
     assert.equal(ai.status, "error");
-    assert.match(ai.error!.message, /"exec" may not read the secret "PEEL_BRIDGE_TOKEN".*inside a workflow the AI published/);
+    assert.match(ai.error!.message, /"exec" runs inside a workflow the AI published and reaches the built-in "exec", the secret "PEEL_BRIDGE_TOKEN"/);
 
     await strut.workspace.publishWorkflowByContent("r-person-exec", flow("r-person-exec", execStep), undefined, undefined, undefined);
     assert.equal(((await authoring.runWorkflow("r-person-exec")) as { status: string }).status, "success");
@@ -145,7 +133,14 @@ describe("builder.reach", () => {
     );
     const sub = (await authoring.runWorkflow("r-ai-sub")) as { status: string; error?: { message: string } };
     assert.equal(sub.status, "error");
-    assert.match(sub.error!.message, /may not read the secret "PEEL_BRIDGE_TOKEN"/);
+    assert.match(sub.error!.message, /the secret "PEEL_BRIDGE_TOKEN"/);
+
+    // A step outside `tools` — here one the AI wrote before its host set a reach.
+    await strut.workspace.publishStep("cand/old", readsSecret("cand/old"), undefined, "ai");
+    await strut.workspace.publishWorkflowByContent("r-ai-old", flow("r-ai-old", stepYaml("p", "cand/old", "      name: OK_KEY\n")), undefined, undefined, "ai");
+    const old = (await authoring.runWorkflow("r-ai-old")) as { status: string; error?: { message: string } };
+    assert.equal(old.status, "error");
+    assert.match(old.error!.message, /reaches the step "cand\/old"/);
   });
 
   it("the meta surface's test run of one step is held to reach: outside it refused, inside it the AI's frame", async () => {
@@ -158,27 +153,23 @@ describe("builder.reach", () => {
     const { authoring: withExec } = await strutWith(d, { builtins: ["exec"], secrets: ["OK_KEY"] });
     const leak = (await withExec.runStep("exec", { config: { cmd: "printenv", args: ["PEEL_BRIDGE_TOKEN"], secretsEnv: ["PEEL_BRIDGE_TOKEN"] } })) as { status: string; error?: { message: string } };
     assert.equal(leak.status, "error");
-    assert.match(leak.error!.message, /may not read the secret "PEEL_BRIDGE_TOKEN"/);
+    assert.match(leak.error!.message, /the secret "PEEL_BRIDGE_TOKEN"/);
     const ok = (await withExec.runStep("exec", { config: { cmd: "printenv", args: ["OK_KEY"], secretsEnv: ["OK_KEY"] } })) as { status: string };
     assert.equal(ok.status, "success");
   });
 
-  it("a step the AI published gets no door to run other steps with the whole bag, and cannot widen reach", async () => {
-    await authoring.createStep(
-      "cand/doors",
-      readsSecret("cand/doors").replace(
-        "run: async (cfg, ctx) => ({ value: await ctx.services.secrets.get(cfg.name) }),",
-        "run: async (cfg, ctx) => ({ authoring: typeof ctx.services.authoring, jobs: typeof ctx.services.jobs, reach: typeof ctx.services.reach }),",
-      ),
-    );
-    await authoring.publishWorkflow("r-doors", flow("r-doors", stepYaml("d", "cand/doors", "      name: x\n")));
-    assert.deepEqual(((await authoring.runWorkflow("r-doors")) as { output?: unknown }).output, { authoring: "undefined", jobs: "undefined", reach: "undefined" });
+  it("a step cannot widen reach", () => {
     const policy = (strut.services as { reach: ReachPolicy }).reach;
-    assert.throws(() => (policy.secrets as string[]).push("PEEL_BRIDGE_TOKEN"));
+    assert.throws(() => (policy.reach.secrets as string[]).push("PEEL_BRIDGE_TOKEN"));
+    assert.throws(() => (policy.reach.tools as string[]).push("*"));
     assert.throws(() => {
       (strut.services as Record<string, unknown>)["reach"] = undefined;
     });
   });
+
+  // An AI frame's context, for withinReach alone.
+  const aiCtx = (reach: BuilderReach) =>
+    ({ runId: "r", path: "p", scope: {}, input: {}, emit: async () => {}, services: { reach: { reach, aiWorkflow: async () => true } satisfies ReachPolicy }, aiAuthored: true }) as StepContext<unknown>;
 
   it("names every way a config names a secret: secretsEnv, tokenSecret, storageStateSecret, http/verify's {NAME} templates", async () => {
     await refused("r-storage", stepYaml("b", "browser/open", "      storageStateSecret: PEEL_BRIDGE_TOKEN\n"), /the secret "PEEL_BRIDGE_TOKEN"/);
@@ -187,8 +178,7 @@ describe("builder.reach", () => {
       stepYaml("v", "http/verify", "      url: https://example.com\n      secrets:\n        Authorization: \"Bearer {PEEL_BRIDGE_TOKEN}\"\n"),
       /the secret "PEEL_BRIDGE_TOKEN"/,
     );
-    const policy: ReachPolicy = { secrets: ["OK_KEY"], aiWorkflow: async () => true, aiStep: () => false };
-    const ctx = { runId: "r", path: "p", scope: {}, input: {}, emit: async () => {}, services: { reach: policy }, aiAuthored: true } as StepContext<unknown>;
+    const ctx = aiCtx({ tools: ["http/verify"], secrets: ["OK_KEY"] });
     assert.throws(() => withinReach("http/verify", { secrets: { Authorization: "Bearer {OK_KEY}", "X-Other": "{PEEL_BRIDGE_TOKEN}" } }, ctx), /PEEL_BRIDGE_TOKEN/);
     assert.doesNotThrow(() => withinReach("http/verify", { secrets: { Authorization: "Bearer {OK_KEY}" } }, ctx));
     // The launcher's MCP servers stop at an AI frame.
@@ -197,11 +187,13 @@ describe("builder.reach", () => {
   });
 
   it("a tool call inside the AI's workflow is held to reach too (what the model passes)", () => {
-    const policy: ReachPolicy = { secrets: ["OK_KEY"], aiWorkflow: async () => true, aiStep: () => false };
-    const ctx = { runId: "r", path: "p", scope: {}, input: {}, emit: async () => {}, services: { reach: policy }, aiAuthored: true } as StepContext<unknown>;
-    assert.throws(() => withinReach("git/push", { tokenSecret: "PEEL_BRIDGE_TOKEN" }, ctx), /may not read the secret "PEEL_BRIDGE_TOKEN"/);
+    const ctx = aiCtx({ tools: ["git/push"], secrets: ["OK_KEY"] });
+    assert.throws(() => withinReach("git/push", { tokenSecret: "PEEL_BRIDGE_TOKEN" }, ctx), /the secret "PEEL_BRIDGE_TOKEN"/);
     assert.doesNotThrow(() => withinReach("git/push", { tokenSecret: "OK_KEY" }, ctx));
     assert.doesNotThrow(() => withinReach("git/push", { tokenSecret: "PEEL_BRIDGE_TOKEN" }, { ...ctx, aiAuthored: undefined }));
+    assert.throws(() => withinReach("slack/post-message", { channel: "C1", text: "hi" }, ctx), /the step "slack\/post-message"/);
+    // A sub-agent the model calls without a toolFilter would hold every built-in.
+    assert.throws(() => withinReach("agent", { prompt: "go" }, ctx), /every built-in/);
   });
 });
 

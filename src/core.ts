@@ -112,7 +112,7 @@ export interface StepContext<TServices = unknown> {
   /** This step runs inside a workflow the meta surface published
    *  (`publisher: ai`) on a strut whose host set `builder.reach`: the
    *  runner sets it, a subflow keeps it, and an agent's tool calls inherit
-   *  it. A step's config may then name only reach's secrets (src/reach.ts). */
+   *  it. Each step is then held to reach, as resolved (src/reach.ts). */
   aiAuthored?: boolean;
   /** The JOB this run was launched under (plans/jobs.md §1): a flat, global
    *  string the caller minted — `POST …/run { job }` — that every run of the

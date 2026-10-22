@@ -367,7 +367,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_PUBLIC_URL`   | (the request's origin) | The base URL a caller OUTSIDE the UI is handed links on — the MCP door's artifact links (absolute, with the `?t=` read token) and `ui` deep links (`createStrut({ publicUrl })`). Unset: each request's own origin, `x-forwarded-proto` / `x-forwarded-host` honored. |
 | `STRUT_EXIT_ON_STDIN_EOF` | (unset) | `1` = `desktop.js` exits when its stdin closes. A host spawns strut with a stdin pipe it never writes to; the kernel closes it when the host dies, crash or force quit included, so strut never outlives its app. Launcher only (`scripts/desktop.js`), not `build/server.js`. |
 | `STRUT_API_KEY`      | (unset)        | Deployment-scoped shared secret. See "Auth" below. |
-| `STRUT_HOST_CONFIG`  | (unset)        | A JSON file with the host's delta for the workflows strut ships, `{ job?, orchestrator?, builder? }`, each `{ tools?: string[], approve?: string[], system?: string, model?: string | null }` (`null`: no pinned model, so it runs on the connected one, `STRUT_DEFAULT_MODEL`; `builder` also takes `peer: false`, closing it to other struts — a file may only close, never open — and `reach: { tools?, builtins?, secrets? }`, what the AI may publish and what its code may read: see "Secrets"), and `automation?: { workflow, approve?, grants? }` for the automation/* steps — what `createStrut({ job, orchestrator, builder, automation })` takes, for a host that runs the bundled server (`build/server.js`, `desktop.js`) instead of embedding strut. Peel writes it at launch. A file that cannot be read or parsed fails the boot. |
+| `STRUT_HOST_CONFIG`  | (unset)        | A JSON file with the host's delta for the workflows strut ships, `{ job?, orchestrator?, builder? }`, each `{ tools?: string[], approve?: string[], system?: string, model?: string | null }` (`null`: no pinned model, so it runs on the connected one, `STRUT_DEFAULT_MODEL`; `builder` also takes `peer: false`, closing it to other struts — a file may only close, never open — and `reach: { tools?, builtins?, secrets? }`, what the AI may publish: see "Secrets"), and `automation?: { workflow, approve?, grants? }` for the automation/* steps — what `createStrut({ job, orchestrator, builder, automation })` takes, for a host that runs the bundled server (`build/server.js`, `desktop.js`) instead of embedding strut. Peel writes it at launch. A file that cannot be read or parsed fails the boot. |
 | `STRUT_SESSION_HOURS` | `12`          | How long a browser SESSION lasts (`POST /auth/session`, see "Auth"): the key traded for an HttpOnly cookie signed under `STRUT_API_KEY` (else `STRUT_SECRET_KEY`), so the page never holds the key. Stateless, like a file token: rotating the signing secret ends every session. |
 | `STRUT_PEER_KEY`     | (unset)        | The key ANOTHER strut holds for this one (plans/federation.md §3): presented like `STRUT_API_KEY`, but a request carrying it is `peer`-scoped — every read, a launch of a workflow whose YAML says `peer: true` (as published: no `params`), and cancel / pause / resume of a run a peer launched; anything else is 403. Unset, it opens nothing. A PERSON token (`POST /peers/tokens`) is the same key attenuated to one actor. See "Auth" below. |
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
@@ -621,27 +621,30 @@ instead of baked into env at deploy time.
   `list_secrets`. A run's `input` is persisted on `run.start`, so this is
   how a per-user credential reaches a workflow without ever being in it.
 
-- **Reach — what code the AI published may read** (`src/reach.ts`,
-  stakwork/peel `docs/connectors-and-authoring.md` §6). Opt-in: a host sets
+- **Reach — what the AI may publish** (`src/reach.ts`, stakwork/peel
+  `docs/connectors-and-authoring.md` §6). Opt-in: a host sets
   `createStrut({ builder: { reach: { tools, builtins, secrets } } })` (or
   `builder.reach` in STRUT_HOST_CONFIG); without one nothing changes. With
-  one, the meta surface's publish refuses a workflow whose closure names a
-  step outside `tools` (globs; control flow, `agent`, `llm` and steps the AI
-  published are always in), `exec` or an agent built-in outside `builtins`
-  (an agent must list its built-ins in `toolFilter`), or a secret outside
-  `secrets` (`secretsEnv`, a `tokenSecret` or `storageStateSecret` — a
-  default too — `http/verify`'s `{NAME}` header templates, or one named by
-  a template), and `meta/run-step` refuses a step outside it. At run time a
-  step the AI published (`publisher: ai`) gets a `secrets` capability that
-  answers only `reach.secrets` and throws on any other name, whoever runs
-  it, and no `authoring` / `jobs` doors; inside a workflow the AI published
-  or a `meta/run-step` run (`ctx.aiAuthored`, kept by a subflow, inherited
-  by an agent's tool calls and a proposal's apply) a step's config may name
-  only those secrets, and the launcher's MCP servers are dropped. The model
-  key the `agent` / `llm` steps read is strut's own and unaffected. A new
-  config field that names a secret goes in `secretNamesIn`. Not covered:
-  the chat builder (HTTP, the API key's holder), whose `create_workflow`
-  publishes unstamped.
+  one, the meta surface publishes WORKFLOWS only — `create_step` /
+  `edit_step` are refused, since step code runs in this process past any
+  scope — and refuses a workflow whose closure names a step outside `tools`
+  (globs; control flow, `agent` and `llm` are always in), `exec` or an agent
+  built-in outside `builtins` (an agent must list its built-ins in
+  `toolFilter`), or a secret outside `secrets` (`secretsEnv`, a
+  `tokenSecret` or `storageStateSecret` — a default too — `http/verify`'s
+  `{NAME}` header templates, or one named by a template); `meta/run-step`
+  refuses a step outside it. The same rule (`stepProblems`) holds at RUN
+  time for every step inside a workflow the AI published or a
+  `meta/run-step` run (`ctx.aiAuthored`, kept by a subflow, inherited by an
+  agent's tool calls and a proposal's apply), as resolved — what a model
+  passes a tool, a workflow stamped `ai` before the host set a reach, a
+  person's subflow changed since — and the launcher's MCP servers are
+  dropped there. The model key the `agent` / `llm` steps read is strut's
+  own and unaffected. A step in `tools` that launches a run (`run/launch`,
+  `job/start`) hands that run out of reach: the host decides. A new config
+  field that names a secret goes in `secretNamesIn`. Not covered: the chat
+  builder (HTTP, the API key's holder), whose `create_workflow` publishes
+  unstamped.
 
 - **No OAuth.** This is a paste-a-key / service-account store by design. For
   Google Drive, paste a **service-account JSON** as `GOOGLE_SERVICE_ACCOUNT_JSON`

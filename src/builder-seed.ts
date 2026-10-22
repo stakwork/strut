@@ -41,8 +41,8 @@ import type { BuilderReach } from "./reach.js";
  * reads it from the file `STRUT_HOST_CONFIG` names (src/server.ts).
  */
 export type BuilderSeedOptions = JobSeedOptions & {
-  /** Not part of the template: what the meta surface may publish and what
-   *  the code it publishes may read (src/reach.ts). */
+  /** Not part of the template: what a workflow the meta surface publishes
+   *  may reach, and no step code (src/reach.ts). */
   reach?: BuilderReach;
 };
 
