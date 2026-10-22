@@ -349,6 +349,15 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   } catch (e) {
     return { status: 400, body: { error: `invalid input for "${rec.step}": ${(e as Error).message}`, proposal: rec } };
   }
+  // A step may apply only after others (`StepDef.after`): a schedule after
+  // the publish of its workflow. Accepting it first changes nothing.
+  if (def.after) {
+    // Not yet applied: pending, being applied, or failed (it may be accepted again).
+    const first = (await listProposals(root, { status: ["pending", "accepted", "failed"] })).find((q) => q.id !== rec.id && def.after!(input, q));
+    if (first) {
+      return { status: 409, body: { error: `Proposal "${rec.id}" applies after "${first.id}" (${first.step}), which is ${first.status}: decide that one first.`, proposal: rec } };
+    }
+  }
 
   let p = (await updateProposal(root, id, (p) => {
     p.status = "accepted";
@@ -398,6 +407,7 @@ async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: s
     ...(mcp?.length ? { mcp } : {}),
     // The proposing workflow's reach holds for the apply too (src/reach.ts).
     ...((await reachPolicyOf(bound)?.aiWorkflow(p.by.workflow).catch(() => true)) ? { aiAuthored: true } : {}),
+    proposal: { id: p.id, by: { workflow: p.by.workflow, runId: p.by.runId } },
   };
   return def.run(input, withinReach(p.step, input, ctx));
 }
