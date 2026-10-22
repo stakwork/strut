@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { flow, step, defineStep, type RunEvent, type Step, type StepRegistry } from "./core.js";
 import { runWorkflow } from "./runner.js";
@@ -375,9 +375,65 @@ describe("git/checkout workdir (kept working copies, in a job's directory)", () 
     assert.equal(await readFile(join(path, "new.txt"), "utf8"), "untracked\n");
     assert.equal(await readFile(join(path, "build/out.js"), "utf8"), "ignored\n");
     assert.ok(!existsSync(join(path, "later.txt")), "the working copy was not moved");
-    // …but the cache was fetched, so the agent can reach the new commit.
+    // …but the cache was fetched, so the agent can reach the new commit —
+    // as origin/main, the way any clone names the remote's branch.
     const cache = cachePath(dataDir, parseRepo(originUrl));
-    assert.equal(sh(["rev-parse", "main"], cache), sh(["rev-parse", "main"], origin));
+    assert.equal(sh(["rev-parse", "origin/main"], cache), sh(["rev-parse", "main"], origin));
+    assert.equal(sh(["rev-parse", "origin/main"], path), sh(["rev-parse", "main"], origin));
+  });
+
+  it("a branch made in a kept working copy is its own: another run's fetch leaves it, and the next commit goes on top of it", async () => {
+    const first = await checkoutOf(co({ workdir: "s-branch" }));
+    assert.equal(first.res.status, "success", JSON.stringify(first.res));
+    const path = first.out!["path"] as string;
+    sh(["switch", "-q", "-c", "agent/change"], path);
+    await writeFile(join(path, "change.txt"), "one\n");
+    sh(["add", "-A"], path);
+    sh(["commit", "-q", "-m", "change"], path);
+    const mine = sh(["rev-parse", "HEAD"], path);
+
+    // Another run checks the same repository out: the cache is fetched,
+    // pruning what the remote does not have — which this branch is not.
+    const other = await checkoutOf(co({}));
+    assert.equal(other.res.status, "success", JSON.stringify(other.res));
+
+    assert.equal(sh(["rev-parse", "agent/change"], path), mine, "the branch is still there");
+    assert.equal(sh(["symbolic-ref", "--short", "HEAD"], path), "agent/change");
+    await writeFile(join(path, "change.txt"), "two\n");
+    sh(["commit", "-q", "-am", "more"], path);
+    assert.equal(sh(["rev-parse", "HEAD~1"], path), mine, "the next commit goes on top of it, never a root commit");
+    assert.equal(sh(["rev-parse", "origin/main"], path), sh(["rev-parse", "main"], origin), "the remote's branches are origin/<name>");
+  });
+
+  it("a cache made before origin/ (a mirror of the remote's branches) moves over at the next checkout: the mirrored heads go, a branch a working copy has checked out stays", async () => {
+    const remote = join(root, "legacy");
+    await mkdir(remote, { recursive: true });
+    sh(["init", "-q", "-b", "main"], remote);
+    await writeFile(join(remote, "a.txt"), "a\n");
+    sh(["add", "-A"], remote);
+    sh(["commit", "-q", "-m", "a"], remote);
+    sh(["branch", "gone"], remote);
+    const url = `file://${remote}`;
+    // The cache as strut made it before: `clone --bare`, every branch a head.
+    const cache = cachePath(dataDir, parseRepo(url));
+    await mkdir(dirname(cache), { recursive: true });
+    sh(["clone", "--bare", "-q", url, cache], root);
+    const kept = join(root, "legacy-copy");
+    sh(["worktree", "add", "-q", "-b", "agent/kept", kept, "main"], cache);
+    // The remote moves on and deletes a branch.
+    await writeFile(join(remote, "b.txt"), "b\n");
+    sh(["add", "-A"], remote);
+    sh(["commit", "-q", "-m", "b"], remote);
+    sh(["branch", "-D", "gone"], remote);
+
+    const { res, out } = await checkoutOf(mk("co", z.any(), step("checkout", "git/checkout", { repo: url })));
+    assert.equal(res.status, "success", JSON.stringify(res));
+    assert.equal(out!["sha"], sh(["rev-parse", "main"], remote), "the remote's main, fetched — not the stale mirrored head");
+    assert.equal(sh(["config", "--get", "remote.origin.fetch"], cache), "+refs/heads/*:refs/remotes/origin/*");
+    const heads = sh(["for-each-ref", "--format=%(refname)", "refs/heads/"], cache).split("\n").filter(Boolean);
+    assert.deepEqual(heads, ["refs/heads/agent/kept"], "the mirrored heads went; the checked-out branch stayed");
+    assert.equal(sh(["rev-parse", "origin/main"], cache), sh(["rev-parse", "main"], remote));
+    assert.throws(() => sh(["rev-parse", "--verify", "--quiet", "origin/gone"], cache), "what the remote deleted is pruned");
   });
 
   it("a slash is part of the name: s1 and s1/review are two working copies", async () => {
