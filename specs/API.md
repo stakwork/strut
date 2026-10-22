@@ -112,7 +112,7 @@ returns everything.
 
 | Method | Path                            | Body | Response |
 | ------ | ------------------------------- | ---- | -------- |
-| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback?, job?, title?, jobCallback?, mcp? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true }` |
+| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback?, job?, title?, jobCallback?, mcp?, attachments? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true, attachments?: true }` |
 | POST   | `/workflows/:name/:version/run` | same | same |
 
 | Field            | Meaning |
@@ -126,6 +126,7 @@ returns everything.
 | `title`          | the job's name (`plans/job-index.md`), recorded on the JOB, never on the run: the host's label for it, kept until a later launch carries another. 400 without `job` |
 | `jobCallback`    | `{ url }` (http/https) — the JOB's live updates (`job.update`: a hold taken or let go, a check's evidence, a verify ended, a step's screenshot or walkthrough frame) are POSTed there as they happen, from every run under the job; see `CALLBACKS.md` §5. Kept on the job, never returned; the latest launch that carries one wins, `null` clears it, absent keeps it. With or without `job`, the jobs THIS run starts (`job/start`, `job/continue`) inherit it — an orchestrator turn's host hears every job it starts at one URL, each event naming its `job` and `runId`. 400 for another scheme |
 | `mcp`            | `[{ name, url, token?, headers?, toolFilter? }]` (`McpServer`, `src/core.ts`; at most 10) — YOUR MCP servers, the way back into you for this run's agents: every `agent` step gets their tools as `<name>_<tool>` unless it says `mcp: false`, and so do the jobs a turn starts (`job/start`, `job/continue`) and the runs it launches (`meta/run-workflow`) — never a peer. `url` is a Streamable HTTP endpoint (http/https); `token` is sent as `Authorization: Bearer <token>`, `headers` for any other scheme; `toolFilter` keeps those tools only (names or globs). `name`: letters, digits, `_`, `-`, unique. A bad entry is a 400 and nothing launches. The log records `mcp: [{ name, origin }]` only; the entries are kept beside it for a resume and returned by nothing. A server that cannot be reached when an agent starts is skipped, the agent going on without its tools |
+| `attachments`    | `[{ name, mediaType?, data }]` (`src/ai/attachments.ts`) — files for the run's agents, the person's message's: `data` is base64 or a data URL, `mediaType` defaults from the data URL, else the extension. At most 10, 10 MB each, 5 MB an image, 15 MB together; a bad one is a 400 and nothing launches. Saved under the run's artifacts as `attachments/<name>` (`GET /artifacts/:runId` lists them) and put on every `agent` step's prompt after its text — an image or a PDF as a file the model sees, text and Word inline, anything else announced by its path — unless the step says `attachments: false`; a sub-agent never gets them. `run.start` records `attachments: [{ name, mediaType, size, path }]`, never the bytes (the agent's transcript keeps what the model saw). An orchestrator turn hands a job the ones it needs by name (`job/start` / `job/continue` `attachments`) — not to a builder job on a peer |
 
 **A peer's launch** (the peer key, Auth) is narrower. The workflow — the
 version launched, for `/:version/run` — must say `peer: true` at the top
@@ -311,7 +312,7 @@ One object per line of the run's append-only log. Common fields:
 
 | Type              | Meaning |
 | ----------------- | ------- |
-| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `parentRunId` when nested |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested |
 | `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
 | `step.retry`      | an attempt failed and another follows |
 | `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |

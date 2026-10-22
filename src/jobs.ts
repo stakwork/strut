@@ -48,6 +48,7 @@ import { isAncestorRun } from "./run-control.js";
 import { encodeId, idProblem } from "./session-store.js";
 import type { JobIndex } from "./job-index.js";
 import type { LedgerClaim } from "./ledger.js";
+import type { Attachment } from "./ai/attachments.js";
 import { bootEnv } from "./env.js";
 
 export interface JobRecord {
@@ -355,6 +356,10 @@ export interface JobLaunch {
   /** The launching run's caller's MCP servers (`ctx.mcp`): the job's agents
    *  reach the same caller. */
   mcp?: McpServer[];
+  /** Files for the job's run (`POST …/run { attachments }`'s, read back from
+   *  the launching run's artifacts): saved under the job run's artifacts and
+   *  put on its agent's prompt. */
+  attachments?: Attachment[];
 }
 
 /** The record's own writer, index or not. `index` (a server's stores) adds

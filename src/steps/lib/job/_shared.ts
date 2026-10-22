@@ -1,6 +1,10 @@
+import { basename } from "node:path";
+import { z } from "zod";
 import type { JobIndex } from "../../../job-index.js";
 import type { RunEvent, StepContext } from "../../../core.js";
+import type { ArtifactsCapability } from "../../../capabilities.js";
 import type { JobLaunch, JobsCapability } from "../../../jobs.js";
+import { loadRunAttachments, type Attachment } from "../../../ai/attachments.js";
 
 /**
  * The `job/list` / `job/get` / `job/read` steps are thin over the job
@@ -31,6 +35,38 @@ export function requireJobLaunch(services: unknown): NonNullable<JobsCapability[
     );
   }
   return launch;
+}
+
+/** job/start's and job/continue's `attachments`: the files of this run to
+ *  hand the job, by name. */
+export const attachmentsField = z
+  .array(z.string())
+  .optional()
+  .describe(
+    "Files the person attached to this message to hand the job, by name as the message shows them ([attachment] <name> …). The job does not see this conversation: a file it needs goes with it — it gets the file as you see it, and saved on disk.",
+  );
+
+/**
+ * The files of THIS run (`ctx.attachments`, `POST …/run { attachments }`)
+ * the model named, read back from the run's artifacts for the job's launch
+ * — a name as the message showed it, or the saved file's (`image-2.png`,
+ * when two had one name). A name the run was not launched with is refused
+ * with the ones it was.
+ */
+export async function handedOn(ctx: StepContext, names: string[] | undefined): Promise<Attachment[] | undefined> {
+  if (!names?.length) return undefined;
+  const all = ctx.attachments ?? [];
+  const picked = all.filter((a) => names.includes(a.name) || names.includes(basename(a.path)));
+  const unknown = names.filter((n) => !all.some((a) => a.name === n || basename(a.path) === n));
+  if (unknown.length) {
+    const have = all.map((a) => a.name);
+    throw new Error(
+      `attachments: no file named ${unknown.map((n) => `"${n}"`).join(", ")} on this message — ${have.length ? `it has ${have.map((n) => `"${n}"`).join(", ")}` : "it has none"}`,
+    );
+  }
+  const artifacts = (ctx.services as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
+  if (!artifacts) throw new Error("attachments: no artifacts capability to read this run's files from");
+  return (await loadRunAttachments(artifacts, ctx.runId, picked)).map(({ name, mediaType, bytes }) => ({ name, mediaType, bytes }));
 }
 
 /** What a launch journals: the job and run it started. */

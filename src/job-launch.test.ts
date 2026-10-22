@@ -459,6 +459,62 @@ describe("job/start and job/continue", () => {
     }
   });
 
+  it("files attached to the turn reach its agent as parts, kept as the run's files with no bytes on run.start; the job gets the ones the turn hands on", async () => {
+    const { strut, store, post, settle, until, toolOutput } = await boot();
+    const png = Buffer.from("a stand-in for a screenshot's bytes");
+    const attachments = [
+      { name: "shot.png", mediaType: "image/png", data: png.toString("base64") },
+      { name: "notes.md", data: Buffer.from("# Notes\nhello from the person").toString("base64") },
+    ];
+
+    // Refused before anything launches, the chat's message.
+    const bad = await post({ input: { prompt: "x" }, attachments: [{ name: "x.png", data: "not base64!" }] });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as any).error, /x\.png.*not base64/);
+    assert.equal(seen.orch.length, 0);
+
+    orchTool = { name: "job_start", input: { prompt: "Fix what the screenshot shows", title: "Fix", attachments: ["shot.png"] } };
+    const res = await post({ input: { prompt: "this looks wrong" }, callback: { url: hostUrl }, attachments });
+    assert.equal(res.status, 202);
+    const launched = (await res.json()) as any;
+    assert.equal(launched.attachments, true, "the host's proof this server honors it");
+    await settle("orch", launched.runId);
+    const started = await toolOutput(launched.runId);
+    await until(() => posts.find((p) => p.workflow === "job"));
+
+    // The turn's agent saw both: the image as an image, the text inline,
+    // each after its `[attachment]` line.
+    const orchReq = JSON.parse(seen.orch[0]!);
+    const user = JSON.stringify(orchReq.messages[0]);
+    assert.ok(user.includes(png.toString("base64")) && user.includes('"media_type":"image/png"'), user.slice(0, 400));
+    assert.match(user, /\[attachment\] notes\.md \(text\/markdown, \d+ B\) — saved at [^"]+attachments\/notes\.md/);
+    assert.ok(user.includes("hello from the person"));
+
+    // run.start records what was attached and where, never the bytes; the
+    // files are the run's, served with its others.
+    const start = (await store.getRunEvents("orch", launched.runId)).find((e) => e.type === "run.start")!;
+    assert.deepEqual(start.attachments, [
+      { name: "shot.png", mediaType: "image/png", size: png.length, path: "attachments/shot.png" },
+      { name: "notes.md", mediaType: "text/markdown", size: 29, path: "attachments/notes.md" },
+    ]);
+    assert.ok(!JSON.stringify(start).includes(png.toString("base64")));
+    const listed = (await (await strut.app.request(`/artifacts/${launched.runId}`)).json()) as any;
+    assert.ok(listed.files.includes("attachments/shot.png") && listed.files.includes("attachments/notes.md"), JSON.stringify(listed));
+
+    // The job got the one it was handed, as a file of its own run.
+    assert.ok(seen.job[0]!.includes(png.toString("base64")));
+    assert.ok(!seen.job[0]!.includes("hello from the person"));
+    const jobStart = (await store.getRunEvents("job", started.runId)).find((e) => e.type === "run.start")!;
+    assert.deepEqual(jobStart.attachments, [{ name: "shot.png", mediaType: "image/png", size: png.length, path: "attachments/shot.png" }]);
+
+    // A name the turn was not launched with is the model's to fix.
+    orchTool = { name: "job_start", input: { prompt: "Again", title: "Again", attachments: ["nope.png"] } };
+    const again = (await (await post({ input: { prompt: "again" }, attachments })).json()) as any;
+    await settle("orch", again.runId);
+    const refused = (await store.getRunEvents("orch", again.runId)).find((e) => e.type === "step.error" && /^tool:job_/.test(String(e.stepType)));
+    assert.match(String(refused?.error?.message), /no file named "nope\.png" on this message — it has "shot\.png", "notes\.md"/);
+  });
+
   it("a turn launched with a jobCallback and no job of its own hands it to the jobs it starts: their job.update events reach it, each naming the job and the run (CALLBACKS.md §5)", async () => {
     const { store, post, launch, settle, until, toolOutput } = await boot();
     // The host's job-events endpoint: ONE URL for the whole conversation,

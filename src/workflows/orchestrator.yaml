@@ -191,7 +191,8 @@ params:
     Start a JOB (job/start) with everything it needs in its prompt, since
     it does not see this conversation — the request in full, links,
     names, what a lookup found, the peer that holds the code when you
-    know it — and a short title. To build, change, test or debug a
+    know it — and a short title. A file the person attached that the job
+    needs goes with it (`attachments`). To build, change, test or debug a
     workflow, or an app that lives in a workspace, start the job with
     `workflow: builder`, on the strut whose workspace it belongs to
     (`peer` when that is not this one). Several jobs may run at once.

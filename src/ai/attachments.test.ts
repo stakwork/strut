@@ -8,9 +8,12 @@ import {
   ATTACHMENT_TEXT_MAX_CHARS,
   MAX_ATTACHMENTS,
   attachmentParts,
+  loadRunAttachments,
   parseAttachments,
   saveAttachments,
+  saveRunAttachments,
 } from "./attachments.js";
+import { fileArtifactsCapability } from "../capabilities.js";
 
 const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
 const one = (input: object) => parseAttachments([input])[0]!;
@@ -48,6 +51,30 @@ describe("chat attachments", () => {
       assert.equal(await readFile(join(dir, "notes.md"), "utf8"), "first");
     } finally {
       await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a run's: under its artifacts' attachments/, a repeated name numbered; recorded without the bytes, read back with them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "strut-attach-"));
+    try {
+      const artifacts = fileArtifactsCapability(root);
+      const list = parseAttachments([
+        { name: "../../etc/passwd", data: b64("a") },
+        { name: "shot.png", data: b64("first") },
+        { name: "shot.png", data: b64("second") },
+      ]);
+      const saved = await saveRunAttachments(artifacts, "1000", list);
+      assert.deepEqual(saved, [
+        { name: "../../etc/passwd", mediaType: "application/octet-stream", size: 1, path: "attachments/passwd" },
+        { name: "shot.png", mediaType: "image/png", size: 5, path: "attachments/shot.png" },
+        { name: "shot.png", mediaType: "image/png", size: 6, path: "attachments/shot-2.png" },
+      ]);
+      assert.deepEqual(await artifacts.list("1000"), ["attachments/passwd", "attachments/shot-2.png", "attachments/shot.png"]);
+      const loaded = await loadRunAttachments(artifacts, "1000", saved.slice(2));
+      assert.equal(loaded[0]!.bytes.toString(), "second");
+      assert.equal(loaded[0]!.savedAt, join(root, "1000", "attachments", "shot-2.png"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

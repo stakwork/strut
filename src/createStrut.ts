@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, StepRegistry, RunEvent, RunResult } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, RunAttachment, StepRegistry, RunEvent, RunResult } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -96,7 +96,7 @@ import { lintStepSource } from "./step-lint.js";
 // SDK (which stays lazy-loaded inside launchChatTurn).
 import { createChatNotifier, formatRestartNotification, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
-import { attachmentParts, parseAttachments, saveAttachments, type Attachment } from "./ai/attachments.js";
+import { attachmentParts, parseAttachments, saveAttachments, saveRunAttachments, type Attachment } from "./ai/attachments.js";
 import { callbackOrigin, parseCallback, postCallback } from "./callback.js";
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { parseMcpServers } from "./mcp-servers.js";
@@ -1665,6 +1665,7 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.principal ? { principal: p.runStart.principal } : {}),
         ...(p.callback ? { callback: p.callback } : {}),
         ...(p.mcp ? { mcp: p.mcp } : {}),
+        ...(p.runStart.attachments?.length ? { savedAttachments: p.runStart.attachments } : {}),
       },
     );
   };
@@ -3106,6 +3107,11 @@ export async function createStrut<TServices = unknown>(
      *  itself for this run's agents, the pull-direction twin of `callback`.
      *  Kept beside the log like the callback URL, never in it. */
     mcp?: McpServer[] | null;
+    /** Files for the run's agents (src/ai/attachments.ts, the shape and
+     *  caps of `POST /chat { attachments }`): saved under the run's
+     *  artifacts when it starts, put on each `agent` step's prompt. The
+     *  bytes never reach the log. */
+    attachments?: unknown;
   }
 
   /**
@@ -3152,6 +3158,12 @@ export async function createStrut<TServices = unknown>(
        *  (`setRunJobCallback`), read by the job launcher
        *  (`rootJobCallbackOf`). Never in the log. */
       jobCallback?: { url: string };
+      /** The files the launch attached (`POST …/run { attachments }`),
+       *  validated: saved under the run's artifacts before the first event
+       *  and handed to its steps as `ctx.attachments` — or, on a resume,
+       *  the ones `run.start` recorded, already saved. */
+      attachments?: Attachment[];
+      savedAttachments?: RunAttachment[];
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -3172,6 +3184,9 @@ export async function createStrut<TServices = unknown>(
       if (callback && !extra?.resume) await store.setRunCallback(flow.name, runId, callback.url);
       if (mcp && !extra?.resume) await store.setRunMcp(flow.name, runId, mcp);
       if (extra?.jobCallback && !extra.resume) await store.setRunJobCallback(flow.name, runId, extra.jobCallback.url);
+      const attachments =
+        extra?.savedAttachments ??
+        (extra?.attachments?.length ? await saveRunAttachments(requireRunFiles(), runId, extra.attachments) : undefined);
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
@@ -3197,6 +3212,7 @@ export async function createStrut<TServices = unknown>(
         ...(body.job && body.title ? { title: body.title } : {}),
         ...(callback ? { callback: { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
+        ...(attachments?.length ? { attachments } : {}),
       });
     })()
       .then(
@@ -3280,7 +3296,7 @@ export async function createStrut<TServices = unknown>(
     return root ? store.getRunJobCallback(root.workflow, root.runId) : null;
   }
   if (launchCap) {
-    launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, workflow: wanted }) => {
+    launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
       const problem = idProblem(job);
       if (problem) throw new Error(`job "${job}" ${problem}`);
       // Which job-shaped workflow runs the turn (plans/builder-job.md §2):
@@ -3294,6 +3310,11 @@ export async function createStrut<TServices = unknown>(
         const start = (await store.getRunEvents(last.workflow, last.runId)).find((e) => e.type === "run.start") as { input?: unknown } | undefined;
         const peer = (start?.input as Record<string, unknown> | undefined)?.["peer"];
         if (typeof peer === "string") input = { ...input, peer };
+      }
+      // A builder job on a peer runs there (builder.yaml's `remote`
+      // branch), and strut/run-workflow carries no files.
+      if (attachments?.length && typeof input["peer"] === "string") {
+        throw new Error(`attachments: a build on another strut (peer "${input["peer"]}") cannot take files yet — describe what the job needs from them in its prompt`);
       }
       // The workspace this strut belongs to (its `self` record): both
       // job-shaped workflows put it on the agent's first line, so a job the
@@ -3326,6 +3347,7 @@ export async function createStrut<TServices = unknown>(
         ...(live ? { jobCallback: { url: live } } : {}),
         // The launching turn's caller, reachable from the job's agents too.
         ...(mcp?.length ? { mcp } : {}),
+        ...(attachments?.length ? { attachments } : {}),
       });
       return { runId, callback: !!url };
     };
@@ -3372,6 +3394,20 @@ export async function createStrut<TServices = unknown>(
     if (problem) throw new Error(`job "${String(body.job)}" ${problem}`);
     if (body.title !== undefined && body.title !== null && typeof body.title !== "string") throw new Error("title must be a string");
     return body.job;
+  };
+
+  /** A run body's `attachments`, validated with the chat's caps
+   *  (src/ai/attachments.ts); absent = none. They are kept as the run's
+   *  files, so a server without an artifacts capability refuses them. */
+  const runAttachmentsOf = (body: RunBody): Attachment[] => {
+    const list = parseAttachments(body.attachments);
+    if (list.length) requireRunFiles();
+    return list;
+  };
+  /** Where a run's attachments are kept: the run's artifacts. */
+  const requireRunFiles = (): ArtifactsCapability => {
+    if (!artifacts) throw new Error("attachments: this server keeps no run files (no artifacts capability)");
+    return artifacts;
   };
 
   /** A PEER's launch (plans/federation.md §3) runs the workflow as published:
@@ -3686,11 +3722,13 @@ export async function createStrut<TServices = unknown>(
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
     let mcp: McpServer[] | undefined;
+    let attachments: Attachment[];
     try {
       callback = runCallbackOf(body);
       runJobOf(body);
       jobCallback = jobCallbackOf(body);
       mcp = parseMcpServers(body.mcp);
+      attachments = runAttachmentsOf(body);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -3709,9 +3747,16 @@ export async function createStrut<TServices = unknown>(
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),
+      ...(attachments.length ? { attachments } : {}),
     });
     return c.json(
-      { runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}), ...(mcp?.length ? { mcp: true } : {}) },
+      {
+        runId,
+        ...(callback ? { callback: true } : {}),
+        ...(jobCallback ? { jobCallback: true } : {}),
+        ...(mcp?.length ? { mcp: true } : {}),
+        ...(attachments.length ? { attachments: true } : {}),
+      },
       202,
     );
   });
@@ -3728,11 +3773,13 @@ export async function createStrut<TServices = unknown>(
     let callback: { url: string } | undefined;
     let jobCallback: { url: string } | null | undefined;
     let mcp: McpServer[] | undefined;
+    let attachments: Attachment[];
     try {
       callback = runCallbackOf(body);
       runJobOf(body);
       jobCallback = jobCallbackOf(body);
       mcp = parseMcpServers(body.mcp);
+      attachments = runAttachmentsOf(body);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -3754,9 +3801,16 @@ export async function createStrut<TServices = unknown>(
       ...(callback ? { callback } : {}),
       ...(jobCallback ? { jobCallback } : {}),
       ...(mcp?.length ? { mcp } : {}),
+      ...(attachments.length ? { attachments } : {}),
     });
     return c.json(
-      { runId, ...(callback ? { callback: true } : {}), ...(jobCallback ? { jobCallback: true } : {}), ...(mcp?.length ? { mcp: true } : {}) },
+      {
+        runId,
+        ...(callback ? { callback: true } : {}),
+        ...(jobCallback ? { jobCallback: true } : {}),
+        ...(mcp?.length ? { mcp: true } : {}),
+        ...(attachments.length ? { attachments: true } : {}),
+      },
       202,
     );
   });

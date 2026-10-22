@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { JobsCapability } from "../../../jobs.js";
-import { launchOnce, requireJobLaunch } from "./_shared.js";
+import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
 
 /**
  * The next message of an existing JOB (the orchestrator's `continue_job`):
@@ -23,16 +23,22 @@ export default defineStep({
     job: z.string().min(1).describe("The job id, from job/start or job/list."),
     prompt: z.string().min(1).describe("The message for the job. It does not see this conversation: include what it needs."),
     session: z.string().optional().describe("Another of the job's threads to continue (job/get lists them). Defaults to the job's own."),
+    attachments: attachmentsField,
   }),
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
   async run(cfg, ctx: StepContext) {
     const launch = requireJobLaunch(ctx.services);
     const index = (ctx.services as { jobs?: JobsCapability } | undefined)?.jobs;
     if (index?.get && !(await index.get(cfg.job, { threads: false }))) throw new Error(`No job "${cfg.job}"`);
+    const attachments = await handedOn(ctx, cfg.attachments);
     return launchOnce(
       ctx,
       launch,
-      { job: cfg.job, input: { prompt: cfg.prompt, ...(cfg.session ? { session: cfg.session } : {}) } },
+      {
+        job: cfg.job,
+        input: { prompt: cfg.prompt, ...(cfg.session ? { session: cfg.session } : {}) },
+        ...(attachments ? { attachments } : {}),
+      },
       cfg.job,
     );
   },

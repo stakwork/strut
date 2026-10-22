@@ -138,7 +138,7 @@ strut/
 │   │   │                  #                   ask_user / request_secret (the builder asks the user — plans/elicitation.md; when deps.openElicitation is wired)
 │   │   ├── walk-tool.ts   # graph_walk (OFF for now: `GRAPH_WALK_TOOL_ENABLED` in prompts.ts): an async-generator tool bridging runWalk's per-hop ctx.emit to preliminary results (→ `tool-progress` chat events, GET /chat/:id/progress/:toolCallId for history); toModelOutput hands the model only { goal, stopped, decider, nodes }
 │   │   ├── turn-callback.ts # POST /chat { callback }: every turn end POSTs to the host with `settled` (expect() tokens for detached runs + verify passes) — how a host app dispatches the builder without tailing
-│   │   ├── attachments.ts # files on a chat message (`POST /chat { attachments }`): validated + capped, saved under `<dataDir>/uploads/<chatId>/`, turned into the user message's parts — an image or a PDF as a `file` part the model sees, text and Word (.docx/.doc via `word-extractor`, lazy) as inline text, anything else announced with its path for bash
+│   │   ├── attachments.ts # files on a chat message (`POST /chat { attachments }`): validated + capped, saved under `<dataDir>/uploads/<chatId>/`, turned into the user message's parts — an image or a PDF as a `file` part the model sees, text and Word (.docx/.doc via `word-extractor`, lazy) as inline text, anything else announced with its path for bash. A run's (`POST …/run { attachments }`) the same, saved under the run's artifacts (`saveRunAttachments` / `loadRunAttachments`) and put on its agents' prompts
 │   │   ├── mcp.ts         # strut over MCP (stateless Streamable HTTP, one SDK `Server` per request, the SDK lazy-imported): `toolsetServer` adapts ANY AI SDK ToolSet GENERICALLY, so no tool exists twice — tools/list from each tool's `asSchema` JSON Schema, tools/call = validate → execute → drain a generator (earlier yields → `notifications/progress`) → `toModelOutput` (where the cap lives) → content (+ `structuredContent`; `isError` on a `{ error }` result) — and `createMcpDoor` is the per-request transport. Two doors in createStrut: `POST /mcp` = the ASSISTANT set (assistant-tools.ts; `assistantInstructions`, ten lines), `POST /mcp/builder` = the BUILDER set (`builderServer`: `buildTools(deps)` + `builderInstructions` = BUILDER_PROCEDURE + the UI's URL + its `?secrets=1` deep link, since ask_user / request_secret are not offered there, + the full `buildSystem` — the host's `chatSystem` section included, resolved at each prompts/get with chat id `mcp` — as the `workflow-builder` prompt); with the chat off `/mcp` serves the builder set. createStrut's `builderDeps` is what both doors and the chat turn share; the doors add `publicUrl` + `artifactRefs` (artifact links absolute with their `?t=` file token, `ui` deep links) and a polling detach hint (get_run's `wait`). specs/API.md §11
 │   │   ├── assistant-tools.ts # the ASSISTANT tool set, `POST /mcp`'s default: SEVEN tools for an external agent (Claude Code, Hermes) that has forty other tools and should not learn strut's YAML — `ask_workflow_builder` (a message to the builder, new chat or continuation; holds up to `wait` and returns the turn's `text` + `did` from chat-view.ts, `status` done | working | asked (the open question, a secret's link for the caller's USER) | parked | error, `settled`), `read_workflow_builder_chat` (turns since a cursor), `list_workflow_builder_chats` (find a chat again; `mine` by the connection's `x-strut-actor`), `list_workflows` (+ schedules, last run), `list_runs` (+ each run's artifacts as links), `get_run` (the basics; an output field over 2k chars HELD BACK as `{ $omitted }` until named in `fields`; `files: true` lists the run's files with links; no step tree — the builder debugs), `run_workflow` (the builder's own, output trimmed the same way). No model behind any but the first. `AssistantChatDoor` is createStrut's way in: `sendChatMessage` (POST /chat's core, shared), the notifier's liveness, the turn callbacks' `isSettled`; a chat started here is stamped `ChatMeta.publicUrl`, so the builder's tool results in it carry absolute links and its reply text copies them
 │   │   ├── elicitation.ts # the builder asks the user (plans/elicitation.md), the PURE half: ACP's flat schema subset + validator (model schema, submitted content), the secret-looking-field guard, crypto-random ids, `stepAsked` (the chat's stop condition), the `[elicitation-response]` formatter, the question as callback text
@@ -1493,6 +1493,21 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   compaction: hence the caps (Anthropic refuses a request over 32 MB). The
   flyout attaches by the paperclip, a drop on the flyout or a pasted
   screenshot, and shows the files as chips (`transcript.ts` `userContent`).
+  **A run takes them too** — `POST …/run { attachments }`, the same shape
+  and caps, a launch-level field beside `mcp` (a host's message to the
+  orchestrator, the person's files with it).
+  Saved under the run's ARTIFACTS as `attachments/<name>` before the first
+  event (`saveRunAttachments`; a repeated name numbered), recorded on
+  `run.start` as `attachments: [{ name, mediaType, size, path }]` — never
+  the bytes, so a resume reads them back from there — and handed to every
+  step as `ctx.attachments`. Every `agent` step of the run puts them on its
+  prompt as the parts above (`attachments`, default true; a sub-agent never
+  gets them — its prompt is its caller's words); in a session they are that
+  turn's message, replayed like the chat's. `job/start` / `job/continue`
+  take `attachments: [name]`: the turn's files the job needs, read back from
+  the run's artifacts and launched with the job's run, which keeps its own
+  copies — the job does not see the conversation. Refused for a builder job
+  on a peer (strut/run-workflow carries no files).
 - **Claims, checks, evidence — the truth layer** (`plans/claims.md`; graph
   workspaces only, on by default there — on `STRUT_WORKSPACE_BACKEND=fs`,
   or with `STRUT_CLAIMS=0` / `createStrut({ claims: false })`, no claim

@@ -2,6 +2,7 @@ import type {
   AppRef,
   Flow,
   McpServer,
+  RunAttachment,
   Step,
   StepContext,
   StepRegistry,
@@ -123,6 +124,10 @@ export interface RunOptions<TServices = unknown> {
    *  `run.start` / `run.resumed` by name and origin only. The launcher keeps
    *  the entries for a resume (`RunStore.setRunMcp`). */
   mcp?: McpServer[];
+  /** The files the launch attached, already saved under the run's
+   *  artifacts by the launcher: handed to every step as `ctx.attachments`,
+   *  recorded on `run.start` (no bytes), read back by a resume. */
+  attachments?: RunAttachment[];
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -206,6 +211,7 @@ interface Exec {
   app?: AppRef;
   automation?: { id: string };
   mcp?: McpServer[];
+  attachments?: RunAttachment[];
   /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
@@ -330,6 +336,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.app ? { app: opts.app } : {}),
       ...(opts?.callback ? { callback: opts.callback } : {}),
       ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
+      ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
@@ -372,6 +379,7 @@ export async function runWorkflow<TServices = unknown>(
     app: opts?.app,
     automation: opts?.automation,
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
+    ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
     disposers: [],
   };
 
@@ -853,6 +861,7 @@ async function dispatchStep(
         ...(exec.app ? { app: exec.app } : {}),
         ...(exec.automation ? { automation: exec.automation } : {}),
         ...(exec.mcp ? { mcp: exec.mcp } : {}),
+        ...(exec.attachments ? { attachments: exec.attachments } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),
