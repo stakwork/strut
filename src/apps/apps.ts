@@ -124,6 +124,8 @@ export interface AppsCapability {
   /** Scaffold an empty `to` from a template: strut's (`default`), or an installed app by name — a copy, with no upstream. */
   init(to: string, template?: string): Promise<{ path: string; template: string; files: string[] }>;
   setActive(name: string, version: string): Promise<void>;
+  /** Pin the app as a tab a host shows (`AppMetadata.pinned`), or unpin it. */
+  pin(name: string, pinned: boolean): Promise<void>;
   delete(name: string): Promise<boolean>;
   /** Strut's template names. */
   templates(): Promise<string[]>;
@@ -325,6 +327,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     },
 
     setActive: (name, version) => workspace.setActiveAppVersion(name, version),
+    pin: (name, pinned) => workspace.setAppPinned(name, pinned),
     delete: (name) => workspace.deleteApp(name),
 
     async templates() {

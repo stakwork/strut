@@ -361,6 +361,30 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(fresh.publisher, undefined);
     });
 
+    it("setAppPinned: the record's flag — listed and read back, kept by a publish and a rollback, cleared by unpin and by a delete", async () => {
+      await ws.publishApp("tabbed", "p1", APP("One"));
+      await ws.publishApp("plain", "q1", APP("Plain"));
+      assert.equal((await ws.listApps()).some((a) => "pinned" in a), false, "absent until pinned");
+      await ws.setAppPinned("tabbed", true);
+      await ws.setAppPinned("tabbed", true);
+      const listed = await ws.listApps();
+      assert.deepEqual(listed.map((a) => [a.name, a.pinned]), [["plain", undefined], ["tabbed", true]]);
+      assert.equal((await ws.getApp("tabbed"))?.pinned, true);
+      await ws.publishApp("tabbed", "p2", APP("Two"));
+      await ws.publishApp("tabbed", "p1", APP("One"));
+      await ws.setActiveAppVersion("tabbed", "v2");
+      assert.equal((await ws.getApp("tabbed"))?.pinned, true, "a publish, a re-activation and a rollback keep it");
+      assert.equal((await ws.getApp("tabbed", "v1"))?.pinned, true, "the record's, whichever version is read");
+      await ws.setAppPinned("tabbed", false);
+      await ws.setAppPinned("tabbed", false);
+      assert.equal((await ws.getApp("tabbed"))?.pinned, undefined);
+      await ws.setAppPinned("tabbed", true);
+      assert.equal(await ws.deleteApp("tabbed"), true);
+      await ws.publishApp("tabbed", "p3", APP("Three"));
+      assert.equal((await ws.getApp("tabbed"))?.pinned, undefined, "the name starts over unpinned");
+      await assert.rejects(ws.setAppPinned("nope", true), /not found/);
+    });
+
     it("publishApp: reactivateKnown, the publisher and owner stamps, and upstream carried forward", async () => {
       const seed = APP("Seed");
       const edit = APP("Edit");

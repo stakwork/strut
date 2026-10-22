@@ -23,6 +23,7 @@ import appInit from "../steps/lib/app/init.js";
 import appCheckout from "../steps/lib/app/checkout.js";
 import appBuild from "../steps/lib/app/build.js";
 import appPublish from "../steps/lib/app/publish.js";
+import appPin from "../steps/lib/app/pin.js";
 
 /**
  * The apps capability (plans/apps.md §1.2, §1.3, §8, §9), the `app/*` steps
@@ -208,6 +209,13 @@ describe("the app/* steps", () => {
     assert.deepEqual(((await appList.run({}, ctx)) as { apps: Array<{ name: string }> }).apps.map((a) => a.name), ["tracker"]);
     assert.equal(((await appGet.run({ name: "tracker" }, ctx)) as { stale: boolean }).stale, false);
     await assert.rejects(appGet.run({ name: "nope" }, ctx), /not found/);
+    // A tab: the record's flag, read back on the listing; unknown names refused.
+    assert.deepEqual(await appPin.run({ name: "tracker", pinned: true }, ctx), { name: "tracker", pinned: true });
+    assert.equal(((await appList.run({}, ctx)) as { apps: Array<{ pinned?: boolean }> }).apps[0]?.pinned, true);
+    assert.equal(((await appGet.run({ name: "tracker" }, ctx)) as { pinned?: boolean }).pinned, true);
+    await appPin.run({ name: "tracker", pinned: false }, ctx);
+    assert.equal(((await appList.run({}, ctx)) as { apps: Array<{ pinned?: boolean }> }).apps[0]?.pinned, undefined);
+    await assert.rejects(appPin.run({ name: "nope", pinned: true }, ctx), /not found/);
     const co = (await appCheckout.run({ name: "tracker", path: "apps/tracker-2" }, ctx)) as { path: string };
     assert.ok(existsSync(join(co.path, "app.yaml")));
 
@@ -329,6 +337,22 @@ describe("the /apps routes", () => {
       assert.equal(back.status, 200);
       assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { version: string }).version, "v1");
       assert.equal((await strut.app.request("/apps/hello/active", { method: "PUT", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify({ version: "v9" }) })).status, 404);
+
+      // Pinned as a tab: the record's flag on GET /apps, /apps/:name and /versions; a bad body 400, an unknown app 404.
+      const pin = (name: string, body: unknown) => strut.app.request(`/apps/${name}/pin`, { method: "PUT", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify(body) });
+      const pinned = await pin("hello", { pinned: true });
+      assert.equal(pinned.status, 200);
+      assert.deepEqual(await pinned.json(), { ok: true, name: "hello", pinned: true });
+      const tabs = (await (await strut.app.request("/apps", auth)).json()) as { apps: Array<{ name: string; pinned?: boolean }> };
+      assert.deepEqual(tabs.apps.filter((a) => a.pinned).map((a) => a.name), ["hello"]);
+      assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { pinned?: boolean }).pinned, true);
+      assert.equal(((await (await strut.app.request("/apps/hello/versions", auth)).json()) as { pinned?: boolean }).pinned, true);
+      assert.equal((await pin("hello", {})).status, 400);
+      assert.equal((await pin("hello", { pinned: "yes" })).status, 400);
+      assert.equal((await pin("nope", { pinned: true })).status, 404);
+      assert.equal((await pin("acme%2Fui", { pinned: true })).status, 200, "a name with a slash");
+      assert.equal((await pin("acme%2Fui", { pinned: false })).status, 200);
+      assert.equal(((await (await strut.app.request("/apps/acme%2Fui", auth)).json()) as { pinned?: boolean }).pinned, undefined);
       assert.equal((await strut.app.request("/apps/hello", { method: "DELETE", ...auth })).status, 200);
       assert.equal((await strut.app.request("/apps/hello", auth)).status, 404);
       assert.equal((await strut.app.request("/apps/hello", { method: "DELETE", ...auth })).status, 404);

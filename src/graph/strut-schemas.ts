@@ -302,6 +302,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       publisher: "?string",
       /** The owning actor (the first publish's), as `StrutWorkflow.owner`. */
       owner: "?string",
+      /** Shown as a tab by a host (`AppMetadata.pinned`); absent = not pinned. */
+      pinned: "?boolean",
       /** Tree hash of the active version (mirrors `ACTIVE_VERSION`). */
       active_version: "?string",
     },

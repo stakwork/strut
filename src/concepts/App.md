@@ -1,5 +1,5 @@
 ---
-description: An APP — a front-end project over this strut's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, and the rules that keep it cheap and safe.
+description: An APP — a front-end project over this strut's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
 parent: Workflow Builder
 ---
 An APP is interactive software the builder writes on top of this strut's
@@ -188,3 +188,9 @@ brings a request back here, and a message typed inside the app ("add a
 column") arrives in this chat naming the app; or in a host's own frame.
 An app lives in the workspace: never hand over an app directory as a
 file.
+
+When the person asks for the app as a TAB of the workspace — "pin it", "put
+it in the sidebar" — `app/pin { name }`: a host that lists this
+workspace's apps (a portal's sidebar) shows it as a tab of its own, at its
+active version, until `app/pin { name, pinned: false }`. A later publish
+keeps the tab. Never pin on your own.
