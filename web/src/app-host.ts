@@ -22,9 +22,9 @@ import { strutLink } from "./app-links";
 export { appMessage, strutLink } from "./app-links";
 
 export interface AppHostHandlers {
-  /** `ui/message`: the text the page sent, for the builder chat. Absent (a
-   *  job's app: strut's UI has no send box for a job yet, plans/apps.md
-   *  §12), the host does not offer the capability. */
+  /** `ui/message`: the text the page sent, for the builder chat. Absent (an
+   *  app in a job's timeline: strut's UI has no send box for a job yet,
+   *  plans/apps.md §12), the host does not offer the capability. */
   onMessage?: (text: string) => void | Promise<void>;
   /** `ui/open-link` with a strut link: its deep-link params. Absent, a
    *  strut link opens in a new tab like any other. */

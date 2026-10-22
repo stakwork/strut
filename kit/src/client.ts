@@ -12,26 +12,17 @@ export interface StrutClient {
   readonly app?: AppIdentity;
 }
 
-/** Which app a page is (plans/apps.md §7.2): a workspace app at a version,
- *  or a JOB's app — the job and its directory in it (§6), what it reads of
- *  its own job (`useRuns(null, { job })`, `job/get`). */
-export type AppIdentity = { name: string; version: string } | { job: string; path: string };
+/** Which app a page is (plans/apps.md §7.2): a workspace app at a version. */
+export type AppIdentity = { name: string; version: string };
 
-/** The app a page's identity names — `app:<name>@<vN>.<token>`, or
- *  `job:<encoded job>/<path>.<token>` — read, never checked: strut checks
- *  the token on every call. Undefined for anything else. */
+/** The app a page's identity names — `app:<name>@<vN>.<token>` — read,
+ *  never checked: strut checks the token on every call. Undefined for
+ *  anything else. */
 export function appOfToken(token: string | undefined): AppIdentity | undefined {
   if (!token) return undefined;
   const scope = token.slice(0, Math.max(0, token.lastIndexOf(".")));
   const app = scope.match(/^app:(.+)@(v\d+)$/);
-  if (app) return { name: app[1]!, version: app[2]! };
-  const job = scope.match(/^job:([^/]+)\/(.+)$/);
-  if (!job) return undefined;
-  try {
-    return { job: decodeURIComponent(job[1]!), path: job[2]! };
-  } catch {
-    return undefined;
-  }
+  return app ? { name: app[1]!, version: app[2]! } : undefined;
 }
 
 /** The one tool an app calls (§5). */

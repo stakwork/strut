@@ -26,7 +26,6 @@ import type { RunStore } from "./store.js";
 import type { SessionInfo, SessionStore } from "./session-store.js";
 import { idProblem } from "./session-store.js";
 import { artifactEntriesOf, artifactKind, resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
-import { readBuildInfo } from "./apps/build.js";
 import { jobFilePath, jobHolder, jobRoot, listJobFiles, readJobRecord, turnOf, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
 import { foldJobThreads, type JobThread, type ThreadRun } from "./job-threads.js";
 import { searchWorkflows } from "./search.js";
@@ -45,6 +44,10 @@ export interface JobIndexDeps {
    *  more, and their artifacts are not folded — `job/get` is that surface
    *  from inside a run. */
   sealed?: (workflow: string) => Promise<boolean>;
+  /** A published app's version — the active one, or the one named — with
+   *  its build, for a `{ kind: "app", app: <name> }` deliverable (the
+   *  builder's); null for no such app. Absent, such an entry is an error. */
+  appVersion?: (name: string, version?: string) => Promise<{ version: string; hash?: string; builtAt?: string } | null>;
 }
 
 /** One row of `GET /jobs`. */
@@ -204,6 +207,8 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
   /** The job's runs that may be read past their status. */
   const readable = async (workflow: string) => !(await deps.sealed?.(workflow));
 
+  const appsAt = deps.appVersion ? { appVersion: deps.appVersion } : {};
+
   /** Does a `/jobs/<id>/files/…` link point at a file in `root`? (Any other
    *  url is taken as given.) */
   const existsIn = (root: string) => async (url: string): Promise<boolean> => {
@@ -217,12 +222,6 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     }
   };
 
-  /** A job app's build (`dist/build.json`), for its deliverable's `app.hash`
-   *  — what a host reloads its frame on. */
-  const appBuildIn = (root: string) => async (_job: string, path: string) => {
-    const build = await readBuildInfo(jobFilePath(root, path));
-    return build ? { hash: build.hash, builtAt: build.builtAt } : null;
-  };
 
   /** §1 of plans/jobs-sidebar.md: the newest `limit` readable runs, their
    *  logs and resolved deliverables, folded with the sessions' turn lines. */
@@ -235,7 +234,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       if (!(await readable(line.workflow))) continue;
       const summary = await deps.store.getRunSummary(line.workflow, line.runId);
       const events = await deps.store.getRunEvents(line.workflow, line.runId);
-      const artifacts = summary?.status === "success" ? await resolveArtifactRefs(summary.output, { runId: line.runId, job: rec.name, exists, appBuild: appBuildIn(rootOf(rec.name)) }) : undefined;
+      const artifacts = summary?.status === "success" ? await resolveArtifactRefs(summary.output, { runId: line.runId, job: rec.name, exists, ...appsAt }) : undefined;
       runs.push({ ...line, summary, events, ...(artifacts?.length ? { artifacts } : {}) });
     }
     const turnLines = (await Promise.all(sessions.map((s) => deps.sessions?.load?.(s.id).catch(() => null)))).flatMap((t) => t?.turns ?? []);
@@ -263,7 +262,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     const exists = existsIn(rootOf(rec.name));
     const artifacts: JobArtifact[] = [];
     for (const { raw, runId } of kept) {
-      const [ref] = (await resolveArtifactRefs({ artifacts: [raw] }, { runId, job: rec.name, exists, appBuild: appBuildIn(rootOf(rec.name)) })) ?? [];
+      const [ref] = (await resolveArtifactRefs({ artifacts: [raw] }, { runId, job: rec.name, exists, ...appsAt })) ?? [];
       if (!ref) continue;
       const path = typeof raw["path"] === "string" && ref.url ? raw["path"].replace(/^\/+/, "") : undefined;
       artifacts.push({ ...ref, runId, ...(path ? { path } : {}) });
