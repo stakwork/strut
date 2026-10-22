@@ -61,6 +61,20 @@ describe("validateNode (§6 gate)", () => {
     rejects(() => validateNode("StrutRun", { ...RUN, Data_Bank: "x" }), "UNKNOWN_ATTRIBUTE", "Data_Bank");
     rejects(() => validateNode("StrutRun", { ...RUN, node_key: "x" }), "UNKNOWN_ATTRIBUTE", "node_key");
   });
+  it("lets updated_at through only when the schema declares it; other generic keys stay refused", () => {
+    const base = fromStrut(getStrutSchema("StrutRun")!);
+    const declared = { ...base, type: "Brief", attributes: { ...base.attributes, updated_at: "?string" } };
+    // declared: create/merge payload passes and is carried through
+    const v = validateNode(declared, { ...RUN, updated_at: "2026-09-01T20:00:00Z" });
+    assert.equal(v.values["updated_at"], "2026-09-01T20:00:00Z");
+    // not declared: still UNKNOWN_ATTRIBUTE
+    rejects(() => validateNode("StrutRun", { ...RUN, updated_at: "x" }), "UNKNOWN_ATTRIBUTE", "updated_at");
+    // identity, embeddings, algo and delete markers stay refused even when declared
+    const all = { ...base, attributes: { ...base.attributes } };
+    const refused = ["ref_id", "namespace", "node_key", "Data_Bank", "date_added_to_graph", "text_embeddings", "embeddings", "algo_page_rank", "is_deleted"];
+    for (const k of refused) all.attributes[k] = "?string";
+    for (const k of refused) rejects(() => validateNode(all, { ...RUN, [k]: "x" }), "UNKNOWN_ATTRIBUTE", k);
+  });
   it("accepts Thing-inherited attributes", () => {
     const v = validateNode("StrutRun", { ...RUN, unique_source_id: "strutrun:1", is_muted: false, weight: 2 });
     assert.equal(v.values["unique_source_id"], "strutrun:1");
@@ -464,6 +478,39 @@ for (const tb of testBackends()) {
       // Without an embedder, a changed text drops the stale vector so backfill heals it.
       await writer.update(a.ref_id, { set: { run_status: "success" } });
       assert.ok(!("text_embeddings" in (await props(a.ref_id))));
+    });
+
+    it("update: updated_at is editable when the schema declares it, refused when not; generic keys stay refused", async () => {
+      const a = await writer.write({ type: "StrutRun", data: RUN });
+      // not declared on StrutRun → refused on the edit path too
+      await assert.rejects(writer.update(a.ref_id, { set: { updated_at: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "updated_at");
+      // a resolver that declares it (and the other generic keys) on StrutRun
+      const declaring = (extra: string[]) => ({
+        async schema(raw: string, tx?: never) {
+          const s = await backend.schemas.schema(raw, tx);
+          if (!s || s.type !== "StrutRun") return s;
+          const attributes: Record<string, string> = { ...s.attributes };
+          for (const k of ["updated_at", ...extra]) attributes[k] = "?string";
+          return { ...s, attributes };
+        },
+      }) as unknown as typeof backend.schemas;
+      for (const k of ["ref_id", "namespace", "embeddings", "is_deleted"]) {
+        const w = new NodeWriter(backend, { resolver: declaring([k]) });
+        await assert.rejects(w.update(a.ref_id, { set: { [k]: "x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === k);
+      }
+    });
+
+    it("update: a declared updated_at is written", neoOnly("the ladybug file has fixed columns: Strut's own registry types, none declaring updated_at"), async () => {
+      const a = await writer.write({ type: "StrutRun", data: RUN });
+      const declaring = {
+        async schema(raw: string, tx?: never) {
+          const s = await backend.schemas.schema(raw, tx);
+          return s && s.type === "StrutRun" ? { ...s, attributes: { ...s.attributes, updated_at: "?string" } } : s;
+        },
+      } as unknown as typeof backend.schemas;
+      const w = new NodeWriter(backend, { resolver: declaring });
+      await w.update(a.ref_id, { set: { updated_at: "2026-09-02T00:00:00Z" } });
+      assert.equal((await props(a.ref_id))["updated_at"], "2026-09-02T00:00:00Z");
     });
 
     it("the no-embed mark: an execution record gets Data_Bank and no vector", neoOnly("the no-embed types (tool calls, turns) are not in the file"), async () => {

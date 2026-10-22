@@ -41,7 +41,7 @@ import { EVIDENCE_TYPE } from "./claims.js";
 import type { EngineLike, GraphEngine, PreparedNode, SoftDeleteResult, WriteMode, WriteOutcome } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
-import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
+import { GENERIC_NODE_PROPERTIES, SCHEMA_DECLARED_STAMPS, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
 
 export type { PreparedNode, WriteMode, WriteOutcome };
 
@@ -107,7 +107,9 @@ export function validateNode(typeOrSchema: string | NodeSchema, data: Record<str
   // 3. Unknown attributes rejected — this is what makes "unexpected" nodes
   //    impossible, not just invalid ones. Generic/system props included.
   for (const key of Object.keys(data)) {
-    if (!attrs[key] || GENERIC_NODE_PROPERTIES.has(key)) {
+    // A generic property is refused unless it is a business stamp (`updated_at`)
+    // the schema declares; undeclared, it is refused like any unknown key.
+    if (!attrs[key] || (GENERIC_NODE_PROPERTIES.has(key) && !SCHEMA_DECLARED_STAMPS.has(key))) {
       throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute is not declared on the schema", key);
     }
   }

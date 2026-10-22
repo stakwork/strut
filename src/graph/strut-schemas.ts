@@ -149,6 +149,15 @@ export const GENERIC_NODE_PROPERTIES = new Set([
   "is_deleted",
 ]);
 
+/** The members of `GENERIC_NODE_PROPERTIES` that are also business stamps a
+ *  schema may declare (jarvis declares `updated_at` as `?string` on
+ *  HiveInitiative, Brief, UserStory, …). The write gate lets exactly these
+ *  through, and only when the type's schema declares them; every other
+ *  generic property (identity, embeddings, algo_*, delete markers) stays
+ *  refused. `GENERIC_NODE_PROPERTIES` itself is unchanged: read stripping and
+ *  the schema-authoring guards still treat these as generic. */
+export const SCHEMA_DECLARED_STAMPS = new Set(["updated_at"]);
+
 /** jarvis `SCHEMA_CORE_PROPERTIES` — top-level keys of a Schema node that
  *  are NOT attributes (everything else on the node is one). */
 export const SCHEMA_CORE_PROPERTIES = new Set([
