@@ -201,6 +201,9 @@ start this until phase A is in users' hands.
 
 ### 2.5 Host ↔ strut contract
 
+(What the host does past this — the chain to the person's orgs, rooms, the
+wake turn — is `specs/DESKTOP.md`.)
+
 Host spawns `node <dir>/desktop.js` (done). The launcher applies these
 defaults; each is an env override, so a host can set none of them:
 
