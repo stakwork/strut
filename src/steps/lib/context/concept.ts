@@ -70,9 +70,12 @@ export default defineStep({
     "Render a Concept of the workspace's knowledge graph as a section of an agent's system prompt: its docs (capped) and the name + description of each Concept under it (PARENT_OF), with how to open one. " +
     'For a workflow that puts the page in front of its agent — `system: "{{ params.system }}…{{ concepts.text }}"`. ' +
     "`docs: false` renders the kinds under the page alone (the page's docs are another agent's instructions): what the orchestrator routes a request by. " +
-    "`{ text: \"\" }` without a graph or the page: never fails the run.",
+    "`{ text: \"\" }` without a name, a graph or the page: never fails the run.",
   input: z.object({
-    name: z.string().min(1).describe('The Concept to render, by name ("Job").'),
+    name: z
+      .string()
+      .optional()
+      .describe('The Concept to render, by name ("Job"). None renders nothing: a template that names no page (the job\'s `{{ input.kind }}` on a launch without one) is no section.'),
     tool: z
       .string()
       .default("graph_graph_get")
@@ -84,6 +87,7 @@ export default defineStep({
   }),
   output: z.object({ text: z.string() }),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
+    if (!cfg.name) return { text: "" };
     // No wired graph: nothing to read. graph/graph-get would open a Neo4j
     // from env instead, a connection attempt per run on a filesystem workspace.
     if (!ctx?.services?.graph) return { text: "" };

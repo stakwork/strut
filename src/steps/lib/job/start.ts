@@ -27,6 +27,13 @@ import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_sha
  * the strut whose workspace it belongs to, and the local `builder` run
  * dispatches there (builder.yaml's `remote` branch); code lives in its
  * repository and is checked out here, so a code job runs here.
+ *
+ * `kind` is the request's KIND, by the name of its page under the `Job`
+ * Concept — what the orchestrator routes by, from the list closing its
+ * prompt. The job workflow opens every turn with that page (job.yaml's
+ * `kindPage`), so the job starts from the kind's convention — a Code
+ * Change's sizing rule, its sandbox — instead of having to open it. A
+ * builder job reads its own page, so `kind` is a code job's only.
  */
 export default defineStep({
   type: "job/start",
@@ -53,6 +60,12 @@ export default defineStep({
         "With workflow: builder only — the strut the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
       ),
     repos: z.array(z.string()).optional().describe("Repository URLs to check out into the job's directory (workflow: job only — workflow: builder checks nothing out)."),
+    kind: z
+      .string()
+      .optional()
+      .describe(
+        "The kind of work, by its name in the list of the kinds of work a job does here (\"Code Change\"), when the request is one of them: the job starts every turn from that kind's page. Leave it out when none fits. workflow: job only — a builder job reads its own page.",
+      ),
     attachments: attachmentsField,
   }),
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
@@ -65,12 +78,20 @@ export default defineStep({
     if (cfg.repos?.length && workflow === "builder") {
       throw new Error(`repos: a builder job checks nothing out — it authors workflows through its tools; leave repos out, or start a job (workflow: job) for work on a repository`);
     }
+    if (cfg.kind && workflow === "builder") {
+      throw new Error(`kind: a builder job reads its own page — name the kind of build in its prompt and leave kind out`);
+    }
     const attachments = await handedOn(ctx, cfg.attachments);
     return launchOnce(ctx, launch, {
       job: randomUUID(),
       title: cfg.title,
       ...(cfg.workflow ? { workflow: cfg.workflow } : {}),
-      input: { prompt: cfg.prompt, ...(cfg.repos?.length ? { repos: cfg.repos } : {}), ...(cfg.peer ? { peer: cfg.peer } : {}) },
+      input: {
+        prompt: cfg.prompt,
+        ...(cfg.repos?.length ? { repos: cfg.repos } : {}),
+        ...(cfg.peer ? { peer: cfg.peer } : {}),
+        ...(cfg.kind ? { kind: cfg.kind } : {}),
+      },
       ...(attachments ? { attachments } : {}),
     });
   },
