@@ -21,13 +21,16 @@ ARG NODE_VERSION=22.23.4
 
 # Web UI → web/dist, served by the engine (STRUT_WEB_DIST default). It is
 # arch-independent, so it builds once on the build host, not per target. It
-# imports src/search.ts, hence the src copy. No web lockfile is committed
-# (package-lock.json is gitignored), so `npm install`, not `npm ci`.
+# imports src/search.ts, hence the src copy, and the kit's folds from source
+# (`@strut/kit/folds`, aliased in web/vite.config.ts), hence that copy. No web
+# lockfile is committed (package-lock.json is gitignored), so `npm install`,
+# not `npm ci`.
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS web
 WORKDIR /usr/src/strut
 COPY web/package.json ./web/
 RUN npm install --prefix web
 COPY src ./src
+COPY kit/src/folds ./kit/src/folds
 COPY web ./web
 RUN npm run build --prefix web
 
