@@ -187,6 +187,8 @@ export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
   Data_Bank: "STRING",
   text_embeddings: "FLOAT[384]",
   date_added_to_graph: "INT64",
+  // System stamp: epoch ms of the last create / change, set by the writer.
+  updated_at: "INT64",
   deleted_at: "INT64",
 };
 

@@ -222,7 +222,7 @@ for (const tb of testBackends()) {
         assert.deepEqual(p["_search_fields_used"], ["workflow_name", "run_status", "summary"]);
         assert.deepEqual(
           Object.keys(p).sort(),
-          ["Data_Bank", "_search_fields_used", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "weight", "workflow_name"],
+          ["Data_Bank", "_search_fields_used", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "updated_at", "weight", "workflow_name"],
         );
         const bolt = (backend as { bolt: Bolt }).bolt;
         const rows = await bolt.run(
@@ -240,7 +240,7 @@ for (const tb of testBackends()) {
         // The file keeps no jarvis stamps and no `_search_fields_used`.
         assert.deepEqual(
           Object.keys(p).sort(),
-          ["Data_Bank", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "workflow_name"],
+          ["Data_Bank", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "updated_at", "workflow_name"],
         );
       }
     });
@@ -464,6 +464,97 @@ for (const tb of testBackends()) {
       // Without an embedder, a changed text drops the stale vector so backfill heals it.
       await writer.update(a.ref_id, { set: { run_status: "success" } });
       assert.ok(!("text_embeddings" in (await props(a.ref_id))));
+    });
+
+    it("stamps updated_at (epoch ms integer) on create, overwriting a caller value; undeclared types too", async () => {
+      let clock = 1_800_000_000_000;
+      const w = new NodeWriter(backend, { resolver: backend.schemas, now: () => clock });
+      const a = await w.write({ type: "StrutRun", data: { ...RUN, updated_at: "yesterday" } });
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_000_000);
+      assert.equal(typeof (await props(a.ref_id))["updated_at"], "number");
+      assert.equal((await props(a.ref_id))["date_added_to_graph"], 1_800_000_000_000, "one stamp: updated_at = date_added_to_graph on create");
+      assert.ok(!("created_at" in (await props(a.ref_id))));
+      clock += 1000;
+      await w.write({ type: "StrutRun", data: RUN });
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_000_000);
+    });
+
+    it("update stamps updated_at, overwrites a caller value, and a no-op edit keeps the old stamp", async () => {
+      let clock = 1_800_000_000_000;
+      const w = new NodeWriter(backend, { resolver: backend.schemas, now: () => clock });
+      const a = await w.write({ type: "StrutRun", data: RUN });
+      clock += 5000;
+      await w.update(a.ref_id, { set: { run_status: "error", updated_at: "x" } });
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_005_000);
+      clock += 5000;
+      const same = await w.update(a.ref_id, { set: { run_status: "error" } });
+      assert.equal(same.rekeyed, false);
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_005_000, "no-op edit does not restamp");
+      await w.write({ type: "StrutRun", data: { ...RUN, run_status: "error" } }, "upsert");
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_005_000, "no-op upsert does not restamp");
+      await w.write({ type: "StrutRun", data: { ...RUN, run_status: "ok", summary: "changed" } }, "upsert");
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_010_000);
+      await assert.rejects(
+        w.update(a.ref_id, { remove: ["updated_at"] }),
+        (e: unknown) => e instanceof GraphValidationError && e.attribute === "updated_at",
+      );
+    });
+
+    it("updated_at follows the attributes: vectors keep it, a removal or a restore moves it", async () => {
+      let clock = 1_800_000_000_000;
+      const now = () => clock;
+      const plain = new NodeWriter(backend, { resolver: backend.schemas, now });
+      // Another model's vectors for the same text (jarvis's, the embedding pass's).
+      const other: Embedder = { async embed(texts) { return texts.map(() => Array.from({ length: 384 }, (_, i) => (i === 1 ? 0.5 : 0))); } };
+      const a = await plain.write({ type: "StrutRun", data: RUN });
+      clock += 1000;
+      await new NodeWriter(backend, { embedder: fakeEmbedder([]), resolver: backend.schemas, now }).update(a.ref_id, { set: { summary: RUN.summary } });
+      assert.ok("text_embeddings" in (await props(a.ref_id)));
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_000_000, "an update that only adds vectors");
+      await new NodeWriter(backend, { embedder: other, resolver: backend.schemas, now }).write({ type: "StrutRun", data: RUN }, "upsert");
+      assert.equal(((await props(a.ref_id))["text_embeddings"] as number[])[1], 0.5);
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_000_000, "an upsert whose vectors differ");
+      await plain.update(a.ref_id, { remove: ["summary"] });
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_001_000, "removing an attribute is a change");
+      clock += 1000;
+      assert.ok(await plain.softDelete(a.ref_id));
+      const r = await plain.write({ type: "StrutRun", data: RUN });
+      assert.equal(r.outcome, "restored");
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_002_000);
+      assert.equal((await props(a.ref_id))["date_added_to_graph"], 1_800_000_000_000);
+    });
+
+    it("update: other generic keys stay refused even when the schema declares them", async () => {
+      const a = await writer.write({ type: "StrutRun", data: RUN });
+      const declaring = (k: string) => ({
+        async schema(raw: string, tx?: never) {
+          const s = await backend.schemas.schema(raw, tx);
+          return !s || s.type !== "StrutRun" ? s : { ...s, attributes: { ...s.attributes, [k]: "?string" } };
+        },
+      }) as unknown as typeof backend.schemas;
+      for (const k of ["ref_id", "namespace", "embeddings", "is_deleted"]) {
+        const w = new NodeWriter(backend, { resolver: declaring(k) });
+        await assert.rejects(
+          w.update(a.ref_id, { set: { [k]: "x" } }),
+          (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === k,
+        );
+      }
+    });
+
+    it("update: a type still declaring updated_at as ?string is editable after an integer stamp (edit trap)", neoOnly("the ladybug file has fixed columns: none of Strut's types declares updated_at"), async () => {
+      const declaring = {
+        async schema(raw: string, tx?: never) {
+          const s = await backend.schemas.schema(raw, tx);
+          return s && s.type === "StrutRun" ? { ...s, attributes: { ...s.attributes, updated_at: "?string" } } : s;
+        },
+      } as unknown as typeof backend.schemas;
+      let clock = 1_800_000_000_000;
+      const w = new NodeWriter(backend, { resolver: declaring, now: () => clock });
+      const a = await w.write({ type: "StrutRun", data: { ...RUN, updated_at: "2026-09-02T00:00:00Z" } });
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_000_000);
+      clock += 1000;
+      await w.update(a.ref_id, { set: { run_status: "error" } });
+      assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_001_000);
     });
 
     it("the no-embed mark: an execution record gets Data_Bank and no vector", neoOnly("the no-embed types (tool calls, turns) are not in the file"), async () => {

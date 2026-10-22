@@ -26,6 +26,10 @@
  *     the embeddings ARE rebuilt from the new payload, so the resulting
  *     state equals what a fresh create with that payload would produce.
  *
+ * `updated_at` is the writer's stamp, as in jarvis (migration 136): epoch ms,
+ * equal to `date_added_to_graph` on create, set again on a restore and on an
+ * upsert or update that changes an attribute. A caller's value is dropped.
+ *
  * Embeddings are computed in-process before the write (no queue, no
  * pending marker — jarvis's "pending" state is simply `text_embeddings IS
  * NULL`). Without an `Embedder` the vectors stay NULL and the boot sweep
@@ -39,6 +43,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { int } from "./bolt.js";
 import { EVIDENCE_TYPE } from "./claims.js";
 import type { EngineLike, GraphEngine, PreparedNode, SoftDeleteResult, WriteMode, WriteOutcome } from "./engine.js";
+import { sameStored } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
 import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
@@ -363,7 +368,13 @@ export interface NodeWriterOptions {
   embedder?: Embedder;
   /** Shared resolver (one per backend); a private one is created otherwise. */
   resolver?: SchemaResolver;
+  /** The writer's clock for `date_added_to_graph` and `updated_at` (epoch ms). */
+  now?: () => number;
 }
+
+/** The system stamp: epoch ms, the format of `date_added_to_graph`. Owned by
+ *  the writer on every node type, declared or not; never a caller's. */
+export const UPDATED_AT = "updated_at";
 
 export interface WriteOptions {
   /** Override the backend's default namespace for this write. Must already
@@ -401,6 +412,18 @@ export class NodeWriter {
     this.resolver = opts.resolver ?? new SchemaResolver(this.engine);
   }
 
+  private stamp(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  /** The caller's data without `updated_at`, dropped before validation (a
+   *  type may still declare it). */
+  private callerData(data: Record<string, unknown>): Record<string, unknown> {
+    if (!(UPDATED_AT in data)) return data;
+    const { [UPDATED_AT]: _drop, ...rest } = data;
+    return rest;
+  }
+
   /** Validate + compose everything except the MERGE. Exposed for tests and
    *  the batch path. */
   async prepare(input: NodeInput, opts: WriteOptions = {}): Promise<PreparedNode> {
@@ -411,10 +434,11 @@ export class NodeWriter {
   async prepareMany(inputs: NodeInput[], opts: WriteOptions = {}): Promise<PreparedNode[]> {
     const namespace = opts.namespace ?? this.engine.namespace;
     const validated: ValidatedNode[] = [];
+    const now = this.stamp();
     for (const i of inputs) {
       const schema = await this.resolver.schema(i.type);
       if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", i.type, "unknown node type (not a Strut type and no such Schema in the graph)");
-      validated.push(validateNode(schema, i.data));
+      validated.push(validateNode(schema, this.callerData(i.data)));
     }
     // Gather every text to embed across the batch → one encoder call.
     const jobs: Array<{ idx: number; column: string; text: string }> = [];
@@ -422,7 +446,9 @@ export class NodeWriter {
       const node_key = composeNodeKey(v.schema, v.values);
       const ref_id = randomUUID();
       const { text, fields } = buildSearchText(v.schema, v.values);
-      const props: Record<string, unknown> = { ...v.values };
+      // One clock read for both stamps; `date_added_to_graph` is identity
+      // (PRESERVED), so only a create writes it.
+      const props: Record<string, unknown> = { ...v.values, date_added_to_graph: now, [UPDATED_AT]: now };
       if (text !== null) {
         props["Data_Bank"] = text;
         props["_search_fields_used"] = fields;
@@ -490,7 +516,7 @@ export class NodeWriter {
    */
   async update(ref_id: string, patch: NodeUpdate): Promise<NodeUpdateResult> {
     const remove = patch.remove ?? [];
-    const set = patch.set ?? {};
+    const set = this.callerData(patch.set ?? {});
     return this.engine.tx(async (tx) => {
       const raw = await this.engine.nodeEngine.readRaw(tx, ref_id);
       if (!raw) throw new GraphValidationError("NOT_FOUND", "?", `no node with ref_id ${ref_id}`);
@@ -501,8 +527,11 @@ export class NodeWriter {
       const attrs = schema.attributes;
 
       const current: Record<string, unknown> = {};
-      for (const k of Object.keys(attrs)) if (props[k] !== undefined && props[k] !== null) current[k] = props[k];
+      // The stored stamp is the writer's, not an attribute to revalidate: an
+      // integer on a type still declared ?string would fail the edit.
+      for (const k of Object.keys(attrs)) if (k !== UPDATED_AT && props[k] !== undefined && props[k] !== null) current[k] = props[k];
       for (const k of remove) {
+        if (k === UPDATED_AT) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "updated_at is system-owned and cannot be removed", k);
         const t = attrs[k];
         if (!t) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute is not declared on the schema", k);
         if (!isOptionalType(t)) throw new GraphValidationError("MISSING_REQUIRED", type, "required attribute cannot be removed", k);
@@ -535,6 +564,9 @@ export class NodeWriter {
       // Attributes present before but absent from the merged payload
       // (e.g. explicitly set to null) go too.
       for (const k of Object.keys(attrs)) if (k in props && !(k in setMap) && !drop.has(k) && !(k in merged)) drop.add(k);
+      // `updated_at` moves only when an attribute does, so a resync keeps its
+      // stamp. Data_Bank and the vectors follow from the attributes.
+      if (!rekeyed && Object.keys(attrs).every((k) => k === UPDATED_AT || sameStored(props[k], p!.props[k]))) delete setMap[UPDATED_AT];
       await this.engine.nodeEngine.update(tx, schema, ref_id, setMap, [...drop]);
       return { ref_id, node_key, rekeyed };
     });
