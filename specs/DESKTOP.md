@@ -139,9 +139,12 @@ curl -X POST http://127.0.0.1:<port>/workflows/orchestrator/run \
 
 Behind the reply, an org request went to that org's orchestrator through
 `strut/run-workflow` on the session `<person>/<org id>`. That is the
-person's own thread on that strut, the same one hive's web chat uses for
-them there. Its reply comes back in the local turn's `output`, and the jobs
-it starts report on that org's room.
+laptop's own thread on that strut — one more conversation the person has
+with the org, beside the ones hive's web chat keeps for them there, each
+on its own session. Its reply comes back in the local turn's `output`,
+and the jobs it starts report on that org's room. What the person did in
+a web conversation reaches this one as it reaches another web
+conversation: through the org's job index, which its orchestrator reads.
 
 ## 5. When a job finishes, wake the conversation
 

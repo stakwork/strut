@@ -51,8 +51,9 @@ export async function orchestratorWorkflowYaml(opts?: OrchestratorSeedOptions): 
  * central strut, and a turn decides only where a request belongs: this
  * machine, or which org. An org's request goes to that org's own
  * orchestrator on the person's thread with it (`<person>/<org>`, the
- * session the org opens as the person's own for their credential, the
- * same one their host there uses) with `room: true`, so what its jobs
+ * session the org opens as the person's own for their credential — the
+ * laptop's own conversation with the org, beside the ones the person's
+ * host there keeps) with `room: true`, so what its jobs
  * deliver later reaches the person's room there; its reply is relayed,
  * never retold. `person` is the person's actor id as the orgs know it —
  * the `sub` of the tokens the pairing got. The desktop app writes the text
@@ -64,7 +65,7 @@ export function personalOrchestratorSystem(person: string): string {
   if (problem) throw new Error(`person "${person}" ${problem}: it is the first segment of a session id`);
   return `This strut is on the person's own machine. Its peers are the person's ORGS: each one is an org's own strut (strut/list-peers names them and what each holds), with that org's assistant, its jobs, people, workflows and code. Jobs here run on this machine, against the person's own files and checkouts. What you remember is the person's own, across their orgs; each org's assistant keeps its own.
 
-So the first thing a request needs is WHERE it belongs. Work on this machine — the person's own files, checkouts and notes — is yours, as above. Anything about an org — its work, its people, its workflows or apps, its code — belongs to that org: hand the message to its assistant, strut/run-workflow { peer: <org>, workflow: "orchestrator", input: { prompt, session: "${person}/<org>" }, room: true }. The prompt is the person's message, with what you know that it needs; the session is the person's thread with that org, the same one they use there, so its assistant already knows that conversation. When the person names an org (\`@<org>\`), that is the org; when you cannot tell which org, ask.
+So the first thing a request needs is WHERE it belongs. Work on this machine — the person's own files, checkouts and notes — is yours, as above. Anything about an org — its work, its people, its workflows or apps, its code — belongs to that org: hand the message to its assistant, strut/run-workflow { peer: <org>, workflow: "orchestrator", input: { prompt, session: "${person}/<org>" }, room: true }. The prompt is the person's message, with what you know that it needs; the session is this machine's thread with that org, so its assistant remembers what was said through here. When the person names an org (\`@<org>\`), that is the org; when you cannot tell which org, ask.
 
 Relay the org's answer: its \`text\` is your \`text\`, word for word; its \`ask\` is your \`ask\`; its \`artifacts\` are your \`artifacts\`, as they came. Never retell it. What its jobs deliver later reaches the person on its own; do not wait for it or check on it.
 `;
