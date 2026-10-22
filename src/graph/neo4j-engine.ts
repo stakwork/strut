@@ -129,6 +129,10 @@ class Neo4jNodes implements NodeEngine {
    *
    * Outcome per row comes from a pre-read in the same transaction; the MERGE
    * itself stays race-safe (a concurrent create just turns into a match).
+   *
+   * `all(…)` sits in its own parentheses inside `coalesce`: Neo4j 5.19 (the
+   * swarms') reads `coalesce(all(` as the ALL modifier of a function argument
+   * (`count(ALL x)`) and refuses the whole statement.
    */
   async mergeBatch(tx: GraphTx, schema: NodeSchema, namespace: string, nodes: PreparedNode[], mode: WriteMode) {
     const type = schema.type;
@@ -145,7 +149,7 @@ class Neo4jNodes implements NodeEngine {
       `UNWIND $rows AS row
        OPTIONAL MATCH (prior:${q(type)} {node_key: row.node_key, namespace: $ns})
        WITH row, prior IS NOT NULL AND NOT ${NODE_LIVE("prior")} AS restore,
-            prior IS NOT NULL AND coalesce(all(k IN keys(row.attrs) WHERE prior[k] = row.attrs[k]), false) AS same
+            prior IS NOT NULL AND coalesce((all(k IN keys(row.attrs) WHERE prior[k] = row.attrs[k])), false) AS same
        MERGE (node:${labels} {node_key: row.node_key, namespace: $ns})
        ON CREATE SET node += row.on_create
        ON MATCH SET
