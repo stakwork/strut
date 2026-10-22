@@ -2257,6 +2257,10 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
     matching nothing warns). `"agent"` itself is grantable — that's the
     sub-agent primitive: recursion depth is controlled by whether the child's
     own `agentTools` list includes `"agent"` again, not by a numeric cap.
+    The model writes a sub-agent's config, so it is held to its parent
+    (`holdSubAgent`): an `agentTools` entry the parent does not hold is
+    refused, and every step the parent asks before running (`approve`) that
+    the sub-agent holds is added to the sub-agent's own `approve`.
     **A tool-step can end the turn**: an output marked `withStop(output)`
     (core.ts, the fourth marker — a device that has not answered, an
     approval waiting on a person) stops the loop after that tool round —

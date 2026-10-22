@@ -122,6 +122,32 @@ describe("agentTools (buildRegistryTools — tools are steps)", () => {
     assert.equal(out, "got:hi");
   });
 
+  it("a sub-agent the model configures holds at most its parent's tools, and asks where its parent asks", async () => {
+    // A stand-in `agent` that hands back the config it was given.
+    const subAgent = defineStep({
+      type: "agent",
+      input: z.object({ prompt: z.string(), agentTools: z.array(z.string()).default([]), approve: z.array(z.string()).default([]) }),
+      output: z.any(),
+      async run(cfg) {
+        return cfg;
+      },
+    });
+    const publish = defineStep({ type: "meta/publish-workflow", input: z.any(), output: z.any(), async run() { return "published"; } });
+    const reg = { agent: subAgent, "demo/echo": echoStep, "meta/publish-workflow": publish } as StepRegistry;
+    const ctx = { runId: "r", path: "wf/a", scope: {}, input: undefined, emit: async () => {}, services: undefined, registry: reg } as unknown as StepContext;
+
+    const tool = buildRegistryTools(["agent", "demo/*"], reg, ctx, fakeTool)["agent"] as any;
+    assert.equal(await tool.execute({ prompt: "go", agentTools: ["meta/publish-workflow"] }), 'Error: a sub-agent may hold only the tools you hold: "meta/publish-workflow" is not one of them');
+    assert.match(await tool.execute({ prompt: "go", agentTools: ["*"] }), /"meta\/publish-workflow" is not one of them/, "a glob reaches past the parent");
+    assert.deepEqual((await tool.execute({ prompt: "go", agentTools: ["demo/echo", "agent"] })).agentTools, ["demo/echo", "agent"], "within the parent's, a sub-agent of its own included");
+
+    // The parent asks before demo/echo: so does any sub-agent that holds it.
+    const gated = buildRegistryTools(["agent", "demo/echo"], reg, ctx, fakeTool, { approve: new Set(["demo/echo"]) })["agent"] as any;
+    assert.deepEqual((await gated.execute({ prompt: "go", agentTools: ["demo/echo"] })).approve, ["demo/echo"], "the parent's gate rides along");
+    assert.deepEqual((await gated.execute({ prompt: "go", agentTools: ["demo/echo"], approve: ["demo/echo"] })).approve, ["demo/echo"]);
+    assert.deepEqual((await gated.execute({ prompt: "go", agentTools: [] })).approve, [], "nothing held, nothing to gate");
+  });
+
   it("stamps created_by from the run's workflow — janitor in a system workflow — and the model cannot set it", async () => {
     const write = defineStep({
       type: "demo/write",
