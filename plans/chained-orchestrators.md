@@ -54,7 +54,7 @@ checkouts. Today:
 | How does the laptop get a credential for central? | **Ruled: a pairing flow in hive**, shown as a QR / magic code / short device code. Hive is the only party that can mint on every org's mcp and knows the person's orgs. Strut's paste door (`PUT /peers/:id`) is the sink; nothing in strut's auth changes. |
 | Is `Job App` kept? | **Agreed: retire the kind now; remove the runtime later.** The middle category is empty (§6). The runtime from strut#262 stays until hive's job-app path (`StrutAppFrame`, hive#5585) is confirmed dead, then goes whole. **Checked the same day (a forked session read strut and hive):** a builder-PUBLISHED app reaches a hive conversation only as text today, and hive's frame in conversations accepts only the job-directory form of `kind: "app"`, so the retirement ships WITH a workspace-app deliverable, `{ kind: "app", app: <name>, version? }` (§6), or the only live-app path into a conversation goes with it. |
 | Who may launch an orchestrator from another strut? | **Ruled: `peer: person`.** A workflow's top-level `peer:` takes a second value, a keyword: `peer: true` accepts any peer request, a strut's or a person's (`explore`, `logs`); `peer: person` accepts only a peer request whose CREDENTIAL names a person, a third scope, `peer:person`, that the host's `resolveScope` returns (mcp: a `lab:peer` JWT with a `sub`). Never a user name in the YAML: the workflow is the whole org's, and its YAML is content (hashed, put back by the seed at every boot); which people may call is the credential's business. `orchestrator.yaml` says `peer: person` (§2). |
-| Which session does the laptop's call open on central? | **Ruled: the person's own.** The same `peer:person` signal lets the request name a session under its own actor, `<actor>/…`; every other id still lands in `peer/`. Tom's credential opens Tom's threads and nobody else's (§2). **Amended 2026-10-22 (hive#5602 review):** the laptop's thread `<person>/<org>` is ONE MORE conversation with the org, beside the person's Jamie conversations there, each of which keeps its own session (hive's conversation id). Not a thread shared across every conversation of the person: what one conversation did reaches another through the job index, as between Jamie's conversations today. |
+| Which session does the laptop's call open on central? | **Ruled: the person's own.** The same `peer:person` signal lets the request name a session under its own actor, `<actor>/…`; every other id still lands in `peer/`. Tom's credential opens Tom's threads and nobody else's (§2). **Amended 2026-10-22 (hive#5602 review):** the laptop's threads on an org are its CONVERSATIONS' — `<person>/<conversation>`, one per local conversation on each org it talks to — beside the person's Jamie conversations there, each of which keeps its own session (hive's conversation id). Never one thread shared by every conversation of the person (the first amendment's `<person>/<org>` was that mistake in a smaller form). What one conversation did reaches another through the job index, as between Jamie's conversations today. The desktop app has conversations like hive does; the job's `run.end` says which one it belongs to (`startedBy`, §3). |
 | Where do rooms run? | **Ruled: the same in a standalone strut and in strut embedded in stakgraph**; a stakgraph PR is fine. One upgrade handler on the strut instance, run through that instance's own gate and hooks; a host that owns the Node server only routes the upgrade to it (§3). |
 | Who is a room? | *Proposed, built as proposed (strut#276):* the actor of a `full` or `peer:person` request, never of a plain `peer` one, whose actor is a header any strut sets. The room id is never chosen by the client; a second device of the same person joins the same room. `callback: { room: true }` and `jobCallback: { room: true }` mean "the launching actor's room" (§3). |
 | How does a standalone central give a person such a credential? | *Proposed, built as proposed (strut#274):* a person token strut mints itself, the shared peer key attenuated to one actor (the file token's mechanism), the standalone twin of mcp's `lab:peer` with a `sub` (§4). |
@@ -182,14 +182,24 @@ that flag. For a `peer:person` run an id that is the actor's own
 everything, as today. Without this the laptop's thread would be
 `peer/<person>/<org>`: a name a strut-held token could never open as the
 person's, and a thread a person token could not tell from a spoke's. The
-session id the laptop uses is `<person>/<org-slug>`, the laptop's OWN
-conversation with the org. Hive's Jamie keeps the conversation id as its
-session — every hive conversation is a thread of its own, and the laptop
-is one more beside them (ruled 2026-10-22 in the hive#5602 review; the
-first draft here had Jamie switch to the same id, which would have folded
-every conversation of a person in an org into one thread). What one
+session id the laptop uses is `<person>/<conversation>`: the LOCAL
+conversation's own thread on that org, one per conversation per org, the
+way each of hive's Jamie conversations keeps its own session (the
+conversation id). Ruled 2026-10-22 in the hive#5602 review: the first
+draft here had Jamie switch to `<person>/<org>`, which would have folded
+every conversation of a person in an org into one thread, and the
+amendment that followed left the laptop with one thread per org, the
+same mistake on the laptop's side — the desktop app has conversations
+too. The local orchestrator's host section is static text, so the
+desktop app names the conversation in each turn's `context.line` and
+the section tells the agent to put it in the session it names. What one
 conversation did reaches another the way it does between Jamie's
-conversations today: the job index (`GET /jobs?mine=1`, `job/get`).
+conversations today: the job index (`GET /jobs?mine=1`, `job/get`). And
+a job's `run.end` names the turn that started it — `startedBy: {
+workflow, runId, session }`, the launching root run and the
+conversation it was launched on (§3): over a URL the host encodes the
+conversation in the URL (hive's webhook), over a room every job of the
+person lands on one socket, so the payload has to say.
 Nothing else bends: `job` stays `peer/<job>` (a peer-launched
 orchestrator turn starts jobs through `job/start`, which mints LOCAL
 job ids on central, so the person's jobs are central's jobs, found by

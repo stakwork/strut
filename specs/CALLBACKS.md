@@ -56,6 +56,7 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
 | `workflow`   | the workflow name you launched                               |
 | `runId`      | the id from step 1                                           |
 | `job`        | the job the run was launched under — only for a job run      |
+| `startedBy`  | `{ workflow, runId, session? }` — the TURN that started this job through `job/start` / `job/continue` (§5): the root run you launched, and the `session` your launch named. Only on a job run a turn started; what tells a room (§8) which conversation a job belongs to, since every job of the person arrives on one socket — over a URL, the URL you gave the turn already says |
 | `status`     | `"success"`, `"error"` or `"cancelled"`                      |
 | `output`     | the workflow's output (its last step's) — on success only    |
 | `error`      | `{ "message": "..." }` — on error only                       |
@@ -430,7 +431,7 @@ share one. Plain HTTP on `/rooms` answers `426`.
 curl -X POST https://strut.example/workflows/orchestrator/run \
   -H "Authorization: Bearer $PERSON_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{ "input": { "prompt": "…", "session": "tom-1/acme" },
+  -d '{ "input": { "prompt": "…", "session": "tom-1/c-8f2a" },
         "callback": { "room": true }, "jobCallback": { "room": true } }'
 ```
 
@@ -439,7 +440,9 @@ beside it, and it is a `400` when the request could not join that room under
 the rule above. The run's `run.end` and every `job.update` arrive on each
 socket of the room as one JSON text message, the bodies of §2 and §5 exactly.
 The jobs the run starts inherit the room as they would a URL (§5), so their
-`run.end`s arrive there too. `run.start` records `callback: { room: true }`,
+`run.end`s arrive there too — each with `startedBy` (§2), the turn and the
+`session` it was launched on, since on a room every job of the person
+lands on the same socket and nothing else says which conversation it is. `run.start` records `callback: { room: true }`,
 never whose.
 
 **Away and back.** While no socket of the room is open, strut queues its

@@ -206,6 +206,9 @@ describe("rooms on a standalone strut", () => {
       assert.deepEqual([update["kind"], update["state"]], ["note", "ready"]);
       const jobEnd = await room.until("the job's run.end", (m) => m.event === "run.end" && m.runId === jobRun);
       assert.deepEqual([jobEnd["workflow"], jobEnd["job"], jobEnd["status"]], ["job", job, "success"]);
+      // On a room every run of the person's lands together, so the job's
+      // end names the turn that started it (no session: this launch named none).
+      assert.deepEqual(jobEnd["startedBy"], { workflow: "chat", runId });
       // The log says a room was asked for, never whose.
       const start = (await strut.store.getRunEvents("chat", runId)).find((e) => e.type === "run.start")!;
       assert.deepEqual(start.callback, { room: true });

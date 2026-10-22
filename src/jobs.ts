@@ -43,7 +43,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { postCallback } from "./callback.js";
 import { roomsFor } from "./rooms.js";
-import type { McpServer, StepContext, StepRegistry } from "./core.js";
+import type { McpServer, StartedBy, StepContext, StepRegistry } from "./core.js";
 import type { ShellCapability } from "./capabilities.js";
 import { isAncestorRun } from "./run-control.js";
 import { encodeId, idProblem } from "./session-store.js";
@@ -84,6 +84,9 @@ export interface JobRun {
   runId: string;
   at: string;
   parentRunId?: string;
+  /** The turn that started this run through `job/start` / `job/continue`
+   *  (`RunEvent.startedBy`): which conversation the job belongs to. */
+  startedBy?: StartedBy;
 }
 
 /**
