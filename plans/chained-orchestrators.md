@@ -13,7 +13,8 @@
 > 2026-10-22: strut#271, #274, #276 and item 4's `personalOrchestratorSystem`,
 > with stakwork/stakgraph#1811 for the lab's half of items 2 and 3 (each
 > item says what was built differently), and item 5 after them. Left:
-> item 6, hive's pairing, the desktop app. Companion to `federation.md` (peers, dispatch-through, the
+> item 6, hive's pairing, the desktop app. The desktop app's how-to is
+> `specs/DESKTOP.md`. Companion to `federation.md` (peers, dispatch-through, the
 > deferred read-through, `peer: true`), `builder-job.md` (the `job` /
 > `builder` split and the peer build), `jobs.md` + `live-artifacts.md` +
 > `specs/CALLBACKS.md` (what a run tells its host, and when),
