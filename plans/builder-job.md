@@ -63,6 +63,25 @@
 > with "this is a builder job"; a job started through `job/start` gets
 > `input.workspace` from the strut's `self` record; the job's prompt carries
 > its id (what a claim's subject and the build's thread are named by).
+>
+> **Amended 2026-10-22:** the builder builds APPS too (plans/apps.md §8:
+> `app/*` and the editor are on its seed), and the orchestrator was never
+> told: asked for an app on a peer, it answered that apps run here. Two
+> changes. (1) **One tree per agent.** `Workflow Build` sat under `Job` only
+> because the orchestrator read `Job` alone, so the job agent's manual was
+> also the orchestrator's menu. It is retired (`STRUT_CONCEPTS.retired`,
+> soft-deleted at boot); the orchestrator reads the kinds under BOTH roots —
+> `Job` (what a job does) and `Workflow Builder` (what the builder builds,
+> `App` and a deployment's janitors among them) — and `Job`'s own docs tell
+> a job agent that meets a workflow or a workspace's app to run `builder`.
+> (2) **The app split.** Anything about an app that should exist in a
+> workspace — a new one, a change to one, one on a peer — is a builder job;
+> `Job App` is only an app that shows THIS job's own results. `job/start`'s
+> `workflow` field and the orchestrator's one sentence say "a workflow, or
+> an app that lives in a workspace"; the builder names an app it published
+> (name, version) in its `text` and hands back no unpublished app
+> directory, so the two paths do not overlap. §2's "A Concept strut seeds
+> under `Job`" below is superseded by (1).
 
 ## Problem
 
@@ -111,7 +130,7 @@ that strut ships, `peer: true` from the start, is the kind of work ruled in
 | Where the authoring tools live | **A third seeded workflow, `builder`** (ruled: separate from `job`). `job.yaml` is untouched: a code job never sees a `meta/*` write. The orchestrator starts a builder job as it starts any job |
 | Cross-strut in v1 | **Yes** (ruled). The builder is `peer: true` in its seed, launched on another strut through `strut/run-workflow` from a branch inside the same YAML (§3) |
 | The door | `job/start` gains `workflow` (`job` \| `builder`, default `job`) and `peer` (§2); `job/continue` follows the job's record. Mine |
-| How the orchestrator learns it | **A kind under `Job`, seeded by strut** (`Workflow Build`), the routing rule in `job/start`'s own schema, one prompt sentence (§2). Ruled 2026-10-21: a workflow build IS a kind of job to the person, and the kinds table is what the orchestrator routes by and recites; `builder` vs `job` is where the work lives and which hands it gets (amended that day, above), never something the person names. A job the orchestrator misroutes still gets built: its agent runs `builder` (`Workflow Build`'s docs) |
+| How the orchestrator learns it | **Superseded 2026-10-22: it reads the kinds under both `Job` and `Workflow Builder`, and `Workflow Build` is retired** (amendment above). First: **a kind under `Job`, seeded by strut** (`Workflow Build`), the routing rule in `job/start`'s own schema, one prompt sentence (§2). Ruled 2026-10-21: a workflow build IS a kind of job to the person, and the kinds table is what the orchestrator routes by and recites; `builder` vs `job` is where the work lives and which hands it gets (amended that day, above), never something the person names. A job the orchestrator misroutes still gets built: its agent runs `builder` (`Workflow Build`'s docs) |
 | The builder's built-ins | **web_search + web_fetch only** (`toolFilter`), as the lab's `explore` keeps bash off a workflow another strut may launch (`stakgraph/mcp/src/lab/explore/workflows/explore.yaml:25-32,78,133`). What the chat used bash for goes through `meta/run-step` with a cassette and `meta/get-run` / `job/read` (§1). Mine |
 | The builder's tools | `meta/*` as a glob — every authoring twin, and a twin added later lands with no seed edit — plus the graph reads and the `job/*` reads (§1). Mine |
 | The builder's prompt | **One source.** The dialect rules and the procedure in `src/ai/prompts.ts` are factored to render with the chat's tool names for the chat and with `meta/*` names for the seed; the `Workflow Builder` page comes in through `context/concept` exactly as the chat reads it (§1). Mine |

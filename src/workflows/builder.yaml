@@ -20,7 +20,7 @@ name: builder
 # repository and is checked out wherever a job runs, so a code job runs
 # here. The hands differ too: the authoring twins and strut's workflow
 # dialect, not a shell and checkouts. A job agent that meets a build runs
-# this workflow itself (meta/run-workflow; the `Workflow Build` page).
+# this workflow itself (meta/run-workflow; the `Job` page's docs).
 #
 # Open to other struts: `peer: true` lets a PEER (plans/federation.md §3)
 # launch this workflow as published — no `params` — under `peer/<job>`, as

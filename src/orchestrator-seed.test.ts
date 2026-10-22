@@ -22,25 +22,28 @@ const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).param
 const quiet = () => ({ serveUi: false, enableChat: false, scheduler: false as const, stt: false as const, store: new MemoryRunStore() });
 
 describe("the orchestrator workflow strut ships", () => {
-  it("the template is a valid workflow over strut's own registry: job/dir → context/concept (the kinds of job, no docs) → agent (session, no built-ins) → pack, every grant a strut step", async () => {
+  it("the template is a valid workflow over strut's own registry: job/dir → context/concept twice (the kinds of job, the kinds of build, no docs) → agent (session, no built-ins) → pack, every grant a strut step", async () => {
     const text = await orchestratorWorkflowYaml();
     const registry = await createRegistry([]);
     const v = validateWorkflowYaml(text, { registry });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "agent", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "agent", "pack"]);
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["session", "context"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
-    // The kinds of work a job can do here, the Job tree's children alone:
-    // the page's docs are the job agent's instructions, and this agent has
-    // no graph-get to open a page with.
+    // Two lists, one per agent's tree, children alone: the kinds of work a
+    // job does here (Job) and the kinds of thing the builder builds
+    // (Workflow Builder). The pages' docs are those agents' instructions,
+    // and this agent has no graph-get to open a page with.
     assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.concept }}", docs: false, tool: "" });
-    assert.equal((yaml.load(text) as { params: { concept: string } }).params.concept, "Job");
-    const turn = flow.steps[2]!.config as Record<string, unknown>;
+    assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "" });
+    const params = (yaml.load(text) as { params: { concept: string; buildConcept: string } }).params;
+    assert.deepEqual([params.concept, params.buildConcept], ["Job", "Workflow Builder"]);
+    const turn = flow.steps[3]!.config as Record<string, unknown>;
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);
-    assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}", "the kinds close the prompt");
+    assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}", "the two lists close the prompt");
 
     const { tools } = paramsOf(text);
     for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read", "memory/recall", "memory/remember"]) assert.ok(tools.includes(t), t);
@@ -50,18 +53,23 @@ describe("the orchestrator workflow strut ships", () => {
     }
 
     // A workflow build is a builder job (plans/builder-job.md §2, amended):
-    // ONE sentence here — the kind itself is the `Workflow Build` Concept
-    // strut seeds under Job (the kinds list this prompt ends with), and the
-    // rule rides on job/start's own schema, beside the call.
+    // ONE sentence here — what the builder builds is the `Workflow Builder`
+    // tree's kinds (the second list this prompt ends with), and the rule
+    // rides on job/start's own schema, beside the call.
     const system = (yaml.load(text) as { params: { system: string } }).params.system.replace(/\s+/g, " ");
     assert.ok(
-      system.includes("A workflow to build, change, test or debug is a BUILDER job (`workflow: builder`), on the strut whose workspace it belongs to (`peer` when that is not this one)."),
+      system.includes("A workflow, or an app that lives in a workspace, to build, change, test or debug is a BUILDER job (`workflow: builder`), on the strut whose workspace it belongs to (`peer` when that is not this one)."),
       system,
     );
-    assert.equal(system.match(/builder/gi)?.length, 2, "one sentence, not a paragraph: `BUILDER job` and `workflow: builder`, nothing more");
+    assert.equal(system.match(/BUILDER job/g)?.length, 1, "one sentence, not a paragraph");
+    assert.ok(system.includes("under `Workflow Builder`, the kinds of thing a builder job builds here"), "the second list says whose it is");
     const start = z.toJSONSchema(registry["job/start"]!.input) as { properties: Record<string, { enum?: string[]; description?: string }> };
     assert.deepEqual(start.properties["workflow"]!.enum, ["job", "builder"], "a closed set: the model never names an arbitrary workflow");
     assert.match(start.properties["workflow"]!.description!, /`builder`: the thing to build, change, test or debug is a WORKFLOW/);
+    // An app that lives in a workspace is a builder's too — on a peer as
+    // here — and an app over a job's own results stays the job's.
+    assert.match(start.properties["workflow"]!.description!, /or an APP that lives in a workspace/);
+    assert.match(start.properties["workflow"]!.description!, /`job` \(the default\):[^.]*an app over this job's own results/);
     assert.match(start.properties["peer"]!.description!, /^With workflow: builder only/);
   });
 

@@ -16,12 +16,14 @@ import { launchOnce, requireJobLaunch } from "./_shared.js";
  * next message.
  *
  * `workflow` picks the hands (plans/builder-job.md §2): `job` (the default)
- * for code, research and pages; `builder` when the thing to make or change
- * is a WORKFLOW — the authoring twins, no shell. The rule lives here, on
- * the field, where the model reads it beside the call; the `Workflow
- * Build` Concept strut seeds under `Job` is the same kind in the table the
- * orchestrator routes by. `peer` goes with `builder` only: a workflow
- * lives on one strut (its graph, secrets and services), so it is built on
+ * for code, research and pages (and an app over the job's own results);
+ * `builder` when the thing to make or change is a WORKFLOW, or an APP that
+ * lives in a workspace (new, changed, or on a peer) — the authoring twins and app/*,
+ * no shell. The rule lives here, on
+ * the field, where the model reads it beside the call; the kinds under the
+ * `Workflow Builder` Concept, in the orchestrator's prompt beside the kinds
+ * under `Job`, are what it routes here. `peer` goes with `builder` only: a workflow (or
+ * an app) lives on one strut (its graph, secrets and services), so it is built on
  * the strut whose workspace it belongs to, and the local `builder` run
  * dispatches there (builder.yaml's `remote` branch); code lives in its
  * repository and is checked out here, so a code job runs here.
@@ -29,7 +31,7 @@ import { launchOnce, requireJobLaunch } from "./_shared.js";
 export default defineStep({
   type: "job/start",
   description:
-    "Start a JOB for bigger work (research, a page, a plan, a code change, a workflow to build — anything that needs files, the web, tools or many steps) and return at once: { job, runId, callback }. " +
+    "Start a JOB for bigger work (research, a page, a plan, a code change, a workflow or an app to build — anything that needs files, the web, tools or many steps) and return at once: { job, runId, callback }. " +
     "The job runs ON ITS OWN in its own directory, with its own tools; this call does not wait for it. Its result (a reply, files, or a question) reaches the person when it ends — " +
     "so tell them in one line what you started and stop; do not wait, poll or guess its result. " +
     "To send the same job a follow-up (an answer to its question, a change), use job/continue with the `job` id this returns.",
@@ -40,15 +42,15 @@ export default defineStep({
       .enum(JOB_WORKFLOWS)
       .optional()
       .describe(
-        "Which hands the job gets. `job` (the default): code, research, pages, plans — a working directory, repositories, the shell. " +
-          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) — the authoring tools, no shell. " +
-          "A workflow belongs to one strut's workspace: a builder job builds on this strut unless `peer` names another.",
+        "Which hands the job gets. `job` (the default): code, research, pages, plans, an app over this job's own results — a working directory, repositories, the shell. " +
+          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP that lives in a workspace (new, changed, or on another strut) — the authoring tools, no shell. " +
+          "A workflow or a workspace's app belongs to one strut's workspace: a builder job builds on this strut unless `peer` names another.",
       ),
     peer: z
       .string()
       .optional()
       .describe(
-        "With workflow: builder only — the strut the workflow belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
+        "With workflow: builder only — the strut the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
       ),
     repos: z.array(z.string()).optional().describe("Repository URLs to check out into the job's directory (workflow: job only — a builder job checks nothing out)."),
   }),

@@ -152,9 +152,9 @@ params:
   # "Publish as an app" or a builder job (§8). A host appends its own
   # (`createStrut({ job: { tools } })`): the lab adds `pod/*`. Never the
   # authoring writes (meta/publish-workflow, meta/create-step, edit-step):
-  # a workflow to build is the `builder` workflow's, which this agent runs
-  # through meta/run-workflow when such a request reaches it (the `Workflow
-  # Build` page under `Job`).
+  # a workflow, or an app that lives in a workspace, is the `builder`
+  # workflow's, which this agent runs through meta/run-workflow when such a
+  # request reaches it (the `Job` page's own docs).
   tools:
     - graph/graph-search
     - graph/graph-get

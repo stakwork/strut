@@ -106,11 +106,15 @@ export interface ConceptSeedOutcome {
 }
 
 /** The pages strut ships (`src/concepts/`). Before strut shipped them the
- *  stakgraph lab seeded the same two files, under its own prefixes. */
+ *  stakgraph lab seeded the same two files, under its own prefixes.
+ *  `Workflow Build` was the builder's entry under `Job`, there only because
+ *  the orchestrator read `Job` alone; it reads both roots now, and the job
+ *  agent's way to the builder is in `Job`'s own docs. */
 export const STRUT_CONCEPTS: ConceptSet = {
   dir: fileURLToPath(new URL("./concepts/", import.meta.url)),
   prefix: "strut/concepts/",
   legacyPrefixes: ["lab/builder/concepts/", "lab/job/concepts/"],
+  retired: ["Workflow Build.md"],
 };
 
 export function stampOf(file: string, text: string, prefix: string): string {
