@@ -42,6 +42,18 @@ request instead (`createStrut({ resolveScope })`). A peer launches only a
 workflow whose YAML says `peer: true`, as published, in a namespace of its
 own (§3, "A peer's launch").
 
+**A person's token.** The peer key stands for a strut: its actor is the
+`x-strut-actor` the calling strut sends, whoever its run is for. A
+**person token** is the peer key attenuated to one actor
+(`plans/chained-orchestrators.md` §2, §4): `POST /peers/tokens` mints it
+(§10), it is presented as `Authorization: Bearer` only (never `?key=`),
+and its request is scoped `peer:person` — everything a peer may do, its
+actor the token's own whatever `x-strut-actor` says, and three things
+more: a launch of a workflow whose YAML says `peer: person`, the actor's
+own agent sessions (§3), and (to come) the actor's room. A host maps its
+own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
+JWT with a `sub`).
+
 ## 1. Publish
 
 | Method | Path                | Body                                                                 | Response |
@@ -65,8 +77,9 @@ own (§3, "A peer's launch").
   published before this was recorded have none.
 - `peer: true` at the top of the YAML (or `peer: true` beside `steps`)
   opens the workflow to other struts: it is what a peer's launch needs
-  (§3). Content, so it is in the version's `hash`; anything but `true` or
-  absent is a 400.
+  (§3). `peer: person` opens it only to a person's credential (Auth). Content,
+  so it is in the version's `hash`; anything but `true`, `person` or absent
+  is a 400.
 - 400 for what the workspace refuses — a bad `input:` block, or an unquoted
   template (`message: {{ input.x }}` parses as a YAML mapping; write
   `message: "{{ input.x }}"`).
@@ -139,6 +152,15 @@ session the run opens is `peer/<id>` — a name a peer chooses never opens
 a local job or a local thread. A peer's durable resume (§6) of a run it
 launched is refused the same way when the version it would run does not
 say `peer: true`.
+
+A workflow that says `peer: person` takes only a person's credential
+(`peer:person`, Auth); the peer key is a `403` (`workflow "x" is open to a
+person's credential only`). `peer: true` takes both. A run a person's
+credential launched records `peerPerson: true` beside `origin: "peer"` on
+`run.start`, and opens the actor's OWN sessions as they are — `<actor>` and
+`<actor>/…`, the thread the actor's host opens for them here too — while
+every other id it names is still `peer/<id>`; its `job` is still
+`peer/<job>`. Only the same person's credential resumes such a run.
 
 The run is **detached**: the 202 comes back before anything executes, the
 run keeps going whether or not you stay connected, and every event is
@@ -312,7 +334,7 @@ One object per line of the run's append-only log. Common fields:
 
 | Type              | Meaning |
 | ----------------- | ------- |
-| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `peerPerson` (a peer run a person's credential launched, §3), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested |
 | `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
 | `step.retry`      | an attempt failed and another follows |
 | `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |
@@ -605,6 +627,7 @@ kept encrypted; the token has no read route.
 | GET    | `/peers` | `{ peers: [{ id, baseUrl, label?, description?, repos? }] }` — never a token |
 | PUT    | `/peers/:id` | `{ baseUrl, token, label?, description?, repos? }` → `{ ok, id, baseUrl, label?, description?, repos? }` (`repos`: the workspace's repository URLs — what `strut/list-peers` shows an agent choosing a peer); replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
 | DELETE | `/peers/:id` | `{ ok, id }`; 404 |
+| POST   | `/peers/tokens` | `{ actor, days? }` → `{ token, actor, exp }` — a PERSON token for this strut (Auth): what a person's own strut puts in its peer record for this one. `days` defaults to 60 (at most 365); nothing is stored, and rotating the signing secret (`STRUT_API_KEY`, else `STRUT_SECRET_KEY`) revokes every one. The deployment's call only (a peer is 403); 400 for a missing actor, bad `days`, or no secret to sign with |
 | GET    | `/self` | `{ self: { id?, label?, description?, repos? } \| null }` — this strut's OWN workspace (never in `/peers`) |
 | PUT    | `/self` | `{ id?, label?, description?, repos? }` → `{ ok, id?, label?, description?, repos? }`; 400 on a bad shape. `STRUT_SELF` / `createStrut({ self })` seed it |
 | DELETE | `/self` | `{ ok }`; 404 when none |
@@ -614,7 +637,11 @@ for a strut nobody pushes to — a desktop strut behind NAT.
 
 **The token** is whatever the peer accepts as a bearer. Give it the peer's
 `STRUT_PEER_KEY` (Auth), not its deployment key: that is everything a call
-needs — read, launch, cancel what it launched — and nothing more.
+needs — read, launch, cancel what it launched — and nothing more. A
+person's own strut (a laptop) holds a person token instead (`POST
+/peers/tokens` on the peer, or a host's pairing): the same calls as that
+person, plus what only a person's credential opens (a `peer: person`
+workflow, their own sessions there).
 
 **The call** is a step, `strut/run-workflow { peer, workflow, input?,
 params?, version?, job?, wait? }`, or the builder's `run_workflow` with

@@ -1280,6 +1280,114 @@ describe("run control endpoints", () => {
     }
   });
 
+  it("a person's credential: `peer: person` opens only to it, its actor is the token's, and its run opens that person's own sessions (plans/chained-orchestrators.md §2)", async () => {
+    const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    process.env["STRUT_PEER_KEY"] = "peer-key";
+    let failing = true;
+    const opener = defineStep({
+      type: "opener",
+      description: "opens a session and reports its id, the run's job and actor",
+      input: z.object({ session: z.string() }),
+      output: z.any(),
+      async run(cfg, ctx) {
+        const s = await (ctx.services as { sessions: SessionsCapability }).sessions.open(cfg.session, { runId: ctx.runId, path: ctx.path });
+        s.release();
+        return { session: s.id, job: ctx.job ?? null, actor: ctx.actor ?? null };
+      },
+    });
+    const flaky = defineStep({
+      type: "flaky",
+      description: "fails until told otherwise",
+      input: z.any(),
+      output: z.any(),
+      async run() {
+        if (failing) throw new Error("not yet");
+        return { ok: true };
+      },
+    });
+    const { strut, workspace, store, cleanup } = await makeServer({ opener, flaky });
+    const post = async (path: string, headers: Record<string, string>, body: unknown) => {
+      const res = await strut.app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify(body),
+      });
+      return { status: res.status, body: (await res.json()) as { runId?: string; error?: string; token?: string } };
+    };
+    const as = (key: string, actor?: string) => ({ authorization: `Bearer ${key}`, ...(actor ? { "x-strut-actor": actor } : {}) });
+    const yaml = (name: string, peer: string) =>
+      [`name: ${name}`, `peer: ${peer}`, "steps:", "  - id: o", "    type: opener", '    config: { session: "{{ input.session }}" }'].join("\n");
+    const outputOf = async (wf: string, res: { status: number; body: { runId?: string; error?: string } }) => {
+      assert.equal(res.status, 202, res.body.error);
+      const summary = await waitForSummary(store, wf, res.body.runId!);
+      assert.equal(summary.status, "success", JSON.stringify(summary.error));
+      return summary.output as { session: string; job: string | null; actor: string | null };
+    };
+    try {
+      // Minted by the deployment, never by a peer.
+      const minted = await post("/peers/tokens", as("deploy-key"), { actor: "tom-1" });
+      assert.equal(minted.status, 200);
+      const tom = minted.body.token!;
+      assert.match(tom, /^strut-person\./);
+      assert.equal((await post("/peers/tokens", as("peer-key"), { actor: "tom-1" })).status, 403);
+      assert.equal((await post("/peers/tokens", as(tom), { actor: "ann-2" })).status, 403);
+      assert.equal((await post("/peers/tokens", as("deploy-key"), {})).status, 400);
+      assert.equal((await post("/peers/tokens", as("deploy-key"), { actor: "ann-2", days: 0 })).status, 400);
+      const ann = (await post("/peers/tokens", as("deploy-key"), { actor: "ann-2", days: 7 })).body.token!;
+
+      await workspace.publishWorkflowByContent("chat", yaml("chat", "person"));
+      await workspace.publishWorkflowByContent("lookup", yaml("lookup", "true"));
+
+      // A strut's credential naming tom is refused outright.
+      const byStrut = await post("/workflows/chat/run", as("peer-key", "tom-1"), { input: { session: "tom-1/acme" } });
+      assert.equal(byStrut.status, 403);
+      assert.match(byStrut.body.error!, /open to a person's credential only/);
+      assert.equal((await post("/workflows/chat/v1/run", as("peer-key", "tom-1"), { input: { session: "tom-1/acme" } })).status, 403);
+
+      // Tom's own opens tom's thread as it is, whatever the header says; his job stays a peer's.
+      const own = await post("/workflows/chat/run", as(tom, "ann-2"), { input: { session: "tom-1/acme" }, job: "j1" });
+      assert.deepEqual(await outputOf("chat", own), { session: "tom-1/acme", job: "peer/j1", actor: "tom-1" });
+      const start = (await store.getRunEvents("chat", own.body.runId!)).find((e) => e.type === "run.start")!;
+      assert.equal(start.origin, "peer");
+      assert.equal(start.peerPerson, true);
+      assert.equal(start.actor, "tom-1");
+      // The thread a local launch for tom opens is the same one.
+      assert.equal((await outputOf("chat", await post("/workflows/chat/run", as("deploy-key", "tom-1"), { input: { session: "tom-1/acme" } }))).session, "tom-1/acme");
+      // His bare id is his too; anyone else's id stays in peer/.
+      for (const [session, expected] of [["tom-1", "tom-1"], ["ann-2/acme", "peer/ann-2/acme"], ["tom-10/acme", "peer/tom-10/acme"]] as const) {
+        assert.equal((await outputOf("chat", await post("/workflows/chat/run", as(tom), { input: { session } }))).session, expected, session);
+      }
+
+      // `peer: true` takes either credential; only the person's opens the person's thread.
+      assert.equal((await outputOf("lookup", await post("/workflows/lookup/run", as("peer-key", "tom-1"), { input: { session: "tom-1/acme" } }))).session, "peer/tom-1/acme");
+      assert.equal((await outputOf("lookup", await post("/workflows/lookup/run", as(tom), { input: { session: "tom-1/acme" } }))).session, "tom-1/acme");
+
+      // A run a person's credential launched is resumed by that person's alone.
+      await workspace.publishWorkflowByContent("flaky", ["name: flaky", "peer: person", "steps:", "  - id: f", "    type: flaky"].join("\n"));
+      const failed = await post("/workflows/flaky/run", as(tom), { input: {} });
+      assert.equal(failed.status, 202);
+      const first = await waitForSummary(store, "flaky", failed.body.runId!);
+      assert.equal(first.status, "error");
+      const resume = (headers: Record<string, string>) => post(`/workflows/flaky/runs/${failed.body.runId}/resume`, headers, {});
+      assert.match((await resume(as(ann))).body.error!, /only the same person's/);
+      assert.equal((await resume(as("peer-key", "tom-1"))).status, 403);
+      failing = false;
+      assert.equal((await resume(as(tom))).status, 202);
+      assert.equal((await waitForRefinalize(store, "flaky", failed.body.runId!, first.finishedAt!)).status, "success");
+
+      // The flag reads back with the flow.
+      const flowRes = await strut.app.request("/workflows/chat/flow", { headers: as("deploy-key") });
+      assert.equal(((await flowRes.json()) as { peer?: unknown }).peer, "person");
+    } finally {
+      for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await cleanup();
+    }
+  });
+
   it("POST pause parks a run (listing shows paused, log records the gap); resume releases it", async () => {
     const gate = createGateStep();
     const { strut, workspace, store, cleanup } = await makeServer({ gate: gate.stepDef });

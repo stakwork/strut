@@ -22,7 +22,7 @@ import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tally
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
-import { peerScoped, type SessionsCapability } from "./session-store.js";
+import { peerSessionId, type SessionsCapability } from "./session-store.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -90,6 +90,11 @@ export interface RunOptions<TServices = unknown> {
    *  `"schedule"` when an automation does; `"peer"` when another strut does
    *  over HTTP. Recorded on `run.start`. */
   origin?: RunOrigin;
+  /** With `origin: "peer"`: launched by a PERSON's credential (scope
+   *  `peer:person`, plans/chained-orchestrators.md §2), so `actor` is the
+   *  credential's own and the run may open that actor's sessions
+   *  (`bindPeer`). Recorded on `run.start`. */
+  peerPerson?: boolean;
   /** The automation firing this run — recorded on `run.start` and on the
    *  summary (see `RunSummary.automation`), handed to every step as
    *  `ctx.automation`. The scheduler's launch is the one site that sets it. */
@@ -181,15 +186,17 @@ function bindPrincipal<TServices>(services: TServices, principal: string | undef
 
 /** A PEER's run opens its sessions under `PEER_NAMESPACE` (plans/federation.md
  *  §3): a session id a peer names — explore's `input.session` — is never a
- *  local thread, the way its `job` is never a local job (createStrut). A
- *  per-run view like `bindPrincipal`'s; the consumer's bag is not mutated. */
-function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined): TServices {
+ *  local thread, the way its `job` is never a local job (createStrut). One
+ *  exception: a run a PERSON's credential launched (`person`, its actor)
+ *  opens that person's own ids as they are (`peerSessionId`). A per-run
+ *  view like `bindPrincipal`'s; the consumer's bag is not mutated. */
+function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined, person?: string): TServices {
   if (origin !== "peer" || services == null || typeof services !== "object") return services;
   const sessions = (services as { sessions?: SessionsCapability }).sessions;
   if (typeof sessions?.open !== "function") return services;
   const view: SessionsCapability = {
-    open: (id, holder) => sessions.open(peerScoped(id), holder),
-    holder: (id) => sessions.holder(peerScoped(id)),
+    open: (id, holder) => sessions.open(peerSessionId(id, person), holder),
+    holder: (id) => sessions.holder(peerSessionId(id, person)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -247,6 +254,7 @@ export async function runWorkflow<TServices = unknown>(
   const services = bindPeer(
     bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
     opts?.origin,
+    opts?.peerPerson ? opts.actor : undefined,
   );
 
   const onEvent = opts?.onEvent;
@@ -328,6 +336,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.stepHashes ? { stepHashes: opts.stepHashes } : {}),
       ...(opts?.cassette ? { cassette: opts.cassette } : {}),
       ...(opts?.origin ? { origin: opts.origin } : {}),
+      ...(opts?.origin === "peer" && opts.peerPerson ? { peerPerson: true as const } : {}),
       ...(opts?.automation ? { automation: opts.automation } : {}),
       ...(opts?.verify ? { verify: opts.verify } : {}),
       ...(opts?.actor ? { actor: opts.actor } : {}),

@@ -16,7 +16,7 @@
  * `useWorkflow` name these steps (kit/src/hooks.ts). A sealed workflow (a
  * grading harness) is still refused by name: the steps are a model's door.
  */
-import type { AppRef, McpServer, RunEvent, RunSummary } from "./core.js";
+import type { AppRef, McpServer, PeerOpen, RunEvent, RunSummary } from "./core.js";
 import type { ArtifactRef } from "./artifact-refs.js";
 import { slimEvent } from "./run-step.js";
 import type { PartialRunSummary } from "./store.js";
@@ -88,7 +88,7 @@ export interface WorkflowInfo {
   /** The `params` defaults. */
   params?: Record<string, unknown>;
   sealed?: true;
-  peer?: true;
+  peer?: PeerOpen;
 }
 
 /** One file of a run (`run/files`): text as text, anything else as base64,

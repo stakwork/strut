@@ -1293,6 +1293,12 @@ describe("the API key gate", () => {
     }
     // A host's route is covered like strut's own: the deployment key writes it.
     assert.equal((await strut.app.request("/host/mounted", { method: "POST", ...auth })).status, 200);
+    // A person token (minted by the deployment) is a peer at this gate too.
+    const minted = await strut.app.request("/peers/tokens", { method: "POST", headers: { ...auth.headers, "content-type": "application/json" }, body: JSON.stringify({ actor: "tom-1" }) });
+    const person = { authorization: `Bearer ${((await minted.json()) as { token: string }).token}`, "content-type": "application/json" };
+    assert.equal((await strut.app.request("/workflows", { headers: person })).status, 200);
+    assert.equal((await strut.app.request("/host/mounted", { method: "POST", headers: person })).status, 403);
+    assert.equal((await strut.app.request("/secrets/X", { method: "PUT", headers: person, body: JSON.stringify({ value: "v" }) })).status, 403);
     // `?key=` carries it like the deployment key; unset, it opens nothing.
     assert.equal((await strut.app.request(`/workflows?key=${PEER}`)).status, 200);
     delete process.env["STRUT_PEER_KEY"];

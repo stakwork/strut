@@ -327,6 +327,8 @@ describe("authoring capability (the meta surface)", () => {
     const r = (await authoring.publishWorkflow("cand-peer", `name: cand-peer\npeer: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n`)) as any;
     assert.ok(r.error && /declares `peer: true`/.test(r.error), JSON.stringify(r));
     assert.ok(!(await strut.workspace.listWorkflows()).some((w) => w.name === "cand-peer"), "nothing was published");
+    const person = (await authoring.publishWorkflow("cand-peer", `name: cand-peer\npeer: person\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n`)) as any;
+    assert.ok(person.error && /declares `peer: person`/.test(person.error), JSON.stringify(person));
   });
 
   it("the job agent's shape: a workflow whose meta/run-workflow step runs a seeded pod-pr", async () => {

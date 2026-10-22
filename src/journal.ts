@@ -42,6 +42,9 @@ export function readRunStart(
   /** Who launched it, when not a person or an API call — a peer's run stays
    *  the peer's to control after a resume (plans/federation.md §3). */
   origin?: RunEvent["origin"];
+  /** A peer's run a person's credential launched — a resume keeps it, so
+   *  the run opens the same person's sessions (plans/chained-orchestrators.md §2). */
+  peerPerson?: true;
   /** The files the launch attached, saved under the run's artifacts — a
    *  resume hands them to its steps again. */
   attachments?: RunAttachment[];
@@ -59,6 +62,7 @@ export function readRunStart(
     principal: start.principal,
     job: start.job,
     origin: start.origin,
+    ...(start.peerPerson ? { peerPerson: true as const } : {}),
     attachments: start.attachments,
   };
 }

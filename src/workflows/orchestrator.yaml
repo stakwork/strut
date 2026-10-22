@@ -30,7 +30,13 @@ name: orchestrator
 # Sealed: the meta surface (a job's meta/run-workflow) never runs it or reads
 # its runs. Its tools are a host's private ones (a person's chats, sends as
 # them), which only the host's own launches may reach.
+# Open to another strut only through a PERSON's credential (`peer: person`,
+# plans/chained-orchestrators.md §2): the person's own strut (a laptop) runs
+# this turn here on their own session, the one their host's launches use. A
+# strut's credential is refused — through job/start this turn starts a job
+# whose agent has bash. The host's own MCP tools ride on its launches only.
 sealed: true
+peer: person
 input:
   prompt: { type: string, description: "The person's message, or an automation's prompt" }
   session: { type: string, required: false, description: "The conversation's thread (a session id), the same every turn. None for a one-shot (an automation)" }

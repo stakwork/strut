@@ -49,11 +49,12 @@ export interface JobSeedOptions {
    *  pinned, so it runs on the deployment's connected model
    *  (`STRUT_DEFAULT_MODEL`), which a desktop host changes at run time. */
   model?: string | null;
-  /** `false` deletes the template's top-level `peer: true` — a deployment
-   *  that will not have other struts launch the workflow. Only `builder`
-   *  carries one (plans/builder-job.md §4); on `job` and `orchestrator`
-   *  there is nothing to delete. A delta can only CLOSE a workflow to
-   *  peers, never open one: opening is the template's statement. */
+  /** `false` deletes the template's top-level `peer:` — a deployment that
+   *  will not have other struts launch the workflow. `builder` carries
+   *  `peer: true` (plans/builder-job.md §4), `orchestrator` `peer: person`
+   *  (plans/chained-orchestrators.md §2); on `job` there is nothing to
+   *  delete. A delta can only CLOSE a workflow to peers, never open one:
+   *  opening is the template's statement. */
   peer?: false;
 }
 
@@ -77,7 +78,7 @@ const JOB_YAML = new URL("./workflows/job.yaml", import.meta.url);
  *  host's section is appended (the builder's rules, src/builder-seed.ts),
  *  so the hash covers it. */
 export async function templateWithDelta(template: URL, opts?: JobSeedOptions, fill?: (system: string) => string): Promise<string> {
-  const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean; params: { tools: string[]; approve?: string[]; system: string; model?: string } };
+  const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean | "person"; params: { tools: string[]; approve?: string[]; system: string; model?: string } };
   if (fill) doc.params.system = fill(doc.params.system);
   if (opts?.peer === false) delete doc.peer;
   if (opts?.tools?.length) doc.params.tools.push(...opts.tools);

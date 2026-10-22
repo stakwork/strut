@@ -232,11 +232,17 @@ export interface Flow {
    *  surface never runs it, reads its runs, or publishes anything that
    *  reaches it. Content like `claims:`, so it rides in the version hash. */
   sealed?: boolean;
-  /** The YAML `peer: true` — another strut may launch it (plans/federation.md
-   *  §3): a peer-scoped launch of a workflow without it is refused. Content
-   *  like `sealed:`, so it rides in the version hash. */
-  peer?: boolean;
+  /** The YAML `peer:` — another strut may launch it (plans/federation.md
+   *  §3): a peer-scoped launch of a workflow without it is refused. `true`:
+   *  any peer request; `"person"`: only one whose credential names a person
+   *  (scope `peer:person`, plans/chained-orchestrators.md §2). Content like
+   *  `sealed:`, so it rides in the version hash. */
+  peer?: PeerOpen;
 }
+
+/** Who another strut's request must be to launch a workflow: any peer
+ *  (`true`), or one whose credential names a person (`"person"`). */
+export type PeerOpen = true | "person";
 
 /** Run event types for the JSONL log. */
 export type RunEventType =
@@ -332,6 +338,11 @@ export interface RunEvent {
    *  request, plans/federation.md §3) — the only runs a peer may cancel,
    *  pause or resume. */
   origin?: RunOrigin;
+  /** On a peer run's `run.start`: launched by a PERSON's credential (scope
+   *  `peer:person`), so `actor` is the credential's own and the run may
+   *  open that actor's sessions (plans/chained-orchestrators.md §2). Read
+   *  back by a resume. */
+  peerPerson?: true;
   /** On a scheduled run's `run.start`: the automation that fired it. */
   automation?: { id: string };
   /** On `run.start`: who launched the run (`actor`) and who pays for it

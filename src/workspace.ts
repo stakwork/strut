@@ -3,7 +3,7 @@ import { dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
 import type { Automation } from "./automations.js";
-import type { Flow } from "./core.js";
+import type { Flow, PeerOpen } from "./core.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import type { SubflowResolver } from "./runner.js";
@@ -69,8 +69,8 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   // `peer:` likewise: a mistyped one read as "open to peers" would hand
   // another strut a workflow nobody vouched for.
   const peer = (parsed as { peer?: unknown } | null)?.peer;
-  if (peer != null && typeof peer !== "boolean") {
-    throw new Error("Workflow YAML has an invalid `peer:` key — it is `true` (another strut may launch it) or absent.");
+  if (peer != null && typeof peer !== "boolean" && peer !== "person") {
+    throw new Error("Workflow YAML has an invalid `peer:` key — it is `true` (another strut may launch it), `person` (only through a credential that names a person) or absent.");
   }
   // A `claims:` block is checked for SHAPE here (every backend, no graph
   // needed) so a malformed contract fails the publish like a bad `input:`;
@@ -159,7 +159,7 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
     ...(data.params != null ? { params: resolveParamSelfReferences(data.params) } : {}),
     ...(Array.isArray(data.promotes) ? { promotes: data.promotes } : {}),
     ...(data.sealed === true ? { sealed: true } : {}),
-    ...(data.peer === true ? { peer: true } : {}),
+    ...(data.peer === true || data.peer === "person" ? { peer: data.peer as PeerOpen } : {}),
   };
 }
 
@@ -175,8 +175,9 @@ export interface WorkflowContent {
   claims?: ClaimsBlock;
   /** `sealed: true` — a grading harness (`src/sealed.ts`). */
   sealed?: boolean;
-  /** `peer: true` — another strut may launch it (plans/federation.md §3). */
-  peer?: boolean;
+  /** `peer: true` — another strut may launch it (plans/federation.md §3);
+   *  `"person"` — only through a credential that names a person. */
+  peer?: boolean | PeerOpen;
 }
 
 export function renderWorkflowYaml(name: string, content: WorkflowContent | string): string {
@@ -191,7 +192,7 @@ export function renderWorkflowYaml(name: string, content: WorkflowContent | stri
           ...(content.promotes != null ? { promotes: content.promotes } : {}),
           ...(content.claims != null ? { claims: content.claims } : {}),
           ...(content.sealed ? { sealed: true } : {}),
-          ...(content.peer ? { peer: true } : {}),
+          ...(content.peer ? { peer: content.peer } : {}),
         },
         { lineWidth: 120, noRefs: true },
       );
