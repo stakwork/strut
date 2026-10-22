@@ -32,13 +32,21 @@ function launchRecord(v: unknown): LaunchRecord | undefined {
  *  THERE — a `path` in it is relative to that job's directory on the peer,
  *  and means nothing here. Never rewritten to a URL: the reader resolves it
  *  against the peer (the handle rule, plans/federation.md §2.2). An entry
- *  already tagged — the peer got it from a third strut — keeps its tag. */
-function tagArtifacts(output: unknown, peer: string, job: string | undefined): unknown {
+ *  already tagged — the peer got it from a third strut, which this one has
+ *  no record for — is re-tagged as the NEXT HOP (plans/chained-orchestrators.md
+ *  §5): `peer` becomes the peer called, `via` the third (the id the peer
+ *  knows it by: its read-through, `GET /peers/<via>/…` there, serves the
+ *  files), and the third's `job` stays. Two hops: a deeper chain keeps the
+ *  last two. */
+export function tagArtifacts(output: unknown, peer: string, job: string | undefined): unknown {
   const entries = artifactEntriesOf(output);
   if (!entries) return output;
-  const tagged = entries.map((a) =>
-    a && typeof a === "object" && !Array.isArray(a) && !("peer" in a) ? { ...a, peer, ...(job ? { job } : {}) } : a,
-  );
+  const tagged = entries.map((a) => {
+    if (!a || typeof a !== "object" || Array.isArray(a)) return a;
+    const entry = a as Record<string, unknown>;
+    if (typeof entry["peer"] === "string" && entry["peer"]) return { ...entry, peer, via: entry["peer"] };
+    return { ...entry, peer, ...(job ? { job } : {}) };
+  });
   return { ...(output as Record<string, unknown>), artifacts: tagged };
 }
 

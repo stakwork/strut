@@ -1,8 +1,8 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -527,11 +527,13 @@ describe("strut/run-workflow across two struts", () => {
     "not an entry",
   ];
   /** The same list as the caller's step returns it: tagged with the peer
-   *  and the job its files are under THERE. */
+   *  and the job its files are under THERE — the third strut's entry
+   *  re-tagged as the next hop, `via` the third, its job kept
+   *  (plans/chained-orchestrators.md §5). */
   const tagged = (job: string) => [
     { id: "plan", title: "Plan", path: "plan.md", peer: "cloud", job },
     { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/acme/web/pull/7", peer: "cloud", job },
-    { id: "far", title: "Far", path: "x.md", peer: "third", job: "j3" },
+    { id: "far", title: "Far", path: "x.md", peer: "cloud", via: "third", job: "j3" },
     "not an entry",
   ];
 
@@ -855,7 +857,7 @@ describe("strut/run-workflow across two struts", () => {
       const expected = [
         { id: "plan", kind: "markdown", title: "Plan", path: "plan.md", peer: "cloud", job: "build-1" },
         { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/acme/web/pull/7", peer: "cloud", job: "build-1" },
-        { id: "far", kind: "markdown", title: "Far", path: "x.md", peer: "third", job: "j3" },
+        { id: "far", kind: "markdown", title: "Far", path: "x.md", peer: "cloud", via: "third", job: "j3" },
       ];
       assert.deepEqual(end.artifacts, expected);
       const listed = (await (await caller.app.request(`/workflows/builder/runs/${runId}/artifacts`, { headers: auth })).json()) as { artifacts: unknown };
@@ -887,5 +889,144 @@ describe("strut/run-workflow across two struts", () => {
     const b = await settled(caller, "missing", await launch("missing", { input: {} }));
     assert.equal(b.status, "error");
     assert.match(b.error?.message ?? "", /peer "cloud" refused POST \/workflows\/nope\/run \(404\): .*not found/);
+  });
+});
+
+// ── three struts: a spoke's deliverable from the laptop, through central ──
+
+describe("a deliverable two hops away (plans/chained-orchestrators.md §5)", () => {
+  const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
+  let dirs: string[];
+  let spoke: Strut;
+  let central: Strut;
+  let laptop: Strut;
+  const urlOf = (port: number) => `http://127.0.0.1:${port}`;
+  const NO_SEEDS = { serveUi: false, enableChat: false, scheduler: false, job: false, orchestrator: false, builder: false } as const;
+
+  before(async () => {
+    delete process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_PEER_KEY"];
+    dirs = [0, 1, 2].map(() => join(tmpdir(), `strut-two-hops-${randomUUID()}`));
+    await Promise.all(dirs.map((d) => mkdir(d, { recursive: true })));
+    // The spoke: a build that writes a report into its job's directory and
+    // hands it over by path.
+    const report = defineStep({
+      type: "test/report",
+      description: "writes a report and lists it",
+      input: z.object({ dir: z.string() }),
+      output: z.any(),
+      async run(cfg) {
+        await writeFile(join(cfg.dir, "report.md"), "# Report\n");
+        return { text: "Built.", artifacts: [{ id: "report", title: "Report", path: "report.md" }] };
+      },
+    });
+    spoke = await createStrut({ workspace: new WorkspaceManager(dirs[0]!), store: new MemoryRunStore(), registry: await createRegistry([report]), ...NO_SEEDS });
+    await spoke.workspace.publishWorkflow("build", "v1", {
+      steps: [{ id: "dir", type: "job/dir" }, { id: "w", type: "test/report", config: { dir: "{{ dir.path }}" } }],
+      peer: true,
+    });
+    // Central: its orchestrator's shape, a turn that builds on the spoke and
+    // hands the result on.
+    central = await createStrut({
+      workspace: new WorkspaceManager(dirs[1]!),
+      store: new MemoryRunStore(),
+      ...NO_SEEDS,
+      peers: [{ id: "billing", baseUrl: urlOf(await spoke.listen(0, "127.0.0.1")), token: "central-for-billing" }],
+    });
+    await central.workspace.publishWorkflow("relay", "v1", {
+      steps: [
+        { id: "b", type: "strut/run-workflow", config: { peer: "billing", workflow: "build", job: "team/j1" } },
+        { id: "out", type: "pack", config: { text: "{{ b.output.text }}", artifacts: "{{ b.output.artifacts }}" } },
+      ],
+      peer: true,
+    });
+    // The laptop: one peer, the org's central.
+    laptop = await createStrut({
+      workspace: new WorkspaceManager(dirs[2]!),
+      store: new MemoryRunStore(),
+      ...NO_SEEDS,
+      peers: [{ id: "acme", baseUrl: urlOf(await central.listen(0, "127.0.0.1")), token: "laptop-for-acme" }],
+    });
+    await laptop.workspace.publishWorkflow("ask", "v1", { steps: [{ id: "c", type: "strut/run-workflow", config: { peer: "acme", workflow: "relay" } }] });
+  });
+
+  after(async () => {
+    for (const s of [laptop, central, spoke]) await s?.close();
+    await Promise.all(dirs.map((d) => rm(d, { recursive: true, force: true })));
+    for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const settledOn = async (strut: Strut, wf: string, runId: string): Promise<RunSummary> => {
+    for (let i = 0; i < 600; i++) {
+      const s = await strut.store.getRunSummary(wf, runId);
+      if (s) return s;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`run ${wf}/${runId} did not settle`);
+  };
+
+  it("the laptop's entry names the next hop, and the file opens through central's read-through from the laptop's own", async () => {
+    const res = await laptop.app.request("/workflows/ask/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: {} }) });
+    assert.equal(res.status, 202);
+    const summary = await settledOn(laptop, "ask", ((await res.json()) as { runId: string }).runId);
+    assert.equal(summary.status, "success", JSON.stringify(summary.error));
+    const relayed = (summary.output as { output: { text: string; artifacts: unknown[] } }).output;
+    assert.equal(relayed.text, "Built.");
+    // Central tagged it with the spoke; the laptop has no record for the
+    // spoke, so it names central and keeps the spoke as `via`, with its job.
+    assert.deepEqual(relayed.artifacts, [{ id: "report", title: "Report", path: "report.md", peer: "acme", via: "billing", job: "team/j1" }]);
+
+    // Central reads the spoke's file with its own token; the job id travels encoded.
+    const direct = await central.app.request("/peers/billing/jobs/team%2Fj1/files/report.md");
+    assert.equal(direct.status, 200);
+    assert.equal(await direct.text(), "# Report\n");
+    assert.equal(direct.headers.get("content-type"), "text/markdown; charset=utf-8");
+    assert.equal(direct.headers.get("content-security-policy"), "sandbox", "untrusted content on this origin, no scripts");
+    // The laptop goes one hop further, each hop with its own token.
+    const far = await laptop.app.request("/peers/acme/peers/billing/jobs/team%2Fj1/files/report.md");
+    assert.equal(far.status, 200);
+    assert.equal(await far.text(), "# Report\n");
+    // A listing comes back as the spoke's JSON.
+    const listing = await laptop.app.request("/peers/acme/peers/billing/jobs/team%2Fj1/files");
+    assert.equal(listing.status, 200);
+    assert.equal(listing.headers.get("content-type"), "application/json");
+    assert.ok(((await listing.json()) as { files: string[] }).files.includes("report.md"));
+    // A file that is not there is the spoke's 404, passed on.
+    assert.equal((await laptop.app.request("/peers/acme/peers/billing/jobs/team%2Fj1/files/nope.md")).status, 404);
+  });
+
+  it("files only, a peer on file only, and this strut's key never travels on", async () => {
+    for (const path of ["/peers/billing/workflows", "/peers/billing/secrets", "/peers/billing/peers/x/workflows"]) {
+      assert.equal((await central.app.request(path)).status, 404, path);
+    }
+    const unknown = await central.app.request("/peers/nope/jobs/j1/files/report.md");
+    assert.equal(unknown.status, 404);
+    assert.match(((await unknown.json()) as { error: string }).error, /^peer_unknown:/);
+
+    // What a peer receives: the path, the query but `key`, and the token on file.
+    const seen: Array<{ url?: string; auth?: string }> = [];
+    const spy = http.createServer((req, res) => {
+      seen.push({ url: req.url, auth: req.headers.authorization });
+      res.setHeader("content-type", "text/plain");
+      res.end("hi");
+    });
+    await new Promise<void>((r) => spy.listen(0, "127.0.0.1", r));
+    try {
+      const put = await central.app.request("/peers/spy", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ baseUrl: urlOf((spy.address() as AddressInfo).port), token: "central-for-spy" }),
+      });
+      assert.equal(put.status, 200);
+      const res = await central.app.request("/peers/spy/artifacts/123/a.txt?key=central-secret&t=tok");
+      assert.equal(res.status, 200);
+      assert.equal(await res.text(), "hi");
+      assert.deepEqual(seen, [{ url: "/artifacts/123/a.txt?t=tok", auth: "Bearer central-for-spy" }]);
+    } finally {
+      spy.close();
+    }
   });
 });

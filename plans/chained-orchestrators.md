@@ -12,8 +12,8 @@
 > and a peer-tagged app in hive's mapper (§6). **Items 1–4 BUILT**
 > 2026-10-22: strut#271, #274, #276 and item 4's `personalOrchestratorSystem`,
 > with stakwork/stakgraph#1811 for the lab's half of items 2 and 3 (each
-> item says what was built differently). Left: items 5 and 6, hive's
-> pairing and its mapper case, the desktop app. Companion to `federation.md` (peers, dispatch-through, the
+> item says what was built differently), and item 5 after them. Left:
+> item 6, hive's pairing, the desktop app. Companion to `federation.md` (peers, dispatch-through, the
 > deferred read-through, `peer: true`), `builder-job.md` (the `job` /
 > `builder` split and the peer build), `jobs.md` + `live-artifacts.md` +
 > `specs/CALLBACKS.md` (what a run tells its host, and when),
@@ -484,7 +484,17 @@ checkout as strut#261 did (a third for the spoke in item 5).
    a documented delta: the desktop app's `STRUT_HOST_CONFIG.orchestrator`
    text ("my machine, or one of my orgs; relay verbatim"). A fixture test
    that the seed renders it. The desktop side is `local-desktop-and-stt.md`'s.
-5. **Next-hop tags + read-through for files** (§5). `tagArtifacts`
+5. **BUILT.** As built: the re-tag is the CALLER's (the laptop's
+   `strut/run-workflow`, `tagArtifacts`), never central's, which hands the
+   entry on untouched; a deeper chain keeps the last two hops. The
+   read-through is one route, `GET /peers/:id/*`, whose rest must be a job's
+   files or a run's artifacts behind any number of `peers/<id>/` hops, so a
+   laptop reads a spoke's file through its OWN strut (`/peers/<central>/peers/<spoke>/jobs/<job>/files/…`)
+   and never holds central's credential in a browser; served under this
+   strut's artifact headers, never with scripts; `?key=` stripped. Nodes
+   keep their one-hop tag (no node read-through yet). The three-strut test
+   is in `src/peers.test.ts`.
+   **Next-hop tags + read-through for files** (§5). `tagArtifacts`
    re-tags an entry that arrives tagged (`via`, the spoke's `job` kept); `GET /peers/:id/jobs/:job/files/…` and
    `/peers/:id/artifacts/:runId/…` proxied with the peer's token
    (`federation.md` §2.1, the files slice only). Test: three struts, a

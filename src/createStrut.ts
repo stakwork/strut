@@ -2815,6 +2815,42 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/peers", async (c) => c.json({ peers: await peerRecords.list() }));
 
+  // READ-THROUGH (plans/federation.md §2.1, the files slice;
+  // plans/chained-orchestrators.md §5): a peer's job files and run
+  // artifacts, fetched with THIS strut's token for it — how a deliverable
+  // tagged `{ peer, via, job }` opens from a strut with no record for
+  // `via`, one hop at a time, each with its own token:
+  // `/peers/<id>/jobs/<job>/files[/…]`, `/peers/<id>/artifacts/<runId>[/…]`,
+  // and `peers/<id>/` before either for one more hop. Files only, anything
+  // else 404. A read like any other (a peer reads it as it reads every
+  // route). The peer's file is untrusted content on THIS origin now: served
+  // under this strut's own artifact headers, typed by its own extension
+  // map and never with scripts; a listing or an error as JSON. This
+  // strut's `?key=` never travels on.
+  const READ_THROUGH = /^(?:peers\/[^/]+\/)*(?:jobs\/[^/]+\/files|artifacts\/[^/]+)(?:\/.*)?$/;
+  app.get("/peers/:id/*", async (c) => {
+    const url = new URL(c.req.url);
+    // The raw path, as it came: a job id travels encoded (`peer%2Fj1`).
+    const rest = url.pathname.split("/").slice(3).join("/");
+    if (!READ_THROUGH.test(rest)) {
+      return c.json({ error: "a peer's read-through serves its job files (jobs/<job>/files/…) and run artifacts (artifacts/<runId>/…) only" }, 404);
+    }
+    url.searchParams.delete("key");
+    const query = url.searchParams.toString();
+    let res: Response;
+    try {
+      res = await peersCap.fetch(c.req.param("id"), `/${rest}${query ? `?${query}` : ""}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, message.startsWith("peer_unknown:") ? 404 : 502);
+    }
+    const listing = /(?:\/files|^(?:peers\/[^/]+\/)*artifacts\/[^/]+)\/?$/.test(rest);
+    const headers = res.ok && !listing
+      ? artifactHeaders(rest)
+      : { "content-type": "application/json", "x-content-type-options": "nosniff", "content-security-policy": "sandbox" };
+    return new Response(res.body, { status: res.status, headers });
+  });
+
   // A PERSON TOKEN (auth.ts "Person tokens"; plans/chained-orchestrators.md
   // §4): what a person's own strut puts in its peer record for this one,
   // so a request through it is `peer:person` — its actor the one named

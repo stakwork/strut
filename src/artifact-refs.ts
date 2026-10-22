@@ -58,7 +58,10 @@ export interface ArtifactEntry {
   version?: string;
   /** Another strut's deliverable: the peer's id, as this strut names it. */
   peer?: string;
-  /** With `peer`: the job its files are under on that peer. */
+  /** With `peer`, two hops away: the strut that holds it, as `peer` names
+   *  it — its files are `peer`'s read-through, `/peers/<via>/…` there. */
+  via?: string;
+  /** With `peer`: the job its files are under on that peer (on `via`, when set). */
   job?: string;
 }
 
@@ -78,6 +81,10 @@ export interface ArtifactRef {
    *  `job`'s directory there) and `url` are THAT peer's, for the reader to
    *  resolve against it by id — never a link on this strut. */
   peer?: string;
+  /** With `peer`, two hops away: the strut that holds it, as `peer` names
+   *  it (plans/chained-orchestrators.md §5) — open `path` through `peer`'s
+   *  read-through, `/peers/<via>/jobs/<job>/files/<path>`. */
+  via?: string;
   job?: string;
   /** With `peer` only. */
   path?: string;
@@ -220,8 +227,9 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       // Another strut's: kept as it came. Its path and url are the peer's,
       // for the reader to resolve there — nothing here checks either.
       const job = text(raw["job"]);
+      const via = text(raw["via"]);
       if (!text(raw["kind"])) ref.kind = appName ? APP_KIND : artifactKind((path ?? url) ?? "");
-      Object.assign(ref, { peer, ...(job ? { job } : {}), ...(path !== undefined ? { path } : {}), ...(url !== undefined ? { url } : {}) });
+      Object.assign(ref, { peer, ...(via ? { via } : {}), ...(job ? { job } : {}), ...(path !== undefined ? { path } : {}), ...(url !== undefined ? { url } : {}) });
       if (appName) ref.app = { name: appName, ...(appVersion ? { version: appVersion } : {}) };
     } else if (appName !== undefined && path === undefined && url === undefined) {
       // A published app, by name: the version's document, or why not.
