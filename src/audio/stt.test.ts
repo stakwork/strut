@@ -85,6 +85,22 @@ function fakeEngine(scripts: Record<string, Script[]>, built: Record<string, unk
         return new FakeRecognizer(config, scripts[id] ?? []);
       }
     } as unknown as SttEngine["OnlineRecognizer"],
+    // Offline (Parakeet): one result for the whole clip, naming its model and length.
+    OfflineRecognizer: class {
+      readonly id: string;
+      constructor(config: Record<string, unknown>) {
+        built.push(config);
+        const tokens = String((config["modelConfig"] as { tokens: string }).tokens);
+        this.id = STT_MODELS.find((m) => tokens.includes(`/stt/${m.id}/`))?.id ?? "?";
+      }
+      createStream() {
+        return { seconds: 0, acceptWaveform(w: { samples: Float32Array; sampleRate: number }) { this.seconds += w.samples.length / w.sampleRate; } };
+      }
+      decode() {}
+      getResult(s: { seconds: number }): EngineResult {
+        return { text: ` Heard by ${this.id}.`, tokens: [" Heard", " by", ` ${this.id}.`], timestamps: [0, 0.5, s.seconds - 1] };
+      }
+    } as unknown as NonNullable<SttEngine["OfflineRecognizer"]>,
     readWave: () => ({ samples: new Float32Array(16000 * 3), sampleRate: 16000 }),
   };
 }
@@ -236,6 +252,36 @@ describe("stt service", () => {
     const s = await stt.openStream({ model: "nemo-fast-conformer-en-80ms", partialModel: null, hotwords: ["x"] });
     assert.equal(s.model, "nemo-fast-conformer-en-80ms");
     assert.equal(built[0]!["decodingMethod"], "greedy_search");
+  });
+
+  it("an offline model (Parakeet) transcribes a whole clip in one pass and cannot stream", async () => {
+    await installFake(modelDir, "parakeet-tdt-en-0.6b-v2");
+    const built: Record<string, unknown>[] = [];
+    const stt = createStt({ dataDir, modelDir, env, engine: async () => fakeEngine({}, built), log: () => {} });
+    const r = await stt.transcribe(new Uint8Array(64), { model: "parakeet-tdt-en-0.6b-v2", session: "p" });
+    assert.equal(r.model, "parakeet-tdt-en-0.6b-v2");
+    assert.equal(r.text, "Heard by parakeet-tdt-en-0.6b-v2.");
+    assert.deepEqual(r.segments[0]!.words.map((w) => [w.text, w.start]), [["Heard", 0], ["by", 0.5], ["parakeet-tdt-en-0.6b-v2.", 2]]);
+    assert.equal((built[0]!["modelConfig"] as { modelType: string }).modelType, "nemo_transducer");
+    assert.equal(((await stt.sessions.get("p")) ?? []).length, 1);
+    await assert.rejects(() => stt.openStream({ model: "parakeet-tdt-en-0.6b-v2", partialModel: null }), /offline/);
+  });
+
+  it("transcribe uses the user's speech pick once it is installed, the default until then", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const install = async (_a: unknown, dir: string) => {
+      await gate;
+      await installFake(modelDir, dir.split("/").pop()!);
+    };
+    const stt = createStt({ dataDir, modelDir, env, engine: async () => fakeEngine({ "zipformer-en-kroko": [{ at: 1, text: "kroko", endpoint: true }] }), install, log: () => {} });
+    await stt.dictation.use({ speech: "parakeet-tdt-en-0.6b-v2" });
+    assert.equal((await stt.transcribe(new Uint8Array(64))).model, "zipformer-en-kroko");
+    release();
+    await stt.dictation.idle();
+    assert.equal((await stt.transcribe(new Uint8Array(64))).model, "parakeet-tdt-en-0.6b-v2");
+    // The caller's `model` still wins.
+    assert.equal((await stt.transcribe(new Uint8Array(64), { model: "zipformer-en-kroko" })).model, "zipformer-en-kroko");
   });
 
   it("transcribe runs the single-recognizer path over a WAV and joins the finals", async () => {

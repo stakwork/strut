@@ -38,8 +38,19 @@ export interface EngineRecognizer {
   reset(s: EngineStream): void;
   getResult(s: EngineStream): EngineResult;
 }
+/** sherpa's OfflineRecognizer: a whole clip in, one result out (Parakeet). */
+export interface EngineOfflineStream {
+  acceptWaveform(w: EngineWaveform): void;
+}
+export interface EngineOfflineRecognizer {
+  createStream(): EngineOfflineStream;
+  decode(s: EngineOfflineStream): void;
+  getResult(s: EngineOfflineStream): EngineResult;
+}
 export interface SttEngine {
   OnlineRecognizer: new (config: Record<string, unknown>) => EngineRecognizer;
+  /** Absent in an engine (a test's fake) that only streams. */
+  OfflineRecognizer?: new (config: Record<string, unknown>) => EngineOfflineRecognizer;
   readWave(path: string): EngineWaveform;
 }
 
@@ -62,6 +73,8 @@ export interface RecognizerSpec {
   key: string;
   /** For the main thread's "ready in N ms" line. */
   label: string;
+  /** Build sherpa's OfflineRecognizer (whole clips, `transcribe` only). */
+  offline?: boolean;
   config: Record<string, unknown>;
 }
 
@@ -96,6 +109,7 @@ export async function loadSttHost(o: { engineModule?: string } = {}): Promise<St
 
 export function createSttHost(engine: SttEngine | null) {
   const recognizers = new Map<string, EngineRecognizer>();
+  const offline = new Map<string, EngineOfflineRecognizer>();
   const decoders = new Map<string, Decoder>();
 
   const requireEngine = (): SttEngine => {
@@ -112,6 +126,18 @@ export function createSttHost(engine: SttEngine | null) {
     }
     return r;
   };
+  const offlineRecognizer = (spec: RecognizerSpec, built: Built[]): EngineOfflineRecognizer => {
+    let r = offline.get(spec.key);
+    if (!r) {
+      const Offline = requireEngine().OfflineRecognizer;
+      if (!Offline) throw new Error("stt engine has no OfflineRecognizer");
+      const t0 = Date.now();
+      r = new Offline(spec.config);
+      built.push({ label: spec.label, ms: Date.now() - t0 });
+      offline.set(spec.key, r);
+    }
+    return r;
+  };
   const decoder = (id: string): Decoder => {
     const d = decoders.get(id);
     if (!d) throw new Error("stream is gone: it ended, or the recognizer thread restarted");
@@ -122,6 +148,7 @@ export function createSttHost(engine: SttEngine | null) {
     available: (): boolean => engine != null,
 
     open(id: string, spec: DecoderSpec): { built: Built[] } {
+      if (spec.main.offline) throw new Error(`${spec.main.label} is an offline model: it cannot stream`);
       const built: Built[] = [];
       const main = recognizer(spec.main, built);
       const partial = spec.partial ? recognizer(spec.partial, built) : null;
@@ -147,6 +174,18 @@ export function createSttHost(engine: SttEngine | null) {
     transcribe(path: string, spec: Omit<DecoderSpec, "partial" | "sampleRate">): { finals: SttEvent[]; built: Built[]; ms: number } {
       const wave = requireEngine().readWave(path);
       const built: Built[] = [];
+      if (spec.main.offline) {
+        // One pass over the whole clip: one final.
+        const rec = offlineRecognizer(spec.main, built);
+        const t0 = Date.now();
+        const s = rec.createStream();
+        s.acceptWaveform(wave);
+        rec.decode(s);
+        const r = rec.getResult(s);
+        const text = r.text.trim();
+        const finals: SttEvent[] = text ? [{ type: "final", index: spec.firstIndex, text, words: wordsOf(r) }] : [];
+        return { finals, built, ms: Date.now() - t0 };
+      }
       const d = new Decoder({ ...spec, partial: null, sampleRate: wave.sampleRate }, recognizer(spec.main, built), null);
       const t0 = Date.now();
       const events: SttEvent[] = [];
