@@ -74,6 +74,8 @@ const MIGRATIONS = [
   "MATCH (f:Fact) WHERE f.invalid_at IS NOT NULL AND f.invalid_at = f.expired_at SET f.invalid_at = NULL",
   // The name a name fact (predicate role alias) gave its subject as an alias, so forgetting the fact can take it back.
   "ALTER TABLE Fact ADD IF NOT EXISTS value STRING",
+  // A mishearing fact's written form, when it is not its subject's name ("bee tee see" → BTC on Bitcoin).
+  "ALTER TABLE Fact ADD IF NOT EXISTS form STRING",
 ];
 
 export type Row = Record<string, any>;
@@ -260,6 +262,16 @@ export async function editAliases(query: Query, id: string, names: string[], now
   const next = remove ? was.filter((a) => !keys.includes(a)) : [...new Set([...was, ...keys])];
   if (e && next.length !== was.length) await query("MATCH (e:Entity) WHERE e.ref_id = $id SET e.aliases = $next, e.updated_at = $now", { id, next, now });
   return next;
+}
+
+/** An entity's attributes as an object; {} when the stored string is not a JSON object. */
+export function readAttributes(stored: unknown): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(typeof stored === "string" && stored ? stored : "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 /** The entity a ref_id now means: itself, or, once merged away, the entity it is an alias of. */

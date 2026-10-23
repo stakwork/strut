@@ -10,7 +10,8 @@ export default defineStep({
     "or proposed) and how often it is used. A predicate also has its cardinality (one: a new fact replaces the current " +
     "one) and the entity types it connects. An entity type may have a parent (it is matched like its parent and fits " +
     "wherever its parent does), a naming (person, organisation or plain: how names are matched) and a role; user_type is " +
-    "the type that is the user. A predicate with role alias gives its subject another name (its fact text is a name). " +
+    "the type that is the user. A predicate with role alias gives its subject another name (its fact text is a name); " +
+      "one with role mishearing records how dictation mishears its subject (the wrong text as the fact's value). " +
     "Use these names in memory/remember rather than inventing near-copies.",
   input: z.object({
     include_proposed: z.boolean().optional().default(true),

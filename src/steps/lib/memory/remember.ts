@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { EntityRef, type EntityRefT, type Query, canonical, editAliases, memoryWrite, newRefId, normalize, supersede } from "./_db.js";
+import { EntityRef, type EntityRefT, type Query, canonical, editAliases, memoryDb, memoryWrite, newRefId, normalize, supersede } from "./_db.js";
 import { fitNote, resolve, termName, vocabulary, type Resolved as Term, type Vocabulary } from "./_ontology.js";
 
 const FactInput = z.object({
@@ -17,6 +17,12 @@ const FactInput = z.object({
   invalid_at: z.string().optional().describe("When it stopped being true, only if the words say; same form as valid_at."),
   ended: z.boolean().optional().default(false).describe(
     "It is no longer true (\"I used to …\"): stored as past, superseding nothing; the same fact held now is ended.",
+  ),
+  value: z.string().optional().describe(
+    "Only for a predicate with role mishearing (memory/ontology): the wrong text dictation writes for the subject, e.g. 'stack work'.",
+  ),
+  form: z.string().optional().describe(
+    "Only with value: the written form the wrong text stands for when it is not the subject's name, e.g. 'BTC' on Bitcoin.",
   ),
 });
 
@@ -103,6 +109,9 @@ export default defineStep({
     "A name given as a name fact's object is never an entity: it becomes another name of the subject, unless another " +
     "entity already goes by it (that one is listed as `similar`, to merge if it is the same) or someone else says it " +
     "of the user. " +
+    "A predicate with role mishearing (how dictation mishears its subject) takes the wrong text as `value`, and as " +
+    "`form` the written form it stands for when that is not the subject's name; no object. It is never a name: " +
+    "nothing is found or merged by it. " +
     "First-person words (I, my, me) mean the speaker: the user unless `speaker` says someone else, so Kate's " +
     "\"I moved to Leeds\" is a fact about Kate. Give a fact's dates only when the words do (\"since September\", " +
     "\"in 2024\"); saying the same fact again adds this episode as a source and fills in a missing date.",
@@ -134,6 +143,14 @@ export default defineStep({
       ];
     });
     if (bad.length) return { error: `invalid_input: ${bad.join(", ")}` };
+    // A mishearing is a value on its subject, never an entity or a name: checked before anything is written.
+    const known = await vocabulary(await memoryDb(ctx));
+    const mishearing = (predicate: string) => known.term("predicate", predicate)?.role === "mishearing";
+    const misheard = cfg.facts.flatMap((f) => {
+      if (!mishearing(f.predicate)) return f.value !== undefined || f.form !== undefined ? [`${f.predicate} takes no value or form`] : [];
+      return [...(!f.value?.trim() ? [`${f.predicate} needs the misheard text as value`] : []), ...(f.object ? [`${f.predicate} takes no object`] : [])];
+    });
+    if (misheard.length) return { error: `invalid_input: ${misheard.join(", ")}` };
     return memoryWrite(ctx, async (query) => {
       const now = Date.now();
       const by = cfg.created_by;
@@ -229,6 +246,12 @@ export default defineStep({
         const note = fitNote(vocab, p.term, subject.type, object?.type);
         if (note) ontology.notes.push(note);
         const predicate = p.term.name;
+        // Kept as given. With no form, the name given is the form: it may be an alias the
+        // subject was found by (BTC, on Bitcoin). NULL when it is the subject's name.
+        const form = f.form?.trim() || f.subject.name.trim();
+        const heard = p.term.role === "mishearing"
+          ? { value: f.value!.trim(), form: normalize(form) !== normalize(subject.name) ? form : null }
+          : undefined;
         // Said about the user (subject or object) by someone else: kept, and shown, not taken as the user's own word.
         const flag = fromOther(subject) || fromOther(object) ? { about_user_from: { ref_id: speaker!.ref_id, name: speaker!.name } } : {};
         const also = similar.length ? { similar } : {};
@@ -237,14 +260,15 @@ export default defineStep({
         // add this episode as another source and fill in a date it was
         // missing, never one that would end it before it began. Said to be
         // past while held now, it stops being held.
+        // A mishearing is the same when its text and form are, whatever its sentence.
         const same = async (held: boolean) => (await query(
-          `MATCH (x:Fact)-[:SUBJECT]->(s:Entity) WHERE s.ref_id = $s AND x.predicate = $p AND x.text = $t
+          `MATCH (x:Fact)-[:SUBJECT]->(s:Entity) WHERE s.ref_id = $s AND x.predicate = $p AND ${heard ? "x.value IS NOT NULL" : "x.text = $t"}
              AND x.expired_at IS ${held ? "NULL" : "NOT NULL"} AND x.deleted_at IS NULL
            OPTIONAL MATCH (x)-[:OBJECT]->(o:Entity)
            WITH x, o WHERE ${object ? "o.ref_id = $o" : "o IS NULL"}
-           RETURN x.ref_id AS ref_id, x.valid_at AS valid_at, x.invalid_at AS invalid_at LIMIT 1`,
-          { s: subject.ref_id, p: predicate, t: f.text, ...(object ? { o: object.ref_id } : {}) },
-        ))[0];
+           RETURN x.ref_id AS ref_id, x.valid_at AS valid_at, x.invalid_at AS invalid_at, x.value AS value, x.form AS form`,
+          { s: subject.ref_id, p: predicate, ...(heard ? {} : { t: f.text }), ...(object ? { o: object.ref_id } : {}) },
+        )).find((x) => !heard || (normalize(x.value) === normalize(heard.value) && normalize(x.form ?? subject.name) === normalize(heard.form ?? subject.name)));
         const held = await same(true);
         const hit = held ?? (past ? await same(false) : undefined);
         if (hit) {
@@ -294,8 +318,8 @@ export default defineStep({
         const factId = newRefId();
         await query(
           `CREATE (:Fact {ref_id: $id, predicate: $p, text: $t, confidence: 1.0, valid_at: $valid, invalid_at: $invalid,
-                   expired_at: $expired, created_by: $by, created_at: $now, updated_at: $now, value: $value})`,
-          { id: factId, p: predicate, t: f.text, value: alias ? f.object!.name : null, valid, invalid: history ? Math.min(...later, ...(invalid !== null ? [invalid] : [])) : invalid, expired: ended ? now : null, now, by },
+                   expired_at: $expired, created_by: $by, created_at: $now, updated_at: $now, value: $value, form: $form})`,
+          { id: factId, p: predicate, t: f.text, value: alias ? f.object!.name : heard?.value ?? null, form: heard?.form ?? null, valid, invalid: history ? Math.min(...later, ...(invalid !== null ? [invalid] : [])) : invalid, expired: ended ? now : null, now, by },
         );
         await query("MATCH (x:Fact), (s:Entity) WHERE x.ref_id = $f AND s.ref_id = $s CREATE (x)-[:SUBJECT]->(s)", { f: factId, s: subject.ref_id });
         if (object) await query("MATCH (x:Fact), (o:Entity) WHERE x.ref_id = $f AND o.ref_id = $o CREATE (x)-[:OBJECT]->(o)", { f: factId, o: object.ref_id });

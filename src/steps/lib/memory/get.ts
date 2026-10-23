@@ -19,7 +19,7 @@ async function entity(query: Query, where: string, params: Record<string, unknow
      OPTIONAL MATCH (f)-[:SUBJECT]->(s:Entity)
      OPTIONAL MATCH (f)-[:OBJECT]->(o:Entity)
      RETURN f.ref_id AS ref_id, f.text AS text, f.predicate AS predicate, f.valid_at AS valid_at,
-            f.invalid_at AS invalid_at, f.value AS value, label(r) AS role, s.name AS subject, o.name AS object
+            f.invalid_at AS invalid_at, f.value AS value, f.form AS form, label(r) AS role, s.name AS subject, o.name AS object
      ORDER BY ${order}`,
     { id: e.ref_id },
   );
@@ -47,6 +47,7 @@ async function entity(query: Query, where: string, params: Record<string, unknow
     ...(f.role === "SUBJECT" && f.object ? { object: f.object } : {}),
     ...(f.role === "OBJECT" ? { subject: f.subject } : {}),
     ...(f.value ? { value: f.value } : {}),
+    ...(f.form ? { form: f.form } : {}),
     since: iso(f.valid_at),
   });
   const [{ n }] = await query("MATCH (ep:Episode)-[:MENTIONS]->(e:Entity {ref_id: $id}) RETURN count(ep) AS n", { id: e.ref_id });

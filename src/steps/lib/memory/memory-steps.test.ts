@@ -38,8 +38,8 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
   const me = { type: "Self", name: "Me" };
   const ids: Record<string, string> = {};
 
-  it("registers the nine steps, and not the shared modules", () => {
-    assert.deepEqual(types.sort(), ["memory/duplicates", "memory/export", "memory/forget", "memory/get", "memory/import", "memory/merge", "memory/ontology", "memory/recall", "memory/remember"]);
+  it("registers the eleven steps, and not the shared modules", () => {
+    assert.deepEqual(types.sort(), ["memory/attributes", "memory/duplicates", "memory/export", "memory/forget", "memory/get", "memory/import", "memory/lexicon", "memory/merge", "memory/ontology", "memory/recall", "memory/remember"]);
   });
 
   it("remember creates Self and the fact, resolving an alias predicate", async () => {

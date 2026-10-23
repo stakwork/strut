@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Query, type Row, editAliases, memoryWrite, supersede } from "./_db.js";
+import { type Query, type Row, editAliases, memoryWrite, normalize, supersede } from "./_db.js";
 import { lookup, vocabulary } from "./_ontology.js";
 import { candidatePairs } from "./duplicates.js";
 import { SYSTEM_WRITER as JANITOR } from "../../../system-workflows.js";
@@ -74,6 +74,14 @@ export default defineStep({
       }
       const notes = kept.type === gone.type ? [] : [`Merged a ${gone.type} into a ${kept.type}.`];
 
+      // A mishearing with no form meant the duplicate's name: it keeps meaning that.
+      if (normalize(gone.name) !== normalize(kept.name)) {
+        await query(
+          `MATCH (f:Fact)-[:SUBJECT]->(d:Entity) WHERE d.ref_id = $dup AND f.predicate IN $heard AND f.value IS NOT NULL AND f.form IS NULL
+           SET f.form = $name`,
+          { dup, heard: vocab.predicatesWithRole("mishearing"), name: gone.name },
+        );
+      }
       const moved = {
         subject_of: await repoint(query, "SUBJECT", "Fact", dup, keep),
         object_of: await repoint(query, "OBJECT", "Fact", dup, keep),
@@ -104,17 +112,22 @@ export default defineStep({
       const facts = (await query(
         `MATCH (f:Fact)-[:SUBJECT]->(k:Entity) WHERE k.ref_id = $keep AND f.expired_at IS NULL AND f.deleted_at IS NULL
            AND (f.invalid_at IS NULL OR f.invalid_at > $now)
-         RETURN f.ref_id AS id, f.predicate AS predicate, f.text AS text, f.valid_at AS valid_at, f.created_at AS created_at`,
+         RETURN f.ref_id AS id, f.predicate AS predicate, f.text AS text, f.value AS value, f.form AS form,
+                f.valid_at AS valid_at, f.created_at AS created_at`,
         { keep, now },
       )).sort(newer);
       const one = new Set<string>();
+      // A mishearing repeats when its text and form do, as in remember, whatever its sentence.
+      const heard = new Set(vocab.predicatesWithRole("mishearing"));
       for (const p of new Set(facts.map((f) => f.predicate as string))) {
         if ((await lookup(query, "predicate", p))?.cardinality === "one") one.add(p);
       }
       const newest = new Map<string, { id: string; valid_at: unknown }>();
       const superseded: string[] = [];
       for (const f of facts) {
-        const group = one.has(f.predicate) ? `${f.predicate}` : `${f.predicate}\u0000${f.text}`;
+        const group = one.has(f.predicate) ? `${f.predicate}`
+          : heard.has(f.predicate) && f.value != null ? `${f.predicate}\u0000${normalize(f.value)}\u0000${normalize(f.form ?? kept.name)}`
+          : `${f.predicate}\u0000${f.text}`;
         const winner = newest.get(group);
         if (!winner) { newest.set(group, { id: f.id, valid_at: f.valid_at }); continue; }
         // As in remember: a replaced value ended when the kept one began, if known; a repeat just stops being held.
