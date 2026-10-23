@@ -1053,6 +1053,10 @@ button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`.
+Alone, the page reads only the listing the app is in — `GET /apps`, or that
+one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
+workflows, step types or other peers (one that does not answer cannot hold
+it at "Loading apps…"), and no `GET /runs/active` poll while it shows.
 
 ### 14.4 A published app as a deliverable
 
