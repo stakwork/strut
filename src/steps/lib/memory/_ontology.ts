@@ -26,7 +26,8 @@ export type Term = {
   parent: string;
   /** Entity types: how names are matched: "person", "organisation" or "plain"; "" inherits, then plain. */
   naming: string;
-  /** Entity types: "user" marks the one type that is the user. Predicates: "alias" marks a fact whose text is another name for its subject. */
+  /** Entity types: "user" marks the one type that is the user. Predicates: "alias" marks a fact whose text is another name for its subject;
+   *  "mishearing" one whose value is how dictation mishears it (never an alias). */
   role: string;
 };
 

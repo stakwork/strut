@@ -39,6 +39,11 @@ export const SEED: Seeded[] = [
     name: "Task", description: "Something to do later: a thing the user means to do is a Task, with what it is about and when it is due.",
     aliases: ["todo", "reminder", "action"], previous: "Something to do later.",
   }),
+  entityType({
+    name: "Lingo",
+    description: "A word or phrase the user uses that is not a person, place, organisation, project or topic: jargon, an acronym, a product or code word.",
+    aliases: ["term", "jargon", "acronym", "word", "vocabulary"],
+  }),
 
   predicate({ name: "name", description: "What someone or something is called.", cardinality: "one", subject_types: ANY, aliases: ["full_name", "called", "named", "is_called"], role: "alias" }),
   predicate({ name: "lives_in", description: "Where someone lives.", cardinality: "one", subject_types: ["Person"], object_types: ["Place"], aliases: ["based_in", "lives_at", "home", "resides_in"] }),
@@ -50,5 +55,10 @@ export const SEED: Seeded[] = [
   predicate({ name: "interested_in", description: "A subject they follow.", cardinality: "many", subject_types: ["Person"], object_types: ["Topic", "Project"], aliases: ["interest", "into", "curious_about"] }),
   predicate({ name: "diet", description: "What they eat or avoid eating.", cardinality: "one", subject_types: ["Person"], aliases: ["eats", "dietary", "dietary_requirement"] }),
   predicate({ name: "about", description: "What a task, event or topic concerns.", cardinality: "many", subject_types: ["Task", "Event", "Topic"], object_types: ANY, aliases: ["regarding", "for", "concerns", "related_to"] }),
+  // The wrong text is the fact's value, never an alias: a misrecognition must not find or merge anything.
+  predicate({
+    name: "heard_as", description: "How dictation mishears this: the wrong text it writes for it.", cardinality: "many",
+    subject_types: ANY, aliases: ["misheard_as", "transcribed_as"], role: "mishearing",
+  }),
   predicate({ name: "due", description: "When a task should be done.", cardinality: "one", subject_types: ["Task"], aliases: ["deadline", "due_on", "due_by"] }),
 ];
