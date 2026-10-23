@@ -29,6 +29,10 @@ export default defineStep({
       .string()
       .optional()
       .describe("Only when the work has become another kind (a plan the person approved, now a code change): its name in the list of the kinds of work a job does here. Left out, the job keeps the kind it has."),
+    mode: z
+      .enum(["plan", "edit", "auto"])
+      .optional()
+      .describe("A job a local coding agent does: its mode from this turn on (auto lets it run commands, only when the person said so). Left out, it keeps the one it has."),
     attachments: attachmentsField,
   }),
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
@@ -42,7 +46,7 @@ export default defineStep({
       launch,
       {
         job: cfg.job,
-        input: { prompt: cfg.prompt, ...(cfg.session ? { session: cfg.session } : {}), ...(cfg.kind ? { kind: cfg.kind } : {}) },
+        input: { prompt: cfg.prompt, ...(cfg.session ? { session: cfg.session } : {}), ...(cfg.kind ? { kind: cfg.kind } : {}), ...(cfg.mode ? { mode: cfg.mode } : {}) },
         ...(attachments ? { attachments } : {}),
       },
       cfg.job,

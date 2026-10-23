@@ -118,6 +118,8 @@ import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
+import { ACP_PRESETS } from "./steps/lib/acp/prompt.js";
+import { jobWorktree } from "./job-worktree.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -3655,11 +3657,36 @@ export async function createStrut<TServices = unknown>(
       // names its own, so the caller names only the job.
       const last = wanted ? undefined : turnOf((await readJobRecord(jobRoot(dataDir, job)))?.runs);
       const workflow = wanted ?? last?.workflow ?? "job";
-      const carried = (["peer", "kind"] as const).filter((k) => input[k] === undefined);
+      // A local coding agent's job keeps its agent, mode and folder (as `cwd`).
+      const carried = (["peer", "kind", "agent", "mode", "cwd"] as const).filter((k) => input[k] === undefined);
+      // What this launch names itself, before the last turn's values join it.
+      const named = typeof input["agent"] === "string" ? input["agent"] : undefined;
       if (last && carried.length) {
         const start = (await store.getRunEvents(last.workflow, last.runId)).find((e) => e.type === "run.start") as { input?: unknown } | undefined;
         const was = start?.input as Record<string, unknown> | undefined;
         for (const k of carried) if (typeof was?.[k] === "string") input = { ...input, [k]: was[k] };
+      }
+      // A local coding agent (job/start { agent, folder }): only a name the
+      // host offers or one of acp/prompt's presets, never a command line a
+      // model wrote; the folder by its name, as a worktree of its own.
+      const hostJob = opts.job === false ? undefined : opts.job;
+      if (named !== undefined) {
+        const command = hostJob?.agents && Object.hasOwn(hostJob.agents, named) ? hostJob.agents[named] : undefined;
+        if (!command && !Object.hasOwn(ACP_PRESETS, named)) {
+          const offered = [...new Set([...Object.keys(hostJob?.agents ?? {}), ...Object.keys(ACP_PRESETS)])];
+          throw new Error(`agent_unknown: "${named}" is not a coding agent this strut offers (${offered.join(", ")})`);
+        }
+        if (command) input = { ...input, agent: command };
+      }
+      if (input["folder"] !== undefined) {
+        const name = String(input["folder"]);
+        const { folder: _folder, ...rest } = input;
+        input = rest;
+        const root = hostJob?.folders && Object.hasOwn(hostJob.folders, name) ? hostJob.folders[name] : undefined;
+        if (!root) {
+          throw new Error(`folder_unknown: "${name}" is not one of this strut's folders (${Object.keys(hostJob?.folders ?? {}).join(", ") || "it has none"})`);
+        }
+        input = { ...input, cwd: await jobWorktree(root, jobRoot(dataDir, job), job) };
       }
       // A builder job on a peer runs there (builder.yaml's `remote`
       // branch), and strut/run-workflow carries no files.

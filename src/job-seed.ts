@@ -56,6 +56,17 @@ export interface JobSeedOptions {
    *  delete. A delta can only CLOSE a workflow to peers, never open one:
    *  opening is the template's statement. */
   peer?: false;
+  /** The host's folders a job may work in with a local coding agent
+   *  (`job/start { agent, folder }`): name → absolute path. A job names one;
+   *  it works in a git worktree of it (on a branch of its own) when the
+   *  folder is a repository, else in the folder itself. Not part of the
+   *  seed: read by the job launcher. */
+  folders?: Record<string, string>;
+  /** The host's command line for a local coding agent by name (`claude` →
+   *  the adapter's absolute path), for a strut whose PATH has none of them.
+   *  A name here or one of `acp/prompt`'s presets is what `job/start` takes;
+   *  never a command line from the model. */
+  agents?: Record<string, string>;
 }
 
 export const JOB_WORKFLOW = "job";
