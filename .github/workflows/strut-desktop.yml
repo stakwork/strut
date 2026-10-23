@@ -23,10 +23,17 @@ jobs:
         with:
           node-version: "22"
 
+      # fixer/ is node-llama-cpp for dictation's fixer, which only this package
+      # carries (strut's own dependencies never install it): its own lockfile,
+      # no install scripts (the prebuilt binaries are all the fixer loads).
       - name: Install
         run: |
           yarn install --frozen-lockfile
+          yarn --cwd fixer install --frozen-lockfile --ignore-scripts
           npm --prefix web install
+
+      - name: Check the fixer's types against node-llama-cpp
+        run: npm run check:fixer
 
       - name: Package darwin-arm64 (smoke-tested)
         run: npm run package:desktop -- --smoke --tar --out dist-desktop

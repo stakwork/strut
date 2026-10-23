@@ -45,7 +45,10 @@ them and fails the build if a binary turns up anywhere else. The dictation
 fixer's node-llama-cpp binaries (the addon, the ggml/llama dylibs and the ggml
 backends it loads from its own folder, Metal among them) sit together in
 `native/llama/<platform folder>`, found through the prebuilt package's
-`getBinsDir()`; never built from source or downloaded at runtime. The app
+`getBinsDir()`; never built from source or downloaded at runtime.
+node-llama-cpp's JavaScript sits in `fixer/` (its own install, not strut's
+dependencies, so only this package carries it); a package built with
+`--no-fixer` has neither, and dictation then offers no fixer. The app
 code-signs and notarizes that directory and its folders. They ship ad-hoc signed, which
 is why an unsigned download trips Gatekeeper; inside a signed, notarized app
 bundle there is no prompt.

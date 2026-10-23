@@ -26,7 +26,7 @@ import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DictationModels } from "./dictation-models.js";
-import { DictationFixer } from "./fixer.js";
+import { DictationFixer, fixerRuntime } from "./fixer.js";
 import { createInstaller, isInstalled, type DownloadProgress, type Installer } from "./download.js";
 import { compileHotwords, parseHotwords, HotwordsStore, type Hotword } from "./hotwords.js";
 import {
@@ -161,7 +161,8 @@ export interface SttServiceOptions {
   fetchImpl?: typeof fetch;
   /** Downloads models (tests: a fake). Default: fetch + sha256 + extract (download.ts). */
   install?: Installer;
-  /** What the fixer's worker loads (tests: a fake model). Default: node-llama-cpp (fixer-engine.ts). */
+  /** What the fixer's worker loads (tests: a fake model). Default: node-llama-cpp (fixer-engine.ts) from
+   *  fixer/, which only the desktop package carries; a strut without either offers no fixer. */
   fixerSpec?: (m: { id: string; path: string }) => ModelWorkerSpec;
   env?: Record<string, string | undefined>;
   log?: (msg: string) => void;
@@ -220,6 +221,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     install,
     defaultSpeech: defaultModelId(),
     requireSpeechEngine: requireEngine,
+    fixerAvailable: () => opts.fixerSpec != null || fixerRuntime() != null,
     log,
   });
   const fixer = new DictationFixer({ model: () => dictation.fixerModel(), ...(opts.fixerSpec ? { spec: opts.fixerSpec } : {}) });

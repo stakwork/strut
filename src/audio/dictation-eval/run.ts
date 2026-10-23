@@ -11,7 +11,9 @@
  *
  * Opt-in and not part of `npm test`: it needs the GGUFs in ./.models/gguf
  * (gitignored; Qwen3-{0.6B,1.7B}-Q4_K_M.gguf, the files models.ts
- * FIXER_MODELS downloads), or `--dir` naming another folder that holds them.
+ * FIXER_MODELS downloads), or `--dir` naming another folder that holds them,
+ * and node-llama-cpp in fixer/ (`yarn --cwd fixer install --frozen-lockfile
+ * --ignore-scripts`; strut's own dependencies do not have it).
  * Node must load .ts in a worker thread: Node 22.18+ (or 22.6+ with
  * NODE_OPTIONS=--experimental-transform-types).
  */
