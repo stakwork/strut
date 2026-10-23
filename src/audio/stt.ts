@@ -26,6 +26,7 @@ import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DictationModels } from "./dictation-models.js";
+import { DictationFixer } from "./fixer.js";
 import { createInstaller, isInstalled, type DownloadProgress, type Installer } from "./download.js";
 import { compileHotwords, parseHotwords, HotwordsStore, type Hotword } from "./hotwords.js";
 import {
@@ -132,6 +133,8 @@ export interface SttService {
   readonly sessions: SessionStore;
   /** The user's dictation model picks and their downloads (dictation/* steps). */
   readonly dictation: DictationModels;
+  /** The picked fixer model, loaded on use (fixer.ts): the vocabulary's rewrite and learning. */
+  readonly fixer: DictationFixer;
   /** Whether the sherpa addon loads in this process. */
   available(): Promise<boolean>;
   models(): Promise<SttModelStatus[]>;
@@ -217,6 +220,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     requireSpeechEngine: requireEngine,
     log,
   });
+  const fixer = new DictationFixer({ model: () => dictation.fixerModel() });
 
   async function load(id: string): Promise<Loaded> {
     const model = requireModel(id);
@@ -376,6 +380,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     hotwords,
     sessions,
     dictation,
+    fixer,
     available,
     async models() {
       const d = defaultModelId();
@@ -392,7 +397,9 @@ export function createStt(opts: SttServiceOptions): SttService {
     openStream,
     transcribe,
     correct: (session, index, text) => sessions.append(session, { type: "correction", t: new Date().toISOString(), index, text }),
-    close: () => host.close(),
+    close: async () => {
+      await Promise.all([host.close(), fixer.close()]);
+    },
   };
 }
 

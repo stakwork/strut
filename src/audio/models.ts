@@ -152,14 +152,12 @@ export function pickModelFiles(entries: readonly string[]): {
 // ── The dictation catalog: what a user picks (plans/dictation-models.md) ───
 
 /**
- * A fixer: a small instruct model that edits a transcript against the
- * vocabulary and judges a user's edits (phase 3 of the plan). Nothing runs
- * one yet: the runtime is being chosen by the phase-1 spike, so `runtime`
- * and the files are PROVISIONAL. These are the GGUF Q4_K_M builds for
- * llama.cpp (node-llama-cpp); if the spike picks transformers.js instead,
- * the entries change to ONNX exports. Qwen publishes only Q8_0 GGUFs of
- * these sizes, so the Q4_K_M files are unsloth's, pinned to a commit; the
- * sha256 and size were verified by downloading each file.
+ * A fixer: a small instruct model that scores what dictation's vocabulary
+ * pipeline asks (audio/lingo.ts, run by audio/fixer.ts on node-llama-cpp with
+ * Metal). The spike (plans/dictation-models.md, phase 1) picked llama.cpp
+ * over transformers.js and the 1.7B as the default. Qwen publishes only Q8_0
+ * GGUFs of these sizes, so the Q4_K_M files are unsloth's, pinned to a
+ * commit; the sha256 and size were verified by downloading each file.
  */
 export interface FixerModel {
   id: string;
@@ -170,6 +168,9 @@ export interface FixerModel {
   /** The file's name under the model's dir. */
   file: string;
   runtime: "llama.cpp";
+  /** How much more weight (nats) "yes" needs than "no" before an edit is
+   *  learned: the 0.6B leans yes on everything (tuned on the eval set). */
+  learnMargin: number;
   description: string;
 }
 
@@ -183,6 +184,7 @@ export const FIXER_MODELS: readonly FixerModel[] = [
     bytes: 396705472,
     file: "Qwen3-0.6B-Q4_K_M.gguf",
     runtime: "llama.cpp",
+    learnMargin: 1,
     description: "Qwen3 0.6B instruct (GGUF Q4_K_M). The small fixer: fastest, least able to judge context.",
   },
   {
@@ -192,7 +194,8 @@ export const FIXER_MODELS: readonly FixerModel[] = [
     bytes: 1107409472,
     file: "Qwen3-1.7B-Q4_K_M.gguf",
     runtime: "llama.cpp",
-    description: "Qwen3 1.7B instruct (GGUF Q4_K_M). The larger fixer: slower, better at telling a mishearing from a rewrite.",
+    learnMargin: 0,
+    description: "Qwen3 1.7B instruct (GGUF Q4_K_M). The default fixer: better at telling a mishearing from a rewrite, about twice the 0.6B's time.",
   },
 ];
 

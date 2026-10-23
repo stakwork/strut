@@ -1,11 +1,24 @@
 /**
- * Dictation's vocabulary (ported from Peel's Lingo.swift): the rewrite of a
+ * Dictation's vocabulary (plans/dictation-models.md): the rewrite of a
  * transcript before it is typed, and what an edit of the typed text teaches.
- * Pure and deterministic over a `Lexicon` (memory/lexicon's output) and an
- * everyday-word test (common-words.ts), so both are tested without a memory.
  *
- * `POST /audio/transcribe` applies `rewrite`; the `dictation/correction` step
- * runs `lessons` and writes each mishearing with `learnInput`.
+ * Code finds and builds; a small local model (the fixer, fixer.ts) only
+ * scores. The model never writes text:
+ *
+ * - Learn (`mishearings`, the dictation/correction step): the edit is diffed
+ *   here; each short change that could sound like what was typed is asked
+ *   yes/no, and learned when the model puts more weight on yes.
+ * - Fix (`rewrite`, POST /audio/transcribe): `recall` finds spans that may be
+ *   a vocabulary word; each is kept when the model finds the sentence with
+ *   the word likelier than as heard. Fillers and doubled words go by rule; a
+ *   phrase the speaker took back goes when the model names it and code finds
+ *   it right before its cue.
+ * - With no fixer (none picked, or too slow): fillers and doubled words still
+ *   go by rule, and only exact learned mishearings of two or more words are
+ *   applied (`heardOnly`); nothing is learned from edits.
+ *
+ * Pure over a `Lexicon` (memory/lexicon's output) and a `Fixer`, so both are
+ * tested with scores injected.
  */
 
 /** memory/lexicon's output, as dictation reads it. */
@@ -38,19 +51,19 @@ export interface Heard {
   form: string | null;
 }
 
-/** Whether a lowercased word is an everyday word. */
-export type IsCommonWord = (word: string) => boolean;
-
+/** One change the rewrite made: `heard` at offset `at` of the transcript
+ *  became `written` ("" when it was removed: a filler, a doubled word, a
+ *  phrase taken back). */
 export interface Change {
-  /** What dictation wrote, and what was typed in its place. */
+  heard: string;
+  written: string;
+  at: number;
+}
+
+export interface Mishearing {
   heard: string;
   written: string;
 }
-
-/** What one hunk of an edit means: a mishearing to learn, or nothing. */
-export type Lesson = { kind: "misheard"; heard: string; written: string } | { kind: "nothing" };
-
-const NOTHING: Lesson = { kind: "nothing" };
 
 /** memory/lexicon's output → a Lexicon. */
 export function lexiconFrom(output: any): Lexicon {
@@ -92,99 +105,43 @@ export function wasUndone(lexicon: Lexicon, value: string, written: string): boo
   return lexicon.undone.some((u) => u.value.toLowerCase() === value.toLowerCase() && u.written.toLowerCase() === written.toLowerCase());
 }
 
-/** Words taught to dictation: a word of the lingo type, or anything with a
- *  mishearing; not one turned off. A name an agent stored in its own casing
- *  ("github") is not, so it never undoes how the user writes it. */
-const taught = (lexicon: Lexicon) =>
-  lexicon.entries.filter((e) => !e.dictationOff && ((!!lexicon.lingoType && e.type === lexicon.lingoType) || e.heard.length > 0));
+// ── The fixer: what the model is asked ─────────────────────────────────────
 
-// ── The rewrite ─────────────────────────────────────────────────────────────
-
-/**
- * What dictation's text becomes before it is typed: each known mishearing
- * replaced by what it stands for, new spellings of taught words put right,
- * then taught words given their casing. What it changed is reported.
- */
-export function rewrite(text: string, lexicon: Lexicon, isCommon: IsCommonWord): { text: string; changes: Change[] } {
-  const words = new Words(text);
-  const changes: Change[] = [];
-  // Mishearings, longest first, so "bee tee see" wins over "see".
-  const pairs = lexicon.entries.filter((e) => !e.dictationOff)
-    .flatMap((e) => e.heard.map((h) => ({ heard: new Words(h.value), written: h.form ?? e.name })))
-    // A token with no letters or digits ("&") is no mishearing: it would match every bare punctuation mark.
-    .filter((p) => p.heard.tokens.length > 0 && p.heard.keys.every(Boolean))
-    // One common word is never rewritten on its own ("fix" for Sphinx):
-    // that would be worse than the mistake.
-    .filter((p) => !(p.heard.tokens.length === 1 && isCommon(p.heard.keys[0]!)))
-    .sort((a, b) => b.heard.tokens.length - a.heard.tokens.length);
-  for (let index = 0; index < words.tokens.length; index++) {
-    const pair = pairs.find((p) => words.matches(p.heard, index));
-    if (!pair) continue;
-    const heard = words.text(index, pair.heard.tokens.length);
-    words.replace(index, pair.heard.tokens.length, pair.written);
-    changes.push({ heard, written: pair.written });
-  }
-  fuzzy(words, changes, lexicon, isCommon);
-  // Casing: a single-word written form that is not an everyday word takes
-  // its own casing ("stakwork" → "Stakwork"; "peel" stays). Taught words only.
-  const cased = new Map<string, string>();
-  for (const w of taught(lexicon).flatMap((e) => e.written)) {
-    // Not a one-letter form ("X"): every lone x would take its casing.
-    if (!w.includes(" ") && length(letters(w)) > 1 && !cased.has(w.toLowerCase())) cased.set(w.toLowerCase(), w);
-  }
-  for (let i = 0; i < words.tokens.length; i++) {
-    const key = words.keys[i]!;
-    const form = cased.get(key);
-    if (!form || isCommon(key) || words.core(i) === form) continue;
-    changes.push({ heard: words.core(i), written: form });
-    words.replace(i, 1, form);
-  }
-  return { text: words.joined, changes };
+/** One change of an edit, asked yes/no: is it a mishearing? */
+export interface JudgeQuestion {
+  typed: string;
+  edited: string;
+  from: string;
+  to: string;
+  /** The vocabulary entries the change touches, as the prompt names them ("" for none). */
+  known: string;
 }
 
-/** Dictation spells a name a new way each time ("Stockwork", "stackwork",
- *  "stock work"): one word, or two, put right when its letters, spaces and
- *  case aside, are a known form's, or for a long word nearly so (a quarter of
- *  its letters off at most). Only taught words, never an everyday word alone. */
-function fuzzy(words: Words, changes: Change[], lexicon: Lexicon, isCommon: IsCommonWord): void {
-  // Each form's letters, and the word it stands for.
-  const exact = new Map<string, string>();
-  const near: { letters: string; written: string }[] = [];
-  // A form of one letter or none ("C#", "&") is left out: it would take every lone letter.
-  const add = (l: string, written: string) => {
-    if (length(l) > 1 && !exact.has(l)) exact.set(l, written);
-  };
-  for (const entry of taught(lexicon)) {
-    for (const written of entry.written) {
-      const l = letters(written);
-      add(l, written);
-      if (length(l) >= 6) near.push({ letters: l, written });
-    }
-    for (const heard of entry.heard) add(letters(heard.value), heard.form ?? entry.name);
-  }
-  if (exact.size === 0) return;
-  for (let index = 0; index < words.tokens.length; index++) {
-    for (const count of [2, 1]) {
-      if (index + count > words.tokens.length) continue;
-      // Not across punctuation: "a stack. Work" stays.
-      if (!words.contiguous(index, count)) continue;
-      const keys = words.keys.slice(index, index + count);
-      if (count === 1 && isCommon(keys[0]!)) continue;
-      const joined = keys.join("");
-      // A known form with a plural or possessive ending ("Stakwork's", "stakworks") is that word, already right.
-      const stem = joined.replace(/['’]?s$/, "");
-      if (count === 1 && stem !== joined && exact.has(stem)) continue;
-      // Two words only as a known form exactly ("stock work"); one long word
-      // also when nearly so ("Stockwork").
-      const written = exact.get(joined) ?? (count === 1 && length(joined) >= 6
-        ? near.find((n) => distance(joined, n.letters) * 4 <= Math.max(length(joined), length(n.letters)))?.written
-        : undefined);
-      if (written === undefined || words.text(index, count) === written) continue;
-      changes.push({ heard: words.text(index, count), written });
-      words.replace(index, count, written);
-      break;
-    }
-  }
+/** A sentence to score, after a line saying the speaker often mentions `name` (a `type`). */
+export interface ScoreSentence {
+  name: string;
+  type: string;
+  text: string;
+}
+
+/** What the model named as taken back: the words, and the words that took them back. */
+export interface Retraction {
+  wrong: string;
+  cue: string;
+}
+
+/** A loaded fixer model (fixer.ts), or a fake with scores injected (tests). */
+export interface Fixer {
+  /** The catalog id (models.ts FIXER_MODELS). */
+  id: string;
+  /** How much more weight (in nats) "yes" needs than "no" for a learn. */
+  learnMargin: number;
+  /** log P(yes) − log P(no) for each question, from one forward pass each. */
+  judge(questions: JudgeQuestion[]): Promise<number[]>;
+  /** The log-likelihood of each sentence. */
+  score(sentences: ScoreSentence[]): Promise<number[]>;
+  /** What the speaker took back in `text`; only asked when a cue word appears. */
+  retract(text: string): Promise<Retraction[]>;
 }
 
 // ── Learning from an edit ───────────────────────────────────────────────────
@@ -192,109 +149,281 @@ function fuzzy(words: Words, changes: Change[], lexicon: Lexicon, isCommon: IsCo
 /** More than this many words on either side is a rewrite, not a correction. */
 const MAX_HUNK = 4;
 
-/** The lessons in turning `typed` into `edited`, one per changed run; empty
- *  when the edit is a rewrite rather than corrections. */
-export function lessons(typed: string, edited: string, lexicon: Lexicon, isCommon: IsCommonWord): Lesson[] {
-  const a = new Words(typed), b = new Words(edited);
-  // Compared as written, so a casing fix ("stakwork" → "Stakwork") is a change.
-  const hunks = diff(a.tokens.map((_, i) => a.core(i)), b.tokens.map((_, i) => b.core(i)));
-  // Each run counts by its shorter side: "k p i" → "KPI" is one change, not three.
-  const changed = hunks.reduce((n, h) => n + Math.min(Math.max(h.a.length, 1), Math.max(h.b.length, 1)), 0);
-  // A short dictation may change by half or more ("stakwork" → "Stakwork").
-  if (hunks.length === 0 || !(changed * 2 <= a.keys.length || a.keys.length <= 3)) return [];
-  if (!hunks.every((h) => h.a.length <= MAX_HUNK && h.b.length <= MAX_HUNK)) return [];
-  return hunks.map((h) => lesson(h.a.map((i) => a.core(i)).join(" "), h.b.map((i) => b.core(i)).join(" "), lexicon, isCommon));
+/** The changes of an edit the fixer is asked about: both sides present,
+ *  at most four words a side, and sounding alike (a word that sounds nothing
+ *  like it is a changed mind, not a mishearing). */
+export function questions(typed: string, edited: string, lexicon: Lexicon): JudgeQuestion[] {
+  return hunks(typed, edited)
+    .filter((h) => h.from && h.to && h.from.split(" ").length <= MAX_HUNK && h.to.split(" ").length <= MAX_HUNK && soundsAlike(h.from, h.to))
+    .map((h) => ({ typed, edited, from: h.from, to: h.to, known: knownFor(lexicon, h.from, h.to) }));
 }
 
-/** One hunk: dictation's `from`, the user's `to`. */
-export function lesson(from: string, to: string, lexicon: Lexicon, isCommon: IsCommonWord): Lesson {
-  // A cut or an addition teaches nothing.
-  if (!from || !to) return NOTHING;
-  const fromWords = new Words(from), toWords = new Words(to);
-  // Both everyday words: "their" → "there".
-  if (fromWords.keys.every(isCommon) && toWords.keys.every(isCommon) && from.toLowerCase() !== to.toLowerCase()) return NOTHING;
-  // Two correct ways to write one thing: "BTC" → "Bitcoin".
-  const entry = entryWriting(lexicon, from);
-  if (entry && entry === entryWriting(lexicon, to)) return NOTHING;
-  // A word the user turned off for dictation is left alone.
-  if (entryWriting(lexicon, to)?.dictationOff) return NOTHING;
-  if (!lingoShaped(to, lexicon, isCommon)) return NOTHING;
-  // Same letters, other casing: "stakwork" → "Stakwork". Not an everyday
-  // word or a letter capitalised ("i" → "I", "so" → "So", "apple" → "Apple").
-  const sameLetters = letters(from) === letters(to);
-  if (sameLetters && fromWords.tokens.length === toWords.tokens.length && fromWords.keys.every((k) => isCommon(k) || length(k) === 1)) return NOTHING;
-  if (!sameLetters && !soundsLike(from, to)) return NOTHING;
-  // Dictation wrote something the user could mean ("PH" for P8): learning
-  // it would rewrite real uses of it.
-  if (!sameLetters && plausible(from, lexicon, isCommon)) return NOTHING;
-  if (wasUndone(lexicon, from, to)) return NOTHING;
-  return { kind: "misheard", heard: from, written: to };
+/** What an edit teaches: each change the fixer judges a mishearing, never a
+ *  pair the user undid or a word turned off for dictation. */
+export async function mishearings(typed: string, edited: string, lexicon: Lexicon, fixer: Fixer): Promise<Mishearing[]> {
+  const qs = questions(typed, edited, lexicon);
+  if (!qs.length) return [];
+  const d = await fixer.judge(qs);
+  return qs
+    .filter((_, i) => (d[i] ?? -Infinity) > fixer.learnMargin)
+    .map((q) => ({ heard: q.from, written: q.to }))
+    .filter((p) => !wasUndone(lexicon, p.heard, p.written) && !entryWriting(lexicon, p.written)?.dictationOff);
 }
 
-/** Something the user might write on purpose: one everyday word, an acronym
- *  or other word-like token ("PH", "2FA", "iOS"), or a word already in the vocabulary. */
-function plausible(text: string, lexicon: Lexicon, isCommon: IsCommonWord): boolean {
-  if (entryWriting(lexicon, text)) return true;
-  const words = new Words(text);
-  if (words.tokens.length !== 1) return false;
-  return isCommon(words.keys[0]!) || wordLike(words.core(0));
+/** The lexicon entries a change touches, as the judge's prompt names them:
+ *  so "BTC" → "Bitcoin" reads as one thing, and an off word as off. */
+export function knownFor(lexicon: Lexicon, from: string, to: string): string {
+  const near = (s: string, e: LexiconEntry) => !!s && [...e.written, ...e.heard.map((h) => h.value)].some((w) => letters(w) === letters(s));
+  return lexicon.entries.filter((e) => near(from, e) || near(to, e))
+    .map((e) => `${e.written.join(", ")}${e.written.length > 1 ? " (same thing)" : ""}${e.dictationOff ? " (turned off for dictation)" : ""}`)
+    .join("; ");
 }
 
-/** Looks like a name or a term: not an everyday word, or cased, or carrying
- *  digits; or already in the vocabulary. */
-function lingoShaped(text: string, lexicon: Lexicon, isCommon: IsCommonWord): boolean {
-  if (entryWriting(lexicon, text)) return true;
-  return new Words(text).keys.some((k) => !isCommon(k)) || UPPER.test(text) || NUMBER.test(text);
+// ── The rewrite ─────────────────────────────────────────────────────────────
+
+/** An edit of a transcript: `from` at offset `at` becomes `to`. The offset
+ *  matters: `from` alone is ambiguous when a word repeats. */
+export interface Edit {
+  from: string;
+  to: string;
+  at: number;
 }
 
-/** An acronym, a mixed-case word or letters with digits: two or more
- *  characters, all capitals, a capital inside, or a digit. */
-function wordLike(word: string): boolean {
-  const core = [...word].filter(isPart);
-  if (core.length < 2) return false;
-  const capitals = core.filter((c) => UPPER.test(c)).length;
-  return core.some((c) => NUMBER.test(c)) || capitals >= 2 || core.slice(1).some((c) => UPPER.test(c));
+/** A span of the transcript that may be a vocabulary word. */
+export interface Candidate {
+  span: string;
+  at: number;
+  written: string;
+  type: string;
+  /** The span is a mishearing the user taught, exactly. */
+  heardBefore: boolean;
+}
+
+/** What dictation's text becomes with the fixer: vocabulary words where the
+ *  model reads them likelier (by more than `margin` nats), fillers, doubled
+ *  words and taken-back phrases removed. `changes` lists every edit, in order. */
+export async function rewrite(text: string, lexicon: Lexicon, fixer: Fixer, margin = 0): Promise<{ text: string; changes: Change[] }> {
+  // Each candidate in up to three readings: with the word, as heard, and as
+  // heard with the span's own capitals (so "tory" in lower case is no
+  // evidence for Tauri). All start with a capital, so "Peel the oranges" is
+  // no evidence for Peel.
+  const readings = recall(text, lexicon).map((c) => {
+    const edit = { from: c.span, to: c.written, at: c.at };
+    const heard = [text];
+    if (letters(c.span) !== letters(c.written)) heard.push(applyEdits(text, [{ ...edit, to: titleCase(c.span) }]));
+    return { edit, sentences: [applyEdits(text, [edit]), ...heard].map((s) => ({ name: c.written, type: c.type, text: capitalised(s) })) };
+  });
+  const scores = readings.length ? await fixer.score(readings.flatMap((r) => r.sentences)) : [];
+  let k = 0;
+  const scored: (Edit & { d: number })[] = [];
+  for (const r of readings) {
+    const s = scores.slice(k, (k += r.sentences.length));
+    const d = (s[0] ?? -Infinity) - Math.max(...s.slice(1));
+    if (d > margin) scored.push({ ...r.edit, d });
+  }
+  // Where two words claim the same span, the likelier.
+  const vocab: Edit[] = scored.filter((x) => !scored.some((y) => y !== x && overlap(x, y) && y.d > x.d)).map(({ d: _, ...e }) => e);
+  const removals = fillers(text);
+  if (TAKE_BACK.test(text)) {
+    for (const r of await fixer.retract(text)) {
+      const e = retraction(text, r.wrong, r.cue);
+      if (e) removals.push(e);
+    }
+  }
+  return finish(text, [...removals, ...vocab]);
+}
+
+/** With no fixer: fillers and doubled words by rule, and what the user
+ *  taught, exactly — a learned `heard` value of two or more words, as whole
+ *  words, never across punctuation, the longest first. A one-word mishearing
+ *  ("fix" for Sphinx) is an everyday word elsewhere: only the fixer, reading
+ *  the sentence, can tell, so without it it is left as heard. */
+export function heardOnly(text: string, lexicon: Lexicon): { text: string; changes: Change[] } {
+  const toks = tokens(text);
+  const pairs = lexicon.entries.filter((e) => !e.dictationOff)
+    .flatMap((e) => e.heard.map((h) => ({ keys: tokens(h.value).map((t) => t.core.toLowerCase()), written: h.form ?? e.name })))
+    // One word needs the fixer's check in context; none ("&") would match every bare mark.
+    .filter((p) => p.keys.length >= 2)
+    .sort((a, b) => b.keys.length - a.keys.length);
+  const edits: Edit[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    const p = pairs.find((p) => i + p.keys.length <= toks.length && p.keys.every((key, j) => toks[i + j]!.core.toLowerCase() === key) && contiguous(toks, i, p.keys.length));
+    if (!p) continue;
+    const from = text.slice(toks[i]!.start, toks[i + p.keys.length - 1]!.end);
+    if (from !== p.written) edits.push({ from, to: p.written, at: toks[i]!.start });
+    i += p.keys.length - 1;
+  }
+  const removals = fillers(text);
+  // Spacing is tidied only after a removal; a replacement alone leaves the text as it was around it.
+  return finish(text, [...removals, ...edits], removals.length > 0);
+}
+
+/** Applies the edits that do not overlap an earlier one; the changes in text
+ *  order. A removal leaves spacing and punctuation to tidy. */
+function finish(text: string, all: Edit[], tidying = true): { text: string; changes: Change[] } {
+  const edits = all.filter((x, i) => !all.slice(0, i).some((y) => overlap(x, y))).sort((a, b) => a.at - b.at);
+  if (!edits.length) return { text, changes: [] };
+  return { text: applyEdits(text, edits, tidying), changes: edits.map((e) => ({ heard: e.from, written: e.to, at: e.at })) };
+}
+
+// ── Recall: candidate vocabulary spans in a transcript ─────────────────────
+
+const MAX_CANDIDATES = 8;
+
+/** Fuzzy + sound-alike match of the transcript's 1–3-word spans against
+ *  every entry's heard values and written forms (not one turned off). It
+ *  finds; it never decides. Where spans for one word overlap, the better
+ *  match wins (an exact past mishearing, then the same letters or sounds,
+ *  then near), then the shortest ("stack work", not "the stack work"). */
+export function recall(text: string, lexicon: Lexicon): Candidate[] {
+  const toks = tokens(text);
+  const keys: { key: string; written: string; heard: boolean; type: string }[] = [];
+  for (const e of lexicon.entries) {
+    if (e.dictationOff) continue;
+    for (const w of e.written) keys.push({ key: w, written: w, heard: false, type: e.type });
+    for (const h of e.heard) keys.push({ key: h.value, written: h.form ?? e.name, heard: true, type: e.type });
+  }
+  const found: (Candidate & { score: number })[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    for (let n = 1; n <= 3 && i + n <= toks.length; n++) {
+      // Not across punctuation: "a stack. Work" is not "stack work".
+      if (!contiguous(toks, i, n)) break;
+      const span = text.slice(toks[i]!.start, toks[i + n - 1]!.end);
+      const ls = letters(span);
+      if (ls.length < 2) continue;
+      for (const k of keys) {
+        if (span === k.written) continue;
+        const lk = letters(k.key);
+        const sk = soundKey(span), kk = soundKey(k.key);
+        const long = Math.max(ls.length, lk.length);
+        // 3: heard exactly so before; 2: the same letters or sounds; 1: near.
+        const score =
+          k.heard && span.toLowerCase() === k.key.toLowerCase() ? 3
+          : ls === lk || (sk.length >= 3 && sk === kk) || (spoken(span) === spoken(k.key) && spoken(span).includes(" ")) ? 2
+          : (long >= 6 && distance(ls, lk) * 4 <= long) || (sk.length >= 6 && distance(sk, kk) <= 1) ? 1
+          : 0;
+        if (!score) continue;
+        const at = toks[i]!.start;
+        const seen = found.find((f) => f.at === at && f.span === span && f.written === k.written);
+        if (seen) (seen.score = Math.max(seen.score, score)), (seen.heardBefore ||= score === 3);
+        else found.push({ span, at, written: k.written, type: k.type, heardBefore: score === 3, score });
+      }
+    }
+  }
+  const better = (g: { score: number; span: string }, f: { score: number; span: string }) => g.score > f.score || (g.score === f.score && g.span.length < f.span.length);
+  return found
+    .filter((f) => !found.some((g) => g !== f && g.written === f.written && overlap(g, f) && better(g, f)))
+    .slice(0, MAX_CANDIDATES)
+    .map(({ score: _, ...c }) => c);
+}
+
+// ── Removals: fillers, doubled words, a phrase taken back ──────────────────
+
+const FILLERS = new Set(["um", "uh", "er", "erm", "uhm", "umm", "uhh", "hmm"]);
+/** Words a speaker can mean twice: "I know that that is", "she had had". */
+const DOUBLE_OK = new Set(["that", "had", "is", "do", "very", "really", "so", "no", "bye"]);
+
+/** Fillers, with the commas that set them off ("is, um, really" → "is
+ *  really"; "the plan, um." → "the plan."), and the first of a word said
+ *  twice in a row. */
+export function fillers(text: string): Edit[] {
+  const toks = tokens(text);
+  const out: Edit[] = [];
+  toks.forEach((t, i) => {
+    const key = t.core.toLowerCase();
+    if (FILLERS.has(key)) {
+      // A comma after it goes with it; a sentence's end stays. A comma before goes too.
+      const prev = toks[i - 1];
+      const at = prev?.trail === "," && !t.lead ? prev.end : t.start;
+      const end = t.end + (/^[,;:]*$/.test(t.trail) ? t.trail.length : 0);
+      out.push({ from: text.slice(at, end), to: "", at });
+    } else if (i + 1 < toks.length && toks[i + 1]!.core.toLowerCase() === key && !t.trail && !toks[i + 1]!.lead && !DOUBLE_OK.has(key)) out.push({ from: t.core, to: "", at: t.start });
+  });
+  return out;
+}
+
+/** A phrase that may take back what came before it: only then is the fixer asked. */
+export const TAKE_BACK = /(?:,|\b)\s*(?:no|sorry|I mean|actually|wait|or rather|scratch that)\s*,?\s/i;
+
+/** The span a take-back removes: from the wrong words through the cue and
+ *  the punctuation after it; null unless the cue follows the wrong words
+ *  with only punctuation and spaces between. */
+export function retraction(text: string, wrong: string, cue: string): Edit | null {
+  wrong = wrong.trim();
+  cue = cue.trim();
+  if (!wrong || !cue) return null;
+  const at = find(text, wrong);
+  if (at < 0) return null;
+  const rest = text.slice(at + wrong.length);
+  const c = find(rest, cue);
+  if (c < 0 || /[\p{L}\p{N}]/u.test(rest.slice(0, c))) return null;
+  let end = at + wrong.length + c + cue.length;
+  while (end < text.length && /[,;:.!?]/.test(text[end]!)) end++;
+  return { from: text.slice(at, end), to: "", at };
+}
+
+// ── Applying edits ──────────────────────────────────────────────────────────
+
+/** Applies edits at their offsets in `text` (right to left, so each offset
+ *  holds), then tidies the spacing and punctuation a removal leaves. */
+export function applyEdits(text: string, edits: Edit[], tidying = true): string {
+  let out = text;
+  for (const e of [...edits].sort((a, b) => b.at - a.at)) out = out.slice(0, e.at) + e.to + out.slice(e.at + e.from.length);
+  return tidying ? tidy(out) : out;
+}
+
+function tidy(out: string): string {
+  return out.replace(/[ \t]+/g, " ").replace(/\s+([,.!?;:])/g, "$1").replace(/([,;:])(?:\s*[,;:])+/g, "$1").replace(/([,;:])([.!?])/g, "$2").replace(/^[\s,;:]+/, "").trim();
+}
+
+const width = (x: { from?: string; span?: string }) => (x.from ?? x.span ?? "").length;
+const overlap = (x: { at: number; from?: string; span?: string }, y: { at: number; from?: string; span?: string }) =>
+  x.at < y.at + width(y) && y.at < x.at + width(x);
+const capitalised = (t: string) => t.replace(/\p{L}/u, (ch) => ch.toUpperCase());
+const titleCase = (t: string) => t.replace(/\p{L}+/gu, (w) => w[0]!.toUpperCase() + w.slice(1));
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Where `needle` occurs in `text` as whole words, case-insensitively. */
+function find(text: string, needle: string): number {
+  const m = new RegExp(`(?<![\\p{L}\\p{N}])${esc(needle)}(?![\\p{L}\\p{N}])`, "iu").exec(text);
+  return m ? m.index : -1;
 }
 
 // ── Sounding alike ──────────────────────────────────────────────────────────
-
-/** Whether `a` and `b` say the same thing: one word split into several or
- *  several run into one, near enough letter for letter ("stack work" /
- *  "Stakwork", "l sat" / "LSAT"); a long word misspelt ("Stackwork" /
- *  "Stakwork"); or the same sounds spelled out ("p eight" / "P8"). Not a
- *  short word swapped for one like it ("Jon" / "Jen", "Sarah" / "Sara"):
- *  that is the user choosing a different name. */
-export function soundsLike(a: string, b: string): boolean {
-  const la = letters(a), lb = letters(b);
-  if (!la || !lb) return false;
-  const longest = Math.max(length(la), length(lb));
-  const splitOrJoined = new Words(a).tokens.length !== new Words(b).tokens.length;
-  if (splitOrJoined && distance(la, lb) * 3 <= longest) return true;
-  if (longest >= 6 && distance(la, lb) * 4 <= longest) return true;
-  const sa = spoken(a), sb = spoken(b);
-  return sa.length > 0 && sa.join(" ") === sb.join(" ");
-}
 
 const LETTER_NAMES: Record<string, string> = {
   a: "ay", b: "bee", c: "see", d: "dee", e: "ee", f: "eff", g: "gee", h: "aitch", i: "eye", j: "jay", k: "kay", l: "el", m: "em",
   n: "en", o: "oh", p: "pee", q: "cue", r: "ar", s: "ess", t: "tee", u: "you", v: "vee", w: "double you", x: "ex", y: "why", z: "zed",
 };
-const DIGIT_NAMES: Record<string, string> = {
-  0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
-};
-const SPOKEN_WORDS: Record<string, string> = { to: "two", too: "two", for: "four", won: "one", ate: "eight", oh: "zero" };
+const DIGIT_NAMES: Record<string, string> = { 0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine" };
 
-/** How it is said, sound by sound: digits and lone letters by name, a short
- *  all-capital or letter-and-digit token letter by letter. */
-export function spoken(text: string): string[] {
-  return new Words(text).tokens.flatMap((token) => {
-    const core = [...token].filter(isPart);
-    if (core.length === 0) return [];
-    const spellOut = core.length === 1 || core.some((c) => NUMBER.test(c)) || (core.length <= 5 && core.every((c) => UPPER.test(c) || NUMBER.test(c)));
-    if (spellOut) return core.map((c) => c.toLowerCase()).map((c) => DIGIT_NAMES[c] ?? LETTER_NAMES[c] ?? c);
-    const word = core.join("").toLowerCase();
-    return [SPOKEN_WORDS[word] ?? word];
-  });
+/** How it is said: the letters and digits of a code by name ("P8" → "pee eight"), words as they are. */
+export function spoken(text: string): string {
+  return tokens(text).flatMap((t) => {
+    const core = [...t.core];
+    const spell = core.length === 1 || core.some((c) => NUMBER.test(c)) || (core.length <= 5 && core.every((c) => UPPER.test(c) || NUMBER.test(c)));
+    if (!spell) return [t.core.toLowerCase()];
+    return core.map((c) => c.toLowerCase()).map((c) => DIGIT_NAMES[c] ?? LETTER_NAMES[c] ?? c);
+  }).join(" ");
+}
+
+/** A crude sound key: the consonant skeleton after common spelling merges ("stack work", "Stakwork" → stkwrk). */
+export function soundKey(text: string): string {
+  let s = letters(text).replace(/\d/g, (d) => DIGIT_NAMES[d] ?? d);
+  if (!s) return "";
+  s = s.replace(/ph/g, "f").replace(/ck/g, "k").replace(/c(?=[eiy])/g, "s").replace(/c/g, "k").replace(/q/g, "k").replace(/x/g, "ks").replace(/z/g, "s").replace(/gh/g, "");
+  s = s[0] + s.slice(1).replace(/[aeiouyhw]/g, "");
+  return s.replace(/(.)\1+/g, "$1");
+}
+
+/** Whether two spellings could be one sound: their letters, sound keys or
+ *  spelled-out sounds within 40% of each other. Lenient: it gates what the
+ *  fixer is asked; it decides nothing. */
+export function soundsAlike(a: string, b: string): boolean {
+  const near = (x: string, y: string) => !!x && !!y && distance(x, y) <= 0.4 * Math.max(x.length, y.length);
+  const forms = (t: string) => [letters(t), soundKey(t), letters(spoken(t)), soundKey(spoken(t))];
+  const fa = forms(a), fb = forms(b);
+  return fa.some((x) => fb.some((y) => near(x, y)));
 }
 
 /** Letters and digits only, lowercased. */
@@ -318,133 +447,83 @@ export function distance(a: string, b: string): number {
   return row[y.length]!;
 }
 
-const length = (s: string) => [...s].length;
-
 // ── Diffing ─────────────────────────────────────────────────────────────────
 
-interface Hunk {
-  a: number[];
-  b: number[];
+/** One run of changed words: `from` in the first text, `to` in the second. */
+export interface Hunk {
+  from: string;
+  to: string;
+  /** The run's token range in the first text. */
+  a: [number, number];
 }
 
-/** Word-level differences, as runs of replaced, cut or added words. */
-export function diff(a: string[], b: string[]): Hunk[] {
+/** Word-level differences between two texts, punctuation aside, compared as
+ *  written (a casing fix is a change). */
+export function hunks(from: string, to: string): Hunk[] {
+  const a = tokens(from).map((t) => t.core), b = tokens(to).map((t) => t.core);
   const lcs = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
   for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
-    }
+    for (let j = b.length - 1; j >= 0; j--) lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
   }
-  const hunks: Hunk[] = [];
-  let current: Hunk = { a: [], b: [] };
+  const out: Hunk[] = [];
+  let i = 0, j = 0, ai = -1, bj = -1;
   const close = () => {
-    if (current.a.length || current.b.length) hunks.push(current);
-    current = { a: [], b: [] };
+    if (ai >= 0) out.push({ from: a.slice(ai, i).join(" "), to: b.slice(bj, j).join(" "), a: [ai, i] });
+    ai = bj = -1;
   };
-  let i = 0, j = 0;
   while (i < a.length || j < b.length) {
     if (i < a.length && j < b.length && a[i] === b[j]) {
       close();
       i++;
       j++;
-    } else if (j < b.length && (i === a.length || lcs[i]![j + 1]! >= lcs[i + 1]![j]!)) {
-      current.b.push(j++);
     } else {
-      current.a.push(i++);
+      if (ai < 0) (ai = i), (bj = j);
+      if (j < b.length && (i === a.length || lcs[i]![j + 1]! >= lcs[i + 1]![j]!)) j++;
+      else i++;
     }
   }
   close();
-  return hunks;
+  return out;
 }
 
 // ── Text as words ───────────────────────────────────────────────────────────
 
-// Marks too: a vowel sign or accent belongs to its letter, as in a Swift Character.
+// Marks too: a vowel sign or accent belongs to its letter.
 const PART = /[\p{L}\p{M}\p{N}]/u;
 const UPPER = /\p{Lu}/u;
 const NUMBER = /\p{N}/u;
-const SPACE = /\s/u;
 const isPart = (c: string) => PART.test(c);
 
-/** Text as words: each token with what surrounds it kept, so a rewrite
- *  leaves the punctuation and spacing as they were. */
-export class Words {
-  /** Whitespace-separated tokens, punctuation attached. */
-  tokens: string[] = [];
-  private separators: string[] = [""];
-  /** Each token's core, lowercased: what is compared. Kept with `tokens`. */
-  keys: string[];
-
-  constructor(text: string) {
-    let token = "";
-    for (const c of text) {
-      if (SPACE.test(c)) {
-        if (token) {
-          this.tokens.push(token);
-          token = "";
-          this.separators.push("");
-        }
-        this.separators[this.separators.length - 1] += c;
-      } else {
-        token += c;
-      }
-    }
-    if (token) {
-      this.tokens.push(token);
-      this.separators.push("");
-    }
-    this.keys = this.tokens.map((t) => split(t).core.toLowerCase());
-  }
-
-  /** A token without the punctuation around it. */
-  core(i: number): string {
-    return split(this.tokens[i]!).core;
-  }
-
-  get joined(): string {
-    let out = this.separators[0]!;
-    this.tokens.forEach((t, i) => (out += t + this.separators[i + 1]!));
-    return out;
-  }
-
-  text(start: number, count: number): string {
-    return Array.from({ length: count }, (_, k) => this.core(start + k)).join(" ");
-  }
-
-  /** Whether `count` tokens from `start` run on without punctuation between them. */
-  contiguous(start: number, count: number): boolean {
-    for (let i = start; i < start + count - 1; i++) {
-      if (split(this.tokens[i]!).trail || split(this.tokens[i + 1]!).lead) return false;
-    }
-    return true;
-  }
-
-  /** `other`'s words at `start`, not across a sentence's or a clause's
-   *  punctuation ("a stack. Work" is not "stack work"). */
-  matches(other: Words, start: number): boolean {
-    const theirs = other.keys;
-    if (start + theirs.length > this.keys.length) return false;
-    return theirs.every((k, i) => this.keys[start + i] === k) && this.contiguous(start, theirs.length);
-  }
-
-  /** Replaces `count` tokens from `start` with `text`, keeping the first
-   *  token's leading and the last token's trailing punctuation. */
-  replace(start: number, count: number, text: string): void {
-    const lead = split(this.tokens[start]!).lead;
-    const trail = split(this.tokens[start + count - 1]!).trail;
-    this.tokens.splice(start, count, lead + text + trail);
-    this.separators.splice(start + 1, count - 1);
-    this.keys.splice(start, count, split(text).core.toLowerCase());
-  }
+/** A word of a text: its core (from its first letter or digit to its last)
+ *  at `start`–`end`, and the punctuation around it. */
+interface Token {
+  core: string;
+  start: number;
+  end: number;
+  lead: string;
+  trail: string;
 }
 
-function split(token: string): { lead: string; core: string; trail: string } {
-  const chars = [...token];
-  const first = chars.findIndex(isPart);
-  if (first < 0) return { lead: token, core: "", trail: "" };
-  let last = chars.length - 1;
-  while (!isPart(chars[last]!)) last--;
-  return { lead: chars.slice(0, first).join(""), core: chars.slice(first, last + 1).join(""), trail: chars.slice(last + 1).join("") };
+/** The whitespace-separated words of a text that hold a letter or digit. */
+function tokens(text: string): Token[] {
+  const out: Token[] = [];
+  for (const m of text.matchAll(/\S+/g)) {
+    const chars = [...m[0]];
+    const first = chars.findIndex(isPart);
+    if (first < 0) continue;
+    let last = chars.length - 1;
+    while (!isPart(chars[last]!)) last--;
+    const lead = chars.slice(0, first).join(""), core = chars.slice(first, last + 1).join("");
+    const start = m.index! + lead.length;
+    out.push({ core, start, end: start + core.length, lead, trail: chars.slice(last + 1).join("") });
+  }
+  return out;
+}
+
+/** Whether `n` tokens from `i` run on without punctuation between them. */
+function contiguous(toks: Token[], i: number, n: number): boolean {
+  for (let k = i; k < i + n - 1; k++) if (toks[k]!.trail || toks[k + 1]!.lead) return false;
+  return true;
 }
 
 // ── Strut's memory steps ────────────────────────────────────────────────────

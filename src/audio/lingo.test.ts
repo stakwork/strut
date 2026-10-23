@@ -1,18 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isCommon as everyday } from "./common-words.js";
-import { lessons, learnInput, lexiconFrom, rewrite, undoIds, type Lesson, type Lexicon } from "./lingo.js";
+import {
+  fillers, heardOnly, learnInput, lexiconFrom, mishearings, questions, recall, retraction, rewrite, soundsAlike, undoIds,
+  type Fixer, type JudgeQuestion, type Lexicon, type Retraction, type ScoreSentence,
+} from "./lingo.js";
 
-// Dictation's vocabulary: the rewrite before the text is typed, and what an
-// edit of it teaches. Peel's LingoTests.swift, case for case.
-
-/** Everyday words, as a spell checker would say. */
-const COMMON = new Set([
-  "a", "i", "ask", "the", "team", "about", "stack", "work", "their", "there", "eight", "meeting", "fix",
-  "bit", "coin", "sat", "peel", "for", "to", "is", "on", "we", "go", "hive", "and", "apple", "pie", "think",
-  "so", "now", "number", "it", "push",
-]);
-const isCommon = (w: string) => COMMON.has(w);
+// Dictation's vocabulary pipeline with a fake fixer: the model's scores are
+// injected, so what is tested is what code does with them — what is asked,
+// what is kept, where an edit lands. The real model is the eval's
+// (src/audio/dictation-eval, `npm run eval:dictation`).
 
 const entry = (refId: string, type: string, name: string, written: string[], heard: [string, string, string?][] = [], dictationOff = false) => ({
   refId, type, name, written, dictationOff, facts: heard.length, heard: heard.map(([id, value, form]) => ({ refId: id, value, form: form ?? null })),
@@ -21,146 +17,211 @@ const entry = (refId: string, type: string, name: string, written: string[], hea
 const lexicon: Lexicon = {
   lingoType: "Lingo",
   mishearing: "heard_as",
-  undone: [],
+  undone: [{ value: "k p eye", written: "KPI" }],
   entries: [
     entry("e1", "Organization", "Stakwork", ["Stakwork"], [["f1", "stack work"]]),
     entry("e2", "Lingo", "Bitcoin", ["Bitcoin", "BTC"], [["f2", "bee tee see", "BTC"]]),
     entry("e3", "Project", "Sphinx", ["Sphinx"], [["f3", "fix"]]),
     entry("e4", "Project", "Peel", ["Peel"]),
     entry("e5", "Lingo", "LSAT", ["LSAT"], [["f5", "el sat"]], true),
-    // An agent stored it in its own casing; nobody taught it to dictation.
-    entry("e6", "Organization", "github", ["github"]),
   ],
 };
 
-const REWRITES: [string, string][] = [
-  // A mishearing, with the punctuation around it kept.
-  ["Ask the stack work team.", "Ask the Stakwork team."],
-  // One standing for an alias.
-  ["send it in bee tee see", "send it in BTC"],
-  // A single everyday word is never rewritten: "fix" stays "fix".
-  ["we fix it", "we fix it"],
-  // Casing for a written form that is not an everyday word; "peel" stays.
-  ["ask stakwork about bitcoin and peel", "ask Stakwork about Bitcoin and peel"],
-  // Off for dictation: left as it is.
-  ["el sat is on", "el sat is on"],
-  // A new spelling of a taught name: its letters, or nearly ("Stockwork").
-  ["Hello, I work for Stockwork.", "Hello, I work for Stakwork."],
-  ["I work for stackwork", "I work for Stakwork"],
-  ["I work for StackWork now", "I work for Stakwork now"],
-  // Not a different word: "stadium" and "network" stay.
-  ["I work at the stadium network", "I work at the stadium network"],
-  // Not across a sentence break.
-  ["We need a stack. Work starts", "We need a stack. Work starts"],
-  // A name nobody taught dictation keeps the user's casing.
-  ["push it to GitHub", "push it to GitHub"],
-  // Nothing known: untouched, spacing and all.
-  ["  nothing  here ", "  nothing  here "],
-];
+/** A fixer whose scores are given: `judge` by "from→to", `score` by sentence
+ *  text (unlisted: −10), `retract` by text. Records what it was asked. */
+function fake(o: { judge?: Record<string, number>; score?: Record<string, number>; retract?: Record<string, Retraction[]>; learnMargin?: number } = {}) {
+  const asked = { judge: [] as JudgeQuestion[], score: [] as ScoreSentence[], retract: [] as string[] };
+  const fixer: Fixer = {
+    id: "fake",
+    learnMargin: o.learnMargin ?? 0,
+    judge: async (qs) => (asked.judge.push(...qs), qs.map((q) => o.judge?.[`${q.from}→${q.to}`] ?? -5)),
+    score: async (ss) => (asked.score.push(...ss), ss.map((s) => o.score?.[s.text] ?? -10)),
+    retract: async (text) => (asked.retract.push(text), o.retract?.[text] ?? []),
+  };
+  return { fixer, asked };
+}
 
-const misheard = (heard: string, written: string): Lesson => ({ kind: "misheard", heard, written });
-const nothing: Lesson = { kind: "nothing" };
+describe("lingo: recall", () => {
+  const spans = (text: string, lex = lexicon) => recall(text, lex).map((c) => `${c.span}@${c.at}→${c.written}${c.heardBefore ? "!" : ""}`);
 
-const LESSONS: [string, string, Lesson[]][] = [
-  // Dictation broke a name up: learned.
-  ["Ask the stack work team", "Ask the Stakwork team", [misheard("stack work", "Stakwork")]],
-  // Spelled out what was said as P8: learned (nobody writes "p eight").
-  ["send p eight now", "send P8 now", [misheard("p eight", "P8")]],
-  // Letters run apart: learned.
-  ["the k p i number", "the KPI number", [misheard("k p i", "KPI")]],
-  // Casing only, on a name not known yet: learned.
-  ["ask hivemind now", "ask HiveMind now", [misheard("hivemind", "HiveMind")]],
-  // Casing on a known name: the rewrite already cases it, nothing new.
-  ["ask stakwork now", "ask Stakwork now", [nothing]],
-  // Dictation wrote PH for P8: PH is something you could mean, so nothing is learned.
-  ["send PH now", "send P8 now", [nothing]],
-  // An everyday swap.
-  ["their team", "there team", [nothing]],
-  // Two right ways to write one thing.
-  ["send BTC now", "send Bitcoin now", [nothing]],
-  // A changed mind: a name that sounds nothing like what was said.
-  ["ask the meeting team", "ask the Stakwork team", [nothing]],
-  // Capitalising an everyday word or a letter teaches nothing.
-  ["i think so", "I think so", [nothing]],
-  ["apple pie", "Apple pie", [nothing]],
-  // One name swapped for another like it: a different person, not a mishearing.
-  ["ask jon now", "ask Jen now", [nothing]],
-  // A word turned off for dictation is left alone.
-  ["the el sat token", "the LSAT token", [nothing]],
-  // A one-word dictation can still teach.
-  ["hivemind", "HiveMind", [misheard("hivemind", "HiveMind")]],
-  // A long word misspelt: learned ("Stackwork", "stockwork" → Stakwork).
-  ["Hello I work for Stackwork", "Hello I work for Stakwork", [misheard("Stackwork", "Stakwork")]],
-  ["I work for stockwork", "I work for Stakwork", [misheard("stockwork", "Stakwork")]],
-  // A different word altogether is not.
-  ["I work for stadium", "I work for Stakwork", [nothing]],
-  // A short name swapped for one like it is a different person.
-  ["ask sarah now", "ask Sara now", [nothing]],
-  // A cut at the end, kept the rest.
-  ["ask the team about it", "ask the team", [nothing]],
-];
-
-describe("lingo: the rewrite", () => {
-  for (const [heard, typed] of REWRITES) {
-    it(JSON.stringify(heard), () => assert.equal(rewrite(heard, lexicon, isCommon).text, typed));
-  }
-
-  it("says what it changed", () => {
-    assert.deepEqual(rewrite("the stack work team", lexicon, isCommon).changes, [{ heard: "stack work", written: "Stakwork" }]);
+  it("finds a past mishearing exactly, the same letters, and a near spelling", () => {
+    assert.deepEqual(spans("ask the stack work team"), ["stack work@8→Stakwork!"]);
+    assert.deepEqual(spans("I work for stackwork"), ["stackwork@11→Stakwork"]);
+    assert.deepEqual(spans("I work for Stockwork"), ["Stockwork@11→Stakwork"]);
+    assert.deepEqual(spans("send it in bee tee see"), ["bee tee see@11→BTC!"]);
   });
 
-  it("gives the same results with the shipped word list", () => {
-    for (const [heard, typed] of REWRITES) assert.equal(rewrite(heard, lexicon, everyday).text, typed, heard);
+  it("an exact past mishearing beats the same letters, which beats a near match; then the shortest span", () => {
+    const lex: Lexicon = { undone: [], entries: [entry("a", "Lingo", "HiveMind", ["HiveMind"], [["h", "hive mind"]])] };
+    // "hive mind" (heard before) wins over "the hive mind" and "hive mind is" for the same word.
+    assert.deepEqual(spans("the hive mind is down", lex), ["hive mind@4→HiveMind!"]);
+  });
+
+  it("never across punctuation, never a word turned off, never what is already right", () => {
+    assert.deepEqual(spans("We need a stack. Work starts"), []);
+    assert.deepEqual(spans("the el sat token"), []);
+    assert.deepEqual(spans("Stakwork ships Peel"), []);
+  });
+
+  it("a repeated word is a candidate at each place it occurs", () => {
+    assert.deepEqual(spans("can you fix the fix integration"), ["fix@8→Sphinx!", "fix@16→Sphinx!"]);
+  });
+});
+
+describe("lingo: the rewrite, with the fixer", () => {
+  it("keeps a candidate only when the sentence reads likelier with the word", async () => {
+    const { fixer } = fake({ score: { "Ask the Stakwork team.": -20, "Ask the stack work team.": -30, "Ask the Stack Work team.": -25 } });
+    assert.deepEqual(await rewrite("Ask the stack work team.", lexicon, fixer), {
+      text: "Ask the Stakwork team.", changes: [{ heard: "stack work", written: "Stakwork", at: 8 }],
+    });
+    const { fixer: unsure } = fake({ score: { "Ask the Stakwork team.": -20, "Ask the stack work team.": -30, "Ask the Stack Work team.": -19 } });
+    assert.deepEqual(await rewrite("Ask the stack work team.", lexicon, unsure), { text: "Ask the stack work team.", changes: [] });
+  });
+
+  it("scores both readings from a capital, and a sound-alike also in its own capitals, after the word's line", async () => {
+    const { fixer, asked } = fake();
+    await rewrite("ask the stack work team", lexicon, fixer);
+    assert.deepEqual(asked.score, [
+      { name: "Stakwork", type: "Organization", text: "Ask the Stakwork team" },
+      { name: "Stakwork", type: "Organization", text: "Ask the stack work team" },
+      { name: "Stakwork", type: "Organization", text: "Ask the Stack Work team" },
+    ]);
+    // The same letters: no capitals reading, it would be the word itself.
+    const { fixer: f2, asked: a2 } = fake();
+    await rewrite("peel it", lexicon, f2);
+    assert.deepEqual(a2.score.map((s) => s.text), ["Peel it", "Peel it"]);
+  });
+
+  it("an edit lands where its word is: one fix stays, the other is Sphinx", async () => {
+    const { fixer } = fake({ score: { "Can you Sphinx the fix integration": -40, "Can you fix the Sphinx integration": -20, "Can you fix the fix integration": -30, "Can you fix the Fix integration": -35 } });
+    assert.deepEqual(await rewrite("can you fix the fix integration", lexicon, fixer), {
+      text: "can you fix the Sphinx integration", changes: [{ heard: "fix", written: "Sphinx", at: 16 }],
+    });
+  });
+
+  it("removes fillers and doubled words by rule, and asks nothing for them", async () => {
+    const { fixer, asked } = fake();
+    assert.equal((await rewrite("um so the deploy is uh done", lexicon, fixer)).text, "so the deploy is done");
+    assert.equal((await rewrite("The API is, um, really slow today.", lexicon, fixer)).text, "The API is really slow today.");
+    assert.equal((await rewrite("I I think the the build", lexicon, fixer)).text, "I think the build");
+    assert.deepEqual(asked.retract, []);
+  });
+
+  it("removes a phrase taken back when the model names it right before its cue", async () => {
+    const text = "let's meet on Tuesday, no, Wednesday";
+    const { fixer, asked } = fake({ retract: { [text]: [{ wrong: "Tuesday", cue: "no" }] } });
+    assert.deepEqual(await rewrite(text, lexicon, fixer), { text: "let's meet on Wednesday", changes: [{ heard: "Tuesday, no,", written: "", at: 14 }] });
+    assert.deepEqual(asked.retract, [text]);
+    // Not before its cue, or not in the text: nothing removed.
+    const { fixer: wrong } = fake({ retract: { [text]: [{ wrong: "meet", cue: "no" }, { wrong: "Friday", cue: "no" }] } });
+    assert.equal((await rewrite(text, lexicon, wrong)).text, text);
+  });
+
+  it("with nothing to ask, the text goes out untouched, spacing and all", async () => {
+    const { fixer, asked } = fake();
+    assert.deepEqual(await rewrite("  nothing  here ", lexicon, fixer), { text: "  nothing  here ", changes: [] });
+    assert.deepEqual([asked.score, asked.retract], [[], []]);
+  });
+});
+
+describe("lingo: fillers and take-backs", () => {
+  it("a filler set off by commas takes both with it", () => {
+    assert.deepEqual(fillers("we should, uh, move"), [{ from: ", uh,", to: "", at: 9 }]);
+    assert.equal(heardOnly("we should, uh, move", lexicon).text, "we should move");
+    assert.equal(heardOnly("we should, uh move", lexicon).text, "we should move");
+    assert.equal(heardOnly("Um, we should move", lexicon).text, "we should move");
+    assert.equal(heardOnly("so, the plan, um.", lexicon).text, "so, the plan.");
+    assert.equal(heardOnly("that is the plan uh.", lexicon).text, "that is the plan.");
+  });
+
+  it("keeps a word a speaker can mean twice", () => {
+    assert.deepEqual(fillers("I know that that is right and she had had enough"), []);
+    assert.deepEqual(fillers("we we go"), [{ from: "we", to: "", at: 0 }]);
+    // Not across punctuation: "No. No." is two sentences.
+    assert.deepEqual(fillers("Go. Go now"), []);
+  });
+
+  it("a take-back spans the wrong words through the cue and its punctuation", () => {
+    assert.deepEqual(retraction("the meeting is at three, I mean four", "three", "I mean"), { from: "three, I mean", to: "", at: 18 });
+    assert.equal(retraction("three cats, I mean four", "three", "I mean"), null);
+    assert.equal(retraction("call me", "", "no"), null);
+  });
+});
+
+describe("lingo: with no fixer", () => {
+  it("applies exact learned mishearings of two or more words only, longest first, never across punctuation or for a word turned off", () => {
+    assert.deepEqual(heardOnly("Ask the stack work team, in bee tee see.", lexicon), {
+      text: "Ask the Stakwork team, in BTC.",
+      changes: [{ heard: "stack work", written: "Stakwork", at: 8 }, { heard: "bee tee see", written: "BTC", at: 28 }],
+    });
+    assert.equal(heardOnly("I work for stackwork", lexicon).text, "I work for stackwork");
+    assert.equal(heardOnly("We need a stack. Work starts", lexicon).text, "We need a stack. Work starts");
+    assert.equal(heardOnly("the el sat token", lexicon).text, "the el sat token");
+    assert.deepEqual(heardOnly("  nothing  here ", lexicon), { text: "  nothing  here ", changes: [] });
+  });
+
+  it("leaves a one-word mishearing as heard: only the fixer can tell it from the everyday word", () => {
+    assert.deepEqual(heardOnly("can you fix the build", lexicon), { text: "can you fix the build", changes: [] });
+  });
+
+  it("still removes fillers and doubled words", () => {
+    assert.deepEqual(heardOnly("um so the the stack work deploy", lexicon), {
+      text: "so the Stakwork deploy",
+      changes: [{ heard: "um", written: "", at: 0 }, { heard: "the", written: "", at: 6 }, { heard: "stack work", written: "Stakwork", at: 14 }],
+    });
+  });
+
+  it("a mishearing with no letters matches nothing", () => {
+    const amp: Lexicon = { undone: [], entries: [entry("a", "Organization", "Acme", ["Acme"], [["f", "&"]])] };
+    assert.equal(heardOnly("salt & pepper", amp).text, "salt & pepper");
+  });
+
+  it("marks belong to their letter", () => {
+    const hindi: Lexicon = { undone: [], entries: [entry("h", "Lingo", "Hindi", ["Hindi"], [["f", "हिंदी में"]])] };
+    assert.equal(heardOnly("मैं हिंदी में बोलता", hindi).text, "मैं Hindi बोलता");
   });
 });
 
 describe("lingo: learning from an edit", () => {
-  for (const [typed, edited, expected] of LESSONS) {
-    it(`${JSON.stringify(typed)} → ${JSON.stringify(edited)}`, () => assert.deepEqual(lessons(typed, edited, lexicon, isCommon), expected));
-  }
-
-  it("gives the same results with the shipped word list", () => {
-    for (const [typed, edited, expected] of LESSONS) assert.deepEqual(lessons(typed, edited, lexicon, everyday), expected, typed);
+  it("asks only short changes that sound alike, with what the vocabulary knows of them", () => {
+    const asked = (typed: string, edited: string) => questions(typed, edited, lexicon).map((q) => `${q.from}→${q.to}${q.known ? ` [${q.known}]` : ""}`);
+    assert.deepEqual(asked("send p eight now", "send P8 now"), ["p eight→P8"]);
+    assert.deepEqual(asked("send BTC now", "send Bitcoin now"), ["BTC→Bitcoin [Bitcoin, BTC (same thing)]"]);
+    assert.deepEqual(asked("the el sat token", "the LSAT token"), ["el sat→LSAT [LSAT (turned off for dictation)]"]);
+    // A changed mind, a cut, an addition, a rewrite: not asked.
+    assert.deepEqual(asked("ask the meeting team", "ask the Stakwork team"), []);
+    assert.deepEqual(asked("ask the team about it", "ask the team"), []);
+    assert.deepEqual(asked("ask the stack work team", "Let's talk tomorrow instead, as we agreed"), []);
   });
 
-  it("a rewrite of the whole thing teaches nothing", () => {
-    assert.deepEqual(lessons("ask the stack work team", "Let's talk tomorrow instead", lexicon, isCommon), []);
+  it("learns what the fixer says yes to, by more than its margin", async () => {
+    const { fixer } = fake({ judge: { "stack work→Stakwork": 3, "k p i→KPI": 0.5 } });
+    assert.deepEqual(await mishearings("ask the stack work team about the k p i", "ask the Stakwork team about the KPI", lexicon, fixer), [
+      { heard: "stack work", written: "Stakwork" }, { heard: "k p i", written: "KPI" },
+    ]);
+    const { fixer: wary } = fake({ judge: { "stack work→Stakwork": 3, "k p i→KPI": 0.5 }, learnMargin: 1 });
+    assert.deepEqual(await mishearings("ask the stack work team about the k p i", "ask the Stakwork team about the KPI", lexicon, wary), [
+      { heard: "stack work", written: "Stakwork" },
+    ]);
   });
 
-  it("an undone pair is not learned again", () => {
-    const undone = { ...lexicon, undone: [{ value: "p eight", written: "P8" }] };
-    assert.deepEqual(lessons("send p eight now", "send P8 now", undone, isCommon), [nothing]);
-  });
-});
-
-// Not in Peel's tests: edges the word list or a hand-added word can reach.
-describe("lingo: edges", () => {
-  const with_ = (...more: ReturnType<typeof entry>[]): Lexicon => ({ ...lexicon, entries: [...lexicon.entries, ...more] });
-
-  it("a known word with a plural or possessive ending is left as it is", () => {
-    assert.equal(rewrite("stakwork's team and stakworks", lexicon, everyday).text, "stakwork's team and stakworks");
-    const k8s = with_(entry("e7", "Lingo", "Kubernetes", ["Kubernetes"]));
-    assert.equal(rewrite("Kubernetes's pods", k8s, everyday).text, "Kubernetes's pods");
+  it("never a pair the user undid, nor a word turned off, whatever the fixer says", async () => {
+    const { fixer } = fake({ judge: { "k p eye→KPI": 9, "el sat→LSAT": 9 } });
+    assert.deepEqual(await mishearings("the k p eye number", "the KPI number", lexicon, fixer), []);
+    assert.deepEqual(await mishearings("the el sat token", "the LSAT token", lexicon, fixer), []);
   });
 
-  it("a one-letter form never takes over a lone letter", () => {
-    const forms = with_(entry("e8", "Lingo", "C#", ["C#"]), entry("e9", "Lingo", "X", ["X"]));
-    assert.equal(rewrite("take vitamin c daily, x marks it", forms, everyday).text, "take vitamin c daily, x marks it");
+  it("an edit with nothing to ask asks nothing", async () => {
+    const { fixer, asked } = fake();
+    assert.deepEqual(await mishearings("same text", "same text", lexicon, fixer), []);
+    assert.deepEqual(asked.judge, []);
   });
 
-  it("a mishearing with no letters matches nothing", () => {
-    const amp = with_(entry("e10", "Organization", "Acme", ["Acme"], [["f10", "&"]]));
-    assert.equal(rewrite("salt & pepper - fine", amp, everyday).text, "salt & pepper - fine");
-  });
-
-  it("a learn says why it cannot be written when the memory lacks the roles", () => {
-    assert.throws(() => learnInput("p eight", "P8", { ...lexicon, lingoType: undefined }), /role dictation/);
-    assert.throws(() => learnInput("bee see", "BTC", { ...lexicon, mishearing: undefined }), /role mishearing/);
-  });
-
-  it("marks belong to their letter", () => {
-    const hindi = with_(entry("e11", "Lingo", "Hindi", ["Hindi"], [["f11", "हिंदी में"]]));
-    assert.equal(rewrite("मैं हिंदी में बोलता", hindi, everyday).text, "मैं Hindi बोलता");
+  it("sounding alike is lenient: split, run together, spelled out, misspelt; not a different word", () => {
+    for (const [a, b] of [["stack work", "Stakwork"], ["p eight", "P8"], ["k p i", "KPI"], ["Stockwork", "Stakwork"], ["cooper netties", "Kubernetes"]]) {
+      assert.equal(soundsAlike(a!, b!), true, `${a} / ${b}`);
+    }
+    for (const [a, b] of [["meeting", "Stakwork"], ["stadium", "Stakwork"]]) assert.equal(soundsAlike(a!, b!), false, `${a} / ${b}`);
   });
 });
 
@@ -191,7 +252,7 @@ describe("lingo: strut's memory steps", () => {
     assert.deepEqual(read.undone, [{ value: "el sat", written: "LSAT" }]);
     assert.equal(read.lingoType, "Lingo");
     assert.equal(read.mishearing, "heard_as");
-    assert.equal(rewrite("a bit coin", read, isCommon).text, "a Bitcoin");
+    assert.equal(heardOnly("a bit coin", read).text, "a Bitcoin");
   });
 
   it("a learn says only the pair, on the right entity", () => {
@@ -211,16 +272,14 @@ describe("lingo: strut's memory steps", () => {
     assert.equal("form" in made.facts[0], false);
   });
 
+  it("a learn says why it cannot be written when the memory lacks the roles", () => {
+    assert.throws(() => learnInput("p eight", "P8", { ...lexicon, lingoType: undefined }), /role dictation/);
+    assert.throws(() => learnInput("bee see", "BTC", { ...lexicon, mishearing: undefined }), /role mishearing/);
+  });
+
   it("undo forgets what the learn made", () => {
     assert.deepEqual(undoIds({ entities: [{ ref_id: "e9", status: "created" }], facts: [{ ref_id: "f9", status: "created" }] }), ["e9"]);
     assert.deepEqual(undoIds({ entities: [{ ref_id: "e1", status: "matched" }], facts: [{ ref_id: "f9", status: "created" }] }), ["f9"]);
     assert.deepEqual(undoIds({ entities: [{ ref_id: "e1", status: "matched" }], facts: [{ ref_id: "f1", status: "existing" }] }), []);
-  });
-});
-
-describe("lingo: everyday words", () => {
-  it("knows everyday English, and no single letter but a and i", () => {
-    for (const w of ["the", "network", "stadium", "colour", "color", "don't", "don’t", "a", "i"]) assert.equal(everyday(w), true, w);
-    for (const w of ["stakwork", "bitcoin", "hivemind", "github", "b", "p", "kpi", ""]) assert.equal(everyday(w), false, w);
   });
 });

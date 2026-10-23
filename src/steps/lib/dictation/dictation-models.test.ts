@@ -90,7 +90,7 @@ describe("dictation models: steps and transcription", () => {
     while (!gates.has("zipformer-en-kroko")) await new Promise((r) => setTimeout(r, 1));
     gates.get("zipformer-en-kroko")!();
     const out = await reply;
-    assert.deepEqual(out, { text: "streamed by zipformer-en-kroko", segments: [{ text: "streamed by zipformer-en-kroko", words: [] }], model: "zipformer-en-kroko", hotwords: null, durationMs: out.durationMs });
+    assert.deepEqual(out, { text: "streamed by zipformer-en-kroko", segments: [{ text: "streamed by zipformer-en-kroko", words: [] }], model: "zipformer-en-kroko", hotwords: null, durationMs: out.durationMs, fixer: null });
   });
 
   it("dictation/use picks Parakeet and a fixer; they download in the background", async () => {
@@ -100,13 +100,13 @@ describe("dictation models: steps and transcription", () => {
     assert.equal((await transcribe()).model, "zipformer-en-kroko");
   });
 
-  it("once installed, /audio/transcribe uses the pick and names it; ?model= still wins", async () => {
+  it("once installed, /audio/transcribe uses the picks and names them; ?model= still wins", async () => {
     gates.get("parakeet-tdt-en-0.6b-v2")!();
     gates.get("qwen3-0.6b-q4")!();
     await stt.dictation.idle();
     assert.deepEqual(brief((await step("dictation/models", {})) as Listed), ["zipformer-en-kroko:installed", "parakeet-tdt-en-0.6b-v2:installed*", "qwen3-0.6b-q4:installed*", "qwen3-1.7b-q4:available"]);
     const out = await transcribe();
-    assert.deepEqual({ ...out, durationMs: 0 }, { text: "Decoded by parakeet-tdt-en-0.6b-v2.", segments: [{ text: "Decoded by parakeet-tdt-en-0.6b-v2.", words: [] }], model: "parakeet-tdt-en-0.6b-v2", hotwords: null, durationMs: 0 });
+    assert.deepEqual({ ...out, durationMs: 0 }, { text: "Decoded by parakeet-tdt-en-0.6b-v2.", segments: [{ text: "Decoded by parakeet-tdt-en-0.6b-v2.", words: [] }], model: "parakeet-tdt-en-0.6b-v2", hotwords: null, durationMs: 0, fixer: "qwen3-0.6b-q4" });
     assert.equal((await transcribe("?model=zipformer-en-kroko")).model, "zipformer-en-kroko");
   });
 

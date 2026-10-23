@@ -6,8 +6,8 @@
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { requireApiKey } from "../auth.js";
-import { isCommon } from "./common-words.js";
-import { rewrite, type Lexicon } from "./lingo.js";
+import { FIX_TIMEOUT_MS, within } from "./fixer.js";
+import { heardOnly, rewrite, type Lexicon } from "./lingo.js";
 import { findModel } from "./models.js";
 import { SttUnavailableError, type SttService, type SttStreamOptions } from "./stt.js";
 
@@ -47,10 +47,12 @@ export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions
 
   // Raw audio/wav body. Query: model, partialModel (ignored: batch is
   // single-recognizer), hotwords (list name), hotwordsScore, session, lingo
-  // (0: the transcript as heard, no vocabulary). `text` is what to type:
-  // the transcript with the user's vocabulary applied (src/audio/lingo.ts),
-  // and when that changed it, `heard` (the transcript) and `changes`.
-  // `segments` stay as heard.
+  // (0: the transcript as heard, no vocabulary). `text` is what to type: the
+  // transcript with the user's vocabulary applied (src/audio/lingo.ts) by the
+  // picked fixer, named in `fixer`; with none, or when it takes longer than
+  // FIX_TIMEOUT_MS, fillers and doubled words by rule and only exact learned
+  // mishearings of two or more words (`fixer: null`). When that
+  // changed it, `heard` (the transcript) and `changes`. `segments` stay as heard.
   app.post("/audio/transcribe", async (c) => {
     const q = c.req.query();
     const o: Omit<SttStreamOptions, "sampleRate"> = {};
@@ -66,7 +68,8 @@ export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions
     } catch (e) {
       return errorResponse(c, e);
     }
-    if (q["lingo"] === "0" || !opts.lexicon || !result.text) return c.json(result);
+    const asHeard = { ...result, fixer: null };
+    if (q["lingo"] === "0" || !opts.lexicon || !result.text) return c.json(asHeard);
     // Never the transcript in a log: only why the vocabulary was not read, once.
     const lexicon = await opts.lexicon().catch((e: unknown) => {
       const why = (e as Error).message;
@@ -74,15 +77,25 @@ export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions
       unread.add(why);
       return undefined;
     });
-    let out;
+    if (!lexicon) return c.json(asHeard);
+    let out: { text: string; changes: unknown[] } | undefined;
+    let fixer: string | null = null;
     try {
-      out = lexicon ? rewrite(result.text, lexicon, isCommon) : undefined;
+      const f = await stt.fixer?.current();
+      // A cold model starts loading here; until it answers in time, the next ones are fixed without it.
+      out = f ? await within(rewrite(result.text, lexicon, f), FIX_TIMEOUT_MS) : undefined;
+      if (out) fixer = f!.id;
     } catch (e) {
-      // A transcript is never lost to the rewrite: it goes out as heard.
+      // A transcript is never lost to the fixer: it goes out with the learned mishearings only.
+      console.error(`[audio] dictation fixer failed: ${(e as Error).message}`);
+    }
+    try {
+      out ??= heardOnly(result.text, lexicon);
+    } catch (e) {
       console.error(`[audio] dictation rewrite failed: ${(e as Error).message}`);
     }
-    if (!out || out.text === result.text) return c.json(result);
-    return c.json({ ...result, text: out.text, heard: result.text, changes: out.changes });
+    if (!out || out.text === result.text) return c.json({ ...result, fixer });
+    return c.json({ ...result, text: out.text, heard: result.text, changes: out.changes, fixer });
   });
 
   // ── Hotword lists (the dream cycle's promotion artifact) ────────────────

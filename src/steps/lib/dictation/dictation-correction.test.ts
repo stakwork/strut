@@ -7,6 +7,7 @@ import { createStrut } from "../../../createStrut.js";
 import { MemoryRunStore } from "../../../store.js";
 import { WorkspaceManager } from "../../../workspace.js";
 import type { SttService, TranscribeResult } from "../../../audio/stt.js";
+import type { LoadedFixer } from "../../../audio/fixer.js";
 import type { StepContext } from "../../../core.js";
 import { memoryDb, memoryWrite } from "../memory/_db.js";
 import { invalidate, seed } from "../memory/_ontology.js";
@@ -14,7 +15,9 @@ import { SEED } from "../memory/_ontology-seed.js";
 
 // Dictation's vocabulary end to end, through strut's own doors: what an edit
 // teaches (POST /steps/dictation/correction/run) and the next transcription
-// putting it right (POST /audio/transcribe), on a real LadybugDB.
+// putting it right (POST /audio/transcribe), on a real LadybugDB, with a fake
+// fixer: it says yes to a written form with a capital or a digit, and finds a
+// sentence likelier with the vocabulary word in it.
 const hasLadybug = await import("@ladybugdb/core").then(
   () => true,
   () => false,
@@ -24,8 +27,16 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
   const dir = mkdtempSync(join(tmpdir(), "strut-dictation-"));
   const dataDir = join(dir, "data");
   let heard = "";
+  const judged: string[] = [];
+  const fake: LoadedFixer = {
+    id: "fake", learnMargin: 0, ready: async () => {},
+    judge: async (qs) => qs.map((q) => (judged.push(`${q.from}→${q.to}`), /[\p{Lu}\p{N}]/u.test(q.to) ? 5 : -5)),
+    score: async (ss) => ss.map((s) => (s.text.includes(s.name) ? 0 : -10)),
+    retract: async () => [],
+  };
+  let fixer: LoadedFixer | null = fake;
   const stt = {
-    modelDir: "/nowhere", hotwords: {}, sessions: {},
+    modelDir: "/nowhere", hotwords: {}, sessions: {}, fixer: { current: async () => fixer },
     available: async () => true, models: async () => [], ensureModel: async () => "/nowhere", correct: async () => {},
     openStream: async () => { throw new Error("unused"); },
     transcribe: async (): Promise<TranscribeResult> => ({ text: heard, segments: [{ text: heard, words: [] }], model: "fake", hotwords: null, durationMs: 1 }),
@@ -50,24 +61,30 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     assert.equal(body.status, "success", JSON.stringify(body.error ?? body).slice(0, 600));
     return body.output;
   };
-  const correct = (typed: string, edited: string, extra: object = {}) =>
-    step("dictation/correction", { typed, edited, ...extra }) as Promise<{ learned: { heard: string; written: string; undo: string[] }[] }>;
+  const correct = (typed: string, edited: string) =>
+    step("dictation/correction", { typed, edited }) as Promise<{ learned: { heard: string; written: string; undo: string[] }[] }>;
   const transcribe = async (text: string, query = "") => {
     heard = text;
     const res = await strut.app.request(`/audio/transcribe${query}`, { method: "POST", body: new Uint8Array(64) });
     assert.equal(res.status, 200);
-    return (await res.json()) as TranscribeResult & { heard?: string; changes?: { heard: string; written: string }[] };
+    return (await res.json()) as TranscribeResult & { heard?: string; changes?: { heard: string; written: string; at: number }[]; fixer: string | null };
   };
   const rows = async (cypher: string) => (await memoryDb(ctx))(cypher);
+  const pick = (o: { text: string; fixer: string | null }) => ({ text: o.text, fixer: o.fixer });
 
-  it("with nothing taught, a transcript goes out as heard, as before", async () => {
+  it("with nothing taught, a transcript goes out as heard, naming the fixer that read it", async () => {
     const out = await transcribe("send p eight now");
-    assert.deepEqual(out, { text: "send p eight now", segments: [{ text: "send p eight now", words: [] }], model: "fake", hotwords: null, durationMs: 1 });
+    assert.deepEqual(out, { text: "send p eight now", segments: [{ text: "send p eight now", words: [] }], model: "fake", hotwords: null, durationMs: 1, fixer: "fake" });
   });
 
-  it("dry_run says what an edit would teach and writes nothing", async () => {
-    assert.deepEqual(await correct("send p eight now", "send P8 now", { dry_run: true }), { learned: [{ heard: "p eight", written: "P8", undo: [] }] });
-    assert.deepEqual(await rows("MATCH (e:Entity) RETURN e.name AS name"), []);
+  it("with no fixer, an edit teaches nothing", async () => {
+    fixer = null;
+    try {
+      assert.deepEqual(await correct("send p eight now", "send P8 now"), { learned: [] });
+      assert.deepEqual(await rows("MATCH (e:Entity) RETURN e.name AS name"), []);
+    } finally {
+      fixer = fake;
+    }
   });
 
   it("learns a new word as a Lingo, storing only the pair", async () => {
@@ -88,13 +105,29 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     const out = await transcribe("send p eight now");
     assert.equal(out.text, "send P8 now");
     assert.equal(out.heard, "send p eight now");
-    assert.deepEqual(out.changes, [{ heard: "p eight", written: "P8" }]);
+    assert.deepEqual(out.changes, [{ heard: "p eight", written: "P8", at: 5 }]);
     assert.equal(out.segments[0]!.text, "send p eight now");
-    assert.equal(out.model, "fake");
+    assert.deepEqual([out.model, out.fixer], ["fake", "fake"]);
     // lingo=0: as heard.
     const raw = await transcribe("send p eight now", "?lingo=0");
     assert.equal(raw.text, "send p eight now");
+    assert.equal(raw.fixer, null);
     assert.equal("heard" in raw || "changes" in raw, false);
+  });
+
+  it("with no fixer, or one too slow, only exact learned mishearings are applied", async () => {
+    fixer = null;
+    try {
+      assert.deepEqual(pick(await transcribe("send p eight now")), { text: "send P8 now", fixer: null });
+      // A new spelling needs the fixer.
+      assert.deepEqual(pick(await transcribe("send p8 now")), { text: "send p8 now", fixer: null });
+      fixer = { ...fake, score: () => new Promise(() => {}) };
+      const started = Date.now();
+      assert.deepEqual(pick(await transcribe("send p eight now")), { text: "send P8 now", fixer: null });
+      assert.ok(Date.now() - started < 3000, "it waited for the fixer only so long");
+    } finally {
+      fixer = fake;
+    }
   });
 
   it("learns on the entity that writes the word, with the alias as its form", async () => {
@@ -128,18 +161,17 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     assert.equal((await transcribe("send p eight now")).text, "send p eight now");
   });
 
-  it("an everyday swap or a rewrite teaches nothing", async () => {
+  it("an everyday swap or a rewrite teaches nothing; only a change that sounds alike is asked", async () => {
+    judged.length = 0;
     assert.deepEqual(await correct("their team is here", "there team is here"), { learned: [] });
     assert.deepEqual(await correct("ask the stack work team", "Let's talk tomorrow instead"), { learned: [] });
+    assert.deepEqual(judged, ["their→there"]);
   });
 
-  it("dictation/add adds a word by hand, and says when it would never apply", async () => {
+  it("dictation/add adds a word by hand", async () => {
     const lsat = await step("dictation/add", { written: "LSAT", heard: "el sat" });
-    assert.deepEqual([lsat.heard, lsat.written, lsat.applies, lsat.undo.length], ["el sat", "LSAT", true, 1]);
+    assert.deepEqual([lsat.heard, lsat.written, lsat.undo.length, "applies" in lsat], ["el sat", "LSAT", 1, false]);
     assert.equal((await transcribe("el sat is on")).text, "LSAT is on");
-    const fix = await step("dictation/add", { written: "Sphinx", heard: "fix" });
-    assert.equal(fix.applies, false);
-    assert.equal((await transcribe("we fix it")).text, "we fix it");
   });
 
   it("dictation/remove takes a mishearing, a word of dictation's own with its last one, and never another entity", async () => {
