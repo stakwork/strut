@@ -256,7 +256,11 @@ describe("the orchestrator, end to end", () => {
   /** A strut with the seeded orchestrator (the host's section added) and a
    *  stand-in `job` (strut's has the coding built-ins). `orch` is every
    *  orchestrator request, `job` every job request. */
-  const boot = async (orchReply: (n: number, body: any) => string, peers?: { id: string; baseUrl: string; token: string; label?: string }[]) => {
+  const boot = async (
+    orchReply: (n: number, body: any) => string,
+    peers?: { id: string; baseUrl: string; token: string; label?: string }[],
+    self?: { id: string; label?: string },
+  ) => {
     const seen = { orch: [] as any[], job: [] as string[] };
     process.env["ANTHROPIC_BASE_URL"] = await listen((body, raw) => {
       if (JSON.stringify(body.system ?? "").includes("JOBAGENT")) {
@@ -277,6 +281,7 @@ describe("the orchestrator, end to end", () => {
       job: false,
       orchestrator: { system: "HOSTSECTION: the person's chats are on their Mac." },
       ...(peers ? { peers } : {}),
+      ...(self ? { self } : {}),
     });
     await strut.workspace.publishWorkflow("job", "v1", {
       steps: [
@@ -360,6 +365,21 @@ describe("the orchestrator, end to end", () => {
     assert.equal(ended.status, "success", JSON.stringify(ended));
     assert.ok(
       lastUser(seen.orch[0]).includes("Fri 23 Oct 18:52, GMT+1. Workspaces you can ask: @hive (Stakwork), @senza-backend. ask stakwork how the app works"),
+      lastUser(seen.orch[0]),
+    );
+  });
+  it("with a self record, this workspace is named first and the list is the others, so a host's own `@<slug>` before the message reads as this one", async () => {
+    const { seen, turn } = await boot(
+      () => toolUse("toolu_s", "final_answer", { text: "Looked.", artifacts: [] }),
+      [{ id: "hive", baseUrl: "http://127.0.0.1:9", token: "t", label: "Stakwork" }],
+      { id: "acme-web", label: "Acme Web" },
+    );
+    const ended = await turn({ prompt: "@acme-web\nhow does login work", session: "jamie-conv-1", context: { line: "Fri 23 Oct 18:52, Europe/London. " } });
+    assert.equal(ended.status, "success", JSON.stringify(ended));
+    assert.ok(
+      lastUser(seen.orch[0]).includes(
+        "Fri 23 Oct 18:52, Europe/London. This workspace is @acme-web (Acme Web). Other workspaces you can ask: @hive (Stakwork). @acme-web\\nhow does login work",
+      ),
       lastUser(seen.orch[0]),
     );
   });

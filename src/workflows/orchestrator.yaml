@@ -71,7 +71,10 @@ steps:
   # The other struts this one can ask (strut/list-peers: ids and labels),
   # read every turn and put before the person's message, so "ask acme…"
   # finds @acme-web by its label, and a peer added mid-conversation is
-  # known at once (the system prompt is the session's first turn's). None
+  # known at once (the system prompt is the session's first turn's). With a
+  # `self` record, this workspace is named first and the list is the OTHER
+  # workspaces: a host's own `@<slug>` before the message (hive's) then
+  # repeats the one named as this one, never reads as one more to ask. None
   # (or no peers capability): nothing is added.
   - id: peers
     type: strut/list-peers
@@ -96,7 +99,7 @@ steps:
         {{ concepts.text }}
         {{ builds.text }}
       retain: "{{ params.retain }}"
-      prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? 'Workspaces you can ask: ' + peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
+      prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
       toolFilter: [none]
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
