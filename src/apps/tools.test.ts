@@ -180,7 +180,7 @@ describe("step_run — the app door", () => {
       job: false,
       orchestrator: false,
       builder: false,
-      browserWorkflows: false,
+      browserWorkflows: false, privacyWorkflows: false,
     });
     for (const [name, yaml] of Object.entries(WORKFLOWS)) await workspace.publishWorkflowByContent(name, yaml);
     for (const [name, manifest] of Object.entries(MANIFESTS)) {

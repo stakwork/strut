@@ -1,0 +1,71 @@
+name: private-ask
+# Ask a hosted model about a text without sending it the personal data in it:
+# privacy/anonymize masks names, places, organisations, dates, phones, emails,
+# addresses and ids as typed tokens ([PERSON_1]); the llm step sees ONLY the
+# masked text; privacy/deanonymize puts the originals back into the answer.
+# This is pseudonymization (specs/PRIVACY_SPEC.md): clues like "the night
+# nurse" are not masked, and the runner records step inputs and outputs, so
+# `prompt` and `answer` are in this run's files in plaintext.
+#
+# Pass the FINAL transcript only, once per utterance. The vault is in memory
+# by default: all three steps run in this process. `vault: file` needs the
+# secret STRUT_ANONYMIZATION_VAULT_KEY and returns the handle.
+#
+# If the llm step fails its error handler destroys the vault; the run then
+# fails at privacy/deanonymize (nothing left to restore), the llm error being
+# in the log.
+#
+# Input:  { prompt, model?, system?, vault?, ttl_minutes?, deny?, allow? }
+# Output: { answer, handle? (file vaults), report: { counts, entities, warnings, restored, unknown_pseudonyms } }
+input:
+  prompt: { type: string, description: "the final dictated transcript" }
+  model: { type: string, required: false, description: "any aieo model name the deployment has a key for (GET /llm/models); the deployment's default when omitted" }
+  system: { type: string, required: false, description: "instructions for the model, in place of params.system" }
+  vault: { type: string, default: memory, description: "memory (this process) or file (encrypted, needs STRUT_ANONYMIZATION_VAULT_KEY)" }
+  ttl_minutes: { type: number, default: 60, description: "how long the mapping is kept; longer than the model call takes" }
+  deny: { type: json, required: false, description: "words always masked (contacts, the user's own name)" }
+  allow: { type: json, required: false, description: "words never masked" }
+params:
+  system: |-
+    The text below has had personal data replaced by tokens such as [PERSON_1], [ORG_2], [LOC_1], [DATE_3]. Treat each token as the name of the thing it stands for and keep every token exactly as written, brackets and number included, wherever you refer to it. Never guess or invent what a token hides, and never invent new tokens.
+steps:
+  - id: mask
+    type: privacy/anonymize
+    config:
+      text: "{{ input.prompt }}"
+      vault: "{{ input.vault }}"
+      ttl_minutes: "{{ input.ttl_minutes }}"
+      deny: "{{ input.deny }}"
+      allow: "{{ input.allow }}"
+
+  - id: ask
+    type: llm
+    config:
+      model: "{{ input.model }}"
+      prompt: |
+        {{ input.system || params.system }}
+
+        {{ mask.text }}
+    options:
+      onError:
+        id: cleanup
+        type: privacy/destroy
+        config: { handle: "{{ mask.handle }}" }
+
+  - id: back
+    type: privacy/deanonymize
+    config:
+      text: "{{ ask.text }}"
+      handle: "{{ mask.handle }}"
+
+  - id: result
+    type: pack
+    config:
+      answer: "{{ back.text }}"
+      handle: "{{ input.vault == 'file' ? mask.handle : undefined }}"
+      report:
+        counts: "{{ mask.counts }}"
+        entities: "{{ mask.entities }}"
+        warnings: "{{ mask.warnings }}"
+        restored: "{{ back.restored }}"
+        unknown_pseudonyms: "{{ back.unknown_pseudonyms }}"

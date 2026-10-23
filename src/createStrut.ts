@@ -117,6 +117,7 @@ import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
+import { seedPrivacyWorkflows } from "./privacy/seed.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -364,6 +365,9 @@ export interface StrutOptions<TServices = unknown> {
    *  (src/browser/seed.ts: browser-capture, browser-explore, browser-watch),
    *  seeded at boot by content hash like `job`. `false` seeds none. */
   browserWorkflows?: false;
+  /** The `private-ask` workflow strut ships beside the privacy/* steps
+   *  (src/privacy/seed.ts), seeded at boot by content hash. `false` seeds none. */
+  privacyWorkflows?: false;
 
   /** The strut graph backend, when the deployment has one. Default: the one
    *  behind a graph-backed workspace (`workspace.graph`), so the default
@@ -1067,6 +1071,13 @@ export async function createStrut<TServices = unknown>(
   if (opts.browserWorkflows !== false) {
     for (const w of await seedBrowserWorkflows(workspace)) {
       if (w.changed) console.log(`[browser] seeded workflow: ${w.name} @ ${w.version}`);
+    }
+  }
+
+  // `private-ask` (src/privacy/seed.ts), seeded like the browser workflows.
+  if (opts.privacyWorkflows !== false) {
+    for (const w of await seedPrivacyWorkflows(workspace)) {
+      if (w.changed) console.log(`[privacy] seeded workflow: ${w.name} @ ${w.version}`);
     }
   }
 
