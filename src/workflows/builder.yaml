@@ -96,7 +96,7 @@ steps:
           text: { type: string, description: "Your reply to the person, markdown: what you published (name, version), what the test run showed, what is left." }
           artifacts:
             type: array
-            description: "An APP you published, by name — { id, kind: app, title, app: <name> } — so the person opens it where they are. Otherwise usually none: name workflows and runs in `text`. A small inline `content` when it helps (a sample output, a diff), or an earlier job's deliverable by the `url` job/get gave it."
+            description: "An APP you published, by name and with the version publishing returned — { id, kind: app, title, app: <name>, version: <vN> } — so the person opens what you built where they are (a draft, when a person holds the app at a release). Otherwise usually none: name workflows and runs in `text`. A small inline `content` when it helps (a sample output, a diff), or an earlier job's deliverable by the `url` job/get gave it."
             items:
               type: object
               additionalProperties: false
@@ -111,7 +111,7 @@ steps:
                 url: { type: string, description: "An absolute link, or the url job/get gave an earlier job's deliverable" }
                 content: { type: string, description: "Small inline content instead of a file" }
                 app: { type: string, description: "A published app, by its name (kind: app): its active version, unless `version` names one" }
-                version: { type: string, description: "With `app`: the version to show (v2); omit for the active one" }
+                version: { type: string, description: "With `app`: the version to show — the one you published (v4); without it, the version people open now" }
           ask:
             type: object
             description: "Only when you need a decision from the person before going on: the question, in prose. The answer comes as the next turn's prompt."
@@ -229,9 +229,9 @@ params:
 
     Answer with `text`: what you published (name, version), what the test
     run showed, and what is left. An app you published is a deliverable:
-    list it in `artifacts` as `{ id, kind: "app", title, app: "<name>" }`
-    (the same id each turn you change it), so the person opens it where
-    they are. Otherwise `artifacts` stays empty: name workflows and runs in
+    list it in `artifacts` as `{ id, kind: "app", title, app: "<name>",
+    version: "<the version publishing returned>" }` (the same id each turn
+    you change it), so the person opens what you built where they are. Otherwise `artifacts` stays empty: name workflows and runs in
     `text`; a small inline `content` (a sample output) when it helps. If
     you cannot go on without the person's decision, stop and put the
     question in `ask`; their answer is the next turn's message.

@@ -28,7 +28,9 @@ react-router, two pages, `app.yaml` with empty grants). Write the files
 with the editor (`str_replace_based_edit_tool`), then `app/build { path }`
 — it returns `{ ok, errors, warnings }`: fix every error and build again —
 then `app/publish { name, path }`: a new app is v1, the same name again is
-the next version, made active. `app/get { name }` shows a published app's
+the next version, which people open — unless a person has HELD the app at a
+release. Then the new version is a DRAFT: the result says `live: false` and
+which version is live, and a person makes it live, never you. `app/get { name }` shows a published app's
 manifest, files, build and its latest CLIENT ERRORS (`errors`: what the
 page's error boundary reported) — read them after a change the person says
 broke. `app/checkout { name, path }` copies a version out to edit it.
@@ -198,8 +200,9 @@ with `useLaunch`. The document's size over 6 MB is a warning.
   never by the chart.
 
 Describe the app's pages in `text` when you publish, and where your reply
-carries `artifacts` (a job's), hand the app over by NAME — `{ id, kind:
-"app", title, app: "<name>" }`, its active version — so the person opens
+carries `artifacts` (a job's), hand the app over by NAME and with the
+VERSION `app/publish` returned — `{ id, kind: "app", title, app: "<name>",
+version: "v4" }`, so a draft opens as the draft — so the person opens
 it where they are: under Apps in strut's UI, where "Edit with the builder"
 brings a request back here, and a message typed inside the app ("add a
 column") arrives in this chat naming the app; or in a host's own frame.
@@ -209,5 +212,5 @@ file.
 When the person asks for the app as a TAB of the workspace — "pin it", "put
 it in the sidebar" — `app/pin { name }`: a host that lists this
 workspace's apps (a portal's sidebar) shows it as a tab of its own, at its
-active version, until `app/pin { name, pinned: false }`. A later publish
+live version, until `app/pin { name, pinned: false }`. A later publish
 keeps the tab. Never pin on your own.
