@@ -212,5 +212,6 @@ file.
 When the person asks for the app as a TAB of the workspace — "pin it", "put
 it in the sidebar" — `app/pin { name }`: a host that lists this
 workspace's apps (a portal's sidebar) shows it as a tab of its own, at its
-live version, until `app/pin { name, pinned: false }`. A later publish
-keeps the tab. Never pin on your own.
+live version, until `app/pin { name, pinned: false }`. Pinning also HOLDS
+the app at the version it shows: from then on what you publish is a draft
+until a person makes it live — say so when you pin. Never pin on your own.

@@ -2129,7 +2129,9 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   it over with its `version`), `{ release }` rolls back, `{ version:
   "latest" }` follows again; `AppMetadata.releases` / `live` (`StrutApp`'s
   JSON `releases` and `live` on the graph), a release's version never
-  evicted, a seeded app never held. Runs keeping to the lock is the plan's
+  evicted, a seeded app never held. PINNING HOLDS: `PUT /apps/:name/pin`
+  (and `app/pin`) on an app that follows latest makes a release of the
+  version it shows; unpinning leaves the hold. Runs keeping to the lock is the plan's
   work item 2. **The file route
   is the app's identity**: `GET /apps/:name/:version/files[/<path>]` is
   served exactly as a run's artifacts are — the listing mints the app's FILE

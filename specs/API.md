@@ -926,7 +926,7 @@ components as an app other apps import (`import { RunTimeline } from
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
 | POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
-| PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. `400` without a boolean, `404` for an unknown app |
+| PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
 | DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
 
 The same reads and writes as steps — `app/list`, `app/get { name, version? }` (or `{ path, job? }`, an app directory you are working on),
@@ -1048,8 +1048,9 @@ an HTML file in its directory, served as any job file is.
 ### 14.5 Releases — following latest, or held (plans/app-releases.md)
 
 An app FOLLOWS LATEST by default: every publish is what people open. A
-person may HOLD it instead with `PUT /apps/:name/active { version }`: that
-makes a RELEASE — `{ id: "rN", version, lock, createdAt, by? }` — and makes
+person may HOLD it instead with `PUT /apps/:name/active { version }`, and
+PINNING it as a tab holds an app that follows latest at the version it
+shows (`PUT /apps/:name/pin`). Either makes a RELEASE — `{ id: "rN", version, lock, createdAt, by? }` — and makes
 it live. While held, `active` is the live release's version, a publish
 records a DRAFT (`live: false` on its result) and changes nothing people
 see, and `{ release }` rolls back (or forward) to another release. An app

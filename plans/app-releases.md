@@ -5,11 +5,12 @@
 > *proposed* are mine, and he accepted them as written ("sounds good, go
 > ahead"), along with my leans on the five open questions, which are now
 > rulings (end of this file). Written against strut `main` @6976983.
-> **Work item 1 BUILT** (2026-10-23, `feature/app-releases`): holds,
+> **Work item 1 BUILT** (2026-10-23, stakwork/strut#300): holds,
 > releases and locks as §1 and §2 describe; one choice beyond them — moving
 > `active` by hand (`setActiveAppVersion`, the store's raw pointer) lets go
 > of the release, so `active` always names the live release's version
-> while one is live. Item 2 (runs under a lock) is next.
+> while one is live. **Ruled after it, the same day: pinning holds**
+> (§1.4), built in its own PR. Item 2 (runs under a lock) is next.
 > Companion to `apps.md` (the app object, §1.3's versions and history,
 > §5's backend, §7's hosts) and `closure.ts`'s readers (`claims.md` §4,
 > the sealed check). Hive's half is described only as the contract it
@@ -56,6 +57,7 @@ tree, and the trees that change fastest are the largest.
 | What a hold covers | **The page AND the workflows and steps it calls** (ruled: with large workflows that change fast there is no other way). Computed from the closure, never written by hand (*proposed*) |
 | How many | **Many releases, one live** (ruled). A release is a page version plus a LOCK; every promote adds one, a rollback re-points to an earlier one |
 | Where the mode lives | *Proposed:* on the app record, beside `active`, NOT on the tab flag. `pinned` says which apps a host shows as tabs; the hold says which page everyone gets — a tab, a deliverable by name, an app importing it, strut's UI, an MCP Apps host. Hive may draw the two together |
+| Pinning and holding | **Pinning holds** (ruled, after #300): a tab is what people use, so pinning an app that follows latest also holds it at the version it shows (§1.4). Unpinning leaves what is live alone, and an app can still be held without a tab |
 | When the lock is taken | *Proposed:* **when a person makes a version live**, not at publish. App versions are named by their sources, and the workflows change far more often than the page: a lock at publish would mint an identical page as a new version for every workflow change. Drafts run against the current workflows, so the lock taken at promote is what the person just reviewed |
 | What `active` means | *Proposed:* **still "the live page"**. Following latest, the newest publish; held, the live release's version. Every reader of `active` keeps working without knowing releases exist |
 | Who promotes | *Proposed:* **a person only**, through `PUT /apps/:name/active` (hive's "Make vN live", strut's version select). No builder step in v1 (Ruled questions 1) |
@@ -163,6 +165,17 @@ REBUILT on the current kit, and a bare import of another app resolves to
 that app's current version, so a rebuild is not the same page; keeping
 the directory is what makes a rollback serve the bytes that were live.
 
+### 1.4 Pinning holds
+
+`PUT /apps/:name/pin { pinned: true }` (and `app/pin`, the builder's,
+only when the person asks) on an app that follows latest also PROMOTES the
+version it shows: a release with a lock, by the same actor, before the
+flag is set — a version that no longer builds pins nothing. On a held app
+it only sets the flag. Unpinning only clears the flag: taking the tab away
+does not change what people open through a link. An app strut seeds is
+pinned without a hold. The responses carry `live` (the release id, or
+`latest`) and the release pinning made.
+
 ## 2. The lock
 
 ### 2.1 Taking one
@@ -267,7 +280,9 @@ Contract only; each host's own repo is adoption.
   page. The chat's app panel frames the version the deliverable names
   (§1.1), labels a draft as one, and turns "Make vN live" into a promote,
   with `behind` and `floating` shown before the click. A releases list
-  rolls back; "Follow latest" releases the hold.
+  rolls back; "Follow latest" releases the hold. Its pin already calls
+  `PUT /apps/:name/pin`, so pinning holds there with no change; the bar
+  should say so before the click.
 - **Strut's UI** (`AppHost.tsx`). The version select becomes: Following
   latest, the versions (drafts marked), the releases; picking one is
   §1.2's door.
