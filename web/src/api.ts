@@ -1852,7 +1852,7 @@ export const setAppLive = (name: string, target: { version: string } | { release
 
 /** Show the app as a tab where this workspace's apps are listed, or stop (`PUT /apps/:name/pin`). */
 export const setAppPinned = (name: string, pinned: boolean) =>
-  fetchJSON<{ ok: true; name: string; pinned: boolean }>(`/apps/${encodeURIComponent(name)}/pin`, {
+  fetchJSON<{ ok: true; name: string; pinned: boolean; live: string; release?: AppRelease }>(`/apps/${encodeURIComponent(name)}/pin`, {
     method: "PUT",
     body: JSON.stringify({ pinned }),
   });

@@ -1503,7 +1503,9 @@ export function App() {
               aria-pressed={!!appEntry.pinned}
               title={appEntry.pinned
                 ? "Shown as a tab in the hosts that list this workspace's apps — click to stop"
-                : "Show this app as a tab in the hosts that list this workspace's apps"}
+                : appEntry.live
+                  ? "Show this app as a tab in the hosts that list this workspace's apps"
+                  : `Show this app as a tab in the hosts that list this workspace's apps — and hold it at ${appEntry.activeVersion}: later publishes are drafts until made live`}
               onClick={async () => {
                 try {
                   await api.setAppPinned(appEntry.name, !appEntry.pinned);
