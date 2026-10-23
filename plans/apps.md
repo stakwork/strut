@@ -82,6 +82,14 @@
 > open; the packaging of the kit's vendor layer and esbuild's binary into
 > the image and the desktop package is its own small PR.
 >
+> **A peer's app** (2026-10-23): a person's own strut hosts an app that
+> lives on a peer — Peel showing an org strut's app with the person token —
+> through three changes: a person token may call `step_run` on `/mcp`, the
+> read-through forwards an app, and AppHost takes the peer (§7.4, §11).
+> Open by default is the owner's choice; the three changes are mine,
+> planned in stakwork/strut#305 and BUILT in #307
+> (`src/apps/peer-host.test.ts` runs them across two struts).
+>
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
 > is the tree hash shared with packages and the kit is out of it (§1.3);
@@ -97,7 +105,8 @@
 > - `claims.md`: what tests an app.
 > - `ladybug-backend.md`: the closed registry this plan opens.
 > - `marketplace.md`: an app is a package member.
-> - `federation.md`: apps stay local, but their workflows may reach peers.
+> - `federation.md`: an app lives on one strut; its workflows may reach
+>   peers, and a person's own strut may host a peer's app (§7.4).
 > - `builder-job.md` (stakwork/strut#239): the `builder` job, the
 >   orchestrator's door to authoring, here and on a peer.
 > - `app-releases.md` (2026-10-23): follow latest or hold a release — a
@@ -1065,6 +1074,89 @@ imports `strut/views` (§3.3); a library build of the kit for a host's own
 React pages is deferred (§12). Hive's OpenHealth page becomes such an app
 (§10). That is adoption.
 
+**A peer's app, hosted by a person's own strut** (2026-10-23; the three
+changes are mine, built in stakwork/strut#307). An app lives on the strut that serves it —
+its grants, its runs, its data — and that does not change. What a person's
+own strut adds is a window onto it: Peel's local strut shows an app that
+lives on the org's strut, with the person token it already holds for that
+peer (`plans/chained-orchestrators.md` §2), the way hive shows it with the
+swarm key. A peer is a URL prefix:
+
+```
+host UI ── its own credential ──▶ the person's strut ── person token ──▶ the peer (on a swarm, mcp's /lab)
+  GET  /peers/acme/apps                              → GET  /apps
+  GET  /peers/acme/apps/<name>/<vN>/files[/<path>]   → the listing (the peer mints the app's token) and the files
+  POST /peers/acme/mcp                               → POST /mcp: step_run, as the person, under the app's grants
+```
+
+1. **The peer: a person token may call `step_run`.** The gate
+   (`createStrut.ts:1253`) lets a `peer:person` request POST `/mcp`, and
+   the door that request gets holds `step_run` alone — the `buildAppTools`
+   set both doors already spread, without the assistant's or the builder's
+   tools. A plain `peer` (`STRUT_PEER_KEY`, a `lab:peer` JWT with no `sub`)
+   is refused as today: its actor is a header any strut sets, and
+   `step_run` runs as the viewer. The rest holds already. The actor is the
+   token's subject (`actorFromHeader`; on a swarm, `labAuth` maps a
+   `lab:peer` JWT's `sub` to `peer:person`), so the person's delegation
+   pays and their secrets bind; the listing and the document are reads,
+   which a peer may make.
+2. **The person's strut: the read-through forwards an app.**
+   `READ_THROUGH` (`createStrut.ts:2894`) gains `apps` and
+   `apps/<name>/<vN>/files[/…]`, and a POST beside it, `/peers/:id/mcp`,
+   relays the JSON-RPC body; each is forwarded as it is, with the peer's
+   token. Two differences from a file: `If-None-Match` and
+   the `ETag` pass through, so the document caches as §1.3 serves it; and
+   the MCP answer keeps its own content type (JSON or an event stream) and
+   `mcp-session-id`. The document comes back with scripts off, like any
+   read-through file, which costs nothing: a host frames its text as
+   `srcdoc` and never navigates to it. The relay is a POST, so a peer of
+   THIS strut cannot use it (the gate).
+3. **The UI: a base path.** AppHost takes the peer (`HostedApp.peer`)
+   and prefixes every URL it builds with `/peers/acme`: the listing
+   (`useFileScope`, with the kit's `fileScopeOf` learning the
+   `peers/<id>/` prefix the read-through already nests), the document, and
+   the relay client's `/mcp`. The Apps section lists each peer's apps
+   (`GET /peers/<id>/apps`) beside the local ones, pinned first, badged
+   `@acme`, opened as `?app=@acme/<name>` (`appKey`); for one, the topbar
+   leaves out the version select, the tab toggle and **Edit with the
+   builder** — those are the peer's. Peel shows strut's UI, or does the
+   same in a frame of its own. **The page alone** (2026-10-23): with
+   `&solo=1` beside `?app=` the UI renders the app's page and nothing of
+   strut's around it — no sidebar, topbar or chat, and no `ui/message` or
+   in-place link, with nothing to open them in — so a native host opens
+   `http://127.0.0.1:<port>/?key=<its key>&app=@<org>/<name>&solo=1` in a
+   web view of its own and shows the org's app as the app.
+
+The token never leaves the peers file, the page never talks to the peer
+(`connect-src 'none'`), and the identity the page sends is the peer's own
+signature, which the person's strut cannot forge.
+
+**Open by default** (the owner's choice, 2026-10-23): every app on the
+peer opens to a person token, with no flag. `step_run` holds every call to
+the app's grants (§9), a launch's `params` only narrow a grant
+(`grantWidenedBy`, `src/closure.ts`), and the person behind the token can
+already drive the app through hive. This is a deliberate exception to the
+peer launch rule (`federation.md` §3: a peer launches only a workflow whose
+YAML says `peer: true` or `peer: person`, as published): through an app, a
+person token launches whatever the app's grants name, because the app's
+publisher granted those to every viewer. A run the page launches stays
+`origin: "app"`, so it takes no `peer/` namespace (`bindPeer`,
+`src/runner.ts`) and behaves the same in hive and on a person's strut. If
+an app turns up that should not be reachable from a person's own strut, a
+flag on the app record beside `pinned` is the later addition.
+
+**Not in this slice:** what a host does with the page's other messages
+when the app is a peer's — `ui/message` to the person's orchestrator
+conversation naming the peer rather than the local builder chat, **Edit
+with the builder** as a builder job on the peer (`job/start { workflow:
+builder, peer }`), and a strut deep link opened in hive or the peer's UI
+rather than the local SPA.
+
+**The zero-strut alternative:** Peel embeds hive's own page for the app.
+Nothing changes in strut, but Peel then needs a hive web session — the
+device credential from pairing is not one — so the work moves into hive,
+and an org strut with no hive in front of it has no page to embed.
+
 ## 8. Authoring — the builders and the job agent are the developers
 
 Three authors, one path. The chat builder, the `builder` JOB that
@@ -1273,12 +1365,18 @@ fourth never load; the rest of each Kit cell is the stack.
   around bought steps, so a forked UI leaves the steps underneath
   fast-forwarding. A COPY under a new name (`app/init { template }`) has no
   `upstream`, and no update reaches it.
-- **Peers.** An app is local. A workflow it launches may reach a peer
-  through `strut/run-workflow`. A build on a peer is a builder job there
-  (`job/start { workflow: builder, peer }`, `plans/builder-job.md` §3): the
-  app is published on that strut, its deliverable comes back tagged
-  `{ peer, job }` under that plan's rule, and the host resolves it against
-  that strut. Nothing of an app crosses.
+- **Peers.** An app lives on one strut: its grants, its runs and its data
+  are that strut's, and nothing of an app is copied to another. A workflow
+  it launches may reach a peer through `strut/run-workflow`. A build on a
+  peer is a builder job there (`job/start { workflow: builder, peer }`,
+  `plans/builder-job.md` §3): the app is published on that strut, its
+  deliverable comes back tagged `{ peer, job }` under that plan's rule, and
+  the host resolves it against that strut. A person's own strut may HOST a
+  peer's app — Peel's local strut showing an app that lives on the org's
+  strut — through its read-through and the person token (§7.4): a window
+  onto the peer's app, never a copy, open to every app on the peer. The
+  same app installed on two struts, each over its own data, is a package
+  (above), not this.
 - **Proposals.** An app acts directly as the viewer. A gated step stays a
   matter for an agent's turn, not a button.
 - **The Mothership.** Nothing new: a launch is a run.

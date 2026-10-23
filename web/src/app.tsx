@@ -40,7 +40,7 @@ import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppHost } from "./components/AppHost";
 import { AppGlyph } from "./icons";
-import { appMessage } from "./app-links";
+import { appKey, appMessage } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
@@ -109,6 +109,10 @@ export function App() {
   // frame reloads when the builder publishes a new version of it.
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
   const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
+  // `?solo=1` beside `?app=`: the app's page alone, with none of strut's UI
+  // around it — what a native host (Peel) opens in a web view of its own,
+  // here or for a peer's app (plans/apps.md §7.4). Read once; the URL keeps it.
+  const [solo] = useState(() => initialUrl.get("solo") === "1");
   const [appQuery, setAppQuery] = useState("");
   const [appReload, setAppReload] = useState(0);
   // What the host hands the chat: a draft for its composer (Edit with the
@@ -329,16 +333,18 @@ export function App() {
   // Pinned apps (tabs where this workspace's apps are listed) first; a
   // filter keeps its own ranking.
   const matchedApps = useMemo(() => {
-    const found = searchWorkflows(apps.map((a) => ({ ...a, description: [a.title, a.description].filter(Boolean).join(" ") })), appQuery);
+    const found = searchWorkflows(apps.map((a) => ({ ...a, description: [a.title, a.description, a.peer && `@${a.peer}`].filter(Boolean).join(" ") })), appQuery);
     return appQuery.trim() ? found : [...found.filter((a) => a.pinned), ...found.filter((a) => !a.pinned)];
   }, [apps, appQuery]);
-  const appEntry = selectedApp ? apps.find((a) => a.name === selectedApp) ?? null : null;
-  const appTitle = (name: string) => apps.find((a) => a.name === name)?.title ?? name;
+  // `selectedApp` is the app's KEY: its name here, `@<peer>/<name>` for a
+  // peer's (plans/apps.md §7.4).
+  const appEntry = selectedApp ? apps.find((a) => appKey(a) === selectedApp) ?? null : null;
+  const appTitle = (name: string) => apps.find((a) => !a.peer && a.name === name)?.title ?? name;
   // The open app's releases (plans/app-releases.md), for the topbar's
   // select: read again whenever what people open changes.
   const [appReleases, setAppReleases] = useState<{ live: string; releases: api.AppRelease[]; behind: api.AppLockDrift[] } | null>(null);
   useEffect(() => {
-    if (!appEntry) {
+    if (!appEntry || appEntry.peer) {
       setAppReleases(null);
       return;
     }
@@ -463,8 +469,18 @@ export function App() {
     const wfs = await api.listWorkflows();
     setWorkflows(wfs);
   }, []);
+  // This strut's apps, then each peer's through the read-through (plans/apps.md
+  // §7.4) — a peer that does not answer just lists none.
+  const [appsLoaded, setAppsLoaded] = useState(false);
   const refreshApps = useCallback(async () => {
-    setApps(await api.listApps().catch(() => []));
+    const local = await api.listApps().catch(() => []);
+    setApps(local);
+    const peers = await api.listPeers().catch(() => []);
+    if (peers.length) {
+      const remote = await Promise.all(peers.map((p) => api.listPeerApps(p.id).catch(() => [])));
+      setApps([...local, ...remote.flat()]);
+    }
+    setAppsLoaded(true);
   }, []);
 
   // Every job title the UI has seen — the run rows' chips name a job by it.
@@ -1164,6 +1180,28 @@ export function App() {
     setInfoStep((prev) => (prev?.type === entry.type ? null : entry));
   }, []);
 
+  // The selected app's page (plans/apps.md §7.3): in the canvas area, or
+  // alone (`solo`). A peer's page — and any page shown alone — gets no
+  // builder chat and no in-place link: there is nothing of strut's around it
+  // to open them in (plans/apps.md §7.4).
+  const appView = selectedApp
+    ? appEntry
+      ? <AppHost
+          key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
+          app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
+          reload={appReload}
+          {...(appEntry.peer || solo ? {} : {
+            onMessage: (text: string) => {
+              setShowChat(true);
+              setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
+            },
+            onNavigate: navigateFromApp,
+          })}
+        />
+      : <div class="empty">{appsLoaded ? `No app "${selectedApp}"` : "Loading apps…"}</div>
+    : null;
+  if (solo && appView) return <div class="app-solo">{appView}</div>;
+
   return (
     <div class="shell">
       {/* Sidebar */}
@@ -1422,7 +1460,7 @@ export function App() {
               onInput={(e) => setAppQuery((e.target as HTMLInputElement).value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setAppQuery("");
-                if (e.key === "Enter" && matchedApps.length === 1) selectApp(matchedApps[0]!.name);
+                if (e.key === "Enter" && matchedApps.length === 1) selectApp(appKey(matchedApps[0]!));
               }}
             />
           )}
@@ -1431,10 +1469,11 @@ export function App() {
               {apps.length === 0 && <div class="empty-sidebar">No apps yet — ask the builder for one</div>}
               {apps.length > 0 && matchedApps.length === 0 && <div class="empty-sidebar">No matching apps</div>}
               {matchedApps.map((a) => (
-                <div key={a.name} class={`list-item ${selectedApp === a.name ? "is-active" : ""}`} title={a.description ? `${a.name} — ${a.description}` : a.name}
-                  onClick={() => selectApp(a.name)}>
+                <div key={appKey(a)} class={`list-item ${selectedApp === appKey(a) ? "is-active" : ""}`} title={a.description ? `${appKey(a)} — ${a.description}` : appKey(a)}
+                  onClick={() => selectApp(appKey(a))}>
                   <span class="app-icon" aria-hidden="true"><AppGlyph /></span>
                   <span class="list-item-name">{a.title}</span>
+                  {a.peer && <span class="badge" title={`Lives on the peer ${a.peer}: it runs there, as you`}>@{a.peer}</span>}
                   {a.pinned && <span class="badge app-tab-badge" title="Shown as a tab where this workspace's apps are listed">tab</span>}
                   <span class="badge badge-accent">{a.activeVersion}</span>
                 </div>
@@ -1448,7 +1487,12 @@ export function App() {
       <div class="shell-topbar">
         <span class="topbar-title">
           {wf ?? (selectedJob ? (job?.title ?? selectedJob) : appOpen ? (appEntry?.title ?? selectedApp) : "Select a workflow")}
-          {appOpen && appEntry && (
+          {appOpen && appEntry?.peer && (
+            // A peer's app (plans/apps.md §7.4): what is live there, run there
+            // as you. Its releases and its tab are the peer's to change.
+            <span class="badge" title={`Lives on the peer ${appEntry.peer}: what is live there, run there as you`}>@{appEntry.peer} · {appEntry.activeVersion}</span>
+          )}
+          {appOpen && appEntry && !appEntry.peer && (
             // What people open (plans/app-releases.md, PUT /apps/:name/active):
             // the latest publish, or a release the app is held at. A release
             // picked here rolls back (or forward); a version picked makes a
@@ -1493,7 +1537,7 @@ export function App() {
               </optgroup>
             </select>
           )}
-          {appOpen && appEntry && (
+          {appOpen && appEntry && !appEntry.peer && (
             // A tab where this workspace's apps are listed (hive's sidebar):
             // the app's record, not a version — the select beside it stays
             // the rollback.
@@ -1619,7 +1663,7 @@ export function App() {
               onClick={() => { setPanel((p) => (p === "workflow" ? null : "workflow")); setInfoStep(null); closeFlyout(); }}
             >Workflow{wfClaims?.enabled && <span class={`claims-dot claims-dot-${claimsTone(wfClaims)}`} />}</button>
           )}
-          {appOpen && selectedApp && (
+          {appOpen && selectedApp && !appEntry?.peer && (
             <button
               class="btn"
               title="Open the builder chat with this app named"
@@ -1689,18 +1733,7 @@ export function App() {
         {/* A selected app: its page, hosted (plans/apps.md §7.3). A selected
             job with no run open: its timeline, not a graph. */}
         {appOpen && selectedApp ? (
-          appEntry
-            ? <AppHost
-                key={`${appEntry.name}@${appEntry.activeVersion}`}
-                app={{ name: appEntry.name, version: appEntry.activeVersion }}
-                reload={appReload}
-                onMessage={(text) => {
-                  setShowChat(true);
-                  setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
-                }}
-                onNavigate={navigateFromApp}
-              />
-            : <div class="empty">{apps.length ? `No app "${selectedApp}"` : "Loading apps…"}</div>
+          appView
         ) : timelineOpen ? (
           job
             ? <JobTimeline

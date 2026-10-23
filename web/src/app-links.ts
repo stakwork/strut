@@ -27,6 +27,14 @@ export function strutLink(url: string, here: { origin: string; pathname: string 
   return Object.keys(params).length ? params : null;
 }
 
+/** How the sidebar and `?app=` name an app: its name for one here,
+ *  `@<peer>/<name>` for a peer's, hosted through the read-through
+ *  (plans/apps.md §7.4). An app name never starts with `@` (the pin), so
+ *  the two never meet. */
+export function appKey(app: { name: string; peer?: string }): string {
+  return app.peer ? `@${app.peer}/${app.name}` : app.name;
+}
+
 /** What `ui/message` from an app becomes in the builder chat: the text,
  *  prefixed with which app it is about — the builder edits the directory. */
 export function appMessage(app: { name: string; version: string }, text: string): string {

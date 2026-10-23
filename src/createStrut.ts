@@ -1266,6 +1266,12 @@ export async function createStrut<TServices = unknown>(
   // then on, the key's equal to this gate (`carriesApiKey`) under the CSRF
   // rules `sessionOf` keeps — and `DELETE /auth/session` ends one; neither
   // needs a credential to be called.
+  //
+  // One POST more for a PERSON's token (`peer:person`, never a plain peer):
+  // `/mcp`, where it gets an app's `step_run` and nothing else — how a
+  // person's own strut hosts an app that lives here (plans/apps.md §7.4).
+  // `step_run` holds every call to the app's grants and runs as the viewer,
+  // and a plain peer's actor is a header any strut sets.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   app.use("*", async (c, next) => {
@@ -1276,8 +1282,12 @@ export async function createStrut<TServices = unknown>(
       : path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
-    if (!read && !(c.req.method === "POST" && PEER_POST.test(path)) && (await isPeer(c))) {
-      return c.json({ error: "forbidden: a peer may read, launch a run, and control a run a peer launched" }, 403);
+    if (!read) {
+      const scope = await scopeOf(c);
+      const post = c.req.method === "POST";
+      if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || (path === "/mcp" && scope === "peer:person")))) {
+        return c.json({ error: "forbidden: a peer may read, launch a run, and control a run a peer launched; a person's token may also call an app's step_run on /mcp" }, 403);
+      }
     }
     return next();
   });
@@ -2938,28 +2948,74 @@ export async function createStrut<TServices = unknown>(
   // under this strut's own artifact headers, typed by its own extension
   // map and never with scripts; a listing or an error as JSON. This
   // strut's `?key=` never travels on.
-  const READ_THROUGH = /^(?:peers\/[^/]+\/)*(?:jobs\/[^/]+\/files|artifacts\/[^/]+)(?:\/.*)?$/;
+  //
+  // And a peer's APPS (plans/apps.md §7.4): its app list, an app version's
+  // files and its document, read with the person token on file for the
+  // peer, so a host here frames a page that lives there — the document's
+  // `ETag` and a host's `If-None-Match` pass through, so it caches. The
+  // page's tools/call go the same way, `POST /peers/<id>/mcp` below.
+  const READ_THROUGH = /^(?:peers\/[^/]+\/)*(?:(?:jobs\/[^/]+\/files|artifacts\/[^/]+|apps\/[^/]+\/v\d+\/files)(?:\/.*)?|apps)$/;
+  const peerFailure = (c: Context, err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ error: message }, message.startsWith("peer_unknown:") ? 404 : 502);
+  };
   app.get("/peers/:id/*", async (c) => {
     const url = new URL(c.req.url);
     // The raw path, as it came: a job id travels encoded (`peer%2Fj1`).
     const rest = url.pathname.split("/").slice(3).join("/");
+    // The relay below is POST only, as `/mcp` is: an MCP client's GET for a
+    // stream gets the 405 it reads as "none".
+    if (rest === "mcp") return c.json({ error: "method not allowed: /peers/:id/mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
     if (!READ_THROUGH.test(rest)) {
-      return c.json({ error: "a peer's read-through serves its job files (jobs/<job>/files/…) and run artifacts (artifacts/<runId>/…) only" }, 404);
+      return c.json({ error: "a peer's read-through serves its job files (jobs/<job>/files/…), run artifacts (artifacts/<runId>/…) and apps (apps, apps/<name>/<vN>/files/…) only" }, 404);
     }
     url.searchParams.delete("key");
     const query = url.searchParams.toString();
+    const ifNoneMatch = c.req.header("if-none-match");
     let res: Response;
     try {
-      res = await peersCap.fetch(c.req.param("id"), `/${rest}${query ? `?${query}` : ""}`);
+      res = await peersCap.fetch(c.req.param("id"), `/${rest}${query ? `?${query}` : ""}`, ifNoneMatch ? { headers: { "if-none-match": ifNoneMatch } } : undefined);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return c.json({ error: message }, message.startsWith("peer_unknown:") ? 404 : 502);
+      return peerFailure(c, err);
     }
-    const listing = /(?:\/files|^(?:peers\/[^/]+\/)*artifacts\/[^/]+)\/?$/.test(rest);
-    const headers = res.ok && !listing
+    const listing = /(?:\/files|^(?:peers\/[^/]+\/)*artifacts\/[^/]+|^(?:peers\/[^/]+\/)*apps)\/?$/.test(rest);
+    const headers: Record<string, string> = (res.ok || res.status === 304) && !listing
       ? artifactHeaders(rest)
       : { "content-type": "application/json", "x-content-type-options": "nosniff", "content-security-policy": "sandbox" };
-    return new Response(res.body, { status: res.status, headers });
+    for (const name of ["etag", "cache-control"]) {
+      const v = res.headers.get(name);
+      if (v) headers[name] = v;
+    }
+    return new Response(res.status === 304 ? null : res.body, { status: res.status, headers });
+  });
+
+  // An app page's tools/call, relayed to the peer whose app it is
+  // (plans/apps.md §7.4): the JSON-RPC body as it came, the MCP headers, the
+  // token on file for the peer — a person's, so the peer answers with
+  // `step_run` alone, as that person. The answer streams back with its own
+  // content type (JSON or an event stream). A POST, so a peer of THIS strut
+  // never relays through it (the gate).
+  app.post("/peers/:id/mcp", async (c) => {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: c.req.header("accept") ?? "application/json, text/event-stream",
+    };
+    for (const name of ["mcp-protocol-version", "mcp-session-id"]) {
+      const v = c.req.header(name);
+      if (v) headers[name] = v;
+    }
+    let res: Response;
+    try {
+      res = await peersCap.fetch(c.req.param("id"), "/mcp", { method: "POST", headers, body: await c.req.text() });
+    } catch (err) {
+      return peerFailure(c, err);
+    }
+    const out: Record<string, string> = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
+    for (const name of ["content-type", "mcp-session-id"]) {
+      const v = res.headers.get(name);
+      if (v) out[name] = v;
+    }
+    return new Response(res.body, { status: res.status, headers: out });
   });
 
   // A PERSON TOKEN (auth.ts "Person tokens"; plans/chained-orchestrators.md
@@ -5164,7 +5220,8 @@ export async function createStrut<TServices = unknown>(
   //
   // Two tool sets over the Model Context Protocol (src/ai/mcp.ts) — stateless,
   // a fresh server per request, behind the gate like every route (the
-  // deployment key; a peer is 403). `POST /mcp` is the ASSISTANT set
+  // deployment key; a peer is 403, but a person's token gets `step_run`
+  // alone on `/mcp`, plans/apps.md §7.4). `POST /mcp` is the ASSISTANT set
   // (src/ai/assistant-tools.ts): talk to the workflow builder, read its
   // chats, list and run workflows, read runs — seven tools, for an agent with
   // forty others that should not learn strut's YAML. `POST /mcp/builder` is
@@ -5183,6 +5240,20 @@ export async function createStrut<TServices = unknown>(
       const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
       return `${proto}://${host}`;
     };
+    /** The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
+     *  doors — hidden from a model, callable by a page whose host relays
+     *  its tools/call here. The viewer is the connection's actor. */
+    const appDoor = async (actor: string | undefined) => {
+      const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
+      const appTools = buildAppTools({
+        apps,
+        registry,
+        services,
+        ...(actor ? { actor } : {}),
+        runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
+      });
+      return { appTools, appMeta: APP_TOOL_META };
+    };
     /** The builder deps both doors spread: public links, and a run that
      *  outlives the wait window goes on detached, tracked like any launch —
      *  nothing can notify an MCP client, so it polls get_run. */
@@ -5196,18 +5267,17 @@ export async function createStrut<TServices = unknown>(
         artifactRefs,
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      // The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
-      // doors — hidden from a model, callable by a page whose host relays
-      // its tools/call here. The viewer is the connection's actor.
-      const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
-      const appTools = buildAppTools({
-        apps,
-        registry,
-        services,
-        ...(actor ? { actor } : {}),
-        runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
-      });
-      return { publicUrl, actor, deps, appTools, appMeta: APP_TOOL_META };
+      return { publicUrl, actor, deps, ...(await appDoor(actor)) };
+    };
+    /** A PERSON's token on `/mcp` (scope `peer:person`, plans/apps.md §7.4):
+     *  `step_run` and nothing else — a person's own strut hosting an app
+     *  that lives here relays its page's tools/call through the token it
+     *  holds for this strut. The viewer is the token's own subject. */
+    const personAppHandler = async (c: Context) => {
+      const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
+      const { appTools, appMeta } = await appDoor(await resolveActor(c));
+      const instructions = "An app's one tool, step_run, for a page hosted by a person's own strut: every call runs as that person, under the app's grants.";
+      return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta })).handle(c.req.raw);
     };
     const builderHandler = async (c: Context) => {
       // The SDK loads on the first MCP request, never at boot.
@@ -5251,7 +5321,9 @@ export async function createStrut<TServices = unknown>(
       return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta })).handle(c.req.raw);
     };
     app.post("/mcp/builder", builderHandler);
-    app.post("/mcp", assistantDoor ? assistantHandler : builderHandler);
+    app.post("/mcp", async (c) =>
+      (await scopeOf(c)) === "peer:person" ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c),
+    );
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
     for (const path of ["/mcp", "/mcp/builder"]) {
