@@ -20,10 +20,12 @@ import { connectAppHost, type AppHostConnection } from "../app-host";
 // document loads, so the page's `ui/initialize` finds a host; its
 // tools/call go to `/mcp` as they are. The same component renders an app a
 // job delivered (the builder's, by name) in the job timeline and the
-// artifact viewer.
+// artifact viewer. A PEER's app (plans/apps.md §7.4) is the same with every
+// URL under `/peers/<id>`: this strut's read-through reads its listing and
+// document, and relays its tools/call to the peer with the token on file.
 
-/** What the host renders: a workspace app at a version. */
-export type HostedApp = { name: string; version: string };
+/** What the host renders: a workspace app at a version — here, or on `peer`. */
+export type HostedApp = { name: string; version: string; peer?: string };
 
 export function AppHost(props: {
   app: HostedApp;
@@ -38,7 +40,7 @@ export function AppHost(props: {
 }) {
   const app = props.app;
   // The version's token comes from its (cached) listing.
-  const scope = useFileScope(api.appFilesScope(app.name, app.version));
+  const scope = useFileScope(api.appFilesScope(app.name, app.version, app.peer));
   const ready = !!scope;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; error?: string }>({ status: "loading" });
@@ -57,11 +59,12 @@ export function AppHost(props: {
     setState({ status: "loading" });
     void (async () => {
       try {
-        const html = await api.fetchAppDocument(app.name, app.version, scope!.token);
+        const html = await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
         if (cancelled) return;
         conn = await connectAppHost({
           frame,
           theme,
+          ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           handlers: {
             ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),
             ...(handlers.current.onNavigate ? { onNavigate: (params: Record<string, string>) => handlers.current.onNavigate?.(params) } : {}),
@@ -84,7 +87,7 @@ export function AppHost(props: {
     // The token is the scope's; a reload re-fetches the document (a new
     // version was published under the same label only on a rebuild).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app.name, app.version, props.reload, scope?.token, ready]);
+  }, [app.name, app.version, app.peer, props.reload, scope?.token, ready]);
 
   useEffect(() => {
     connRef.current?.setTheme(theme);

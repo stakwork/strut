@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appMessage, strutLink } from "./app-links";
+import { appKey, appMessage, strutLink } from "./app-links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
  *  decides without the bridge): where a link leads, what a page's message
@@ -21,6 +21,11 @@ describe("the app host", () => {
     assert.deepEqual(strutLink("https://swarm.test/lab/?wf=bench", lab), { wf: "bench" });
     assert.deepEqual(strutLink("https://swarm.test/lab?run=1&wf=w", lab), { run: "1", wf: "w" });
     assert.equal(strutLink("https://swarm.test/?wf=bench", lab), null, "the root is another page");
+  });
+
+  it("an app is named by its name here, and by its peer and name when it lives on a peer", () => {
+    assert.equal(appKey({ name: "bench" }), "bench");
+    assert.equal(appKey({ name: "hive/ui", peer: "acme" }), "@acme/hive/ui");
   });
 
   it("a page's message names the app it is about", () => {

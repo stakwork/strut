@@ -85,9 +85,10 @@
 > **A peer's app** (2026-10-23): a person's own strut hosts an app that
 > lives on a peer — Peel showing an org strut's app with the person token —
 > through three changes: a person token may call `step_run` on `/mcp`, the
-> read-through forwards an app, and AppHost takes a base path (§7.4, §11).
-> Open by default is the owner's choice; the three changes are mine,
-> proposed.
+> read-through forwards an app, and AppHost takes the peer (§7.4, §11).
+> Open by default is the owner's choice; the three changes are mine, and
+> BUILT with this plan in stakwork/strut#305 (`src/apps/peer-host.test.ts`
+> runs them across two struts).
 >
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
@@ -1074,7 +1075,7 @@ React pages is deferred (§12). Hive's OpenHealth page becomes such an app
 (§10). That is adoption.
 
 **A peer's app, hosted by a person's own strut** (2026-10-23; the three
-changes are mine, proposed). An app lives on the strut that serves it —
+changes are mine, built in stakwork/strut#305). An app lives on the strut that serves it —
 its grants, its runs, its data — and that does not change. What a person's
 own strut adds is a window onto it: Peel's local strut shows an app that
 lives on the org's strut, with the person token it already holds for that
@@ -1110,13 +1111,16 @@ host UI ── its own credential ──▶ the person's strut ── person tok
    read-through file, which costs nothing: a host frames its text as
    `srcdoc` and never navigates to it. The relay is a POST, so a peer of
    THIS strut cannot use it (the gate).
-3. **The UI: a base path.** AppHost takes one — `/peers/acme` — and
-   prefixes every URL it builds: the listing (`useFileScope`, with the
-   kit's `fileScopeOf` learning the `peers/<id>/` prefix the read-through
-   already nests), the document, and the relay client's `/mcp`. The Apps
-   section lists each peer's apps (`GET /peers/<id>/apps`) beside the local
-   ones, pinned first, opened as `?app=@acme/<name>`. Peel shows strut's
-   UI, or does the same in a frame of its own.
+3. **The UI: a base path.** AppHost takes the peer (`HostedApp.peer`)
+   and prefixes every URL it builds with `/peers/acme`: the listing
+   (`useFileScope`, with the kit's `fileScopeOf` learning the
+   `peers/<id>/` prefix the read-through already nests), the document, and
+   the relay client's `/mcp`. The Apps section lists each peer's apps
+   (`GET /peers/<id>/apps`) beside the local ones, pinned first, badged
+   `@acme`, opened as `?app=@acme/<name>` (`appKey`); for one, the topbar
+   leaves out the version select, the tab toggle and **Edit with the
+   builder** — those are the peer's. Peel shows strut's UI, or does the
+   same in a frame of its own.
 
 The token never leaves the peers file, the page never talks to the peer
 (`connect-src 'none'`), and the identity the page sends is the peer's own

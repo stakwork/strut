@@ -1772,6 +1772,9 @@ export interface AppListEntry {
   pinned?: boolean;
   /** The live release's id, only while the app is held (plans/app-releases.md). */
   live?: string;
+  /** The peer the app lives on, for one listed through the read-through
+   *  (`listPeerApps`; never on the wire). */
+  peer?: string;
 }
 
 /** A page version made live with the versions it locks (plans/app-releases.md). */
@@ -1860,15 +1863,39 @@ export const setAppPinned = (name: string, pinned: boolean) =>
 export const deleteApp = (name: string) =>
   fetchJSON<{ ok: true; name: string }>(`/apps/${encodeURIComponent(name)}`, { method: "DELETE" });
 
+// ── A peer's apps (plans/apps.md §7.4) ──────────────────────────────────────
+// An app that lives on a PEER, hosted here: this strut's read-through reads
+// its list, files and document with the token on file for the peer (a
+// person's), and relays its page's tools/call to the peer's `/mcp`. A peer
+// is a path prefix; everything else is the same as for an app here.
+
+/** `GET /peers`: the struts this one may call, never a token. */
+export interface PeerEntry {
+  id: string;
+  baseUrl: string;
+  label?: string;
+  description?: string;
+}
+
+export const listPeers = () => fetchJSON<{ peers: PeerEntry[] }>("/peers").then((r) => r.peers);
+
+/** The path prefix that reaches a peer through this strut's read-through. */
+export const peerBase = (peer: string) => `/peers/${encodeURIComponent(peer)}`;
+
+/** A peer's apps, through the read-through, each tagged with the peer. */
+export const listPeerApps = (peer: string) =>
+  fetchJSON<{ apps: AppListEntry[] }>(`${peerBase(peer)}/apps`).then((r) => r.apps.map((a) => ({ ...a, peer })));
+
 /** The scope a version's files are listed and read under — what
- *  `useFileScope` takes, and what `appDocumentPath` is inside. */
-export function appFilesScope(name: string, version: string): string {
-  return `/apps/${encodeURIComponent(name)}/${version}/files`;
+ *  `useFileScope` takes, and what `appDocumentPath` is inside — here, or on
+ *  `peer` through the read-through. */
+export function appFilesScope(name: string, version: string, peer?: string): string {
+  return `${peer ? peerBase(peer) : ""}/apps/${encodeURIComponent(name)}/${version}/files`;
 }
 
 /** The version's document, inside its scope. */
-export function appDocumentPath(name: string, version: string): string {
-  return `${appFilesScope(name, version)}/dist/index.html`;
+export function appDocumentPath(name: string, version: string, peer?: string): string {
+  return `${appFilesScope(name, version, peer)}/dist/index.html`;
 }
 
 /** The document's bytes, read with the scope's token (`?t=`) — the server
@@ -1876,8 +1903,8 @@ export function appDocumentPath(name: string, version: string): string {
  *  — else with the UI's own credential. The caller frames the TEXT as a
  *  sandboxed frame's srcdoc: the page runs in an opaque origin, never on
  *  this one. */
-export async function fetchAppDocument(name: string, version: string, token: string): Promise<string> {
-  const path = appDocumentPath(name, version);
+export async function fetchAppDocument(name: string, version: string, token: string, peer?: string): Promise<string> {
+  const path = appDocumentPath(name, version, peer);
   // `no-cache`: the browser's copy, once the server says it is current (a
   // 304 against its ETag) — reopening an app downloads nothing.
   const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`, { cache: "no-cache" });

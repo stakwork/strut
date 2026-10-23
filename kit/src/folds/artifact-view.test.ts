@@ -100,6 +100,11 @@ describe("fileScopeOf / artifactRel", () => {
     assert.equal(fileScopeOf("/jobs/job-1/files/notes/plan.md"), "/jobs/job-1/files");
     assert.equal(fileScopeOf("/jobs/job-1"), null);
     assert.equal(fileScopeOf("https://x/artifacts/1/a.md"), null);
+    // Through a peer's read-through, one hop per prefix: the listing is the peer's.
+    assert.equal(fileScopeOf("/peers/acme/apps/hello/v3/files/dist/index.html"), "/peers/acme/apps/hello/v3/files");
+    assert.equal(fileScopeOf("/peers/acme/peers/billing/jobs/team%2Fj1/files/report.md"), "/peers/acme/peers/billing/jobs/team%2Fj1/files");
+    assert.equal(fileScopeOf("/peers/acme/workflows/x"), null);
+    assert.equal(artifactRel("/peers/acme/apps/hello/v3/files/dist/index.html"), "dist/index.html");
     assert.equal(artifactRel("/artifacts/1790/chapters/README.md"), "chapters/README.md");
     assert.equal(artifactRel("/artifacts/1790/book/"), "book");
     assert.equal(artifactRel("/artifacts/1790/"), "");
