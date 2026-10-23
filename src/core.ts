@@ -46,6 +46,11 @@ export interface StepDef<
    *  Listed by `GET /steps`, so a host can fill its `approve:` lists. Absent
    *  (or any other value): not declared, which a host treats as `write`. */
   effect?: StepEffect;
+  /** For a step an agent's `approve:` gates (src/proposals.ts): a proposal
+   *  of it waits for every PENDING proposal this returns true for — accepting
+   *  it first is refused (409), so it applies after them. `meta/set-automation`
+   *  waits for the publish of the workflow it schedules. */
+  after?: (cfg: z.infer<TInput>, pending: { step: string; input: unknown }) => boolean;
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
@@ -132,6 +137,10 @@ export interface StepContext<TServices = unknown> {
    *  runner sets it, a subflow keeps it, and an agent's tool calls inherit
    *  it. Each step is then held to reach, as resolved (src/reach.ts). */
   aiAuthored?: boolean;
+  /** Set only when the step runs as an ACCEPTED proposal (src/proposals.ts
+   *  `applyProposal`): which one, and who proposed it. A step that must
+   *  only ever run on a person's yes requires it (`meta/set-automation`). */
+  proposal?: { id: string; by: { workflow: string; runId: string } };
   /** The JOB this run was launched under (plans/jobs.md §1): a flat, global
    *  string the caller minted — `POST …/run { job }` — that every run of the
    *  job shares, whatever its workflow. `job/dir` hands out its directory;
@@ -738,6 +747,8 @@ export interface AnyStepDef {
   secrets?: string[];
   /** Read or write (see `StepDef.effect`). */
   effect?: StepEffect;
+  /** Which pending proposals one of its own waits for (see `StepDef.after`). */
+  after?: (cfg: any, pending: { step: string; input: unknown }) => boolean;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
 }
 
