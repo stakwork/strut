@@ -14,7 +14,7 @@ export { detectAll, resolve, typeFix, ruleSpans, denySpans, denyStage, ruleStage
 export { pseudonymize } from "./pseudonymize.js";
 export { restore } from "./restore.js";
 export { putVault, getVault, destroyVault, kindOf, HANDLE_RE, type VaultDeps } from "./vault.js";
-export { secretKeyProvider, VAULT_KEY_SECRET, VAULT_KEY_SECRET_LEGACY, type KeyProvider, type KeyCtx } from "./keys.js";
+export { secretKeyProvider, VAULT_KEY_SECRET, type KeyProvider, type KeyCtx } from "./keys.js";
 export { transformersNer, workerNer, nerStage, nerPostprocess, groupAndAlign } from "./ner.js";
 export { transformersLlm, workerLlm, llmStage, llmPostprocess, parseLlmReply } from "./llm.js";
 export { PRIVACY_MODELS, NER_MODEL, LLM_MODEL, privacyModelOptions, type PrivacyModelOptions } from "./models.js";

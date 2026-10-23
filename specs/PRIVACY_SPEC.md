@@ -145,8 +145,8 @@ follows, and no key material is ever in a handle.
   HKDF-SHA256(secret, salt, info `strut-privacy-vault`), AAD = `<id>:<exp>`, so
   a changed `exp` or a file renamed to another id fails to decrypt. Expired
   files are removed on read and by a bounded sweep (100 files) on each write.
-- **The key** (`vault: file` only): the secret `STRUT_ANONYMIZATION_VAULT_KEY`
-  (legacy name `STRUT_PRIVACY_KEY` still read). Without it the step fails with
+- **The key** (`vault: file` only): the secret `STRUT_ANONYMIZATION_VAULT_KEY`,
+  the only name read. Without it the step fails with
   an error naming `STRUT_ANONYMIZATION_VAULT_KEY`; there is no keyless mode.
   `kid` is the first 8 hex of sha256(secret name + ":" + value). A vault
   written under another key is a clear error, so **rotating the key orphans

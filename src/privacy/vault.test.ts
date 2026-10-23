@@ -4,7 +4,7 @@ import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { putVault, getVault, destroyVault, HANDLE_RE, kindOf, type VaultDeps } from "./vault.js";
-import { secretKeyProvider, VAULT_KEY_SECRET, VAULT_KEY_SECRET_LEGACY, type KeyProvider } from "./keys.js";
+import { secretKeyProvider, VAULT_KEY_SECRET, type KeyProvider } from "./keys.js";
 
 const map = { "[PERSON_1]": { type: "PERSON", value: "Ann" } };
 const SECRET = "correct horse battery staple";
@@ -109,24 +109,14 @@ describe("vault", () => {
 });
 
 describe("keys", () => {
-  it("reads STRUT_ANONYMIZATION_VAULT_KEY first, then the legacy STRUT_PRIVACY_KEY; no key -> null", async () => {
-    const a = await secretKeyProvider.get(ctxWith({ [VAULT_KEY_SECRET]: "one", [VAULT_KEY_SECRET_LEGACY]: "two" }), { vault: "file" });
+  it("reads STRUT_ANONYMIZATION_VAULT_KEY and no other name; no key -> null", async () => {
+    const a = await secretKeyProvider.get(ctxWith({ [VAULT_KEY_SECRET]: "one" }), { vault: "file" });
     assert.deepEqual(Buffer.from(a!.material).toString(), "one");
-    const b = await secretKeyProvider.get(ctxWith({ [VAULT_KEY_SECRET_LEGACY]: "two" }), { vault: "file" });
-    assert.deepEqual(Buffer.from(b!.material).toString(), "two");
-    assert.match(b!.kid, /^[0-9a-f]{8}$/);
-    assert.ok(!b!.kid.includes("two"));
+    assert.match(a!.kid, /^[0-9a-f]{8}$/);
+    assert.ok(!a!.kid.includes("one"));
+    assert.equal(await secretKeyProvider.get(ctxWith({ STRUT_PRIVACY_KEY: "two" }), { vault: "file" }), null);
     assert.equal(await secretKeyProvider.get(ctxWith({}), { vault: "file" }), null);
     assert.equal(await secretKeyProvider.get({}, { vault: "file" }), null);
-  });
-  it("a vault written under the legacy name opens with it", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "strut-vault-"));
-    try {
-      const d: VaultDeps = { dir: join(dir, "v") };
-      const legacy = ctxWith({ [VAULT_KEY_SECRET_LEGACY]: "old" });
-      const h = await putVault("file", map, 5, legacy, d);
-      assert.deepEqual(await getVault(h, legacy, d), map);
-    } finally { await rm(dir, { recursive: true, force: true }); }
   });
   it("an injected KeyProvider replaces the secret lookup and receives the purpose", async () => {
     const dir = await mkdtemp(join(tmpdir(), "strut-vault-"));

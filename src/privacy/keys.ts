@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 
-/** The one place the vault key is looked up. Nothing else reads these secret names. */
+/** The one place the vault key is looked up. Nothing else reads this secret name. */
 export const VAULT_KEY_SECRET = "STRUT_ANONYMIZATION_VAULT_KEY";
-export const VAULT_KEY_SECRET_LEGACY = "STRUT_PRIVACY_KEY";
 
 export type KeyPurpose = { vault: "file"; owner?: string };
 export type KeyMaterial = { kid: string; material: Uint8Array };
@@ -24,14 +23,10 @@ export const secretKeyProvider: KeyProvider = {
   async get(ctx) {
     const secrets = (ctx.services as { secrets?: Secrets } | undefined)?.secrets;
     if (!secrets) return null;
-    for (const name of [VAULT_KEY_SECRET, VAULT_KEY_SECRET_LEGACY]) {
-      const value = await secrets.get(name);
-      if (value) {
-        // the kid names the key without revealing it; a different name or value is a different key
-        const kid = createHash("sha256").update(name + ":" + value).digest("hex").slice(0, 8);
-        return { kid, material: new TextEncoder().encode(value) };
-      }
-    }
-    return null;
+    const value = await secrets.get(VAULT_KEY_SECRET);
+    if (!value) return null;
+    // the kid names the key without revealing it; a different value is a different key
+    const kid = createHash("sha256").update(VAULT_KEY_SECRET + ":" + value).digest("hex").slice(0, 8);
+    return { kid, material: new TextEncoder().encode(value) };
   },
 };
