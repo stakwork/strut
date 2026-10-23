@@ -116,12 +116,15 @@ brackets, spaces); a token the vault does not know is left as written and
 counted in `unknown_pseudonyms`, never guessed. **The output contains real
 personal data.**
 
-**`privacy/destroy`** `{ handle }` → `{ destroyed }`.
+**`privacy/destroy`** `{ handle, rethrow? }` → `{ destroyed }`. With `rethrow`
+it destroys and then fails with that message: an `onError` handler passes
+`"{{ $error.message }}"`, so the run still fails with the failed step's error.
 
 **`private-ask`** (seeded workflow, category `privacy`): `privacy/anonymize` →
 `llm` (sees only the masked text, told to keep tokens verbatim) →
 `privacy/deanonymize`. If the `llm` step fails its `onError` destroys the vault
-(the run then fails at `deanonymize`, the model's error being in the log).
+and rethrows: the run fails at `llm` with the model's error (what a callback's
+`error.message` carries), and `deanonymize` never runs.
 
 - input `{ prompt, model?, system?, vault? = "memory", ttl_minutes? = 60, deny?, allow? }`
 - output `{ answer, handle?, report: { counts, entities, warnings, restored, unknown_pseudonyms } }`

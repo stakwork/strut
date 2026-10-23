@@ -80,6 +80,15 @@ describe("privacy steps", () => {
     assert.deepEqual((await step("privacy/destroy", { handle: h }, svc)).output, { destroyed: false });
   });
 
+  it("privacy/destroy with rethrow destroys, then fails with that message", async () => {
+    const svc = services();
+    const h = ((await step("privacy/anonymize", { text: "Jonas" }, svc)).output as any).handle;
+    const r = await step("privacy/destroy", { handle: h, rethrow: "provider down" }, svc);
+    assert.equal(r.status, "error");
+    assert.equal(r.error!.message, "provider down");
+    assert.deepEqual((await step("privacy/destroy", { handle: h }, svc)).output, { destroyed: false });
+  });
+
   it("ner:false skips the model entirely; privacy_level warns and behaves as off", async () => {
     const boom: NerEngine = { detect: async () => { throw new Error("must not be called"); } };
     const a = await step("privacy/anonymize", { text: "Jonas at jo@example.com", detectors: { ner: false }, privacy_level: "strict" }, services({}, {}, boom));
@@ -199,12 +208,18 @@ describe("private-ask", () => {
     assert.match((r.output as any).handle, /^pvf_[0-9a-f]{24}$/);
   });
 
-  it("destroys the vault when the model call fails", async () => {
+  it("destroys the vault when the model call fails, and fails with the model's error", async () => {
     const flow = flowFromYaml("private-ask", "v1", await text());
     const svc = services({}, { [VAULT_KEY_SECRET]: "k".repeat(32) });
-    const r = await runWorkflow(flow, { prompt: "Jonas", vault: "file" }, await createRegistry([fakeLlm(true)]), { services: svc, store: new MemoryRunStore() });
+    const store = new MemoryRunStore();
+    const r = await runWorkflow(flow, { prompt: "Jonas", vault: "file" }, await createRegistry([fakeLlm(true)]), { services: svc, store });
     assert.equal(r.status, "error");
+    assert.equal(r.error?.message, "provider down");
     assert.deepEqual(await readdir(join(dir, "privacy", "vault")), []);
+    const events = store.getEvents("private-ask", r.runId) as any[];
+    const ask = events.find((e) => e.type === "step.error" && e.path === "private-ask/ask");
+    assert.equal(ask?.error.message, "provider down");
+    assert.ok(!events.some((e) => e.path === "private-ask/back"), "back never runs");
   });
 
   it("createStrut seeds it in the privacy category; privacyWorkflows: false seeds none", async () => {

@@ -11,9 +11,9 @@ name: private-ask
 # by default: all three steps run in this process. `vault: file` needs the
 # secret STRUT_ANONYMIZATION_VAULT_KEY and returns the handle.
 #
-# If the llm step fails its error handler destroys the vault; the run then
-# fails at privacy/deanonymize (nothing left to restore), the llm error being
-# in the log.
+# If the llm step fails its error handler destroys the vault and fails again
+# with the llm's error, so the run fails at `ask` with the model's message and
+# privacy/deanonymize never runs.
 #
 # Input:  { prompt, model?, system?, vault?, ttl_minutes?, deny?, allow? }
 # Output: { answer, handle? (file vaults), report: { counts, entities, warnings, restored, unknown_pseudonyms } }
@@ -50,7 +50,7 @@ steps:
       onError:
         id: cleanup
         type: privacy/destroy
-        config: { handle: "{{ mask.handle }}" }
+        config: { handle: "{{ mask.handle }}", rethrow: "{{ $error.message }}" }
 
   - id: back
     type: privacy/deanonymize

@@ -1,13 +1,20 @@
 /**
  * LIVE privacy test — loads the real NER model (Xenova/bert-base-NER, ~110 MB,
- * downloaded into the model dir on first use). Opt in with STRUT_PRIVACY_LIVE=1
- * (`npm run test:privacy`); skipped otherwise. The fixtures are synthetic.
+ * downloaded into the model dir on first use) in its worker thread. Opt in with
+ * STRUT_PRIVACY_LIVE=1 (`npm run test:privacy`); skipped otherwise. The fixtures
+ * are synthetic; the `llm` step in private-ask is a fake, no provider is called.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
+import { defineStep } from "../core.js";
+import { runWorkflow } from "../runner.js";
+import { createRegistry } from "../steps/registry.js";
+import { MemoryRunStore } from "../store.js";
+import { flowFromYaml } from "../workspace.js";
 import { anonymizeTexts, deanonymizeText, type AnonymizeOptions } from "./index.js";
 
 const enabled = process.env["STRUT_PRIVACY_LIVE"] === "1";
@@ -47,5 +54,29 @@ describe("privacy live (STRUT_PRIVACY_LIVE=1)", { skip: !enabled }, () => {
     const recall = masked / planted;
     console.log(JSON.stringify({ planted, masked, recall: Number(recall.toFixed(3)), byType, missed }));
     assert.ok(recall >= RECALL_FLOOR, `recall ${recall.toFixed(3)} below ${RECALL_FLOOR}; missed: ${missed.join(", ")}`);
+  });
+
+  it("private-ask with the default NER: the model sees no planted value, the answer is restored", async () => {
+    const seen: string[] = [];
+    // echoes the masked text back, as a model that keeps every token would
+    const fakeLlm = defineStep({
+      type: "llm",
+      description: "fake",
+      input: z.object({ prompt: z.string(), model: z.string().optional() }),
+      output: z.any(),
+      async run(cfg) {
+        seen.push(cfg.prompt);
+        return { text: cfg.prompt.trim().split("\n\n").at(-1)!.trim() };
+      },
+    });
+    const row = rows[0]!;
+    const flow = flowFromYaml("private-ask", "v1", await readFile(new URL("../workflows/private-ask.yaml", import.meta.url), "utf-8"));
+    const services = { dataDir: dir, secrets: { get: async () => undefined } };
+    const r = await runWorkflow(flow, { prompt: row.text }, await createRegistry([fakeLlm]), { services, store: new MemoryRunStore() });
+    assert.equal(r.status, "success", JSON.stringify(r.error));
+    assert.equal(seen.length, 1);
+    for (const p of row.planted) assert.ok(!seen[0]!.includes(p.value), `${p.type} reached the model`);
+    assert.equal((r.output as any).answer, row.text);
+    assert.equal((r.output as any).report.unknown_pseudonyms, 0);
   });
 });
