@@ -41,8 +41,12 @@ The directory is `package.json`, `build/`, `web/dist/`, `node_modules/`,
 and nothing else: the `sherpa-onnx.node` addon and the two dylibs it links
 (`libonnxruntime`, `libsherpa-onnx-c-api`), moved out of the sherpa platform
 package by the packaging script, which points `sherpa-onnx-node`'s loader at
-them and fails the build if a binary turns up anywhere else. The app
-code-signs and notarizes that one directory. They ship ad-hoc signed, which
+them and fails the build if a binary turns up anywhere else. The dictation
+fixer's node-llama-cpp binaries (the addon, the ggml/llama dylibs and the ggml
+backends it loads from its own folder, Metal among them) sit together in
+`native/llama/<platform folder>`, found through the prebuilt package's
+`getBinsDir()`; never built from source or downloaded at runtime. The app
+code-signs and notarizes that directory and its folders. They ship ad-hoc signed, which
 is why an unsigned download trips Gatekeeper; inside a signed, notarized app
 bundle there is no prompt.
 
@@ -236,7 +240,7 @@ Content-Type: audio/wav
 <wav bytes>
 ```
 
-→ `{ "text": "…", "segments": [{ "text", "words" }], "model", "hotwords", "durationMs" }`,
+→ `{ "text": "…", "segments": [{ "text", "words" }], "model", "hotwords", "durationMs", "fixer" }`,
 plus `heard` and `changes` when the user's vocabulary changed the text (§7a).
 `text` is what to type. Single recognizer (no `partialModel`); same casing
 and punctuation as a `final`. Bodies under 44 bytes are rejected as not-a-WAV.
@@ -269,8 +273,9 @@ nouns both ways.
 ## 7a. The user's vocabulary (rewrite, learning, Undo, the Vocabulary UI)
 
 Strut keeps the user's words and how dictation mishears them in its memory
-graph, and makes every decision about them: what is an everyday word, what an
-edit teaches, how a transcript is rewritten. A client sends what it saw and
+graph, and makes every decision about them (with the user's fixer model, a
+small local model it runs): what an edit teaches, how a transcript is
+rewritten. A client sends what it saw and
 shows what comes back; it has no word lists or rules of its own. Every call
 below is the same for any client (Mac, iOS, a web page). Steps are run through
 `POST /steps/<type>/run` with the body `{ "config": { …input } }` and answer
@@ -286,28 +291,37 @@ default:
   text: string;            // type this
   segments: { text: string; words: SttWord[] }[];  // as heard
   model: string; hotwords: string | null; durationMs: number;
+  fixer: string | null;    // the fixer model that read it (see Models); null: none ran
   heard?: string;          // the transcript as heard, only when `text` differs
-  changes?: { heard: string; written: string }[];  // what the rewrite changed, in order
+  changes?: { heard: string; written: string; at: number }[];  // each edit in text order; `at` is its offset in `heard`, `written` "" for a removal
 }
 ```
 
-`?lingo=0` returns the transcript as heard (no `heard`, no `changes`). A strut
-that cannot read its memory returns it as heard too. The socket's `final`
-frames (§4) are as heard today.
+With a fixer, `text` has the user's words where the model reads them in
+context, and fillers, doubled words and a phrase the speaker took back
+("Tuesday, no, Wednesday") removed. With none, or when it does not answer
+within 1.5 s (a cold model loads meanwhile; the next transcript gets it),
+fillers and doubled words are still removed, only exact learned mishearings
+of two or more words are applied (a one-word one, "fix" for Sphinx, needs
+the model's check in context), and `fixer` is null. `?lingo=0`
+returns the transcript as heard (`fixer: null`, no `heard`, no `changes`). A
+strut that cannot read its memory returns it as heard too. The socket's
+`final` frames (§4) are as heard today.
 
-**Learning from an edit.** Once the user has edited what was typed (the
-client re-reads the field), send both texts:
+**Learning from an edit.** Once the user's edit of what was typed has
+settled (the client re-reads the field), send both texts, once:
 
 ```
-dictation/correction { typed: string, edited: string, dry_run?: boolean }
+dictation/correction { typed: string, edited: string }
 → { learned: [{ heard: string, written: string, undo: string[] }] }
 ```
 
 Each pair in `learned` is now in the vocabulary. Show "Learned <written>" for
 those with a non-empty `undo`; an empty `undo` means strut already had the
-pair. `dry_run: true` writes nothing and answers the same shape: use it to
-decide whether an edit in progress is worth watching. Only the pair is
-stored, never the sentence.
+pair. Strut asks the fixer about each short change that could sound like what
+was typed; with no fixer installed nothing is learned (Add still works). The
+call waits for a cold fixer to load, so it can take a few seconds the first
+time. Only the pair is stored, never the sentence.
 
 **Undo.** `dictation/undo { undo: string[] } → { undone: string[] }` with the
 `undo` ids of a learn. The pair is then never learned again. Ids that
@@ -323,9 +337,8 @@ dictation did not write are refused, and then nothing is forgotten.
   own words. Other entities (people, companies) come from the rest of the
   memory. Rank or filter with `facts`, `updated_at` and `known_by_user`.
 - Add a word and how it is misheard:
-  `dictation/add { written, heard } → { heard, written, undo, applies }`.
-  This is the same write as a learn. `applies: false` means `heard` is one
-  everyday word, which the rewrite never replaces on its own, so say so.
+  `dictation/add { written, heard } → { heard, written, undo }`.
+  This is the same write as a learn.
 - Remove: `dictation/remove { ref_id } → { forgotten }`. The `ref_id` is a
   `heard` ref_id (one mishearing) or a word of `lingo_type` (the word and all
   its mishearings). A word that has nothing else known of it goes with its
@@ -337,6 +350,22 @@ dictation did not write are refused, and then nothing is forgotten.
 
 Refresh the lexicon after each write if the UI shows it. Transcription
 always reads the current one.
+
+**Models.** The speech model and the fixer are the user's picks, the same
+steps for any client:
+
+- `dictation/models {}` → `{ models: [{ id, kind: "speech" | "fixer", bytes,
+  description, state: "available" | "downloading" | "installed", progress?,
+  selected, error? }] }`. Poll it while something downloads.
+- `dictation/use { speech?, fixer? }` (`fixer: null`: none) → the same list.
+  A pick that is not installed starts downloading and is used once it is.
+- `dictation/remove-model { id }` → the same list; a removed pick goes back
+  to the default speech model, or to no fixer.
+
+Fixers: `qwen3-1.7b-q4` (1.1 GB; offer it first) and `qwen3-0.6b-q4`
+(0.4 GB; faster, learns more wrongly). None is downloaded until the user
+picks one. A picked fixer loads on first use and unloads after five minutes
+idle.
 
 ## 8. Errors and lifecycle
 
@@ -461,5 +490,6 @@ PCM16LE.
 - [ ] `end` on stop; wait for the trailing `final` and close `1000` before discarding state.
 - [ ] Render partial as replace-in-place, final as commit; glue a punctuation-only final to the previous word.
 - [ ] Pass a `session`; send corrections when the user edits.
-- [ ] Type `text` from `/audio/transcribe`; after the user edits it, send `dictation/correction` and offer Undo (`dictation/undo`) for what it learned.
+- [ ] Type `text` from `/audio/transcribe`; once the user's edit of it settles, send `dictation/correction` once and offer Undo (`dictation/undo`) for what it learned.
+- [ ] A Dictation setting over `dictation/models` / `dictation/use` / `dictation/remove-model`: each model with its size, Download and Remove.
 - [ ] `error` frame → show it; reconnect on transport loss with a new stream.
