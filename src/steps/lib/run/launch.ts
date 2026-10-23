@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { requireRuns } from "./_shared.js";
+import { requireRuns, runInput } from "./_shared.js";
 
 export default defineStep({
   type: "run/launch",
@@ -12,7 +12,7 @@ export default defineStep({
     "`key` dedupes in flight: a run of this workflow launched under the same key and still running is returned as { runId, existing: true } instead of a second launch — a double click, a re-mounted component, a retried request all land on one run.",
   input: z.object({
     workflow: z.string().describe("The workflow name."),
-    input: z.any().optional().describe("The run's input, a JSON object matching the workflow's input: block."),
+    input: runInput("The run's input, a JSON object matching the workflow's input: block."),
     params: z.record(z.string(), z.any()).optional().describe("Overrides for the workflow's params knobs — a narrower grant at most."),
     job: z.string().optional().describe("Launch under this job (plans/jobs.md)."),
     title: z.string().optional().describe("With `job`: the job's title."),

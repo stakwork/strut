@@ -4,6 +4,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import { cancelOnPeer, launchOnPeer, tailPeerRun, type PeerRunHandle, type PeersCapability } from "../../../peers.js";
 import { requireApproval } from "../../../proposals.js";
 import { artifactEntriesOf } from "../../../artifact-refs.js";
+import { runInput } from "../run/_shared.js";
 
 const EXAMPLE = `- id: ask
   type: strut/run-workflow
@@ -80,7 +81,7 @@ export default defineStep({
   input: z.object({
     peer: z.string().describe("The peer's id, as GET /peers lists it (hive registers workspaces by slug: @acme-web → acme-web)"),
     workflow: z.string().describe("The workflow to run ON THE PEER (its name there)"),
-    input: z.any().optional().describe("The run's input, a JSON object. Use {} if none."),
+    input: runInput("The run's input, a JSON object. Use {} if none."),
     params: z
       .record(z.string(), z.any())
       .optional()
