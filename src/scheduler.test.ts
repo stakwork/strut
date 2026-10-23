@@ -272,7 +272,7 @@ describe("automations: policy layer + scheduler", () => {
     assert.deepEqual([view!.lastRun?.runId, view!.lastRun?.status, view!.running], [fourth.runId, "running", true]);
   });
 
-  it("a run listed before its run.start is written still shows as running once it is", async () => {
+  it("a fired run is its automation's, in flight, before its run.start is written", async () => {
     // The real launch: the callback is kept beside the log (creating the
     // run's folder) before run.start is appended, and `fire` answers first.
     const files = new FileRunStore(dir);
@@ -296,12 +296,24 @@ describe("automations: policy layer + scheduler", () => {
     assert.ok("ok" in r);
     const fired = await late.fire(WF, r.automation.id);
     assert.ok("ok" in fired);
-    await kept;
+    const running = async () => {
+      const [view] = await late.list(WF);
+      return [view!.lastRun?.runId, view!.lastRun?.status, view!.running];
+    };
     // Read in the gap: the run's folder is there, its run.start is not.
-    assert.equal((await late.list(WF))[0]!.running, false);
+    await kept;
+    assert.deepEqual(await running(), [fired.runId, "running", true]);
+    const again = await late.fire(WF, r.automation.id);
+    assert.ok("error" in again && again.error.startsWith("skipped:"), "the overlap rule holds in the gap");
     await start!();
-    const [view] = await late.list(WF);
-    assert.deepEqual([view!.lastRun?.runId, view!.lastRun?.status, view!.running], [fired.runId, "running", true]);
+    assert.deepEqual(await running(), [fired.runId, "running", true]);
+  });
+
+  it("two fires at once launch one run", async () => {
+    const r = await created({ name: "Twice", trigger: daily });
+    const [a, b] = await Promise.all([autos.fire(WF, r.automation.id), autos.fire(WF, r.automation.id)]);
+    assert.equal(launches.length, 1);
+    assert.ok([a, b].some((x) => "ok" in x) && [a, b].some((x) => "error" in x && x.error.startsWith("skipped:")));
   });
 
   it("two automations on one workflow keep separate cursors", async () => {

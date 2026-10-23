@@ -125,6 +125,8 @@ export function createAutomations(deps: AutomationsDeps): Automations {
   /** Enabled automations only — a paused one has no entry. */
   const entries = new Map<string, Entry>();
   const fireErrors = new Map<string, string>();
+  /** Automations a fire is launching now: one at a time each. */
+  const firing = new Set<string>();
   const bornAt = clock();
   let loaded = false;
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -177,6 +179,12 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     return stamp;
   }
 
+  /** Runs a fire launched whose `run.start` is not written yet: a launch
+   *  answers first and stamps the run after. Kept until the stamp can be
+   *  read or the run is over, so a read or a fire in that gap sees the run
+   *  as its automation's, in flight. */
+  const launched = new Map<string, { workflow: string; runId: string; id: string; startedAt: string }>();
+
   /** One newest-first pass over a workflow's runs, for several automations
    *  at once: each one's latest run, latest SUCCESS (the `last` cursor), and
    *  any run of its that is still executing. */
@@ -184,6 +192,17 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     const facts = new Map<string, RunFacts>(ids.map((id) => [id, { last: NO_LAST_RUN, lastRun: null, inFlight: null }]));
     const settled = new Set<string>();
     if (ids.length === 0) return facts;
+    // The newest run of its automation, whatever the scan below finds.
+    for (const [k, run] of launched) {
+      if (!deps.isInFlight(run.workflow, run.runId) || (await stampOf(run.workflow, run.runId)).id !== null) {
+        launched.delete(k);
+        continue;
+      }
+      const f = run.workflow === workflow ? facts.get(run.id) : undefined;
+      if (!f) continue;
+      f.inFlight = run.runId;
+      f.lastRun = { runId: run.runId, status: "running", startedAt: run.startedAt };
+    }
     for (const runId of (await store.listRuns(workflow)).slice(0, SCAN_LIMIT)) {
       if (settled.size === ids.length) break;
       const summary = await store.getRunSummary(workflow, runId);
@@ -216,6 +235,9 @@ export function createAutomations(deps: AutomationsDeps): Automations {
    *  process the same window twice. */
   async function fireOne(workflow: string, automation: Automation, at: Date): Promise<AutomationsResult<{ runId: string }>> {
     const k = key(workflow, automation.id);
+    // Two fires at once (a tick and a Run now) would both pass the check below.
+    if (firing.has(k)) return { error: "skipped: a fire of it is already launching" };
+    firing.add(k);
     try {
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
@@ -225,7 +247,9 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       if (unowned) throw new Error(unowned);
       const flow = await workspace.getWorkflow(workflow);
       const input = resolveAutomationInput(automation, at, facts.last);
-      const runId = deps.launch(flow, input, { id: automation.id }, await callbackOf(automation));
+      const callback = await callbackOf(automation);
+      const runId = deps.launch(flow, input, { id: automation.id }, callback);
+      launched.set(`${workflow}/${runId}`, { workflow, runId, id: automation.id, startedAt: clock().toISOString() });
       fireErrors.delete(k);
       return { ok: true, runId };
     } catch (err) {
@@ -233,6 +257,8 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       fireErrors.set(k, message(err));
       console.error(`[automations] "${automation.name}" (${workflow}) launched nothing:`, message(err));
       return { error: message(err) };
+    } finally {
+      firing.delete(k);
     }
   }
 
