@@ -109,6 +109,10 @@ export function App() {
   // frame reloads when the builder publishes a new version of it.
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
   const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
+  // `?solo=1` beside `?app=`: the app's page alone, with none of strut's UI
+  // around it — what a native host (Peel) opens in a web view of its own,
+  // here or for a peer's app (plans/apps.md §7.4). Read once; the URL keeps it.
+  const [solo] = useState(() => initialUrl.get("solo") === "1");
   const [appQuery, setAppQuery] = useState("");
   const [appReload, setAppReload] = useState(0);
   // What the host hands the chat: a draft for its composer (Edit with the
@@ -467,13 +471,16 @@ export function App() {
   }, []);
   // This strut's apps, then each peer's through the read-through (plans/apps.md
   // §7.4) — a peer that does not answer just lists none.
+  const [appsLoaded, setAppsLoaded] = useState(false);
   const refreshApps = useCallback(async () => {
     const local = await api.listApps().catch(() => []);
     setApps(local);
     const peers = await api.listPeers().catch(() => []);
-    if (!peers.length) return;
-    const remote = await Promise.all(peers.map((p) => api.listPeerApps(p.id).catch(() => [])));
-    setApps([...local, ...remote.flat()]);
+    if (peers.length) {
+      const remote = await Promise.all(peers.map((p) => api.listPeerApps(p.id).catch(() => [])));
+      setApps([...local, ...remote.flat()]);
+    }
+    setAppsLoaded(true);
   }, []);
 
   // Every job title the UI has seen — the run rows' chips name a job by it.
@@ -1173,6 +1180,28 @@ export function App() {
     setInfoStep((prev) => (prev?.type === entry.type ? null : entry));
   }, []);
 
+  // The selected app's page (plans/apps.md §7.3): in the canvas area, or
+  // alone (`solo`). A peer's page — and any page shown alone — gets no
+  // builder chat and no in-place link: there is nothing of strut's around it
+  // to open them in (plans/apps.md §7.4).
+  const appView = selectedApp
+    ? appEntry
+      ? <AppHost
+          key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
+          app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
+          reload={appReload}
+          {...(appEntry.peer || solo ? {} : {
+            onMessage: (text: string) => {
+              setShowChat(true);
+              setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
+            },
+            onNavigate: navigateFromApp,
+          })}
+        />
+      : <div class="empty">{appsLoaded ? `No app "${selectedApp}"` : "Loading apps…"}</div>
+    : null;
+  if (solo && appView) return <div class="app-solo">{appView}</div>;
+
   return (
     <div class="shell">
       {/* Sidebar */}
@@ -1704,22 +1733,7 @@ export function App() {
         {/* A selected app: its page, hosted (plans/apps.md §7.3). A selected
             job with no run open: its timeline, not a graph. */}
         {appOpen && selectedApp ? (
-          appEntry
-            ? <AppHost
-                key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
-                app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
-                reload={appReload}
-                // A peer's page: no builder chat here and no in-place link —
-                // the app is the peer's (plans/apps.md §7.4, not in this slice).
-                {...(appEntry.peer ? {} : {
-                  onMessage: (text: string) => {
-                    setShowChat(true);
-                    setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
-                  },
-                  onNavigate: navigateFromApp,
-                })}
-              />
-            : <div class="empty">{apps.length ? `No app "${selectedApp}"` : "Loading apps…"}</div>
+          appView
         ) : timelineOpen ? (
           job
             ? <JobTimeline

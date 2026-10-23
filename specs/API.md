@@ -1050,6 +1050,9 @@ launch. Open to every app on the peer; a plain peer key gets none of it.
 Strut's UI lists each peer's apps beside its own as `?app=@<peer>/<name>`;
 for one, it leaves out the version select, the tab toggle and the builder
 button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
+With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
+page ALONE, nothing of strut's around it — what a native host such as Peel
+opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`.
 
 ### 14.4 A published app as a deliverable
 
