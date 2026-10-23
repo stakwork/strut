@@ -332,17 +332,30 @@ becomes a real app.
   (`PUT /apps/:name/active`) and the `publisher` and `owner` stamps work as
   they do for workflows. Republishing on a newer kit is a REBUILD of the
   same version, never a new one.
-- **A version keeps** its files, its `hash`, and in `dist/` the document
-  it was last built with — `dist/build.json` records the `kit`, `builtAt`
-  and the tree hash it was built from. A strut upgrade rebuilds nothing by
-  itself — the old document stays, so the app keeps working; `app/build` on
-  the version, or the next publish, builds it on the current kit.
+- **A version keeps** its `hash` and its HISTORY: each source file once,
+  by its sha256, in the app's `.objects/`, and its tree (path → sha256, the
+  hashes its tree hash is made of) in `.trees/<vN>.json`
+  (`src/apps/objects.ts`, 2026-10-23). The version's DIRECTORY, `dist/`
+  included, is a cache over it: kept for the active version and the newest
+  five, dropped for the rest, and restored and rebuilt on the current kit
+  the first time one is read again (a rollback to one that no longer builds
+  is refused with the build's errors). Why: a version was a full copy, and
+  ~97% of it the built document (1.44 MB of 1.48 MB for the OpenHealth
+  benchmark app), so hundreds of small edits were hundreds of megabytes;
+  now one adds the files it changed. `dist/build.json` records the `kit`,
+  `builtAt` and the tree hash it was built from. A strut upgrade rebuilds
+  nothing by itself — a kept document stays, so the app keeps working;
+  `app/build` on the version, or the next publish, builds it on the current
+  kit. A version published before the history is recorded at boot
+  (`apps.compact()`); a directory whose files no longer match its version is
+  left as it is.
 - **`upstream`** rides on an app version as on a workflow's
   (`marketplace.md` §3): which package, which digest, whether it was edited
   since. Carried forward by every publish over the name.
 - **The files live under `dataDir`, on every backend.**
   `<dataDir>/apps/<name>/<vN>/` is the version's directory as published,
-  `dist/` included, beside the app's `data.db` — the rule AGENTS.md already
+  `dist/` included (while it is kept, above), beside the app's history
+  (`.objects/`, `.trees/`) and its `data.db` — the rule AGENTS.md already
   states for artifacts, cassettes and jobs: the inherently local things hang
   off `dataDir`, whatever the workspace's kind. The workspace store keeps
   only the POINTERS, so a version is never a 20 MB graph property, and

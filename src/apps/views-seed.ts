@@ -28,6 +28,7 @@ import { buildApp } from "./build.js";
 import { copyAppDir } from "./files.js";
 import { kitOf, type Kit, type KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
+import { recordTree } from "./objects.js";
 
 export const VIEWS_APP = "strut/views";
 /** The app's sources: `src/apps/views/` (`build/apps/views/` once built). */
@@ -109,5 +110,6 @@ export async function seedViewsApp(opts: ViewsSeedOptions): Promise<{ version: s
   const r = await workspace.publishApp(VIEWS_APP, hash, built.manifest, { publisher: "strut", source: "seed" });
   const { path } = await workspace.materializeAppVersion(VIEWS_APP, r.version);
   if (!(await exists(join(path, "dist", "index.html")))) await copyAppDir(built.dir, path, { dist: true });
+  await recordTree(path, hash);
   return r;
 }

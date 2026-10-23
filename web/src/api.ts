@@ -1821,7 +1821,9 @@ export function appDocumentPath(name: string, version: string): string {
  *  this one. */
 export async function fetchAppDocument(name: string, version: string, token: string): Promise<string> {
   const path = appDocumentPath(name, version);
-  const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`);
+  // `no-cache`: the browser's copy, once the server says it is current (a
+  // 304 against its ETag) — reopening an app downloads nothing.
+  const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`, { cache: "no-cache" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
 }

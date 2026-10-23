@@ -4,6 +4,7 @@ import { compress } from "hono/compress";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1022,6 +1023,17 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       console.warn(`[views] could not seed strut/views:`, err instanceof Error ? err.message : err);
     }
+  }
+
+  // Apps' history (src/apps/objects.ts): versions published before it get
+  // their sources recorded once per file, and the directories no longer
+  // kept (the active version and the newest few are) go.
+  try {
+    const c = await apps.compact();
+    if (c.recorded || c.evicted) console.log(`[apps] recorded ${c.recorded} app version(s), removed ${c.evicted} version folder(s) no longer kept`);
+    if (c.mismatched.length) console.warn(`[apps] left alone, files no longer match the version: ${c.mismatched.join(", ")}`);
+  } catch (err) {
+    console.warn(`[apps] could not compact app versions:`, err instanceof Error ? err.message : err);
   }
 
   // The Concept pages strut ships (src/concepts/): the `Workflow Builder`
@@ -2392,7 +2404,15 @@ export async function createStrut<TServices = unknown>(
       const html = Buffer.from(bytes).toString("utf8");
       const signs = fileToken({ kind: "app", id: `${at.name}@${at.version}` }) !== undefined;
       const identity = tokenRead || !signs ? appIdentity(at.name, at.version) : undefined;
-      return c.body(identity ? withToken(html, identity) : withoutTokenMeta(html), 200, artifactHeaders(relPath, tokenRead));
+      const served = identity ? withToken(html, identity) : withoutTokenMeta(html);
+      // The same bytes every time a version is served (the identity is a
+      // signature of it, not a nonce), so a host keeps them and asks again
+      // with If-None-Match: a rebuild, a rotated key or another version
+      // changes the tag.
+      const etag = `"${createHash("sha256").update(served).digest("hex").slice(0, 32)}"`;
+      const headers = { ...artifactHeaders(relPath, tokenRead), etag, "cache-control": "private, no-cache" };
+      if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
+      return c.body(served, 200, headers);
     }
     return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, artifactHeaders(relPath, tokenRead));
   });
@@ -5329,6 +5349,13 @@ export async function createStrut<TServices = unknown>(
     listen,
     close,
   };
+}
+
+/** Does an `If-None-Match` header name this ETag? (`*`, a list, weak or strong.) */
+function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  const bare = (t: string) => t.trim().replace(/^W\//, "");
+  return ifNoneMatch.split(",").some((t) => t.trim() === "*" || bare(t) === bare(etag));
 }
 
 /**
