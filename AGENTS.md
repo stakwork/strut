@@ -198,7 +198,7 @@ strut/
     ├── index.html
     └── src/
         ├── main.tsx       # entry: renders <App/>
-        ├── app.tsx        # shell: sidebar, topbar, canvas, events panel, dialog/flyout orchestration
+        ├── app.tsx        # shell: sidebar, topbar, canvas, events panel, dialog/flyout orchestration. `&solo=1` renders one thing ALONE, nothing of strut's around it, for a native host's web view (Peel): `?app=` an app's page (AppHost), or `?artifact=<path>` one served file in the viewer — a job's file or a run's artifact, here or behind `/peers/<id>` hops (`isServedFilePath`; any other path says it is not a file strut serves); `artifact` without `solo` is ignored
         ├── api.ts         # typed fetch wrapper for all API endpoints (+ run SSE tail; chat: sendChat/streamChat/getChat reattach)
         ├── flow-to-canvas.ts  # Flow → CanvasData; one theme category per palette entry; childRefForStep/stepWorkflow (container nav)
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
@@ -216,11 +216,11 @@ strut/
         ├── elicitation.ts # the builder's open question (meta.elicitation, ACP's flat schema) → FieldDesc[] for ConfigField + form helpers (pure; tested)
         ├── embed.ts       # deep links when iframed (Hive): replaceUrl() posts ?wf/run/v/chat/job/app to the host named by ?embed_origin
         ├── app-host.ts    # strut's UI as an MCP Apps HOST (plans/apps.md §7.3): ext-apps' `AppBridge` over a `PostMessageTransport` on the frame's window, wired to the MCP SDK's `Client` + `StreamableHTTPClientTransport` at `/mcp` with the UI's credential (`apiHeaders`: the session cookie or the key, `x-strut-ui: 1`) — the bridge relays the page's `tools/call` by itself, as it is. `ui/message` → the builder chat (`appMessage` names the app), `ui/open-link` → the SPA's own navigation for a strut deep link (`strutLink`: same origin and mount, `?wf/run/job/app`) and a new tab otherwise, a theme change → `host-context-changed`. Nothing hand-rolled. app-links.ts holds the two pure parts (`strutLink`, `appMessage`) and their test: the root test run installs no web/node_modules, so a web test may import nothing that needs them
-        ├── use-artifact-url.ts # useFileScope: a served path's SCOPE listing (`GET /artifacts/:runId` / `/jobs/:id/files` / `/apps/:name/:version/files` → its files + file token), one fetch per scope for the page's life (`api.fileScope`); useArtifactUrl: the tokened URL over it
+        ├── use-artifact-url.ts # useFileScope: a served path's SCOPE listing (`GET /artifacts/:runId` / `/jobs/:id/files` / `/apps/:name/:version/files` → its files + file token), one fetch per scope for the page's life (`api.fileScope`); useArtifactUrl: the tokened URL over it; useFileBlob: a served file's bytes as an object URL, read with the UI's credential (`api.fetchArtifactBlob`) — how a PEER's file shows, since no token minted here opens the read-through and the key never rides in a `src`
         ├── components/
         │   ├── AddStepDialog.tsx     # searchable Add Step picker (core / lib / custom)
         │   ├── AccessedNodes.tsx     # the run flyout's Nodes section: type chips (Concept by default, sticky), one row per node, a click opens its content in place (GET /graph/nodes/:ref_id)
-        │   ├── ArtifactViewer.tsx    # the eye beside an artifact link (ValueFields): a modal showing the file RENDERED — markdown via Markdown.tsx, media inline, pdf/html in a frame (html sandboxed), text in a pre, a DIRECTORY as one level of folders and files, a WALKTHROUGH (`walkthrough.json`, `parseWalkthrough`) as frames to scrub — portaled onto <body>. It MOVES within the scope: a markdown link to a sibling (resolveArtifactLink) and a directory row open in place, a back arrow over the trail; a link out of the scope stays a link. An app the caller names (a published one, its document the path) renders through AppHost, not as HTML
+        │   ├── ArtifactViewer.tsx    # the eye beside an artifact link (ValueFields): a modal showing the file RENDERED — markdown via Markdown.tsx, media inline, pdf/html in a frame (html sandboxed), text in a pre, a DIRECTORY as one level of folders and files, a WALKTHROUGH (`walkthrough.json`, `parseWalkthrough`) as frames to scrub — portaled onto <body>. It MOVES within the scope: a markdown link to a sibling (resolveArtifactLink) and a directory row open in place, a back arrow over the trail; a link out of the scope stays a link. A PEER's file (`/peers/<id>/…`, `isPeerPath`) is fetched with the UI's credential and shown from its bytes — media and a PDF from an object URL (`useFileBlob`, the PDF's typed `application/pdf`), markdown images through `FileImg` (Markdown's `img` hook), HTML as the `srcdoc` of `sandbox=""` (runs nothing) — and a file nothing renders, and the head's link, DOWNLOAD (`api.downloadArtifact`); no URL it builds for a peer carries a token or the key. `solo`: the head and body alone in the window, nothing to close (`?artifact=…&solo=1`). An app the caller names (a published one, its document the path) renders through AppHost, not as HTML
         │   ├── WorkflowFlyout.tsx    # the selected workflow's own flyout, one tab each — Params / Claims / Automate / Versions (only the tabs that apply) — with "Delete workflow" in the footer, and under the tabs the APPS whose grants name the workflow (a chip each opens the app). The topbar's single **Workflow** button (claims dot riding along)
         │   ├── AppHost.tsx           # an app's page, hosted (plans/apps.md §7.3): the version's files listed (`useFileScope` mints the token), `dist/index.html` fetched under it (the server writes the app's identity into it), the TEXT framed as the srcdoc of `<iframe sandbox="allow-scripts">` — an opaque origin, never `allow-same-origin`, no src with a credential; never a `blob:` URL, whose document has its creator's `location.origin` and the whole URL as its pathname, which kills a validator in the MCP SDK's bundle at module time — with the relay (../app-host) connected over the frame's window BEFORE the document loads. The canvas area when an app is selected (the sidebar's Apps section, `?app=`), or the whole window with `&solo=1` — the page alone, nothing of strut's around it, for a native host's web view (plans/apps.md §7.4); the topbar shows its title, the active version as a select (another picked = the rollback, `PUT /apps/:name/active`), a **Tab** toggle beside it (`PUT /apps/:name/pin`: shown as a tab in the hosts that list this workspace's apps; the sidebar's Apps list puts pinned apps first, marked `tab`) and **Edit with the builder** (the chat with the app named); a page's `ui/message` is sent on the builder chat; an `app_publish` in the chat reloads the frame. `app` is a workspace app `{ name, version }`
         │   ├── ParamsPanel.tsx       # the Params tab: edit the workflow's `params` (edits → Publish, a new version)
@@ -228,7 +228,7 @@ strut/
         │   ├── AutomationsPanel.tsx  # the Automate tab: list (toggle / Run now / last run) + editor (repeat form, live "next runs" preview from the server, inputs with fire-time tokens)
         │   ├── ChatFlyout.tsx        # AI workflow-builder chat (detached launch + reattach; chatId in localStorage; renders the open question's form; the context meter in its header)
         │   ├── Transcript.tsx        # the entries renderer (bubbles, tool chips, notices, marks) the chat flyout and the thread view share
-        │   ├── JobTimeline.tsx       # the selected job in the canvas area (plans/jobs-sidebar.md §3): header + totals, deliverables (cards → ArtifactViewer / a link / inline content; a peer-tagged one badged `@<peer>` and opened by nothing here — `linkOf` never takes its path or a strut-relative url as local), the thread TREE (a thread row with totals; its turns with time, run link, tools, duration, cost, context, artifact chips marked current/superseded; spawned threads nested), every node the job's agents touched (AccessedNodes over the fold). A turn's run id opens that run on the canvas with the flyout on its step; `transcript` opens ThreadFlyout. A `kind: "app"` deliverable — a workspace app by name and version (the builder's; `api.hostableApp`) — opens in place under the cards — the first one by default — in JobAppPanel.tsx: AppHost under a bar with Reload, Expand (the viewer) and "Under Apps"
+        │   ├── JobTimeline.tsx       # the selected job in the canvas area (plans/jobs-sidebar.md §3): header + totals, deliverables (cards → ArtifactViewer / a link / inline content; a peer-tagged one `{ peer, via?, job, path }` badged `@<peer>` and opened in the viewer through the peer's read-through — `linkOf` maps it with `peerArtifactPath`, `/peers/<peer>[/peers/<via>]/jobs/<job>/files/<path>`, and never takes a strut-relative url of the peer's as local; RunOverview's artifact list shares `linkOf`), the thread TREE (a thread row with totals; its turns with time, run link, tools, duration, cost, context, artifact chips marked current/superseded; spawned threads nested), every node the job's agents touched (AccessedNodes over the fold). A turn's run id opens that run on the canvas with the flyout on its step; `transcript` opens ThreadFlyout. A `kind: "app"` deliverable — a workspace app by name and version (the builder's; `api.hostableApp`) — opens in place under the cards — the first one by default — in JobAppPanel.tsx: AppHost under a bar with Reload, Expand (the viewer) and "Under Apps"
         │   ├── ThreadFlyout.tsx      # one thread read back, read-only (§4): the turn's `?full=1` transcript rendered by Transcript with a mark at each turn's `offset`, the system prompt collapsed on top, no input box
         │   ├── ElicitationForm.tsx   # the builder's question at the end of the transcript: a form (Submit / Decline / ✕) or, for a secret, a password field posting to the /secret endpoint — the page a host's link opens (?chat=&elicit=)
         │   ├── ConfigField.tsx       # field renderer driven by Zod-derived FieldDesc (+ the node-name typeahead for a field with `nodeType`, via graph-search)
@@ -498,8 +498,9 @@ container in the compose (strut and any service that registers steps).
   browser without SameSite, and for an untrusted page served from strut's
   own origin): a request that is not a read is honored only with
   `x-strut-ui: 1`, the header the UI sends on every call and no cross-site
-  form can set; and a FILE read (`/artifacts/:runId…`, `/jobs/:id/files…`)
-  never opens on the cookie alone — the UI's listing fetch carries the
+  form can set; and a FILE read (`/artifacts/:runId…`, `/jobs/:id/files…`,
+  a peer's through `/peers/<id>/…`) never opens on the cookie alone — the
+  UI reads a peer's with the header, and its listing fetch carries the
   header and mints the `?t=` token every link carries, so a sandboxed
   artifact page (an opaque origin) cannot reach another run's files
   through the person's session. `createStrut.test.ts` ("a session") runs
@@ -2242,8 +2243,9 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   true`, as published (no `params`). The output
   is the peer's result; each entry of its `artifacts` comes back tagged `{
   peer, job }` (the job as the peer holds it) and is never resolved here —
-  `run.end` carries it as it came, the Jobs view badges it, the host
-  resolves it against the peer (`specs/CALLBACKS.md` §4). A refused
+  `run.end` carries it as it came, the Jobs view badges it and opens it
+  through the read-through below, the host resolves it against the peer
+  (`specs/CALLBACKS.md` §4). A refused
   launch fails the step with the peer's message (not open to peers,
   `job_busy:`); an id not on
   file is `peer_unknown:`; a peer that stays unreachable is
@@ -2260,7 +2262,11 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   host's `If-None-Match` pass through), plus `POST /peers/:id/mcp`, which
   relays an app page's tools/call — with a person token on file, the peer
   answers with `step_run` alone, as that person — so strut's UI hosts a
-  peer's app as `?app=@<peer>/<name>`. Those paths only; served under this
+  peer's app as `?app=@<peer>/<name>`. The UI's viewer reads a peer's file
+  with its own credential and shows the bytes (no file token here opens
+  the read-through), and `?artifact=/peers/<id>/jobs/<job>/files/<file>&solo=1`
+  shows one alone — what Peel opens for an org's deliverable (specs/API.md
+  §14.3, "One file alone"). Those paths only; served under this
   strut's artifact headers (no scripts: the peer's file is untrusted
   content on this origin; a host frames a document's text); `?key=` never
   forwarded. Not yet: the rest of read-through (a peer's runs and

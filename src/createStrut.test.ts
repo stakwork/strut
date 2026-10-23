@@ -1418,6 +1418,9 @@ describe("the API key gate", () => {
     assert.equal((await strut.app.request("/artifacts/r1", { headers: { cookie } })).status, 401, "a file read on the cookie alone");
     assert.equal((await strut.app.request("/artifacts/r1/page.html", { headers: { cookie } })).status, 401);
     assert.equal((await strut.app.request("/artifacts/r1", { headers: ui })).status, 200, "the listing fetch, which mints the token");
+    assert.equal((await strut.app.request("/peers/org/jobs/j1/files/plan.md", { headers: { cookie } })).status, 401, "a peer's file, read through, is a file read");
+    assert.equal((await strut.app.request("/peers/org/jobs/j1/files/plan.md", { headers: ui })).status, 404, "past the gate with the header: no such peer");
+    assert.equal((await strut.app.request("/peers", { headers: { cookie } })).status, 200, "the peer list is no file");
     assert.equal((await strut.app.request("/secrets/X", { method: "PUT", headers: { ...json, cookie: "strut_session=forged.forged", "x-strut-ui": "1" }, body: "{}" })).status, 401);
 
     // A session is the key's equal and no more: the peer key beside it does
