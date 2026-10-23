@@ -22,14 +22,14 @@ const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).param
 const quiet = () => ({ serveUi: false, enableChat: false, scheduler: false as const, stt: false as const, store: new MemoryRunStore() });
 
 describe("the orchestrator workflow strut ships", () => {
-  it("the template is a valid workflow over strut's own registry: job/dir → context/concept twice (the kinds of job, the kinds of build, no docs) → agent (session, no built-ins) → pack, every grant a strut step", async () => {
+  it("the template is a valid workflow over strut's own registry: job/dir → context/concept twice (the kinds of job, the kinds of build, no docs) → strut/list-peers → agent (session, no built-ins) → pack, every grant a strut step", async () => {
     const text = await orchestratorWorkflowYaml();
     const registry = await createRegistry([]);
     const v = validateWorkflowYaml(text, { registry });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "agent", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "strut/list-peers", "agent", "pack"]);
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["session", "context"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
     // Two lists, one per agent's tree, children alone: the kinds of work a
@@ -40,7 +40,7 @@ describe("the orchestrator workflow strut ships", () => {
     assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "" });
     const params = (yaml.load(text) as { params: { concept: string; buildConcept: string } }).params;
     assert.deepEqual([params.concept, params.buildConcept], ["Job", "Workflow Builder"]);
-    const turn = flow.steps[3]!.config as Record<string, unknown>;
+    const turn = flow.steps[4]!.config as Record<string, unknown>;
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);
     assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}", "the two lists close the prompt");
@@ -256,7 +256,7 @@ describe("the orchestrator, end to end", () => {
   /** A strut with the seeded orchestrator (the host's section added) and a
    *  stand-in `job` (strut's has the coding built-ins). `orch` is every
    *  orchestrator request, `job` every job request. */
-  const boot = async (orchReply: (n: number, body: any) => string) => {
+  const boot = async (orchReply: (n: number, body: any) => string, peers?: { id: string; baseUrl: string; token: string; label?: string }[]) => {
     const seen = { orch: [] as any[], job: [] as string[] };
     process.env["ANTHROPIC_BASE_URL"] = await listen((body, raw) => {
       if (JSON.stringify(body.system ?? "").includes("JOBAGENT")) {
@@ -276,6 +276,7 @@ describe("the orchestrator, end to end", () => {
       scheduler: false,
       job: false,
       orchestrator: { system: "HOSTSECTION: the person's chats are on their Mac." },
+      ...(peers ? { peers } : {}),
     });
     await strut.workspace.publishWorkflow("job", "v1", {
       steps: [
@@ -320,7 +321,7 @@ describe("the orchestrator, end to end", () => {
     assert.equal(first.status, "success", JSON.stringify(first));
     assert.equal(first.output.text, "Kate's birthday is 3 May.");
     assert.equal(first.output.session.id, session);
-    assert.ok(lastUser(seen.orch[0]).includes("Thu 16 Oct 14:02, Europe/London. When is Kate's birthday?"), "the host's line heads the prompt");
+    assert.ok(lastUser(seen.orch[0]).includes("Thu 16 Oct 14:02, Europe/London. When is Kate's birthday?"), "the host's line heads the prompt; no peers, no list");
     const system = JSON.stringify(seen.orch[0].system);
     assert.ok(system.includes("Start a JOB"), "strut's prompt");
     assert.ok(system.includes("HOSTSECTION"), "the host's section after it");
@@ -349,5 +350,17 @@ describe("the orchestrator, end to end", () => {
     assert.equal(jobEnd.output.text, "Three flights.");
     assert.ok(seen.job[0]!.includes("Find flights to Lisbon for 3 May"));
     assert.equal(seen.orch.length, 3, "the orchestrator never waited on the job");
+  });
+  it("each turn's message lists the peers it can ask, by id and label, so a label finds the id and a peer added mid-session is known", async () => {
+    const { seen, turn } = await boot(
+      () => toolUse("toolu_p", "final_answer", { text: "Asked.", artifacts: [] }),
+      [{ id: "hive", baseUrl: "http://127.0.0.1:9", token: "t", label: "Stakwork" }, { id: "senza-backend", baseUrl: "http://127.0.0.1:9", token: "t" }],
+    );
+    const ended = await turn({ prompt: "ask stakwork how the app works", session: "peel/agent-1/dm-p", context: { line: "Fri 23 Oct 18:52, GMT+1. " } });
+    assert.equal(ended.status, "success", JSON.stringify(ended));
+    assert.ok(
+      lastUser(seen.orch[0]).includes("Fri 23 Oct 18:52, GMT+1. Workspaces you can ask: @hive (Stakwork), @senza-backend. ask stakwork how the app works"),
+      lastUser(seen.orch[0]),
+    );
   });
 });

@@ -68,6 +68,19 @@ steps:
       name: "{{ params.buildConcept }}"
       docs: false
       tool: ""
+  # The other struts this one can ask (strut/list-peers: ids and labels),
+  # read every turn and put before the person's message, so "ask acme…"
+  # finds @acme-web by its label, and a peer added mid-conversation is
+  # known at once (the system prompt is the session's first turn's). None
+  # (or no peers capability): nothing is added.
+  - id: peers
+    type: strut/list-peers
+    config: {}
+    options:
+      onError:
+        id: nopeers
+        type: pack
+        config: { peers: [] }
   - id: turn
     type: agent
     config:
@@ -83,7 +96,7 @@ steps:
         {{ concepts.text }}
         {{ builds.text }}
       retain: "{{ params.retain }}"
-      prompt: "{{ input.context?.line || '' }}{{ input.prompt }}"
+      prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? 'Workspaces you can ask: ' + peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
       toolFilter: [none]
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
