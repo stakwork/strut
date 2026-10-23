@@ -35,11 +35,25 @@ export interface StepDef<
    *  may never run this step or publish anything that reaches it. The
    *  grader namespaces are sealed by name; this seals one step anywhere. */
   sealed?: boolean;
+  /** The secrets this step can take its credential from when its config
+   *  passes none (`SLACK_BOT_TOKEN`); it works when ANY one is set (gdrive:
+   *  an access token or a service account). Credentials only, never an
+   *  optional setting. Listed by `GET /steps`, so a host can tell which
+   *  connectors are set up; strut itself never reads it. */
+  secrets?: string[];
+  /** Whether running this step changes anything outside the run: `write`
+   *  for one that posts, sends or edits, `read` for one that only fetches.
+   *  Listed by `GET /steps`, so a host can fill its `approve:` lists. Absent
+   *  (or any other value): not declared, which a host treats as `write`. */
+  effect?: StepEffect;
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
   ) => Promise<z.infer<TOutput>>;
 }
+
+/** What running a step does outside the run (`StepDef.effect`). */
+export type StepEffect = "read" | "write";
 
 /** One of the caller's MCP servers (`POST …/run { mcp }`, src/mcp-servers.ts)
  *  — Hive's `McpServerConfig`, field for field. HTTP only: a caller names a
@@ -70,6 +84,10 @@ export interface RunAttachment {
   /** Where it is saved, relative to the run's artifact directory
    *  (`attachments/<name>`). */
   path: string;
+  /** The run whose artifacts hold it, when not this one: a file an earlier
+   *  turn of an agent's thread carried, which the agent hands its tools
+   *  (`ctx.attachments`). Absent on what a run records. */
+  runId?: string;
 }
 
 /** Context passed to every step's `run` function.
@@ -148,8 +166,10 @@ export interface StepContext<TServices = unknown> {
   /** The files the launch attached (`POST …/run { attachments }`), saved
    *  under the run's artifacts: an `agent` step of the workflow puts them on
    *  its prompt (`attachments`, default true), and job/start / job/continue
-   *  hand the ones the model names on to the job. Absent on a run launched
-   *  without. */
+   *  hand the ones the model names on to the job. An agent with a `session`
+   *  hands its tools the files its thread's earlier turns carried too, after
+   *  these, newest turn first, each with the `runId` that holds it. Absent on
+   *  a run launched without. */
   attachments?: RunAttachment[];
   /** Register a run-scoped disposer: the runner calls every registered `fn`
    *  in its `finally` when the run settles — success, error AND cancel —
@@ -284,6 +304,14 @@ export type RunOrigin = "verify" | "schedule" | "peer" | "app";
  *  records on `run.start` as a job run records `job`. A workspace app at a
  *  version. (A JOB's app, a directory in a job's with no versions, is
  *  retired: plans/chained-orchestrators.md §6.) */
+/** The turn that started a job (`RunEvent.startedBy`). */
+export interface StartedBy {
+  workflow: string;
+  runId: string;
+  /** The launching run's `input.session`, when it named one. */
+  session?: string;
+}
+
 export type AppRef = WorkspaceAppRef;
 
 export interface WorkspaceAppRef {
@@ -384,6 +412,14 @@ export interface RunEvent {
    *  for a root run. Boot-time auto-resume (§5.3) resumes only roots: a
    *  parent re-executing its launching step relaunches its children. */
   parentRunId?: string;
+  /** On a JOB run's `run.start`: the TURN that started it through
+   *  `job/start` / `job/continue` (CALLBACKS.md §5) — the root run the host
+   *  launched, and the `session` that launch named (the conversation). The
+   *  job's `run.end` carries it, so a host hearing it on a per-person
+   *  channel (a room) can find the conversation the job belongs to; a URL
+   *  per conversation needs nothing. Absent when a host launched the job
+   *  itself. */
+  startedBy?: StartedBy;
   /** Graph nodes this step reported touching (the provenance convention,
    *  plans/generic-storage.md "v2") — lifted verbatim from the output's
    *  `_nodes` marker on `step.end`, exempt from any truncation. The graph
@@ -698,6 +734,10 @@ export interface AnyStepDef {
   source?: string;
   /** Sealed from the meta surface (see `StepDef.sealed`, `src/sealed.ts`). */
   sealed?: boolean;
+  /** Secret names it reads (see `StepDef.secrets`). */
+  secrets?: string[];
+  /** Read or write (see `StepDef.effect`). */
+  effect?: StepEffect;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
 }
 

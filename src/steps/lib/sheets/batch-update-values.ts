@@ -5,6 +5,8 @@ import { SHEETS_API, errorResult, serviceAccountField, sheetsCtx, valuesSchema }
 
 export default defineStep({
   type: "sheets/batch-update-values",
+  secrets: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "write",
   description:
     "Write multiple ranges of a spreadsheet in one call — use this instead of repeated " +
     "sheets_update_values when laying out a model (e.g. headers, inputs, and a formula block at once). " +

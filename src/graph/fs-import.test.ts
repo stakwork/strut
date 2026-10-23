@@ -52,6 +52,7 @@ async function seedFileWorkspace(dataDir: string): Promise<FileWorkspaceStore> {
   await fs.publishApp("acme/ui", "hash-a1", manifestSchema.parse({ title: "Kit" }), { publisher: "me", actor: "evan", source: "seed", upstream: APP_UPSTREAM });
   await fs.publishApp("acme/ui", "hash-a2", manifestSchema.parse({ title: "Kit two" }), { source: "ui", actor: "evan" });
   await fs.setActiveAppVersion("acme/ui", "v1");
+  await fs.setAppPinned("acme/ui", true);
   await mkdir(join(dataDir, "apps", "acme", "ui", "v1", "dist"), { recursive: true });
   await writeFile(join(dataDir, "apps", "acme", "ui", "v1", "dist", "index.html"), "<!doctype html>");
   return fs;
@@ -119,7 +120,7 @@ for (const tb of testBackends()) {
       // The app's pointers, labels and stamps as they were; its files untouched.
       assert.deepEqual([r.apps, r.appVersions], [1, 2]);
       const app = (await ws.getApp("acme/ui"))!;
-      assert.deepEqual([app.version, app.hash, app.manifest.title, app.publisher, app.owner, app.upstream, Object.keys(app.versions)], ["v1", "hash-a1", "Kit", "me", "evan", APP_UPSTREAM, ["v1", "v2"]]);
+      assert.deepEqual([app.version, app.hash, app.manifest.title, app.publisher, app.owner, app.upstream, Object.keys(app.versions), app.pinned], ["v1", "hash-a1", "Kit", "me", "evan", APP_UPSTREAM, ["v1", "v2"], true]);
       assert.deepEqual([app.versions["v1"]?.source, app.versions["v2"]?.source, app.versions["v2"]?.actor], ["seed", "ui", "evan"]);
       assert.deepEqual((await ws.getApp("acme/ui", "v2"))?.upstream, APP_UPSTREAM, "carried forward in the file store, imported as recorded");
       assert.ok(existsSync(join(dir, "apps", "acme", "ui", "v1", "dist", "index.html")), "the version's directory stays where it is");

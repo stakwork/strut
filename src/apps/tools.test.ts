@@ -106,7 +106,7 @@ const MANIFESTS: Record<string, string> = {
   ].join("\n"),
   strict: "title: Strict\ngrants:\n  workflows: [score-wf]\n",
   nodes: "title: Nodes\ngrants:\n  steps: [graph/*]\n",
-  paid: "title: Paid\ngrants:\n  steps: [llm, exec, agent, acp/prompt, meta/*, sqlite/*, automation/*, job/start, app/publish]\n",
+  paid: "title: Paid\ngrants:\n  steps: [llm, exec, agent, acp/prompt, meta/*, sqlite/*, automation/*, job/start, app/publish, app/pin]\n",
 };
 const APP_TSX = 'export default function App() { return <p className="p-2">hi</p>; }\n';
 
@@ -229,13 +229,14 @@ describe("step_run — the app door", () => {
     await refused({ type: "automation/list", config: {}, app: paid }, /not available in this strut yet: .*work item 7/);
     await refused({ type: "job/start", config: {}, app: paid }, /continue this job/);
     await refused({ type: "app/publish", config: {}, app: paid }, /does not author apps/);
+    await refused({ type: "app/pin", config: { name: "paid" }, app: paid }, /the person's call/);
     // An app may filter a granted workflow's runs by job; it reads no job
     // past its grants, and launches no job's turn.
     assert.deepEqual(await ok({ type: "run/list", config: { workflow: "score-wf", job: "j" }, app: identity }), []);
     await refused({ type: "run/list", config: { job: "j" }, app: identity }, /needs `workflow`/);
     await refused({ type: "run/files", config: { job: "j", path: "x.md" }, app: identity }, /needs `workflow`/);
     await refused({ type: "run/launch", config: { workflow: "score-wf", job: "j" }, app: identity }, /does not launch a job's turn/);
-    await refused({ type: "run/launch", config: { workflow: "agentish", params: { tools: ["app/list"] } }, app: identity }, /params may not grant/);
+    await refused({ type: "run/launch", config: { workflow: "agentish", params: { tools: ["app/list"] } }, app: identity }, /params may not widen/);
     await refused({ type: "nope/step", config: {}, app: identity }, /not granted/);
     // The pure check, on a manifest alone.
     const m = parseManifest("title: T\ngrants: { steps: ['graph/*'] }\n");

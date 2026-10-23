@@ -338,6 +338,10 @@ export interface AppMetadata {
   /** The PERSON the app belongs to: the first publish's actor, as for a
    *  workflow (`WorkflowMetadata.owner`). */
   owner?: string;
+  /** Shown as a TAB by the hosts that read `GET /apps` — hive's sidebar for
+   *  the workspace this strut is the swarm of. The record's, never a
+   *  version's: a publish keeps it, a delete clears it. Not a version pin. */
+  pinned?: boolean;
 }
 
 export interface AppListEntry {
@@ -350,6 +354,8 @@ export interface AppListEntry {
   grants: AppGrants;
   publisher?: string;
   owner?: string;
+  /** Present (true) only when pinned as a tab. */
+  pinned?: boolean;
 }
 
 /** `getApp`: one version (the active one by default) with the app's record around it. */
@@ -365,6 +371,7 @@ export interface AppRecord {
   versions: Record<string, AppVersionSummary>;
   publisher?: string;
   owner?: string;
+  pinned?: boolean;
 }
 
 export interface PublishAppOptions extends PublishByContentOptions {
@@ -543,6 +550,9 @@ export interface WorkspaceStore extends SubflowResolver {
    *  after (src/apps/apps.ts). */
   publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }>;
   setActiveAppVersion(name: string, version: string): Promise<void>;
+  /** Pin the app as a tab, or unpin it (`AppMetadata.pinned`). Throws when
+   *  the app does not exist. */
+  setAppPinned(name: string, pinned: boolean): Promise<void>;
   /** Remove the pointers; the directories stay. False when there was none. */
   deleteApp(name: string): Promise<boolean>;
   /** The directory a version's files live in (`<dataDir>/apps/<name>/<vN>`)
@@ -1154,6 +1164,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       },
       ...(publisher !== undefined ? { publisher } : {}),
       ...(owner ? { owner } : {}),
+      ...(meta?.pinned ? { pinned: true } : {}),
     });
     return { version: vid, changed: true };
   }
@@ -1166,6 +1177,15 @@ export class FileWorkspaceStore implements WorkspaceStore {
       throw new Error(`Version "${version}" not found for app "${name}". Available: ${Object.keys(meta.versions).join(", ")}`);
     }
     meta.active = version;
+    await this.writeAppMetadata(name, meta);
+  }
+
+  async setAppPinned(name: string, pinned: boolean): Promise<void> {
+    validateAppName(name);
+    const meta = await this.readAppMetadata(name);
+    if (!meta) throw new Error(`App "${name}" not found`);
+    if (pinned) meta.pinned = true;
+    else delete meta.pinned;
     await this.writeAppMetadata(name, meta);
   }
 
@@ -1480,7 +1500,7 @@ async function safeReaddir(dir: string) {
 
 /** An `AppListEntry` from a record and its active version — shared by the
  *  file and graph stores. */
-export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "versions" | "publisher" | "owner">, active: AppVersionInfo): AppListEntry {
+export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "versions" | "publisher" | "owner" | "pinned">, active: AppVersionInfo): AppListEntry {
   const m = active.manifest;
   return {
     name,
@@ -1492,6 +1512,7 @@ export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "v
     grants: m.grants,
     ...(meta.publisher ? { publisher: meta.publisher } : {}),
     ...(meta.owner ? { owner: meta.owner } : {}),
+    ...(meta.pinned ? { pinned: true } : {}),
   };
 }
 
@@ -1513,6 +1534,7 @@ export function appRecord(name: string, meta: AppMetadata, version: string, info
     versions,
     ...(meta.publisher ? { publisher: meta.publisher } : {}),
     ...(meta.owner ? { owner: meta.owner } : {}),
+    ...(meta.pinned ? { pinned: true } : {}),
   };
 }
 

@@ -326,10 +326,12 @@ export function App() {
   // the name, the category or the description.
   const matchedWorkflows = useMemo(() => searchWorkflows(workflows, wfQuery), [workflows, wfQuery]);
   // The Apps filter: the same matcher, over the title and description too.
-  const matchedApps = useMemo(
-    () => searchWorkflows(apps.map((a) => ({ ...a, description: [a.title, a.description].filter(Boolean).join(" ") })), appQuery),
-    [apps, appQuery],
-  );
+  // Pinned apps (tabs where this workspace's apps are listed) first; a
+  // filter keeps its own ranking.
+  const matchedApps = useMemo(() => {
+    const found = searchWorkflows(apps.map((a) => ({ ...a, description: [a.title, a.description].filter(Boolean).join(" ") })), appQuery);
+    return appQuery.trim() ? found : [...found.filter((a) => a.pinned), ...found.filter((a) => !a.pinned)];
+  }, [apps, appQuery]);
   const appEntry = selectedApp ? apps.find((a) => a.name === selectedApp) ?? null : null;
   const appTitle = (name: string) => apps.find((a) => a.name === name)?.title ?? name;
   const wfGroups = useMemo(() => {
@@ -1419,6 +1421,7 @@ export function App() {
                   onClick={() => selectApp(a.name)}>
                   <span class="app-icon" aria-hidden="true"><AppGlyph /></span>
                   <span class="list-item-name">{a.title}</span>
+                  {a.pinned && <span class="badge app-tab-badge" title="Shown as a tab where this workspace's apps are listed">tab</span>}
                   <span class="badge badge-accent">{a.activeVersion}</span>
                 </div>
               ))}
@@ -1455,6 +1458,27 @@ export function App() {
                 <option key={v} value={v}>{v}{v === appEntry.activeVersion ? " · active" : ""}</option>
               ))}
             </select>
+          )}
+          {appOpen && appEntry && (
+            // A tab where this workspace's apps are listed (hive's sidebar):
+            // the app's record, not a version — the select beside it stays
+            // the rollback.
+            <button
+              type="button"
+              class={`app-tab-toggle${appEntry.pinned ? " is-on" : ""}`}
+              aria-pressed={!!appEntry.pinned}
+              title={appEntry.pinned
+                ? "Shown as a tab in the hosts that list this workspace's apps — click to stop"
+                : "Show this app as a tab in the hosts that list this workspace's apps"}
+              onClick={async () => {
+                try {
+                  await api.setAppPinned(appEntry.name, !appEntry.pinned);
+                  await refreshApps();
+                } catch (err) {
+                  alert(errorMessage(err));
+                }
+              }}
+            >Tab</button>
           )}
           {wf && (
             <CategoryEditor

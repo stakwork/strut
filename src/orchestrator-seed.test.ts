@@ -96,7 +96,9 @@ describe("the orchestrator workflow strut ships", () => {
     const strutsOwn = paramsOf(await orchestratorWorkflowYaml()).system.trimEnd();
     const text = await orchestratorWorkflowYaml({ system: section });
     assert.equal(paramsOf(text).system, `${strutsOwn}\n\n${section.trim()}\n`, "appended after strut's own, as any host's");
-    assert.ok(section.includes('strut/run-workflow { peer: <org>, workflow: "orchestrator", input: { prompt, session: "tom-1/<org>" }, room: true }'));
+    // One thread per LOCAL conversation on the org, never one for every conversation (hive#5602 review).
+    assert.ok(section.includes('strut/run-workflow { peer: <org>, workflow: "orchestrator", input: { prompt, session: "tom-1/<conversation>" }, room: true }'));
+    assert.ok(!section.includes("tom-1/<org>"));
     assert.match(section, /`text` is your `text`, word for word; its `ask` is your `ask`; its `artifacts` are your `artifacts`/);
     // It renders a valid workflow, no `{{ }}` for the params resolver to touch.
     assert.ok(!section.includes("{{"));

@@ -12,12 +12,19 @@
  * is the unit of spend. A person's `POST /apps` (`surface: "person"`) may
  * grant anything, the `peer: true` precedent. Built by `createStrut` into
  * `ctx.services.apps`; an embedder builds one with `createApps`.
+ *
+ * A version's directory is a CACHE over its history (./objects.ts): a
+ * publish records the version's sources once per file, the active version
+ * and the newest few keep their directory, and an older one is restored
+ * from its tree and rebuilt the first time it is read (`ensure`). Every
+ * read of a version goes through `ensure`.
  */
-import { stat } from "node:fs/promises";
+import { rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppRef, StepRegistry } from "../core.js";
 import { globToRegExp } from "../closure.js";
+import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
 import { treeHash } from "../version.js";
 import type { AppListEntry, AppRecord, AppUpstream, VersionSource, WorkspaceStore } from "../workspace.js";
@@ -25,6 +32,7 @@ import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResu
 import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
+import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
 
 /** Strut's starter directories (`app/init { template }`): `src/apps/templates/<name>/`. */
 export const TEMPLATES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "templates");
@@ -123,7 +131,15 @@ export interface AppsCapability {
   checkout(name: string, to: string, version?: string): Promise<{ path: string; version: string; hash: string }>;
   /** Scaffold an empty `to` from a template: strut's (`default`), or an installed app by name — a copy, with no upstream. */
   init(to: string, template?: string): Promise<{ path: string; template: string; files: string[] }>;
+  /** Make a version the active one. A version restored from its history
+   *  that no longer builds on this strut's kit is refused with the errors. */
   setActive(name: string, version: string): Promise<void>;
+  /** Record every version's history that has none yet (a directory published
+   *  before ./objects.ts) and drop the directories no longer kept: a boot
+   *  step. A directory whose files no longer match its version is left alone. */
+  compact(): Promise<{ recorded: number; evicted: number; mismatched: string[] }>;
+  /** Pin the app as a tab a host shows (`AppMetadata.pinned`), or unpin it. */
+  pin(name: string, pinned: boolean): Promise<void>;
   delete(name: string): Promise<boolean>;
   /** Strut's template names. */
   templates(): Promise<string[]>;
@@ -152,9 +168,60 @@ const isDir = async (p: string) => {
   }
 };
 
+const exists = async (p: string) => {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export function createApps(deps: AppsDeps): AppsCapability {
   const { workspace } = deps;
   const templatesDir = deps.templatesDir ?? TEMPLATES_DIR;
+
+  /**
+   * A version's directory, there to be read: as it is when kept, else
+   * restored from its tree and rebuilt (a build that fails leaves the
+   * sources without `dist/`, which `get` reports and `setActive` refuses).
+   * Absent with no tree to restore from (a graph copied without its
+   * dataDir): `missing`. One restore per directory at a time.
+   */
+  const ensure = async (name: string, version: string): Promise<{ path: string; hash: string }> => {
+    const at = await workspace.materializeAppVersion(name, version);
+    if (await isDir(at.path)) return at;
+    return withLock(`app-version:${at.path}`, async () => {
+      if (await isDir(at.path)) return at;
+      const tree = await readTree(at.path);
+      if (!tree || tree.hash !== at.hash) return at;
+      const tmp = join(dirname(at.path), `.restore-${version}-${process.pid}-${Date.now()}`);
+      try {
+        await restoreSources(at.path, tree, tmp);
+        const built = await buildApp(tmp, buildDeps(name)).catch((err: unknown) => ({ ok: false as const, errors: [err instanceof Error ? err.message : String(err)] }));
+        if (!built.ok) console.warn(`[apps] ${name}@${version} was restored but does not build on this kit: ${built.errors.join("; ")}`);
+        await rename(tmp, at.path);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+      return at;
+    });
+  };
+
+  /** Drop the directories of the versions no longer kept (their trees stay). */
+  const evict = async (name: string): Promise<number> => {
+    const rec = await workspace.getApp(name);
+    if (!rec) return 0;
+    const kept = keptVersions(Object.keys(rec.versions), rec.active);
+    let n = 0;
+    for (const v of Object.keys(rec.versions)) {
+      if (kept.has(v)) continue;
+      const { path, hash } = await workspace.materializeAppVersion(name, v);
+      if (!(await isDir(path))) continue;
+      if (await withLock(`app-version:${path}`, () => evictVersionDir(path, hash))) n++;
+    }
+    return n;
+  };
 
   const resolveApp = async (name: string, version?: string): Promise<InstalledApp | null> => {
     const rec = await workspace.getApp(name, version);
@@ -162,7 +229,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       if (version && (await workspace.getApp(name))) throw new Error(`the installed app ${name} has no version ${version}`);
       return null;
     }
-    const { path } = await workspace.materializeAppVersion(name, rec.version);
+    const { path } = await ensure(name, rec.version);
     return { name, version: rec.version, dir: path, hash: rec.hash };
   };
 
@@ -202,7 +269,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
   const versionDir: AppsCapability["versionDir"] = async (name, version) => {
     const rec = await workspace.getApp(name, version);
     if (!rec) return null;
-    const { path } = await workspace.materializeAppVersion(name, rec.version);
+    const { path } = await ensure(name, rec.version);
     return { path, version: rec.version, hash: rec.hash };
   };
 
@@ -237,7 +304,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     async get(name, version) {
       const rec = await workspace.getApp(name, version);
       if (!rec) return null;
-      const { path } = await workspace.materializeAppVersion(name, rec.version);
+      const { path } = await ensure(name, rec.version);
       const missing = !(await isDir(path));
       const files = missing ? [] : await listAppFiles(path);
       const build = missing ? null : await readBuildInfo(path);
@@ -293,8 +360,13 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const { path } = await workspace.materializeAppVersion(name, r.version);
       // The directory as built, `dist/` included — the same bytes on a
       // rebuild of a known version (§1.3). Publishing from the version's own
-      // directory copies nothing.
-      if (resolve(dir) !== resolve(path)) await copyAppDir(dir, path, { dist: true });
+      // directory copies nothing. Its sources go into the history, and the
+      // directories no longer kept go.
+      await withLock(`app-version:${path}`, async () => {
+        if (resolve(dir) !== resolve(path)) await copyAppDir(dir, path, { dist: true });
+        await recordTree(path, built.hash);
+      });
+      await evict(name);
       return { ok: true, name, version: r.version, changed: r.changed, hash: built.hash, bytes: built.bytes, warnings: built.warnings };
     },
 
@@ -324,7 +396,40 @@ export function createApps(deps: AppsDeps): AppsCapability {
       return { path: to, template, files: await listAppFiles(to) };
     },
 
-    setActive: (name, version) => workspace.setActiveAppVersion(name, version),
+    async setActive(name, version) {
+      // A version restored from its history is built on this strut's kit; one
+      // that no longer builds is refused rather than made live with no page.
+      if (await workspace.getApp(name, version).catch(() => null)) {
+        const { path } = await ensure(name, version);
+        if ((await isDir(path)) && !(await exists(join(path, "dist", "index.html")))) {
+          const built = await buildApp(path, buildDeps(name));
+          if (!built.ok) throw new Error(`${name}@${version} does not build on this strut's kit: ${built.errors.join("; ")}`);
+        }
+      }
+      await workspace.setActiveAppVersion(name, version);
+      await evict(name);
+    },
+
+    async compact() {
+      let recorded = 0;
+      let evicted = 0;
+      const mismatched: string[] = [];
+      for (const { name } of await workspace.listApps()) {
+        const rec = await workspace.getApp(name).catch(() => null);
+        if (!rec) continue;
+        for (const [v, info] of Object.entries(rec.versions)) {
+          const { path } = await workspace.materializeAppVersion(name, v);
+          if ((await readTree(path))?.hash === info.hash || !(await isDir(path))) continue;
+          const tree = await withLock(`app-version:${path}`, () => recordTree(path, info.hash));
+          if (tree.hash === info.hash) recorded++;
+          else mismatched.push(`${name}@${v}`);
+        }
+        evicted += await evict(name);
+      }
+      return { recorded, evicted, mismatched };
+    },
+
+    pin: (name, pinned) => workspace.setAppPinned(name, pinned),
     delete: (name) => workspace.deleteApp(name),
 
     async templates() {

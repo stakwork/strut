@@ -615,7 +615,7 @@ export async function streamRun(
 // ── Steps ──────────────────────────────────────────────────────────────────
 
 export interface StepsResponse {
-  core: { type: string; source: string; description?: string }[];
+  core: { type: string; source: string; description?: string; secrets?: string[]; effect?: "read" | "write" }[];
   workspace: { type: string; description?: string }[];
 }
 
@@ -1745,6 +1745,8 @@ export interface AppListEntry {
   grants: AppGrants;
   publisher?: string;
   owner?: string;
+  /** Shown as a tab by a host that lists this workspace's apps (true only when set). */
+  pinned?: boolean;
 }
 
 /** One client-side error the app's page reported (`app/report-error`). */
@@ -1791,6 +1793,13 @@ export const setActiveAppVersion = (name: string, version: string) =>
     body: JSON.stringify({ version }),
   });
 
+/** Show the app as a tab where this workspace's apps are listed, or stop (`PUT /apps/:name/pin`). */
+export const setAppPinned = (name: string, pinned: boolean) =>
+  fetchJSON<{ ok: true; name: string; pinned: boolean }>(`/apps/${encodeURIComponent(name)}/pin`, {
+    method: "PUT",
+    body: JSON.stringify({ pinned }),
+  });
+
 export const deleteApp = (name: string) =>
   fetchJSON<{ ok: true; name: string }>(`/apps/${encodeURIComponent(name)}`, { method: "DELETE" });
 
@@ -1812,7 +1821,9 @@ export function appDocumentPath(name: string, version: string): string {
  *  this one. */
 export async function fetchAppDocument(name: string, version: string, token: string): Promise<string> {
   const path = appDocumentPath(name, version);
-  const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`);
+  // `no-cache`: the browser's copy, once the server says it is current (a
+  // 304 against its ETag) — reopening an app downloads nothing.
+  const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`, { cache: "no-cache" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
 }

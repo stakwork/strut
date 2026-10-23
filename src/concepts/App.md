@@ -1,5 +1,5 @@
 ---
-description: An APP — a front-end project over this strut's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, and the rules that keep it cheap and safe.
+description: An APP — a front-end project over this strut's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
 parent: Workflow Builder
 ---
 An APP is interactive software the builder writes on top of this strut's
@@ -154,6 +154,23 @@ cancelable, verified.
 "If an agent should ever find it, it goes in the graph." Migrations (when
 they come) are additive: a rollback never rolls the schema back.
 
+## Loading related data: one call, not a loop
+
+When a view needs a lot of RELATED data at once — a run graph with its
+nodes, the edges between them and each node's ancestors — do the whole
+analysis server-side in ONE purpose-built step or workflow (a single Cypher
+query that returns everything, for example), grant it, and call it once.
+Never assemble it in the page: a `graph/graph-neighbors` call per node,
+`graph/graph-get-batched` in a loop, a lineage walked hop by hop. Every
+call is a browser round trip through the host, and a few hundred of them
+make the page slow. A cheap read is a step (`useStep`, fine on a render);
+an analysis too slow for that is a workflow, launched on a click and
+followed with `useRun`. The worked example is `openhealth/run-graph`: one
+call runs three queries and returns the nodes, edges and ancestors that
+used to take up to ~240 browser round trips. The `strut/views` graph
+components read node by node, so they suit a small graph; a big one needs
+a step like this.
+
 ## What the build refuses
 
 An import outside the kit and the installed apps; a relative import that
@@ -188,3 +205,9 @@ brings a request back here, and a message typed inside the app ("add a
 column") arrives in this chat naming the app; or in a host's own frame.
 An app lives in the workspace: never hand over an app directory as a
 file.
+
+When the person asks for the app as a TAB of the workspace — "pin it", "put
+it in the sidebar" — `app/pin { name }`: a host that lists this
+workspace's apps (a portal's sidebar) shows it as a tab of its own, at its
+active version, until `app/pin { name, pinned: false }`. A later publish
+keeps the tab. Never pin on your own.

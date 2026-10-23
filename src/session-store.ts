@@ -20,6 +20,7 @@
 import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StoredMessage } from "./chat-store.js";
+import type { RunAttachment } from "./core.js";
 
 // ── ids ────────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,10 @@ export interface NewTurn {
    *  turn was made under, so a thread is found from its job whatever its
    *  id (plans/job-index.md §4). Records, ties nothing. */
   job?: string;
+  /** The files this turn's prompt carried (`ctx.attachments`), saved under
+   *  `runId`'s artifacts: what a later turn's tools may hand on (job/start).
+   *  Absent when it carried none. */
+  attachments?: RunAttachment[];
   provider: string;
   /** Canonical `provider/id`. */
   model: string;

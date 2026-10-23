@@ -100,6 +100,8 @@ export async function openPullRequest(api: PullsApi, a: CreatePrArgs): Promise<C
  */
 export default defineStep({
   type: "github/create-pr",
+  secrets: ["GITHUB_TOKEN"],
+  effect: "write",
   description:
     `Open a GitHub pull request from head to base, or return the open one that already exists for head (so a re-run lands on the same PR). ` +
     `Auth: token, else the GITHUB_TOKEN secret — the PR is authored by the token's owner. ` +

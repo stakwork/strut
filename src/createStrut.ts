@@ -4,6 +4,7 @@ import { compress } from "hono/compress";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,7 +54,7 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
-import type { AppRef } from "./core.js";
+import type { AppRef, StartedBy } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
@@ -1026,6 +1027,17 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       console.warn(`[views] could not seed strut/views:`, err instanceof Error ? err.message : err);
     }
+  }
+
+  // Apps' history (src/apps/objects.ts): versions published before it get
+  // their sources recorded once per file, and the directories no longer
+  // kept (the active version and the newest few are) go.
+  try {
+    const c = await apps.compact();
+    if (c.recorded || c.evicted) console.log(`[apps] recorded ${c.recorded} app version(s), removed ${c.evicted} version folder(s) no longer kept`);
+    if (c.mismatched.length) console.warn(`[apps] left alone, files no longer match the version: ${c.mismatched.join(", ")}`);
+  } catch (err) {
+    console.warn(`[apps] could not compact app versions:`, err instanceof Error ? err.message : err);
   }
 
   // The Concept pages strut ships (src/concepts/): the `Workflow Builder`
@@ -2362,7 +2374,7 @@ export async function createStrut<TServices = unknown>(
     if (at instanceof Response) return at;
     const rec = await workspace.getApp(at.name);
     if (!rec) return c.json({ error: `App "${at.name}" not found` }, 404);
-    return c.json({ name: at.name, active: rec.active, versions: rec.versions, ...(rec.publisher ? { publisher: rec.publisher } : {}), ...(rec.owner ? { owner: rec.owner } : {}) });
+    return c.json({ name: at.name, active: rec.active, versions: rec.versions, ...(rec.publisher ? { publisher: rec.publisher } : {}), ...(rec.owner ? { owner: rec.owner } : {}), ...(rec.pinned ? { pinned: true } : {}) });
   });
 
   /** The version's directory, or the 404 / 400 that says why not. */
@@ -2409,7 +2421,15 @@ export async function createStrut<TServices = unknown>(
       const html = Buffer.from(bytes).toString("utf8");
       const signs = fileToken({ kind: "app", id: `${at.name}@${at.version}` }) !== undefined;
       const identity = tokenRead || !signs ? appIdentity(at.name, at.version) : undefined;
-      return c.body(identity ? withToken(html, identity) : withoutTokenMeta(html), 200, artifactHeaders(relPath, tokenRead));
+      const served = identity ? withToken(html, identity) : withoutTokenMeta(html);
+      // The same bytes every time a version is served (the identity is a
+      // signature of it, not a nonce), so a host keeps them and asks again
+      // with If-None-Match: a rebuild, a rotated key or another version
+      // changes the tag.
+      const etag = `"${createHash("sha256").update(served).digest("hex").slice(0, 32)}"`;
+      const headers = { ...artifactHeaders(relPath, tokenRead), etag, "cache-control": "private, no-cache" };
+      if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
+      return c.body(served, 200, headers);
     }
     return c.body(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 200, artifactHeaders(relPath, tokenRead));
   });
@@ -2466,6 +2486,23 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     return c.json({ ok: true, name: at.name, active: body.version });
+  });
+
+  // Pin the app as a TAB, or unpin it: `{ pinned: boolean }` — the record's
+  // flag a host reads off `GET /apps` (hive's sidebar for the workspace this
+  // strut is the swarm of). A person's door, like `/active`; `app/pin` is
+  // the builder's.
+  app.put("/apps/:name/pin", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const body = (await c.req.json().catch(() => ({}))) as { pinned?: unknown };
+    if (typeof body.pinned !== "boolean") return c.json({ error: "pinned is required: true or false" }, 400);
+    try {
+      await apps.pin(at.name, body.pinned);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+    }
+    return c.json({ ok: true, name: at.name, pinned: body.pinned });
   });
 
   app.delete("/apps/:name", async (c) => {
@@ -2994,11 +3031,19 @@ export async function createStrut<TServices = unknown>(
 
   // ── Steps ────────────────────────────────────────────────────────────────
 
+  // A step's own `secrets` / `effect`, served only when well formed: a
+  // custom step's mistyped `effect: "Write"` must read as undeclared, never
+  // as something a host could take for `read`.
+  const declaredStepMeta = (def: AnyStepDef | undefined) => ({
+    ...(Array.isArray(def?.secrets) && def.secrets.every((n) => typeof n === "string") ? { secrets: def.secrets } : {}),
+    ...(def?.effect === "read" || def?.effect === "write" ? { effect: def.effect } : {}),
+  });
   app.get("/steps", async (c) => {
     const allSteps = Object.keys(registry).map((type) => ({
       type,
       source: stepSources[type] ?? "core",
       description: registry[type]?.description,
+      ...declaredStepMeta(registry[type]),
     }));
     const workspaceSteps = await workspace.listSteps();
     return c.json({ core: allSteps, workspace: workspaceSteps });
@@ -3278,6 +3323,9 @@ export async function createStrut<TServices = unknown>(
        *  (`setRunJobCallback`), read by the job launcher
        *  (`rootJobCallbackOf`). Never in the log. */
       jobCallback?: { url: string };
+      /** A job run started by a turn (`job/start`, the job launcher below):
+       *  recorded on `run.start`, carried on its `run.end` (CALLBACKS.md §2). */
+      startedBy?: StartedBy;
       /** The files the launch attached (`POST …/run { attachments }`),
        *  validated: saved under the run's artifacts before the first event
        *  and handed to its steps as `ctx.attachments` — or, on a resume,
@@ -3331,6 +3379,7 @@ export async function createStrut<TServices = unknown>(
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
+        ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
         ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
@@ -3338,7 +3387,7 @@ export async function createStrut<TServices = unknown>(
     })()
       .then(
         (res) => {
-          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt, body.job);
+          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt, body.job, extra?.startedBy);
         },
         // runWorkflow finalizes its own errors into a resolved result; a
         // rejection is an unexpected throw (e.g. a store write failure).
@@ -3347,7 +3396,7 @@ export async function createStrut<TServices = unknown>(
           console.error(`[run ${runId}] launch failed:`, err);
           if (callback) {
             const message = err instanceof Error ? err.message : String(err);
-            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt, body.job);
+            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt, body.job, extra?.startedBy);
           }
         },
       )
@@ -3359,7 +3408,7 @@ export async function createStrut<TServices = unknown>(
    *  one POST, detached from the run's teardown and never awaited — a slow
    *  or dead host holds nothing up, and `postCallback` retries then warns,
    *  never throws. The payload mirrors the run's summary, minus the stack. */
-  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number, job?: string): void {
+  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number, job?: string, startedBy?: StartedBy): void {
     const durationMs = Date.now() - launchedAt;
     void (async () => {
       const transcripts = await transcriptLinks(workflow, res.runId).catch(() => []);
@@ -3374,6 +3423,7 @@ export async function createStrut<TServices = unknown>(
           workflow,
           runId: res.runId,
           ...(job ? { job } : {}),
+          ...(startedBy ? { startedBy } : {}),
           status: res.status,
           ...(res.output !== undefined ? { output: res.output } : {}),
           ...(res.error ? { error: { message: res.error.message } } : {}),
@@ -3416,6 +3466,16 @@ export async function createStrut<TServices = unknown>(
     const root = rootRunOf(runId);
     return root ? store.getRunJobCallback(root.workflow, root.runId) : null;
   }
+  /** The TURN the run `runId` belongs to, for the jobs it starts
+   *  (`RunEvent.startedBy`): the root run and the `session` its launch
+   *  named — read off its `run.start`, the one record of the input. */
+  async function startedByOf(runId: string): Promise<StartedBy | undefined> {
+    const root = rootRunOf(runId);
+    if (!root) return undefined;
+    const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
+    const session = (start?.input as Record<string, unknown> | undefined)?.["session"];
+    return { workflow: root.workflow, runId: root.runId, ...(typeof session === "string" && session ? { session } : {}) };
+  }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
       const problem = idProblem(job);
@@ -3451,6 +3511,11 @@ export async function createStrut<TServices = unknown>(
       });
       const url = await rootCallbackOf(from);
       const live = await rootJobCallbackOf(from);
+      // The TURN this job belongs to (CALLBACKS.md §5): the root run the host
+      // launched and the conversation it named, so a host that hears the
+      // job's run.end on a per-person channel (a room) finds the
+      // conversation — a URL per conversation carries that by itself.
+      const startedBy = await startedByOf(from);
       // The job INHERITS the launching run's job callback: on file before
       // the run starts, so its first update finds it — the latest launch
       // that carries one wins, as over HTTP; a run launched with none
@@ -3466,6 +3531,7 @@ export async function createStrut<TServices = unknown>(
       const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}) }, {
         ...(actor ? { actor } : {}),
         ...(principal ? { principal } : {}),
+        ...(startedBy ? { startedBy } : {}),
         ...(url ? { callback: { url } } : {}),
         ...(live ? { jobCallback: { url: live } } : {}),
         // The launching turn's caller, reachable from the job's agents too.
@@ -3686,7 +3752,7 @@ export async function createStrut<TServices = unknown>(
       // Its params may narrow what its agents are granted, never widen it
       // (the meta/run-workflow rule).
       const widened = grantWidenedBy(flow, q.params ?? {}, registry);
-      if (widened) throw new Error(`params may not grant a step the workflow "${q.workflow}" does not already: ${widened}`);
+      if (widened) throw new Error(`params may not widen what the workflow "${q.workflow}" allows — more tools, or fewer approvals: ${widened}`);
       if (q.job) {
         const problem = idProblem(q.job);
         if (problem) throw new Error(`job "${q.job}" ${problem}`);
@@ -5308,6 +5374,13 @@ export async function createStrut<TServices = unknown>(
     listen,
     close,
   };
+}
+
+/** Does an `If-None-Match` header name this ETag? (`*`, a list, weak or strong.) */
+function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  const bare = (t: string) => t.trim().replace(/^W\//, "");
+  return ifNoneMatch.split(",").some((t) => t.trim() === "*" || bare(t) === bare(etag));
 }
 
 /**
