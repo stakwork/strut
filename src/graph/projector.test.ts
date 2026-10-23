@@ -104,6 +104,28 @@ describe("projectRunEvents (pure)", () => {
     assert.deepEqual(p.toolCalls.map((t) => t.accessed.map((n) => n.ref_id)), [[CONCEPT_A]]);
   });
 
+  it("stores the full agent prompt and reply beside the previews, capped", () => {
+    const run = (result: string) =>
+      projectRunEvents(
+        WF,
+        RUN,
+        [
+          ev(0, "run.start", WF),
+          ev(1, "step.start", `${WF}/a`, { stepType: "agent", input: { prompt: "p".repeat(900) } }),
+          ev(2, "step.end", `${WF}/a`, { stepType: "agent", output: { result } }),
+        ],
+        null,
+      )!.sessions[0]!.data;
+    const d = run("r".repeat(900));
+    assert.equal((d["result_preview"] as string).length, 500);
+    assert.equal((d["result_full"] as string).length, 900);
+    assert.equal(d["prompt_full"], "p".repeat(900));
+    assert.equal(d["result_truncated"], undefined);
+    const big = run("x".repeat(60000));
+    assert.equal((big["result_full"] as string).length, 50000);
+    assert.equal(big["result_truncated"], true);
+  });
+
   it("stamps an agent's thread: the id from its config, the turn from its output", () => {
     const agent = (i: number, id: string, input: Record<string, unknown>, end: Partial<RunEvent>): RunEvent[] => [
       ev(i, "step.start", `${WF}/${id}`, { stepType: "agent", input: { prompt: "go", ...input } }),

@@ -47,7 +47,7 @@ import type { JobIndex, JobView } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
-import { PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
+import { FULL_TEXT_MAX_CHARS, PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
 
 /** Does this backend hold nodes of `type`: every type on Neo4j (jarvis's
  *  meta-graph is open), the registry's on a Ladybug file. */
@@ -112,6 +112,17 @@ export function preview(v: unknown, max = PREVIEW_MAX_CHARS): string | undefined
   const s = typeof v === "string" ? v : JSON.stringify(v);
   if (!s) return undefined;
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/** The full text of a prompt / reply, capped at `max` (no ellipsis), with a
+ *  `truncated` flag when cut. An object with a string `result` yields that
+ *  string. Not indexed or embedded. */
+export function fullText(v: unknown, max = FULL_TEXT_MAX_CHARS): { text?: string; truncated?: boolean } {
+  if (v === undefined || v === null) return {};
+  const r = typeof v === "object" ? (v as { result?: unknown }).result : undefined;
+  const s = typeof v === "string" ? v : typeof r === "string" ? r : JSON.stringify(v);
+  if (!s) return {};
+  return s.length > max ? { text: s.slice(0, max), truncated: true } : { text: s };
 }
 
 function compact(o: Record<string, unknown>): Record<string, unknown> {
@@ -211,6 +222,8 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     const thread = typeof input["session"] === "string" && !idProblem(input["session"]) ? threadOf(input["session"]) : undefined;
     const turn = (end?.output as { session?: { turn?: unknown } } | null | undefined)?.session?.turn;
     sessionPaths.push(e.path);
+    const promptFull = fullText(input["prompt"] ?? input["system"] ?? e.input);
+    const resultFull = fullText(end?.output);
     sessions.push({
       type: "StrutAgentSession",
       data: compact({
@@ -221,6 +234,10 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
         iteration: e.iteration,
         prompt_preview: preview(input["prompt"] ?? input["system"] ?? e.input),
         result_preview: preview(end?.output),
+        prompt_full: promptFull.text,
+        prompt_truncated: promptFull.truncated,
+        result_full: resultFull.text,
+        result_truncated: resultFull.truncated,
         started_at: e.ts,
         duration_ms: end?.durationMs,
         error_message: end?.error?.message,

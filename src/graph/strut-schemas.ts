@@ -171,6 +171,9 @@ export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "
  *  payloads stay in the run/chat log behind `log_ref`. */
 export const PREVIEW_MAX_CHARS = 500;
 
+/** Cap on the full prompt / reply stored on a StrutAgentSession. */
+export const FULL_TEXT_MAX_CHARS = 50_000;
+
 // ── The eleven Strut node types ──────────────────────────────────────────────
 //
 // Keys. The six WORKSPACE types — `StrutWorkflow`, `StrutWorkflowVersion`,
@@ -381,6 +384,11 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       iteration: "?int",
       prompt_preview: "?string",
       result_preview: "?string",
+      /** Full prompt / reply, capped at FULL_TEXT_MAX_CHARS; not indexed or embedded. */
+      prompt_full: "?string",
+      prompt_truncated: "?boolean",
+      result_full: "?string",
+      result_truncated: "?boolean",
       started_at: "?datetime",
       duration_ms: "?int",
       error_message: "?string",
