@@ -1120,7 +1120,12 @@ host UI ── its own credential ──▶ the person's strut ── person tok
    `@acme`, opened as `?app=@acme/<name>` (`appKey`); for one, the topbar
    leaves out the version select, the tab toggle and **Edit with the
    builder** — those are the peer's. Peel shows strut's UI, or does the
-   same in a frame of its own.
+   same in a frame of its own. **The page alone** (2026-10-23): with
+   `&solo=1` beside `?app=` the UI renders the app's page and nothing of
+   strut's around it — no sidebar, topbar or chat, and no `ui/message` or
+   in-place link, with nothing to open them in — so a native host opens
+   `http://127.0.0.1:<port>/?key=<its key>&app=@<org>/<name>&solo=1` in a
+   web view of its own and shows the org's app as the app.
 
 The token never leaves the peers file, the page never talks to the peer
 (`connect-src 'none'`), and the identity the page sends is the peer's own
