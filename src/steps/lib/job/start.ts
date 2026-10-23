@@ -59,7 +59,12 @@ export default defineStep({
       .describe(
         "With workflow: builder only — the strut the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
       ),
-    repos: z.array(z.string()).optional().describe("Repository URLs to check out into the job's directory (workflow: job only — workflow: builder checks nothing out)."),
+    repos: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Repository URLs the job works on, checked out into its directory with the person's GitHub token before it starts. List them here, not only in the prompt: a private one is reachable only through a checkout. workflow: job only — workflow: builder checks nothing out.",
+      ),
     kind: z
       .string()
       .optional()
