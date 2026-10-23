@@ -1065,3 +1065,31 @@ sentence for each thing the lock cannot hold (a subflow chosen by a
 template, an agent grant read at run time, a step that starts other runs).
 Runs the live release's page launches will run the locked versions; until
 that lands, a release holds the page and records the lock.
+
+## 15. Dictation — speech to text and its models
+
+Speech-to-text over sherpa-onnx (`src/audio/`, plans/local-desktop-and-stt.md
+§4; the client contract is plans/native-dictation-client.md). 501 on a build
+without the sherpa addon.
+
+| Method | Path | Body / reply |
+| ------ | ---- | ------------ |
+| POST   | `/audio/transcribe[?model=&hotwords=&hotwordsScore=&session=]` | a WAV body → `{ text, segments: [{ text, words: [{ text, start }] }], model, hotwords, durationMs }`. The model is `?model=`, else the user's speech pick once it is installed (`dictation/use`), else `STRUT_STT_MODEL` (Kroko); `model` names the one used. An offline model (Parakeet) decodes the clip in one pass: one segment |
+| GET    | `/audio/stream` | WebSocket: PCM in, partials and finals out. Streaming models only — an offline model is refused |
+| GET    | `/audio/models` | `{ available, modelDir, models }` — every STT model with `installed` and `default` |
+| POST   | `/audio/models/:id/download` | SSE progress of one STT model's download |
+
+The models a user picks from are steps (`POST /steps/<type>/run`, §7), the
+same for any client:
+
+| Step | Config | Output |
+| ---- | ------ | ------ |
+| `dictation/models` | `{}` | `{ models: [{ id, kind: "speech" \| "fixer", bytes, description, state: "available" \| "downloading" \| "installed", progress?, selected, error? }] }` — `progress` 0..1 while downloading, `selected` the user's pick for its kind, `error` why the last download failed |
+| `dictation/use` | `{ speech?, fixer? }` — `fixer: null` is none | the same list. A pick that is not installed starts downloading in the background (sha256 checked, extracted into the model dir) and is used once installed; until then dictation keeps to what it had. A speech model is refused where sherpa cannot run |
+| `dictation/remove-model` | `{ id }` | the same list. Deletes the model's files; a removed speech pick goes back to the default, a removed fixer pick to none. Refused while it downloads |
+
+Speech models: `zipformer-en-kroko` (streaming, the default) and
+`parakeet-tdt-en-0.6b-v2` (offline). Fixer models: `qwen3-0.6b-q4`,
+`qwen3-1.7b-q4` — downloadable and selectable, not run yet (the fixer's
+runtime is still being chosen). The picks live in
+`<dataDir>/audio/dictation.json`; with none, Kroko and no fixer.
