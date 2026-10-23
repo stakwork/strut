@@ -50,7 +50,9 @@ own (§3, "A peer's launch").
 and its request is scoped `peer:person` — everything a peer may do, its
 actor the token's own whatever `x-strut-actor` says, and three things
 more: a launch of a workflow whose YAML says `peer: person`, the actor's
-own agent sessions (§3), and (to come) the actor's room. A host maps its
+own agent sessions (§3), the actor's room, and `POST /mcp`, where it gets
+an app's `step_run` alone, run as the actor under the app's grants (§14.3,
+"A peer's app"). A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
 JWT with a `sub`).
 
@@ -627,7 +629,8 @@ kept encrypted; the token has no read route.
 | GET    | `/peers` | `{ peers: [{ id, baseUrl, label?, description?, repos? }] }` — never a token |
 | PUT    | `/peers/:id` | `{ baseUrl, token, label?, description?, repos? }` → `{ ok, id, baseUrl, label?, description?, repos? }` (`repos`: the workspace's repository URLs — what `strut/list-peers` shows an agent choosing a peer); replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
 | DELETE | `/peers/:id` | `{ ok, id }`; 404 |
-| GET    | `/peers/:id/jobs/:job/files[/<path>]`, `/peers/:id/artifacts/:runId[/<path>]` | READ-THROUGH: that peer's job files and run artifacts, fetched with THIS strut's token for it — the listing (JSON) or the file, the peer's status passed on. Prefix `peers/<id>/` for one more hop: `/peers/acme/peers/billing/jobs/<job>/files/report.md` reads `billing`'s file through `acme`, each hop with its own token — how an entry tagged `{ peer, via, job }` opens (`CALLBACKS.md` §4). Files only (anything else 404); a peer not on file 404 (`peer_unknown:`), unreachable 502. Served under this strut's artifact headers (sandboxed, no scripts); this strut's `?key=` is never forwarded. A read like any other: a peer may call it |
+| GET    | `/peers/:id/jobs/:job/files[/<path>]`, `/peers/:id/artifacts/:runId[/<path>]`, `/peers/:id/apps`, `/peers/:id/apps/:name/:version/files[/<path>]` | READ-THROUGH: that peer's job files, run artifacts and apps (its app list, an app version's listing and files, the document among them — §14.3, "A peer's app"), fetched with THIS strut's token for it — the listing (JSON) or the file, the peer's status passed on; a host's `If-None-Match` goes along and the peer's `ETag` comes back, so a 304 passes through. Prefix `peers/<id>/` for one more hop: `/peers/acme/peers/billing/jobs/<job>/files/report.md` reads `billing`'s file through `acme`, each hop with its own token — how an entry tagged `{ peer, via, job }` opens (`CALLBACKS.md` §4). Those paths only (anything else 404); a peer not on file 404 (`peer_unknown:`), unreachable 502. Served under this strut's artifact headers (sandboxed, no scripts); this strut's `?key=` is never forwarded. A read like any other: a peer may call it |
+| POST   | `/peers/:id/mcp` | An app page's tools/call, relayed to that peer's `/mcp` with THIS strut's token for it (a person token: the peer answers with `step_run` alone, as that person — §14.3, "A peer's app"). The JSON-RPC body as it came, `accept`, `mcp-protocol-version` and `mcp-session-id`; the answer streams back with its own content type (JSON or an event stream). A peer of this strut is 403 (a POST); a peer not on file 404 |
 | POST   | `/peers/tokens` | `{ actor, days? }` → `{ token, actor, exp }` — a PERSON token for this strut (Auth): what a person's own strut puts in its peer record for this one. `days` defaults to 60 (at most 365); nothing is stored, and rotating the signing secret (`STRUT_API_KEY`, else `STRUT_SECRET_KEY`) revokes every one. The deployment's call only (a peer is 403); 400 for a missing actor, bad `days`, or no secret to sign with |
 | GET    | `/self` | `{ self: { id?, label?, description?, repos? } \| null }` — this strut's OWN workspace (never in `/peers`) |
 | PUT    | `/self` | `{ id?, label?, description?, repos? }` → `{ ok, id?, label?, description?, repos? }`; 400 on a bad shape. `STRUT_SELF` / `createStrut({ self })` seed it |
@@ -717,7 +720,10 @@ any MCP client:
 Both doors also list **`step_run`**, the APP door (§14.1): an app-only tool
 (`_meta.ui.visibility: ["app"]` — an MCP Apps host hides it from the model
 and lets a page call it), served beside each set so a host relays a frame's
-`tools/call` to whichever door it connects.
+`tools/call` to whichever door it connects. A PERSON token (`peer:person`,
+Auth) gets `POST /mcp` with `step_run` and nothing else — how a person's own
+strut hosts an app that lives here (§14.3, "A peer's app"); `/mcp/builder`
+and every plain peer stay 403.
 
 ```bash
 claude mcp add --transport http strut http://localhost:3000/mcp --header "Authorization: Bearer $STRUT_API_KEY" --header "x-strut-actor: hermes"
@@ -1030,6 +1036,20 @@ is one the same way, with no strut change per host:
 Nothing else a host says to strut changes: runs, jobs, chat and files stay
 on the HTTP API. A page's `tools/call` reaches strut in the shape it left
 the frame in.
+
+**A peer's app** (plans/apps.md §7.4). A person's own strut — Peel's, a
+laptop's — hosts an app that lives on a peer it holds a PERSON token for,
+with every URL above under `/peers/<id>`: `GET /peers/<id>/apps`, `GET
+/peers/<id>/apps/:name/:version/files` (the PEER mints the token),
+`…/files/dist/index.html?t=<token>` (the peer's identity in the meta, which
+the person's strut cannot forge), and the bridge's client pointed at `POST
+/peers/<id>/mcp` (§10). On the peer the token gets `step_run` alone, run as
+the token's person under the app's grants — a granted workflow runs whatever
+its YAML says about peers, as the app's run (`origin: "app"`), never a peer
+launch. Open to every app on the peer; a plain peer key gets none of it.
+Strut's UI lists each peer's apps beside its own as `?app=@<peer>/<name>`;
+for one, it leaves out the version select, the tab toggle and the builder
+button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
 
 ### 14.4 A published app as a deliverable
 

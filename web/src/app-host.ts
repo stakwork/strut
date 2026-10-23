@@ -37,6 +37,10 @@ export interface AppHostOptions {
   handlers: AppHostHandlers;
   /** The page's location (default: `window.location`), for `strutLink`. */
   here?: { origin: string; pathname: string };
+  /** Where the app lives, as a path prefix: "" here, `/peers/<id>` for a
+   *  peer's app, whose tools/call this strut relays to the peer
+   *  (plans/apps.md §7.4). */
+  base?: string;
 }
 
 export interface AppHostConnection {
@@ -46,11 +50,11 @@ export interface AppHostConnection {
   close(): Promise<void>;
 }
 
-/** The MCP client the relay forwards through: one per frame, over `/mcp`,
- *  the UI's credential on every request. */
-export function createRelayClient(): { client: Client; transport: StreamableHTTPClientTransport } {
+/** The MCP client the relay forwards through: one per frame, over `/mcp`
+ *  (or a peer's, `/peers/<id>/mcp`), the UI's credential on every request. */
+export function createRelayClient(base = ""): { client: Client; transport: StreamableHTTPClientTransport } {
   const client = new Client({ name: "strut-ui", version: "0" });
-  const transport = new StreamableHTTPClientTransport(new URL(`${API_BASE}/mcp`, location.href), {
+  const transport = new StreamableHTTPClientTransport(new URL(`${API_BASE}${base}/mcp`, location.href), {
     requestInit: { headers: apiHeaders() },
   });
   return { client, transport };
@@ -77,7 +81,7 @@ export function hostContextFor(theme: McpUiTheme): McpUiHostContext {
  * answers in the page are wired here.
  */
 export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConnection> {
-  const { client, transport } = createRelayClient();
+  const { client, transport } = createRelayClient(opts.base);
   await client.connect(transport);
   const bridge = new AppBridge(
     client,

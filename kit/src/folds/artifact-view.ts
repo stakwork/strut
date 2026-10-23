@@ -59,11 +59,16 @@ export function isArtifactPath(v: unknown): v is string {
 /** An app version's files: `/apps/<name>/<vN>/files` (plans/apps.md §7.2). */
 const APP_SCOPE_RE = /^\/apps\/[^/]+\/v\d+\/files/;
 
-/** The scope a served-file path reads from — `/artifacts/<runId>` or
- *  `/jobs/<id>/files` — whose listing names every file under it and mints
+/** A scope read through a peer's read-through, one hop per `/peers/<id>`
+ *  (plans/chained-orchestrators.md §5, plans/apps.md §7.4). */
+const SCOPE_RE = /^(?:\/peers\/[^/]+)*(?:\/artifacts\/[^/]+|\/jobs\/[^/]+\/files|\/apps\/[^/]+\/v\d+\/files)/;
+
+/** The scope a served-file path reads from — `/artifacts/<runId>`,
+ *  `/jobs/<id>/files` or `/apps/<name>/<vN>/files`, here or behind a
+ *  `/peers/<id>` prefix — whose listing names every file under it and mints
  *  the token for them; null for anything else. */
 export function fileScopeOf(path: string): string | null {
-  const m = path.match(/^\/artifacts\/[^/]+/) ?? path.match(/^\/jobs\/[^/]+\/files/) ?? path.match(APP_SCOPE_RE);
+  const m = path.match(SCOPE_RE);
   return m ? m[0] : null;
 }
 
