@@ -1,13 +1,19 @@
 /**
  * Speech-to-text service over sherpa-onnx (plans/local-desktop-and-stt.md §4).
  *
- * Owns: model download + verification, recognizer construction and caching,
- * the streaming session (PCM in → partial/final events out), and the batch
+ * Owns: model download + verification, hotword lists, the streaming session
+ * (PCM in → partial/final events out) and its session log, and the batch
  * `transcribe` that runs the same streaming path over a WAV. Routes
  * (`routes.ts`) and the WebSocket (`ws.ts`) are thin over this.
  *
- * `sherpa-onnx-node` is an optionalDependency, imported lazily: a strut without
- * the addon boots, and `available()` says so. Tests inject a fake `engine`.
+ * The recognizers themselves — building them, every decode — run in a
+ * worker thread (decoder.ts over `ModelWorker`), so a decode never blocks
+ * the event loop: a recognizer takes up to a second to build, and
+ * `transcribe` decodes a whole file in one go.
+ *
+ * `sherpa-onnx-node` is an optionalDependency, imported lazily (in the
+ * worker): a strut without the addon boots, and `available()` says so. Tests
+ * inject a fake `engine`, which runs in process.
  *
  * Two-recognizer streams: when `partialModel` is set, a fast greedy model
  * produces the partials and the hotword-capable `model` produces finals and
@@ -36,45 +42,20 @@ import {
 } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { bootEnv } from "../env.js";
+import { ModelWorker } from "../model-worker.js";
+import { createSttHost, DECODER_MODULE, type Built, type RecognizerSpec, type SttEngine, type SttHost } from "./decoder.js";
 
-// ── Engine surface (what we use of sherpa-onnx-node; fakeable) ────────────
-
-export interface EngineWaveform {
-  samples: Float32Array;
-  sampleRate: number;
-}
-export interface EngineResult {
-  text: string;
-  tokens?: string[];
-  timestamps?: number[];
-  start_time?: number;
-}
-export interface EngineStream {
-  acceptWaveform(w: EngineWaveform): void;
-  inputFinished(): void;
-}
-export interface EngineRecognizer {
-  createStream(): EngineStream;
-  isReady(s: EngineStream): boolean;
-  decode(s: EngineStream): void;
-  isEndpoint(s: EngineStream): boolean;
-  reset(s: EngineStream): void;
-  getResult(s: EngineStream): EngineResult;
-}
-export interface SttEngine {
-  OnlineRecognizer: new (config: Record<string, unknown>) => EngineRecognizer;
-  readWave(path: string): EngineWaveform;
-}
-
-/** Lazy sherpa import; null when the optional addon isn't installed. */
-export async function loadSherpaEngine(): Promise<SttEngine | null> {
-  try {
-    const mod = (await import("sherpa-onnx-node")) as { default?: SttEngine } & SttEngine;
-    return mod.default ?? mod;
-  } catch {
-    return null;
-  }
-}
+// The engine surface and the decode loop live in decoder.ts (they run in the
+// recognizer's thread); re-exported here, where callers have always found them.
+export {
+  loadSherpaEngine,
+  wordsOf,
+  type EngineWaveform,
+  type EngineResult,
+  type EngineStream,
+  type EngineRecognizer,
+  type SttEngine,
+} from "./decoder.js";
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -117,12 +98,14 @@ export interface SttStream {
   readonly model: string;
   readonly partialModel: string | null;
   readonly hotwords: string | null;
-  /** Feed PCM16LE bytes at the stream's sample rate. */
-  push(pcm16le: Uint8Array): SttEvent[];
+  /** Feed PCM16LE bytes at the stream's sample rate. Each call is a round
+   *  trip to the recognizer's thread; calls made back to back are decoded in
+   *  the order they were made. */
+  push(pcm16le: Uint8Array): Promise<SttEvent[]>;
   /** Feed float32 samples (any rate; sherpa resamples). */
-  pushSamples(samples: Float32Array, sampleRate: number): SttEvent[];
+  pushSamples(samples: Float32Array, sampleRate: number): Promise<SttEvent[]>;
   /** Flush: pads silence so the last chunk decodes, emits the trailing final. */
-  end(): SttEvent[];
+  end(): Promise<SttEvent[]>;
   /** Resolves once every session-log write so far has landed — await it
    *  before telling a client it may correct the finals. */
   flush(): Promise<void>;
@@ -161,13 +144,20 @@ export interface SttService {
   transcribe(wav: Uint8Array, opts?: Omit<SttStreamOptions, "sampleRate">): Promise<TranscribeResult>;
   /** Append a user's correction to a session's final. */
   correct(session: string, index: number, text: string): Promise<void>;
+  /** Stop the recognizer thread (its streams with it); the next call starts another. */
+  close(): Promise<void>;
 }
 
 export interface SttServiceOptions {
   /** Local data dir (sessions, hotword lists, temp WAVs). */
   dataDir: string;
   modelDir?: string;
+  /** An engine to run IN PROCESS (tests): the recognizers are built and fed
+   *  on this thread. Default: sherpa, in a worker thread. */
   engine?: () => Promise<SttEngine | null>;
+  /** The module the worker loads its engine from, in place of
+   *  `sherpa-onnx-node` (a test's fake). Ignored with `engine`. */
+  engineModule?: string;
   fetchImpl?: typeof fetch;
   env?: Record<string, string | undefined>;
   log?: (msg: string) => void;
@@ -175,7 +165,6 @@ export interface SttServiceOptions {
 
 // ── Implementation ─────────────────────────────────────────────────────────
 
-const FRAME_SECONDS = 0.1;
 const DEFAULT_HOTWORDS_SCORE = 2;
 const DEFAULT_ENDPOINT: Required<EndpointRules> = { rule1: 2.4, rule2: 1.0, rule3: 20 };
 
@@ -188,22 +177,21 @@ interface Loaded {
 export function createStt(opts: SttServiceOptions): SttService {
   const env = opts.env ?? bootEnv();
   const modelDir = opts.modelDir ?? modelDirFromEnv(env);
-  const loadEngine = opts.engine ?? loadSherpaEngine;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const log = opts.log ?? ((m: string) => console.log(`[stt] ${m}`));
   const hotwords = new HotwordsStore(opts.dataDir);
   const sessions = new SessionStore(opts.dataDir);
 
-  let engineP: Promise<SttEngine | null> | undefined;
-  const engine = () => (engineP ??= loadEngine());
-  const requireEngine = async (): Promise<SttEngine> => {
-    const e = await engine();
-    if (!e) throw new SttUnavailableError();
-    return e;
+  const host = opts.engine ? inProcess(opts.engine) : inWorker(opts.engineModule);
+  const available = () => host.call<boolean>("available");
+  const requireEngine = async (): Promise<void> => {
+    if (!(await available())) throw new SttUnavailableError();
+  };
+  const logBuilt = (built: Built[]) => {
+    for (const b of built) log(`recognizer ${b.label} ready in ${b.ms} ms`);
   };
 
   const downloads = new Map<string, Promise<string>>();
-  const recognizers = new Map<string, Promise<EngineRecognizer>>();
 
   const defaultModelId = () => env["STRUT_STT_MODEL"] ?? DEFAULT_MODEL;
   const defaultPartialId = (): string | null => {
@@ -292,56 +280,58 @@ export function createStt(opts: SttServiceOptions): SttService {
     return { name: list.length ? "inline" : null, list };
   }
 
-  async function recognizer(
+  /** What the recognizer thread builds a recognizer from; it keeps one per `key`. */
+  async function recognizerSpec(
     loaded: Loaded,
     list: readonly Hotword[],
     score: number,
     ep: Required<EndpointRules>,
-  ): Promise<EngineRecognizer> {
-    const e = await requireEngine();
+  ): Promise<RecognizerSpec> {
     const biased = list.length > 0 && loaded.model.hotwords;
     const compiled = biased ? await compileHotwords(loaded.dir, list) : null;
     const key = [loaded.model.id, compiled?.hash ?? "-", biased ? score : "-", ep.rule1, ep.rule2, ep.rule3].join("|");
-    let p = recognizers.get(key);
-    if (!p) {
-      const { dir, files } = loaded;
-      const modelConfig: Record<string, unknown> = {
-        transducer: { encoder: join(dir, files.encoder), decoder: join(dir, files.decoder), joiner: join(dir, files.joiner) },
-        tokens: join(dir, files.tokens),
-        numThreads: 2,
-        provider: "cpu",
-        debug: 0,
-      };
-      if (compiled) {
-        // §4.2: without modelingUnit sherpa defaults to cjkchar and the list
-        // silently does nothing.
-        modelConfig["modelingUnit"] = "bpe";
-        modelConfig["bpeVocab"] = compiled.vocab;
-      }
-      const config: Record<string, unknown> = {
-        featConfig: { sampleRate: 16000, featureDim: 80 },
-        modelConfig,
-        decodingMethod: compiled ? "modified_beam_search" : "greedy_search",
-        maxActivePaths: 4,
-        enableEndpoint: true,
-        rule1MinTrailingSilence: ep.rule1,
-        rule2MinTrailingSilence: ep.rule2,
-        rule3MinUtteranceLength: ep.rule3,
-      };
-      if (compiled) {
-        config["hotwordsFile"] = compiled.file;
-        config["hotwordsScore"] = score;
-      }
-      p = Promise.resolve().then(() => {
-        const t0 = Date.now();
-        const r = new e.OnlineRecognizer(config);
-        log(`recognizer ${loaded.model.id}${compiled ? ` +hotwords(${compiled.hash})` : ""} ready in ${Date.now() - t0} ms`);
-        return r;
-      });
-      p.catch(() => recognizers.delete(key));
-      recognizers.set(key, p);
+    const { dir, files } = loaded;
+    const modelConfig: Record<string, unknown> = {
+      transducer: { encoder: join(dir, files.encoder), decoder: join(dir, files.decoder), joiner: join(dir, files.joiner) },
+      tokens: join(dir, files.tokens),
+      numThreads: 2,
+      provider: "cpu",
+      debug: 0,
+    };
+    if (compiled) {
+      // §4.2: without modelingUnit sherpa defaults to cjkchar and the list
+      // silently does nothing.
+      modelConfig["modelingUnit"] = "bpe";
+      modelConfig["bpeVocab"] = compiled.vocab;
     }
-    return p;
+    const config: Record<string, unknown> = {
+      featConfig: { sampleRate: 16000, featureDim: 80 },
+      modelConfig,
+      decodingMethod: compiled ? "modified_beam_search" : "greedy_search",
+      maxActivePaths: 4,
+      enableEndpoint: true,
+      rule1MinTrailingSilence: ep.rule1,
+      rule2MinTrailingSilence: ep.rule2,
+      rule3MinUtteranceLength: ep.rule3,
+    };
+    if (compiled) {
+      config["hotwordsFile"] = compiled.file;
+      config["hotwordsScore"] = score;
+    }
+    return { key, label: `${loaded.model.id}${compiled ? ` +hotwords(${compiled.hash})` : ""}`, config };
+  }
+
+  /** The finals recognizer `o` asks for, and where its finals continue counting. */
+  async function mainSpec(o: Omit<SttStreamOptions, "sampleRate">) {
+    const ep = { ...DEFAULT_ENDPOINT, ...stripUndefined(o.endpoint ?? {}) };
+    const { name: hotwordsName, list } = await resolveHotwords(o.hotwords);
+    const score = o.hotwordsScore ?? DEFAULT_HOTWORDS_SCORE;
+    const loaded = await load(o.model ?? defaultModelId());
+    const spec = await recognizerSpec(loaded, list, score, ep);
+    // Final indexes continue across connections that share a session, so a
+    // correction's `index` is unambiguous within the session file.
+    const firstIndex = o.session ? await sessions.nextIndex(o.session) : 0;
+    return { loaded, spec, hotwordsName, score, ep, firstIndex };
   }
 
   async function openStream(o: SttStreamOptions = {}): Promise<SttStream> {
@@ -349,64 +339,51 @@ export function createStt(opts: SttServiceOptions): SttService {
     await requireEngine();
     const modelId = o.model ?? defaultModelId();
     const partialId = o.partialModel === undefined ? defaultPartialId() : o.partialModel;
-    const ep = { ...DEFAULT_ENDPOINT, ...stripUndefined(o.endpoint ?? {}) };
-    const { name: hotwordsName, list } = await resolveHotwords(o.hotwords);
-    const score = o.hotwordsScore ?? DEFAULT_HOTWORDS_SCORE;
-
-    const main = await load(modelId);
-    const mainRec = await recognizer(main, list, score, ep);
-    let partialRec: EngineRecognizer | null = null;
-    if (partialId && partialId !== modelId) {
-      partialRec = await recognizer(await load(partialId), [], score, ep);
-    }
-    // Final indexes continue across connections that share a session, so a
-    // correction's `index` is unambiguous within the session file.
-    const firstIndex = o.session ? await sessions.nextIndex(o.session) : 0;
+    const { loaded, spec, hotwordsName, score, ep, firstIndex } = await mainSpec(o);
+    const partial = partialId && partialId !== modelId ? await recognizerSpec(await load(partialId), [], score, ep) : null;
+    const id = randomUUID();
+    const sampleRate = o.sampleRate ?? 16000;
+    const { built } = await host.call<{ built: Built[] }>("open", [
+      id,
+      { main: spec, partial, sampleRate, tailPadMs: loaded.model.tailPadMs, firstIndex },
+    ]);
+    logBuilt(built);
     return new Stream({
-      model: main.model,
-      partialModel: partialId && partialRec ? partialId : null,
+      id,
+      host,
+      model: loaded.model.id,
+      partialModel: partial ? partialId : null,
       hotwords: hotwordsName,
-      mainRec,
-      partialRec,
-      sampleRate: o.sampleRate ?? 16000,
+      sampleRate,
       session: o.session ?? null,
       sessions,
-      firstIndex,
     });
   }
 
   async function transcribe(wav: Uint8Array, o: Omit<SttStreamOptions, "sampleRate"> = {}): Promise<TranscribeResult> {
-    const e = await requireEngine();
+    await requireEngine();
+    // Batch runs single-recognizer: partials are irrelevant here.
+    const { loaded, spec, hotwordsName, firstIndex } = await mainSpec(o);
     const tmp = join(opts.dataDir, "audio", "tmp");
     await mkdir(tmp, { recursive: true });
     const path = join(tmp, `${randomUUID()}.wav`);
     await writeFile(path, wav);
-    let wave: EngineWaveform;
+    let r: { finals: SttEvent[]; built: Built[]; ms: number };
     try {
-      wave = e.readWave(path);
+      // The whole pass — read, decode, flush — in the recognizer's thread.
+      r = await host.call("transcribe", [path, { main: spec, tailPadMs: loaded.model.tailPadMs, firstIndex }]);
     } finally {
       await rm(path, { force: true });
     }
-    // Batch runs single-recognizer: partials are irrelevant here.
-    const stream = await openStream({ ...o, partialModel: null, sampleRate: wave.sampleRate });
-    const t0 = Date.now();
-    const finals: SttEvent[] = [];
-    const frame = Math.max(1, Math.round(FRAME_SECONDS * wave.sampleRate));
-    try {
-      for (let i = 0; i < wave.samples.length; i += frame) {
-        finals.push(...stream.pushSamples(wave.samples.subarray(i, i + frame), wave.sampleRate).filter((ev) => ev.type === "final"));
-      }
-      finals.push(...stream.end().filter((ev) => ev.type === "final"));
-    } finally {
-      stream.close();
-    }
-    const segments = finals.flatMap((ev) => (ev.type === "final" ? [{ text: ev.text, words: ev.words }] : []));
+    logBuilt(r.built);
+    if (o.session) await logFinals(sessions, o.session, loaded.model.id, hotwordsName, r.finals);
+    const segments = r.finals.flatMap((ev) => (ev.type === "final" ? [{ text: ev.text, words: ev.words }] : []));
     return {
       text: segments.map((s) => s.text).join(" "),
       segments,
-      model: stream.model,
-      hotwords: stream.hotwords,
-      durationMs: Date.now() - t0,
+      model: loaded.model.id,
+      hotwords: hotwordsName,
+      durationMs: r.ms,
     };
   }
 
@@ -414,7 +391,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     modelDir,
     hotwords,
     sessions,
-    available: async () => (await engine()) != null,
+    available,
     async models() {
       const d = defaultModelId();
       const pd = defaultPartialId();
@@ -430,6 +407,38 @@ export function createStt(opts: SttServiceOptions): SttService {
     openStream,
     transcribe,
     correct: (session, index, text) => sessions.append(session, { type: "correction", t: new Date().toISOString(), index, text }),
+    close: () => host.close(),
+  };
+}
+
+// ── Where the recognizers run ──────────────────────────────────────────────
+
+/** The recognizer host (decoder.ts) as calls: in a worker thread, or in process. */
+interface Host {
+  call<T>(method: keyof SttHost, args?: unknown[], transfer?: Transferable[]): Promise<T>;
+  close(): Promise<void>;
+}
+
+/** sherpa in a worker thread: a decode never blocks the event loop serving requests. */
+function inWorker(engineModule?: string): Host {
+  const worker = new ModelWorker(
+    { module: DECODER_MODULE, factory: "loadSttHost", options: engineModule ? { engineModule } : {} },
+    "stt worker",
+  );
+  return { call: (method, args, transfer) => worker.call(method, args, transfer), close: () => worker.close() };
+}
+
+/** An injected engine, on this thread (tests). */
+function inProcess(load: () => Promise<SttEngine | null>): Host {
+  let host: Promise<SttHost> | undefined;
+  return {
+    async call<T>(method: keyof SttHost, args: unknown[] = []): Promise<T> {
+      const h = await (host ??= load().then(createSttHost));
+      return (h[method] as (...a: unknown[]) => T)(...args);
+    },
+    close: async () => {
+      host = undefined;
+    },
   };
 }
 
@@ -443,76 +452,45 @@ export class SttUnavailableError extends Error {
 // ── The streaming session ──────────────────────────────────────────────────
 
 interface StreamDeps {
-  model: SttModel;
+  id: string;
+  host: Host;
+  model: string;
   partialModel: string | null;
   hotwords: string | null;
-  mainRec: EngineRecognizer;
-  partialRec: EngineRecognizer | null;
   sampleRate: number;
   session: string | null;
   sessions: SessionStore;
-  firstIndex: number;
 }
 
+/** A dictation stream on this thread: the decoding is the recognizer
+ *  thread's (decoder.ts); the session log is written here. */
 class Stream implements SttStream {
   readonly model: string;
   readonly partialModel: string | null;
   readonly hotwords: string | null;
-  private readonly d: StreamDeps;
-  private readonly main: EngineStream;
-  private readonly partial: EngineStream | null;
-  private lastPartial = "";
-  private index = 0;
   private closed = false;
   private writes: Promise<void> = Promise.resolve();
-  /** Rate of the last audio fed — sherpa aborts the process if a stream's
-   *  rate changes, so the flush pad must match it. */
-  private rate: number;
-  private fed = false;
 
-  constructor(d: StreamDeps) {
-    this.d = d;
-    this.model = d.model.id;
+  constructor(private readonly d: StreamDeps) {
+    this.model = d.model;
     this.partialModel = d.partialModel;
     this.hotwords = d.hotwords;
-    this.main = d.mainRec.createStream();
-    this.partial = d.partialRec ? d.partialRec.createStream() : null;
-    this.index = d.firstIndex;
-    this.rate = d.sampleRate;
   }
 
-  push(pcm16le: Uint8Array): SttEvent[] {
-    return this.pushSamples(pcm16ToFloat32(pcm16le), this.d.sampleRate);
+  push(pcm16le: Uint8Array): Promise<SttEvent[]> {
+    // A fresh buffer, so it moves to the recognizer's thread instead of being copied.
+    const samples = pcm16ToFloat32(pcm16le);
+    return this.send("push", [this.d.id, samples, this.d.sampleRate], [samples.buffer]);
   }
 
-  pushSamples(samples: Float32Array, sampleRate: number): SttEvent[] {
-    if (this.closed) throw new Error("stream is closed");
-    this.feed(samples, sampleRate);
-    const events: SttEvent[] = [];
-    const text = this.currentPartialText();
-    if (text !== this.lastPartial) {
-      this.lastPartial = text;
-      events.push({ type: "partial", text });
-    }
-    if (this.d.mainRec.isEndpoint(this.main)) {
-      const fin = this.takeFinal();
-      if (fin) events.push(fin);
-      this.resetAll();
-    }
-    return events;
+  pushSamples(samples: Float32Array, sampleRate: number): Promise<SttEvent[]> {
+    return this.send("push", [this.d.id, samples, sampleRate]);
   }
 
-  end(): SttEvent[] {
+  async end(): Promise<SttEvent[]> {
     if (this.closed) return [];
-    const pad = Math.round((this.d.model.tailPadMs / 1000) * this.rate);
-    this.feed(new Float32Array(pad), this.rate);
-    this.main.inputFinished();
-    while (this.d.mainRec.isReady(this.main)) this.d.mainRec.decode(this.main);
-    const events: SttEvent[] = [];
-    const fin = this.takeFinal();
-    if (fin) events.push(fin);
-    this.close();
-    return events;
+    this.closed = true;
+    return this.logged(await this.d.host.call<SttEvent[]>("end", [this.d.id]));
   }
 
   flush(): Promise<void> {
@@ -520,77 +498,33 @@ class Stream implements SttStream {
   }
 
   close(): void {
+    if (this.closed) return;
     this.closed = true;
+    this.d.host.call("close", [this.d.id]).catch(() => {});
   }
 
-  private feed(samples: Float32Array, sampleRate: number): void {
-    if (sampleRate !== this.rate) {
-      if (this.rate !== this.d.sampleRate || samples.length) {
-        // Changing rate mid-stream is fatal in sherpa (it exits the process).
-        if (this.fed) throw new Error(`sample rate changed mid-stream (${this.rate} → ${sampleRate})`);
-      }
-      this.rate = sampleRate;
-    }
-    this.fed = true;
-    const w = { samples, sampleRate };
-    this.main.acceptWaveform(w);
-    while (this.d.mainRec.isReady(this.main)) this.d.mainRec.decode(this.main);
-    if (this.partial && this.d.partialRec) {
-      this.partial.acceptWaveform(w);
-      while (this.d.partialRec.isReady(this.partial)) this.d.partialRec.decode(this.partial);
-    }
+  private async send(method: "push", args: unknown[], transfer?: Transferable[]): Promise<SttEvent[]> {
+    if (this.closed) throw new Error("stream is closed");
+    return this.logged(await this.d.host.call<SttEvent[]>(method, args, transfer));
   }
 
-  private currentPartialText(): string {
-    const r = this.partial && this.d.partialRec ? this.d.partialRec.getResult(this.partial) : this.d.mainRec.getResult(this.main);
-    return r.text.trim();
-  }
-
-  private takeFinal(): SttEvent | null {
-    const r = this.d.mainRec.getResult(this.main);
-    const text = r.text.trim();
-    if (!text) return null;
-    const ev: SttEvent = { type: "final", index: this.index++, text, words: wordsOf(r) };
-    if (this.d.session) {
-      const entry = {
-        type: "final" as const,
-        t: new Date().toISOString(),
-        index: ev.index,
-        text,
-        words: ev.words,
-        model: this.model,
-        hotwords: this.hotwords,
-      };
-      const session = this.d.session;
+  private logged(events: SttEvent[]): SttEvent[] {
+    const session = this.d.session;
+    if (session && events.some((ev) => ev.type === "final")) {
       this.writes = this.writes
-        .then(() => this.d.sessions.append(session, entry))
+        .then(() => logFinals(this.d.sessions, session, this.model, this.hotwords, events))
         .catch((e) => console.warn(`[stt] session log failed:`, e));
     }
-    return ev;
-  }
-
-  private resetAll(): void {
-    this.d.mainRec.reset(this.main);
-    if (this.partial && this.d.partialRec) this.d.partialRec.reset(this.partial);
-    this.lastPartial = "";
+    return events;
   }
 }
 
-/** Group sherpa's subword tokens into words. A token starting with `▁` (or
- *  a space, as the JSON renders it) begins a word. */
-export function wordsOf(r: EngineResult): SttWord[] {
-  const tokens = r.tokens ?? [];
-  const ts = r.timestamps ?? [];
-  const base = r.start_time ?? 0;
-  const words: SttWord[] = [];
-  tokens.forEach((tok, i) => {
-    const starts = tok.startsWith("▁") || tok.startsWith(" ");
-    const piece = starts ? tok.slice(1) : tok;
-    const last = words[words.length - 1];
-    if (starts || !last) words.push({ text: piece, start: round(base + (ts[i] ?? 0)) });
-    else last.text += piece;
-  });
-  return words.filter((w) => w.text.length > 0);
+/** Append a stream's finals to its session log. */
+async function logFinals(sessions: SessionStore, session: string, model: string, hotwords: string | null, events: SttEvent[]): Promise<void> {
+  for (const ev of events) {
+    if (ev.type !== "final") continue;
+    await sessions.append(session, { type: "final", t: new Date().toISOString(), index: ev.index, text: ev.text, words: ev.words, model, hotwords });
+  }
 }
 
 export function pcm16ToFloat32(bytes: Uint8Array): Float32Array {
@@ -599,10 +533,6 @@ export function pcm16ToFloat32(bytes: Uint8Array): Float32Array {
   const view = new DataView(bytes.buffer, bytes.byteOffset, n * 2);
   for (let i = 0; i < n; i++) out[i] = view.getInt16(i * 2, true) / 32768;
   return out;
-}
-
-function round(n: number): number {
-  return Math.round(n * 1000) / 1000;
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {

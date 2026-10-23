@@ -16,10 +16,8 @@
  * some OTHER writer put in the graph with no vector at all — is the
  * `EmbeddingPass`'s job (below; plans/semantic-search.md).
  */
-import { extname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { Worker } from "node:worker_threads";
 import { modelDirFromEnv } from "../model-dir.js";
+import { ModelWorker, type ModelWorkerSpec } from "../model-worker.js";
 import { int, type Bolt } from "./bolt.js";
 import { buildSearchText, renderVectorField, type Embedder } from "./node-writer.js";
 import type { SchemaResolver } from "./schema-resolver.js";
@@ -191,88 +189,32 @@ export function loadMiniLM(opts: MiniLMOptions = {}): Promise<MiniLMEmbedder> {
 
 /** What builds the embedder inside the worker: an export of `module` that
  *  takes `options` and resolves to an `Embedder`. */
-export interface WorkerEmbedderSpec {
-  module: string;
-  factory: string;
-  options?: unknown;
-}
-
-// Beside this file in `src/` (tsx) and in `build/` alike.
-const WORKER_ENTRY = new URL(`./embed-worker${extname(fileURLToPath(import.meta.url))}`, import.meta.url);
-
-type WorkerReply = { ready: true } | { id: number; vectors: number[][] } | { id: number; error: string } | { error: string };
+export type WorkerEmbedderSpec = ModelWorkerSpec;
 
 /**
- * An `Embedder` in a worker thread — what the pass embeds with (backend.ts).
- * onnxruntime-node runs a model synchronously (its `run()` is the native
- * call inside a `setImmediate`), so on the main thread every forward pass
- * blocks the event loop of the process serving requests: on swarm38, mcp's
- * whole server (2026-10-11, a tick of catch-up took `GET /lab/health` from
- * 0.34 s to 1.74 s and a graph search from 0.6 s to 5.6 s). Here the main
- * thread only posts texts and receives vectors. The worker starts on the
- * first `embed`, and again after it dies (its calls in flight fail); it
- * holds the process open only while it starts or a call is in flight.
+ * An `Embedder` in a worker thread (`ModelWorker`) — what the pass embeds
+ * with (backend.ts), so a tick of catch-up never blocks the process serving
+ * requests. The worker starts on the first `embed`, and again after it dies.
  */
 export class WorkerEmbedder implements Embedder {
-  private worker: Worker | null = null;
-  private starting: Promise<Worker> | null = null;
-  private readonly pending = new Map<number, { resolve: (v: number[][]) => void; reject: (e: Error) => void }>();
-  private next = 0;
+  private readonly worker: ModelWorker;
 
-  constructor(private readonly spec: WorkerEmbedderSpec = { module: import.meta.url, factory: "loadMiniLM" }) {}
+  // The cache dir is resolved HERE: the worker reads the environment the env
+  // scrub left, without STRUT_MODEL_DIR.
+  constructor(
+    spec: WorkerEmbedderSpec = { module: import.meta.url, factory: "loadMiniLM", options: { cacheDir: modelDirFromEnv() } },
+  ) {
+    this.worker = new ModelWorker(spec, "embedding worker");
+  }
 
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
-    const worker = await this.start();
-    return new Promise((resolve, reject) => {
-      const id = this.next++;
-      this.pending.set(id, { resolve, reject });
-      worker.ref();
-      worker.postMessage({ id, texts });
-    });
+    return this.worker.call<number[][]>("embed", [texts]);
   }
 
   /** Stop the worker; calls in flight fail. */
-  async close(): Promise<void> {
-    const worker = this.worker;
-    this.drop(worker, new Error("embedding worker closed"));
-    await worker?.terminate();
-  }
-
-  private start(): Promise<Worker> {
-    return (this.starting ??= new Promise<Worker>((resolve, reject) => {
-      const worker = new Worker(WORKER_ENTRY, { workerData: this.spec });
-      this.worker = worker;
-      const fail = (e: Error) => {
-        this.drop(worker, e);
-        reject(e);
-      };
-      worker.on("message", (m: WorkerReply) => {
-        if ("ready" in m) {
-          worker.unref();
-          return resolve(worker);
-        }
-        if (!("id" in m)) return fail(new Error(`embedding worker: ${m.error}`));
-        const call = this.pending.get(m.id);
-        if (!call) return;
-        this.pending.delete(m.id);
-        if (this.pending.size === 0) worker.unref();
-        if ("error" in m) call.reject(new Error(`embedding worker: ${m.error}`));
-        else call.resolve(m.vectors);
-      });
-      worker.on("error", (e) => fail(e instanceof Error ? e : new Error(String(e))));
-      worker.on("exit", (code) => fail(new Error(`embedding worker exited with code ${code}`)));
-    }));
-  }
-
-  /** Forget a worker that died or was closed: its calls in flight fail, and
-   *  the next `embed` starts another. */
-  private drop(worker: Worker | null, e: Error): void {
-    if (!worker || worker !== this.worker) return;
-    this.worker = null;
-    this.starting = null;
-    for (const call of this.pending.values()) call.reject(e);
-    this.pending.clear();
+  close(): Promise<void> {
+    return this.worker.close();
   }
 }
 

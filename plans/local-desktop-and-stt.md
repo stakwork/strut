@@ -428,9 +428,11 @@ and passes every other test.
   one recognizer does both.
 - One recognizer per (model, hotwords hash, score, endpoint rules), cached;
   streams are cheap.
-  Decoding is synchronous native work on the event loop, ~1–2 ms per
-  100 ms frame on M-series; move to a worker thread only if a slow target
-  shows it.
+  Decoding is synchronous native work, ~1–2 ms per 100 ms frame on
+  M-series — but a recognizer takes up to ~1 s to build and `transcribe`
+  decodes a whole file in one go, so the recognizers, their streams and
+  `transcribe` run in a worker thread (`src/audio/decoder.ts` over
+  `ModelWorker`, 2026-10-23); a stream's `push` is a round trip to it.
 - Auth: `Authorization: Bearer` **or** `?key=` (a webview's WebSocket
   cannot set headers). HTTP routes below use the normal bearer middleware.
 - The upgrade happens on the Node server, not inside Hono. Strut's own
@@ -560,8 +562,8 @@ artifact per user/company) or beside it. Lean: same artifact, two sections.
   Nemotron 3.5 is multilingual. Catalog entries only; nothing else changes.
 - Speaker diarization and VAD: sherpa ships silero-VAD and speaker
   embedding models. Not in v1; the streaming route's endpointing is enough.
-- Decoding on the event loop vs a worker thread: fine on M-series; decide
-  after measuring an older Intel laptop and Windows.
+- Decoding on the event loop vs a worker thread: decided — a worker thread
+  (2026-10-23), so a slow target never stalls the server.
 - LadybugDB local graph (§3.1): do it at all, and if so, jarvis-shaped
   logical model vs. Ladybug-native schema. Team discussion pending.
 
