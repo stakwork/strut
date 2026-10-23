@@ -86,9 +86,9 @@
 > lives on a peer — Peel showing an org strut's app with the person token —
 > through three changes: a person token may call `step_run` on `/mcp`, the
 > read-through forwards an app, and AppHost takes the peer (§7.4, §11).
-> Open by default is the owner's choice; the three changes are mine, and
-> BUILT with this plan in stakwork/strut#305 (`src/apps/peer-host.test.ts`
-> runs them across two struts).
+> Open by default is the owner's choice; the three changes are mine,
+> planned in stakwork/strut#305 and BUILT in #307
+> (`src/apps/peer-host.test.ts` runs them across two struts).
 >
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
@@ -1075,7 +1075,7 @@ React pages is deferred (§12). Hive's OpenHealth page becomes such an app
 (§10). That is adoption.
 
 **A peer's app, hosted by a person's own strut** (2026-10-23; the three
-changes are mine, built in stakwork/strut#305). An app lives on the strut that serves it —
+changes are mine, built in stakwork/strut#307). An app lives on the strut that serves it —
 its grants, its runs, its data — and that does not change. What a person's
 own strut adds is a window onto it: Peel's local strut shows an app that
 lives on the org's strut, with the person token it already holds for that
