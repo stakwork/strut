@@ -42,6 +42,8 @@ export {
   mediaOf,
   withStop,
   stopOf,
+  withUntrusted,
+  untrustedOf,
   type ModelUsage,
   withUsage,
 } from "./core.js";
