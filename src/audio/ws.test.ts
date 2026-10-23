@@ -24,6 +24,7 @@ function fakeService(overrides: Partial<SttService> = {}): SttService & { opened
       throw new Error("unused");
     },
     correct: async () => {},
+    close: async () => {},
     async openStream(o: SttStreamOptions = {}): Promise<SttStream> {
       opened.push(o);
       let frames = 0;
@@ -32,15 +33,15 @@ function fakeService(overrides: Partial<SttService> = {}): SttService & { opened
         model: o.model ?? "fake",
         partialModel: o.partialModel ?? null,
         hotwords: typeof o.hotwords === "string" ? o.hotwords : null,
-        push(b) {
+        async push(b) {
           frames++;
           bytes += b.byteLength;
           const ev: SttEvent[] = [{ type: "partial", text: `frame ${frames}` }];
           if (frames === 3) ev.push({ type: "final", index: 0, text: "three frames", words: [] });
           return ev;
         },
-        pushSamples: () => [],
-        end: () => [{ type: "final", index: 1, text: `done ${bytes} bytes`, words: [] }],
+        pushSamples: async () => [],
+        end: async () => [{ type: "final", index: 1, text: `done ${bytes} bytes`, words: [] }],
         flush: async () => {},
         close() {},
       };

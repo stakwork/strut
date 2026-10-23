@@ -385,6 +385,54 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       await assert.rejects(ws.setAppPinned("nope", true), /not found/);
     });
 
+    it("releases (plans/app-releases.md §1): a release holds the app, a publish is then a draft, setAppLive rolls back or follows latest", async () => {
+      await ws.publishApp("held", "rh1", APP("One"));
+      await ws.publishApp("held", "rh2", APP("Two"));
+      const lock = { workflows: { wf: { version: "v1", hash: "x" } }, steps: { "s/t": { version: "v2", hash: "y" } }, floating: ["a"] };
+      const r1 = await ws.addAppRelease("held", { version: "v1", lock, by: "alice" });
+      assert.deepEqual([r1.id, r1.version, r1.by, typeof r1.createdAt], ["r1", "v1", "alice", "string"]);
+      let rec = (await ws.getApp("held"))!;
+      assert.deepEqual([rec.version, rec.active, rec.live], ["v1", "v1", "r1"]);
+      assert.deepEqual(rec.releases?.[0]?.lock, lock, "the lock read back as written");
+      assert.equal((await ws.listApps()).find((a) => a.name === "held")?.live, "r1");
+
+      // Held: a new tree is a draft, a known one re-activates nothing.
+      assert.deepEqual(await ws.publishApp("held", "rh3", APP("Three")), { version: "v3", changed: true });
+      assert.deepEqual(await ws.publishApp("held", "rh2", APP("Two")), { version: "v2", changed: false });
+      rec = (await ws.getApp("held"))!;
+      assert.deepEqual([rec.active, rec.live, Object.keys(rec.versions)], ["v1", "r1", ["v1", "v2", "v3"]]);
+      assert.equal((await ws.listApps()).find((a) => a.name === "held")?.title, "One", "the listing follows the live page");
+
+      // Promote the draft, roll back to r1 (adding nothing), follow latest.
+      assert.equal((await ws.addAppRelease("held", { version: "v3", lock: { workflows: {}, steps: {} } })).id, "r2");
+      assert.equal((await ws.getApp("held"))?.active, "v3");
+      await ws.setAppLive("held", "r1");
+      rec = (await ws.getApp("held"))!;
+      assert.deepEqual([rec.active, rec.live, rec.releases?.map((r) => r.id)], ["v1", "r1", ["r1", "r2"]]);
+      await ws.setAppLive("held", null);
+      rec = (await ws.getApp("held"))!;
+      assert.deepEqual([rec.active, rec.live, rec.releases?.length], ["v3", undefined, 2], "the newest version, the releases kept");
+      await ws.publishApp("held", "rh4", APP("Four"));
+      assert.equal((await ws.getApp("held"))?.active, "v4", "following again, a publish is live");
+
+      // Moving the pointer by hand lets go of the release.
+      await ws.addAppRelease("held", { version: "v2", lock });
+      await ws.setActiveAppVersion("held", "v4");
+      rec = (await ws.getApp("held"))!;
+      assert.deepEqual([rec.active, rec.live, rec.releases?.length], ["v4", undefined, 3]);
+
+      await assert.rejects(ws.addAppRelease("held", { version: "v9", lock }), /not found/);
+      await assert.rejects(ws.addAppRelease("nope", { version: "v1", lock }), /not found/);
+      await assert.rejects(ws.setAppLive("held", "r9"), /not found/);
+      await assert.rejects(ws.setAppLive("nope", null), /not found/);
+
+      await ws.setAppLive("held", "r3");
+      assert.equal(await ws.deleteApp("held"), true);
+      await ws.publishApp("held", "rh5", APP("Five"));
+      rec = (await ws.getApp("held"))!;
+      assert.deepEqual([rec.live, rec.releases], [undefined, undefined], "the name starts over with no releases");
+    });
+
     it("publishApp: reactivateKnown, the publisher and owner stamps, and upstream carried forward", async () => {
       const seed = APP("Seed");
       const edit = APP("Edit");

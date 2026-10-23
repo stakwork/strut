@@ -306,6 +306,10 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       pinned: "?boolean",
       /** Tree hash of the active version (mirrors `ACTIVE_VERSION`). */
       active_version: "?string",
+      /** The live release's id while the app is held (plans/app-releases.md §1). */
+      live: "?string",
+      /** JSON `AppRelease[]`: every release with its lock, oldest first. */
+      releases: "?string",
     },
   },
   {

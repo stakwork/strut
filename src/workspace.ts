@@ -342,7 +342,38 @@ export interface AppMetadata {
    *  the workspace this strut is the swarm of. The record's, never a
    *  version's: a publish keeps it, a delete clears it. Not a version pin. */
   pinned?: boolean;
+  /** Every release, oldest first (plans/app-releases.md §1): a page version
+   *  and the lock taken when a person made it live. Never edited. */
+  releases?: AppRelease[];
+  /** The live release's id: the app is HELD, `active` is that release's
+   *  version and a publish records a draft. Absent = following latest. */
+  live?: string;
 }
+
+/** The versions a release runs (plans/app-releases.md §2): every workflow
+ *  the page version grants and every subflow they reach, and every custom
+ *  step type the closure reaches, as they were when it was made live. */
+export interface AppLock {
+  workflows: Record<string, { version: string; hash?: string }>;
+  steps: Record<string, { version: string; hash: string }>;
+  /** What the closure could not see, one sentence each: it runs whatever
+   *  is current. */
+  floating?: string[];
+}
+
+/** A page version made live with its lock. Many may name one version. */
+export interface AppRelease {
+  /** `r1`, `r2`, … per app. */
+  id: string;
+  version: string;
+  lock: AppLock;
+  createdAt: string;
+  /** The actor who made it live. */
+  by?: string;
+}
+
+/** A release as a record lists it, without its lock. */
+export type AppReleaseSummary = Omit<AppRelease, "lock">;
 
 export interface AppListEntry {
   name: string;
@@ -356,6 +387,8 @@ export interface AppListEntry {
   owner?: string;
   /** Present (true) only when pinned as a tab. */
   pinned?: boolean;
+  /** The live release's id, only while the app is held. */
+  live?: string;
 }
 
 /** `getApp`: one version (the active one by default) with the app's record around it. */
@@ -372,6 +405,9 @@ export interface AppRecord {
   publisher?: string;
   owner?: string;
   pinned?: boolean;
+  /** The releases, oldest first (plans/app-releases.md §1). */
+  releases?: AppRelease[];
+  live?: string;
 }
 
 export interface PublishAppOptions extends PublishByContentOptions {
@@ -547,9 +583,20 @@ export interface WorkspaceStore extends SubflowResolver {
   /** Record a version: a known tree hash re-activates its version (unless
    *  `reactivateKnown: false`), new content is the next `vN`. The caller
    *  builds first and writes the files to `materializeAppVersion`'s path
-   *  after (src/apps/apps.ts). */
+   *  after (src/apps/apps.ts). A HELD app (`live` set) keeps its active
+   *  version: what this records is a draft. */
   publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }>;
+  /** Move the active pointer by hand. A held app follows latest from here
+   *  (`live` cleared): the pointer no longer names its release. */
   setActiveAppVersion(name: string, version: string): Promise<void>;
+  /** Append a release (the next `rN`) and make it live: `active` moves to
+   *  its version (plans/app-releases.md §1). Throws on an unknown app or
+   *  version. */
+  addAppRelease(name: string, release: { version: string; lock: AppLock; createdAt?: string; by?: string }): Promise<AppRelease>;
+  /** Make a release live (`active` = its version), or with null follow
+   *  latest again (`active` = the newest version). Throws on an unknown app
+   *  or release. */
+  setAppLive(name: string, live: string | null): Promise<void>;
   /** Pin the app as a tab, or unpin it (`AppMetadata.pinned`). Throws when
    *  the app does not exist. */
   setAppPinned(name: string, pinned: boolean): Promise<void>;
@@ -1127,7 +1174,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
         const [vid] = match;
         let changed = false;
         let dirty = false;
-        if (meta.active !== vid && opts?.reactivateKnown !== false) {
+        if (meta.active !== vid && opts?.reactivateKnown !== false && !meta.live) {
           meta.active = vid;
           changed = dirty = true;
         }
@@ -1150,7 +1197,8 @@ export class FileWorkspaceStore implements WorkspaceStore {
     const publisher = opts?.publisher ?? meta?.publisher;
     const owner = meta?.owner ?? opts?.owner ?? opts?.actor;
     await this.writeAppMetadata(name, {
-      active: vid,
+      // Held, the new version is a draft: the live release keeps `active`.
+      active: meta?.live ? meta.active : vid,
       versions: {
         ...(meta?.versions ?? {}),
         [vid]: {
@@ -1165,6 +1213,8 @@ export class FileWorkspaceStore implements WorkspaceStore {
       ...(publisher !== undefined ? { publisher } : {}),
       ...(owner ? { owner } : {}),
       ...(meta?.pinned ? { pinned: true } : {}),
+      ...(meta?.releases?.length ? { releases: meta.releases } : {}),
+      ...(meta?.live ? { live: meta.live } : {}),
     });
     return { version: vid, changed: true };
   }
@@ -1177,6 +1227,36 @@ export class FileWorkspaceStore implements WorkspaceStore {
       throw new Error(`Version "${version}" not found for app "${name}". Available: ${Object.keys(meta.versions).join(", ")}`);
     }
     meta.active = version;
+    delete meta.live;
+    await this.writeAppMetadata(name, meta);
+  }
+
+  async addAppRelease(name: string, release: { version: string; lock: AppLock; createdAt?: string; by?: string }): Promise<AppRelease> {
+    validateAppName(name);
+    const meta = await this.readAppMetadata(name);
+    if (!meta) throw new Error(`App "${name}" not found`);
+    if (!meta.versions[release.version]) throw new Error(`Version "${release.version}" not found for app "${name}"`);
+    const made = newRelease(meta.releases ?? [], release);
+    meta.releases = [...(meta.releases ?? []), made];
+    meta.live = made.id;
+    meta.active = made.version;
+    await this.writeAppMetadata(name, meta);
+    return made;
+  }
+
+  async setAppLive(name: string, live: string | null): Promise<void> {
+    validateAppName(name);
+    const meta = await this.readAppMetadata(name);
+    if (!meta) throw new Error(`App "${name}" not found`);
+    if (live === null) {
+      delete meta.live;
+      meta.active = newestVersion(Object.keys(meta.versions));
+    } else {
+      const r = meta.releases?.find((x) => x.id === live);
+      if (!r) throw new Error(`Release "${live}" not found for app "${name}"`);
+      meta.live = r.id;
+      meta.active = r.version;
+    }
     await this.writeAppMetadata(name, meta);
   }
 
@@ -1498,9 +1578,20 @@ async function safeReaddir(dir: string) {
   }
 }
 
+/** The next release (`rN`) after `releases` — shared by the file and graph stores. */
+export function newRelease(releases: readonly AppRelease[], r: { version: string; lock: AppLock; createdAt?: string; by?: string }): AppRelease {
+  const n = Math.max(0, ...releases.map((x) => parseInt(x.id.slice(1), 10) || 0)) + 1;
+  return { id: `r${n}`, version: r.version, lock: r.lock, createdAt: r.createdAt ?? new Date().toISOString(), ...(r.by ? { by: r.by } : {}) };
+}
+
+/** The newest of some version labels (`v10` after `v9`). */
+export function newestVersion(labels: readonly string[]): string {
+  return [...labels].sort(versionLabelOrder).at(-1) ?? "";
+}
+
 /** An `AppListEntry` from a record and its active version — shared by the
  *  file and graph stores. */
-export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "versions" | "publisher" | "owner" | "pinned">, active: AppVersionInfo): AppListEntry {
+export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "versions" | "publisher" | "owner" | "pinned" | "live">, active: AppVersionInfo): AppListEntry {
   const m = active.manifest;
   return {
     name,
@@ -1513,6 +1604,7 @@ export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "v
     ...(meta.publisher ? { publisher: meta.publisher } : {}),
     ...(meta.owner ? { owner: meta.owner } : {}),
     ...(meta.pinned ? { pinned: true } : {}),
+    ...(meta.live ? { live: meta.live } : {}),
   };
 }
 
@@ -1535,6 +1627,8 @@ export function appRecord(name: string, meta: AppMetadata, version: string, info
     ...(meta.publisher ? { publisher: meta.publisher } : {}),
     ...(meta.owner ? { owner: meta.owner } : {}),
     ...(meta.pinned ? { pinned: true } : {}),
+    ...(meta.releases?.length ? { releases: meta.releases } : {}),
+    ...(meta.live ? { live: meta.live } : {}),
   };
 }
 

@@ -100,6 +100,9 @@
 > - `federation.md`: apps stay local, but their workflows may reach peers.
 > - `builder-job.md` (stakwork/strut#239): the `builder` job, the
 >   orchestrator's door to authoring, here and on a peer.
+> - `app-releases.md` (2026-10-23): follow latest or hold a release — a
+>   page version plus a lock on every workflow and step it calls — so the
+>   builder keeps publishing drafts while people use the live one.
 >
 > Hosts appear below only as the contract they read. Their own repos are
 > adoption, not work items.
@@ -331,7 +334,9 @@ becomes a real app.
   publishes the next `vN`. The active pointer, rollback
   (`PUT /apps/:name/active`) and the `publisher` and `owner` stamps work as
   they do for workflows. Republishing on a newer kit is a REBUILD of the
-  same version, never a new one.
+  same version, never a new one. A person may HOLD the app instead, at a
+  release that also locks the workflows it calls; a publish is then a
+  draft (`app-releases.md`).
 - **A version keeps** its `hash` and its HISTORY: each source file once,
   by its sha256, in the app's `.objects/`, and its tree (path → sha256, the
   hashes its tree hash is made of) in `.trees/<vN>.json`
@@ -1425,6 +1430,8 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
 8. **The package kind** — in `marketplace.md`'s step order, once its steps
    1–2 exist: `apps/<name>/` in `buildPackage` and `installPackage`,
    `upstream` on app versions, the per-file merge.
+9. **Releases** — `app-releases.md` §5, its own two items: holds and
+   releases, then runs under a lock.
 
 ## 14. Validation
 

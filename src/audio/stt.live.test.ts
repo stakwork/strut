@@ -31,6 +31,7 @@ describe("stt live (STRUT_TEST_STT=1)", { skip: !enabled }, () => {
     wavPath = join(dir, "test_wavs", "0.wav");
   });
   after(async () => {
+    await stt?.close();
     await rm(dataDir, { recursive: true, force: true });
     if (tmpModelDir) await rm(tmpModelDir, { recursive: true, force: true });
   });
@@ -48,9 +49,9 @@ describe("stt live (STRUT_TEST_STT=1)", { skip: !enabled }, () => {
       const view = new DataView(pcm.buffer);
       chunk.forEach((v, j) => view.setInt16(j * 2, Math.max(-32768, Math.min(32767, Math.round(v * 32768))), true));
       assert.equal(pcm16ToFloat32(pcm).length, chunk.length);
-      events.push(...s.push(pcm));
+      events.push(...(await s.push(pcm)));
     }
-    events.push(...s.end());
+    events.push(...(await s.end()));
     await s.flush();
     return events;
   }

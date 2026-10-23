@@ -128,7 +128,11 @@ export async function importFileWorkspace(dataDir: string, target: GraphWorkspac
         }
         report.appVersions++;
       }
+      // Releases in order keep their ids; the active pointer as it was, then
+      // the live release (which names the same version).
+      for (const r of app.meta.releases ?? []) await target.addAppRelease(app.name, { version: r.version, lock: r.lock, createdAt: r.createdAt, ...(r.by ? { by: r.by } : {}) });
       await target.setActiveAppVersion(app.name, app.meta.active);
+      if (app.meta.live) await target.setAppLive(app.name, app.meta.live);
       if (app.meta.pinned) await target.setAppPinned(app.name, true);
       report.apps++;
     }
