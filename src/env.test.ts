@@ -50,7 +50,7 @@ describe("the env boundary (src/env.ts)", () => {
     // and stdout for the whole turn — bidirectional, which runProcess (run to
     // completion, output captured) cannot provide. It spawns with the env
     // its caller builds from minimalEnv(), never the server's.
-    const allowed = new Set(["shell.ts", "audio/stt.ts", "steps/lib/acp/_client.ts"]);
+    const allowed = new Set(["shell.ts", "audio/download.ts", "steps/lib/acp/_client.ts"]);
     const offenders = sources()
       .filter((p) => /\b(?:from|import|require)\s*\(?\s*["'](?:node:)?child_process["']/.test(readFileSync(p, "utf8")))
       .map((p) => relative(SRC, p))
