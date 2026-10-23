@@ -20,6 +20,8 @@ const EXAMPLE = `- id: mentions
 
 export default defineStep({
   type: "x/mentions",
+  secrets: ["X_TOKEN"],
+  effect: "read",
   description: `Fetch the posts that mention an X (Twitter) account — its mentions timeline, which reaches further back than x/search-posts' 7-day window (X keeps roughly the latest 800). Returns markdown for LLM consumption (newest first, author handles resolved) with the raw posts alongside. Auth: token, else the X_TOKEN secret (an app-only bearer token; the X app must sit in a Project with API v2 access). X meters post reads — keep limit modest. To poll incrementally, feed newestId back in as sinceId on the next run (it holds its value when nothing new arrived). hasMore means older mentions exist beyond limit — page older with untilId: oldestId.\n\n${EXAMPLE}`,
   input: z.object({
     username: z

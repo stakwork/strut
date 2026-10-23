@@ -23,6 +23,7 @@ export {
   type Step,
   type StepDef,
   type AnyStepDef,
+  type StepEffect,
   type StepContext,
   type StepOptions,
   type StepRegistry,

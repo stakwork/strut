@@ -67,6 +67,8 @@ function detectCrossSheetFormulaRefs(formulas: string[], sheetTitles: string[]):
 
 export default defineStep({
   type: "sheets/import-spreadsheet",
+  secrets: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "write",
   description:
     "Import every sheet of a source spreadsheet (uploaded .xlsx or existing Google Sheet) into a " +
     "destination spreadsheet as correctly-named tabs. Source may be any Drive file id; non-native " +

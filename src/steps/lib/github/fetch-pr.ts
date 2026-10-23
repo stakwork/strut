@@ -27,6 +27,8 @@ type Limits = z.infer<typeof limitsSchema>;
 
 export default defineStep({
   type: "github/fetch-pr",
+  secrets: ["GITHUB_TOKEN"],
+  effect: "read",
   description: `Fetch a GitHub pull request — description, changed files with patches, reviews, comments, commits — and format it as markdown for LLM consumption, with a structured pr summary alongside. Auth: token, else the GITHUB_TOKEN secret.\n\n${EXAMPLE}`,
   input: z.object({
     owner: z.string().min(1).describe("repository owner (user or org)"),

@@ -3014,11 +3014,19 @@ export async function createStrut<TServices = unknown>(
 
   // ── Steps ────────────────────────────────────────────────────────────────
 
+  // A step's own `secrets` / `effect`, served only when well formed: a
+  // custom step's mistyped `effect: "Write"` must read as undeclared, never
+  // as something a host could take for `read`.
+  const declaredStepMeta = (def: AnyStepDef | undefined) => ({
+    ...(Array.isArray(def?.secrets) && def.secrets.every((n) => typeof n === "string") ? { secrets: def.secrets } : {}),
+    ...(def?.effect === "read" || def?.effect === "write" ? { effect: def.effect } : {}),
+  });
   app.get("/steps", async (c) => {
     const allSteps = Object.keys(registry).map((type) => ({
       type,
       source: stepSources[type] ?? "core",
       description: registry[type]?.description,
+      ...declaredStepMeta(registry[type]),
     }));
     const workspaceSteps = await workspace.listSteps();
     return c.json({ core: allSteps, workspace: workspaceSteps });

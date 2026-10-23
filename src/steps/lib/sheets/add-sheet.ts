@@ -5,6 +5,8 @@ import { SHEETS_API, errorResult, serviceAccountField, sheetsCtx } from "./_shar
 
 export default defineStep({
   type: "sheets/add-sheet",
+  secrets: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "write",
   description:
     "Add a new tab to an existing spreadsheet (e.g. a 'Scenarios' tab next to 'Model'). " +
     "Reference its cells from other tabs as 'TabName!A1'.",

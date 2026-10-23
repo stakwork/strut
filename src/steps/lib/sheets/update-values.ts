@@ -5,6 +5,8 @@ import { SHEETS_API, errorResult, serviceAccountField, sheetsCtx, valuesSchema }
 
 export default defineStep({
   type: "sheets/update-values",
+  secrets: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "write",
   description:
     "Write a 2D array of values into a spreadsheet range (A1 notation, e.g. 'Sheet1!A1:C10'). " +
     "Strings starting with '=' are entered as LIVE FORMULAS — prefer building calculations with " +

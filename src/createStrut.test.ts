@@ -124,6 +124,56 @@ describe("createStrut", () => {
     assert.ok("http" in reg);
   });
 
+  it("GET /steps lists each step's secrets and effect; a step without them still loads", async () => {
+    const plain = defineStep({
+      type: "plain",
+      input: z.object({}),
+      output: z.any(),
+      async run() {
+        return 1;
+      },
+    });
+    const mistyped = defineStep({
+      type: "mistyped",
+      effect: "Write" as "write",
+      secrets: "X_TOKEN" as unknown as string[],
+      input: z.object({}),
+      output: z.any(),
+      async run() {
+        return 1;
+      },
+    });
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(tempDir),
+      store: new MemoryRunStore(),
+      registry: await createRegistry([plain, mistyped]),
+      serveUi: false,
+      enableChat: false,
+    });
+    const { core } = (await (await strut.app.request("/steps")).json()) as {
+      core: { type: string; secrets?: string[]; effect?: string }[];
+    };
+    const byType = new Map(core.map((s) => [s.type, s]));
+    assert.deepEqual(byType.get("slack/post-message")?.secrets, ["SLACK_BOT_TOKEN"]);
+    assert.equal(byType.get("slack/post-message")?.effect, "write");
+    assert.equal(byType.get("slack/read-channel")?.effect, "read");
+    assert.equal(byType.get("github/create-pr")?.effect, "write");
+    assert.equal(byType.get("x/search-posts")?.effect, "read");
+    const p = byType.get("plain");
+    assert.ok(p, "a step that declares neither is listed");
+    assert.equal(p.secrets, undefined);
+    assert.equal(p.effect, undefined);
+    // A malformed declaration reads as none, never as `read`.
+    assert.equal(byType.get("mistyped")?.effect, undefined);
+    assert.equal(byType.get("mistyped")?.secrets, undefined);
+    assert.deepEqual(byType.get("sheets/update-values")?.secrets, ["GOOGLE_SERVICE_ACCOUNT_JSON"]);
+    // Every step of a connector family declares both.
+    for (const s of core.filter((s) => /^(slack|github|gdrive|sheets|x)\//.test(s.type))) {
+      assert.ok(s.secrets?.length, `${s.type} declares its secrets`);
+      assert.ok(s.effect === "read" || s.effect === "write", `${s.type} declares its effect`);
+    }
+  });
+
   it("serves run artifacts with media content-types (video plays inline, unknown types download)", async () => {
     const strut = await createStrut({
       workspace: new WorkspaceManager(tempDir),

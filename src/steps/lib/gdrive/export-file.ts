@@ -24,6 +24,8 @@ const DEFAULT_NATIVE_EXPORT = "text/plain";
 
 export default defineStep({
   type: "gdrive/export-file",
+  secrets: ["GOOGLE_ACCESS_TOKEN", "GOOGLE_SERVICE_ACCOUNT_JSON"],
+  effect: "read",
   description: `Fetch a Google Drive file as text for LLM consumption: Google-native files are exported (Docs → markdown, Sheets → CSV, Slides → text), anything else is downloaded as-is. Auth: an OAuth accessToken, else the GOOGLE_ACCESS_TOKEN or GOOGLE_SERVICE_ACCOUNT_JSON secret, else Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS). Pair with gdrive/list-files + foreach to process a folder.\n\n${EXAMPLE}`,
   input: z.object({
     fileId: z.string().min(1).describe("Drive file ID (from the file's URL or gdrive/list-files)"),

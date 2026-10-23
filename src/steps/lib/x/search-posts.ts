@@ -19,6 +19,8 @@ const EXAMPLE = `- id: posts
 
 export default defineStep({
   type: "x/search-posts",
+  secrets: ["X_TOKEN"],
+  effect: "read",
   description: `Search X (Twitter) posts from the last 7 days by topic, hashtag, author or mention using X's search query syntax; returns markdown for LLM consumption (newest first, author handles resolved) with the raw posts alongside. Auth: token, else the X_TOKEN secret (an app-only bearer token; the X app must sit in a Project with API v2 access). X meters post reads — keep limit modest. To poll incrementally, feed newestId back in as sinceId on the next run (it holds its value when nothing new arrived). hasMore means more matches exist beyond limit — page older with untilId: oldestId. For an account's mentions further back than 7 days use x/mentions.\n\n${EXAMPLE}`,
   input: z.object({
     query: z
