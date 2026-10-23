@@ -1,0 +1,9 @@
+{
+  "name": "@strut/fixer",
+  "private": true,
+  "type": "module",
+  "description": "node-llama-cpp for dictation's fixer (src/audio/fixer.ts), kept out of strut's own dependencies so a server install never carries it: only the desktop package does (scripts/package-desktop.mjs). index.js re-exports it for the fixer's worker. Install: yarn --cwd fixer install --frozen-lockfile --ignore-scripts.",
+  "dependencies": {
+    "node-llama-cpp": "^3.22.2"
+  }
+}

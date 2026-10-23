@@ -1148,7 +1148,10 @@ Speech models: `zipformer-en-kroko` (streaming, the default) and
 `parakeet-tdt-en-0.6b-v2` (offline). Fixer models (GGUF Q4_K_M on
 node-llama-cpp, Metal on a Mac): `qwen3-1.7b-q4` (1.1 GB, the one to offer
 first) and `qwen3-0.6b-q4` (0.4 GB, faster, worse at telling a mishearing
-from a changed word). The picks live in `<dataDir>/audio/dictation.json`;
+from a changed word). Only a strut that has node-llama-cpp offers them — the desktop
+package; a server install does not carry it — and elsewhere
+`dictation/models` lists none and `dictation/use { fixer }` is an error.
+The picks live in `<dataDir>/audio/dictation.json`;
 with none, Kroko and no fixer — a fixer is never downloaded unless picked.
 The fixer loads on first use and unloads after five minutes idle.
 

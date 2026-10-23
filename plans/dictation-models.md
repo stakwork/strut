@@ -98,6 +98,14 @@ every edit; the model only answers how likely something is.
   ones until that rewrite is done (30 s at most), so a slow model never piles
   up calls. transformers.js
   (privacy's runtime) was measured in the spike and lost on speed.
+- **Where node-llama-cpp is.** Not among strut's dependencies: in #301 it
+  was one, and every Linux x64 install (CI, the published image, the mcp
+  host on the swarms) got all four of its Linux builds, ~740 MB with CUDA
+  and Vulkan. It is fixer/'s own (fixer/package.json + fixer/yarn.lock),
+  staged at fixer/ by the desktop package alone; fixer-engine.ts types the
+  part it calls and fixer/check.ts checks that against the real package in
+  the desktop job. A strut without it lists no fixer, refuses to pick one
+  and takes the no-fixer path.
 - **Catalog** (src/audio/models.ts): like `STT_MODELS`, each entry has id,
   url, sha256, bytes, kind (`speech` | `fixer`), description, and what a
   picker shows (name, summary, recommended); a fixer also

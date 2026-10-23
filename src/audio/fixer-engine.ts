@@ -2,6 +2,11 @@
  * What runs in the dictation fixer's worker thread (fixer.ts): the prompts
  * and the model on node-llama-cpp (Metal, GGUF). Only types are imported
  * from strut, so the worker loads this file alone, under tsx or built.
+ *
+ * node-llama-cpp is not one of strut's dependencies (fixer/ installs it, and
+ * only the desktop package carries it), so it is not imported by name: the
+ * worker is handed fixer/index.js, and the part of it this file calls is
+ * typed here (`LlamaLib`), held to the real package by fixer/check.ts.
  */
 import type { JudgeQuestion, Retraction, ScoreSentence } from "./lingo.js";
 
@@ -82,10 +87,50 @@ export interface FixerEngine {
   dispose(): Promise<void>;
 }
 
-/** The factory the fixer's worker builds: loads the GGUF at `path`. */
-export async function loadLlamaFixer(o: { path: string }): Promise<FixerEngine> {
+// node-llama-cpp as this file calls it. `T` is a token and `S` a context
+// sequence: fixer/check.ts reads this under node-llama-cpp's own `Token` (a
+// branded number) and `LlamaContextSequence`, and checks each options type
+// below against the real one, key by key.
+
+export interface GetLlamaOptions { build: "never" }
+export interface LoadModelOptions { modelPath: string }
+export interface ContextOptions { contextSize: number; sequences: number }
+export interface CompletionOptions<S> { contextSequence: S }
+export interface GenerateOptions { maxTokens: number; temperature: number; customStopTriggers: string[] }
+/** What one evaluated position asks for its next token. */
+export interface GenerateNext<T = number> {
+  token: true;
+  options: { temperature: number };
+  logits: { filter: { tokens: readonly T[]; includeSelected: boolean } };
+  totalLogitWeight: true;
+}
+export type EvaluateItem<T = number> = T | [token: T, options: { generateNext: GenerateNext<T> }];
+export interface EvaluateOutput<T = number> {
+  next: { token?: T | null; logits?: ReadonlyMap<T, number>; totalLogitWeight?: number };
+}
+export interface LlamaSequence<T = number> {
+  readonly contextTokens: readonly T[];
+  readonly nextTokenIndex: number;
+  eraseContextTokenRanges(ranges: { start: number; end: number }[]): Promise<void>;
+  controlledEvaluate(input: EvaluateItem<T>[]): Promise<(EvaluateOutput<T> | undefined)[]>;
+}
+export interface LlamaModel<T = number, S extends LlamaSequence<T> = LlamaSequence<T>> {
+  tokenize(text: string, specialTokens: boolean): T[];
+  createContext(options: ContextOptions): Promise<{ getSequence(): S; dispose(): Promise<void> }>;
+  dispose(): Promise<void>;
+}
+export interface LlamaLib<T = number, S extends LlamaSequence<T> = LlamaSequence<T>> {
+  getLlama(options: GetLlamaOptions): Promise<{ loadModel(options: LoadModelOptions): Promise<LlamaModel<T, S>> }>;
+  LlamaCompletion: new (options: CompletionOptions<S>) => {
+    generateCompletion(input: T[], options: GenerateOptions): Promise<string>;
+  };
+}
+
+/** The factory the fixer's worker builds: loads the GGUF at `path` on the
+ *  node-llama-cpp `llama` names (fixer/index.js, by URL: fixer.ts). */
+export async function loadLlamaFixer(o: { path: string; llama: string }): Promise<FixerEngine> {
   // Lazy: node-llama-cpp loads a native addon and Metal; only this worker needs it.
-  const lib = await import("node-llama-cpp");
+  const lib = (await import(o.llama)) as LlamaLib;
   // The prebuilt binary only: never a build from source or a download (a
   // packaged strut ships its binaries in native/llama; package-desktop.mjs).
   const llama = await lib.getLlama({ build: "never" });
@@ -100,22 +145,21 @@ export async function loadLlamaFixer(o: { path: string }): Promise<FixerEngine> 
   const prompt = (p: { head: string; tail: string }, user: string) =>
     [...model.tokenize(p.head, true), ...model.tokenize(user, false), ...model.tokenize(p.tail, true)];
 
-  type Sequence = typeof scoring;
   /** Evaluates `toks` on `seq`, keeping the tokens it already holds of them
    *  before `from`, the first position whose next-token logits are read;
    *  `want(i)` says which tokens' logits to read at position `i`. */
-  async function evaluate(seq: Sequence, toks: number[], from: number, want: (i: number) => readonly number[] | null) {
-    const have = seq.contextTokens as number[];
+  async function evaluate(seq: LlamaSequence, toks: number[], from: number, want: (i: number) => readonly number[] | null) {
+    const have = seq.contextTokens;
     let k = 0;
     while (k < have.length && k < from && have[k] === toks[k]) k++;
     if (k < seq.nextTokenIndex) await seq.eraseContextTokenRanges([{ start: k, end: seq.nextTokenIndex }]);
-    const input = toks.slice(k).map((t, j) => {
+    const input = toks.slice(k).map((t, j): EvaluateItem => {
       const filter = want(k + j);
       return filter
         ? [t, { generateNext: { token: true, options: { temperature: 0 }, logits: { filter: { tokens: filter, includeSelected: true } }, totalLogitWeight: true } }]
         : t;
     });
-    const out = (await seq.controlledEvaluate(input as never)) as any[];
+    const out = (await seq.controlledEvaluate(input)) as any[];
     return { k, out };
   }
   // log-softmax of one token: at temperature 0 the selected token is the argmax, so its logit is the max.

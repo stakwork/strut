@@ -7,7 +7,8 @@ export default defineStep({
   description:
     "Lists the models dictation can use: speech models (what turns audio into text in /audio/transcribe) and fixer " +
     "models (a small local model that puts the vocabulary into a transcript), each with its download size, whether it is " +
-    "available, downloading (with progress) or installed, and whether it is the user's pick. Pick with dictation/use.",
+    "available, downloading (with progress) or installed, and whether it is the user's pick. Pick with dictation/use. " +
+    "Fixers are listed only where one can run: the desktop package carries node-llama-cpp, a server install does not.",
   effect: "read",
   input: z.object({}),
   output: ModelList,

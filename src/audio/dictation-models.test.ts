@@ -175,6 +175,19 @@ describe("dictation model picks", () => {
     assert.deepEqual(installs, ["qwen3-0.6b-q4"]);
   });
 
+  it("without node-llama-cpp (a server install) no fixer is listed, picked or used", async () => {
+    finishAll();
+    const before = picker();
+    await before.use({ fixer: "qwen3-0.6b-q4" }); // picked and installed where a fixer runs
+    await before.idle();
+    const p = picker({ fixerAvailable: () => false });
+    assert.deepEqual((await p.list()).map((m) => m.id), ["zipformer-en-kroko", "parakeet-tdt-en-0.6b-v2"]);
+    await assert.rejects(() => p.use({ fixer: "qwen3-1.7b-q4" }), /needs node-llama-cpp/);
+    assert.equal(await p.fixerModel(), null);
+    await p.use({ fixer: null }); // none is always a pick
+    assert.deepEqual(installs, ["qwen3-0.6b-q4"]);
+  });
+
   it("a failed download goes back to available, saying why", async () => {
     const p = picker();
     await p.use({ fixer: "qwen3-0.6b-q4" });
