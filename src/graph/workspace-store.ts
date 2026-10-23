@@ -49,8 +49,12 @@ import {
   provenance,
   appListEntry,
   appRecord,
+  newestVersion,
+  newRelease,
   type AppListEntry,
+  type AppLock,
   type AppMetadata,
+  type AppRelease,
   type AppRecord,
   type AppUpstream,
   type AppVersionInfo,
@@ -150,6 +154,10 @@ interface AppRow {
   owner?: string;
   pinned?: boolean;
   active_version?: string;
+  /** The live release's id (`AppMetadata.live`). */
+  live?: string;
+  /** JSON `AppRelease[]`. */
+  releases?: string;
 }
 
 interface AppVersionRow {
@@ -168,7 +176,7 @@ interface AppVersionRow {
   upstream?: string;
 }
 
-const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "pinned", "active_version"] as const;
+const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "pinned", "active_version", "live", "releases"] as const;
 const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "created_at", "manifest", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
 
 /** A JSON attribute, or undefined when absent or unreadable. */
@@ -916,6 +924,9 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     if (app.publisher) out.publisher = app.publisher;
     if (app.owner) out.owner = app.owner;
     if (app.pinned) out.pinned = true;
+    const releases = parseJson<AppRelease[]>(app.releases);
+    if (releases?.length) out.releases = releases;
+    if (app.live) out.live = app.live;
     return Object.keys(out.versions).length ? out : null;
   }
 
@@ -958,7 +969,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       if (match) {
         let changed = false;
         const desired: Record<string, unknown> = {};
-        if (existing.active_version !== hash && opts?.reactivateKnown !== false) {
+        if (existing.active_version !== hash && opts?.reactivateKnown !== false && !existing.live) {
           const m = parseJson<AppManifest>(match.manifest);
           Object.assign(desired, { active_version: hash, title: m?.title, description: m?.description });
           changed = true;
@@ -1000,14 +1011,15 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       appRef = a.ref_id;
     } else {
       appRef = existing.ref_id;
-      const desired: Record<string, unknown> = { active_version: hash, title: manifest.title, description: manifest.description };
+      // Held, the new version is a draft: the live release keeps `active`.
+      const desired: Record<string, unknown> = existing.live ? {} : { active_version: hash, title: manifest.title, description: manifest.description };
       if (publisher !== undefined) desired["publisher"] = publisher;
       if (!existing.owner && owner) desired["owner"] = owner;
       const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
       if (patch) await nodes.update(appRef, patch);
     }
     await this.backend.edges.write({ edge: "VERSION_OF", source_ref_id: v.ref_id, target_ref_id: appRef });
-    await this.swapActiveAppEdge(appRef, v.ref_id);
+    if (!existing?.live) await this.swapActiveAppEdge(appRef, v.ref_id);
     // USES_WORKFLOW → every workflow the grants name that the graph holds.
     const names = [...new Set(manifest.grants.workflows)];
     if (names.length) {
@@ -1037,10 +1049,52 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const versions = await this.appVersionRows(name);
     const v = versions.find((x) => x.version_label === version);
     if (!v) throw new Error(`Version "${version}" not found for app "${name}". Available: ${versions.map((x) => x.version_label).join(", ")}`);
+    await this.pointAppAt(a, v, null);
+  }
+
+  /** Move `active` (and `ACTIVE_VERSION`) to a version and set `live` —
+   *  null clears it — writing `releases` when given. */
+  private async pointAppAt(a: AppRow, v: AppVersionRow, live: string | null, releases?: AppRelease[]): Promise<void> {
     const m = parseJson<AppManifest>(v.manifest);
-    const patch = patchFor(a as unknown as Record<string, unknown>, { active_version: v.content_hash, title: m?.title, description: m?.description });
+    const patch = patchFor(a as unknown as Record<string, unknown>, {
+      active_version: v.content_hash,
+      title: m?.title,
+      description: m?.description,
+      live,
+      ...(releases ? { releases: JSON.stringify(releases) } : {}),
+    });
     if (patch) await this.backend.nodes.update(a.ref_id, patch);
     await this.swapActiveAppEdge(a.ref_id, v.ref_id);
+  }
+
+  async addAppRelease(name: string, release: { version: string; lock: AppLock; createdAt?: string; by?: string }): Promise<AppRelease> {
+    validateAppName(name);
+    const a = await this.appRow(name);
+    if (!a) throw new Error(`App "${name}" not found`);
+    const v = (await this.appVersionRows(name)).find((x) => x.version_label === release.version);
+    if (!v) throw new Error(`Version "${release.version}" not found for app "${name}"`);
+    const releases = parseJson<AppRelease[]>(a.releases) ?? [];
+    const made = newRelease(releases, release);
+    await this.pointAppAt(a, v, made.id, [...releases, made]);
+    return made;
+  }
+
+  async setAppLive(name: string, live: string | null): Promise<void> {
+    validateAppName(name);
+    const a = await this.appRow(name);
+    if (!a) throw new Error(`App "${name}" not found`);
+    const versions = await this.appVersionRows(name);
+    let label: string;
+    if (live === null) {
+      label = newestVersion(versions.map((x) => x.version_label));
+    } else {
+      const r = (parseJson<AppRelease[]>(a.releases) ?? []).find((x) => x.id === live);
+      if (!r) throw new Error(`Release "${live}" not found for app "${name}"`);
+      label = r.version;
+    }
+    const v = versions.find((x) => x.version_label === label);
+    if (!v) throw new Error(`Version "${label}" not found for app "${name}"`);
+    await this.pointAppAt(a, v, live);
   }
 
   async setAppPinned(name: string, pinned: boolean): Promise<void> {
@@ -1057,7 +1111,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     validateAppName(name);
     const a = await this.appRow(name);
     if (!a) return false;
-    const remove = (["owner", "publisher", "pinned", "title", "description", "active_version"] as const).filter((k) => a[k] != null);
+    const remove = (["owner", "publisher", "pinned", "title", "description", "active_version", "live", "releases"] as const).filter((k) => a[k] != null);
     if (remove.length) await this.backend.nodes.update(a.ref_id, { remove: [...remove] });
     for (const v of await this.appVersionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
     await this.backend.nodes.softDelete(a.ref_id);

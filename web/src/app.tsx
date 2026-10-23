@@ -334,6 +334,20 @@ export function App() {
   }, [apps, appQuery]);
   const appEntry = selectedApp ? apps.find((a) => a.name === selectedApp) ?? null : null;
   const appTitle = (name: string) => apps.find((a) => a.name === name)?.title ?? name;
+  // The open app's releases (plans/app-releases.md), for the topbar's
+  // select: read again whenever what people open changes.
+  const [appReleases, setAppReleases] = useState<{ live: string; releases: api.AppRelease[]; behind: api.AppLockDrift[] } | null>(null);
+  useEffect(() => {
+    if (!appEntry) {
+      setAppReleases(null);
+      return;
+    }
+    let on = true;
+    api.getAppVersions(appEntry.name).then((r) => on && setAppReleases(r)).catch(() => on && setAppReleases(null));
+    return () => {
+      on = false;
+    };
+  }, [appEntry?.name, appEntry?.activeVersion, appEntry?.live]);
   const wfGroups = useMemo(() => {
     const byCat = new Map<string, api.WorkflowEntry[]>();
     for (const wf of matchedWorkflows) {
@@ -1435,28 +1449,48 @@ export function App() {
         <span class="topbar-title">
           {wf ?? (selectedJob ? (job?.title ?? selectedJob) : appOpen ? (appEntry?.title ?? selectedApp) : "Select a workflow")}
           {appOpen && appEntry && (
-            // The version in front of you IS the active one: picking another
-            // here is the rollback (PUT /apps/:name/active), and the frame
-            // reloads on it.
+            // What people open (plans/app-releases.md, PUT /apps/:name/active):
+            // the latest publish, or a release the app is held at. A release
+            // picked here rolls back (or forward); a version picked makes a
+            // release of it and holds the app there. The frame shows what is
+            // live and reloads on a change.
             <select
               class="app-version-select"
-              title="The active version — pick another to roll back (or forward)"
-              value={appEntry.activeVersion}
+              title={appEntry.live
+                ? [
+                    `Held at ${appEntry.live} (${appEntry.activeVersion}): a publish is a draft until it is made live here.`,
+                    ...(appReleases?.behind.length ? ["Moved on since:", ...appReleases.behind.map((d) => `${d.name} ${d.locked} → ${d.current ?? "gone"}`)] : []),
+                  ].join("\n")
+                : "Following latest: every publish is live. Pick a version to hold the app there."}
+              value={appEntry.live ? `release:${appEntry.live}` : "latest"}
               onChange={async (e) => {
                 const v = (e.target as HTMLSelectElement).value;
-                if (!v || v === appEntry.activeVersion) return;
+                const target = v === "latest" ? { version: "latest" } : v.startsWith("release:") ? { release: v.slice(8) } : { version: v.slice(8) };
                 try {
-                  await api.setActiveAppVersion(appEntry.name, v);
+                  await api.setAppLive(appEntry.name, target);
                   await refreshApps();
                   setAppReload((n) => n + 1);
                 } catch (err) {
                   alert(errorMessage(err));
+                  (e.target as HTMLSelectElement).value = appEntry.live ? `release:${appEntry.live}` : "latest";
                 }
               }}
             >
-              {[...appEntry.versions].sort((a, b) => Number(b.slice(1)) - Number(a.slice(1))).map((v) => (
-                <option key={v} value={v}>{v}{v === appEntry.activeVersion ? " · active" : ""}</option>
-              ))}
+              <option value="latest">{appEntry.live ? "Follow latest" : `Following latest · ${appEntry.activeVersion}`}</option>
+              {!!appReleases?.releases.length && (
+                <optgroup label="Releases">
+                  {[...appReleases.releases].reverse().map((r) => (
+                    <option key={r.id} value={`release:${r.id}`}>{r.id} · {r.version}{r.id === appEntry.live ? " · live" : ""}</option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label="Make live and hold">
+                {[...appEntry.versions].sort((a, b) => Number(b.slice(1)) - Number(a.slice(1))).map((v) => (
+                  <option key={v} value={`version:${v}`}>
+                    {v}{appEntry.live && Number(v.slice(1)) > Number(appEntry.activeVersion.slice(1)) ? " · draft" : v === appEntry.activeVersion ? " · live" : ""}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           )}
           {appOpen && appEntry && (

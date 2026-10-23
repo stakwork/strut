@@ -4088,8 +4088,8 @@ body.is-resizing-flyout * {
 }
 .flyout-apps .app-chip { margin-left: 0; }
 
-/* The topbar's version select for an app: the active version; another
-   picked here is the rollback. */
+/* The topbar's select for an app: following latest, or the release it is
+   held at — a release picked rolls back, a version picked is made live. */
 .app-version-select {
   margin-left: 8px;
   font: inherit;

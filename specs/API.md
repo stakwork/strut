@@ -899,7 +899,8 @@ versioned by the TREE HASH of its directory (`treeHash`, `src/version.ts`;
 `dist/` and `data.db` left out, the kit never in it): identical content
 re-activates the version it already is, anything else is the next `vN`. The
 workspace store holds the pointers (`listApps`, `getApp`, `publishApp`,
-`setActiveAppVersion`, `deleteApp`, `materializeAppVersion`); the files live
+`setActiveAppVersion`, `addAppRelease`, `setAppLive`, `deleteApp`,
+`materializeAppVersion`); the files live
 under `<dataDir>/apps/<name>/<vN>/` on every backend, `dist/` included. A
 name may carry a package prefix (`acme/hvac/invoices`, `strut/views`) —
 encoded in a URL (`/apps/acme%2Fhvac%2Finvoices`). Every strut with a built
@@ -910,13 +911,13 @@ components as an app other apps import (`import { RunTimeline } from
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned? }] }` — `pinned: true` only on an app pinned as a tab |
-| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist); 404 |
-| GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned? }` |
+| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release |
+| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
+| GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
-| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings }`. Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
-| PUT    | `/apps/:name/active` | `{ version }` — rollback; publishes nothing. A version restored from its history that no longer builds on this strut's kit is a `404` with the build's errors |
+| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
+| PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. `400` without a boolean, `404` for an unknown app |
 | DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
 
@@ -1025,8 +1026,9 @@ the frame in.
 ### 14.4 A published app as a deliverable
 
 The `builder` workflow publishes an app in the workspace and hands it over
-by NAME in its reply's `artifacts`: `{ id, kind: "app", title, app:
-"<name>", version? }`, resolved to the version's document with `app: {
+by NAME in its reply's `artifacts`, with the version it published: `{ id,
+kind: "app", title, app: "<name>", version? }` (a DRAFT while a person
+holds the app, §14.5; without `version`, the version people open), resolved to the version's document with `app: {
 name, version, hash, builtAt }` beside the `url` (`CALLBACKS.md` §4) — on
 `run.end`, `…/runs/:runId/artifacts` and `GET /jobs/:id`; a job that ran
 the builder passes the entry on. Host it as §14.3: the version's listing
@@ -1034,3 +1036,23 @@ mints its token. A directory is no app: a JOB's app (a live directory in a
 job's, with an identity of its own) is retired, runtime and all
 (`plans/chained-orchestrators.md` §6). A page over a job's own results is
 an HTML file in its directory, served as any job file is.
+
+### 14.5 Releases — following latest, or held (plans/app-releases.md)
+
+An app FOLLOWS LATEST by default: every publish is what people open. A
+person may HOLD it instead with `PUT /apps/:name/active { version }`: that
+makes a RELEASE — `{ id: "rN", version, lock, createdAt, by? }` — and makes
+it live. While held, `active` is the live release's version, a publish
+records a DRAFT (`live: false` on its result) and changes nothing people
+see, and `{ release }` rolls back (or forward) to another release. An app
+keeps every release; one is live. A version a release names keeps its
+directory, so a rollback serves the bytes that were live.
+
+The `lock` is taken when the version is made live, never at publish: every
+workflow the version grants and every subflow they reach as `{ version,
+hash? }`, every workspace (custom) step the closure reaches as `{ version,
+hash }` — every one when the closure cannot be read — and `floating`, one
+sentence for each thing the lock cannot hold (a subflow chosen by a
+template, an agent grant read at run time, a step that starts other runs).
+Runs the live release's page launches will run the locked versions; until
+that lands, a release holds the page and records the lock.
