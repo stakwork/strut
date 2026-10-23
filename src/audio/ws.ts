@@ -25,7 +25,7 @@ import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { apiKeyMatches } from "../auth.js";
-import type { SttService, SttStream, SttStreamOptions } from "./stt.js";
+import type { SttEvent, SttService, SttStream, SttStreamOptions } from "./stt.js";
 
 export const AUDIO_STREAM_PATH = "/audio/stream";
 
@@ -94,37 +94,38 @@ export function attachAudioWebSocket(server: Server, stt: SttService, opts: Atta
 /** Drive one socket. Exported for tests (any `ws`-shaped socket works). */
 export function handleSocket(ws: WebSocket, stt: SttService): void {
   let stream: SttStream | null = null;
-  let opening: Promise<void> | null = null;
+  let started = false;
   let finished = false;
+  let failed = false;
+  // Every stream call waits for the one before it: a push is a round trip to
+  // the recognizer's thread, and the audio must reach it in order — audio
+  // sent before the stream is ready waits for it.
+  let queue: Promise<void> = Promise.resolve();
+  const inOrder = (fn: () => Promise<void>) => {
+    queue = queue.then(() => (failed ? undefined : fn())).catch(fail);
+  };
 
   const send = (msg: Record<string, unknown>) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
   };
   const fail = (err: unknown) => {
+    if (failed) return;
+    failed = true;
     send({ type: "error", error: err instanceof Error ? err.message : String(err) });
     ws.close(1011, "error");
   };
-  const emit = (events: ReturnType<SttStream["push"]>) => {
+  const emit = (events: SttEvent[]) => {
     for (const ev of events) send(ev);
   };
 
   ws.on("message", (data, isBinary) => {
-    if (finished) return;
+    if (finished || failed) return;
     if (isBinary) {
-      if (!stream) {
-        if (opening) {
-          // Audio arriving before the recognizer is ready: wait, then feed.
-          const chunk = toBytes(data);
-          opening.then(() => stream && emit(stream.push(chunk))).catch(fail);
-          return;
-        }
-        return fail(new Error('send {"type":"start"} before audio'));
-      }
-      try {
-        emit(stream.push(toBytes(data)));
-      } catch (e) {
-        fail(e);
-      }
+      if (!started) return fail(new Error('send {"type":"start"} before audio'));
+      const chunk = toBytes(data);
+      inOrder(async () => {
+        if (stream) emit(await stream.push(chunk));
+      });
       return;
     }
 
@@ -135,36 +136,27 @@ export function handleSocket(ws: WebSocket, stt: SttService): void {
       return fail(new Error("expected JSON control message or binary PCM"));
     }
     if (msg.type === "start") {
-      if (stream || opening) return fail(new Error("stream already started"));
+      if (started) return fail(new Error("stream already started"));
+      started = true;
       const { type: _t, ...o } = msg;
-      opening = stt
-        .openStream(o)
-        .then((s) => {
-          stream = s;
-          send({ type: "ready", model: s.model, partialModel: s.partialModel, hotwords: s.hotwords });
-        })
-        .catch((e) => {
-          opening = null;
-          fail(e);
-        });
+      inOrder(async () => {
+        const s = await stt.openStream(o);
+        if (ws.readyState !== ws.OPEN) return s.close();
+        stream = s;
+        send({ type: "ready", model: s.model, partialModel: s.partialModel, hotwords: s.hotwords });
+      });
       return;
     }
     if (msg.type === "end") {
       finished = true;
-      const finish = async () => {
+      inOrder(async () => {
         if (stream) {
-          try {
-            emit(stream.end());
-          } catch (e) {
-            return fail(e);
-          }
+          emit(await stream.end());
           // Session finals are on disk before the client can correct them.
           await stream.flush();
         }
         ws.close(1000, "done");
-      };
-      if (opening) opening.then(finish).catch(fail);
-      else finish().catch(fail);
+      });
       return;
     }
     fail(new Error(`unknown message type ${JSON.stringify(msg.type)}`));

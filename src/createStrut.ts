@@ -778,6 +778,8 @@ export async function createStrut<TServices = unknown>(
   // Speech-to-text: sessions + hotword lists live under dataDir; models under
   // STRUT_MODEL_DIR. Nothing loads until a stream or transcribe call.
   const stt: SttService | null = opts.stt === false ? null : (opts.stt ?? createStt({ dataDir }));
+  // The recognizer thread strut started, stopped by `close()`; a host's own service is the host's.
+  const ownStt = opts.stt === undefined ? stt : null;
   // What the job index may not read past a run's status (plans/job-index.md
   // §2): a sealed workflow's runs — `job/get` is the meta surface from
   // inside a run (src/sealed.ts).
@@ -5383,6 +5385,7 @@ export async function createStrut<TServices = unknown>(
     automations.stop();
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();
+    await ownStt?.close();
     // What the sink still holds goes out before the process does.
     await ownSink?.close();
     // A room's sockets close with the server; their rooms queue what follows.
