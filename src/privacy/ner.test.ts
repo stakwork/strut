@@ -1,7 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { groupAndAlign, nerPostprocess, nerStage } from "./ner.js";
-import { llmPostprocess, llmStage, parseLlmReply } from "./llm.js";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { groupAndAlign, nerPostprocess, nerStage, workerNer } from "./ner.js";
+import { llmPostprocess, llmStage, parseLlmReply, workerLlm } from "./llm.js";
+import { privacyModelOptions } from "./models.js";
+import { anonymizeTexts } from "./index.js";
 import { chunk } from "./chunk.js";
 import { detectAll, ruleStage } from "./detect.js";
 import type { LlmEngine, NerEngine, RawNerSpan, Warning } from "./types.js";
@@ -119,5 +124,37 @@ describe("llm detector with a fake engine", () => {
   it("an org that only starts a sentence is not trusted", () => {
     const { spans } = llmPostprocess("Apple pie. Fine.", [{ text: "Apple", type: "ORG" }]);
     assert.deepEqual(spans, []);
+  });
+});
+
+describe("where the models run", () => {
+  it("their settings are read from the environment by privacyModelOptions", () => {
+    assert.deepEqual(privacyModelOptions({ STRUT_MODEL_DIR: "/m", STRUT_PRIVACY_OFFLINE: "1" }), { cacheDir: join("/m", "privacy"), offline: true });
+    assert.equal(privacyModelOptions({ STRUT_MODEL_DIR: "/m" }).offline, false);
+  });
+
+  it("the default NER and LLM run in worker threads, configured from the main thread, and still fail closed", async () => {
+    const models = await mkdtemp(join(tmpdir(), "strut-privacy-models-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-privacy-data-"));
+    const env = process.env as Record<string, string | undefined>;
+    try {
+      env["STRUT_MODEL_DIR"] = models;
+      env["STRUT_PRIVACY_OFFLINE"] = "1";
+      const ner = workerNer();
+      const llm = workerLlm();
+      // What the env scrub does before a worker starts: the settings are gone
+      // from the environment, so offline must reach the worker as an option.
+      delete env["STRUT_MODEL_DIR"];
+      delete env["STRUT_PRIVACY_OFFLINE"];
+      await assert.rejects(ner.detect(["Jonas"]), /^Error: privacy ner worker: .*local_files_only/);
+      await assert.rejects(llm.detect(["Jonas"]), /^Error: privacy llm worker: .*local_files_only/);
+      assert.equal(workerNer(), ner, "one per process");
+      const opts = { vault: "memory" as const, ttlMinutes: 1, deny: [], allow: [], ner: true, llm: false, minScore: 0.6, privacyLevel: "off" as const };
+      await assert.rejects(anonymizeTexts(["Jonas"], opts, { services: { dataDir } }), /ner_unavailable: .*privacy ner worker/);
+      assert.deepEqual(await readdir(models), [], "nothing downloaded");
+    } finally {
+      await rm(models, { recursive: true, force: true });
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 });

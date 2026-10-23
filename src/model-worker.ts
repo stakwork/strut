@@ -1,6 +1,7 @@
 /**
- * A local model in a worker thread: the embedder (graph/embeddings.ts) and
- * the dictation recognizers (audio/decoder.ts).
+ * A local model in a worker thread: the embedder (graph/embeddings.ts), the
+ * dictation recognizers (audio/decoder.ts), and the privacy NER and LLM
+ * detector (privacy/ner.ts, llm.ts).
  *
  * onnxruntime-node and sherpa-onnx run a model synchronously (the native
  * call blocks its thread), so on the main thread every forward pass blocks

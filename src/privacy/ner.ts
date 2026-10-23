@@ -1,11 +1,9 @@
-import { join } from "node:path";
-import { bootEnv } from "../env.js";
-import { modelDirFromEnv } from "../model-dir.js";
+import { ModelWorker } from "../model-worker.js";
 import { chunk } from "./chunk.js";
 import { typeFix, type Stage } from "./detect.js";
 import { LEAD, NER_TYPE, WORDCH } from "./rules.js";
 import { STOP, escRe } from "./gazetteer.js";
-import { NER_MODEL } from "./models.js";
+import { NER_MODEL, privacyModelOptions, type PrivacyModelOptions } from "./models.js";
 import type { NerEngine, RawNerSpan, Span } from "./types.js";
 
 const MAX_CHARS = 700;
@@ -45,28 +43,27 @@ export function groupAndAlign(ct: string, toks: Tok[]): { spans: RawNerSpan[]; u
 type Pipe = (text: string) => Promise<Tok[]>;
 let shared: Promise<Pipe> | null = null;
 
-async function loadPipe(): Promise<Pipe> {
+async function loadPipe(o: PrivacyModelOptions): Promise<Pipe> {
   let tf: typeof import("@huggingface/transformers");
   try {
     tf = await import("@huggingface/transformers");
   } catch (e) {
     throw new Error(`privacy NER is not available: @huggingface/transformers could not be loaded (${(e as Error).message})`);
   }
-  const env = bootEnv();
-  const offline = env["STRUT_PRIVACY_OFFLINE"] === "1";
   const pipe = await tf.pipeline(NER_MODEL.task, NER_MODEL.id, {
     dtype: NER_MODEL.dtype,
-    cache_dir: join(modelDirFromEnv(env), "privacy"),
-    ...(offline ? { local_files_only: true } : {}),
+    cache_dir: o.cacheDir,
+    ...(o.offline ? { local_files_only: true } : {}),
   } as never);
   return pipe as unknown as Pipe;
 }
 
-/** The in-process BERT NER: one warm pipeline per process, a failed load is retried next call. */
-export function transformersNer(): NerEngine {
+/** The BERT NER on THIS thread: one warm pipeline per thread, a failed load is
+ *  retried next call. The factory `workerNer`'s worker calls. */
+export function transformersNer(o: PrivacyModelOptions = privacyModelOptions()): NerEngine {
   return {
     async detect(texts) {
-      shared ??= loadPipe();
+      shared ??= loadPipe(o);
       let pipe: Pipe;
       try { pipe = await shared; } catch (e) { shared = null; throw e; }
       const spans: RawNerSpan[][] = [];
@@ -83,6 +80,19 @@ export function transformersNer(): NerEngine {
       return { spans, unaligned };
     },
   };
+}
+
+let viaWorker: NerEngine | undefined;
+
+/** The NER in a worker thread (`ModelWorker`), one per process — the default
+ *  engine. A forward pass is synchronous native work: on the main thread it
+ *  would block every request the server is handling. */
+export function workerNer(): NerEngine {
+  if (!viaWorker) {
+    const w = new ModelWorker({ module: import.meta.url, factory: "transformersNer", options: privacyModelOptions() }, "privacy ner worker");
+    viaWorker = { detect: (texts) => w.call("detect", [texts]) };
+  }
+  return viaWorker;
 }
 
 /** Raw model spans -> candidate spans: score floor, whole words, lead/filler strip, precision filter, type fix. */

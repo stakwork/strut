@@ -161,11 +161,16 @@ follows, and no key material is ever in a handle.
 
 ## 5. Models and configuration
 
-- NER: `Xenova/bert-base-NER`, dtype `q8` (~110 MB), run **in process** with
-  `@huggingface/transformers`, lazily imported; one warm pipeline per process,
-  concurrent first use shares one load. No child process.
+- NER: `Xenova/bert-base-NER`, dtype `q8` (~110 MB), run with
+  `@huggingface/transformers` in a **worker thread** of this process
+  (`ModelWorker`, `src/model-worker.ts`; `workerNer`), lazily imported; one warm
+  pipeline per process, concurrent first use shares one load. A forward pass is
+  synchronous native work, and on the main thread it would block every request
+  the server is handling. No child process.
 - Model files are cached under `<model dir>/privacy/<model id>` (the model dir is
-  `STRUT_MODEL_DIR`, see `src/model-dir.ts`). **The first use downloads them**,
+  `STRUT_MODEL_DIR`, see `src/model-dir.ts`). The model dir and
+  `STRUT_PRIVACY_OFFLINE` are read on the main thread and handed to the worker
+  (`privacyModelOptions`): a worker sees the environment the env scrub left. **The first use downloads them**,
   which takes seconds to minutes and needs the network: pre-download in a
   deployment (run one anonymize at build or boot) and set
   `STRUT_PRIVACY_OFFLINE=1` to forbid downloads afterwards (a missing model then
@@ -278,7 +283,8 @@ keeps the originals out of its run files.
 ## 7. The optional LLM detector
 
 `detectors: { llm: true }` adds a second detector for nicknames and unusual names
-(`onnx-community/Qwen2.5-1.5B-Instruct`, q4, loaded in process like the NER). It
+(`onnx-community/Qwen2.5-1.5B-Instruct`, q4, in a worker thread of its own, so a
+3 s call never holds up the NER; `workerLlm`). It
 is **off by default and stays out of the default path**: the download is about
 1.7 GB and a text costs roughly 3 s on CPU. Its output is trusted only for short,
 capitalised, digit-free strings found verbatim in the text. An invalid reply is

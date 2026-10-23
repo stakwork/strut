@@ -1,9 +1,7 @@
-import { join } from "node:path";
-import { bootEnv } from "../env.js";
-import { modelDirFromEnv } from "../model-dir.js";
+import { ModelWorker } from "../model-worker.js";
 import { chunk } from "./chunk.js";
 import { escRe, STOP } from "./gazetteer.js";
-import { LLM_MODEL } from "./models.js";
+import { LLM_MODEL, privacyModelOptions, type PrivacyModelOptions } from "./models.js";
 import { LEAD } from "./rules.js";
 import type { LlmEngine, Span } from "./types.js";
 
@@ -19,13 +17,12 @@ const SHOTS: [string, string][] = [
 type Pipe = (msgs: unknown, o: unknown) => Promise<{ generated_text: { content: string }[] }[]>;
 let shared: Promise<Pipe> | null = null;
 
-async function loadPipe(): Promise<Pipe> {
+async function loadPipe(o: PrivacyModelOptions): Promise<Pipe> {
   const tf = await import("@huggingface/transformers");
-  const env = bootEnv();
   const pipe = await tf.pipeline(LLM_MODEL.task, LLM_MODEL.id, {
     dtype: LLM_MODEL.dtype,
-    cache_dir: join(modelDirFromEnv(env), "privacy"),
-    ...(env["STRUT_PRIVACY_OFFLINE"] === "1" ? { local_files_only: true } : {}),
+    cache_dir: o.cacheDir,
+    ...(o.offline ? { local_files_only: true } : {}),
   } as never);
   return pipe as unknown as Pipe;
 }
@@ -45,10 +42,12 @@ export function parseLlmReply(content: string): { text: string; type: string }[]
   }
 }
 
-export function transformersLlm(): LlmEngine {
+/** The Qwen detector on THIS thread: one warm pipeline per thread. The factory
+ *  `workerLlm`'s worker calls. */
+export function transformersLlm(o: PrivacyModelOptions = privacyModelOptions()): LlmEngine {
   return {
     async detect(texts) {
-      shared ??= loadPipe();
+      shared ??= loadPipe(o);
       let pipe: Pipe;
       try { pipe = await shared; } catch (e) { shared = null; throw e; }
       const items: { text: string; type: string }[][] = [];
@@ -69,6 +68,20 @@ export function transformersLlm(): LlmEngine {
       return { items, invalid };
     },
   };
+}
+
+let viaWorker: LlmEngine | undefined;
+
+/** The Qwen detector in a worker thread of its own (`ModelWorker`), one per
+ *  process — the default engine: about 3 s a chunk of synchronous native work,
+ *  which on the main thread would block every request, and in the NER's
+ *  worker would queue it behind every call. */
+export function workerLlm(): LlmEngine {
+  if (!viaWorker) {
+    const w = new ModelWorker({ module: import.meta.url, factory: "transformersLlm", options: privacyModelOptions() }, "privacy llm worker");
+    viaWorker = { detect: (texts) => w.call("detect", [texts]) };
+  }
+  return viaWorker;
 }
 
 /** The model is only trusted for short, capitalised, digit-free strings that are verbatim in the text. */

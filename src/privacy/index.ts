@@ -2,8 +2,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { denyStage, detectAll, ruleStage, type Stage } from "./detect.js";
 import type { KeyCtx, KeyProvider } from "./keys.js";
-import { llmStage, transformersLlm } from "./llm.js";
-import { nerStage, transformersNer } from "./ner.js";
+import { llmStage, workerLlm } from "./llm.js";
+import { nerStage, workerNer } from "./ner.js";
 import { pseudonymize } from "./pseudonymize.js";
 import { restore } from "./restore.js";
 import { destroyVault, getVault, kindOf, putVault, type VaultDeps } from "./vault.js";
@@ -15,9 +15,9 @@ export { pseudonymize } from "./pseudonymize.js";
 export { restore } from "./restore.js";
 export { putVault, getVault, destroyVault, kindOf, HANDLE_RE, type VaultDeps } from "./vault.js";
 export { secretKeyProvider, VAULT_KEY_SECRET, VAULT_KEY_SECRET_LEGACY, type KeyProvider, type KeyCtx } from "./keys.js";
-export { transformersNer, nerStage, nerPostprocess, groupAndAlign } from "./ner.js";
-export { transformersLlm, llmStage, llmPostprocess, parseLlmReply } from "./llm.js";
-export { PRIVACY_MODELS, NER_MODEL, LLM_MODEL } from "./models.js";
+export { transformersNer, workerNer, nerStage, nerPostprocess, groupAndAlign } from "./ner.js";
+export { transformersLlm, workerLlm, llmStage, llmPostprocess, parseLlmReply } from "./llm.js";
+export { PRIVACY_MODELS, NER_MODEL, LLM_MODEL, privacyModelOptions, type PrivacyModelOptions } from "./models.js";
 
 /** `ctx.services.privacy`: the injection seam (tests, a host with its own key provider or models). */
 export interface PrivacyServices {
@@ -73,7 +73,7 @@ export async function anonymizeTexts(texts: string[], o: AnonymizeOptions, ctx: 
   const { vault, services } = depsFrom(ctx);
   const stages: Stage[] = [denyStage, ruleStage];
   if (o.ner) {
-    const engine = services.ner ?? transformersNer();
+    const engine = services.ner ?? workerNer();
     stages.push(nerStage({
       async detect(t) {
         try { return await engine.detect(t); }
@@ -81,7 +81,7 @@ export async function anonymizeTexts(texts: string[], o: AnonymizeOptions, ctx: 
       },
     }));
   }
-  if (o.llm) stages.push(llmStage(services.llm ?? transformersLlm()));
+  if (o.llm) stages.push(llmStage(services.llm ?? workerLlm()));
 
   const out: AnonymizeResult[] = [];
   for (const text of texts) {
