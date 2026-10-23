@@ -1042,3 +1042,41 @@ mints its token. A directory is no app: a JOB's app (a live directory in a
 job's, with an identity of its own) is retired, runtime and all
 (`plans/chained-orchestrators.md` §6). A page over a job's own results is
 an HTML file in its directory, served as any job file is.
+
+## 15. Dictation — transcribe with the user's vocabulary
+
+`POST /audio/transcribe?model=&hotwords=&hotwordsScore=&session=&lingo=`, body a
+WAV (`audio/wav`), returns `TranscribeResult` (src/audio/stt.ts) plus, when the
+user's vocabulary changed the transcript, `heard` and `changes`:
+
+```ts
+{
+  text: string;            // what to type: the transcript with the vocabulary applied
+  segments: { text: string; words: SttWord[] }[];  // as heard
+  model: string;
+  hotwords: string | null;
+  durationMs: number;
+  heard?: string;          // the transcript as heard, only when `text` differs from it
+  changes?: { heard: string; written: string }[];  // what the rewrite changed, in order
+}
+```
+
+The vocabulary is memory/lexicon's, read on each call (src/audio/lingo.ts
+`rewrite`). `lingo=0` returns the transcript as heard; so does a strut whose
+memory cannot be read (logged once, never the text). 400 for a body shorter
+than a WAV header, 501 without the speech addon.
+
+What an edit teaches is the `dictation/correction` step, through `POST
+/steps/dictation/correction/run` like any step (§7):
+`{ config: { typed: string, edited: string, dry_run?: boolean } }` → `output:
+{ learned: { heard: string; written: string; undo: string[] }[] }`. Each pair is
+written with memory/remember (episode `Dictation: corrected “heard” to
+“written”.`, kind `note`, created_by `dictation`, on the entity that writes
+`written`, else a new word of memory/lexicon's `lingo_type`); `undo` is what
+`dictation/undo` takes back — the new entity, else
+the new fact, empty when memory already had the pair. `dry_run` writes nothing
+(every `undo` empty). `dictation/undo { undo }`, `dictation/add { written, heard }`
+and `dictation/remove { ref_id }` complete a client's vocabulary; the whole
+client contract is plans/native-dictation-client.md §7a. Only the pair is stored. The sentence is in the run's
+own events, returned to the caller and kept only as §7 says (`keep: true`, or
+claims on the step), so a caller that wants no record of it never passes `keep`.

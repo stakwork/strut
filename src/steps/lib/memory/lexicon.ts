@@ -17,6 +17,8 @@ export default defineStep({
     "meaning the name), `dictation_off` (attributes.dictation is \"off\", set with memory/attributes), and for ranking " +
     "`facts` (current facts it is in), `updated_at` and `known_by_user` (a current fact of the user's points at it). " +
     "`undone` lists the mishearings forgotten with reason \"undone\", so they are not learned again. " +
+    "`lingo_type` is the type a new word is made as (role dictation; its entities are taught to dictation) and `mishearing` " +
+    "the predicate with role mishearing. " +
     "A mishearing is written with memory/remember: { episode, kind: \"note\", created_by: \"dictation\", facts: [{ " +
     "subject: { ref_id?, type, name }, predicate: <the predicate with role mishearing>, text, value: <the wrong text>, " +
     "form?: <the written form> }] }, where a form left out is the subject name given (so naming the subject by an alias, " +
@@ -59,6 +61,8 @@ export default defineStep({
     const byEntity = new Map<string, typeof facts>();
     for (const f of facts) byEntity.set(f.entity, [...(byEntity.get(f.entity) ?? []), f]);
     return {
+      lingo_type: vocab.typeWithRole("dictation") ?? null,
+      mishearing: heardAs[0] ?? null,
       entities: entities.map((e) => {
         const own = byEntity.get(e.ref_id) ?? [];
         const subjectOf = own.filter((f) => f.role === "SUBJECT");

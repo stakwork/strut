@@ -236,9 +236,10 @@ Content-Type: audio/wav
 <wav bytes>
 ```
 
-→ `{ "text": "…", "segments": [{ "text", "words" }], "model", "hotwords", "durationMs" }`.
-Single recognizer (no `partialModel`); same casing and punctuation as a
-`final`. Bodies under 44 bytes are rejected as not-a-WAV.
+→ `{ "text": "…", "segments": [{ "text", "words" }], "model", "hotwords", "durationMs" }`,
+plus `heard` and `changes` when the user's vocabulary changed the text (§7a).
+`text` is what to type. Single recognizer (no `partialModel`); same casing
+and punctuation as a `final`. Bodies under 44 bytes are rejected as not-a-WAV.
 
 ## 7. The learning loop (sessions, corrections, hotword lists)
 
@@ -264,6 +265,78 @@ model is greedy), the boost only helps a spelling the model could already
 emit (it won't turn "stack work" into "Stakwork"; that's a post-correction
 glossary), and casing must match what the model would emit, so list proper
 nouns both ways.
+
+## 7a. The user's vocabulary (rewrite, learning, Undo, the Vocabulary UI)
+
+Strut keeps the user's words and how dictation mishears them in its memory
+graph, and makes every decision about them: what is an everyday word, what an
+edit teaches, how a transcript is rewritten. A client sends what it saw and
+shows what comes back; it has no word lists or rules of its own. Every call
+below is the same for any client (Mac, iOS, a web page). Steps are run through
+`POST /steps/<type>/run` with the body `{ "config": { …input } }` and answer
+`{ "status": "success" | "error", "output"?, "error"? }`. Never pass `keep`:
+a step run is kept only when asked, and the sentence a correction carries
+should not be.
+
+**Transcribing.** `POST /audio/transcribe` (§6) applies the vocabulary by
+default:
+
+```ts
+{
+  text: string;            // type this
+  segments: { text: string; words: SttWord[] }[];  // as heard
+  model: string; hotwords: string | null; durationMs: number;
+  heard?: string;          // the transcript as heard, only when `text` differs
+  changes?: { heard: string; written: string }[];  // what the rewrite changed, in order
+}
+```
+
+`?lingo=0` returns the transcript as heard (no `heard`, no `changes`). A strut
+that cannot read its memory returns it as heard too. The socket's `final`
+frames (§4) are as heard today.
+
+**Learning from an edit.** Once the user has edited what was typed (the
+client re-reads the field), send both texts:
+
+```
+dictation/correction { typed: string, edited: string, dry_run?: boolean }
+→ { learned: [{ heard: string, written: string, undo: string[] }] }
+```
+
+Each pair in `learned` is now in the vocabulary. Show "Learned <written>" for
+those with a non-empty `undo`; an empty `undo` means strut already had the
+pair. `dry_run: true` writes nothing and answers the same shape: use it to
+decide whether an edit in progress is worth watching. Only the pair is
+stored, never the sentence.
+
+**Undo.** `dictation/undo { undo: string[] } → { undone: string[] }` with the
+`undo` ids of a learn. The pair is then never learned again. Ids that
+dictation did not write are refused, and then nothing is forgotten.
+
+**The Vocabulary UI.**
+
+- Read: `memory/lexicon {}` →
+  `{ lingo_type, mishearing, entities: [{ ref_id, type, name, written: string[], heard: [{ ref_id, value, form, created_at }], dictation_off, facts, updated_at, known_by_user, user? }], undone: [{ ref_id, value, form, entity: { ref_id, name }, undone_at }] }`.
+  `written` holds the ways to write it, the name first. `heard` holds how
+  dictation mishears it: `value` is the wrong text and `form` the written form
+  it stands for (null means the name). Words of `lingo_type` are dictation's
+  own words. Other entities (people, companies) come from the rest of the
+  memory. Rank or filter with `facts`, `updated_at` and `known_by_user`.
+- Add a word and how it is misheard:
+  `dictation/add { written, heard } → { heard, written, undo, applies }`.
+  This is the same write as a learn. `applies: false` means `heard` is one
+  everyday word, which the rewrite never replaces on its own, so say so.
+- Remove: `dictation/remove { ref_id } → { forgotten }`. The `ref_id` is a
+  `heard` ref_id (one mishearing) or a word of `lingo_type` (the word and all
+  its mishearings). A word that has nothing else known of it goes with its
+  last mishearing. Any other entity is refused, so turn it off instead.
+- Dictation off / on for one entity:
+  `memory/attributes { ref_id, set: { dictation: "off" } }`, and
+  `{ dictation: null }` to turn it back on. A word that is off is neither
+  rewritten nor learned.
+
+Refresh the lexicon after each write if the UI shows it. Transcription
+always reads the current one.
 
 ## 8. Errors and lifecycle
 
@@ -388,4 +461,5 @@ PCM16LE.
 - [ ] `end` on stop; wait for the trailing `final` and close `1000` before discarding state.
 - [ ] Render partial as replace-in-place, final as commit; glue a punctuation-only final to the previous word.
 - [ ] Pass a `session`; send corrections when the user edits.
+- [ ] Type `text` from `/audio/transcribe`; after the user edits it, send `dictation/correction` and offer Undo (`dictation/undo`) for what it learned.
 - [ ] `error` frame → show it; reconnect on transport loss with a new stream.

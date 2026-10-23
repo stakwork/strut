@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -90,6 +90,7 @@ import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
 import { createStt, type SttService } from "./audio/stt.js";
 import { audioRoutes } from "./audio/routes.js";
+import { readLexicon } from "./steps/lib/dictation/_shared.js";
 import { createAudioUpgradeHandler } from "./audio/ws.js";
 import { roomsFor } from "./rooms.js";
 import { WebSocketServer } from "ws";
@@ -5250,7 +5251,8 @@ export async function createStrut<TServices = unknown>(
 
   // ── Speech-to-text (src/audio) ─────────────────────────────────────────
 
-  if (stt) audioRoutes(app, stt);
+  // Dictation's vocabulary, from the memory graph the memory/* steps keep.
+  if (stt) audioRoutes(app, stt, { lexicon: () => readLexicon({ services } as unknown as StepContext) });
 
   // ── Static files (web UI) ────────────────────────────────────────────────
 

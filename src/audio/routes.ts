@@ -6,10 +6,18 @@
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { requireApiKey } from "../auth.js";
+import { isCommon } from "./common-words.js";
+import { rewrite, type Lexicon } from "./lingo.js";
 import { findModel } from "./models.js";
 import { SttUnavailableError, type SttService, type SttStreamOptions } from "./stt.js";
 
-export function audioRoutes(app: Hono, stt: SttService): void {
+export interface AudioRoutesOptions {
+  /** Dictation's vocabulary (memory/lexicon), read per transcription; absent or failing: no rewrite. */
+  lexicon?: () => Promise<Lexicon>;
+}
+
+export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions = {}): void {
+  const unread = new Set<string>();
   app.use("/audio/*", requireApiKey);
 
   app.get("/audio/models", async (c) => {
@@ -38,21 +46,43 @@ export function audioRoutes(app: Hono, stt: SttService): void {
   });
 
   // Raw audio/wav body. Query: model, partialModel (ignored: batch is
-  // single-recognizer), hotwords (list name), hotwordsScore, session.
+  // single-recognizer), hotwords (list name), hotwordsScore, session, lingo
+  // (0: the transcript as heard, no vocabulary). `text` is what to type:
+  // the transcript with the user's vocabulary applied (src/audio/lingo.ts),
+  // and when that changed it, `heard` (the transcript) and `changes`.
+  // `segments` stay as heard.
   app.post("/audio/transcribe", async (c) => {
     const q = c.req.query();
-    const opts: Omit<SttStreamOptions, "sampleRate"> = {};
-    if (q["model"]) opts.model = q["model"];
-    if (q["hotwords"]) opts.hotwords = q["hotwords"];
-    if (q["hotwordsScore"]) opts.hotwordsScore = Number(q["hotwordsScore"]);
-    if (q["session"]) opts.session = q["session"];
+    const o: Omit<SttStreamOptions, "sampleRate"> = {};
+    if (q["model"]) o.model = q["model"];
+    if (q["hotwords"]) o.hotwords = q["hotwords"];
+    if (q["hotwordsScore"]) o.hotwordsScore = Number(q["hotwordsScore"]);
+    if (q["session"]) o.session = q["session"];
     const body = new Uint8Array(await c.req.arrayBuffer());
     if (body.byteLength < 44) return c.json({ error: "expected a WAV body" }, 400);
+    let result;
     try {
-      return c.json(await stt.transcribe(body, opts));
+      result = await stt.transcribe(body, o);
     } catch (e) {
       return errorResponse(c, e);
     }
+    if (q["lingo"] === "0" || !opts.lexicon || !result.text) return c.json(result);
+    // Never the transcript in a log: only why the vocabulary was not read, once.
+    const lexicon = await opts.lexicon().catch((e: unknown) => {
+      const why = (e as Error).message;
+      if (!unread.has(why)) console.warn(`[audio] dictation vocabulary not read, transcripts go out as heard: ${why}`);
+      unread.add(why);
+      return undefined;
+    });
+    let out;
+    try {
+      out = lexicon ? rewrite(result.text, lexicon, isCommon) : undefined;
+    } catch (e) {
+      // A transcript is never lost to the rewrite: it goes out as heard.
+      console.error(`[audio] dictation rewrite failed: ${(e as Error).message}`);
+    }
+    if (!out || out.text === result.text) return c.json(result);
+    return c.json({ ...result, text: out.text, heard: result.text, changes: out.changes });
   });
 
   // ── Hotword lists (the dream cycle's promotion artifact) ────────────────
