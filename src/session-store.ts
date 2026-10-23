@@ -107,6 +107,10 @@ export interface NewTurn {
   cost?: number;
   /** The context after the turn's last model call. */
   context?: { used: number; limit: number };
+  /** The thread held untrusted content (`withUntrusted`) by the end of this
+   *  turn. Sticky: a later turn of the thread starts untrusted, since what
+   *  was read stays in its context (compacted or not). */
+  untrusted?: true;
   /** Where the NEXT turn's replay begins: an absolute index into
    *  `messages.jsonl`, set by a turn that compacted the thread
    *  (plans/compaction.md) to the index of its `[compaction]` message.
