@@ -3727,7 +3727,7 @@ export async function createStrut<TServices = unknown>(
       // Its params may narrow what its agents are granted, never widen it
       // (the meta/run-workflow rule).
       const widened = grantWidenedBy(flow, q.params ?? {}, registry);
-      if (widened) throw new Error(`params may not grant a step the workflow "${q.workflow}" does not already: ${widened}`);
+      if (widened) throw new Error(`params may not widen what the workflow "${q.workflow}" allows — more tools, or fewer approvals: ${widened}`);
       if (q.job) {
         const problem = idProblem(q.job);
         if (problem) throw new Error(`job "${q.job}" ${problem}`);

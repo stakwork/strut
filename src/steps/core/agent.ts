@@ -746,6 +746,12 @@ export function buildRegistryTools(
         // adopting it as the child ctx path makes any events the step itself
         // emits (e.g. a nested `agent` step's own tool calls) nest UNDER this
         // call's span instead of appearing as flat siblings of it.
+        // A sub-agent the model configures is held to this agent (holdSubAgent).
+        if (stepType === "agent") {
+          const held = holdSubAgent(parsed, names, gate?.approve, registry);
+          if (typeof held === "string") return `Error: ${held}`;
+          parsed = held;
+        }
         const base: StepContext = ctx ??
           ({ runId: "", path: "", scope: {}, input: undefined, emit: (async () => {}) as any, services: undefined });
         const childCtx: StepContext = options?.strutToolPath
@@ -758,6 +764,30 @@ export function buildRegistryTools(
     });
   }
   return out;
+}
+
+/**
+ * A sub-agent's config as the model wrote it (`agent` granted as a tool),
+ * held to its parent: its `agentTools` within the parent's grants, and each
+ * step the parent asks before running (`approve`) that the sub-agent holds
+ * added to its own `approve`. Else the model could hand a sub-agent any
+ * step — a sealed one, a gated one — to run without asking. A string is the
+ * refusal the model reads.
+ */
+export function holdSubAgent(
+  cfg: unknown,
+  parentGrants: string[],
+  parentApprove: ReadonlySet<string> | undefined,
+  registry: StepRegistry,
+): Record<string, unknown> | string {
+  const c = (cfg ?? {}) as { agentTools?: string[]; approve?: string[] };
+  const granted = new Set(expandAgentTools(parentGrants, registry));
+  const held = expandAgentTools(c.agentTools ?? [], registry);
+  const extra = held.find((t) => !granted.has(t));
+  if (extra) return `a sub-agent may hold only the tools you hold: "${extra}" is not one of them`;
+  const gates = [...(parentApprove ?? [])].filter((t) => held.includes(t));
+  if (!gates.length) return cfg as Record<string, unknown>;
+  return { ...(cfg as Record<string, unknown>), approve: [...new Set([...(c.approve ?? []), ...gates])] };
 }
 
 /** The run's attachments (`ctx.attachments`) as user-message parts, read

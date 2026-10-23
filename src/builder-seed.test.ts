@@ -184,6 +184,57 @@ describe("the builder workflow strut ships", () => {
     }
   });
 
+  it("a builder may not run the builder again with fewer approvals: meta/run-workflow keeps the host's gate", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "builder-gate-"));
+    try {
+      const strut = await createStrut({ workspace: new WorkspaceManager(dir), ...quiet(), builder: { approve: ["meta/publish-workflow", "meta/create-step"] } });
+      const authoring = (strut.services as { authoring: AuthoringCapability }).authoring;
+      for (const approve of [[], ["meta/create-step"]]) {
+        const res = (await authoring.runWorkflow(BUILDER_WORKFLOW, { prompt: "publish x" }, { approve })) as { error?: string; runId?: string };
+        assert.match(res.error ?? "", /"meta\/(publish-workflow|create-step)" taken out of approval \(params\.approve: approve may only grow\)/);
+        assert.equal(res.runId, undefined, "nothing ran");
+      }
+      // More approvals, or none overridden, pass the gate (checked off the seeded YAML itself).
+      const { grantWidenedBy } = await import("./closure.js");
+      const flow = await strut.workspace.getWorkflow(BUILDER_WORKFLOW);
+      assert.equal(grantWidenedBy(flow, { approve: ["meta/publish-workflow", "meta/create-step", "meta/edit-step"] }, strut.getRegistry()), null);
+      assert.equal(grantWidenedBy(flow, { system: "a knob" }, strut.getRegistry()), null);
+
+      // A host with no approvals (Hive's builder today): nothing gated, nothing to keep.
+      const hive = await createStrut({ workspace: new WorkspaceManager(join(dir, "hive")), ...quiet() });
+      assert.equal(grantWidenedBy(await hive.workspace.getWorkflow(BUILDER_WORKFLOW), { approve: [] }, hive.getRegistry()), null);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("nor around the gate: a workflow that subflows the builder, or grants meta/* through params or input, is refused at publish", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "builder-gate-around-"));
+    try {
+      const strut = await createStrut({ workspace: new WorkspaceManager(dir), ...quiet(), builder: { approve: ["meta/publish-workflow", "meta/create-step"] } });
+      const authoring = (strut.services as { authoring: AuthoringCapability }).authoring;
+      const publish = async (name: string, body: string) =>
+        ((await authoring.publishWorkflow(name, `name: ${name}\n${body}`)) as { ok?: boolean; error?: string });
+
+      // The builder as a subflow, its gate emptied: the builder's own grants are read off its params.
+      const wrap = await publish("wrap", "steps:\n  - id: b\n    type: subflow\n    config:\n      workflow: builder\n      input:\n        prompt: hi\n      params:\n        approve: []\n");
+      assert.match(wrap.error ?? "", /reaches a sealed grant "meta\/\*"/);
+      // Its own builder: meta/* through params, no approve.
+      const agentStep = (tools: string) => `steps:\n  - id: a\n    type: agent\n    config:\n      prompt: hi\n      toolFilter: [none]\n      agentTools: "${tools}"\n`;
+      const clone = await publish("clone", `params:\n  tools: [meta/publish-workflow]\n${agentStep("{{ params.tools }}")}`);
+      assert.match(clone.error ?? "", /reaches a sealed grant "meta\/publish-workflow"/);
+      // Or through what the launch hands it: cannot be read, so refused.
+      const viaInput = await publish("via-input", agentStep("{{ input.tools }}"));
+      assert.match(viaInput.error ?? "", /reaches a sealed grant "\{\{ input\.tools \}\}" \(read only when the run starts/);
+      // A grant through params that reaches nothing sealed still publishes.
+      const fine = await publish("fine", `params:\n  tools: [log]\n${agentStep("{{ params.tools }}")}`);
+      assert.equal(fine.error, undefined);
+      assert.equal(fine.ok, true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("the meta surface may not publish the template: `peer: true` is a person's call (a seed's), never an agent's", async () => {
     const dir = await mkdtemp(join(tmpdir(), "builder-meta-"));
     try {

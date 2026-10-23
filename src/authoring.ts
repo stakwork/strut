@@ -813,7 +813,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // Its params may narrow what its agents are granted, never widen it.
       const widened = grantWidenedBy(flow, (coerceJsonArg(params) ?? {}) as Record<string, unknown>, registry);
       if (widened) {
-        return { error: `params may not grant a step the workflow "${name}" does not already: ${widened}. Run it with its own tools, or fewer.` };
+        return { error: `params may not widen what the workflow "${name}" allows — more tools, or fewer approvals: ${widened}. Run it with its own params, fewer tools, or more approvals.` };
       }
       const runId = generateRunId();
       // Tree linkage: attach this nested run's controller to the launching

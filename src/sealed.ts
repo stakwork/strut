@@ -49,12 +49,16 @@ export function isSealedStep(type: string, registry?: StepRegistry, patterns: re
 /**
  * The first sealed thing a closure reaches, as a phrase for an error, or
  * null: `workflow "gaia-run"` (through a subflow), `step "gaia/evaluate"`
- * (by type), `grant "meta/*"` (an agentTools entry, as written) or
- * `grant "*" (reaches "gaia/evaluate")` (expanded over the registry).
+ * (by type), `grant "meta/*"` (an agentTools entry, as written, or read off
+ * params), `grant "*" (reaches "gaia/evaluate")` (expanded over the
+ * registry), or a grant the closure cannot read before the run
+ * (`"{{ input.tools }}"`), which could name anything.
  */
 export function sealedInClosure(closure: FlowClosure, registry: StepRegistry, patterns: readonly string[] = sealedStepPatterns()): string | null {
   const sealed = (type: string) => isSealedStep(type, registry, patterns);
   for (const w of closure.workflows) if (w.sealed) return `workflow "${w.workflow}"`;
+  const unread = closure.unreadGrants[0];
+  if (unread) return `grant "${unread}" (read only when the run starts, so it may name anything)`;
   for (const t of closure.types) if (sealed(t)) return `step "${t}"`;
   for (const grant of closure.agentTools) {
     if (sealed(grant)) return `grant "${grant}"`;
