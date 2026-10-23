@@ -160,7 +160,9 @@ export function createAutomations(deps: AutomationsDeps): Automations {
   // ── Run facts, from the run store ────────────────────────────────────────
 
   /** `run.start` never changes: remember which automation (if any) an
-   *  unfinished run belongs to instead of re-reading its log every time. */
+   *  unfinished run belongs to instead of re-reading its log every time.
+   *  Only once it is written: a launch lists the run (its callback, beside
+   *  the log) before then, and `fire` answers before then too. */
   const stamps = new Map<string, { id: string | null; startedAt: string }>();
   async function stampOf(workflow: string, runId: string): Promise<{ id: string | null; startedAt: string }> {
     const k = `${workflow}/${runId}`;
@@ -168,6 +170,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     if (!stamp) {
       const start = (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start");
       stamp = { id: start?.automation?.id ?? null, startedAt: start?.ts ?? "" };
+      if (!start) return stamp;
       if (stamps.size > 500) stamps.clear();
       stamps.set(k, stamp);
     }

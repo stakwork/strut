@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Flow, RunSummary } from "./core.js";
-import { MemoryRunStore } from "./store.js";
+import { FileRunStore, MemoryRunStore } from "./store.js";
 import { MemorySecretStore } from "./secret-store.js";
 import { FileWorkspaceStore } from "./workspace.js";
 import { createAutomations, type Automations } from "./scheduler.js";
@@ -270,6 +270,38 @@ describe("automations: policy layer + scheduler", () => {
     const [view] = await autos.list(WF);
     assert.equal(view!.id, r.automation.id);
     assert.deepEqual([view!.lastRun?.runId, view!.lastRun?.status, view!.running], [fourth.runId, "running", true]);
+  });
+
+  it("a run listed before its run.start is written still shows as running once it is", async () => {
+    // The real launch: the callback is kept beside the log (creating the
+    // run's folder) before run.start is appended, and `fire` answers first.
+    const files = new FileRunStore(dir);
+    let kept: Promise<void> | undefined;
+    let start: (() => Promise<void>) | undefined;
+    const late = createAutomations({
+      workspace: ws,
+      store: files,
+      secrets,
+      now: () => now,
+      isInFlight: (_wf, runId) => inFlight.has(runId),
+      launch: (flow: Flow, input, automation, callback) => {
+        const runId = `${now.getTime()}-late`;
+        inFlight.add(runId);
+        kept = files.setRunCallback(flow.name, runId, callback!.url);
+        start = () => files.append(flow.name, runId, { ts: now.toISOString(), runId, path: flow.name, type: "run.start", input, origin: "schedule", automation });
+        return runId;
+      },
+    });
+    const r = await late.create(WF, { name: "Run now", trigger: daily, callback: { url: "http://127.0.0.1:9911/run-end" } });
+    assert.ok("ok" in r);
+    const fired = await late.fire(WF, r.automation.id);
+    assert.ok("ok" in fired);
+    await kept;
+    // Read in the gap: the run's folder is there, its run.start is not.
+    assert.equal((await late.list(WF))[0]!.running, false);
+    await start!();
+    const [view] = await late.list(WF);
+    assert.deepEqual([view!.lastRun?.runId, view!.lastRun?.status, view!.running], [fired.runId, "running", true]);
   });
 
   it("two automations on one workflow keep separate cursors", async () => {
