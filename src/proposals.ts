@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { accessedNodesOf, takeUsage, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
 import { withLock } from "./jobs.js";
+import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
 
@@ -179,9 +180,16 @@ export interface ProposalsCapability {
   /** The decided proposals of a session its agent has not been told of. */
   unreported(session: string): Promise<Proposal[]>;
   markReported(ids: string[]): Promise<void>;
+  /** Does the HOST gate this step type: is it in an `approve:` list of its
+   *  delta (`createStrut({ job, orchestrator, builder })`)? */
+  hostGates?(type: string): boolean;
 }
 
-export function proposalsCapability(dataDir: string, deps: { notify?: (job: string, update: JobUpdateInput) => void } = {}): ProposalsCapability {
+export function proposalsCapability(
+  dataDir: string,
+  deps: { notify?: (job: string, update: JobUpdateInput) => void; hostApprove?: readonly string[] } = {},
+): ProposalsCapability {
+  const hostApprove = (deps.hostApprove ?? []).map(globToRegExp);
   const root = proposalsRoot(dataDir);
   const tell = (p: Proposal) => {
     if (p.by.job) deps.notify?.(p.by.job, proposalUpdate(p));
@@ -199,7 +207,26 @@ export function proposalsCapability(dataDir: string, deps: { notify?: (job: stri
       const at = new Date().toISOString();
       for (const id of ids) await updateProposal(root, id, (p) => void (p.reportedAt ??= at));
     },
+    hostGates: (type) => hostApprove.some((re) => re.test(type)),
   };
+}
+
+/**
+ * A step that reaches past this strut (`strut/run-workflow`: another org's
+ * strut) runs only on a person's yes when the HOST gates it — whatever the
+ * route. A host's `approve:` holds back the agent's TOOL call; the same
+ * step can also be reached as a workflow step (the builder's `remote`, a
+ * builder job started with `peer` by `job/start` or `meta/run-workflow`),
+ * through `meta/run-step`, or as an ungated tool of another agent. So the
+ * step itself refuses unless it runs as an accepted proposal
+ * (`ctx.proposal`). No host gate: nothing changes.
+ */
+export function requireApproval(type: string, ctx: StepContext): void {
+  if (ctx.proposal || !proposalsOf(ctx.services)?.hostGates?.(type)) return;
+  throw new Error(
+    `${type} needs the person's approval on this strut (its host gates it), and this call is not an approved proposal. ` +
+      `Ask for it as a tool call the person approves; a workflow step, meta/run-step or a launch with \`peer\` cannot reach it.`,
+  );
 }
 
 export function proposalsOf(services: unknown): ProposalsCapability | undefined {

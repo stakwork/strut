@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, foldAccessedNodes, withAccessedNodes, type AccessedNode, type RunEvent, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { cancelOnPeer, launchOnPeer, tailPeerRun, type PeerRunHandle, type PeersCapability } from "../../../peers.js";
+import { requireApproval } from "../../../proposals.js";
 import { artifactEntriesOf } from "../../../artifact-refs.js";
 
 const EXAMPLE = `- id: ask
@@ -111,6 +112,8 @@ export default defineStep({
         "strut/run-workflow needs the peers capability (ctx.services.peers) — the standard strut server provides it; a bare runWorkflow bag does not",
       );
     }
+    // Another org's strut: when the host gates this step, only a person's yes reaches it.
+    requireApproval("strut/run-workflow", ctx);
 
     // Resume (plans/federation.md §2.2): a journaled launch for THIS peer and
     // workflow means the run is already going (or done) on the peer —
