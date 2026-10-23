@@ -41,7 +41,7 @@ import {
 } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { bootEnv } from "../env.js";
-import { ModelWorker } from "../model-worker.js";
+import { ModelWorker, type ModelWorkerSpec } from "../model-worker.js";
 import { createSttHost, DECODER_MODULE, type Built, type RecognizerSpec, type SttEngine, type SttHost } from "./decoder.js";
 
 // The engine surface and the decode loop live in decoder.ts (they run in the
@@ -161,6 +161,8 @@ export interface SttServiceOptions {
   fetchImpl?: typeof fetch;
   /** Downloads models (tests: a fake). Default: fetch + sha256 + extract (download.ts). */
   install?: Installer;
+  /** What the fixer's worker loads (tests: a fake model). Default: node-llama-cpp (fixer-engine.ts). */
+  fixerSpec?: (m: { id: string; path: string }) => ModelWorkerSpec;
   env?: Record<string, string | undefined>;
   log?: (msg: string) => void;
 }
@@ -220,7 +222,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     requireSpeechEngine: requireEngine,
     log,
   });
-  const fixer = new DictationFixer({ model: () => dictation.fixerModel() });
+  const fixer = new DictationFixer({ model: () => dictation.fixerModel(), ...(opts.fixerSpec ? { spec: opts.fixerSpec } : {}) });
 
   async function load(id: string): Promise<Loaded> {
     const model = requireModel(id);

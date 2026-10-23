@@ -13,6 +13,17 @@ import type { Installer } from "../../../audio/download.js";
 // steps (POST /steps/<type>/run) and the next POST /audio/transcribe using
 // the pick. A fake installer stands in for the network; a fake engine for
 // sherpa, each recognizer saying which model it is.
+const FAKE_FIXER = `data:text/javascript,${encodeURIComponent(`
+export function make() {
+  return {
+    judge: async (qs) => qs.map(() => 0),
+    score: async (ss) => ss.map(() => 0),
+    retract: async () => [],
+    ready: async () => {},
+    dispose: async () => {},
+  };
+}`)}`;
+
 describe("dictation models: steps and transcription", () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-dictation-models-"));
   const dataDir = join(dir, "data");
@@ -50,7 +61,9 @@ describe("dictation models: steps and transcription", () => {
     } as unknown as NonNullable<SttEngine["OfflineRecognizer"]>,
     readWave: () => ({ samples: new Float32Array(16000), sampleRate: 16000 }),
   };
-  const stt = createStt({ dataDir, modelDir, engine: async () => engine, install, env: {}, log: () => {} });
+  // A fake fixer model in the worker: CI has no llama.cpp model to load.
+  const fixerSpec = () => ({ module: FAKE_FIXER, factory: "make" });
+  const stt = createStt({ dataDir, modelDir, engine: async () => engine, install, fixerSpec, env: {}, log: () => {} });
   let strut: Awaited<ReturnType<typeof createStrut>>;
 
   before(async () => {
