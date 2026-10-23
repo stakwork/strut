@@ -1,7 +1,8 @@
 /**
  * Speech-to-text service over sherpa-onnx (plans/local-desktop-and-stt.md §4).
  *
- * Owns: model download + verification, hotword lists, the streaming session
+ * Owns: models on disk (downloaded and verified by download.ts; the user's
+ * dictation picks in dictation-models.ts), hotword lists, the streaming session
  * (PCM in → partial/final events out) and its session log, and the batch
  * `transcribe` that runs the same streaming path over a WAV. Routes
  * (`routes.ts`) and the WebSocket (`ws.ts`) are thin over this.
@@ -21,14 +22,12 @@
  * transducer is greedy-only, so speed and biasing come from different
  * families).
  */
-import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
-import { Transform } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { DictationModels } from "./dictation-models.js";
+import { DictationFixer } from "./fixer.js";
+import { createInstaller, isInstalled, type DownloadProgress, type Installer } from "./download.js";
 import { compileHotwords, parseHotwords, HotwordsStore, type Hotword } from "./hotwords.js";
 import {
   DEFAULT_MODEL,
@@ -42,7 +41,7 @@ import {
 } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { bootEnv } from "../env.js";
-import { ModelWorker } from "../model-worker.js";
+import { ModelWorker, type ModelWorkerSpec } from "../model-worker.js";
 import { createSttHost, DECODER_MODULE, type Built, type RecognizerSpec, type SttEngine, type SttHost } from "./decoder.js";
 
 // The engine surface and the decode loop live in decoder.ts (they run in the
@@ -120,10 +119,7 @@ export interface TranscribeResult {
   durationMs: number;
 }
 
-export type DownloadProgress =
-  | { phase: "download"; received: number; total: number }
-  | { phase: "extract" }
-  | { phase: "done" };
+export type { DownloadProgress } from "./download.js";
 
 export interface SttModelStatus extends SttModel {
   installed: boolean;
@@ -135,6 +131,10 @@ export interface SttService {
   readonly modelDir: string;
   readonly hotwords: HotwordsStore;
   readonly sessions: SessionStore;
+  /** The user's dictation model picks and their downloads (dictation/* steps). */
+  readonly dictation: DictationModels;
+  /** The picked fixer model, loaded on use (fixer.ts): the vocabulary's rewrite and learning. */
+  readonly fixer: DictationFixer;
   /** Whether the sherpa addon loads in this process. */
   available(): Promise<boolean>;
   models(): Promise<SttModelStatus[]>;
@@ -159,6 +159,10 @@ export interface SttServiceOptions {
    *  `sherpa-onnx-node` (a test's fake). Ignored with `engine`. */
   engineModule?: string;
   fetchImpl?: typeof fetch;
+  /** Downloads models (tests: a fake). Default: fetch + sha256 + extract (download.ts). */
+  install?: Installer;
+  /** What the fixer's worker loads (tests: a fake model). Default: node-llama-cpp (fixer-engine.ts). */
+  fixerSpec?: (m: { id: string; path: string }) => ModelWorkerSpec;
   env?: Record<string, string | undefined>;
   log?: (msg: string) => void;
 }
@@ -191,7 +195,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     for (const b of built) log(`recognizer ${b.label} ready in ${b.ms} ms`);
   };
 
-  const downloads = new Map<string, Promise<string>>();
+  const install = opts.install ?? createInstaller({ fetchImpl, log });
 
   const defaultModelId = () => env["STRUT_STT_MODEL"] ?? DEFAULT_MODEL;
   const defaultPartialId = (): string | null => {
@@ -200,65 +204,25 @@ export function createStt(opts: SttServiceOptions): SttService {
     return v ?? DEFAULT_PARTIAL_MODEL;
   };
 
-  async function installed(id: string): Promise<boolean> {
-    try {
-      await stat(join(sttModelPath(modelDir, id), ".ok"));
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  const installed = (id: string) => isInstalled(sttModelPath(modelDir, id));
 
   async function ensureModel(id: string, onProgress?: (p: DownloadProgress) => void): Promise<string> {
     const model = requireModel(id);
     await requireEngine(); // no model downloads for a build without the addon
     const dir = sttModelPath(modelDir, id);
-    if (await installed(id)) return dir;
-    let p = downloads.get(id);
-    if (!p) {
-      p = download(model, dir, onProgress).finally(() => downloads.delete(id));
-      downloads.set(id, p);
-    }
-    return p;
-  }
-
-  async function download(model: SttModel, dir: string, onProgress?: (p: DownloadProgress) => void): Promise<string> {
-    await mkdir(join(modelDir, "stt"), { recursive: true });
-    const archive = `${dir}.tar.bz2.part`;
-    log(`downloading ${model.id} (${Math.round(model.bytes / 1e6)} MB)`);
-    const res = await fetchImpl(model.url);
-    if (!res.ok || !res.body) throw new Error(`download failed for ${model.id}: HTTP ${res.status}`);
-    const total = Number(res.headers.get("content-length") ?? model.bytes);
-    const hash = createHash("sha256");
-    let received = 0;
-    const meter = new Transform({
-      transform(chunk: Buffer, _enc, cb) {
-        hash.update(chunk);
-        received += chunk.length;
-        onProgress?.({ phase: "download", received, total });
-        cb(null, chunk);
-      },
-    });
-    await pipeline(res.body as unknown as NodeJS.ReadableStream, meter, createWriteStream(archive));
-    const digest = hash.digest("hex");
-    if (digest !== model.sha256) {
-      await rm(archive, { force: true });
-      throw new Error(`sha256 mismatch for ${model.id}: expected ${model.sha256}, got ${digest}`);
-    }
-    onProgress?.({ phase: "extract" });
-    const scratch = `${dir}.extract`;
-    await rm(scratch, { recursive: true, force: true });
-    await mkdir(scratch, { recursive: true });
-    await untar(archive, scratch);
-    await rm(dir, { recursive: true, force: true });
-    await rename(join(scratch, model.archiveDir), dir);
-    await rm(scratch, { recursive: true, force: true });
-    await rm(archive, { force: true });
-    await writeFile(join(dir, ".ok"), new Date().toISOString());
-    onProgress?.({ phase: "done" });
-    log(`installed ${model.id} → ${dir}`);
+    if (!(await installed(id))) await install(model, dir, onProgress);
     return dir;
   }
+
+  const dictation = new DictationModels({
+    dataDir: opts.dataDir,
+    modelDir,
+    install,
+    defaultSpeech: defaultModelId(),
+    requireSpeechEngine: requireEngine,
+    log,
+  });
+  const fixer = new DictationFixer({ model: () => dictation.fixerModel(), ...(opts.fixerSpec ? { spec: opts.fixerSpec } : {}) });
 
   async function load(id: string): Promise<Loaded> {
     const model = requireModel(id);
@@ -287,6 +251,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     score: number,
     ep: Required<EndpointRules>,
   ): Promise<RecognizerSpec> {
+    if (loaded.model.offline) return offlineSpec(loaded);
     const biased = list.length > 0 && loaded.model.hotwords;
     const compiled = biased ? await compileHotwords(loaded.dir, list) : null;
     const key = [loaded.model.id, compiled?.hash ?? "-", biased ? score : "-", ep.rule1, ep.rule2, ep.rule3].join("|");
@@ -321,12 +286,34 @@ export function createStt(opts: SttServiceOptions): SttService {
     return { key, label: `${loaded.model.id}${compiled ? ` +hotwords(${compiled.hash})` : ""}`, config };
   }
 
+  /** An offline transducer (Parakeet): one pass over the whole clip, greedy. */
+  function offlineSpec(loaded: Loaded): RecognizerSpec {
+    const { dir, files } = loaded;
+    return {
+      key: `${loaded.model.id}|offline`,
+      label: loaded.model.id,
+      offline: true,
+      config: {
+        featConfig: { sampleRate: 16000, featureDim: 80 },
+        modelConfig: {
+          transducer: { encoder: join(dir, files.encoder), decoder: join(dir, files.decoder), joiner: join(dir, files.joiner) },
+          tokens: join(dir, files.tokens),
+          modelType: "nemo_transducer",
+          numThreads: 2,
+          provider: "cpu",
+          debug: 0,
+        },
+        decodingMethod: "greedy_search",
+      },
+    };
+  }
+
   /** The finals recognizer `o` asks for, and where its finals continue counting. */
-  async function mainSpec(o: Omit<SttStreamOptions, "sampleRate">) {
+  async function mainSpec(o: Omit<SttStreamOptions, "sampleRate">, modelId = o.model ?? defaultModelId()) {
     const ep = { ...DEFAULT_ENDPOINT, ...stripUndefined(o.endpoint ?? {}) };
     const { name: hotwordsName, list } = await resolveHotwords(o.hotwords);
     const score = o.hotwordsScore ?? DEFAULT_HOTWORDS_SCORE;
-    const loaded = await load(o.model ?? defaultModelId());
+    const loaded = await load(modelId);
     const spec = await recognizerSpec(loaded, list, score, ep);
     // Final indexes continue across connections that share a session, so a
     // correction's `index` is unambiguous within the session file.
@@ -338,6 +325,7 @@ export function createStt(opts: SttServiceOptions): SttService {
     // Before load(): without the addon a dictation start must not download a model first.
     await requireEngine();
     const modelId = o.model ?? defaultModelId();
+    if (requireModel(modelId).offline) throw new Error(`stt model "${modelId}" is offline: it transcribes whole clips (/audio/transcribe), not streams`);
     const partialId = o.partialModel === undefined ? defaultPartialId() : o.partialModel;
     const { loaded, spec, hotwordsName, score, ep, firstIndex } = await mainSpec(o);
     const partial = partialId && partialId !== modelId ? await recognizerSpec(await load(partialId), [], score, ep) : null;
@@ -362,8 +350,10 @@ export function createStt(opts: SttServiceOptions): SttService {
 
   async function transcribe(wav: Uint8Array, o: Omit<SttStreamOptions, "sampleRate"> = {}): Promise<TranscribeResult> {
     await requireEngine();
-    // Batch runs single-recognizer: partials are irrelevant here.
-    const { loaded, spec, hotwordsName, firstIndex } = await mainSpec(o);
+    // Batch runs single-recognizer: partials are irrelevant here. The model:
+    // the caller's, else the user's dictation pick once installed, else the default.
+    const modelId = o.model ?? (await dictation.speechModel()) ?? defaultModelId();
+    const { loaded, spec, hotwordsName, firstIndex } = await mainSpec(o, modelId);
     const tmp = join(opts.dataDir, "audio", "tmp");
     await mkdir(tmp, { recursive: true });
     const path = join(tmp, `${randomUUID()}.wav`);
@@ -391,6 +381,8 @@ export function createStt(opts: SttServiceOptions): SttService {
     modelDir,
     hotwords,
     sessions,
+    dictation,
+    fixer,
     available,
     async models() {
       const d = defaultModelId();
@@ -407,7 +399,9 @@ export function createStt(opts: SttServiceOptions): SttService {
     openStream,
     transcribe,
     correct: (session, index, text) => sessions.append(session, { type: "correction", t: new Date().toISOString(), index, text }),
-    close: () => host.close(),
+    close: async () => {
+      await Promise.all([host.close(), fixer.close()]);
+    },
   };
 }
 
@@ -538,16 +532,3 @@ export function pcm16ToFloat32(bytes: Uint8Array): Float32Array {
 function stripUndefined<T extends object>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
-
-/** `tar xjf` — bsdtar (macOS, Windows 10+) and GNU tar both do bz2; Node's
- *  zlib has no bzip2. */
-function untar(archive: string, into: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const p = spawn("tar", ["xjf", archive, "-C", into], { stdio: ["ignore", "ignore", "pipe"] });
-    let err = "";
-    p.stderr.on("data", (d) => (err += d));
-    p.on("error", reject);
-    p.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`tar exited ${code}: ${err.trim()}`))));
-  });
-}
-

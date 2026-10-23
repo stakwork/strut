@@ -87,3 +87,48 @@ describe("stt live (STRUT_TEST_STT=1)", { skip: !enabled }, () => {
     assert.equal(r.model, "zipformer-en-kroko");
   });
 });
+
+/**
+ * LIVE Parakeet (offline) — downloads Parakeet TDT 0.6B v2 int8 (482 MB)
+ * through the dictation picker (download, sha256, extract) and transcribes
+ * Kroko's test clip with it. Opt in with STRUT_TEST_STT=1 and
+ * STRUT_TEST_STT_PARAKEET=1; point STRUT_TEST_STT_MODEL_DIR at a persistent
+ * dir to download once.
+ */
+describe("parakeet live (STRUT_TEST_STT=1 STRUT_TEST_STT_PARAKEET=1)", { skip: !(enabled && process.env["STRUT_TEST_STT_PARAKEET"] === "1") }, () => {
+  let dataDir: string;
+  let stt: SttService;
+  const modelDir = process.env["STRUT_TEST_STT_MODEL_DIR"];
+  let tmpModelDir: string | undefined;
+
+  before(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "strut-stt-live-"));
+    if (!modelDir) tmpModelDir = await mkdtemp(join(tmpdir(), "strut-stt-models-"));
+    stt = createStt({ dataDir, modelDir: modelDir ?? tmpModelDir!, env: {} });
+  });
+  after(async () => {
+    await stt?.close();
+    await rm(dataDir, { recursive: true, force: true });
+    if (tmpModelDir) await rm(tmpModelDir, { recursive: true, force: true });
+  });
+
+  it("picked, downloaded and verified, it transcribes a clip in one pass, cased and punctuated", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const clip = await readFile(join(await stt.ensureModel("zipformer-en-kroko"), "test_wavs", "0.wav"));
+    await stt.dictation.use({ speech: "parakeet-tdt-en-0.6b-v2" });
+    await stt.dictation.idle();
+    const listed = await stt.dictation.list();
+    assert.equal(listed.find((m) => m.id === "parakeet-tdt-en-0.6b-v2")?.state, "installed", JSON.stringify(listed));
+    const t0 = Date.now();
+    const first = await stt.transcribe(clip);
+    const firstMs = Date.now() - t0;
+    const t1 = Date.now();
+    const r = await stt.transcribe(clip);
+    const warmMs = Date.now() - t1;
+    console.log(`[parakeet] "${r.text}" — first call ${firstMs} ms (recognizer build + decode), warm ${warmMs} ms (decode ${r.durationMs} ms)`);
+    assert.equal(first.model, "parakeet-tdt-en-0.6b-v2");
+    assert.equal(r.text, first.text);
+    assert.match(r.text, /^[A-Z]/);
+    assert.match(r.text.toLowerCase(), /ask not what your country can do for you/);
+  });
+});

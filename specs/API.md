@@ -1088,3 +1088,81 @@ sentence for each thing the lock cannot hold (a subflow chosen by a
 template, an agent grant read at run time, a step that starts other runs).
 Runs the live release's page launches will run the locked versions; until
 that lands, a release holds the page and records the lock.
+
+## 15. Dictation — speech to text, its models and the user's vocabulary
+
+Speech-to-text over sherpa-onnx (`src/audio/`, plans/local-desktop-and-stt.md
+§4; the client contract is plans/native-dictation-client.md, the vocabulary
+§7a; the design plans/dictation-models.md). 501 on a build without the sherpa
+addon.
+
+| Method | Path | Body / reply |
+| ------ | ---- | ------------ |
+| POST   | `/audio/transcribe[?model=&hotwords=&hotwordsScore=&session=&lingo=]` | a WAV body → `TranscribeResult` below. The model is `?model=`, else the user's speech pick once it is installed (`dictation/use`), else `STRUT_STT_MODEL` (Kroko); `model` names the one used. An offline model (Parakeet) decodes the clip in one pass: one segment |
+| GET    | `/audio/stream` | WebSocket: PCM in, partials and finals out (as heard: no vocabulary). Streaming models only — an offline model is refused |
+| GET    | `/audio/models` | `{ available, modelDir, models }` — every STT model with `installed` and `default` |
+| POST   | `/audio/models/:id/download` | SSE progress of one STT model's download |
+
+```ts
+{
+  text: string;            // what to type: the transcript with the vocabulary applied
+  segments: { text: string; words: SttWord[] }[];  // as heard
+  model: string;           // the speech model used
+  hotwords: string | null;
+  durationMs: number;
+  fixer: string | null;    // the fixer model that read it; null: none ran (none picked or installed, too slow, lingo=0)
+  heard?: string;          // the transcript as heard, only when `text` differs from it
+  changes?: { heard: string; written: string; at: number }[];  // each edit, in text order: `heard` at offset `at` of `heard` became `written` ("" for a removal)
+}
+```
+
+The vocabulary is memory/lexicon's, read on each call (src/audio/lingo.ts).
+With the user's fixer (a small local model, src/audio/fixer.ts), spans that
+may be a vocabulary word are found in code and each is kept when the model
+scores the sentence likelier with the word; fillers ("um", "uh") and a word
+said twice in a row are removed by rule ("that that", "had had" stay); a
+phrase the speaker took back ("Tuesday, no, Wednesday") is removed when the
+model names it and code finds it right before its cue. The model never
+writes text: every edit is a span code found. With no fixer, or when it has
+not answered within 1.5 s (a cold model loads meanwhile), only exact learned
+mishearings are applied and `fixer` is null. `lingo=0` returns the
+transcript as heard; so does a strut whose memory cannot be read (logged
+once, never the text). 400 for a body shorter than a WAV header, 501 without
+the speech addon.
+
+Everything else is steps (`POST /steps/<type>/run`, §7), the same for any
+client:
+
+| Step | Config | Output |
+| ---- | ------ | ------ |
+| `dictation/models` | `{}` | `{ models: [{ id, kind: "speech" \| "fixer", name, summary, recommended, bytes, description, state: "available" \| "downloading" \| "installed", progress?, downloaded?, selected, active, removable, error? }] }` — `name` / `summary` what a picker shows, `recommended` true for `qwen3-1.7b-q4` only; `progress` 0..1 and `downloaded` (bytes) while downloading; `selected` the user's pick for its kind, `active` what strut uses now (the installed speech pick, else the default speech model; the installed fixer pick — differs from `selected` while a pick downloads); `removable` false for an active model and the default speech model; `error` why the last download failed |
+| `dictation/use` | `{ speech?, fixer? }` — `fixer: null` is none | the same list. A pick that is not installed starts downloading in the background (sha256 checked, extracted into the model dir) and is used once installed; until then dictation keeps to what it had. A speech model is refused where sherpa cannot run |
+| `dictation/remove-model` | `{ id }` | the same list. Deletes the model's files. Refused for a model not `removable` (active, or the default speech model) and while it downloads; a pick removed before it was installed goes back to the default speech model, or to no fixer |
+| `dictation/correction` | `{ typed, edited }` (each ≤ 20,000 characters) | `{ learned: [{ heard, written, undo: string[] }] }` — what the user's edit of dictation's text teaches. Send it once the edit settles. With no fixer `active`, `learned` is always empty: a client need not send edits then |
+| `dictation/enable` | `{ ref_id, on: boolean }` | `{ ref_id, on }` — dictation off (`false`) or back on for one entity: off, its mishearings are not applied, its forms not looked for, nothing learned for it (`memory/lexicon`'s `dictation_off`). The entity stays. `ref_id` is the entity changed |
+| `dictation/add` | `{ written, heard }` | `{ heard, written, undo }` — the same write as a learn, by hand |
+| `dictation/undo` | `{ undo }` | `{ undone }` — takes back a learn; the pair is never learned again. Refused for ids dictation did not write |
+| `dictation/remove` | `{ ref_id }` | `{ forgotten }` — a mishearing, or a word of `lingo_type` with all its mishearings |
+
+Speech models: `zipformer-en-kroko` (streaming, the default) and
+`parakeet-tdt-en-0.6b-v2` (offline). Fixer models (GGUF Q4_K_M on
+node-llama-cpp, Metal on a Mac): `qwen3-1.7b-q4` (1.1 GB, the one to offer
+first) and `qwen3-0.6b-q4` (0.4 GB, faster, worse at telling a mishearing
+from a changed word). The picks live in `<dataDir>/audio/dictation.json`;
+with none, Kroko and no fixer — a fixer is never downloaded unless picked.
+The fixer loads on first use and unloads after five minutes idle.
+
+`dictation/correction` diffs the two texts word by word; each change of at
+most four words a side that could sound like what was typed is asked of the
+fixer, yes or no, and learned when it says yes. Nothing is learned with no
+fixer installed (or one that, once loaded, takes longer than 1.5 s). Each
+pair is written with memory/remember (episode `Dictation: corrected “heard”
+to “written”.`, kind `note`, created_by `dictation`, on the entity that
+writes `written`, else a new word of memory/lexicon's `lingo_type`); `undo`
+is what `dictation/undo` takes back — the new entity, else the new fact,
+empty when memory already had the pair. Undone pairs, words turned off
+for dictation, and a change whose `heard` side is already a vocabulary form
+("BTC" → "Bitcoin", "PH" → "P8") are never written, whatever the fixer says. Only the pair is stored. The sentence is in
+the run's own events, returned to the caller and kept only as §7 says
+(`keep: true`, or claims on the step), so a caller that wants no record of it
+never passes `keep`.

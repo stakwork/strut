@@ -63,6 +63,14 @@
  * On darwin targets sharp's addon + libvips (the browser screenshot's downscale)
  * move into native/ too (`relocateSharp`).
  *
+ * Dictation's fixer (src/audio/fixer-engine.ts) runs node-llama-cpp; only
+ * the target's prebuilt binary package (@node-llama-cpp/mac-arm64-metal on
+ * darwin-arm64) comes along, its binaries moved into native/llama/<folder>
+ * and found through that package's getBinsDir() (`relocateLlama`), and the
+ * llama.cpp sources a build from source would start from are left out.
+ * desktop.json's `fixer` says the binaries are staged; --smoke loads the
+ * addon from the copy and reports whether it got Metal.
+ *
  * The app build (plans/apps.md §2) needs two more things, both staged: the
  * kit's vendor layer at kit/vendor + its base stylesheet (built by `npm run
  * build`), and esbuild's binary, moved out of @esbuild/<platform> into
@@ -225,7 +233,7 @@ async function stageFiles() {
 // node_modules): the workspace backend flips to ladybug only when the addon
 // AND both extensions are in native/; the graph's embedder is on only when
 // the embeddings stack came along. Rewritten as the relocations add to it.
-const manifest = { platform, stt, ladybug, ladybugVersion: ladybug ? ladybugVersion : null, ladybugExtensions: null, embeddings };
+const manifest = { platform, stt, ladybug, ladybugVersion: ladybug ? ladybugVersion : null, ladybugExtensions: null, embeddings, fixer: false, llamaVersion: null };
 async function writeManifest() {
   await writeFile(join(stage, "desktop.json"), JSON.stringify(manifest, null, 2) + "\n");
 }
@@ -253,7 +261,19 @@ const sharpPkgs = platform.startsWith("darwin-") ? [`@img/sharp-${platform}`, `@
 // esbuild (the app build) ships its binary as one package per platform; the
 // target's moves into native/ (relocateEsbuild).
 const esbuildPkg = `@esbuild/${platform.replace(/^win-/, "win32-")}`;
+// node-llama-cpp (dictation's fixer) ships its binaries as one package per
+// platform and GPU; the target's (Metal on Apple silicon, CPU elsewhere) moves
+// into native/llama (relocateLlama). None for win-ia32: the fixer is left out there.
+const LLAMA_FOLDERS = { "darwin-arm64": "mac-arm64-metal", "darwin-x64": "mac-x64", "linux-x64": "linux-x64", "linux-arm64": "linux-arm64", "win-x64": "win-x64" };
+const llamaFolder = LLAMA_FOLDERS[platform] ?? null;
+const llamaPkg = llamaFolder ? `@node-llama-cpp/${llamaFolder}` : null;
+// @reflink/reflink (an addon) is ipull's optional file-clone fast path, and
+// ipull is node-llama-cpp's model downloader, which strut never uses (the
+// catalog downloads its own GGUFs): left out, with a stub (ipull catches it).
+const LEFT_OUT = (name) => /^@reflink\//.test(name);
 const OTHER_PLATFORM_PKG = (name) =>
+  LEFT_OUT(name) ||
+  (/^@node-llama-cpp\//.test(name) && name !== llamaPkg) ||
   (/^sherpa-onnx-(darwin|linux|win)-/.test(name) && name !== `sherpa-onnx-${platform}`) ||
   (/^@ladybugdb\/core-/.test(name) && name !== ladybugPlatformPkg) ||
   (/^@esbuild\//.test(name) && name !== esbuildPkg) ||
@@ -435,7 +455,7 @@ async function installDeps() {
   // sharp's wrapper pins both @img packages for each platform, esbuild its
   // @esbuild/<platform>; a cross-stage has the host's in the root tree, so the
   // target's come from npm at those versions.
-  for (const [wrapper, names, relocate] of [["sharp", sharpPkgs, "relocateSharp"], ["esbuild", [esbuildPkg], "relocateEsbuild"]]) {
+  for (const [wrapper, names, relocate] of [["sharp", sharpPkgs, "relocateSharp"], ["esbuild", [esbuildPkg], "relocateEsbuild"], ["node-llama-cpp", llamaPkg ? [llamaPkg] : [], "relocateLlama"]]) {
     const pins = JSON.parse(await readFile(join(nm, wrapper, "package.json"), "utf-8")).optionalDependencies ?? {};
     for (const name of names) {
       if (!pins[name]) throw new Error(`${wrapper} pins no ${name}; its platform packages changed — update ${relocate}`);
@@ -450,11 +470,13 @@ async function installDeps() {
   // The app build's fallback when esbuild's binary cannot run (src/apps/build.ts
   // loadEsbuild); this package carries the binary, so the fallback stops here.
   stubs.push("esbuild-wasm");
+  stubs.push("@reflink/reflink");
   const why = {
     "sherpa-onnx-node": "built with --no-stt",
     "@ladybugdb/core": ladybugSkip,
     "@huggingface/transformers": "the embeddings stack is left out; package:desktop --embeddings keeps it",
     "esbuild-wasm": "the package carries esbuild's own binary in native/",
+    "@reflink/reflink": "ipull's optional file cloning; strut never downloads through node-llama-cpp",
   };
   for (const name of stubs) added.push(await writeStub(name, why[name]));
 
@@ -736,6 +758,50 @@ async function relocateEsbuild() {
   log(`moved ${esbuildPkg}/${sub} (esbuild ${esbuildJson.version}, sha256 matches esbuild's record) → native/${basename(sub)}; desktop.js points ESBUILD_BINARY_PATH at it`);
 }
 
+// node-llama-cpp's binaries go into native/ too, in one folder of their own:
+// node-llama-cpp looks for the addon as <binsDir>/<folder>/llama-addon.node
+// beside _nlcBuildMetadata.json, links the ggml/llama dylibs through @rpath
+// = @loader_path, and loads the ggml backends (.so: Metal, BLAS, the CPU
+// variants) from the addon's directory, so all of them stay together, in
+// native/llama/<folder>. binsDir comes from the platform package's
+// getBinsDir() — the documented hook node-llama-cpp imports it for — which is
+// rewritten to name that folder; the package stays (package.json carries the
+// version node-llama-cpp checks against its own). The fixer calls getLlama
+// with build: "never", so a missing or broken binary is an error, never a
+// build from source or a download; and the llama.cpp sources such a build
+// would start from (llama/gitRelease.bundle, its CMake files and toolchains,
+// the addon's C++) are left out.
+const LLAMA_BINS = 'const binsDir = path.join(__dirname, "..", "bins");';
+const LLAMA_SOURCES = ["gitRelease.bundle", "addon", "CMakeLists.txt", "cmake", "toolchains", "patches", "xpack", "profiles"];
+async function relocateLlama() {
+  if (!llamaPkg) return warn(`no node-llama-cpp binaries for ${platform}: dictation's fixer is left out`);
+  const nm = join(stage, "node_modules");
+  const pkgDir = join(nm, llamaPkg);
+  const index = join(pkgDir, "dist", "index.js");
+  const src = await readFile(index, "utf-8");
+  if (src.split(LLAMA_BINS).length !== 2) throw new Error(`${llamaPkg}: dist/index.js no longer has exactly one \`${LLAMA_BINS}\`; its getBinsDir changed — update relocateLlama`);
+  const bins = join(pkgDir, "bins", llamaFolder);
+  for (const f of ["llama-addon.node", "_nlcBuildMetadata.json"]) {
+    if (!(await stat(join(bins, f)).catch(() => null))) throw new Error(`${llamaPkg}: no bins/${llamaFolder}/${f}; its layout changed — update relocateLlama`);
+  }
+  const dest = join(native, "llama", llamaFolder);
+  await mkdir(dirname(dest), { recursive: true });
+  await rename(bins, dest);
+  await rm(join(pkgDir, "bins"), { recursive: true, force: true });
+  await writeFile(
+    index,
+    src.replace(LLAMA_BINS, `// strut's package-desktop.mjs (relocateLlama): the binaries live in <stage>/native/llama/${llamaFolder}.\nconst binsDir = path.join(__dirname, "..", "..", "..", "..", "native", "llama");`),
+  );
+  const llamaDir = join(nm, "node-llama-cpp", "llama");
+  for (const f of LLAMA_SOURCES) await rm(join(llamaDir, f), { recursive: true, force: true });
+  const version = await installedVersion(join(nm, "node-llama-cpp"));
+  manifest.fixer = true;
+  manifest.llamaVersion = version;
+  await writeManifest();
+  const files = (await readdir(dest)).filter(isNative);
+  log(`moved ${llamaPkg}'s ${files.join(", ")} → native/llama/${llamaFolder}; its getBinsDir() names native/llama; left out llama.cpp's sources (${LLAMA_SOURCES.join(", ")})`);
+}
+
 // Every Mach-O in native/: no load command may name a build-machine path,
 // every @rpath dependency must be in native/, and every signature present must verify.
 function checkMachO(files) {
@@ -746,8 +812,9 @@ function checkMachO(files) {
     for (const r of rpaths(p)) if (BUILD_MACHINE_PATH.test(r)) bad.push(`${f}: LC_RPATH ${r}`);
     for (const d of linked(p)) {
       if (BUILD_MACHINE_PATH.test(d)) bad.push(`${f}: links ${d}`);
+      // Beside it: every rpath left is @loader_path.
       const m = /^@(?:rpath|loader_path)\/(.+)$/.exec(d);
-      if (m && m[1] !== f && !files.includes(m[1])) bad.push(`${f}: links ${d}, not in native/`);
+      if (m && m[1] !== basename(f) && !files.includes(join(dirname(f), m[1]))) bad.push(`${f}: links ${d}, not beside it in native/`);
     }
     const v = spawnSync("codesign", ["-v", p], { encoding: "utf-8" });
     // Upstream's x86_64 binaries ship unsigned (Intel runs them so; the host
@@ -811,13 +878,14 @@ async function report() {
   log(`staged ${stage}: ${mb(total)} total, ${rows.length - 1} packages; largest:`);
   for (const [name, size] of rows.slice(0, 8)) console.log(`    ${mb(size).padStart(7)}  ${name}`);
   // Everything the host must code-sign, in one place: the addons plus the
-  // shared libraries they link (relocateNative, relocateLadybug, relocateSharp) and
-  // esbuild's executable (relocateEsbuild), all of which must be signed
-  // and notarized inside the app bundle, not just the .node. Nothing else in
-  // the package is a binary — enforced here, because the host's signing step
-  // is "sign native/". --embeddings is the one exception: onnxruntime-node
+  // shared libraries they link (relocateNative, relocateLadybug, relocateSharp,
+  // relocateLlama) and esbuild's executable (relocateEsbuild), all of which
+  // must be signed and notarized inside the app bundle, not just the .node.
+  // Nothing else in the package is a binary — enforced here, because the
+  // host's signing step is "sign native/ and its folders". --embeddings is the one exception: onnxruntime-node
   // keeps its addons in node_modules, where its loader looks.
-  const inNative = (await readdir(native)).filter(isNative);
+  // native/ and its folders (native/llama/<folder>), as paths relative to it.
+  const inNative = (await readdir(native, { recursive: true })).filter((f) => isNative(basename(f))).sort();
   const stray = [];
   const walk = async (d) => {
     for (const e of await readdir(d, { withFileTypes: true })) {
@@ -827,7 +895,7 @@ async function report() {
     }
   };
   await walk(nm);
-  log(`native binaries the host must code-sign (${inNative.length}, all in native/):`);
+  log(`native binaries the host must code-sign (${inNative.length}, all in native/ and its folders):`);
   for (const f of inNative) console.log(`    native/${f}`);
   if (platform.startsWith("darwin-") && process.platform === "darwin") checkMachO(inNative);
   if (stray.length) {
@@ -968,6 +1036,7 @@ export default defineStep({
   if (/Warning: failed to load step/.test(output)) failures.push(`step load warning:\n${output}`);
   if (ladybug) failures.push(...(await smokeLadybug(app, tmp)));
   if (sharpPkgs.length) failures.push(...(await smokeSharp(app)));
+  if (manifest.fixer) failures.push(...(await smokeLlama(app)));
   failures.push(...(await smokeStubs(app)));
   await rm(tmp, { recursive: true, force: true });
   if (failures.length) {
@@ -977,7 +1046,8 @@ export default defineStep({
   log(
     `smoke: OK — desktop.js boots with no STRUT_* env beyond the two dirs, ready line carries port + key, ` +
       `${stt ? "sherpa addon loads" : "/audio answers 501 without sherpa"}, out-of-tree custom step resolves, an app builds with native/esbuild + kit/vendor, UI serves, exits on stdin EOF, stubs answer (${stubs.join(", ")})` +
-      `${ladybug ? ", the server boots on the Ladybug workspace, Ladybug opens + queries a database with OpenSSL and both extensions from native/" : ""}`,
+      `${ladybug ? ", the server boots on the Ladybug workspace, Ladybug opens + queries a database with OpenSSL and both extensions from native/" : ""}` +
+      `${manifest.fixer ? ", the fixer's node-llama-cpp addon loads from native/llama" : ""}`,
   );
 }
 
@@ -1061,6 +1131,45 @@ console.log(JSON.stringify({ width: meta.width, loaded }));
   return failures;
 }
 
+// Load node-llama-cpp's addon from the copy the way the fixer does (getLlama,
+// build: "never"), DYLD_* cleared, and report the GPU it got. The images it
+// loads must be in native/ (or the system's: Metal, Accelerate) and include the
+// addon from native/llama; on darwin-arm64 the GPU must be Metal.
+async function smokeLlama(app) {
+  const script = `
+const before = new Set(process.report.getReport().sharedObjects);
+const { getLlama } = await import("node-llama-cpp");
+const llama = await getLlama({ build: "never", progressLogs: false });
+const out = { gpu: llama.gpu, buildType: llama.buildType, release: llama.llamaCppRelease.release, devices: await llama.getGpuDeviceNames() };
+out.loaded = process.report.getReport().sharedObjects.filter((p) => !before.has(p));
+await llama.dispose();
+console.log(JSON.stringify(out));
+`;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DYLD_") && !k.startsWith("STRUT_") && !k.startsWith("NODE_LLAMA_CPP_")));
+  log("smoke: node-llama-cpp — load the fixer's addon from the copy (DYLD_* cleared)");
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: app, env, encoding: "utf-8" });
+  if (r.status !== 0) return [`node-llama-cpp did not load (${r.status}):\n${r.stdout}${r.stderr}`];
+  let res;
+  try {
+    res = JSON.parse(r.stdout.trim().split("\n").pop());
+  } catch {
+    return [`node-llama-cpp smoke printed no result:\n${r.stdout}${r.stderr}`];
+  }
+  const failures = [];
+  const dirs = [join(app, "native") + "/", (await realpath(join(app, "native"))) + "/"];
+  for (const p of res.loaded) if (!/^\/(System|usr\/lib)\//.test(p) && !dirs.some((d) => p.startsWith(d))) failures.push(`node-llama-cpp loaded ${p}, outside the copy's native/`);
+  if (!res.loaded.some((p) => dirs.some((d) => p === `${d}llama/${llamaFolder}/llama-addon.node`))) failures.push(`llama-addon.node not loaded from native/llama/${llamaFolder}: ${res.loaded.join(", ") || "none"}`);
+  if (res.buildType !== "prebuilt") failures.push(`node-llama-cpp's build type is ${res.buildType}, expected prebuilt`);
+  if (platform === "darwin-arm64" && res.gpu !== "metal") failures.push(`node-llama-cpp's GPU is ${res.gpu}, expected metal`);
+  if (!failures.length) {
+    log(
+      `smoke: node-llama-cpp OK — addon loaded (llama.cpp ${res.release}), GPU ${res.gpu === false ? "none (CPU)" : `${res.gpu}: ${res.devices.join(", ")}`}; loaded from native/:\n    ` +
+        res.loaded.filter((p) => dirs.some((d) => p.startsWith(d))).join("\n    "),
+    );
+  }
+  return failures;
+}
+
 // Each stub answers an import with its own error, from the app root (where
 // build/ resolves from) — proof resolution stops inside the stage.
 async function smokeStubs(app) {
@@ -1091,6 +1200,7 @@ if (ladybug) {
 }
 await relocateSharp();
 await relocateEsbuild();
+await relocateLlama();
 await report();
 if (smoke) await smokeTest();
 if (tar) await tarball();

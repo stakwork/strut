@@ -1,0 +1,86 @@
+{"kind":"lexicon","id":"learn","entries":[{"name":"Stakwork","type":"Organization","written":["Stakwork"],"heard":["stack work"]},{"name":"Bitcoin","type":"Lingo","written":["Bitcoin","BTC"],"heard":[{"value":"bee tee see","form":"BTC"}]},{"name":"Sphinx","type":"Project","written":["Sphinx"],"heard":["fix"]},{"name":"Peel","type":"Project","written":["Peel"]},{"name":"LSAT","type":"Lingo","written":["LSAT"],"heard":["el sat"],"off":true},{"name":"Jen","type":"Person","written":["Jen"]}],"undone":[{"value":"k p eye","written":"KPI"}]}
+{"kind":"lexicon","id":"fix","entries":[{"name":"Stakwork","type":"Organization","written":["Stakwork"],"heard":["stack work","stock work"]},{"name":"Bitcoin","type":"Lingo","written":["Bitcoin","BTC"],"heard":[{"value":"bee tee see","form":"BTC"}]},{"name":"Sphinx","type":"Project","written":["Sphinx"],"heard":["fix"]},{"name":"P8","type":"Lingo","written":["P8"],"heard":["p eight"]},{"name":"KPI","type":"Lingo","written":["KPI"],"heard":["k p i"]},{"name":"HiveMind","type":"Project","written":["HiveMind"],"heard":["hive mind"]},{"name":"Kubernetes","type":"Lingo","written":["Kubernetes"],"heard":["cooper netties"]},{"name":"Supabase","type":"Organization","written":["Supabase"],"heard":["super base"]},{"name":"Tauri","type":"Project","written":["Tauri"],"heard":["tory"]},{"name":"Strut","type":"Project","written":["Strut"]},{"name":"Peel","type":"Project","written":["Peel"]},{"name":"Jen","type":"Person","written":["Jen"]},{"name":"LSAT","type":"Lingo","written":["LSAT"],"heard":["el sat"],"off":true}],"undone":[]}
+{"kind":"learn","id":"l-stack-work","lexicon":"learn","typed":"Ask the stack work team","edited":"Ask the Stakwork team","expect":[{"heard":"stack work","written":"Stakwork"}],"note":"a name broken up"}
+{"kind":"learn","id":"l-stackwork","lexicon":"learn","typed":"Hello I work for Stackwork","edited":"Hello I work for Stakwork","expect":[{"heard":"Stackwork","written":"Stakwork"}],"note":"a long name misspelt"}
+{"kind":"learn","id":"l-stockwork","lexicon":"learn","typed":"I work for stockwork","edited":"I work for Stakwork","expect":[{"heard":"stockwork","written":"Stakwork"}]}
+{"kind":"learn","id":"l-p-eight","lexicon":"learn","typed":"send p eight now","edited":"send P8 now","expect":[{"heard":"p eight","written":"P8"}],"note":"spelled-out sounds of a code"}
+{"kind":"learn","id":"l-p-eight-long","lexicon":"learn","typed":"I need to send p eight now, before the meeting.","edited":"I need to send P8 now, before the meeting.","expect":[{"heard":"p eight","written":"P8"}]}
+{"kind":"learn","id":"l-kpi","lexicon":"learn","typed":"the k p i number","edited":"the KPI number","expect":[{"heard":"k p i","written":"KPI"}],"note":"letters run apart"}
+{"kind":"learn","id":"l-hivemind","lexicon":"learn","typed":"ask hivemind now","edited":"ask HiveMind now","expect":[{"heard":"hivemind","written":"HiveMind"}],"note":"casing of a new name"}
+{"kind":"learn","id":"l-hivemind-alone","lexicon":"learn","typed":"hivemind","edited":"HiveMind","expect":[{"heard":"hivemind","written":"HiveMind"}],"note":"one-word dictation"}
+{"kind":"learn","id":"l-bee-see","lexicon":"learn","typed":"send it in bee see","edited":"send it in BTC","expect":[{"heard":"bee see","written":"BTC"}],"note":"an alias of a known word"}
+{"kind":"learn","id":"l-supabase","lexicon":"learn","typed":"we deploy on super base","edited":"we deploy on Supabase","expect":[{"heard":"super base","written":"Supabase"}]}
+{"kind":"learn","id":"l-kubernetes","lexicon":"learn","typed":"talk to the cooper netties cluster","edited":"talk to the Kubernetes cluster","expect":[{"heard":"cooper netties","written":"Kubernetes"}]}
+{"kind":"learn","id":"l-tauri","lexicon":"learn","typed":"build the desktop app in tory","edited":"build the desktop app in Tauri","expect":[{"heard":"tory","written":"Tauri"}]}
+{"kind":"learn","id":"l-sphinks","lexicon":"learn","typed":"message me on sphinks","edited":"message me on Sphinx","expect":[{"heard":"sphinks","written":"Sphinx"}]}
+{"kind":"learn","id":"l-fix-sphinx","lexicon":"learn","typed":"message me on fix tonight","edited":"message me on Sphinx tonight","expect":[{"heard":"fix","written":"Sphinx"}],"note":"fix is a mishearing of Sphinx here"}
+{"kind":"learn","id":"l-ollama","lexicon":"learn","typed":"start the oh llama server","edited":"start the Ollama server","expect":[{"heard":"oh llama","written":"Ollama"}]}
+{"kind":"learn","id":"l-two-pairs","lexicon":"learn","typed":"ask stack work about the k p i","edited":"ask Stakwork about the KPI","expect":[{"heard":"stack work","written":"Stakwork"},{"heard":"k p i","written":"KPI"}],"note":"two mishearings in one edit"}
+{"kind":"learn","id":"l-github","lexicon":"learn","typed":"open the get hub repo","edited":"open the GitHub repo","expect":[{"heard":"get hub","written":"GitHub"}]}
+{"kind":"learn","id":"l-langchain","lexicon":"learn","typed":"we use lang chain for that","edited":"we use LangChain for that","expect":[{"heard":"lang chain","written":"LangChain"}]}
+{"kind":"learn","id":"l-pytorch","lexicon":"learn","typed":"train it with pie torch","edited":"train it with PyTorch","expect":[{"heard":"pie torch","written":"PyTorch"}]}
+{"kind":"learn","id":"l-vercel","lexicon":"learn","typed":"ship the site on ver cell","edited":"ship the site on Vercel","expect":[{"heard":"ver cell","written":"Vercel"}]}
+{"kind":"learn","id":"l-postgres","lexicon":"learn","typed":"the post gres database is full","edited":"the Postgres database is full","expect":[{"heard":"post gres","written":"Postgres"}]}
+{"kind":"learn","id":"l-mixed","lexicon":"learn","typed":"ask jon at stack work","edited":"ask Jen at Stakwork","expect":[{"heard":"stack work","written":"Stakwork"}],"note":"a mishearing beside a changed name"}
+{"kind":"learn","id":"l-kates","lexicon":"learn","typed":"restart the kates cluster","edited":"restart the k8s cluster","expect":[{"heard":"kates","written":"k8s"}]}
+{"kind":"learn","id":"n-ph","lexicon":"learn","typed":"send PH now","edited":"send P8 now","expect":[],"note":"PH is something you could mean"}
+{"kind":"learn","id":"n-their","lexicon":"learn","typed":"their team is here","edited":"there team is here","expect":[],"note":"everyday swap"}
+{"kind":"learn","id":"n-there","lexicon":"learn","typed":"is there car outside","edited":"is their car outside","expect":[],"note":"everyday swap"}
+{"kind":"learn","id":"n-btc-bitcoin","lexicon":"learn","typed":"send BTC now","edited":"send Bitcoin now","expect":[],"note":"two right ways to write one thing"}
+{"kind":"learn","id":"n-meeting","lexicon":"learn","typed":"ask the meeting team","edited":"ask the Stakwork team","expect":[],"note":"a changed mind"}
+{"kind":"learn","id":"n-i","lexicon":"learn","typed":"i think so","edited":"I think so","expect":[],"note":"capitalising a letter"}
+{"kind":"learn","id":"n-apple","lexicon":"learn","typed":"apple pie","edited":"Apple pie","expect":[],"note":"capitalising an everyday word"}
+{"kind":"learn","id":"n-jon","lexicon":"learn","typed":"ask jon now","edited":"ask Jen now","expect":[],"note":"a different person"}
+{"kind":"learn","id":"n-sarah","lexicon":"learn","typed":"ask sarah now","edited":"ask Sara now","expect":[],"note":"a different spelling of a name, chosen"}
+{"kind":"learn","id":"n-michael","lexicon":"learn","typed":"email Michael about it","edited":"email Michelle about it","expect":[],"note":"a different person"}
+{"kind":"learn","id":"n-lsat-off","lexicon":"learn","typed":"the el sat token","edited":"the LSAT token","expect":[],"note":"word turned off for dictation (filtered)"}
+{"kind":"learn","id":"n-undone","lexicon":"learn","typed":"the k p eye number","edited":"the KPI number","expect":[],"note":"pair the user undid (filtered)"}
+{"kind":"learn","id":"n-stadium","lexicon":"learn","typed":"I work for stadium","edited":"I work for Stakwork","expect":[],"note":"a different word altogether"}
+{"kind":"learn","id":"n-cut","lexicon":"learn","typed":"ask the team about it","edited":"ask the team","expect":[],"note":"a cut"}
+{"kind":"learn","id":"n-add","lexicon":"learn","typed":"send it now","edited":"send it now please","expect":[],"note":"an addition"}
+{"kind":"learn","id":"n-rewrite","lexicon":"learn","typed":"ask the stack work team","edited":"Let's talk tomorrow instead","expect":[],"note":"a sentence rewrite"}
+{"kind":"learn","id":"n-rewrite-2","lexicon":"learn","typed":"can you maybe take a look at it when you get a chance","edited":"please review it today","expect":[],"note":"a rewrite"}
+{"kind":"learn","id":"n-punct","lexicon":"learn","typed":"ok lets go","edited":"OK, let's go.","expect":[],"note":"punctuation and casing"}
+{"kind":"learn","id":"n-synonym","lexicon":"learn","typed":"the big release is Friday","edited":"the major release is Friday","expect":[],"note":"a word choice"}
+{"kind":"learn","id":"n-tense","lexicon":"learn","typed":"we fix it","edited":"we fixed it","expect":[],"note":"fix out of context: a tense change"}
+{"kind":"learn","id":"n-fix-patch","lexicon":"learn","typed":"we need to fix the login bug","edited":"we need to patch the login bug","expect":[],"note":"fix out of context"}
+{"kind":"learn","id":"n-number","lexicon":"learn","typed":"the meeting is at 3","edited":"the meeting is at 4","expect":[],"note":"a changed fact"}
+{"kind":"learn","id":"n-day","lexicon":"learn","typed":"let's meet on Tuesday","edited":"let's meet on Wednesday","expect":[],"note":"a changed fact"}
+{"kind":"learn","id":"n-filler","lexicon":"learn","typed":"so um we ship today","edited":"so we ship today","expect":[],"note":"the user removed a filler"}
+{"kind":"learn","id":"n-two","lexicon":"learn","typed":"send it two him","edited":"send it to him","expect":[],"note":"everyday homophone"}
+{"kind":"learn","id":"n-format","lexicon":"learn","typed":"growth was twenty five percent","edited":"growth was 25%","expect":[],"note":"number formatting"}
+{"kind":"learn","id":"n-possessive","lexicon":"learn","typed":"the Stakwork team","edited":"Stakwork's team","expect":[],"note":"grammar edit around a known word"}
+{"kind":"fix","id":"f-stack-work","lexicon":"fix","transcript":"Ask the stack work team.","expect":"Ask the Stakwork team."}
+{"kind":"fix","id":"f-stackwork","lexicon":"fix","transcript":"I work for stackwork now","expect":"I work for Stakwork now","note":"a new spelling, found by fuzzy recall"}
+{"kind":"fix","id":"f-stockwork","lexicon":"fix","transcript":"Hello, I work for Stockwork.","expect":"Hello, I work for Stakwork."}
+{"kind":"fix","id":"f-p-eight","lexicon":"fix","transcript":"send p eight now","expect":"send P8 now"}
+{"kind":"fix","id":"f-btc","lexicon":"fix","transcript":"send it in bee tee see","expect":"send it in BTC"}
+{"kind":"fix","id":"f-bitcoin","lexicon":"fix","transcript":"we raised it in bit coin","expect":"we raised it in Bitcoin"}
+{"kind":"fix","id":"f-kpi","lexicon":"fix","transcript":"check the k p i dashboard","expect":"check the KPI dashboard"}
+{"kind":"fix","id":"f-hivemind","lexicon":"fix","transcript":"hive mind is down again","expect":"HiveMind is down again"}
+{"kind":"fix","id":"f-supabase","lexicon":"fix","transcript":"deploy it on super base tonight","expect":"deploy it on Supabase tonight"}
+{"kind":"fix","id":"f-sphinx-in","lexicon":"fix","transcript":"I'll ping you on fix tonight","expect":"I'll ping you on Sphinx tonight","note":"fix is Sphinx in context"}
+{"kind":"fix","id":"f-sphinx-both","lexicon":"fix","transcript":"can you fix the fix integration","expect":"can you fix the Sphinx integration","note":"one fix stays, one is Sphinx"}
+{"kind":"fix","id":"n-fix-out","lexicon":"fix","transcript":"we need to fix the login bug","expect":"we need to fix the login bug","note":"fix out of context"}
+{"kind":"fix","id":"n-fix-out-2","lexicon":"fix","transcript":"can you fix it before lunch","expect":"can you fix it before lunch"}
+{"kind":"fix","id":"f-tauri","lexicon":"fix","transcript":"build the desktop app with tory","expect":"build the desktop app with Tauri"}
+{"kind":"fix","id":"n-tory","lexicon":"fix","transcript":"the tory party won the vote","expect":"the tory party won the vote","note":"tory the politics, not Tauri"}
+{"kind":"fix","id":"f-peel","lexicon":"fix","transcript":"the peel build is green","expect":"the Peel build is green"}
+{"kind":"fix","id":"n-peel","lexicon":"fix","transcript":"peel the oranges before lunch","expect":"peel the oranges before lunch","note":"everyday peel"}
+{"kind":"fix","id":"f-strut","lexicon":"fix","transcript":"push it to strut main","expect":"push it to Strut main"}
+{"kind":"fix","id":"n-strut","lexicon":"fix","transcript":"the peacock began to strut","expect":"the peacock began to strut","note":"everyday strut"}
+{"kind":"fix","id":"n-jon","lexicon":"fix","transcript":"ask jon about the release","expect":"ask jon about the release","note":"Jon is not Jen"}
+{"kind":"fix","id":"n-lsat-off","lexicon":"fix","transcript":"the el sat token is live","expect":"the el sat token is live","note":"turned off for dictation"}
+{"kind":"fix","id":"n-stack-break","lexicon":"fix","transcript":"We need a stack. Work starts Monday.","expect":"We need a stack. Work starts Monday.","note":"not across a sentence break"}
+{"kind":"fix","id":"n-stadium","lexicon":"fix","transcript":"I work at the stadium network","expect":"I work at the stadium network"}
+{"kind":"fix","id":"n-clean","lexicon":"fix","transcript":"Stakwork ships Peel on Friday.","expect":"Stakwork ships Peel on Friday.","note":"already right"}
+{"kind":"fix","id":"n-nothing","lexicon":"fix","transcript":"Let's grab lunch tomorrow.","expect":"Let's grab lunch tomorrow.","note":"no candidates"}
+{"kind":"fix","id":"n-like","lexicon":"fix","transcript":"I like the new design","expect":"I like the new design","note":"like is not a filler here"}
+{"kind":"fix","id":"f-fillers","lexicon":"fix","transcript":"um so the deploy is uh done","expect":"So the deploy is done"}
+{"kind":"fix","id":"f-filler-commas","lexicon":"fix","transcript":"The API is, um, really slow today.","expect":"The API is really slow today."}
+{"kind":"fix","id":"f-stutter","lexicon":"fix","transcript":"I I think we should ship it","expect":"I think we should ship it"}
+{"kind":"fix","id":"f-stutter-the","lexicon":"fix","transcript":"the the build failed again","expect":"The build failed again"}
+{"kind":"fix","id":"f-self-correct-day","lexicon":"fix","transcript":"let's meet on Tuesday, no, Wednesday","expect":"let's meet on Wednesday","note":"self-correction"}
+{"kind":"fix","id":"f-self-correct-time","lexicon":"fix","transcript":"the meeting is at three, I mean four","expect":"the meeting is at four","note":"self-correction"}
+{"kind":"fix","id":"f-two-vocab","lexicon":"fix","transcript":"send three bee tee see to the stack work wallet","expect":"send three BTC to the Stakwork wallet"}
+{"kind":"fix","id":"f-vocab-and-filler","lexicon":"fix","transcript":"we should, uh, move to cooper netties","expect":"we should move to Kubernetes"}

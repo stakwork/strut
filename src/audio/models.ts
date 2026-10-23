@@ -4,9 +4,14 @@
  * GitHub release asset with its sha256, so a download is verifiable and a
  * server image can pre-bake the same files.
  *
- * Only streaming transducers are listed: hotwords (§4.2) need a transducer,
- * and the NeMo online transducer in sherpa is greedy-only, so `hotwords`
- * records which entries can be biased.
+ * Transducers only: hotwords (§4.2) need a transducer, and the NeMo
+ * transducer in sherpa is greedy-only, so `hotwords` records which entries
+ * can be biased. Streaming entries serve `/audio/stream` and
+ * `/audio/transcribe`; an `offline` one (Parakeet) decodes a whole clip at
+ * once and serves `/audio/transcribe` only.
+ *
+ * The dictation catalog (`DICTATION_MODELS`, plans/dictation-models.md) is
+ * what a user picks from: some of these speech models plus the fixer models.
  */
 import { join } from "node:path";
 
@@ -23,6 +28,9 @@ export interface SttModel {
   chunkMs: number;
   /** Accepts a hotwords list (`modified_beam_search` transducer). */
   hotwords: boolean;
+  /** Decodes a whole clip at once (sherpa's OfflineRecognizer): no streams,
+   *  `/audio/transcribe` only. `chunkMs` and `tailPadMs` do not apply. */
+  offline?: boolean;
   /** Emits casing and punctuation. */
   cased: boolean;
   /** Silence to feed after the last audio so the final chunk flushes (ms). */
@@ -85,6 +93,20 @@ export const STT_MODELS: readonly SttModel[] = [
     tailPadMs: 1000,
     description: "NVIDIA Nemotron-speech streaming 0.6B, 80 ms chunks (int8). Cased, punctuated, the most accurate; greedy-only and ~0.5× real-time CPU on two threads.",
   },
+  {
+    id: "parakeet-tdt-en-0.6b-v2",
+    url: `${RELEASE}/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2`,
+    sha256: "157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad",
+    bytes: 482468385,
+    archiveDir: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+    language: "en",
+    chunkMs: 0,
+    hotwords: false,
+    cased: true,
+    tailPadMs: 0,
+    offline: true,
+    description: "NVIDIA Parakeet TDT 0.6B v2 (int8), offline. Cased, punctuated, among the most accurate English models; decodes a whole clip at once, so transcription only, no live partials.",
+  },
 ];
 
 export const DEFAULT_MODEL = "zipformer-en-kroko";
@@ -125,4 +147,101 @@ export function pickModelFiles(entries: readonly string[]): {
     joiner: pick(/^joiner.*\.onnx$/),
     tokens: pick(/^tokens\.txt$/),
   };
+}
+
+// ── The dictation catalog: what a user picks (plans/dictation-models.md) ───
+
+/**
+ * A fixer: a small instruct model that scores what dictation's vocabulary
+ * pipeline asks (audio/lingo.ts, run by audio/fixer.ts on node-llama-cpp with
+ * Metal). The spike (plans/dictation-models.md, phase 1) picked llama.cpp
+ * over transformers.js and the 1.7B as the default. Qwen publishes only Q8_0
+ * GGUFs of these sizes, so the Q4_K_M files are unsloth's, pinned to a
+ * commit; the sha256 and size were verified by downloading each file.
+ */
+export interface FixerModel {
+  id: string;
+  url: string;
+  /** sha256 of the file. */
+  sha256: string;
+  bytes: number;
+  /** The file's name under the model's dir. */
+  file: string;
+  runtime: "llama.cpp";
+  /** How much more weight (nats) "yes" needs than "no" before an edit is
+   *  learned: the 0.6B leans yes on everything (tuned on the eval set). */
+  learnMargin: number;
+  description: string;
+}
+
+const UNSLOTH = "https://huggingface.co/unsloth";
+
+export const FIXER_MODELS: readonly FixerModel[] = [
+  {
+    id: "qwen3-0.6b-q4",
+    url: `${UNSLOTH}/Qwen3-0.6B-GGUF/resolve/50968a4468ef4233ed78cd7c3de230dd1d61a56b/Qwen3-0.6B-Q4_K_M.gguf`,
+    sha256: "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a",
+    bytes: 396705472,
+    file: "Qwen3-0.6B-Q4_K_M.gguf",
+    runtime: "llama.cpp",
+    learnMargin: 1,
+    description: "Qwen3 0.6B instruct (GGUF Q4_K_M). The small fixer: fastest, least able to judge context.",
+  },
+  {
+    id: "qwen3-1.7b-q4",
+    url: `${UNSLOTH}/Qwen3-1.7B-GGUF/resolve/d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf`,
+    sha256: "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
+    bytes: 1107409472,
+    file: "Qwen3-1.7B-Q4_K_M.gguf",
+    runtime: "llama.cpp",
+    learnMargin: 0,
+    description: "Qwen3 1.7B instruct (GGUF Q4_K_M). The default fixer: better at telling a mishearing from a rewrite, about twice the 0.6B's time.",
+  },
+];
+
+export type DictationModelKind = "speech" | "fixer";
+
+/** One pickable model: a speech model (an `STT_MODELS` entry) or a fixer. */
+export interface DictationModel {
+  id: string;
+  kind: DictationModelKind;
+  /** What a picker shows: its name and one line about it. */
+  name: string;
+  summary: string;
+  /** The one a picker suggests (the 1.7B fixer). */
+  recommended: boolean;
+  url: string;
+  sha256: string;
+  bytes: number;
+  description: string;
+  /** What runs it: sherpa streaming or offline, or the fixer's runtime. */
+  runtime: "sherpa-online" | "sherpa-offline" | FixerModel["runtime"];
+}
+
+/** The speech models a user picks from, in the order shown. */
+export const DICTATION_SPEECH = ["zipformer-en-kroko", "parakeet-tdt-en-0.6b-v2"] as const;
+
+/** How a picker shows each model. */
+const SHOWN: Record<string, Pick<DictationModel, "name" | "summary" | "recommended">> = {
+  "zipformer-en-kroko": { name: "Kroko", summary: "Fastest and smallest.", recommended: false },
+  "parakeet-tdt-en-0.6b-v2": { name: "Parakeet", summary: "More accurate with names and jargon.", recommended: false },
+  "qwen3-0.6b-q4": { name: "Qwen3 0.6B", summary: "Small and capable.", recommended: false },
+  "qwen3-1.7b-q4": { name: "Qwen3 1.7B", summary: "Most accurate at learning your lingo.", recommended: true },
+};
+
+export const DICTATION_MODELS: readonly DictationModel[] = [
+  ...DICTATION_SPEECH.map((id): DictationModel => {
+    const m = requireModel(id);
+    return { id, kind: "speech", ...SHOWN[id]!, url: m.url, sha256: m.sha256, bytes: m.bytes, description: m.description, runtime: m.offline ? "sherpa-offline" : "sherpa-online" };
+  }),
+  ...FIXER_MODELS.map((m): DictationModel => ({ id: m.id, kind: "fixer", ...SHOWN[m.id]!, url: m.url, sha256: m.sha256, bytes: m.bytes, description: m.description, runtime: m.runtime })),
+];
+
+export function findFixer(id: string): FixerModel | undefined {
+  return FIXER_MODELS.find((m) => m.id === id);
+}
+
+/** Fixer models live under `<dir>/fixer/<id>/`. */
+export function fixerModelPath(modelDir: string, id: string): string {
+  return join(modelDir, "fixer", id);
 }
