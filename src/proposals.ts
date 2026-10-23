@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { accessedNodesOf, takeUsage, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
 import { withLock } from "./jobs.js";
+import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
 
 /**
@@ -391,8 +392,10 @@ async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: s
     ...(by ? { actor: by } : {}),
     ...(p.by.principal ? { principal: p.by.principal } : {}),
     ...(mcp?.length ? { mcp } : {}),
+    // The proposing workflow's reach holds for the apply too (src/reach.ts).
+    ...((await reachPolicyOf(bound)?.aiWorkflow(p.by.workflow).catch(() => true)) ? { aiAuthored: true } : {}),
   };
-  return def.run(input, ctx);
+  return def.run(input, withinReach(p.step, input, ctx));
 }
 
 // ── what the agent is told (§5) ────────────────────────────────────────────

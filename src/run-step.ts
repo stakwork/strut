@@ -43,6 +43,8 @@ export function runStepId(type: string): string {
 }
 
 export interface RunStepOptions {
+  /** Held to the host's reach as a workflow the AI published is (src/reach.ts). */
+  aiAuthored?: boolean;
   /** The step's config (same shape as a workflow step's `config`). Templates
    *  like `{{ input.* }}` / `{{ params.* }}` are resolved. */
   config?: Record<string, unknown>;
@@ -133,6 +135,7 @@ export async function runSingleStep(
     ...(opts.principal ? { principal: opts.principal } : {}),
     ...(opts.job ? { job: opts.job } : {}),
     ...(opts.app ? { app: opts.app } : {}),
+    ...(opts.aiAuthored ? { aiAuthored: true } : {}),
     onEvent: (e) => {
       events.push(e);
     },

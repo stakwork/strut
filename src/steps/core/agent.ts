@@ -11,6 +11,7 @@ import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMa
 import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
 import { connectMcpTools } from "../../mcp-servers.js";
+import { withinReach } from "../../reach.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
 import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
@@ -758,7 +759,7 @@ export function buildRegistryTools(
           ? { ...base, agentTool: true, path: options.strutToolPath }
           : { ...base, agentTool: true };
         if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
-        return def.run(parsed, childCtx);
+        return def.run(parsed, withinReach(stepType, parsed, childCtx));
       },
       toModelOutput: ({ output }: { output: unknown }) => registryToolModelOutput(output),
     });

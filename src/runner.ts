@@ -22,6 +22,7 @@ import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tally
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
+import { reachPolicyOf, withinReach } from "./reach.js";
 import { peerSessionId, type SessionsCapability } from "./session-store.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
@@ -101,6 +102,9 @@ export interface RunOptions<TServices = unknown> {
   automation?: { id: string };
   /** Recorded on a check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
+  /** The run is the AI's whatever its workflow (src/reach.ts): the meta
+   *  surface's single-step runs, whose config a model wrote. */
+  aiAuthored?: boolean;
   /** Who launched the run and who pays for it (plans/mothership-cost-control.md
    *  §2). Recorded on `run.start` and the summary, handed to every step as
    *  `ctx.actor` / `ctx.principal`. The launcher resolves them; the runner
@@ -206,6 +210,14 @@ function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined,
   return { ...(services as object), sessions: view } as TServices;
 }
 
+/** Is `workflow` one the AI published, on a strut with `builder.reach`
+ *  (src/reach.ts)? A publisher that cannot be read counts as the AI's. */
+async function aiAuthored(services: unknown, workflow: string): Promise<boolean> {
+  const policy = reachPolicyOf(services);
+  if (!policy) return false;
+  return policy.aiWorkflow(workflow).catch(() => true);
+}
+
 /** Everything the execution tree threads through unchanged — bundled so the
  *  recursive executors don't each grow another positional parameter. */
 interface Exec {
@@ -224,6 +236,9 @@ interface Exec {
   automation?: { id: string };
   mcp?: McpServer[];
   attachments?: RunAttachment[];
+  /** This frame is a workflow the AI published, or runs under one
+   *  (`StepContext.aiAuthored`, src/reach.ts). */
+  aiAuthored?: boolean;
   /** Run-scoped disposers registered through `ctx.onRunEnd` — ONE list per
    *  run, shared by every frame (subflow, loop body, an agent's tool-call
    *  steps), drained newest-first in `runWorkflow`'s `finally`. */
@@ -396,6 +411,7 @@ export async function runWorkflow<TServices = unknown>(
     automation: opts?.automation,
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
+    ...(opts?.aiAuthored || (await aiAuthored(services, wfName)) ? { aiAuthored: true } : {}),
     disposers: [],
   };
 
@@ -858,7 +874,7 @@ async function dispatchStep(
       const validConfig = def.input.parse(resolvedConfig ?? {});
 
       const stepJournal = sliceJournal(exec.journal, path);
-      const ctx: StepContext<unknown> = {
+      const ctx: StepContext<unknown> = withinReach(step.type, validConfig, {
         runId: exec.runId,
         path,
         scope,
@@ -881,7 +897,8 @@ async function dispatchStep(
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),
-      };
+        ...(exec.aiAuthored ? { aiAuthored: true } : {}),
+      });
 
       if (exec.controller) {
         // checkpoint → beginUnit with no interleaving await, so a pause can
@@ -1215,7 +1232,9 @@ async function executeSubflow(
     throw new Error(`subflow step "${step.id}": params must be an object`);
   }
   const params = { ...(stepParams as Record<string, unknown> | undefined), ...exec.paramOverrides?.[childFlow.name] };
-  return executeFlow(childFlow, validatedInput, exec, path, params);
+  // Once a frame is the AI's, everything under it is (src/reach.ts).
+  const childExec = !exec.aiAuthored && (await aiAuthored(exec.services, childFlow.name)) ? { ...exec, aiAuthored: true } : exec;
+  return executeFlow(childFlow, validatedInput, childExec, path, params);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────

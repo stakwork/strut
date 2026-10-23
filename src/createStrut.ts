@@ -73,7 +73,8 @@ import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
 import { grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
-import { buildAuthoringCapability } from "./authoring.js";
+import { AI_PUBLISHER, buildAuthoringCapability } from "./authoring.js";
+import type { ReachPolicy } from "./reach.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
@@ -340,8 +341,9 @@ export interface StrutOptions<TServices = unknown> {
    *  meta/* authoring twins as its agent's tools, the web tools as its only
    *  built-ins, the `Workflow Builder` page in its prompt — `peer: true`,
    *  so another strut may launch it as published. Seeded as `job` is, with
-   *  the same host delta plus `peer: false` to close it to peers. `false`
-   *  seeds nothing. */
+   *  the same host delta plus `peer: false` to close it to peers, and
+   *  `reach`: what a workflow it publishes may touch, and no step code
+   *  (src/reach.ts; none set = no limit, as before). `false` seeds nothing. */
   builder?: false | BuilderSeedOptions;
   /** `strut/views` (`src/apps/views-seed.ts`, plans/apps.md §3.3): strut's
    *  own components — RunTimeline, RunGraph, LaunchForm, … — as an app other
@@ -971,6 +973,8 @@ export async function createStrut<TServices = unknown>(
   const chatSystem: StrutOptions["chatSystem"] =
     opts.chatSystem ?? (graph ? () => builderSystem({ graph, registry, services }) : undefined);
 
+  // What the AI may publish, when the host says (src/reach.ts).
+  const reach = opts.builder ? opts.builder.reach : undefined;
   async function rebuildRegistry(): Promise<void> {
     if (registryWasInjected) return; // consumer owns the registry
     const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
@@ -1171,6 +1175,18 @@ export async function createStrut<TServices = unknown>(
   // (EVOLVE_SPEC §5). Everything it publishes is stamped publisher "ai" and
   // it publishes only over that stamped set; it runs and inspects anything
   // but what is sealed (src/sealed.ts: a grading harness, a grader step).
+  if (reach) {
+    // Frozen, and a copy: a step holds the bag, and must not widen it.
+    const policy: ReachPolicy = Object.freeze({
+      reach: Object.freeze({
+        tools: Object.freeze([...(reach.tools ?? [])]) as string[],
+        builtins: Object.freeze([...(reach.builtins ?? [])]) as string[],
+        secrets: Object.freeze([...(reach.secrets ?? [])]) as string[],
+      }),
+      aiWorkflow: async (name: string) => (await workspace.getWorkflowMetadata(name))?.publisher === AI_PUBLISHER,
+    });
+    Object.defineProperty(services, "reach", { value: policy, enumerable: true, writable: false, configurable: false });
+  }
   if (!(services as Record<string, unknown>)["authoring"]) {
     (services as Record<string, unknown>)["authoring"] = buildAuthoringCapability({
       workspace,
@@ -1186,6 +1202,7 @@ export async function createStrut<TServices = unknown>(
         return registry;
       },
       ...(secretsInjected ? {} : { secrets: secretStore }),
+      ...(reach ? { reach } : {}),
     });
   }
 
