@@ -205,6 +205,11 @@ export type DictationModelKind = "speech" | "fixer";
 export interface DictationModel {
   id: string;
   kind: DictationModelKind;
+  /** What a picker shows: its name and one line about it. */
+  name: string;
+  summary: string;
+  /** The one a picker suggests (the 1.7B fixer). */
+  recommended: boolean;
   url: string;
   sha256: string;
   bytes: number;
@@ -216,12 +221,20 @@ export interface DictationModel {
 /** The speech models a user picks from, in the order shown. */
 export const DICTATION_SPEECH = ["zipformer-en-kroko", "parakeet-tdt-en-0.6b-v2"] as const;
 
+/** How a picker shows each model. */
+const SHOWN: Record<string, Pick<DictationModel, "name" | "summary" | "recommended">> = {
+  "zipformer-en-kroko": { name: "Kroko", summary: "Fastest and smallest.", recommended: false },
+  "parakeet-tdt-en-0.6b-v2": { name: "Parakeet", summary: "More accurate with names and jargon.", recommended: false },
+  "qwen3-0.6b-q4": { name: "Qwen3 0.6B", summary: "Small and capable.", recommended: false },
+  "qwen3-1.7b-q4": { name: "Qwen3 1.7B", summary: "Most accurate at learning your lingo.", recommended: true },
+};
+
 export const DICTATION_MODELS: readonly DictationModel[] = [
   ...DICTATION_SPEECH.map((id): DictationModel => {
     const m = requireModel(id);
-    return { id, kind: "speech", url: m.url, sha256: m.sha256, bytes: m.bytes, description: m.description, runtime: m.offline ? "sherpa-offline" : "sherpa-online" };
+    return { id, kind: "speech", ...SHOWN[id]!, url: m.url, sha256: m.sha256, bytes: m.bytes, description: m.description, runtime: m.offline ? "sherpa-offline" : "sherpa-online" };
   }),
-  ...FIXER_MODELS.map((m): DictationModel => ({ id: m.id, kind: "fixer", url: m.url, sha256: m.sha256, bytes: m.bytes, description: m.description, runtime: m.runtime })),
+  ...FIXER_MODELS.map((m): DictationModel => ({ id: m.id, kind: "fixer", ...SHOWN[m.id]!, url: m.url, sha256: m.sha256, bytes: m.bytes, description: m.description, runtime: m.runtime })),
 ];
 
 export function findFixer(id: string): FixerModel | undefined {

@@ -1112,10 +1112,11 @@ client:
 
 | Step | Config | Output |
 | ---- | ------ | ------ |
-| `dictation/models` | `{}` | `{ models: [{ id, kind: "speech" \| "fixer", bytes, description, state: "available" \| "downloading" \| "installed", progress?, selected, error? }] }` — `progress` 0..1 while downloading, `selected` the user's pick for its kind, `error` why the last download failed |
+| `dictation/models` | `{}` | `{ models: [{ id, kind: "speech" \| "fixer", name, summary, recommended, bytes, description, state: "available" \| "downloading" \| "installed", progress?, downloaded?, selected, active, removable, error? }] }` — `name` / `summary` what a picker shows, `recommended` true for `qwen3-1.7b-q4` only; `progress` 0..1 and `downloaded` (bytes) while downloading; `selected` the user's pick for its kind, `active` what strut uses now (the installed speech pick, else the default speech model; the installed fixer pick — differs from `selected` while a pick downloads); `removable` false for an active model and the default speech model; `error` why the last download failed |
 | `dictation/use` | `{ speech?, fixer? }` — `fixer: null` is none | the same list. A pick that is not installed starts downloading in the background (sha256 checked, extracted into the model dir) and is used once installed; until then dictation keeps to what it had. A speech model is refused where sherpa cannot run |
-| `dictation/remove-model` | `{ id }` | the same list. Deletes the model's files; a removed speech pick goes back to the default, a removed fixer pick to none. Refused while it downloads |
-| `dictation/correction` | `{ typed, edited }` | `{ learned: [{ heard, written, undo: string[] }] }` — what the user's edit of dictation's text teaches. Send it once the edit settles |
+| `dictation/remove-model` | `{ id }` | the same list. Deletes the model's files. Refused for a model not `removable` (active, or the default speech model) and while it downloads; a pick removed before it was installed goes back to the default speech model, or to no fixer |
+| `dictation/correction` | `{ typed, edited }` (each ≤ 20,000 characters) | `{ learned: [{ heard, written, undo: string[] }] }` — what the user's edit of dictation's text teaches. Send it once the edit settles. With no fixer `active`, `learned` is always empty: a client need not send edits then |
+| `dictation/enable` | `{ ref_id, on: boolean }` | `{ ref_id, on }` — dictation off (`false`) or back on for one entity: off, its mishearings are not applied, its forms not looked for, nothing learned for it (`memory/lexicon`'s `dictation_off`). The entity stays. `ref_id` is the entity changed |
 | `dictation/add` | `{ written, heard }` | `{ heard, written, undo }` — the same write as a learn, by hand |
 | `dictation/undo` | `{ undo }` | `{ undone }` — takes back a learn; the pair is never learned again. Refused for ids dictation did not write |
 | `dictation/remove` | `{ ref_id }` | `{ forgotten }` — a mishearing, or a word of `lingo_type` with all its mishearings |
@@ -1136,8 +1137,9 @@ pair is written with memory/remember (episode `Dictation: corrected “heard”
 to “written”.`, kind `note`, created_by `dictation`, on the entity that
 writes `written`, else a new word of memory/lexicon's `lingo_type`); `undo`
 is what `dictation/undo` takes back — the new entity, else the new fact,
-empty when memory already had the pair. Undone pairs and words turned off
-for dictation are never written. Only the pair is stored. The sentence is in
+empty when memory already had the pair. Undone pairs, words turned off
+for dictation, and a change whose `heard` side is already a vocabulary form
+("BTC" → "Bitcoin", "PH" → "P8") are never written, whatever the fixer says. Only the pair is stored. The sentence is in
 the run's own events, returned to the caller and kept only as §7 says
 (`keep: true`, or claims on the step), so a caller that wants no record of it
 never passes `keep`.

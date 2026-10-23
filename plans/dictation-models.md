@@ -48,7 +48,11 @@ every edit; the model only answers how likely something is.
      Tauri). Kept when the vocabulary reading is likelier; of two claiming
      one span, the likelier.
    - Fillers and a word said twice in a row: removed by rule, with an
-     exception list ("that that", "had had", "very very", …).
+     exception list ("that that", "had had", "very very", …). A removal
+     that began a sentence capitalises the word now beginning it ("team?
+     Um, about" → "team? About").
+   - Dictated text and vocabulary names go into the prompts as text, never
+     as special tokens (`<|im_end|>` in a transcript is those characters).
    - A phrase taken back: only when a cue word appears ("no", "sorry", "I
      mean", "actually", "wait", …), a narrow prompt answers `{ wrong, cue }`;
      code removes from `wrong` through the cue, and only when the cue follows
@@ -71,9 +75,12 @@ every edit; the model only answers how likely something is.
    thing)", "(turned off for dictation)"); P(yes) and P(no) come from one
    forward pass, and it is learned when yes outweighs no by the model's
    margin (0 for the 1.7B, 1 nat for the 0.6B, which leans yes). The write
-   path is #301's: undone pairs and words with dictation off are never
-   written, and only the pair is stored, never the sentence. With no fixer
-   installed nothing is learned (Add in the Vocabulary still works). The
+   path is #301's: undone pairs, words with dictation off, and a change from
+   a form already in the vocabulary (two forms of one thing, or "PH" that is
+   a word of its own) are never written, whatever the model says, and only
+   the pair is stored, never the sentence. With no fixer active
+   (`dictation/models`, `active`) nothing is learned and `learned` is empty,
+   so a client sends no edits then (Add in the Vocabulary still works). The
    step waits up to 60 s for a cold model to load, then 1.5 s for the
    answer: the client sends an edit once, so a cold model should not lose it.
 
@@ -85,21 +92,32 @@ every edit; the model only answers how likely something is.
   (judge, score, take-back) keeps its own sequence of one context, so its
   fixed prompt prefix (system prompt and shots) stays in the KV cache. Calls
   run one at a time. The model loads on the first call and unloads after 5
-  minutes idle; a changed pick swaps it on the next call. transformers.js
+  minutes idle; a changed pick swaps it on the next call (a handle to the
+  old model then refuses, rather than start a worker nobody unloads). A
+  transcript whose rewrite missed the 1.5 s keeps the fixer out of the next
+  ones until that rewrite is done (30 s at most), so a slow model never piles
+  up calls. transformers.js
   (privacy's runtime) was measured in the spike and lost on speed.
 - **Catalog** (src/audio/models.ts): like `STT_MODELS`, each entry has id,
-  url, sha256, bytes, kind (`speech` | `fixer`), description; a fixer also
+  url, sha256, bytes, kind (`speech` | `fixer`), description, and what a
+  picker shows (name, summary, recommended); a fixer also
   its learn margin. Fixers: `qwen3-1.7b-q4` (Qwen3 1.7B instruct, unsloth's
   Q4_K_M GGUF, 1.1 GB; the default to offer) and `qwen3-0.6b-q4` (0.4 GB,
   the small option). Speech: Kroko, Parakeet TDT 0.6B v2.
 - **Selection and download** (steps, same for any client):
-  - `dictation/models {}` → `{ models: [{ id, kind, bytes, description,
-    state: "available" | "downloading" | "installed", progress?, selected,
-    error? }] }`
+  - `dictation/models {}` → `{ models: [{ id, kind, name, summary,
+    recommended, bytes, description, state: "available" | "downloading" |
+    "installed", progress?, downloaded?, selected, active, removable,
+    error? }] }`: `active` is what strut uses now (it trails `selected`
+    while a pick downloads); `removable` is false for an active model and
+    the default speech model, which `remove-model` refuses.
   - `dictation/use { speech?, fixer? }` (fixer may be `null`: none) → the
     same list. Selecting a model that is not installed starts its download;
     it is used once installed.
   - `dictation/remove-model { id }` → the same list.
+  - `dictation/enable { ref_id, on }` → `{ ref_id, on }`: dictation off or on
+    for one entity (the `dictation: "off"` attribute memory/lexicon reads),
+    so clients never write that attribute themselves.
   Selection lives in `<dataDir>/audio/dictation.json`. Default: Kroko and no
   fixer: a 1.1 GB download is the user's choice, so "default fixer" means the
   one a client offers first. Models are never bundled with a client.
@@ -121,8 +139,8 @@ On an M-series Mac, 2026-10-23, warm (load measured separately):
 
 | fixer | task | precision | recall | exact | p50 ms | p95 ms | load s |
 |---|---|---|---|---|---|---|---|
-| qwen3-1.7b-q4 | learn | 0.92 | 0.96 | 0.94 | 62 | 90 | 4.2 |
-| qwen3-1.7b-q4 | fix | 0.96 | 0.96 | 0.94 | 96 | 232 | 4.2 |
+| qwen3-1.7b-q4 | learn | 0.92 | 0.96 | 0.94 | 59 | 66 | 1.6 |
+| qwen3-1.7b-q4 | fix | 0.96 | 0.96 | 0.94 | 66 | 186 | 1.6 |
 | qwen3-0.6b-q4 | learn | 0.82 | 0.96 | 0.88 | 37 | 81 | 6.5 |
 | qwen3-0.6b-q4 | fix | 1.00 | 0.84 | 0.88 | 78 | 349 | 6.5 |
 | none | learn | – | 0.00 | 0.54 | 0 | 0 | – |
@@ -160,7 +178,8 @@ mishearing applied, rewriting "fix" everywhere: fix precision 0.75, recall
 - `dictation/correction`'s `dry_run` is removed (clients send the settled
   edit once).
 - `dictation/add`'s `applies` is removed (no everyday-word rule).
-- New: `dictation/models`, `dictation/use`, `dictation/remove-model`.
+- New: `dictation/models`, `dictation/use`, `dictation/remove-model`,
+  `dictation/enable`.
 - `/audio/transcribe`: `model` names the speech model used, and a new
   `fixer` names the fixer used (null when none ran). Each entry of `changes`
   gains `at`, its offset in `heard`; a removal has `written: ""`.

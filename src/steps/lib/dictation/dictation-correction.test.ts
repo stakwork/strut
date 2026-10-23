@@ -121,10 +121,16 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
       assert.deepEqual(pick(await transcribe("send p eight now")), { text: "send P8 now", fixer: null });
       // A new spelling needs the fixer.
       assert.deepEqual(pick(await transcribe("send p8 now")), { text: "send p8 now", fixer: null });
-      fixer = { ...fake, score: () => new Promise(() => {}) };
+      let scored = 0;
+      fixer = { ...fake, score: () => (scored++, new Promise(() => {})) };
       const started = Date.now();
       assert.deepEqual(pick(await transcribe("send p eight now")), { text: "send P8 now", fixer: null });
       assert.ok(Date.now() - started < 3000, "it waited for the fixer only so long");
+      // While that one is still running, the next goes without the fixer: calls never pile up.
+      const again = Date.now();
+      assert.deepEqual(pick(await transcribe("send p eight now")), { text: "send P8 now", fixer: null });
+      assert.ok(Date.now() - again < 1000, "it did not wait again");
+      assert.equal(scored, 1);
     } finally {
       fixer = fake;
     }
@@ -156,9 +162,19 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
   it("a word turned off for dictation is never learned, nor rewritten", async () => {
     const lexicon = await step("memory/lexicon", {});
     const p8 = lexicon.entities.find((e: any) => e.name === "P8");
-    await step("memory/attributes", { ref_id: p8.ref_id, set: { dictation: "off" } });
+    assert.deepEqual(await step("dictation/enable", { ref_id: p8.ref_id, on: false }), { ref_id: p8.ref_id, on: false });
+    assert.equal((await step("memory/lexicon", {})).entities.find((e: any) => e.name === "P8").dictation_off, true);
     assert.deepEqual(await correct("send p eight now", "send P8 now"), { learned: [] });
     assert.equal((await transcribe("send p eight now")).text, "send p eight now");
+  });
+
+  it("dictation/enable turns a word back on, and refuses an entity memory does not have", async () => {
+    const p8 = (await step("memory/lexicon", {})).entities.find((e: any) => e.name === "P8");
+    assert.deepEqual(await step("dictation/enable", { ref_id: p8.ref_id, on: true }), { ref_id: p8.ref_id, on: true });
+    assert.equal((await step("memory/lexicon", {})).entities.find((e: any) => e.name === "P8").dictation_off, false);
+    const res = await strut.app.request("/steps/dictation/enable/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ config: { ref_id: "nope", on: false } }) });
+    assert.match(JSON.stringify(await res.json()), /not_found/);
+    await step("dictation/enable", { ref_id: p8.ref_id, on: false });
   });
 
   it("an everyday swap or a rewrite teaches nothing; only a change that sounds alike is asked", async () => {

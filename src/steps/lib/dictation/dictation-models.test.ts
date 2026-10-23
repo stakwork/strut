@@ -121,9 +121,12 @@ describe("dictation models: steps and transcription", () => {
     assert.deepEqual(out.models.filter((m) => m.selected).map((m) => m.id), ["parakeet-tdt-en-0.6b-v2"]);
   });
 
-  it("dictation/remove-model deletes a model; removing the speech pick goes back to Kroko", async () => {
+  it("dictation/remove-model deletes a model, never the active one or the default speech model", async () => {
     let out = (await step("dictation/remove-model", { id: "qwen3-0.6b-q4" })) as Listed;
     assert.equal(out.models.find((m) => m.id === "qwen3-0.6b-q4")!.state, "available");
+    assert.match(JSON.stringify(await step("dictation/remove-model", { id: "parakeet-tdt-en-0.6b-v2" }, false)), /is in use/);
+    assert.match(JSON.stringify(await step("dictation/remove-model", { id: "zipformer-en-kroko" }, false)), /the default speech model/);
+    await step("dictation/use", { speech: "zipformer-en-kroko" });
     out = (await step("dictation/remove-model", { id: "parakeet-tdt-en-0.6b-v2" })) as Listed;
     assert.deepEqual(brief(out), ["zipformer-en-kroko:installed*", "parakeet-tdt-en-0.6b-v2:available", "qwen3-0.6b-q4:available", "qwen3-1.7b-q4:available"]);
     assert.equal((await transcribe()).model, "zipformer-en-kroko");

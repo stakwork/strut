@@ -10,7 +10,7 @@
  * live in `<dataDir>/audio/dictation.json`; with none, speech is the default
  * model (Kroko) and there is no fixer.
  */
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isInstalled, type DownloadProgress, type Installer, type ModelAsset } from "./download.js";
 import {
@@ -28,12 +28,23 @@ export type DictationModelState = "available" | "downloading" | "installed";
 export interface DictationModelStatus {
   id: string;
   kind: DictationModelKind;
+  name: string;
+  summary: string;
+  recommended: boolean;
   bytes: number;
   description: string;
   state: DictationModelState;
   /** 0..1 while downloading. */
   progress?: number;
+  /** Bytes received so far, while downloading. */
+  downloaded?: number;
+  /** The user's pick for its kind (used once installed). */
   selected: boolean;
+  /** What strut uses now: the installed speech pick, else the default speech
+   *  model; the installed fixer pick. Differs from `selected` while a pick downloads. */
+  active: boolean;
+  /** False for the active model and the default speech model: remove-model refuses them. */
+  removable: boolean;
   /** Why the last download failed; cleared by the next attempt. */
   error?: string;
 }
@@ -55,7 +66,7 @@ export interface DictationModelsOptions {
 }
 
 export class DictationModels {
-  private readonly downloads = new Map<string, { promise: Promise<void>; progress?: number }>();
+  private readonly downloads = new Map<string, Download>();
   private readonly errors = new Map<string, string>();
   private writes: Promise<unknown> = Promise.resolve();
 
@@ -88,23 +99,37 @@ export class DictationModels {
 
   async list(): Promise<DictationModelStatus[]> {
     const picks = await this.picks();
+    const active = await this.active();
     return Promise.all(
       DICTATION_MODELS.map(async (m): Promise<DictationModelStatus> => {
         const dl = this.downloads.get(m.id);
         const state: DictationModelState = dl ? "downloading" : (await isInstalled(this.dir(m.id))) ? "installed" : "available";
         const error = this.errors.get(m.id);
+        const on = active.has(m.id);
         return {
           id: m.id,
           kind: m.kind,
+          name: m.name,
+          summary: m.summary,
+          recommended: m.recommended,
           bytes: m.bytes,
           description: m.description,
           state,
           ...(dl?.progress !== undefined ? { progress: dl.progress } : {}),
+          ...(dl?.received !== undefined ? { downloaded: dl.received } : {}),
           selected: m.kind === "speech" ? picks.speech === m.id : picks.fixer === m.id,
+          active: on,
+          removable: !on && m.id !== this.o.defaultSpeech,
           ...(error && !dl ? { error } : {}),
         };
       }),
     );
+  }
+
+  /** The models in use now: the speech model /audio/transcribe takes and the fixer, when installed. */
+  private async active(): Promise<Set<string>> {
+    const fixer = await this.fixerModel();
+    return new Set([(await this.speechModel()) ?? this.o.defaultSpeech, ...(fixer ? [fixer.id] : [])]);
   }
 
   /** Pick a speech model and/or a fixer (`null`: none). A pick that is not
@@ -113,23 +138,27 @@ export class DictationModels {
     if (pick.speech !== undefined) requireDictationModel(pick.speech, "speech");
     if (pick.fixer != null) requireDictationModel(pick.fixer, "fixer");
     if (pick.speech !== undefined && !(await isInstalled(this.dir(pick.speech)))) await this.o.requireSpeechEngine?.();
-    await this.save((p) => ({
-      speech: pick.speech ?? p.speech,
-      fixer: pick.fixer === undefined ? p.fixer : pick.fixer,
+    await this.save((s) => ({
+      ...s,
+      ...(pick.speech !== undefined ? { speech: pick.speech } : {}),
+      ...(pick.fixer !== undefined ? { fixer: pick.fixer } : {}),
     }));
     for (const id of [pick.speech, pick.fixer]) if (id) await this.download(id);
     return this.list();
   }
 
-  /** Delete a model's files. A removed pick goes back to the default (speech) or none (fixer). */
+  /** Delete a model's files. Not the default speech model, nor one in use
+   *  (`active`); a pick not yet installed goes back to the default (speech) or none (fixer). */
   async remove(id: string): Promise<DictationModelStatus[]> {
     const m = requireDictationModel(id);
     if (this.downloads.has(id)) throw new Error(`dictation model "${id}" is downloading; remove it once it is done`);
+    if (id === this.o.defaultSpeech) throw new Error(`dictation model "${id}" is the default speech model: it cannot be removed`);
+    if ((await this.active()).has(id)) throw new Error(`dictation model "${id}" is in use; pick another ${m.kind === "fixer" ? "fixer, or none," : "speech model"} first`);
     await rm(this.dir(id), { recursive: true, force: true });
     this.errors.delete(id);
-    const picks = await this.picks();
-    if (m.kind === "speech" && picks.speech === id) await this.save((p) => ({ ...p, speech: this.o.defaultSpeech }));
-    if (m.kind === "fixer" && picks.fixer === id) await this.save((p) => ({ ...p, fixer: null }));
+    // A pick not installed (never finished, or failed) goes back to the default or none.
+    const picks = await this.stored();
+    if (picks?.[m.kind] === id) await this.save((s) => ({ ...s, [m.kind]: m.kind === "fixer" ? null : undefined }));
     return this.list();
   }
 
@@ -152,11 +181,17 @@ export class DictationModels {
     while (this.downloads.size) await Promise.allSettled([...this.downloads.values()].map((d) => d.promise));
   }
 
-  private save(f: (p: DictationPicks) => DictationPicks): Promise<void> {
+  /** Rewrites the stored picks. Only what the user picked is stored: a
+   *  speech model never picked stays unset, so it follows the default. */
+  private save(f: (s: Partial<DictationPicks>) => Partial<DictationPicks>): Promise<void> {
     const next = this.writes.then(async () => {
-      const picks = f(await this.picks());
+      const s = await this.stored();
+      // An unset pick is undefined, which JSON leaves out.
+      const picks = f({ speech: s?.speech, fixer: s?.fixer });
       await mkdir(dirname(this.file), { recursive: true });
-      await writeFile(this.file, JSON.stringify(picks, null, 2) + "\n");
+      // Whole or not at all: a torn file would read as no picks.
+      await writeFile(`${this.file}.tmp`, JSON.stringify(picks, null, 2) + "\n");
+      await rename(`${this.file}.tmp`, this.file);
     });
     this.writes = next.catch(() => {});
     return next;
@@ -165,9 +200,12 @@ export class DictationModels {
   /** Start installing `id` in the background unless it is installed or already coming. */
   private async download(id: string): Promise<void> {
     if (this.downloads.has(id) || (await isInstalled(this.dir(id)))) return;
+    // Another call may have started it while this one looked at the disk.
+    if (this.downloads.has(id)) return;
     this.errors.delete(id);
-    const entry: { promise: Promise<void>; progress?: number } = { promise: Promise.resolve() };
+    const entry: Download = { promise: Promise.resolve() };
     const onProgress = (p: DownloadProgress) => {
+      if (p.phase === "download") entry.received = p.received;
       if (p.phase === "download" && p.total > 0) entry.progress = Math.min(1, p.received / p.total);
       if (p.phase === "extract") entry.progress = 1;
     };
@@ -180,6 +218,12 @@ export class DictationModels {
       .finally(() => this.downloads.delete(id));
     this.downloads.set(id, entry);
   }
+}
+
+interface Download {
+  promise: Promise<void>;
+  progress?: number;
+  received?: number;
 }
 
 function find(id: string, kind?: DictationModelKind): DictationModel | undefined {

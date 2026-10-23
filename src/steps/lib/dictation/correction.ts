@@ -9,6 +9,9 @@ import { Learned, learn, readLexicon, type LearnedT } from "./_shared.js";
  *  client sends it once, so it waits for the model rather than lose it. */
 const LOAD_MS = 60_000;
 
+/** Characters a side: a long dictation is a few thousand. */
+const MAX_TEXT = 20_000;
+
 export default defineStep({
   type: "dictation/correction",
   description:
@@ -16,12 +19,15 @@ export default defineStep({
     "writes `written`, a name or term that sounds like it) is remembered on the entity that writes it, or as a new word, " +
     "so the next transcription puts it right. The user's fixer model (dictation/use) judges each short change that " +
     "sounds alike; everyday swaps, rewrites, casing of everyday words, two names for one thing, words turned off for " +
-    "dictation and pairs the user undid teach nothing. With no fixer installed, or one too slow, nothing is learned. " +
+    "dictation and pairs the user undid teach nothing. With no fixer active (dictation/models: none picked, or the pick " +
+    "not installed yet) nothing is learned and `learned` is empty, so a client need not send edits then; nor when the " +
+    "fixer is too slow. " +
     "Only the pair is stored, never the sentence. Send an edit once it settles. Undo with dictation/undo.",
   effect: "write",
+  // Bounded: the edit is diffed word by word on strut's thread (quadratic in its length).
   input: z.object({
-    typed: z.string().describe("What dictation typed into the field."),
-    edited: z.string().describe("The same text after the user's edit."),
+    typed: z.string().max(MAX_TEXT).describe("What dictation typed into the field."),
+    edited: z.string().max(MAX_TEXT).describe("The same text after the user's edit."),
   }),
   output: z.object({ learned: z.array(Learned) }),
   async run(cfg, ctx) {

@@ -61,6 +61,8 @@ describe("lingo: recall", () => {
     assert.deepEqual(spans("We need a stack. Work starts"), []);
     assert.deepEqual(spans("the el sat token"), []);
     assert.deepEqual(spans("Stakwork ships Peel"), []);
+    // A written form with a plural or possessive ending is that word, already right.
+    assert.deepEqual(spans("Stakwork's team and the stakworks"), []);
   });
 
   it("a repeated word is a candidate at each place it occurs", () => {
@@ -101,7 +103,7 @@ describe("lingo: the rewrite, with the fixer", () => {
 
   it("removes fillers and doubled words by rule, and asks nothing for them", async () => {
     const { fixer, asked } = fake();
-    assert.equal((await rewrite("um so the deploy is uh done", lexicon, fixer)).text, "so the deploy is done");
+    assert.equal((await rewrite("um so the deploy is uh done", lexicon, fixer)).text, "So the deploy is done");
     assert.equal((await rewrite("The API is, um, really slow today.", lexicon, fixer)).text, "The API is really slow today.");
     assert.equal((await rewrite("I I think the the build", lexicon, fixer)).text, "I think the build");
     assert.deepEqual(asked.retract, []);
@@ -129,9 +131,26 @@ describe("lingo: fillers and take-backs", () => {
     assert.deepEqual(fillers("we should, uh, move"), [{ from: ", uh,", to: "", at: 9 }]);
     assert.equal(heardOnly("we should, uh, move", lexicon).text, "we should move");
     assert.equal(heardOnly("we should, uh move", lexicon).text, "we should move");
-    assert.equal(heardOnly("Um, we should move", lexicon).text, "we should move");
+    assert.equal(heardOnly("Um, we should move", lexicon).text, "We should move");
     assert.equal(heardOnly("so, the plan, um.", lexicon).text, "so, the plan.");
     assert.equal(heardOnly("that is the plan uh.", lexicon).text, "that is the plan.");
+  });
+
+  it("a removal that began a sentence capitalises the word that now begins it", () => {
+    assert.equal(heardOnly("team? Um, about the release", lexicon).text, "team? About the release");
+    assert.equal(heardOnly("Done. uh the next one! um, so", lexicon).text, "Done. The next one! So");
+    assert.equal(heardOnly("um about it", lexicon).text, "About it");
+    // A doubled word at a sentence's start too.
+    assert.equal(heardOnly("Ready. the the plan", lexicon).text, "Ready. The plan");
+    // Mid-sentence, the next word keeps its case; a word already cased or not a word is left.
+    assert.equal(heardOnly("the team, um, about the release", lexicon).text, "the team about the release");
+    assert.equal(heardOnly("Um, iPhone sales", lexicon).text, "iPhone sales");
+    assert.equal(heardOnly("Um, 3 things", lexicon).text, "3 things");
+  });
+
+  it("fillers in a row all go", () => {
+    assert.equal(heardOnly("Um, uh, about the release", lexicon).text, "About the release");
+    assert.equal(heardOnly("so, um, uh, the plan", lexicon).text, "so the plan");
   });
 
   it("keeps a word a speaker can mean twice", () => {
@@ -166,7 +185,7 @@ describe("lingo: with no fixer", () => {
 
   it("still removes fillers and doubled words", () => {
     assert.deepEqual(heardOnly("um so the the stack work deploy", lexicon), {
-      text: "so the Stakwork deploy",
+      text: "So the Stakwork deploy",
       changes: [{ heard: "um", written: "", at: 0 }, { heard: "the", written: "", at: 6 }, { heard: "stack work", written: "Stakwork", at: 14 }],
     });
   });
@@ -209,6 +228,12 @@ describe("lingo: learning from an edit", () => {
     const { fixer } = fake({ judge: { "k p eye→KPI": 9, "el sat→LSAT": 9 } });
     assert.deepEqual(await mishearings("the k p eye number", "the KPI number", lexicon, fixer), []);
     assert.deepEqual(await mishearings("the el sat token", "the LSAT token", lexicon, fixer), []);
+  });
+
+  it("never dictation's text when it is already a vocabulary word: two forms of one thing, or a word of its own", async () => {
+    const { fixer } = fake({ judge: { "BTC→Bitcoin": 9, "Peel→P8": 9 } });
+    assert.deepEqual(await mishearings("send BTC now", "send Bitcoin now", lexicon, fixer), []);
+    assert.deepEqual(await mishearings("send Peel now", "send P8 now", lexicon, fixer), []);
   });
 
   it("an edit with nothing to ask asks nothing", async () => {

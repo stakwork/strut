@@ -56,12 +56,18 @@ export class DictationFixer {
       return null;
     }
     if (this.loaded?.path !== m.path) {
-      await this.unload();
+      // Swapped with no await between the check and the new one: two calls
+      // racing here share one worker, and none is left running unowned.
+      const old = this.loaded;
       const spec = this.o.spec?.(m) ?? { module: ENGINE, factory: "loadLlamaFixer", options: { path: m.path } };
       this.loaded = { ...m, worker: new ModelWorker(spec, `dictation fixer (${m.id})`), busy: 0 };
+      await this.free(old);
     }
     const l = this.loaded!;
     const call = async <T>(method: keyof FixerEngine, args: unknown[]): Promise<T> => {
+      // A handle outlives its model (swapped, idle, closed): calling it would
+      // start a worker nobody unloads.
+      if (this.loaded !== l) throw new Error(`dictation fixer ${l.id} was unloaded`);
       l.busy++;
       l.started = true;
       clearTimeout(l.timer);
@@ -97,6 +103,11 @@ export class DictationFixer {
   private async unload(which = this.loaded): Promise<void> {
     if (!which || which !== this.loaded) return;
     this.loaded = null;
+    await this.free(which);
+  }
+
+  private async free(which: typeof this.loaded): Promise<void> {
+    if (!which) return;
     clearTimeout(which.timer);
     // A worker never called has no model to free, and no thread.
     if (!which.started) return;

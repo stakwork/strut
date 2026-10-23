@@ -92,8 +92,6 @@ export function lexiconFrom(output: any): Lexicon {
   };
 }
 
-export const EMPTY_LEXICON: Lexicon = { entries: [], undone: [] };
-
 /** The entry with `text` among its written forms, matched without case,
  *  turned off for dictation or not: it is still that thing. */
 export function entryWriting(lexicon: Lexicon, text: string): LexiconEntry | undefined {
@@ -158,8 +156,11 @@ export function questions(typed: string, edited: string, lexicon: Lexicon): Judg
     .map((h) => ({ typed, edited, from: h.from, to: h.to, known: knownFor(lexicon, h.from, h.to) }));
 }
 
-/** What an edit teaches: each change the fixer judges a mishearing, never a
- *  pair the user undid or a word turned off for dictation. */
+/** What an edit teaches: each change the fixer judges a mishearing. Never,
+ *  whatever the fixer says: a pair the user undid, a word turned off for
+ *  dictation, or dictation's text when it is already a vocabulary word ("BTC"
+ *  → "Bitcoin": two forms of one thing; "PH" → "P8": learning it would
+ *  rewrite real uses of PH). */
 export async function mishearings(typed: string, edited: string, lexicon: Lexicon, fixer: Fixer): Promise<Mishearing[]> {
   const qs = questions(typed, edited, lexicon);
   if (!qs.length) return [];
@@ -167,7 +168,7 @@ export async function mishearings(typed: string, edited: string, lexicon: Lexico
   return qs
     .filter((_, i) => (d[i] ?? -Infinity) > fixer.learnMargin)
     .map((q) => ({ heard: q.from, written: q.to }))
-    .filter((p) => !wasUndone(lexicon, p.heard, p.written) && !entryWriting(lexicon, p.written)?.dictationOff);
+    .filter((p) => !wasUndone(lexicon, p.heard, p.written) && !entryWriting(lexicon, p.written)?.dictationOff && !entryWriting(lexicon, p.heard));
 }
 
 /** The lexicon entries a change touches, as the judge's prompt names them:
@@ -277,11 +278,14 @@ const MAX_CANDIDATES = 8;
  *  then near), then the shortest ("stack work", not "the stack work"). */
 export function recall(text: string, lexicon: Lexicon): Candidate[] {
   const toks = tokens(text);
-  const keys: { key: string; written: string; heard: boolean; type: string }[] = [];
+  // Each key's forms once, not once per span: the lexicon is every entity the memory knows.
+  const keys: { key: string; written: string; heard: boolean; type: string; lk: string; kk: string; said: string }[] = [];
+  const key = (k: string, written: string, heard: boolean, type: string) =>
+    keys.push({ key: k.toLowerCase(), written, heard, type, lk: letters(k), kk: soundKey(k), said: spoken(k) });
   for (const e of lexicon.entries) {
     if (e.dictationOff) continue;
-    for (const w of e.written) keys.push({ key: w, written: w, heard: false, type: e.type });
-    for (const h of e.heard) keys.push({ key: h.value, written: h.form ?? e.name, heard: true, type: e.type });
+    for (const w of e.written) key(w, w, false, e.type);
+    for (const h of e.heard) key(h.value, h.form ?? e.name, true, e.type);
   }
   const found: (Candidate & { score: number })[] = [];
   for (let i = 0; i < toks.length; i++) {
@@ -291,15 +295,17 @@ export function recall(text: string, lexicon: Lexicon): Candidate[] {
       const span = text.slice(toks[i]!.start, toks[i + n - 1]!.end);
       const ls = letters(span);
       if (ls.length < 2) continue;
+      const lower = span.toLowerCase(), sk = soundKey(span), said = spoken(span);
+      // A written form with a plural or possessive ending ("Stakwork's") is that word, already right.
+      const stem = lower.replace(/['’]?s$/, "");
       for (const k of keys) {
-        if (span === k.written) continue;
-        const lk = letters(k.key);
-        const sk = soundKey(span), kk = soundKey(k.key);
+        if (span === k.written || (stem !== lower && stem === k.written.toLowerCase())) continue;
+        const { lk, kk } = k;
         const long = Math.max(ls.length, lk.length);
         // 3: heard exactly so before; 2: the same letters or sounds; 1: near.
         const score =
-          k.heard && span.toLowerCase() === k.key.toLowerCase() ? 3
-          : ls === lk || (sk.length >= 3 && sk === kk) || (spoken(span) === spoken(k.key) && spoken(span).includes(" ")) ? 2
+          k.heard && lower === k.key ? 3
+          : ls === lk || (sk.length >= 3 && sk === kk) || (said === k.said && said.includes(" ")) ? 2
           : (long >= 6 && distance(ls, lk) * 4 <= long) || (sk.length >= 6 && distance(sk, kk) <= 1) ? 1
           : 0;
         if (!score) continue;
@@ -332,9 +338,10 @@ export function fillers(text: string): Edit[] {
   toks.forEach((t, i) => {
     const key = t.core.toLowerCase();
     if (FILLERS.has(key)) {
-      // A comma after it goes with it; a sentence's end stays. A comma before goes too.
+      // A comma after it goes with it; a sentence's end stays. A comma before
+      // goes too, unless a filler before it already took it ("um, uh, so").
       const prev = toks[i - 1];
-      const at = prev?.trail === "," && !t.lead ? prev.end : t.start;
+      const at = prev?.trail === "," && !t.lead && !FILLERS.has(prev.core.toLowerCase()) ? prev.end : t.start;
       const end = t.end + (/^[,;:]*$/.test(t.trail) ? t.trail.length : 0);
       out.push({ from: text.slice(at, end), to: "", at });
     } else if (i + 1 < toks.length && toks[i + 1]!.core.toLowerCase() === key && !t.trail && !toks[i + 1]!.lead && !DOUBLE_OK.has(key)) out.push({ from: t.core, to: "", at: t.start });
@@ -365,11 +372,26 @@ export function retraction(text: string, wrong: string, cue: string): Edit | nul
 // ── Applying edits ──────────────────────────────────────────────────────────
 
 /** Applies edits at their offsets in `text` (right to left, so each offset
- *  holds), then tidies the spacing and punctuation a removal leaves. */
+ *  holds), then tidies the spacing and punctuation a removal leaves. A
+ *  removal that began a sentence (at the start, or after . ? !) leaves the
+ *  word after it to begin it: "team? Um, about" → "team? About". */
 export function applyEdits(text: string, edits: Edit[], tidying = true): string {
   let out = text;
-  for (const e of [...edits].sort((a, b) => b.at - a.at)) out = out.slice(0, e.at) + e.to + out.slice(e.at + e.from.length);
+  for (const e of [...edits].sort((a, b) => b.at - a.at)) {
+    // Right to left: what precedes `e.at` is still the text as heard.
+    const before = out.slice(0, e.at), after = out.slice(e.at + e.from.length);
+    out = before + e.to + (!e.to && SENTENCE_START.test(before) ? capitalisedWord(after) : after);
+  }
   return tidying ? tidy(out) : out;
+}
+
+/** The text before a sentence's first word: nothing, or an end mark, then space or an opening quote. */
+const SENTENCE_START = /(?:^|[.!?])[\s"'“‘(]*$/u;
+
+/** `t` with its first word capitalised when it is all lower case ("about";
+ *  not "iPhone", not "3"). */
+function capitalisedWord(t: string): string {
+  return t.replace(/^([^\p{L}\p{N}]*)(\p{Ll})(\S*)/u, (all, lead: string, first: string, rest: string) => (/\p{Lu}/u.test(rest) ? all : lead + first.toUpperCase() + rest));
 }
 
 function tidy(out: string): string {

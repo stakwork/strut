@@ -76,7 +76,48 @@ describe("dictation model picks", () => {
     assert.equal(await p.speechModel(), null);
     assert.equal(await p.fixerModel(), null);
     const entry = (await p.list())[0]!;
-    assert.deepEqual(Object.keys(entry).sort(), ["bytes", "description", "id", "kind", "selected", "state"]);
+    assert.deepEqual(Object.keys(entry).sort(), ["active", "bytes", "description", "id", "kind", "name", "recommended", "removable", "selected", "state", "summary"]);
+  });
+
+  it("each model has its name, a line for the user, and the 1.7B is the one recommended", async () => {
+    assert.deepEqual(
+      (await picker().list()).map((m) => [m.id, m.name, m.summary, m.recommended]),
+      [
+        ["zipformer-en-kroko", "Kroko", "Fastest and smallest.", false],
+        ["parakeet-tdt-en-0.6b-v2", "Parakeet", "More accurate with names and jargon.", false],
+        ["qwen3-0.6b-q4", "Qwen3 0.6B", "Small and capable.", false],
+        ["qwen3-1.7b-q4", "Qwen3 1.7B", "Most accurate at learning your lingo.", true],
+      ],
+    );
+  });
+
+  it("active is what strut uses now, which trails the pick while it downloads; downloaded counts bytes", async () => {
+    const p = picker();
+    const state = async () => Object.fromEntries((await p.list()).map((m) => [m.id, [m.selected, m.active, m.removable, m.downloaded ?? null]]));
+    await p.use({ speech: "parakeet-tdt-en-0.6b-v2", fixer: "qwen3-1.7b-q4" });
+    const half = (id: string) => DICTATION_MODELS.find((m) => m.id === id)!.bytes / 2;
+    assert.deepEqual(await state(), {
+      "zipformer-en-kroko": [false, true, false, null],
+      "parakeet-tdt-en-0.6b-v2": [true, false, true, half("parakeet-tdt-en-0.6b-v2")],
+      "qwen3-0.6b-q4": [false, false, true, null],
+      "qwen3-1.7b-q4": [true, false, true, half("qwen3-1.7b-q4")],
+    });
+    finish("parakeet-tdt-en-0.6b-v2");
+    finish("qwen3-1.7b-q4");
+    await p.idle();
+    assert.deepEqual(await state(), {
+      "zipformer-en-kroko": [false, false, false, null],
+      "parakeet-tdt-en-0.6b-v2": [true, true, false, null],
+      "qwen3-0.6b-q4": [false, false, true, null],
+      "qwen3-1.7b-q4": [true, true, false, null],
+    });
+  });
+
+  it("picking only a fixer stores no speech pick, so speech keeps following the default", async () => {
+    finishAll();
+    await picker().use({ fixer: "qwen3-0.6b-q4" });
+    assert.deepEqual(JSON.parse(await readFile(join(dataDir, "audio", "dictation.json"), "utf8")), { fixer: "qwen3-0.6b-q4" });
+    assert.deepEqual(await picker({ defaultSpeech: "parakeet-tdt-en-0.6b-v2" }).picks(), { speech: "parakeet-tdt-en-0.6b-v2", fixer: "qwen3-0.6b-q4" });
   });
 
   it("a pick that is not installed downloads in the background and is used once installed", async () => {
@@ -143,20 +184,35 @@ describe("dictation model picks", () => {
     assert.equal(await p.fixerModel(), null);
   });
 
-  it("remove deletes the files; a removed pick goes back to the default or none; not while downloading", async () => {
+  it("remove deletes the files; never while downloading, never the active model or the default speech model", async () => {
     const p = picker();
     await p.use({ speech: "parakeet-tdt-en-0.6b-v2", fixer: "qwen3-0.6b-q4" });
     await assert.rejects(() => p.remove("qwen3-0.6b-q4"), /is downloading/);
     finish("parakeet-tdt-en-0.6b-v2");
     finish("qwen3-0.6b-q4");
     await p.idle();
+    await assert.rejects(() => p.remove("qwen3-0.6b-q4"), /is in use; pick another fixer, or none, first/);
+    await assert.rejects(() => p.remove("parakeet-tdt-en-0.6b-v2"), /is in use; pick another speech model first/);
+    await assert.rejects(() => p.remove("zipformer-en-kroko"), /the default speech model/);
+    await p.use({ speech: "zipformer-en-kroko", fixer: null });
+    finish("zipformer-en-kroko");
+    await p.idle();
     let listed = await p.remove("qwen3-0.6b-q4");
     assert.deepEqual(listed.find((m) => m.id === "qwen3-0.6b-q4")!.state, "available");
-    assert.deepEqual(await p.picks(), { speech: "parakeet-tdt-en-0.6b-v2", fixer: null });
     listed = await p.remove("parakeet-tdt-en-0.6b-v2");
-    assert.deepEqual(listed.filter((m) => m.selected).map((m) => m.id), ["zipformer-en-kroko"]);
-    assert.deepEqual(await readdir(join(modelDir, "stt")), []);
-    assert.equal(await p.speechModel(), null, "Kroko is the pick again, and not on disk");
+    assert.deepEqual(listed.find((m) => m.id === "parakeet-tdt-en-0.6b-v2")!.state, "available");
+    assert.deepEqual(await readdir(join(modelDir, "stt")), ["zipformer-en-kroko"]);
+  });
+
+  it("a pick removed before it was installed goes back to the default or none", async () => {
+    const p = picker();
+    await p.use({ speech: "parakeet-tdt-en-0.6b-v2", fixer: "qwen3-0.6b-q4" });
+    gates.get("parakeet-tdt-en-0.6b-v2")!.reject(new Error("offline"));
+    gates.get("qwen3-0.6b-q4")!.reject(new Error("offline"));
+    await p.idle();
+    await p.remove("parakeet-tdt-en-0.6b-v2");
+    await p.remove("qwen3-0.6b-q4");
+    assert.deepEqual(await p.picks(), { speech: "zipformer-en-kroko", fixer: null });
   });
 
   /** Let every download through as soon as it starts. */

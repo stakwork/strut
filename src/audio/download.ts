@@ -68,7 +68,7 @@ async function download(
   onProgress: (p: DownloadProgress) => void,
 ): Promise<void> {
   await mkdir(dirname(dir), { recursive: true });
-  const part = `${dir}.part`;
+  const part = `${dir}.part`, scratch = `${dir}.extract`;
   log(`downloading ${asset.id} (${Math.round(asset.bytes / 1e6)} MB)`);
   const res = await fetchImpl(asset.url);
   if (!res.ok || !res.body) throw new Error(`download failed for ${asset.id}: HTTP ${res.status}`);
@@ -87,7 +87,6 @@ async function download(
     await pipeline(res.body as unknown as NodeJS.ReadableStream, meter, createWriteStream(part));
     const digest = hash.digest("hex");
     if (digest !== asset.sha256) throw new Error(`sha256 mismatch for ${asset.id}: expected ${asset.sha256}, got ${digest}`);
-    const scratch = `${dir}.extract`;
     await rm(scratch, { recursive: true, force: true });
     await mkdir(scratch, { recursive: true });
     if (asset.archiveDir) {
@@ -95,7 +94,6 @@ async function download(
       await untar(part, scratch);
       await rm(dir, { recursive: true, force: true });
       await rename(join(scratch, asset.archiveDir), dir);
-      await rm(scratch, { recursive: true, force: true });
     } else {
       await rename(part, join(scratch, asset.file ?? "model"));
       await rm(dir, { recursive: true, force: true });
@@ -103,7 +101,9 @@ async function download(
     }
     await writeFile(join(dir, ".ok"), new Date().toISOString());
   } finally {
+    // A failed install leaves nothing behind: no partial download, no half-extracted archive.
     await rm(part, { force: true });
+    await rm(scratch, { recursive: true, force: true });
   }
   onProgress({ phase: "done" });
   log(`installed ${asset.id} → ${dir}`);

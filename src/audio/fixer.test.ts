@@ -69,6 +69,20 @@ describe("DictationFixer", () => {
     await fixers.close();
   });
 
+  it("calls racing to load share one worker, and a handle outlives its model only to refuse", async () => {
+    const { fixers, pick } = picked({ id: "qwen3-1.7b-q4", path: "/m/large.gguf" });
+    const [a, b] = await Promise.all([fixers.current(), fixers.current()]);
+    assert.deepEqual(await Promise.all([a!.ready(), b!.ready()]), [undefined, undefined]);
+    // Swapped: the old handles would otherwise start a worker nobody unloads.
+    pick({ id: "qwen3-0.6b-q4", path: "/m/small.gguf" });
+    const small = (await fixers.current())!;
+    await assert.rejects(a!.score([{ name: "X", type: "Lingo", text: "ab" }]), /was unloaded/);
+    assert.deepEqual(await small.judge([{ typed: "a", edited: "b", from: "a", to: "b", known: "" }]), [2]);
+    await fixers.close();
+    await assert.rejects(small.ready(), /was unloaded/);
+    assert.equal(fixers.active, null);
+  });
+
   it("within: the value in time, else undefined while the work goes on", async () => {
     assert.equal(await within(Promise.resolve(1), 50), 1);
     assert.equal(await within(sleep(200).then(() => 1), 20), undefined);

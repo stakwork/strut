@@ -319,9 +319,12 @@ dictation/correction { typed: string, edited: string }
 Each pair in `learned` is now in the vocabulary. Show "Learned <written>" for
 those with a non-empty `undo`; an empty `undo` means strut already had the
 pair. Strut asks the fixer about each short change that could sound like what
-was typed; with no fixer installed nothing is learned (Add still works). The
-call waits for a cold fixer to load, so it can take a few seconds the first
-time. Only the pair is stored, never the sentence.
+was typed. With no fixer **active** (`dictation/models`: no fixer with
+`active: true`, i.e. none picked or the pick still downloading) nothing is
+learned and `learned` is always empty, so a client can skip sending edits
+then (Add still works). The call waits for a cold fixer to load, so it can
+take a few seconds the first time. Each text is at most 20,000 characters.
+Only the pair is stored, never the sentence.
 
 **Undo.** `dictation/undo { undo: string[] } → { undone: string[] }` with the
 `undo` ids of a learn. The pair is then never learned again. Ids that
@@ -344,9 +347,11 @@ dictation did not write are refused, and then nothing is forgotten.
   its mishearings). A word that has nothing else known of it goes with its
   last mishearing. Any other entity is refused, so turn it off instead.
 - Dictation off / on for one entity:
-  `memory/attributes { ref_id, set: { dictation: "off" } }`, and
-  `{ dictation: null }` to turn it back on. A word that is off is neither
-  rewritten nor learned.
+  `dictation/enable { ref_id, on: boolean } → { ref_id, on }`. A word that
+  is off is neither rewritten nor learned, and `memory/lexicon` shows it with
+  `dictation_off: true`; the entity and what is known of it stay. The reply's
+  `ref_id` is the entity changed (the survivor, for a merged-away ref_id).
+  Use this step, not `memory/attributes`: the attribute behind it is strut's.
 
 Refresh the lexicon after each write if the UI shows it. Transcription
 always reads the current one.
@@ -354,13 +359,26 @@ always reads the current one.
 **Models.** The speech model and the fixer are the user's picks, the same
 steps for any client:
 
-- `dictation/models {}` → `{ models: [{ id, kind: "speech" | "fixer", bytes,
-  description, state: "available" | "downloading" | "installed", progress?,
-  selected, error? }] }`. Poll it while something downloads.
+- `dictation/models {}` → `{ models: [{ id, kind: "speech" | "fixer", name,
+  summary, recommended, bytes, description, state: "available" |
+  "downloading" | "installed", progress?, downloaded?, selected, active,
+  removable, error? }] }`. Poll it while something downloads.
+  - `name` and `summary` are what to show ("Qwen3 1.7B", "Most accurate at
+    learning your lingo."); `recommended` is true for the one to suggest
+    (`qwen3-1.7b-q4` only). `description` is the longer, technical text.
+  - `selected` is the user's pick for its kind; `active` is what strut uses
+    now: the installed speech pick, else the default speech model (Kroko),
+    and the installed fixer pick. They differ while a pick downloads.
+  - `progress` (0..1) and `downloaded` (bytes received) are present while
+    downloading.
+  - `removable` is false for an active model and for the default speech
+    model.
 - `dictation/use { speech?, fixer? }` (`fixer: null`: none) → the same list.
   A pick that is not installed starts downloading and is used once it is.
-- `dictation/remove-model { id }` → the same list; a removed pick goes back
-  to the default speech model, or to no fixer.
+- `dictation/remove-model { id }` → the same list. Refused for a model that
+  is not `removable` (pick another first, or `fixer: null`) and while it
+  downloads. A pick removed before it was installed goes back to the default
+  speech model, or to no fixer.
 
 Fixers: `qwen3-1.7b-q4` (1.1 GB; offer it first) and `qwen3-0.6b-q4`
 (0.4 GB; faster, learns more wrongly). None is downloaded until the user

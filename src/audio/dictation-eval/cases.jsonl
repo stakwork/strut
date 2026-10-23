@@ -76,10 +76,10 @@
 {"kind":"fix","id":"n-clean","lexicon":"fix","transcript":"Stakwork ships Peel on Friday.","expect":"Stakwork ships Peel on Friday.","note":"already right"}
 {"kind":"fix","id":"n-nothing","lexicon":"fix","transcript":"Let's grab lunch tomorrow.","expect":"Let's grab lunch tomorrow.","note":"no candidates"}
 {"kind":"fix","id":"n-like","lexicon":"fix","transcript":"I like the new design","expect":"I like the new design","note":"like is not a filler here"}
-{"kind":"fix","id":"f-fillers","lexicon":"fix","transcript":"um so the deploy is uh done","expect":"so the deploy is done"}
+{"kind":"fix","id":"f-fillers","lexicon":"fix","transcript":"um so the deploy is uh done","expect":"So the deploy is done"}
 {"kind":"fix","id":"f-filler-commas","lexicon":"fix","transcript":"The API is, um, really slow today.","expect":"The API is really slow today."}
 {"kind":"fix","id":"f-stutter","lexicon":"fix","transcript":"I I think we should ship it","expect":"I think we should ship it"}
-{"kind":"fix","id":"f-stutter-the","lexicon":"fix","transcript":"the the build failed again","expect":"the build failed again"}
+{"kind":"fix","id":"f-stutter-the","lexicon":"fix","transcript":"the the build failed again","expect":"The build failed again"}
 {"kind":"fix","id":"f-self-correct-day","lexicon":"fix","transcript":"let's meet on Tuesday, no, Wednesday","expect":"let's meet on Wednesday","note":"self-correction"}
 {"kind":"fix","id":"f-self-correct-time","lexicon":"fix","transcript":"the meeting is at three, I mean four","expect":"the meeting is at four","note":"self-correction"}
 {"kind":"fix","id":"f-two-vocab","lexicon":"fix","transcript":"send three bee tee see to the stack work wallet","expect":"send three BTC to the Stakwork wallet"}

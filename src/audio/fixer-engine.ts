@@ -45,13 +45,17 @@ const KIND: Record<string, string> = { Organization: "a company", Project: "a pr
 /** The line a sentence is scored after. */
 export const scorePrefix = (s: Pick<ScoreSentence, "name" | "type">) => `Dictated by someone who often mentions ${s.name} (${KIND[s.type] ?? "a term"}).\n\n`;
 
-/** ChatML with Qwen3's thinking turned off: the empty think block its chat
- *  template writes for enable_thinking=false. */
-function chatml(system: string, shots: Shot[], user: string): string {
-  let s = `<|im_start|>system\n${system}<|im_end|>\n`;
-  for (const [u, a] of shots) s += `<|im_start|>user\n${u}<|im_end|>\n<|im_start|>assistant\n${a}<|im_end|>\n`;
-  return s + `<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`;
+/** ChatML with Qwen3's thinking turned off (the empty think block its chat
+ *  template writes for enable_thinking=false), around the user's turn: the
+ *  text before it and after it. The turn itself is the user's text and is
+ *  tokenized apart, never as special tokens. */
+function chatml(system: string, shots: Shot[]): { head: string; tail: string } {
+  let head = `<|im_start|>system\n${system}<|im_end|>\n`;
+  for (const [u, a] of shots) head += `<|im_start|>user\n${u}<|im_end|>\n<|im_start|>assistant\n${a}<|im_end|>\n`;
+  return { head: head + "<|im_start|>user\n", tail: "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n" };
 }
+const JUDGE_PROMPT = chatml(JUDGE_SYSTEM, JUDGE_SHOTS);
+const RETRACT_PROMPT = chatml(RETRACT_SYSTEM, RETRACT_SHOTS);
 
 /** The `{ wrong, cue }` items of a reply; [] when it holds no JSON array. */
 export function parseRetractions(reply: string): Retraction[] {
@@ -91,6 +95,10 @@ export async function loadLlamaFixer(o: { path: string }): Promise<FixerEngine> 
   const judging = context.getSequence(), scoring = context.getSequence();
   const completion = new lib.LlamaCompletion({ contextSequence: context.getSequence() });
   const yesNo = ["yes", "no"].map((w) => model.tokenize(w, false)[0]!);
+  // Dictated text and the vocabulary's names are text, so "<|im_end|>" in
+  // them is those characters, not the end of the turn.
+  const prompt = (p: { head: string; tail: string }, user: string) =>
+    [...model.tokenize(p.head, true), ...model.tokenize(user, false), ...model.tokenize(p.tail, true)];
 
   type Sequence = typeof scoring;
   /** Evaluates `toks` on `seq`, keeping the tokens it already holds of them
@@ -125,7 +133,7 @@ export async function loadLlamaFixer(o: { path: string }): Promise<FixerEngine> 
     judge: (qs) => serial(async () => {
       const out: number[] = [];
       for (const q of qs) {
-        const toks = model.tokenize(chatml(JUDGE_SYSTEM, JUDGE_SHOTS, judgeUser(q)), true) as number[];
+        const toks = prompt(JUDGE_PROMPT, judgeUser(q)) as number[];
         const r = await evaluate(judging, toks, toks.length - 1, (i) => (i === toks.length - 1 ? yesNo : null));
         const next = r.out.at(-1).next;
         out.push(logp(next, yesNo[0]!) - logp(next, yesNo[1]!));
@@ -135,7 +143,7 @@ export async function loadLlamaFixer(o: { path: string }): Promise<FixerEngine> 
     score: (ss) => serial(async () => {
       const out: number[] = [];
       for (const s of ss) {
-        const a = model.tokenize(scorePrefix(s), true) as number[], b = model.tokenize(s.text, false) as number[];
+        const a = model.tokenize(scorePrefix(s), false) as number[], b = model.tokenize(s.text, false) as number[];
         const toks = [...a, ...b];
         const r = await evaluate(scoring, toks, a.length - 1, (i) => (i >= a.length - 1 && i < toks.length - 1 ? [toks[i + 1]!] : null));
         let sum = 0;
@@ -147,7 +155,7 @@ export async function loadLlamaFixer(o: { path: string }): Promise<FixerEngine> 
       return out;
     }),
     retract: (text) => serial(async () => {
-      const reply = await completion.generateCompletion(model.tokenize(chatml(RETRACT_SYSTEM, RETRACT_SHOTS, text), true), {
+      const reply = await completion.generateCompletion(prompt(RETRACT_PROMPT, text), {
         maxTokens: 64, temperature: 0, customStopTriggers: ["<|im_end|>"],
       });
       return parseRetractions(reply);

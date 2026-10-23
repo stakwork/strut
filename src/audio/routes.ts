@@ -16,8 +16,16 @@ export interface AudioRoutesOptions {
   lexicon?: () => Promise<Lexicon>;
 }
 
+/** The longest a rewrite that missed its time keeps the fixer out of the next transcripts. */
+const LATE_MS = 30_000;
+
 export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions = {}): void {
   const unread = new Set<string>();
+  // A rewrite that missed FIX_TIMEOUT_MS keeps running in the fixer's worker
+  // (a cold model loading, a long transcript). Until it is done (or LATE_MS
+  // has passed, for one that never answers) the next transcripts go without
+  // the fixer, so a slow model never piles up calls.
+  let late: unknown = null;
   app.use("/audio/*", requireApiKey);
 
   app.get("/audio/models", async (c) => {
@@ -81,10 +89,19 @@ export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions
     let out: { text: string; changes: unknown[] } | undefined;
     let fixer: string | null = null;
     try {
-      const f = await stt.fixer?.current();
-      // A cold model starts loading here; until it answers in time, the next ones are fixed without it.
-      out = f ? await within(rewrite(result.text, lexicon, f), FIX_TIMEOUT_MS) : undefined;
-      if (out) fixer = f!.id;
+      const f = late ? null : await stt.fixer?.current();
+      if (f) {
+        // A cold model starts loading here; until it answers in time, the next ones are fixed without it.
+        const p = rewrite(result.text, lexicon, f);
+        out = await within(p, FIX_TIMEOUT_MS);
+        if (out) fixer = f.id;
+        else {
+          const mine = (late = {});
+          const done = () => void (late === mine && (late = null));
+          setTimeout(done, LATE_MS).unref();
+          p.then(done, done);
+        }
+      }
     } catch (e) {
       // A transcript is never lost to the fixer: it goes out with the learned mishearings only.
       console.error(`[audio] dictation fixer failed: ${(e as Error).message}`);
