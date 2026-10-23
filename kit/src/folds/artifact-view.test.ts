@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   artifactKind, artifactLabel, artifactRel, directoryEntries, fileScopeOf, findArtifacts, isArtifactPath,
-  isDirectory, parseWalkthrough, resolveArtifactLink, viewerKind,
+  isDirectory, isPeerPath, isServedFilePath, parseWalkthrough, peerArtifactPath, resolveArtifactLink, viewerKind,
 } from "./artifact-view.js";
 
 describe("artifactKind", () => {
@@ -35,6 +35,79 @@ describe("isArtifactPath", () => {
     assert.equal(isArtifactPath("https://x/artifacts/1/a.md"), false);
     assert.equal(isArtifactPath(42), false);
     assert.equal(isArtifactPath(null), false);
+  });
+
+  it("accepts either behind a peer's read-through, one or more hops", () => {
+    assert.equal(isArtifactPath("/peers/org/jobs/peer%2Fj-1/files/plan.md"), true);
+    assert.equal(isArtifactPath("/peers/org/peers/billing/artifacts/1790/a.png"), true);
+    assert.equal(isArtifactPath("/peers/org/workflows/x"), false);
+    assert.equal(isArtifactPath("/peers/org"), false);
+  });
+});
+
+describe("isPeerPath", () => {
+  it("is true for a path read through a peer, and only then", () => {
+    assert.equal(isPeerPath("/peers/org/jobs/j-1/files/plan.md"), true);
+    assert.equal(isPeerPath("/peers/org/peers/billing/artifacts/1/a.md"), true);
+    assert.equal(isPeerPath("/jobs/j-1/files/plan.md"), false);
+    assert.equal(isPeerPath("/peers"), false);
+  });
+});
+
+describe("peerArtifactPath", () => {
+  it("opens a peer's deliverable through its read-through, the job one encoded segment", () => {
+    assert.equal(peerArtifactPath({ peer: "org", job: "j-1", path: "plan.md" }), "/peers/org/jobs/j-1/files/plan.md");
+    assert.equal(peerArtifactPath({ peer: "org", job: "peer/j-1", path: "/notes/plan.md" }), "/peers/org/jobs/peer%2Fj-1/files/notes/plan.md");
+  });
+
+  it("goes one more hop through the peer for an entry it got from a third strut", () => {
+    assert.equal(
+      peerArtifactPath({ peer: "org", via: "billing", job: "peer/j-1", path: "shots/a.png" }),
+      "/peers/org/peers/billing/jobs/peer%2Fj-1/files/shots/a.png",
+    );
+  });
+
+  it("is null without a peer, a job or a path", () => {
+    assert.equal(peerArtifactPath({ job: "j-1", path: "plan.md" }), null);
+    assert.equal(peerArtifactPath({ peer: "org", path: "plan.md" }), null);
+    assert.equal(peerArtifactPath({ peer: "org", job: "j-1" }), null);
+    assert.equal(peerArtifactPath({ peer: "org", job: "j-1", path: "/" }), null);
+  });
+});
+
+describe("isServedFilePath", () => {
+  it("accepts a job's files and a run's artifacts, here or behind peer hops", () => {
+    assert.equal(isServedFilePath("/jobs/j-1/files/plan.md"), true);
+    assert.equal(isServedFilePath("/jobs/j-1/files"), true);
+    assert.equal(isServedFilePath("/jobs/j-1/files/book/"), true);
+    assert.equal(isServedFilePath("/artifacts/1790/shots/a.png"), true);
+    assert.equal(isServedFilePath("/artifacts/1790"), true);
+    assert.equal(isServedFilePath("/peers/org/jobs/peer%2Fj-1/files/plan.md"), true);
+    assert.equal(isServedFilePath("/peers/org/peers/billing/artifacts/1790/a.pdf"), true);
+    assert.equal(isServedFilePath("/peers/org/jobs/j-1/files/my%20notes.md"), true);
+  });
+
+  it("refuses every other route, a URL, and an app's files", () => {
+    assert.equal(isServedFilePath("/peers/org/workflows/x/runs"), false);
+    assert.equal(isServedFilePath("/secrets"), false);
+    assert.equal(isServedFilePath("/jobs/j-1"), false);
+    assert.equal(isServedFilePath("/apps/hello/v3/files/dist/index.html"), false);
+    assert.equal(isServedFilePath("https://x/jobs/j-1/files/a.md"), false);
+    assert.equal(isServedFilePath("//x/jobs/j-1/files/a.md"), false);
+    assert.equal(isServedFilePath("jobs/j-1/files/a.md"), false);
+    assert.equal(isServedFilePath(""), false);
+  });
+
+  it("refuses a dot segment, encoded or not, a query, a fragment, an empty segment", () => {
+    assert.equal(isServedFilePath("/jobs/j-1/files/../../secrets"), false);
+    assert.equal(isServedFilePath("/jobs/j-1/files/%2e%2e/%2E%2E/secrets"), false);
+    assert.equal(isServedFilePath("/jobs/j-1/files/./a.md"), false);
+    assert.equal(isServedFilePath("/peers/../jobs/j-1/files/a.md"), false);
+    assert.equal(isServedFilePath("/jobs/j-1/files/a.md?key=x"), false);
+    assert.equal(isServedFilePath("/jobs/j-1/files/a.md#x"), false);
+    assert.equal(isServedFilePath("/jobs/j-1/files//a.md"), false);
+    assert.equal(isServedFilePath("/jobs/j-1/files/a\\..\\b"), false);
+    assert.equal(isServedFilePath("/jobs/j-1/files/%E0%A4%A"), false);
   });
 });
 

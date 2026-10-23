@@ -4,7 +4,7 @@ import type { CanvasData, CanvasNode, CanvasEdge } from "system-canvas";
 import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
-import { foldAccessedNodes } from "@strut/kit/folds";
+import { foldAccessedNodes, isServedFilePath } from "@strut/kit/folds";
 import { latestAttempt } from "./step-attempt";
 import { pushUrl, replaceUrl } from "./embed";
 import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";
@@ -39,6 +39,7 @@ import { JobTimeline, fmtTime } from "./components/JobTimeline";
 import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppHost } from "./components/AppHost";
+import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph } from "./icons";
 import { appKey, appMessage } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
@@ -113,6 +114,11 @@ export function App() {
   // around it — what a native host (Peel) opens in a web view of its own,
   // here or for a peer's app (plans/apps.md §7.4). Read once; the URL keeps it.
   const [solo] = useState(() => initialUrl.get("solo") === "1");
+  // `?artifact=<path>` beside `?solo=1`: one served file alone in the window
+  // — a job's file or a run's artifact, here or a peer's through the
+  // read-through — what a native host (Peel) opens for a deliverable. Only
+  // a path of that shape (`isServedFilePath`); without `solo` it is ignored.
+  const [soloArtifact] = useState(() => initialUrl.get("artifact"));
   const [appQuery, setAppQuery] = useState("");
   const [appReload, setAppReload] = useState(0);
   // What the host hands the chat: a draft for its composer (Edit with the
@@ -1201,6 +1207,11 @@ export function App() {
       : <div class="empty">{appsLoaded ? `No app "${selectedApp}"` : "Loading apps…"}</div>
     : null;
   if (solo && appView) return <div class="app-solo">{appView}</div>;
+  if (solo && soloArtifact) {
+    return isServedFilePath(soloArtifact)
+      ? <ArtifactViewer path={soloArtifact} solo />
+      : <div class="app-solo"><div class="empty">Not a file strut serves: {soloArtifact}</div></div>;
+  }
 
   return (
     <div class="shell">

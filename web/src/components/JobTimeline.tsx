@@ -4,7 +4,7 @@ import { jobTotals } from "../api";
 import { displayActor } from "../actor";
 import { formatTokens } from "../context-meter";
 import { statusTone } from "../helpers";
-import { isArtifactPath } from "@strut/kit/folds";
+import { isArtifactPath, peerArtifactPath } from "@strut/kit/folds";
 import { checkOutcomes, ledgerSignature, newestTurn, verifySummary } from "../claims-view";
 import type { TouchedNode } from "@strut/kit/folds";
 import { ArtifactViewer } from "./ArtifactViewer";
@@ -359,10 +359,10 @@ function findTurnArtifact(threads: api.JobThread[], id: string, runId: string): 
 
 /** Where a deliverable opens: its url, or a url inside small inline JSON
  *  (a pull request ref carries `{ url, number, state }`). A deliverable
- *  tagged with a `peer` is that strut's: only an absolute link opens from
- *  here, never a path or a strut-relative url (no read-through yet,
- *  plans/federation.md §2.1). */
-export function linkOf(ref: { url?: string; content?: unknown; peer?: string }): string | null {
+ *  tagged with a `peer` is that strut's: an absolute link opens as it is,
+ *  a `path` through the peer's read-through (`peerArtifactPath`,
+ *  plans/chained-orchestrators.md §5), never a strut-relative url. */
+export function linkOf(ref: { url?: string; content?: unknown; peer?: string; via?: string; job?: string; path?: string }): string | null {
   let link: string | null = null;
   const c = ref.content;
   if (ref.url) link = ref.url;
@@ -374,12 +374,14 @@ export function linkOf(ref: { url?: string; content?: unknown; peer?: string }):
   } else if (c && typeof c === "object" && typeof (c as { url?: unknown }).url === "string") {
     link = (c as { url: string }).url;
   }
-  return link && ref.peer && !/^https?:\/\//.test(link) ? null : link;
+  if (!ref.peer) return link;
+  return link && /^https?:\/\//.test(link) ? link : peerArtifactPath(ref);
 }
 
 /** A peer's deliverable's tooltip: where it is, and whether it opens here. */
-export function peerArtifactNote(ref: { peer?: string; path?: string; url?: string; content?: unknown }): string {
+export function peerArtifactNote(ref: { peer?: string; via?: string; job?: string; path?: string; url?: string; content?: unknown }): string {
   const link = linkOf(ref);
+  if (link && isArtifactPath(link)) return `${ref.path} on @${ref.via ?? ref.peer} — read through @${ref.peer}`;
   if (link) return `${link} — on @${ref.peer}`;
   if (ref.content !== undefined) return `Inline, from @${ref.peer}`;
   return `${ref.path ?? ref.url} on @${ref.peer} — this strut cannot open it yet`;

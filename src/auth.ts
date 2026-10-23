@@ -312,8 +312,9 @@ export function actorFromHeader(c: Context): string | undefined {
 // of an untrusted origin served from strut's own: (1) a request that is
 // not a read is honored only with `x-strut-ui: 1`, a header the UI sends
 // on every call and no cross-site form can set; (2) a FILE read
-// (`fileScopeOf`: a run's artifacts, a job's files) is never opened by the
-// cookie alone either — the header or the `?t=` token, as always. So a
+// (`fileScopeOf`: a run's artifacts, a job's files; or a peer's, read
+// through `/peers/<id>/…`) is never opened by the cookie alone either —
+// the header or the `?t=` token, as always. So a
 // sandboxed artifact page (an opaque origin, which Lax already treats as
 // cross-site) cannot reach another run's files through the person's
 // session: an <img> or a navigation has no header, and a fetch with one is
@@ -446,7 +447,8 @@ export function sessionOf(c: Context): Session | undefined {
   if (!session) return undefined;
   if (c.req.header(UI_HEADER) === "1") return session;
   const read = c.req.method === "GET" || c.req.method === "HEAD";
-  return read && !fileScopeOf(c.req.path) ? session : undefined;
+  const fileRead = fileScopeOf(c.req.path) || /^\/peers\/[^/]+\/./.test(c.req.path);
+  return read && !fileRead ? session : undefined;
 }
 
 // ── Person tokens ────────────────────────────────────────────────────────

@@ -887,9 +887,10 @@ scope, never more — and its `actor` is stamped on what it launches and
 publishes (`x-strut-actor` beside it is ignored). Two CSRF rules: a request
 that is not a `GET`/`HEAD` is honored only with the header `x-strut-ui: 1`
 (the UI sends it on every call; a cross-site form cannot), and a file read
-(`/artifacts/:runId…`, `/jobs/:id/files…`) never opens on the cookie alone —
-fetch the listing with the header, which mints the `?t=` token (§5), and
-read the files with that.
+(`/artifacts/:runId…`, `/jobs/:id/files…`, or a peer's through
+`/peers/<id>/…`) never opens on the cookie alone — fetch the listing with
+the header, which mints the `?t=` token (§5), and read the files with that;
+a peer's file, which no `?t=` opens here, is read with the header.
 
 ```bash
 curl -s -c jar.txt -X POST localhost:3000/auth/session \
@@ -1053,6 +1054,30 @@ button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`.
+
+**One file alone.** The twin for a deliverable that is a file:
+`/?key=<the local strut's key>&artifact=<encodeURIComponent(path)>&solo=1`
+renders the artifact viewer alone, filling the window. `path` is a path
+on the local strut that serves the file: `/jobs/<job>/files/<file>`,
+`/artifacts/<runId>/<file>`, or either behind one or more `/peers/<id>`
+hops — `/peers/<org>/jobs/<job>/files/<file>` is an org's file through the
+read-through (§10), `/peers/<org>/peers/<via>/jobs/<job>/files/<file>` one
+more hop. Each id is one segment, percent-encoded (a job the peer keeps as
+`peer/j-1` is `peer%2Fj-1`); the file path keeps its own `/`, and a path
+that names a directory shows its listing. Anything else — another route,
+an app's files, a URL, a query, an empty or `.`/`..` segment, encoded or
+not — shows "Not a file strut serves" and reads nothing
+(`isServedFilePath`, `kit/src/folds/artifact-view.ts`). The viewer renders
+by extension: markdown (its relative links open in place, its images load,
+both inside the same scope), images, video, audio, PDF, text, a directory,
+a walkthrough, and HTML — a peer's as a static page in a frame that runs
+nothing, since the read-through never serves a peer's page with scripts. A
+peer's file is read with the UI's own credential and shown from its bytes
+(an object URL, or the page's text), because no file token this strut
+mints opens the read-through and the key never goes into an image's or a
+frame's URL; a peer's file nothing renders, and the head's link, download
+instead. `solo` is read once and stays in the URL; without it `artifact`
+is ignored.
 
 ### 14.4 A published app as a deliverable
 

@@ -51,9 +51,57 @@ export function artifactKind(path: string): ArtifactKind | null {
 
 /** True for a served-file path as steps put it in their output — a run's
  *  `/artifacts/<runId>/<relPath>` (see `ctx.services.artifacts`) or a job's
- *  `/jobs/<job>/files/<relPath>` (`job/dir`). */
+ *  `/jobs/<job>/files/<relPath>` (`job/dir`) — here, or a peer's through the
+ *  read-through (`/peers/<id>/…`, `peerArtifactPath`). */
 export function isArtifactPath(v: unknown): v is string {
-  return typeof v === "string" && (v.startsWith("/artifacts/") || v.startsWith("/jobs/") || APP_SCOPE_RE.test(v));
+  if (typeof v !== "string") return false;
+  const local = v.replace(PEER_HOPS_RE, "");
+  return local.startsWith("/artifacts/") || local.startsWith("/jobs/") || APP_SCOPE_RE.test(local);
+}
+
+/** The `/peers/<id>` hops in front of a path read through a peer. */
+const PEER_HOPS_RE = /^(?:\/peers\/[^/]+)+(?=\/)/;
+
+/** True for a path this strut reads through a peer (`/peers/<id>/…`): its
+ *  bytes are the peer's, fetched with this strut's token for it, and no
+ *  `?t=` minted here or there opens it from a link. */
+export function isPeerPath(path: string): boolean {
+  return PEER_HOPS_RE.test(path);
+}
+
+/** Where a deliverable another strut produced opens from here: a peer-tagged
+ *  entry `{ peer, via?, job, path }` (plans/chained-orchestrators.md §5) as
+ *  the read-through path — `/peers/<peer>/jobs/<job>/files/<path>`, or
+ *  `/peers/<peer>/peers/<via>/jobs/<job>/files/<path>` two hops away. Each
+ *  id one encoded segment (a job the peer keeps as `peer/<job>` is
+ *  `peer%2F<job>`), the path's own `/` kept. Null without a peer, a job or
+ *  a path. */
+export function peerArtifactPath(ref: { peer?: string; via?: string; job?: string; path?: string }): string | null {
+  const rel = ref.path?.replace(/^\/+/, "");
+  if (!ref.peer || !ref.job || !rel) return null;
+  const hops = [ref.peer, ...(ref.via ? [ref.via] : [])].map((id) => `/peers/${encodeURIComponent(id)}`).join("");
+  return `${hops}/jobs/${encodeURIComponent(ref.job)}/files/${rel}`;
+}
+
+/** A job's files or a run's artifacts, here or behind `/peers/<id>` hops. */
+const SERVED_FILE_RE = /^(?:\/peers\/[^/]+)*\/(?:jobs\/[^/]+\/files|artifacts\/[^/]+)(?:\/.*)?$/;
+
+/** True for a path a host may hand the UI to show on its own
+ *  (`?artifact=<path>&solo=1`): a job's files (`/jobs/<job>/files/…`) or a
+ *  run's artifacts (`/artifacts/<runId>/…`), either behind any number of
+ *  `/peers/<id>` hops — and nothing else: no URL, no query or fragment, no
+ *  other route, no empty segment but a trailing slash, and no segment that
+ *  is `.` or `..` once decoded (a URL parser folds `%2e%2e` too). */
+export function isServedFilePath(path: string): boolean {
+  if (!SERVED_FILE_RE.test(path) || /[?#\\]/.test(path)) return false;
+  const segments = path.slice(1).split("/");
+  if (segments[segments.length - 1] === "") segments.pop();
+  for (const seg of segments) {
+    let decoded: string;
+    try { decoded = decodeURIComponent(seg); } catch { return false; }
+    if (decoded === "" || decoded === "." || decoded === "..") return false;
+  }
+  return true;
 }
 
 /** An app version's files: `/apps/<name>/<vN>/files` (plans/apps.md §7.2). */
