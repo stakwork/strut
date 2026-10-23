@@ -53,6 +53,15 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     assert.doesNotMatch(system, /app\/init|Job App/);
   });
 
+  it("a repository found mid-turn: git/checkout is granted and the prompt says how, since bash never holds the person's token", async () => {
+    const text = await jobWorkflowYaml();
+    const { tools, system } = paramsOf(text);
+    assert.ok(tools.includes("git/checkout"), "a repository checked out with the person's token, into the job's directory");
+    assert.match(system, /git\/checkout with `workdir`\s+your job id/);
+    const work = flowFromYaml(JOB_WORKFLOW, "v1", text).steps.find((s) => s.id === "work") as { config: Record<string, unknown> };
+    assert.equal(work.config["secretsEnv"], undefined, "no token in the agent's shell");
+  });
+
   it("the host's delta is appended — its grants after strut's, its section after strut's prompt — and changes the hash; nothing else does", async () => {
     const plain = await jobWorkflowYaml();
     const section = "Before you act, open the `Job` Concept and follow the kind's page.";
