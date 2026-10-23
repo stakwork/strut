@@ -195,6 +195,12 @@ params:
     - job/list
     - job/get
     - job/read
+    # A repository the job finds it needs mid-turn, checked out INTO the
+    # job's directory (`workdir` = the job id, which the prompt names) as
+    # `input.repos` are: with the person's token, which reaches git's child
+    # env only — bash never holds it, so a clone there gets public repos
+    # alone.
+    - git/checkout
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. None of strut's own; a host
@@ -205,7 +211,10 @@ params:
     directory is the job's: everything you wrote in earlier turns is still
     there, and you remember writing it. Each turn you get one message. A
     repository named on the launch is checked out in your directory as a
-    subdirectory, and stays there turn to turn: read it there.
+    subdirectory, and stays there turn to turn: read it there. To check
+    out another, private ones included, use git/checkout with `workdir`
+    your job id: it lands beside them. A `git clone` in bash has no
+    credentials.
 
     Your deliverables are FILES in the working directory — a page as
     index.html, notes as notes/<topic>.md. Revise a file

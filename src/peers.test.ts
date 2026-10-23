@@ -872,6 +872,73 @@ describe("strut/run-workflow across two struts", () => {
     }
   });
 
+  it("a host that gates strut/run-workflow: no route reaches the peer but an approved proposal (a workflow step, meta/run-workflow or job/start of a builder with peer)", async () => {
+    const dir = join(tmpdir(), `strut-peer-gated-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    const { peers } = (await (await caller.app.request("/peers", { headers: auth })).json()) as { peers: Array<{ baseUrl: string }> };
+    const gated = await createStrut({
+      workspace: new WorkspaceManager(dir),
+      store: new MemoryRunStore(),
+      serveUi: false,
+      enableChat: false,
+      scheduler: false,
+      peers: [{ id: "cloud", baseUrl: peers[0]!.baseUrl, token: KEY, label: "Cloud" }],
+      // Peel's delta: the agent's peer tool asks first.
+      orchestrator: { approve: ["strut/run-workflow"] },
+      job: { approve: ["strut/run-workflow"] },
+    });
+    try {
+      const echoRuns = async () => (await peer.store.listRuns("echo")).length + (await peer.store.listRuns("builder")).length;
+      const before = await echoRuns();
+      const refusal = /strut\/run-workflow needs the person's approval on this strut/;
+      const go = async (wf: string, body: Record<string, unknown>) => {
+        const res = await gated.app.request(`/workflows/${wf}/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body) });
+        assert.equal(res.status, 202, await res.clone().text());
+        return settled(gated, wf, ((await res.json()) as { runId: string }).runId);
+      };
+
+      // A workflow step.
+      await gated.workspace.publishWorkflow("call", "v1", { steps: [{ id: "far", type: "strut/run-workflow", config: { peer: "cloud", workflow: "echo", input: { name: "x" } } }] });
+      const step = await go("call", { input: {} });
+      assert.equal(step.status, "error");
+      assert.match(step.error?.message ?? "", refusal);
+
+      // The builder's `remote` branch, launched with input.peer — what job/start { peer } and meta/run-workflow do.
+      const build = await go("builder", { job: "b-1", input: { prompt: "Build hello on cloud", peer: "cloud" } });
+      assert.equal(build.status, "error");
+      assert.match(build.error?.message ?? "", refusal);
+      const authoring = (gated.services as { authoring: { runWorkflow(n: string, i: unknown): Promise<{ status?: string; error?: { message: string } }> } }).authoring;
+      const nested = await authoring.runWorkflow("builder", { prompt: "Build hello on cloud", peer: "cloud" });
+      assert.equal(nested.status, "error");
+      assert.match(nested.error?.message ?? "", refusal);
+      // job/start { workflow: builder, peer } launches that same builder run.
+      const reg = gated.getRegistry();
+      const started = (await reg["job/start"]!.run(
+        { workflow: "builder", title: "Build", prompt: "Build hello on cloud", peer: "cloud" },
+        { runId: "r-orch", path: "orchestrator/turn/001-job_start", scope: {}, input: {}, emit: async () => {}, services: gated.services, registry: reg, agentTool: true } as never,
+      )) as { runId: string };
+      const viaJob = await settled(gated, "builder", started.runId);
+      assert.equal(viaJob.status, "error");
+      assert.match(viaJob.error?.message ?? "", refusal);
+      assert.equal(await echoRuns(), before, "nothing reached the peer");
+
+      // The agent's tool call as a proposal: accepted, it runs once.
+      const proposals = (gated.services as { proposals: { propose(p: unknown): Promise<{ id: string }> } }).proposals;
+      const p = await proposals.propose({
+        step: "strut/run-workflow",
+        input: { peer: "cloud", workflow: "echo", input: { name: "approved" } },
+        title: "Run a workflow on another strut.",
+        by: { workflow: "orchestrator", runId: "r-orch", path: "orchestrator/turn/002-strut_run_workflow" },
+      });
+      const decided = (await (await gated.app.request(`/proposals/${p.id}/decide`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ action: "accept" }) })).json()) as { status: string; result?: { output?: Far; error?: string } };
+      assert.equal(decided.status, "applied", JSON.stringify(decided.result));
+      assert.equal(decided.result?.output?.output, "hi approved");
+    } finally {
+      await gated.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("the tail of a run that died on the peer ends with done { status: stale }", async () => {
     await peer.store.append("echo", "8888", { ts: new Date().toISOString(), runId: "8888", path: "echo", type: "run.start", input: {} });
     const res = await peer.app.request("/workflows/echo/runs/8888/stream", { headers: auth });

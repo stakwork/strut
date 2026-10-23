@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { threadId } from "node:worker_threads";
 import { join } from "node:path";
 import {
   createStt,
@@ -153,8 +154,8 @@ describe("stt service", () => {
     assert.equal(s.model, "zipformer-en-kroko");
     assert.equal(s.partialModel, null);
     const events = [];
-    for (let i = 0; i < 12; i++) events.push(...s.push(silence(0.1)));
-    events.push(...s.end());
+    for (let i = 0; i < 12; i++) events.push(...(await s.push(silence(0.1))));
+    events.push(...(await s.end()));
     await s.flush();
     assert.deepEqual(events, [
       { type: "partial", text: "hello" },
@@ -172,7 +173,7 @@ describe("stt service", () => {
     // A later connection on the same session keeps counting.
     const s2 = await stt.openStream({ partialModel: null, session: "s1" });
     const later = [];
-    for (let i = 0; i < 11; i++) later.push(...s2.push(silence(0.1)));
+    for (let i = 0; i < 11; i++) later.push(...(await s2.push(silence(0.1))));
     assert.equal(later.find((e) => e.type === "final")?.index, 2);
   });
 
@@ -194,7 +195,7 @@ describe("stt service", () => {
     assert.equal(s.partialModel, "nemo-fast-conformer-en-80ms");
     assert.equal(s.hotwords, "inline");
     const events = [];
-    for (let i = 0; i < 11; i++) events.push(...s.push(silence(0.1)));
+    for (let i = 0; i < 11; i++) events.push(...(await s.push(silence(0.1))));
     assert.deepEqual(events, [
       { type: "partial", text: "hel" },
       { type: "partial", text: "hello" },
@@ -249,6 +250,93 @@ describe("stt service", () => {
     assert.equal(r.model, "zipformer-en-kroko");
     assert.ok(r.segments.length >= 1);
     assert.equal(r.text, r.segments.map((s) => s.text).join(" "));
+  });
+
+  describe("in a worker thread (the default)", () => {
+    /** A fake engine as a module the worker can import: a stream ends a
+     *  segment every second of audio, each result names the thread that
+     *  decoded it, and every decode holds that thread for `busyMs` the way
+     *  sherpa's native decode does. */
+    const engineModule = (busyMs: number) =>
+      `data:text/javascript,${encodeURIComponent(`
+import { threadId } from "node:worker_threads";
+class Stream { seconds = 0; offset = 0; pending = false;
+  acceptWaveform(w) { this.seconds += w.samples.length / w.sampleRate; this.pending = true; }
+  inputFinished() {} }
+export class OnlineRecognizer {
+  constructor(config) { this.config = config; }
+  createStream() { return new Stream(); }
+  isReady(s) { return s.pending; }
+  decode(s) { s.pending = false; const end = Date.now() + ${busyMs}; while (Date.now() < end) {} }
+  isEndpoint(s) { return s.seconds - s.offset >= 1; }
+  reset(s) { s.offset = s.seconds; }
+  getResult(s) { return { text: s.seconds > s.offset ? "decoded on " + threadId : "" }; }
+}
+export function readWave() { return { samples: new Float32Array(16000 * 3), sampleRate: 16000 }; }
+`)}`;
+
+    /** The longest the event loop went without running a 5 ms interval while `work` ran. */
+    async function maxLag(work: () => Promise<unknown>): Promise<number> {
+      let last = performance.now();
+      let max = 0;
+      const timer = setInterval(() => {
+        const now = performance.now();
+        max = Math.max(max, now - last);
+        last = now;
+      }, 5);
+      try {
+        await work();
+      } finally {
+        clearInterval(timer);
+      }
+      return Math.max(max, performance.now() - last);
+    }
+
+    it("a stream is decoded off the main thread, its finals counted and logged here", async () => {
+      const stt = createStt({ dataDir, modelDir, env, engineModule: engineModule(0), log: () => {} });
+      try {
+        assert.equal(await stt.available(), true);
+        const s = await stt.openStream({ partialModel: null, session: "w1" });
+        const events = [];
+        for (let i = 0; i < 11; i++) events.push(...(await s.push(silence(0.1))));
+        events.push(...(await s.end()));
+        await s.flush();
+        const finals = events.filter((e) => e.type === "final");
+        assert.deepEqual(finals.map((e) => e.index), [0, 1]);
+        const decodedOn = Number(/decoded on (\d+)/.exec(finals[0]!.text)?.[1]);
+        assert.ok(decodedOn > 0 && decodedOn !== threadId, `decoded on thread ${decodedOn}`);
+        assert.equal(((await stt.sessions.get("w1")) ?? []).length, 2);
+        await assert.rejects(s.push(silence(0.1)), /stream is closed/);
+      } finally {
+        await stt.close();
+      }
+    });
+
+    it("transcribe leaves the event loop free while the recognizer works — in process, it would not", async () => {
+      const inWorker = createStt({ dataDir, modelDir, env, engineModule: engineModule(20), log: () => {} });
+      const inline = createStt({ dataDir, modelDir, env, engine: () => import(engineModule(20)), log: () => {} });
+      try {
+        await inWorker.available(); // the worker is up before the clock starts
+        let r: Awaited<ReturnType<typeof inWorker.transcribe>> | undefined;
+        const lagWorker = await maxLag(async () => (r = await inWorker.transcribe(new Uint8Array(64))));
+        const lagInline = await maxLag(() => inline.transcribe(new Uint8Array(64)));
+        assert.deepEqual(r!.segments.map((s) => s.text.startsWith("decoded on")), [true, true, true]);
+        assert.ok(lagInline >= 400, `in process: the loop stalled ${lagInline.toFixed(0)} ms`);
+        assert.ok(lagWorker < 150, `in the worker: the loop stalled ${lagWorker.toFixed(0)} ms`);
+      } finally {
+        await inWorker.close();
+      }
+    });
+
+    it("an engine the worker cannot load is 'not available', never a download", async () => {
+      const stt = createStt({ dataDir, modelDir, env, engineModule: "data:text/javascript,throw new Error('no addon')", log: () => {} });
+      try {
+        assert.equal(await stt.available(), false);
+        await assert.rejects(() => stt.openStream({ partialModel: null }), /stt not available/);
+      } finally {
+        await stt.close();
+      }
+    });
   });
 
   it("ensureModel rejects unknown ids and dedupes in-flight downloads", async () => {
