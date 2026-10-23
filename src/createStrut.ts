@@ -827,6 +827,9 @@ export async function createStrut<TServices = unknown>(
     // `agentTools: [mcp/<server>/*]` reaches.
     mcpRegistry,
     proposals: proposalsCapability(dataDir, {
+      // What the host's deltas gate: a step that reaches past this strut
+      // checks it whatever the route (proposals.ts `requireApproval`).
+      hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
     }),
     // The graph backend the server wired, for the graph/* steps (graphCtx
