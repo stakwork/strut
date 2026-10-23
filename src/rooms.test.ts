@@ -72,7 +72,7 @@ const refusedWith = (url: string, headers: Record<string, string>) =>
     (err: { status?: number }) => err.status,
   );
 
-const NO_SEEDS = { job: false, orchestrator: false, builder: false, browserWorkflows: false, views: false, concepts: false } as const;
+const NO_SEEDS = { job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, views: false, concepts: false } as const;
 
 describe("a room", () => {
   it("each message goes to every open socket; with none open they wait, and the next join gets them in order", () => {

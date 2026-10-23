@@ -245,6 +245,8 @@ describe("the apps capability", () => {
     const seeded = await writeApp(fresh(), app("title: Seeded\n"));
     assert.ok((await apps.publish(seeded, "strut/seeded", { surface: "person", source: "seed" })).ok);
     await assert.rejects(apps.promote("strut/seeded", "v1"), /seeded by strut.*cannot be held/);
+    assert.deepEqual(await apps.pin("strut/seeded", true), {}, "a seeded app is pinned without a hold");
+    assert.deepEqual([(await ws.getApp("strut/seeded"))?.pinned, (await ws.getApp("strut/seeded"))?.live], [true, undefined]);
   });
 
   it("compact: a version published before the history gets its tree and its folder dropped when not kept; one whose files changed is left alone", async () => {
@@ -349,10 +351,13 @@ describe("the app/* steps", () => {
     assert.equal(((await appGet.run({ name: "tracker" }, ctx)) as { stale: boolean }).stale, false);
     await assert.rejects(appGet.run({ name: "nope" }, ctx), /not found/);
     // A tab: the record's flag, read back on the listing; unknown names refused.
-    assert.deepEqual(await appPin.run({ name: "tracker", pinned: true }, ctx), { name: "tracker", pinned: true });
+    // Pinning holds the app at the version it shows (plans/app-releases.md), by the run's actor.
+    assert.deepEqual(await appPin.run({ name: "tracker", pinned: true }, ctx), { name: "tracker", pinned: true, live: "r1", release: "r1" });
+    assert.equal((await ws.getApp("tracker"))?.releases?.[0]?.by, "bot");
+    assert.deepEqual(await appPin.run({ name: "tracker", pinned: true }, ctx), { name: "tracker", pinned: true, live: "r1" }, "already held: no second release");
     assert.equal(((await appList.run({}, ctx)) as { apps: Array<{ pinned?: boolean }> }).apps[0]?.pinned, true);
     assert.equal(((await appGet.run({ name: "tracker" }, ctx)) as { pinned?: boolean }).pinned, true);
-    await appPin.run({ name: "tracker", pinned: false }, ctx);
+    assert.deepEqual(await appPin.run({ name: "tracker", pinned: false }, ctx), { name: "tracker", pinned: false, live: "r1" }, "unpinning leaves what is live alone");
     assert.equal(((await appList.run({}, ctx)) as { apps: Array<{ pinned?: boolean }> }).apps[0]?.pinned, undefined);
     await assert.rejects(appPin.run({ name: "nope", pinned: true }, ctx), /not found/);
     const co = (await appCheckout.run({ name: "tracker", path: "apps/tracker-2" }, ctx)) as { path: string };
@@ -514,7 +519,7 @@ describe("the /apps routes", () => {
       const pin = (name: string, body: unknown) => strut.app.request(`/apps/${name}/pin`, { method: "PUT", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify(body) });
       const pinned = await pin("hello", { pinned: true });
       assert.equal(pinned.status, 200);
-      assert.deepEqual(await pinned.json(), { ok: true, name: "hello", pinned: true });
+      assert.deepEqual(await pinned.json(), { ok: true, name: "hello", pinned: true, live: "r1" }, "held already: pinning makes no release");
       const tabs = (await (await strut.app.request("/apps", auth)).json()) as { apps: Array<{ name: string; pinned?: boolean }> };
       assert.deepEqual(tabs.apps.filter((a) => a.pinned).map((a) => a.name), ["hello"]);
       assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { pinned?: boolean }).pinned, true);
@@ -522,7 +527,10 @@ describe("the /apps routes", () => {
       assert.equal((await pin("hello", {})).status, 400);
       assert.equal((await pin("hello", { pinned: "yes" })).status, 400);
       assert.equal((await pin("nope", { pinned: true })).status, 404);
-      assert.equal((await pin("acme%2Fui", { pinned: true })).status, 200, "a name with a slash");
+      const kitPinned = await pin("acme%2Fui", { pinned: true });
+      assert.equal(kitPinned.status, 200, "a name with a slash");
+      const kitBody = (await kitPinned.json()) as { live: string; release: { id: string; version: string; by: string } };
+      assert.deepEqual([kitBody.live, kitBody.release.id, kitBody.release.version], ["r1", "r1", "v1"], "following latest, pinning holds it at the version it shows");
       assert.equal((await pin("acme%2Fui", { pinned: false })).status, 200);
       assert.equal(((await (await strut.app.request("/apps/acme%2Fui", auth)).json()) as { pinned?: boolean }).pinned, undefined);
       assert.equal((await strut.app.request("/apps/hello", { method: "DELETE", ...auth })).status, 200);

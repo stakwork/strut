@@ -118,6 +118,7 @@ import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
+import { seedPrivacyWorkflows } from "./privacy/seed.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -365,6 +366,9 @@ export interface StrutOptions<TServices = unknown> {
    *  (src/browser/seed.ts: browser-capture, browser-explore, browser-watch),
    *  seeded at boot by content hash like `job`. `false` seeds none. */
   browserWorkflows?: false;
+  /** The `private-ask` workflow strut ships beside the privacy/* steps
+   *  (src/privacy/seed.ts), seeded at boot by content hash. `false` seeds none. */
+  privacyWorkflows?: false;
 
   /** The strut graph backend, when the deployment has one. Default: the one
    *  behind a graph-backed workspace (`workspace.graph`), so the default
@@ -1068,6 +1072,13 @@ export async function createStrut<TServices = unknown>(
   if (opts.browserWorkflows !== false) {
     for (const w of await seedBrowserWorkflows(workspace)) {
       if (w.changed) console.log(`[browser] seeded workflow: ${w.name} @ ${w.version}`);
+    }
+  }
+
+  // `private-ask` (src/privacy/seed.ts), seeded like the browser workflows.
+  if (opts.privacyWorkflows !== false) {
+    for (const w of await seedPrivacyWorkflows(workspace)) {
+      if (w.changed) console.log(`[privacy] seeded workflow: ${w.name} @ ${w.version}`);
     }
   }
 
@@ -2533,12 +2544,17 @@ export async function createStrut<TServices = unknown>(
     if (at instanceof Response) return at;
     const body = (await c.req.json().catch(() => ({}))) as { pinned?: unknown };
     if (typeof body.pinned !== "boolean") return c.json({ error: "pinned is required: true or false" }, 400);
+    let made: AppRelease | undefined;
     try {
-      await apps.pin(at.name, body.pinned);
+      const actor = await resolveActor(c);
+      made = (await apps.pin(at.name, body.pinned, actor ? { by: actor } : {})).release;
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, /not found/.test(message) ? 404 : 409);
     }
-    return c.json({ ok: true, name: at.name, pinned: body.pinned });
+    // Pinning holds an app that followed latest (plans/app-releases.md): `release` is the one made.
+    const live = (await workspace.getApp(at.name))?.live ?? "latest";
+    return c.json({ ok: true, name: at.name, pinned: body.pinned, live, ...(made ? { release: made } : {}) });
   });
 
   app.delete("/apps/:name", async (c) => {

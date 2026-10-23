@@ -172,8 +172,13 @@ export interface AppsCapability {
    *  before ./objects.ts) and drop the directories no longer kept: a boot
    *  step. A directory whose files no longer match its version is left alone. */
   compact(): Promise<{ recorded: number; evicted: number; mismatched: string[] }>;
-  /** Pin the app as a tab a host shows (`AppMetadata.pinned`), or unpin it. */
-  pin(name: string, pinned: boolean): Promise<void>;
+  /** Pin the app as a tab a host shows (`AppMetadata.pinned`), or unpin it.
+   *  A tab is what people use, so pinning an app that follows latest also
+   *  HOLDS it at the version it shows (plans/app-releases.md, ruled
+   *  2026-10-23): the release made comes back, and the builder's later
+   *  publishes are drafts until a person makes one live. Unpinning leaves
+   *  what is live alone. An app strut seeds is pinned without a hold. */
+  pin(name: string, pinned: boolean, opts?: { by?: string }): Promise<{ release?: AppRelease }>;
   delete(name: string): Promise<boolean>;
   /** Strut's template names. */
   templates(): Promise<string[]>;
@@ -344,6 +349,19 @@ export function createApps(deps: AppsDeps): AppsCapability {
     return out;
   };
 
+  const promote: AppsCapability["promote"] = async (name, version, opts) => {
+    const rec = await workspace.getApp(name, version);
+    if (!rec) throw new Error((await workspace.getApp(name)) ? `Version "${version}" not found for app "${name}"` : `App "${name}" not found`);
+    // A seed always matches its source (strut/views): every boot makes the
+    // committed tree active again, so a hold would not hold.
+    if (rec.versions[rec.active]?.source === "seed") throw new Error(`${name} is seeded by strut and always runs its committed version — it cannot be held`);
+    await buildable(name, version);
+    const lock = await takeLock(rec.manifest, workspace);
+    const release = await workspace.addAppRelease(name, { version, lock, ...(opts?.by ? { by: opts.by } : {}) });
+    await evict(name);
+    return release;
+  };
+
   const errorsOf = async (app: string) => (deps.errors ? await deps.errors(app, APP_ERRORS_MAX).catch(() => []) : []);
 
   return {
@@ -473,18 +491,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       return { path: to, template, files: await listAppFiles(to) };
     },
 
-    async promote(name, version, opts) {
-      const rec = await workspace.getApp(name, version);
-      if (!rec) throw new Error((await workspace.getApp(name)) ? `Version "${version}" not found for app "${name}"` : `App "${name}" not found`);
-      // A seed always matches its source (strut/views): every boot makes the
-      // committed tree active again, so a hold would not hold.
-      if (rec.versions[rec.active]?.source === "seed") throw new Error(`${name} is seeded by strut and always runs its committed version — it cannot be held`);
-      await buildable(name, version);
-      const lock = await takeLock(rec.manifest, workspace);
-      const release = await workspace.addAppRelease(name, { version, lock, ...(opts?.by ? { by: opts.by } : {}) });
-      await evict(name);
-      return release;
-    },
+    promote,
 
     async setLive(name, live) {
       const rec = await workspace.getApp(name);
@@ -528,7 +535,13 @@ export function createApps(deps: AppsDeps): AppsCapability {
       return { recorded, evicted, mismatched };
     },
 
-    pin: (name, pinned) => workspace.setAppPinned(name, pinned),
+    async pin(name, pinned, opts) {
+      // The hold first: a version that no longer builds pins nothing.
+      const rec = pinned ? await workspace.getApp(name) : null;
+      const release = rec && !rec.live && rec.versions[rec.active]?.source !== "seed" ? await promote(name, rec.active, opts) : undefined;
+      await workspace.setAppPinned(name, pinned);
+      return release ? { release } : {};
+    },
     delete: (name) => workspace.deleteApp(name),
 
     async templates() {
