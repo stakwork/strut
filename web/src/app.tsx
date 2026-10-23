@@ -4,7 +4,7 @@ import type { CanvasData, CanvasNode, CanvasEdge } from "system-canvas";
 import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
-import { foldAccessedNodes } from "@strut/kit/folds";
+import { foldAccessedNodes, isServedFilePath } from "@strut/kit/folds";
 import { latestAttempt } from "./step-attempt";
 import { pushUrl, replaceUrl } from "./embed";
 import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";
@@ -40,6 +40,7 @@ import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppHost } from "./components/AppHost";
 import { SoloApp } from "./components/SoloApp";
+import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph } from "./icons";
 import { appKey, appMessage } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
@@ -90,15 +91,25 @@ function activeKey(runs: api.ActiveRun[]): string {
 }
 
 export function App() {
-  // `?solo=1` beside `?app=`: the app's page alone, with none of strut's UI
-  // around it — what a native host (Peel) opens in a web view of its own,
-  // here or for a peer's app (plans/apps.md §7.4). Its own component, so
-  // none of the shell's loads and polls run behind it. Read once.
+  // `?solo=1`: one thing alone in the window, with none of strut's UI around
+  // it — what a native host (Peel) opens in a web view of its own. Rendered
+  // in place of the shell, so none of its loads and polls run behind it.
+  // Read once.
+  //  - beside `?app=`: the app's page, here or a peer's (plans/apps.md §7.4).
+  //  - beside `?artifact=<path>`: one served file — a job's file or a run's
+  //    artifact, here or a peer's through the read-through — for a
+  //    deliverable. Only a path of that shape (`isServedFilePath`).
   const [solo] = useState(() => {
     const p = new URLSearchParams(location.search);
-    return p.get("solo") === "1" ? p.get("app") : null;
+    return p.get("solo") === "1" ? { app: p.get("app"), artifact: p.get("artifact") } : null;
   });
-  return solo ? <SoloApp app={solo} /> : <Shell />;
+  if (solo?.app) return <SoloApp app={solo.app} />;
+  if (solo?.artifact) {
+    return isServedFilePath(solo.artifact)
+      ? <ArtifactViewer path={solo.artifact} solo />
+      : <div class="app-solo"><div class="empty">Not a file strut serves: {solo.artifact}</div></div>;
+  }
+  return <Shell />;
 }
 
 function Shell() {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
 import { createPortal } from "preact/compat";
-import { artifactUrl, fetchArtifactText, fileScopeOf } from "../api";
-import { artifactKind, artifactRel, directoryEntries, parseWalkthrough, resolveArtifactLink, viewerKind } from "@strut/kit/folds";
+import { artifactUrl, downloadArtifact, fetchArtifactText, fileScopeOf } from "../api";
+import { artifactKind, artifactRel, directoryEntries, isPeerPath, parseWalkthrough, resolveArtifactLink, viewerKind } from "@strut/kit/folds";
 import { ArrowLeftIcon, CloseIcon } from "../icons";
-import { useFileScope } from "../use-artifact-url";
+import { useFileBlob, useFileScope } from "../use-artifact-url";
 import { Markdown, type MarkdownLink } from "./Markdown";
 import { AppHost, type HostedApp } from "./AppHost";
 
@@ -28,10 +28,20 @@ import { AppHost, type HostedApp } from "./AppHost";
 //
 // An APP the caller names (`app`: a published app, its document the path)
 // renders through the app host, not as an HTML page.
+//
+// A PEER's file (`/peers/<id>/…`, plans/chained-orchestrators.md §5) is read
+// through this strut with its token for the peer: no `?t=` opens it from a
+// link, and the key must never ride in a `src`. So it is fetched with the
+// UI's own credential and shown from the bytes — an image, video, audio or
+// PDF from an object URL, an HTML page as the text of a frame that runs
+// nothing (the read-through never serves a peer's page with scripts) — and
+// a file nothing renders downloads. `solo`: the viewer alone in the window,
+// no backdrop and nothing to close (`?artifact=…&solo=1`).
 
 export function ArtifactViewer(props: {
   path: string;
-  onClose: () => void;
+  onClose?: () => void;
+  solo?: boolean;
   /** An app to render through the host (the path is its document). */
   app?: HostedApp;
   /** A strut link the app opened (`ui/open-link`). */
@@ -44,14 +54,19 @@ export function ArtifactViewer(props: {
   const scope = useFileScope(path);
   const files = scope?.files ?? null;
   const kind = viewerKind(path, files);
-  const url = scope ? artifactUrl(path, scope.token) : undefined;
+  const peer = isPeerPath(path);
   const hosted = props.app && path === props.path ? props.app : null;
-  const wantsText = !hosted && (kind === "markdown" || kind === "text" || kind === "walkthrough");
+  const wantsText = !hosted && (kind === "markdown" || kind === "text" || kind === "walkthrough" || (peer && kind === "html"));
+  const wantsBlob = !hosted && peer && (kind === "image" || kind === "video" || kind === "audio" || kind === "pdf");
+  const blob = useFileBlob(wantsBlob ? path : null, kind === "pdf" ? "application/pdf" : undefined);
+  const url = !scope ? undefined : peer ? blob.url ?? undefined : artifactUrl(path, scope.token);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose(); };
+    const close = props.onClose;
+    if (!close) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [props.onClose]);
@@ -78,17 +93,22 @@ export function ArtifactViewer(props: {
 
   // Where a link in this file leads: a file of the scope opens in place when
   // something renders it, and is a link to the served file when nothing
-  // does; anything outside the scope is left as written.
+  // does (a peer's downloads); anything outside the scope is left as written.
+  const token = scope?.token ?? "";
   const resolveLink = (href: string): MarkdownLink | null => {
     const to = resolveArtifactLink(path, href);
     if (!to) return null;
-    return { url: artifactUrl(to, scope?.token ?? ""), open: viewerKind(to, files) ? () => go(to) : undefined };
+    return {
+      url: artifactUrl(to, token),
+      open: viewerKind(to, files) ? () => go(to) : peer ? () => void downloadArtifact(to).catch(() => {}) : undefined,
+      img: (alt) => <FileImg class="md-img" path={to} token={token} alt={alt} />,
+    };
   };
 
   const body = () => {
     if (hosted) return <AppHost app={hosted} {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})} />;
-    if (error) return <div class="artifact-status tone-error">{error}</div>;
-    if (!scope || (wantsText && text == null)) return <div class="artifact-status">Loading…</div>;
+    if (error || blob.error) return <div class="artifact-status tone-error">{error || blob.error}</div>;
+    if (!scope || (wantsText && text == null) || (wantsBlob && !url)) return <div class="artifact-status">Loading…</div>;
     switch (kind) {
       case "markdown": return <Markdown source={text ?? ""} resolveLink={resolveLink} />;
       case "text": return <pre class="artifact-text">{text}</pre>;
@@ -96,35 +116,58 @@ export function ArtifactViewer(props: {
       case "video": return <video class="artifact-media" src={url} controls />;
       case "audio": return <audio class="artifact-audio" src={url} controls />;
       case "pdf": return <iframe class="artifact-frame" src={url} title={path} />;
-      case "html": return <iframe class="artifact-frame" src={url} title={path} sandbox="allow-scripts" />;
+      case "html": return peer
+        ? <iframe class="artifact-frame" srcdoc={text ?? ""} title={path} sandbox="" />
+        : <iframe class="artifact-frame" src={url} title={path} sandbox="allow-scripts" />;
       case "directory": return <Directory files={scope.files} path={path} token={scope.token} onOpen={go} />;
       case "walkthrough": return <WalkthroughView text={text ?? ""} path={path} token={scope.token} />;
       default: return <div class="artifact-status">No inline viewer for this file type.</div>;
     }
   };
 
-  return createPortal(
-    <div class="dialog-backdrop" onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
-      <div class="dialog artifact-dialog" role="dialog" aria-label={path}>
-        <div class="artifact-dialog-head">
-          {trail.length > 0 && (
-            <button class="copy-btn" onClick={back} aria-label="Back" title="Back"><ArrowLeftIcon /></button>
-          )}
-          <span class="artifact-dialog-path" title={path}>{path}</span>
-          {url && kind !== "directory" && (
+  const view = (
+    <>
+      <div class="artifact-dialog-head">
+        {trail.length > 0 && (
+          <button class="copy-btn" onClick={back} aria-label="Back" title="Back"><ArrowLeftIcon /></button>
+        )}
+        <span class="artifact-dialog-path" title={path}>{path}</span>
+        {peer
+          ? scope && kind !== "directory" && (
+            <button class="artifact-dialog-open" onClick={() => void downloadArtifact(path).catch(() => {})}>Download ↓</button>
+          )
+          : url && kind !== "directory" && (
             <a class="artifact-dialog-open" href={url} target="_blank" rel="noopener">Open in new tab ↗</a>
           )}
+        {props.onClose && (
           <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
-        </div>
-        <div class="artifact-dialog-body">{body()}</div>
+        )}
       </div>
+      <div class="artifact-dialog-body">{body()}</div>
+    </>
+  );
+  if (props.solo) return <div class="artifact-solo" aria-label={path}>{view}</div>;
+  return createPortal(
+    <div class="dialog-backdrop" onClick={(e) => { if (e.target === e.currentTarget) props.onClose?.(); }}>
+      <div class="dialog artifact-dialog" role="dialog" aria-label={path}>{view}</div>
     </div>,
     document.body,
   );
 }
 
+/** An image of a served file: by its tokened URL here, from its bytes for a
+ *  peer's (`useFileBlob`). */
+function FileImg(props: { path: string; token: string; alt: string; class?: string; loading?: "lazy" }) {
+  const peer = isPeerPath(props.path);
+  const blob = useFileBlob(peer ? props.path : null);
+  const src = peer ? blob.url : artifactUrl(props.path, props.token);
+  if (!src) return <span class="artifact-status">{blob.error || "Loading…"}</span>;
+  return <img class={props.class} src={src} alt={props.alt} {...(props.loading ? { loading: props.loading } : {})} />;
+}
+
 /** One level of a directory: folders first, then files. A row the viewer
- *  can render opens in place; one it cannot is a link to the served file. */
+ *  can render opens in place; one it cannot is a link to the served file —
+ *  a download for a peer's. */
 function Directory(props: { files: string[]; path: string; token: string; onOpen: (path: string) => void }) {
   const scope = fileScopeOf(props.path) ?? "";
   const rel = artifactRel(props.path) ?? "";
@@ -144,7 +187,9 @@ function Directory(props: { files: string[]; path: string; token: string; onOpen
           <li key={`f:${f}`}>
             {artifactKind(p)
               ? <button class="artifact-dir-row" onClick={() => props.onOpen(p)}>{f}</button>
-              : <a class="artifact-dir-row" href={artifactUrl(p, props.token)} target="_blank" rel="noopener">{f} ↗</a>}
+              : isPeerPath(p)
+                ? <button class="artifact-dir-row" onClick={() => void downloadArtifact(p).catch(() => {})}>{f} ↓</button>
+                : <a class="artifact-dir-row" href={artifactUrl(p, props.token)} target="_blank" rel="noopener">{f} ↗</a>}
           </li>
         );
       })}
@@ -181,7 +226,7 @@ function WalkthroughView(props: { text: string; path: string; token: string }) {
           {w.status && <span class={`walkthrough-status is-${w.status}`}>{w.status}</span>}
         </div>
       )}
-      <img class={`walkthrough-frame${frame.failed ? " is-failed" : ""}`} src={artifactUrl(frame.path, props.token)} alt={frame.caption} />
+      <FileImg class={`walkthrough-frame${frame.failed ? " is-failed" : ""}`} path={frame.path} token={props.token} alt={frame.caption} />
       <div class="walkthrough-caption">
         <span class="walkthrough-count">{i + 1} / {count}</span>
         <span class="walkthrough-text">{frame.caption}</span>
@@ -208,7 +253,7 @@ function WalkthroughView(props: { text: string; path: string; token: string }) {
             onClick={() => setAt(n)}
             title={f.caption}
           >
-            <img src={artifactUrl(f.path, props.token)} alt={f.caption} loading="lazy" />
+            <FileImg path={f.path} token={props.token} alt={f.caption} loading="lazy" />
           </button>
         ))}
       </div>

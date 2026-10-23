@@ -13,10 +13,12 @@ import { h, Fragment, JSX } from "preact";
 // runs instead of leaving the page (a modified click still gets the URL).
 // An image renders only through it: a markdown file an agent wrote may name
 // any URL, and the UI loads nothing but the scope's own files; otherwise the
-// image is the link it names.
+// image is the link it names. A caller whose files no plain `src` can load
+// (a peer's, read with the UI's credential) renders the image itself (`img`).
 
-/** Where a link leads, by the caller: its URL, and how to open it in place. */
-export interface MarkdownLink { url: string; open?: () => void }
+/** Where a link leads, by the caller: its URL, how to open it in place, and
+ *  how to show it as an image when a plain `<img src={url}>` cannot. */
+export interface MarkdownLink { url: string; open?: () => void; img?: (alt: string) => JSX.Element }
 type Resolve = ((href: string) => MarkdownLink | null) | undefined;
 
 type Node = JSX.Element | string;
@@ -97,7 +99,7 @@ function renderInline(text: string, resolve: Resolve): Node[] {
       if (link) {
         flush();
         const to = resolve?.(link.target) ?? null;
-        nodes.push(to ? <img class="md-img" src={to.url} alt={link.label} /> : renderLink(link.label, link.target, resolve));
+        nodes.push(to ? to.img?.(link.label) ?? <img class="md-img" src={to.url} alt={link.label} /> : renderLink(link.label, link.target, resolve));
         i = link.end;
         continue;
       }
