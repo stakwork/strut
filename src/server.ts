@@ -40,6 +40,23 @@ let strutInstance: Strut | null = null;
  *  and `automation?: { workflow, approve?, grants? }`. Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
+/** `job.folders` (name → absolute path) and `job.agents` (name → command
+ *  line): a desktop host's folders and coding agents (job/start { agent, folder }). */
+function localAgentsFromConfig(delta: Record<string, unknown>, file: string): { folders?: Record<string, string>; agents?: Record<string, string> } {
+  const out: { folders?: Record<string, string>; agents?: Record<string, string> } = {};
+  for (const name of ["folders", "agents"] as const) {
+    const value = delta[name];
+    if (value === undefined) continue;
+    const entries = value && typeof value === "object" && !Array.isArray(value) ? Object.entries(value as Record<string, unknown>) : null;
+    const ok = entries?.every(([k, v]) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(k) && typeof v === "string" && v.length > 0 && (name !== "folders" || v.startsWith("/")));
+    if (!entries || !ok) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "job.${name}" must be { <name>: ${name === "folders" ? "an absolute path" : "a command line"} }`);
+    }
+    out[name] = Object.fromEntries(entries as [string, string][]);
+  }
+  return out;
+}
+
 export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
@@ -64,8 +81,10 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
       throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }`);
     }
     const reach = key === "builder" ? reachFromConfig((delta ?? {}) as Record<string, unknown>, file) : undefined;
+    const local = key === "job" ? localAgentsFromConfig((delta ?? {}) as Record<string, unknown>, file) : {};
     out[key] = {
       ...(reach ? { reach } : {}),
+      ...local,
       ...(tools ? { tools: tools as string[] } : {}),
       ...(approve ? { approve: approve as string[] } : {}),
       ...(system !== undefined ? { system: system as string } : {}),
