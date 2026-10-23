@@ -1,6 +1,6 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -126,9 +126,70 @@ describe("the apps capability", () => {
     assert.equal((await apps.get("importer"))!.stale, false);
     assert.equal((await readBuildInfo(at.path))!.imports[0]!.version, "v2", "built against the kit's active version now");
 
+    // The directory alone gone: restored from the version's history and rebuilt.
     await rm(join(dataDir, "apps", "pinned", "v1"), { recursive: true, force: true });
+    const back = (await apps.get("pinned"))!;
+    assert.deepEqual([back.missing, back.stale, back.build?.hash], [false, false, back.hash]);
+    // The history gone with it (a graph copied without its dataDir): missing.
+    await rm(join(dataDir, "apps", "pinned", "v1"), { recursive: true, force: true });
+    await rm(join(dataDir, "apps", "pinned", ".trees"), { recursive: true, force: true });
     const gone = (await apps.get("pinned"))!;
     assert.deepEqual([gone.missing, gone.stale, gone.files, gone.build], [true, true, [], null]);
+  });
+
+  it("history: each source file stored once; the active version and the newest 5 keep their folder; an older one is restored and rebuilt on read; rollback to one restores it", async () => {
+    const { ws, apps, dataDir } = setup();
+    const dir = await writeApp(fresh(), { ...app("title: H\n"), "src/big.ts": `export const BIG = ${JSON.stringify("x".repeat(20_000))};\n` });
+    const folder = join(dataDir, "apps", "h");
+    for (let i = 1; i <= 8; i++) {
+      await writeFile(join(dir, "src", "App.tsx"), `export default function App() { return <p>version ${i}</p>; }\n`);
+      const r = await apps.publish(dir, "h", { surface: "person" });
+      assert.ok(r.ok && r.version === `v${i}`, r.ok ? r.version : r.errors.join("\n"));
+    }
+    const kept = (v: number) => existsSync(join(folder, `v${v}`));
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8].map(kept), [false, false, false, true, true, true, true, true], "v1–v3 dropped, v4–v8 kept");
+    for (let i = 1; i <= 8; i++) assert.ok(existsSync(join(folder, ".trees", `v${i}.json`)), `v${i}'s tree`);
+    // app.yaml and big.ts once, App.tsx once per version.
+    const objects = await treeFiles(join(folder, ".objects"), () => false);
+    assert.equal(objects.length, 2 + 8);
+
+    // An old version read again: its sources back as published, its document rebuilt.
+    const v1 = (await apps.get("h", "v1"))!;
+    assert.deepEqual([v1.missing, v1.stale, v1.build?.hash], [false, false, v1.hash]);
+    assert.ok((await readFile(join(folder, "v1", "src", "App.tsx"), "utf8")).includes("version 1"));
+    assert.ok((await readFile(join(folder, "v1", "dist", "index.html"), "utf8")).includes("version 1"));
+    assert.deepEqual((await readdir(folder)).filter((e) => e.startsWith(".restore")), [], "no restore left behind");
+
+    // Rollback to an evicted version: restored, live, and the folders kept move with it.
+    await apps.setActive("h", "v2");
+    assert.equal((await ws.getApp("h"))!.version, "v2");
+    assert.ok(existsSync(join(folder, "v2", "dist", "index.html")));
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8].map(kept), [false, true, false, true, true, true, true, true], "v2 is live; v1 dropped again");
+    assert.equal((await apps.versionDir("h", "v3"))!.path, join(folder, "v3"));
+    assert.ok(existsSync(join(folder, "v3", "dist", "index.html")), "versionDir restores too");
+  });
+
+  it("compact: a version published before the history gets its tree and its folder dropped when not kept; one whose files changed is left alone", async () => {
+    const { ws, apps, dataDir } = setup();
+    const dir = await writeApp(fresh(), app("title: L\n"));
+    const folder = join(dataDir, "apps", "legacy");
+    // Published as strut did before ./objects.ts: the directory, dist/ included, and nothing else.
+    for (let i = 1; i <= 7; i++) {
+      await writeFile(join(dir, "src", "App.tsx"), `export default function App() { return <p>legacy ${i}</p>; }\n`);
+      const built = await apps.build(dir, { name: "legacy" });
+      assert.ok(built.ok);
+      const r = await ws.publishApp("legacy", built.hash, built.manifest);
+      await cp(dir, (await ws.materializeAppVersion("legacy", r.version)).path, { recursive: true });
+    }
+    await writeFile(join(folder, "v1", "src", "App.tsx"), "export default () => null;\n");
+    assert.ok(!existsSync(join(folder, ".trees")));
+
+    const c = await apps.compact();
+    assert.deepEqual(c, { recorded: 6, evicted: 1, mismatched: ["legacy@v1"] });
+    assert.ok(existsSync(join(folder, "v1")), "an edited folder is never dropped");
+    assert.ok(!existsSync(join(folder, "v2")), "v2 is recorded and not kept");
+    assert.ok((await readFile(join((await apps.versionDir("legacy", "v2"))!.path, "dist", "index.html"), "utf8")).includes("legacy 2"), "and comes back");
+    assert.deepEqual(await apps.compact(), { recorded: 0, evicted: 1, mismatched: ["legacy@v1"] }, "a second pass drops only what was read back");
   });
 
   it("checkout copies a version into an empty directory; init scaffolds the template, or copies an installed app with no upstream", async () => {
@@ -303,6 +364,15 @@ describe("the /apps routes", () => {
       assert.ok(html.includes(`<meta name="strut-app-token" content="app:hello@v1.${listed.token}">`), "the identity written in as served");
       assert.ok(html.includes('<script type="module">'));
       assert.ok(!(await readFile(join(dataDir, "apps", "hello", "v1", "dist", "index.html"), "utf8")).includes(listed.token), "dist/ holds no credential");
+      // Kept by the host, asked again: the same version served twice is the same tag, and a 304 when it is current.
+      const etag = page.headers.get("etag")!;
+      assert.match(etag, /^"[0-9a-f]{32}"$/);
+      assert.equal(page.headers.get("cache-control"), "private, no-cache");
+      const asked = await strut.app.request(`/apps/hello/v1/files/dist/index.html?t=${t}`, { headers: { "if-none-match": `W/${etag}` } });
+      assert.equal(asked.status, 304);
+      assert.equal(await asked.text(), "");
+      assert.equal(asked.headers.get("etag"), etag);
+      assert.equal((await strut.app.request(`/apps/hello/v1/files/dist/index.html?t=${t}`, { headers: { "if-none-match": '"other"' } })).status, 200);
       // By key: no meta, no script.
       const keyed = await strut.app.request(`/apps/hello/v1/files/dist/index.html?key=${KEY}`);
       assert.equal(keyed.status, 200);
