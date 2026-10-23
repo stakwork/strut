@@ -39,6 +39,7 @@ import { JobTimeline, fmtTime } from "./components/JobTimeline";
 import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppHost } from "./components/AppHost";
+import { SoloApp } from "./components/SoloApp";
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph } from "./icons";
 import { appKey, appMessage } from "./app-links";
@@ -90,6 +91,28 @@ function activeKey(runs: api.ActiveRun[]): string {
 }
 
 export function App() {
+  // `?solo=1`: one thing alone in the window, with none of strut's UI around
+  // it — what a native host (Peel) opens in a web view of its own. Rendered
+  // in place of the shell, so none of its loads and polls run behind it.
+  // Read once.
+  //  - beside `?app=`: the app's page, here or a peer's (plans/apps.md §7.4).
+  //  - beside `?artifact=<path>`: one served file — a job's file or a run's
+  //    artifact, here or a peer's through the read-through — for a
+  //    deliverable. Only a path of that shape (`isServedFilePath`).
+  const [solo] = useState(() => {
+    const p = new URLSearchParams(location.search);
+    return p.get("solo") === "1" ? { app: p.get("app"), artifact: p.get("artifact") } : null;
+  });
+  if (solo?.app) return <SoloApp app={solo.app} />;
+  if (solo?.artifact) {
+    return isServedFilePath(solo.artifact)
+      ? <ArtifactViewer path={solo.artifact} solo />
+      : <div class="app-solo"><div class="empty">Not a file strut serves: {solo.artifact}</div></div>;
+  }
+  return <Shell />;
+}
+
+function Shell() {
   // Deep-links: ?wf=<workflow>&run=<runId>&v=<version> select on load and are
   // kept in sync (replaceState) as the selection changes, so the address bar
   // is always a shareable link to what's on screen. (?chat is read below and
@@ -110,15 +133,6 @@ export function App() {
   // frame reloads when the builder publishes a new version of it.
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
   const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
-  // `?solo=1` beside `?app=`: the app's page alone, with none of strut's UI
-  // around it — what a native host (Peel) opens in a web view of its own,
-  // here or for a peer's app (plans/apps.md §7.4). Read once; the URL keeps it.
-  const [solo] = useState(() => initialUrl.get("solo") === "1");
-  // `?artifact=<path>` beside `?solo=1`: one served file alone in the window
-  // — a job's file or a run's artifact, here or a peer's through the
-  // read-through — what a native host (Peel) opens for a deliverable. Only
-  // a path of that shape (`isServedFilePath`); without `solo` it is ignored.
-  const [soloArtifact] = useState(() => initialUrl.get("artifact"));
   const [appQuery, setAppQuery] = useState("");
   const [appReload, setAppReload] = useState(0);
   // What the host hands the chat: a draft for its composer (Edit with the
@@ -1186,17 +1200,16 @@ export function App() {
     setInfoStep((prev) => (prev?.type === entry.type ? null : entry));
   }, []);
 
-  // The selected app's page (plans/apps.md §7.3): in the canvas area, or
-  // alone (`solo`). A peer's page — and any page shown alone — gets no
-  // builder chat and no in-place link: there is nothing of strut's around it
-  // to open them in (plans/apps.md §7.4).
+  // The selected app's page (plans/apps.md §7.3), in the canvas area. A
+  // peer's page gets no builder chat and no in-place link: those are the
+  // peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is ./components/SoloApp.
   const appView = selectedApp
     ? appEntry
       ? <AppHost
           key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
           app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
           reload={appReload}
-          {...(appEntry.peer || solo ? {} : {
+          {...(appEntry.peer ? {} : {
             onMessage: (text: string) => {
               setShowChat(true);
               setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
@@ -1206,12 +1219,6 @@ export function App() {
         />
       : <div class="empty">{appsLoaded ? `No app "${selectedApp}"` : "Loading apps…"}</div>
     : null;
-  if (solo && appView) return <div class="app-solo">{appView}</div>;
-  if (solo && soloArtifact) {
-    return isServedFilePath(soloArtifact)
-      ? <ArtifactViewer path={soloArtifact} solo />
-      : <div class="app-solo"><div class="empty">Not a file strut serves: {soloArtifact}</div></div>;
-  }
 
   return (
     <div class="shell">

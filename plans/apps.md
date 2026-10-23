@@ -1125,7 +1125,10 @@ host UI ── its own credential ──▶ the person's strut ── person tok
    strut's around it — no sidebar, topbar or chat, and no `ui/message` or
    in-place link, with nothing to open them in — so a native host opens
    `http://127.0.0.1:<port>/?key=<its key>&app=@<org>/<name>&solo=1` in a
-   web view of its own and shows the org's app as the app.
+   web view of its own and shows the org's app as the app. It reads only
+   the listing the app is in (`GET /apps`, or that one peer's) and the
+   app's files — none of the sidebar's loads, no other peer, no poll
+   (`web/src/components/SoloApp.tsx`).
 
 The token never leaves the peers file, the page never talks to the peer
 (`connect-src 'none'`), and the identity the page sends is the peer's own

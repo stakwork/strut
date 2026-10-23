@@ -1054,10 +1054,16 @@ button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`.
+Alone, the page reads only the listing the app is in — `GET /apps`, or that
+one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
+workflows, step types or other peers (one that does not answer cannot hold
+it at "Loading apps…"), and no `GET /runs/active` poll while it shows.
 
 **One file alone.** The twin for a deliverable that is a file:
 `/?key=<the local strut's key>&artifact=<encodeURIComponent(path)>&solo=1`
-renders the artifact viewer alone, filling the window. `path` is a path
+renders the artifact viewer alone, filling the window, and reads nothing
+but that file (and what it links to in its scope): like the app alone, none
+of the UI's other loads and no poll. `path` is a path
 on the local strut that serves the file: `/jobs/<job>/files/<file>`,
 `/artifacts/<runId>/<file>`, or either behind one or more `/peers/<id>`
 hops — `/peers/<org>/jobs/<job>/files/<file>` is an org's file through the

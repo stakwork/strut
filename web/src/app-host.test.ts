@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, strutLink } from "./app-links";
+import { appKey, appMessage, parseAppKey, strutLink } from "./app-links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
  *  decides without the bridge): where a link leads, what a page's message
@@ -26,6 +26,10 @@ describe("the app host", () => {
   it("an app is named by its name here, and by its peer and name when it lives on a peer", () => {
     assert.equal(appKey({ name: "bench" }), "bench");
     assert.equal(appKey({ name: "hive/ui", peer: "acme" }), "@acme/hive/ui");
+    for (const app of [{ name: "bench" }, { name: "strut/views" }, { name: "hive/ui", peer: "acme" }]) {
+      assert.deepEqual(parseAppKey(appKey(app)), app, "read back");
+    }
+    for (const key of ["", "@acme", "@acme/", "@/x"]) assert.equal(parseAppKey(key), null, key);
   });
 
   it("a page's message names the app it is about", () => {
