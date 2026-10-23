@@ -223,6 +223,13 @@ export function grantWidenedBy(flow: Pick<Flow, "steps" | "params">, override: R
     for (const type of grantedTypes(override[key], registry)) {
       if (!own.has(type)) return `"${type}" (params.${key})`;
     }
+    // A registered MCP server's tools (`mcp/<server>/<tool>`, src/mcp-registry.ts)
+    // are no registry step: an entry is narrower only when one of the flow's
+    // own `mcp/` entries covers it as written.
+    const ownMcp = mcpGrants(flow.params?.[key]).map(globToRegExp);
+    for (const g of mcpGrants(override[key])) {
+      if (!ownMcp.some((re) => re.test(g))) return `"${g}" (params.${key})`;
+    }
   }
   // And the gate only grows: an override of a key an `approve` list reads
   // keeps every step the flow's own approve keys gate (all of them, so
@@ -237,8 +244,27 @@ export function grantWidenedBy(flow: Pick<Flow, "steps" | "params">, override: R
     for (const type of gated) {
       if (!kept.has(type)) return `"${type}" taken out of approval (params.${key}: approve may only grow)`;
     }
+    // A registered MCP server's tools, by name: each the flow gates stays
+    // covered by an entry of the override, as written.
+    const keptMcp = mcpGrants(override[key]).map(globToRegExp);
+    for (const g of approveKeys.flatMap((k) => mcpGrants(flow.params?.[k]))) {
+      if (!keptMcp.some((re) => re.test(g))) return `"${g}" taken out of approval (params.${key}: approve may only grow)`;
+    }
   }
   return null;
+}
+
+/** The `mcp/…` strings in a grant value, however it is shaped. */
+function mcpGrants(value: unknown): string[] {
+  const out: string[] = [];
+  const visit = (v: unknown) => {
+    if (typeof v === "string") {
+      if (v.startsWith("mcp/")) out.push(v);
+    } else if (Array.isArray(v)) v.forEach(visit);
+    else if (v && typeof v === "object") Object.values(v).forEach(visit);
+  };
+  visit(value);
+  return out;
 }
 
 /** Does the closure reach `type` — by name, or through an `agentTools` grant? */
