@@ -27,12 +27,13 @@ import { globToRegExp } from "../closure.js";
 import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
 import { treeHash } from "../version.js";
-import type { AppListEntry, AppRecord, AppUpstream, VersionSource, WorkspaceStore } from "../workspace.js";
+import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type AppUpstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
 import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
+import { lockDrift, lockProblems, takeLock, type LockDrift } from "./releases.js";
 
 /** Strut's starter directories (`app/init { template }`): `src/apps/templates/<name>/`. */
 export const TEMPLATES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "templates");
@@ -44,7 +45,9 @@ export const PAID_OR_SHELL_STEPS: readonly string[] = ["llm", "agent", "exec"];
 
 /** One app as `app/get` and `GET /apps/:name` read it: the record, the
  *  version's files and build, and what has moved since. */
-export interface AppView extends AppRecord {
+export interface AppView extends Omit<AppRecord, "releases"> {
+  /** The releases without their locks (`GET /apps/:name/versions` has them). */
+  releases?: AppReleaseSummary[];
   /** The version's directory on this host. */
   dir: string;
   /** The directory is not there (a graph copied without its dataDir). */
@@ -109,8 +112,32 @@ export interface AppPublishOptions {
 }
 
 export type AppPublishResult =
-  | { ok: true; name: string; version: string; changed: boolean; hash: string; bytes: number; warnings: string[] }
+  | {
+      ok: true;
+      name: string;
+      version: string;
+      changed: boolean;
+      hash: string;
+      bytes: number;
+      warnings: string[];
+      /** The version is what people open. False while the app is HELD at a
+       *  release (plans/app-releases.md §1.1): the version is a draft. */
+      live: boolean;
+      /** Held: the live release and its version, and what to do. */
+      liveVersion?: string;
+      release?: string;
+      note?: string;
+    }
   | { ok: false; errors: string[]; warnings: string[] };
+
+/** An app's releases as `GET /apps/:name/versions` reads them. */
+export interface AppReleases {
+  /** The live release's id, or `latest` while following. */
+  live: string;
+  releases: AppRelease[];
+  /** What the live release's lock names that has moved on since. */
+  behind: LockDrift[];
+}
 
 export interface AppsCapability {
   list(): Promise<AppListEntry[]>;
@@ -131,9 +158,16 @@ export interface AppsCapability {
   checkout(name: string, to: string, version?: string): Promise<{ path: string; version: string; hash: string }>;
   /** Scaffold an empty `to` from a template: strut's (`default`), or an installed app by name — a copy, with no upstream. */
   init(to: string, template?: string): Promise<{ path: string; template: string; files: string[] }>;
-  /** Make a version the active one. A version restored from its history
-   *  that no longer builds on this strut's kit is refused with the errors. */
-  setActive(name: string, version: string): Promise<void>;
+  /** PROMOTE (plans/app-releases.md §1.2): a new release of `version` with
+   *  a lock taken now, made live — the app is held. A version restored from
+   *  its history that no longer builds on this strut's kit is refused with
+   *  the errors, as is an app strut seeds. */
+  promote(name: string, version: string, opts?: { by?: string }): Promise<AppRelease>;
+  /** Make an existing release live again (`rN`), or with null follow
+   *  latest. A release whose lock names something gone is refused. */
+  setLive(name: string, live: string | null): Promise<void>;
+  /** The releases with their locks, the live one, and its drift. */
+  releases(name: string): Promise<AppReleases | null>;
   /** Record every version's history that has none yet (a directory published
    *  before ./objects.ts) and drop the directories no longer kept: a boot
    *  step. A directory whose files no longer match its version is left alone. */
@@ -212,7 +246,9 @@ export function createApps(deps: AppsDeps): AppsCapability {
   const evict = async (name: string): Promise<number> => {
     const rec = await workspace.getApp(name);
     if (!rec) return 0;
-    const kept = keptVersions(Object.keys(rec.versions), rec.active);
+    // A version a release names keeps its directory: a rebuild would take
+    // today's kit and imports, and a rollback serves the bytes that were live.
+    const kept = new Set([...keptVersions(Object.keys(rec.versions), rec.active), ...(rec.releases ?? []).map((r) => r.version)]);
     let n = 0;
     for (const v of Object.keys(rec.versions)) {
       if (kept.has(v)) continue;
@@ -221,6 +257,18 @@ export function createApps(deps: AppsDeps): AppsCapability {
       if (await withLock(`app-version:${path}`, () => evictVersionDir(path, hash))) n++;
     }
     return n;
+  };
+
+  /** A version about to be made live: restored from its history and built
+   *  on this strut's kit if it has to be; one that no longer builds is
+   *  refused rather than made live with no page. */
+  const buildable = async (name: string, version: string): Promise<void> => {
+    if (!(await workspace.getApp(name, version).catch(() => null))) return;
+    const { path } = await ensure(name, version);
+    if ((await isDir(path)) && !(await exists(join(path, "dist", "index.html")))) {
+      const built = await buildApp(path, buildDeps(name));
+      if (!built.ok) throw new Error(`${name}@${version} does not build on this strut's kit: ${built.errors.join("; ")}`);
+    }
   };
 
   const resolveApp = async (name: string, version?: string): Promise<InstalledApp | null> => {
@@ -311,7 +359,18 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const stale = missing || (await isStale(path, build));
       const inertGrants = await inert(rec.manifest);
       const errors = deps.errors ? await errorsOf(name) : undefined;
-      return { ...rec, dir: path, missing, files, build, stale, inertGrants, ...(errors ? { errors } : {}) };
+      const { releases, ...record } = rec;
+      return {
+        ...record,
+        ...(releases ? { releases: releases.map(({ lock: _lock, ...r }) => r) } : {}),
+        dir: path,
+        missing,
+        files,
+        build,
+        stale,
+        inertGrants,
+        ...(errors ? { errors } : {}),
+      };
     },
 
     versionDir,
@@ -367,7 +426,25 @@ export function createApps(deps: AppsDeps): AppsCapability {
         await recordTree(path, built.hash);
       });
       await evict(name);
-      return { ok: true, name, version: r.version, changed: r.changed, hash: built.hash, bytes: built.bytes, warnings: built.warnings };
+      const rec = await workspace.getApp(name);
+      const held = rec?.live && rec.active !== r.version ? rec : null;
+      return {
+        ok: true,
+        name,
+        version: r.version,
+        changed: r.changed,
+        hash: built.hash,
+        bytes: built.bytes,
+        warnings: built.warnings,
+        live: !held,
+        ...(held
+          ? {
+              liveVersion: held.active,
+              release: held.live,
+              note: `${name} is held at ${held.active} (release ${held.live}): ${r.version} is a draft. Hand it over with its version — { kind: "app", app: "${name}", version: "${r.version}" } — and a person makes it live.`,
+            }
+          : {}),
+      };
     },
 
     async checkout(name, to, version) {
@@ -396,18 +473,40 @@ export function createApps(deps: AppsDeps): AppsCapability {
       return { path: to, template, files: await listAppFiles(to) };
     },
 
-    async setActive(name, version) {
-      // A version restored from its history is built on this strut's kit; one
-      // that no longer builds is refused rather than made live with no page.
-      if (await workspace.getApp(name, version).catch(() => null)) {
-        const { path } = await ensure(name, version);
-        if ((await isDir(path)) && !(await exists(join(path, "dist", "index.html")))) {
-          const built = await buildApp(path, buildDeps(name));
-          if (!built.ok) throw new Error(`${name}@${version} does not build on this strut's kit: ${built.errors.join("; ")}`);
-        }
-      }
-      await workspace.setActiveAppVersion(name, version);
+    async promote(name, version, opts) {
+      const rec = await workspace.getApp(name, version);
+      if (!rec) throw new Error((await workspace.getApp(name)) ? `Version "${version}" not found for app "${name}"` : `App "${name}" not found`);
+      // A seed always matches its source (strut/views): every boot makes the
+      // committed tree active again, so a hold would not hold.
+      if (rec.versions[rec.active]?.source === "seed") throw new Error(`${name} is seeded by strut and always runs its committed version — it cannot be held`);
+      await buildable(name, version);
+      const lock = await takeLock(rec.manifest, workspace);
+      const release = await workspace.addAppRelease(name, { version, lock, ...(opts?.by ? { by: opts.by } : {}) });
       await evict(name);
+      return release;
+    },
+
+    async setLive(name, live) {
+      const rec = await workspace.getApp(name);
+      if (!rec) throw new Error(`App "${name}" not found`);
+      if (live === null) {
+        await buildable(name, newestVersion(Object.keys(rec.versions)));
+      } else {
+        const r = rec.releases?.find((x) => x.id === live);
+        if (!r) throw new Error(`Release "${live}" not found for app "${name}"`);
+        const gone = await lockProblems(r.lock, workspace);
+        if (gone.length) throw new Error(`${name} ${live} cannot be made live again: ${gone.join("; ")}`);
+        await buildable(name, r.version);
+      }
+      await workspace.setAppLive(name, live);
+      await evict(name);
+    },
+
+    async releases(name) {
+      const rec = await workspace.getApp(name);
+      if (!rec) return null;
+      const live = rec.live ? rec.releases?.find((r) => r.id === rec.live) : undefined;
+      return { live: rec.live ?? "latest", releases: rec.releases ?? [], behind: live ? await lockDrift(live.lock, workspace) : [] };
     },
 
     async compact() {

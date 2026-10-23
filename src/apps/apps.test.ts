@@ -161,12 +161,90 @@ describe("the apps capability", () => {
     assert.deepEqual((await readdir(folder)).filter((e) => e.startsWith(".restore")), [], "no restore left behind");
 
     // Rollback to an evicted version: restored, live, and the folders kept move with it.
-    await apps.setActive("h", "v2");
+    await apps.promote("h", "v2");
     assert.equal((await ws.getApp("h"))!.version, "v2");
     assert.ok(existsSync(join(folder, "v2", "dist", "index.html")));
     assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8].map(kept), [false, true, false, true, true, true, true, true], "v2 is live; v1 dropped again");
+    // Following latest again, v2 keeps its folder: a release names it.
+    await apps.setLive("h", null);
+    assert.equal((await ws.getApp("h"))!.version, "v8");
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8].map(kept), [false, true, false, true, true, true, true, true], "a release's version is never evicted");
     assert.equal((await apps.versionDir("h", "v3"))!.path, join(folder, "v3"));
     assert.ok(existsSync(join(folder, "v3", "dist", "index.html")), "versionDir restores too");
+  });
+
+  it("releases (plans/app-releases.md): promote holds the app with a lock on what it reaches; a publish is a draft; roll back, follow latest, drift", async () => {
+    const { ws, apps } = setup();
+    await ws.publishStep("t/echo", "export default {};\n");
+    await ws.publishStep("t/tool", "export default {};\n");
+    await ws.publishStep("x/unused", "export default {};\n");
+    const CHILD = (m: string) => `name: child\nsteps:\n  - id: e\n    type: t/echo\n    config: { message: ${m} }\n`;
+    await ws.publishWorkflow("child", "v1", CHILD("one"));
+    await ws.publishWorkflow("wf", "v1", "name: wf\nsteps:\n  - id: s\n    type: subflow\n    config: { workflow: child }\n  - id: a\n    type: agent\n    config: { prompt: hi, agentTools: ['t/*'] }\n");
+    const dir = await writeApp(fresh(), app("title: Rel\ngrants:\n  workflows: [wf]\n"));
+    assert.ok((await apps.publish(dir, "rel", { surface: "person" })).ok);
+
+    // Promote: a release, the app held at it, the lock naming every version the page reaches.
+    const r1 = await apps.promote("rel", "v1", { by: "alice" });
+    assert.deepEqual([r1.id, r1.version, r1.by], ["r1", "v1", "alice"]);
+    assert.deepEqual(r1.lock.workflows, { wf: { version: "v1", hash: r1.lock.workflows["wf"]?.hash }, child: { version: "v1", hash: r1.lock.workflows["child"]?.hash } });
+    assert.ok(r1.lock.workflows["wf"]?.hash && r1.lock.workflows["child"]?.hash);
+    assert.deepEqual(Object.keys(r1.lock.steps).sort(), ["t/echo", "t/tool"], "a subflow's step and an agent's glob grant — never a step nothing reaches");
+    assert.equal(r1.lock.floating, undefined);
+
+    // Held: a publish is a draft, and says so.
+    await writeFile(join(dir, "src", "App.tsx"), "export default function App() { return <p>two</p>; }\n");
+    const draft = await apps.publish(dir, "rel", { surface: "ai" });
+    assert.ok(draft.ok);
+    assert.deepEqual([draft.version, draft.live, draft.liveVersion, draft.release], ["v2", false, "v1", "r1"]);
+    assert.match(draft.note!, /v2 is a draft.*version: "v2"/);
+    assert.equal((await ws.getApp("rel"))!.version, "v1", "people still open v1");
+    const view = (await apps.get("rel"))!;
+    assert.deepEqual([view.live, view.releases?.map((r) => r.id), "lock" in view.releases![0]!], ["r1", ["r1"], false], "get carries the releases without their locks");
+
+    // The workflows move on: the live release says how far behind it is.
+    await ws.publishWorkflow("child", "v2", CHILD("two"));
+    let rel = (await apps.releases("rel"))!;
+    assert.deepEqual([rel.live, rel.behind], ["r1", [{ kind: "workflow", name: "child", locked: "v1", current: "v2" }]]);
+
+    // Promote the draft: a new lock. Roll back to r1, adding nothing. Follow latest.
+    const r2 = await apps.promote("rel", "v2");
+    assert.deepEqual([r2.id, r2.lock.workflows["child"]?.version], ["r2", "v2"]);
+    await apps.setLive("rel", "r1");
+    rel = (await apps.releases("rel"))!;
+    assert.deepEqual([(await ws.getApp("rel"))!.version, rel.live, rel.releases.length], ["v1", "r1", 2]);
+    await apps.setLive("rel", null);
+    assert.deepEqual([(await ws.getApp("rel"))!.version, (await apps.releases("rel"))!.live], ["v2", "latest"]);
+    await writeFile(join(dir, "src", "App.tsx"), "export default function App() { return <p>three</p>; }\n");
+    const live = await apps.publish(dir, "rel", { surface: "ai" });
+    assert.ok(live.ok && live.live && live.version === "v3" && !live.note, "following latest, a publish is live");
+
+    // A release whose lock names something gone cannot be made live again.
+    await ws.deleteWorkflow("child");
+    await assert.rejects(apps.setLive("rel", "r1"), /r1 cannot be made live again: workflow child@v1 no longer exists/);
+    await assert.rejects(apps.setLive("rel", "r9"), /not found/);
+    await assert.rejects(apps.promote("rel", "v9"), /not found/);
+    await assert.rejects(apps.promote("nope", "v1"), /not found/);
+  });
+
+  it("releases: what a lock cannot see is named, and every custom step is locked when the closure cannot be read; a seeded app cannot be held", async () => {
+    const { ws, apps } = setup();
+    await ws.publishStep("x/unused", "export default {};\n");
+    await ws.publishWorkflow("dyn", "v1", "name: dyn\nsteps:\n  - id: pick\n    type: subflow\n    config: { workflow: \"{{ input.which }}\" }\n  - id: go\n    type: run/launch\n    config: { workflow: other }\n");
+    const dir = await writeApp(fresh(), app("title: Dyn\ngrants:\n  workflows: [dyn]\n"));
+    assert.ok((await apps.publish(dir, "dyn-app", { surface: "person" })).ok);
+    const r = await apps.promote("dyn-app", "v1");
+    assert.deepEqual(Object.keys(r.lock.workflows), ["dyn"]);
+    assert.deepEqual(Object.keys(r.lock.steps), ["x/unused"]);
+    assert.deepEqual(r.lock.floating, [
+      '"run/launch" starts other runs, which run current versions',
+      "part of the closure could not be read, so every custom step is locked and some workflows may not be",
+      'subflow step "pick" chooses its workflow at run time',
+    ]);
+
+    const seeded = await writeApp(fresh(), app("title: Seeded\n"));
+    assert.ok((await apps.publish(seeded, "strut/seeded", { surface: "person", source: "seed" })).ok);
+    await assert.rejects(apps.promote("strut/seeded", "v1"), /seeded by strut.*cannot be held/);
   });
 
   it("compact: a version published before the history gets its tree and its folder dropped when not kept; one whose files changed is left alone", async () => {
@@ -403,10 +481,34 @@ describe("the /apps routes", () => {
       assert.equal(v2.status, 201);
       assert.equal(((await v2.json()) as { version: string }).version, "v2");
       assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { version: string }).version, "v2");
-      const back = await strut.app.request("/apps/hello/active", { method: "PUT", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify({ version: "v1" }) });
+      // PUT …/active (plans/app-releases.md §1.2): a version PROMOTES — a release, the app held at it.
+      const active = (body: unknown) => strut.app.request("/apps/hello/active", { method: "PUT", headers: { "content-type": "application/json", "x-strut-actor": "alice", ...auth.headers }, body: JSON.stringify(body) });
+      const back = await active({ version: "v1" });
       assert.equal(back.status, 200);
+      const promoted = (await back.json()) as { active: string; live: string; release: { id: string; version: string; by: string; lock: object } };
+      assert.deepEqual([promoted.active, promoted.live, promoted.release.id, promoted.release.version, promoted.release.by], ["v1", "r1", "r1", "v1", "alice"]);
       assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { version: string }).version, "v1");
-      assert.equal((await strut.app.request("/apps/hello/active", { method: "PUT", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify({ version: "v9" }) })).status, 404);
+      const held = (await (await strut.app.request("/apps/hello/versions", auth)).json()) as { active: string; live: string; releases: Array<{ id: string; lock: object }>; behind: unknown[] };
+      assert.deepEqual([held.active, held.live, held.releases.map((r) => r.id), "lock" in held.releases[0]!, held.behind], ["v1", "r1", ["r1"], true, []]);
+      const heldView = (await (await strut.app.request("/apps/hello", auth)).json()) as { live: string; releases: object[] };
+      assert.deepEqual([heldView.live, "lock" in heldView.releases[0]!], ["r1", false]);
+      assert.equal((await (await strut.app.request("/apps", auth)).json() as { apps: Array<{ name: string; live?: string }> }).apps.find((a) => a.name === "hello")?.live, "r1");
+      // Held, a publish is a draft.
+      const v3 = await strut.app.request("/apps", { method: "POST", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify({ name: "hello", files: { ...files, "app.yaml": "title: Hello three\n" } }) });
+      const v3Body = (await v3.json()) as { version: string; live: boolean; liveVersion: string };
+      assert.deepEqual([v3.status, v3Body.version, v3Body.live, v3Body.liveVersion], [201, "v3", false, "v1"]);
+      assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { version: string }).version, "v1");
+      // Promote the draft, roll back to r1, follow latest.
+      assert.equal(((await (await active({ version: "v3" })).json()) as { live: string }).live, "r2");
+      const rolled = (await (await active({ release: "r1" })).json()) as { active: string; live: string; release?: unknown };
+      assert.deepEqual([rolled.active, rolled.live, rolled.release], ["v1", "r1", undefined]);
+      assert.deepEqual(await (await active({ version: "latest" })).json(), { ok: true, name: "hello", active: "v3", live: "latest" });
+      assert.equal((await active({ version: "v9" })).status, 404);
+      assert.equal((await active({ release: "r9" })).status, 404);
+      assert.equal((await active({})).status, 400);
+      assert.equal((await active({ version: "v1", release: "r1" })).status, 400);
+      assert.equal((await strut.app.request("/apps/nope/active", { method: "PUT", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify({ version: "v1" }) })).status, 404);
+      await active({ release: "r1" });
 
       // Pinned as a tab: the record's flag on GET /apps, /apps/:name and /versions; a bad body 400, an unknown app 404.
       const pin = (name: string, body: unknown) => strut.app.request(`/apps/${name}/pin`, { method: "PUT", headers: { "content-type": "application/json", ...auth.headers }, body: JSON.stringify(body) });

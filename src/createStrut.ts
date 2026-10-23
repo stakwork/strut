@@ -80,7 +80,7 @@ import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
-import type { AppUpstream } from "./workspace.js";
+import type { AppRelease, AppUpstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -2395,7 +2395,17 @@ export async function createStrut<TServices = unknown>(
     if (at instanceof Response) return at;
     const rec = await workspace.getApp(at.name);
     if (!rec) return c.json({ error: `App "${at.name}" not found` }, 404);
-    return c.json({ name: at.name, active: rec.active, versions: rec.versions, ...(rec.publisher ? { publisher: rec.publisher } : {}), ...(rec.owner ? { owner: rec.owner } : {}), ...(rec.pinned ? { pinned: true } : {}) });
+    // `live`, `releases` (with their locks) and `behind`: plans/app-releases.md §1.2.
+    const releases = await apps.releases(at.name);
+    return c.json({
+      name: at.name,
+      active: rec.active,
+      versions: rec.versions,
+      ...(rec.publisher ? { publisher: rec.publisher } : {}),
+      ...(rec.owner ? { owner: rec.owner } : {}),
+      ...(rec.pinned ? { pinned: true } : {}),
+      ...(releases ?? { live: "latest", releases: [], behind: [] }),
+    });
   });
 
   /** The version's directory, or the 404 / 400 that says why not. */
@@ -2496,17 +2506,32 @@ export async function createStrut<TServices = unknown>(
     return c.json(result, 201);
   });
 
+  // What people open (plans/app-releases.md §1.2): `{ version: "vN" }`
+  // PROMOTES — a new release with a lock on the workflows and steps the
+  // version reaches, made live, the app held; `{ release: "rN" }` makes an
+  // earlier release live again; `{ version: "latest" }` follows the newest
+  // publish. A person's door.
   app.put("/apps/:name/active", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
-    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown };
-    if (typeof body.version !== "string" || !body.version) return c.json({ error: "version is required" }, 400);
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown; release?: unknown };
+    const version = typeof body.version === "string" && body.version ? body.version : undefined;
+    const release = typeof body.release === "string" && body.release ? body.release : undefined;
+    if (!version === !release) return c.json({ error: 'one of version ("vN", or "latest" to follow the newest publish) or release ("rN") is required' }, 400);
+    let made: AppRelease | undefined;
     try {
-      await apps.setActive(at.name, body.version);
+      if (release) await apps.setLive(at.name, release);
+      else if (version === "latest") await apps.setLive(at.name, null);
+      else {
+        const actor = await resolveActor(c);
+        made = await apps.promote(at.name, version!, actor ? { by: actor } : {});
+      }
     } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, /not found/.test(message) ? 404 : 409);
     }
-    return c.json({ ok: true, name: at.name, active: body.version });
+    const rec = await workspace.getApp(at.name);
+    return c.json({ ok: true, name: at.name, active: rec?.active, live: rec?.live ?? "latest", ...(made ? { release: made } : {}) });
   });
 
   // Pin the app as a TAB, or unpin it: `{ pinned: boolean }` — the record's

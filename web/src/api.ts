@@ -1770,6 +1770,29 @@ export interface AppListEntry {
   owner?: string;
   /** Shown as a tab by a host that lists this workspace's apps (true only when set). */
   pinned?: boolean;
+  /** The live release's id, only while the app is held (plans/app-releases.md). */
+  live?: string;
+}
+
+/** A page version made live with the versions it locks (plans/app-releases.md). */
+export interface AppRelease {
+  id: string;
+  version: string;
+  createdAt: string;
+  by?: string;
+  lock: {
+    workflows: Record<string, { version: string; hash?: string }>;
+    steps: Record<string, { version: string; hash: string }>;
+    floating?: string[];
+  };
+}
+
+/** What the live release's lock names that has moved on since. */
+export interface AppLockDrift {
+  kind: "workflow" | "step";
+  name: string;
+  locked: string;
+  current: string | null;
 }
 
 /** One client-side error the app's page reported (`app/report-error`). */
@@ -1807,13 +1830,24 @@ export const getApp = (name: string, version?: string) =>
   fetchJSON<AppView>(`/apps/${encodeURIComponent(name)}${version ? `?version=${encodeURIComponent(version)}` : ""}`);
 
 export const getAppVersions = (name: string) =>
-  fetchJSON<{ name: string; active: string; versions: Record<string, { createdAt: string; hash: string }> }>(`/apps/${encodeURIComponent(name)}/versions`);
+  fetchJSON<{
+    name: string;
+    active: string;
+    versions: Record<string, { createdAt: string; hash: string }>;
+    /** The live release's id, or `latest` while following. */
+    live: string;
+    releases: AppRelease[];
+    behind: AppLockDrift[];
+  }>(`/apps/${encodeURIComponent(name)}/versions`);
 
-/** Rollback: make a version the active one (publishes nothing). */
-export const setActiveAppVersion = (name: string, version: string) =>
-  fetchJSON<{ ok: true; name: string; active: string }>(`/apps/${encodeURIComponent(name)}/active`, {
+/** What people open (`PUT /apps/:name/active`): `{ version: "vN" }` makes a
+ *  release of it and holds the app there, `{ release: "rN" }` makes an
+ *  earlier release live again, `{ version: "latest" }` follows the newest
+ *  publish. Publishes nothing. */
+export const setAppLive = (name: string, target: { version: string } | { release: string }) =>
+  fetchJSON<{ ok: true; name: string; active: string; live: string }>(`/apps/${encodeURIComponent(name)}/active`, {
     method: "PUT",
-    body: JSON.stringify({ version }),
+    body: JSON.stringify(target),
   });
 
 /** Show the app as a tab where this workspace's apps are listed, or stop (`PUT /apps/:name/pin`). */
