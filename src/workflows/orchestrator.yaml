@@ -40,7 +40,7 @@ peer: person
 input:
   prompt: { type: string, description: "The person's message, or an automation's prompt" }
   session: { type: string, required: false, description: "The conversation's thread (a session id), the same every turn. None for a one-shot (an automation)" }
-  context: { type: json, required: false, description: "What the host knows about this turn: { line } is put before the prompt (\"Thu 16 Oct 14:02, Europe/London. \"): the time, the person's time zone, the device" }
+  context: { type: json, required: false, description: "What the host knows about this turn: { line } is put before the prompt (\"Thu 16 Oct 14:02, Europe/London. \"): the time, the person's time zone, the device; { untrusted: true } when the prompt carries other people's words" }
 steps:
   - id: dir
     type: job/dir
@@ -103,6 +103,11 @@ steps:
       toolFilter: [none]
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
+      # Free until the thread has read other people's words (a tool output
+      # marked withUntrusted), then each call is a proposal; a host whose
+      # message carries such words (an answer relayed late) says so.
+      approveAfterUntrusted: "{{ params.approveAfterUntrusted }}"
+      untrusted: "{{ input.context?.untrusted || false }}"
       schema:
         type: object
         additionalProperties: false
@@ -178,6 +183,11 @@ params:
   # step, and strut runs it when they accept. None of strut's own; a host
   # appends its gated writes (`createStrut({ orchestrator: { approve } })`).
   approve: []
+  # Tools among the grants that ask the person once this thread has read
+  # untrusted content (a host's reads of other people's messages). None of
+  # strut's own; a host appends them (`createStrut({ orchestrator:
+  # { approveAfterUntrusted } })`).
+  approveAfterUntrusted: []
   # What a compaction's summary keeps word for word: a conversation's
   # references, not a job's files and commands.
   retain: "The jobs started or continued, by job id and title, and what each was asked to do; the people, ids and links named in the conversation, verbatim; what the person asked for that is still open."

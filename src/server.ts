@@ -53,21 +53,24 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
-    const { tools, approve, system, model, peer } = (delta ?? {}) as { tools?: unknown; approve?: unknown; system?: unknown; model?: unknown; peer?: unknown };
+    const { tools, approve, approveAfterUntrusted, system, model, peer } = (delta ?? {}) as { tools?: unknown; approve?: unknown; approveAfterUntrusted?: unknown; system?: unknown; model?: unknown; peer?: unknown };
+    const strings = (v: unknown) => Array.isArray(v) && v.every((t) => typeof t === "string");
     if (
-      (tools !== undefined && !(Array.isArray(tools) && tools.every((t) => typeof t === "string"))) ||
-      (approve !== undefined && !(Array.isArray(approve) && approve.every((t) => typeof t === "string"))) ||
+      (tools !== undefined && !strings(tools)) ||
+      (approve !== undefined && !strings(approve)) ||
+      (approveAfterUntrusted !== undefined && (key !== "orchestrator" || !strings(approveAfterUntrusted))) ||
       (system !== undefined && typeof system !== "string") ||
       (model !== undefined && model !== null && typeof model !== "string") ||
       (peer !== undefined && peer !== false)
     ) {
-      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }`);
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }${key === "orchestrator" ? " (and approveAfterUntrusted?: string[])" : ""}`);
     }
     const reach = key === "builder" ? reachFromConfig((delta ?? {}) as Record<string, unknown>, file) : undefined;
     out[key] = {
       ...(reach ? { reach } : {}),
       ...(tools ? { tools: tools as string[] } : {}),
       ...(approve ? { approve: approve as string[] } : {}),
+      ...(approveAfterUntrusted ? { approveAfterUntrusted: approveAfterUntrusted as string[] } : {}),
       ...(system !== undefined ? { system: system as string } : {}),
       ...(peer === false ? { peer: false as const } : {}),
       ...(model !== undefined ? { model: model as string | null } : {}),

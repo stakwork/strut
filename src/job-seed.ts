@@ -40,6 +40,10 @@ export interface JobSeedOptions {
    *  (plans/proposals.md): appended to `params.approve`, the agent step's
    *  gate — a call records a proposal instead of running the step. */
   approve?: string[];
+  /** Step types among the grants that ask the person once the thread has
+   *  read untrusted content (`withUntrusted`): appended to
+   *  `params.approveAfterUntrusted`, which the orchestrator wires. */
+  approveAfterUntrusted?: string[];
   /** A section appended to the agent's system prompt after strut's — the
    *  deployment's own instructions. Which workflow does which kind of work
    *  is not one: that is the `Job` Concept's children, which the workflow
@@ -78,11 +82,12 @@ const JOB_YAML = new URL("./workflows/job.yaml", import.meta.url);
  *  host's section is appended (the builder's rules, src/builder-seed.ts),
  *  so the hash covers it. */
 export async function templateWithDelta(template: URL, opts?: JobSeedOptions, fill?: (system: string) => string): Promise<string> {
-  const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean | "person"; params: { tools: string[]; approve?: string[]; system: string; model?: string } };
+  const doc = yaml.load(await readFile(template, "utf-8")) as { peer?: boolean | "person"; params: { tools: string[]; approve?: string[]; approveAfterUntrusted?: string[]; system: string; model?: string } };
   if (fill) doc.params.system = fill(doc.params.system);
   if (opts?.peer === false) delete doc.peer;
   if (opts?.tools?.length) doc.params.tools.push(...opts.tools);
   if (opts?.approve?.length) (doc.params.approve ??= []).push(...opts.approve);
+  if (opts?.approveAfterUntrusted?.length) (doc.params.approveAfterUntrusted ??= []).push(...opts.approveAfterUntrusted);
   if (opts?.model === null) delete doc.params.model;
   else if (opts?.model) doc.params.model = opts.model;
   if (opts?.system?.trim()) doc.params.system = `${doc.params.system.trimEnd()}\n\n${opts.system.trim()}\n`;

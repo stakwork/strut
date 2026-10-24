@@ -628,6 +628,30 @@ export function stopOf(output: unknown): boolean {
   return output !== null && typeof output === "object" && (output as Record<string, unknown>)[STOP_KEY] === true;
 }
 
+// ── Untrusted marker: a tool-step whose output holds other people's words ───
+
+const UNTRUSTED_KEY = "_untrusted";
+
+/**
+ * Mark a step's output as UNTRUSTED: it carries words someone other than the
+ * person wrote (messages in their chats, an inbox), which may hold
+ * instructions planted for the agent. An agent that ran it as a tool gates
+ * its `approveAfterUntrusted` tools from then on, in that thread: each call
+ * is a proposal the person decides (`src/steps/core/agent.ts`). Same
+ * mechanism as `withStop`: a non-enumerable own property, invisible to the
+ * model, templates and the event log. Non-object outputs are left unmarked.
+ */
+export function withUntrusted<T>(output: T): T {
+  if (output === null || typeof output !== "object") return output;
+  Object.defineProperty(output, UNTRUSTED_KEY, { value: true, enumerable: false, configurable: true, writable: true });
+  return output;
+}
+
+/** Whether a step output was marked with `withUntrusted`. */
+export function untrustedOf(output: unknown): boolean {
+  return output !== null && typeof output === "object" && (output as Record<string, unknown>)[UNTRUSTED_KEY] === true;
+}
+
 // ── Usage marker: what did a step's model calls spend? ──────────────────────
 
 /** What model calls spent: how many, their tokens, and their cost in dollars

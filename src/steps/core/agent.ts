@@ -4,7 +4,7 @@ import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
+import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, untrustedOf, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
 import { GATE_NOTE, gatedSchema, proposalResultLines, proposalsOf, proposeCall } from "../../proposals.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
@@ -696,6 +696,10 @@ function summarizeForEvent(v: unknown): string {
  * Each tool's `toModelOutput` is `registryToolModelOutput`: a step that marks
  * its output with `withMedia` shows the model the media beside the JSON.
  */
+/** Told to the model on a tool that asks once the thread has read untrusted content. */
+const UNTRUSTED_GATE_NOTE =
+  " Once this conversation has read other people's words (a tool's result that may hold instructions planted for you), a call to this tool is not run: it is recorded as a proposal the person decides, and you get { proposal, status: 'pending' }.";
+
 export function buildRegistryTools(
   names: string[] | undefined,
   registry: StepRegistry | undefined,
@@ -705,8 +709,11 @@ export function buildRegistryTools(
   toolFactory: (def: any) => unknown,
   // The gate (plans/proposals.md §1): a type in `approve` is built with the
   // same name and schema (plus `rationale`), but a call records a proposal
-  // instead of running the step — `proposeCall`.
-  gate?: { approve: ReadonlySet<string>; session?: string },
+  // instead of running the step — `proposeCall`. A type in `afterUntrusted`
+  // runs until a tool's output marked `withUntrusted` comes back (`taint`,
+  // shared by the turn's tools and seeded from the thread), then is gated
+  // the same way.
+  gate?: { approve: ReadonlySet<string>; session?: string; afterUntrusted?: ReadonlySet<string>; taint?: { untrusted: boolean } },
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!names?.length || !registry) return out;
@@ -725,9 +732,10 @@ export function buildRegistryTools(
     // "janitor" for a system workflow (src/system-workflows.ts).
     const stamp = def.input instanceof z.ZodObject && "created_by" in def.input.shape ? writerOf(ctx) : undefined;
     const gated = !!gate?.approve.has(stepType);
+    const deferred = !gated && !!gate?.afterUntrusted?.has(stepType);
     const schema = stamp ? (def.input as z.ZodObject).omit({ created_by: true }) : def.input;
     out[toolNameFor(stepType)] = toolFactory({
-      description: (def.description ?? `Run the "${stepType}" step.`) + (gated ? GATE_NOTE : ""),
+      description: (def.description ?? `Run the "${stepType}" step.`) + (gated ? GATE_NOTE : deferred ? UNTRUSTED_GATE_NOTE : ""),
       inputSchema: gated ? gatedSchema(schema) : schema,
       execute: async (input: unknown, options?: { strutToolPath?: string }) => {
         let rationale: string | undefined;
@@ -759,8 +767,13 @@ export function buildRegistryTools(
         const childCtx: StepContext = options?.strutToolPath
           ? { ...base, agentTool: true, path: options.strutToolPath }
           : { ...base, agentTool: true };
-        if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
-        return def.run(parsed, withinReach(stepType, parsed, childCtx));
+        if (gated || (deferred && gate?.taint?.untrusted)) {
+          return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
+        }
+        const output = await def.run(parsed, withinReach(stepType, parsed, childCtx));
+        // Other people's words are in the thread now: its gated-after tools ask from here on.
+        if (gate?.taint && untrustedOf(output)) gate.taint.untrusted = true;
+        return output;
       },
       toModelOutput: ({ output }: { output: unknown }) => registryToolModelOutput(output),
     });
@@ -1134,6 +1147,16 @@ export default defineStep({
       .describe(
         "registry step types among agentTools (globs as there) that need the PERSON's approval (plans/proposals.md): a call to one does not run the step — it is recorded as a proposal, the model gets { proposal, status: 'pending' } and goes on, and strut runs the step when the person accepts (POST /proposals/:id/decide), in code, never a model turn. The gated tool's schema gains `rationale`. The decisions reach a `session` agent as [proposal-result] lines before its next prompt.",
       ),
+    approveAfterUntrusted: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "registry step types among agentTools (globs as there) that run freely until this thread has read UNTRUSTED content — a tool's output marked withUntrusted (core.ts), words other people wrote — and from then on are gated as `approve` gates them: each call a proposal the person decides. Sticky for the thread (`session`): what was read stays in its context.",
+      ),
+    untrusted: z
+      .preprocess((v) => v === "true" || v === true, z.boolean())
+      .default(false)
+      .describe("the turn starts untrusted: its prompt carries other people's words (a host's answer relayed as a message), so `approveAfterUntrusted` gates from the start."),
     secretsEnv: z
       .array(z.string())
       .default([])
@@ -1445,7 +1468,23 @@ export default defineStep({
         throw new Error("agent: `approve` needs strut's proposals (ctx.services.proposals); the standard strut server provides them.");
       }
     }
-    const registryTools = buildRegistryTools(stepGrants, ctx?.registry, toolCtx, tool, approve.size ? { approve, session: cfg.session } : undefined);
+    // Gated once the thread has read untrusted content: the same rule, granted types only.
+    const afterUntrusted = new Set<string>();
+    if (cfg.approveAfterUntrusted.length && ctx?.registry) {
+      const granted = new Set(expandAgentTools(stepGrants, ctx.registry));
+      for (const t of expandAgentTools(cfg.approveAfterUntrusted, ctx.registry)) {
+        if (granted.has(t) && !approve.has(t)) afterUntrusted.add(t);
+      }
+      if (afterUntrusted.size && !proposalsOf(ctx.services)) {
+        throw new Error("agent: `approveAfterUntrusted` needs strut's proposals (ctx.services.proposals); the standard strut server provides them.");
+      }
+    }
+    // Seeded from the thread once it is open (below): a session that read untrusted content stays so.
+    const taint = { untrusted: cfg.untrusted };
+    const registryTools = buildRegistryTools(
+      stepGrants, ctx?.registry, toolCtx, tool,
+      approve.size || afterUntrusted.size ? { approve, session: cfg.session, afterUntrusted, taint } : { approve, taint },
+    );
     // A tool-step whose output is marked `withStop` (core.ts) ends the turn
     // after this tool round (a device that has not answered, an approval
     // waiting on a person): the loop stops, and the one answer turn below
@@ -1539,6 +1578,7 @@ export default defineStep({
     // verbatim — with its messages it heads every request, and the prompt
     // cache (and thinking blocks bound to the prefix) need it byte for byte.
     const session = cfg.session ? await openSession(cfg.session, ctx, resolved, compactAt) : undefined;
+    if (session?.turns.some((t) => t.untrusted)) taint.untrusted = true;
     // The files the thread's earlier turns carried are in its history, so its
     // tools may hand them on (job/start): after this run's own, newest first.
     const earlierFiles = session ? threadAttachments(session.turns) : [];
@@ -1913,6 +1953,7 @@ export default defineStep({
               usage: out["usage"],
               cost: out["cost"] as number,
               ...(contextUsed ? { context: { used: contextUsed, limit: resolved.contextLimit } } : {}),
+              ...(taint.untrusted ? { untrusted: true as const } : {}),
               ...(from !== undefined ? { replayFrom: from } : {}),
             },
           });
