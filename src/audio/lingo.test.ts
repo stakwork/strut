@@ -81,14 +81,17 @@ describe("lingo: recall", () => {
     assert.deepEqual(spans("go to an office", { undone: [], entries: [entry("a", "Lingo", "A6", ["A6"])] }), []);
   });
 
-  it("a person's full name is offered loosely: the first name one sound off, the surname close, split or run together", () => {
+  it("a person's full name is offered when a span's whole sound is within a quarter of the name's, however it is split", () => {
     const boss: Lexicon = { undone: [], personType: "Person", entries: [entry("p", "Person", "Paul Itoi", ["Paul Itoi"]), entry("m", "Person", "Mike", ["Mike"]), entry("a", "Person", "Paula", ["Paula"])] };
     const to = (text: string) => recall(text, boss).filter((c) => c.written === "Paul Itoi").map((c) => c.span);
     for (const [text, span] of [["My boss is called Paul Attoy.", "Paul Attoy"], ["Paul Latoy will review it", "Paul Latoy"], ["My boss is called Paula Toy.", "Paula Toy"],
-      ["My boss is called Call itoy.", "Call itoy"], ["Send it to Coolitoy.", "Coolitoy"], ["ask Call It Oy", "Call It Oy"]]) {
+      ["My boss is called Call itoy.", "Call itoy"], ["ask Call It Oy", "Call It Oy"], ["Paul Italy is my boss.", "Paul Italy"]]) {
       assert.deepEqual(to(text!), [span], text);
     }
-    for (const text of ["I'll call Mark tomorrow.", "I bought a toy for Paul.", "Paula said hi.", "Let's call it a day.", "My son wants a toy."]) assert.deepEqual(to(text), [], text);
+    // Three sounds off of eight: Coolitoy, and Bill Itoi, a different person, are not offered.
+    for (const text of ["I'll call Mark tomorrow.", "I bought a toy for Paul.", "Paula said hi.", "Let's call it a day.", "My son wants a toy.", "Send it to Coolitoy.", "Ask Bill Itoi about it."]) {
+      assert.deepEqual(to(text), [], text);
+    }
     // A one-word name stays strict: Mark is not offered for Mike.
     assert.deepEqual(recall("I'll call Mark tomorrow.", boss), []);
     // Only a person: the same name as a term is matched as before.

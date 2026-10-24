@@ -139,12 +139,15 @@
 {"kind":"fix","id":"f-itoi-etoy","lexicon":"boss","transcript":"I'll ask Paul Etoy about it.","expect":"I'll ask Paul Itoi about it."}
 {"kind":"fix","id":"f-itoi-latoy","lexicon":"boss","transcript":"Paul Latoy will review the deck on Monday.","expect":"Paul Itoi will review the deck on Monday."}
 {"kind":"fix","id":"f-itoi-paula-toy","lexicon":"boss","transcript":"My boss is called Paula Toy.","expect":"My boss is called Paul Itoi."}
-{"kind":"fix","id":"f-itoi-call","lexicon":"boss","transcript":"My boss is called Call itoy.","expect":"My boss is called Paul Itoi.","note":"the first name loosely, the surname close: recall offers it for a person's full name only"}
-{"kind":"fix","id":"f-itoi-cool","lexicon":"boss","transcript":"Send the deck to Coolitoy.","expect":"Send the deck to Paul Itoi.","note":"the full name run into one word"}
+{"kind":"fix","id":"f-itoi-call","lexicon":"boss","transcript":"My boss is called Call itoy.","expect":"My boss is called Paul Itoi.","note":"two sounds off the whole name: recall offers it for a person's full name only"}
+{"kind":"fix","id":"f-itoi-cool","lexicon":"boss","transcript":"Send the deck to Coolitoy.","expect":"Send the deck to Paul Itoi.","note":"the full name run into one word, three sounds off: not recalled at 0.25 (a known miss; Bill Itoi is as far)"}
 {"kind":"fix","id":"n-itoi-call-mark","lexicon":"boss","transcript":"I'll call Mark tomorrow.","expect":"I'll call Mark tomorrow.","note":"Mark is not Mike, and no surname"}
 {"kind":"fix","id":"n-itoi-toy","lexicon":"boss","transcript":"I bought a toy for Paul.","expect":"I bought a toy for Paul."}
 {"kind":"fix","id":"n-itoi-son-toy","lexicon":"boss","transcript":"My son wants a toy for his birthday.","expect":"My son wants a toy for his birthday."}
 {"kind":"fix","id":"n-itoi-day","lexicon":"boss","transcript":"Let's call it a day.","expect":"Let's call it a day."}
 {"kind":"fix","id":"n-itoi-paula","lexicon":"boss-paula","transcript":"Paula said hi.","expect":"Paula said hi.","note":"Paula is a person of her own"}
+{"kind":"fix","id":"f-itoi-italy","lexicon":"boss","transcript":"Paul Italy is my boss.","expect":"Paul Itoi is my boss.","note":"two sounds off the whole name"}
+{"kind":"fix","id":"n-itoi-bill","lexicon":"boss","transcript":"Ask Bill Itoi about the invoice.","expect":"Ask Bill Itoi about the invoice.","note":"a different person with the same surname"}
+{"kind":"fix","id":"n-itoi-paul-it","lexicon":"boss","transcript":"I told Paul it was fine.","expect":"I told Paul it was fine.","note":"Paul followed by it: two sounds off the whole name"}
 {"kind":"fix","id":"n-tory-capital","lexicon":"fix","transcript":"the Tory party won the vote","expect":"the Tory party won the vote","note":"dictation capitalised the everyday word: it needs the same-sound margin too (Kroko and Parakeet)"}
 {"kind":"fix","id":"n-ph-kroko","lexicon":"p8-term","transcript":"The PH of the water is high.","expect":"The PH of the water is high.","note":"Kroko's PH in chemistry: a code a letter off needs a margin"}

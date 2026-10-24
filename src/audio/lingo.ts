@@ -509,8 +509,8 @@ const MAX_CANDIDATES = 8;
 export function recall(text: string, lexicon: Lexicon): Candidate[] {
   const toks = tokens(text);
   // Each key's forms once, not once per span: the lexicon is every entity the memory knows.
-  const keys: { key: string; written: string; heard: boolean; type: string; lk: string; kk: string; said: string; person?: FullName }[] = [];
-  const key = (k: string, written: string, heard: boolean, type: string, person?: FullName) =>
+  const keys: { key: string; written: string; heard: boolean; type: string; lk: string; kk: string; said: string; person?: string }[] = [];
+  const key = (k: string, written: string, heard: boolean, type: string, person?: string) =>
     keys.push({ key: k.toLowerCase(), written, heard, type, lk: letters(k), kk: soundKey(k), said: spoken(k), ...(person ? { person } : {}) });
   for (const e of lexicon.entries) {
     if (e.dictationOff) continue;
@@ -525,7 +525,7 @@ export function recall(text: string, lexicon: Lexicon): Candidate[] {
       const span = text.slice(toks[i]!.start, toks[i + n - 1]!.end);
       const ls = letters(span);
       if (ls.length < 2) continue;
-      const lower = span.toLowerCase(), sk = soundKey(span), said = spoken(span), heardAs = squeeze(saidKey(span));
+      const lower = span.toLowerCase(), sk = soundKey(span), said = spoken(span), heardAs = wholeSound(span);
       // A written form with a plural or possessive ending ("Stakwork's") is that word, already right.
       const stem = lower.replace(/['’]?s$/, "");
       for (const k of keys) {
@@ -554,45 +554,31 @@ export function recall(text: string, lexicon: Lexicon): Candidate[] {
     .map(({ score: _, ...c }) => c);
 }
 
-/** A person's full name of two or more words, as `saidAsName` compares it:
- *  the first name's consonants (a run of vowels as one "V") and the rest's
- *  sounds (`saidKey`). */
-interface FullName {
-  first: string;
-  rest: string;
-}
+/** How far, relative to its length, a span's whole sound may be from a
+ *  person's full name to be offered for it (`saidAsName`): chosen on the
+ *  eval (plans/dictation-models.md, "The full name, kept and recalled"). */
+const NAME_SOUND_DISTANCE = 0.25;
 
-function fullName(written: string): FullName | undefined {
+/** A person's full name of two or more words as one run of sounds
+ *  (`wholeSound`); a one-word name, or one with a code or number, is not
+ *  matched this way. */
+function fullName(written: string): string | undefined {
   const words = tokens(written).map((t) => t.core);
-  if (words.length < 2 || words.some((w) => isCode(w) || NUMBER.test(w))) return undefined;
-  const first = skeleton(saidKey(words[0]!)), rest = squeeze(saidKey(words.slice(1).join(" ")));
-  // A surname of fewer than three sounds ("Li", "Ng") is too short to find by sound.
-  return /[^V]/.test(first) && rest.length >= 3 ? { first, rest } : undefined;
+  return words.length < 2 || words.some((w) => isCode(w) || NUMBER.test(w)) ? undefined : wholeSound(written);
 }
 
-/** A doubled sound, also across words ("Paul Latoy": paullatoi), as one. */
-const squeeze = (k: string) => k.replace(/(.)\1+/g, "$1");
-/** The consonants of a sound form, each run of vowels one "V": "paul" pVl, "call" kVl. */
-const skeleton = (k: string) => k.replace(/[aeiou]+/g, "V");
+/** How a span is said as a whole: `saidKey`, spaces counting for nothing and
+ *  a doubled sound across words as one ("Paul Latoy" paulatoi). */
+const wholeSound = (text: string) => saidKey(text).replace(/(.)\1+/g, "$1");
 
-/** Whether a span, said (`saidKey`, doubled sounds as one), could be a
- *  person's full name: its sounds split, anywhere and across words, into a
- *  part said like the first name, the same or one consonant off with the
- *  same last sound (Paul / Call / Cool), and a part within one sound of the
- *  rest ("Call itoy", "Coolitoy", "Paul Attoy", "Paula Toy" for Paul Itoi).
- *  Lenient on the first name, as dictation is ("Call itoy"); the surname must
- *  be close, so "I'll call Mark", "a toy for Paul" and "Paula said hi" are
- *  not offered. Only a person's name of two or more words, never one word:
- *  a near one-word match is where Mark → Mike comes from. It finds; the
- *  rewrite decides in context. */
-function saidAsName(heard: string, name: FullName): boolean {
-  const slack = name.rest.length >= 4 ? 1 : 0;
-  for (let k = 1; k < heard.length; k++) {
-    const head = skeleton(heard.slice(0, k)), tail = heard.slice(k);
-    if (Math.abs(tail.length - name.rest.length) > slack || distance(tail, name.rest) > slack) continue;
-    if (/[^V]/.test(head) && head.at(-1) === name.first.at(-1) && distance(head, name.first) <= 1) return true;
-  }
-  return false;
+/** Whether a span's whole sound could be a person's full name: within
+ *  `NAME_SOUND_DISTANCE` of the name's, by edit distance over the longer
+ *  ("Paul Attoy", "Paula Toy", "Call itoy" for Paul Itoi). However the
+ *  sounds are split into words. Only for a name of two or more words: a near
+ *  one-word match is where Mark → Mike comes from. It finds; the rewrite
+ *  decides in context. */
+function saidAsName(heard: string, name: string): boolean {
+  return distance(heard, name) <= NAME_SOUND_DISTANCE * Math.max(heard.length, name.length);
 }
 
 /** Two codes of the same length one character apart, a letter for a digit

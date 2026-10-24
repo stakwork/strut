@@ -41,9 +41,10 @@ every edit; the model only answers how likely something is.
    the same letters or sounds, which beats a near spelling or a code a digit
    off ("PH" or "P H" for a term P8; a letter for a digit only, so "API" is
    not "KPI"); where one word's spans overlap, the better match, then the
-   shortest. A person's full name is also offered loosely: the first name
-   one consonant off, the surname close, split or run together ("Call
-   itoy" for Paul Itoi; see "The full name, kept and recalled"). At most 8.
+   shortest. A person's full name of two or more words is also offered for
+   a span whose whole sound is within a quarter of the name's, however it
+   is split ("Call itoy" for Paul Itoi; see "The full name, kept and
+   recalled"). At most 8.
    It finds; it never decides.
 3. **Fix** (`rewrite`, with the selected fixer):
    - Each candidate: the log-likelihood of the sentence with the vocabulary
@@ -367,21 +368,37 @@ never offered ("Call itoy", "Coolitoy", "Paul Italy").
   reads 11.3 (12.7 in "His name is…", 12.3 in "Ask…"). So `named` is asked
   of the capitalised run round the user's words, less a word beginning the
   sentence that is not theirs (`nameWord`).
-- **Looser recall, for a person's full name only** (`saidAsName`). A span's
-  sounds (`saidKey`, doubled sounds as one, across words too) may split
-  anywhere into a part said like the first name and a part within one sound
-  of the rest of the name. The first name is matched loosely: its consonants
-  with each vowel run as one, one consonant off at most, the same last sound
-  (Paul / Call / Cool). The surname is matched closely (one sound off, none
-  for a surname under four sounds; under three, never). So "Call itoy",
-  "Call It Oy", "Coolitoy", "Paul Attoy", "Paul Latoy" and "Paula Toy" are
-  offered for Paul Itoi; "I'll call Mark", "a toy for Paul", "Paula said hi",
-  "Let's call it a day" are not. A one-word name is matched as strictly as
-  before, since a loose one-word match is where Mark → Mike and Jon → Jen
-  come from. A Lingo of the same name is not matched this way. "Paul Italy"
-  (two sounds off) is still missed. The rewrite decides each one as before.
-  What this cannot tell: a different person whose name is one consonant off
-  ("Bill Itoi") is offered, and the scoring line favours the known name.
+- **Recall of a full name by its whole sound** (`saidAsName`,
+  `NAME_SOUND_DISTANCE`). One rule, for a person's name of two or more
+  words: a span (1–3 words, not across punctuation) is offered when its
+  whole sound (`saidKey`, spaces counting for nothing, a doubled sound
+  across words as one) is within 0.25 of the name's, by edit distance over
+  the longer. No first-name or surname rule. For Paul Itoi ("paulitoi", 8
+  sounds) that is two sounds: Paul Etoy (0), Paul Attoy, Paul Latoy, Paula
+  Toy (1), Call itoy, Call It Oy, Paul Italy (2) are offered; Coolitoy
+  ("kolitoi", 3) is not, nor "I'll call Mark", "a toy for Paul", "Paula said
+  hi", "call it a day". "I told Paul it was fine" ("paulit", 2) is offered
+  and the rewrite leaves it. A one-word name is matched as strictly as
+  before (a loose one-word match is where Mark → Mike comes from), and a
+  Lingo of the same name is not matched this way. The rewrite decides each
+  one as before.
+  It replaced a first-name/surname split (the first name one consonant off
+  with the same last sound, the surname within one sound, the split
+  anywhere), tuned on Tom's six. The threshold, on the 1.7B fix eval (71
+  cases):
+
+  | threshold | fix precision | recall | exact | Tom's six | fails among the names |
+  |---|---|---|---|---|---|
+  | 0.2 | 0.98 | 0.89 | 0.92 | 4 | Call itoy, Coolitoy, Paul Italy missed |
+  | 0.25 (0.3 the same) | 0.98 | 0.93 | 0.94 | 5 | Coolitoy missed |
+  | 0.4 | 0.96 | 0.96 | 0.94 | 6 | Bill Itoi rewritten to Paul Itoi |
+
+  Coolitoy and Bill Itoi ("bilitoi") are both three sounds off, so no one
+  threshold tells them apart: 0.25 misses Tom's run-together name and
+  leaves a different person alone; 0.4 does the reverse. A wrong person's
+  name rewritten is the worse mistake (the Mark → Mike kind), so 0.25. The
+  old split rule also rewrote Bill Itoi (the first name one consonant off)
+  and missed Paul Italy.
 - **PH → P8 in chemistry** (`CODE_MARGIN`, 2 nats). A code that dictation
   wrote one character off a code in the vocabulary must read likelier by 2
   nats. "The PH of the water is high" reads 0.3 as P8 (Kroko writes PH so);
@@ -402,7 +419,7 @@ never offered ("Call itoy", "Coolitoy", "Paul Italy").
 ## Eval (src/audio/dictation-eval)
 
 `cases.jsonl` (synthetic, committed): 71 learn cases (typed, edited, lexicon
-→ expected pairs, with the full name a pair is kept on) and 68 fix cases (transcript, lexicon → expected text),
+→ expected pairs, with the full name a pair is kept on) and 71 fix cases (transcript, lexicon → expected text),
 with the hard ones: stack work→Stakwork, stackwork→Stakwork, p eight→P8, P8
 typed as PH and put back, their→there (nothing), i→I (nothing), Jon→Jen
 (nothing), a sentence rewrite (nothing), "fix" vs Sphinx in and out of
@@ -419,10 +436,10 @@ in chemistry; Tom's Etoy → Itoi and Paula Toy → Paul Itoi with Nicky →
 Nikki, Ellen → Allen, and "a cross" → "across" and "may be" → "maybe" not
 learned; Etoy → Itoi in "My boss is called Paul Itoi." and "Ask Paul Itoi…"
 kept on the full name; with Paul Itoi a person in the vocabulary, Tom's
-"Paul Attoy", "Paul Etoy", "Paul Latoy", "Paula Toy", "Call itoy" and
-"Coolitoy" put right, and "I'll call Mark", "a toy for Paul", "a toy for his
-birthday", "call it a day" and "Paula said hi" (Paula a person of her own)
-left; "the Tory party" and Kroko's "The PH of the water is high" left).
+"Paul Attoy", "Paul Etoy", "Paul Latoy", "Paula Toy", "Call itoy",
+"Coolitoy" and "Paul Italy" put right, and "I'll call Mark", "a toy for
+Paul", "a toy for his birthday", "call it a day", "Paula said hi" (Paula a
+person of her own), "Ask Bill Itoi" and "I told Paul it was fine" left; "the Tory party" and Kroko's "The PH of the water is high" left).
 `npm run eval:dictation` (opt-in, not in `npm test`) runs them through the
 real pipeline and `DictationFixer` (the model in its worker, the 1.5 s
 fallback live) against the GGUFs in `./.models/gguf` (gitignored).
@@ -432,14 +449,19 @@ On an M-series Mac, 2026-10-23, warm (load measured separately):
 | fixer | task | precision | recall | exact | p50 ms | p95 ms | load s |
 |---|---|---|---|---|---|---|---|
 | qwen3-1.7b-q4 | learn | 0.96 | 0.96 | 0.94 | 59 | 338 | 1.2 |
-| qwen3-1.7b-q4 | fix | 0.98 | 0.95 | 0.96 | 71 | 133 | 1.2 |
+| qwen3-1.7b-q4 | fix | 0.98 | 0.93 | 0.94 | 70 | 136 | 1.2 |
 | qwen3-0.6b-q4 | learn | 0.82 | 0.96 | 0.88 | 37 | 81 | 6.5 |
 | qwen3-0.6b-q4 | fix | 1.00 | 0.84 | 0.88 | 78 | 349 | 6.5 |
 | none | learn | – | 0.00 | 0.54 | 0 | 0 | – |
 | none | fix | 1.00 | 0.60 | 0.71 | 0 | 0 | – |
 
-The 1.7B rows are from 2026-10-24 (later) on the 139 cases, with the full
-name kept, the looser full-name recall and the code margin. Before them, on
+The 1.7B rows are from 2026-10-24 (later) on the 142 cases, with the full
+name kept, full names recalled by their whole sound (0.25) and the code
+margin. With the earlier first-name/surname recall the same 142 scored
+learn 0.96 / 0.96 / 0.94 (recall does not touch learning) and fix 0.95 /
+0.93 / 0.93; the whole-sound rule gains Paul Italy and leaves Bill Itoi,
+and loses Coolitoy (above). On the 139 before those three, the split rule's
+fix was 0.98 / 0.95 / 0.96. Before them, on
 the 124 cases before the 15 new ones, learn was 0.95 / 0.95 / 0.94 and fix
 1.00 / 0.95 / 0.96; the same four learn and two fix cases fail on both, and
 of the new ones only `n-tory-capital` fails (the Tory party rewritten,
