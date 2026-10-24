@@ -10,6 +10,8 @@ import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import type { JobsCapability } from "./jobs.js";
 import jobStart from "./steps/lib/job/start.js";
+import { withPath } from "./job-worktree.js";
+import { parseAgent } from "./steps/lib/acp/prompt.js";
 
 // A local coding agent's job (job/start { agent, mode, folder }): the
 // launcher takes only a name the host offers or a preset, turns the
@@ -87,10 +89,12 @@ describe("job/start with a local coding agent", () => {
     assert.equal((await store.listRuns("job")).length, 0, "nothing launched");
   });
 
-  it("a folder that is not a repository is worked in place; a preset agent passes as its name", async () => {
+  it("a folder that is not a repository is worked in place; a preset agent passes as its name, or with the host's PATH", async () => {
     const run = await jobs().launch({ job: "j5", input: { prompt: "tidy", agent: "goose", mode: "plan", folder: "notes" }, from: "none" });
     const out = await output(run.runId);
     assert.deepEqual([out["cwd"], out["agent"], out["mode"]], [dir, "goose", "plan"]);
+    assert.equal(withPath("/opt/homebrew/bin:/Users/t/My Tools", ["goose", "acp"]), '/usr/bin/env "PATH=/opt/homebrew/bin:/Users/t/My Tools" goose acp');
+    assert.deepEqual(parseAgent(withPath("/opt/homebrew/bin:/Users/t/My Tools", ["goose", "acp"])), ["/usr/bin/env", "PATH=/opt/homebrew/bin:/Users/t/My Tools", "goose", "acp"]);
   });
 
   it("job/start: agent, mode and folder only on a code job, mode and folder only with an agent", async () => {

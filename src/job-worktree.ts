@@ -5,6 +5,12 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+/** A preset agent's command line run with the host's `PATH`, quoted as
+ *  `acp/prompt`'s `parseAgent` reads it (double quotes group). */
+export function withPath(path: string, command: string[]): string {
+  return ["/usr/bin/env", `PATH=${path}`, ...command].map((p) => (/[\s"]/.test(p) ? `"${p.replace(/"/g, "")}"` : p)).join(" ");
+}
+
 /**
  * Where a local coding agent's job works in the host's folder `root`
  * (job/start { agent, folder }): a git worktree of it, under the job's own

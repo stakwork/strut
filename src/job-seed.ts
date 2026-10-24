@@ -67,6 +67,10 @@ export interface JobSeedOptions {
    *  A name here or one of `acp/prompt`'s presets is what `job/start` takes;
    *  never a command line from the model. */
   agents?: Record<string, string>;
+  /** The `PATH` a local coding agent runs with: a desktop host's login
+   *  shell's, where `npx` and the agents live, which a GUI app's strut does
+   *  not have. A preset agent is started through `/usr/bin/env PATH=…`. */
+  path?: string;
 }
 
 export const JOB_WORKFLOW = "job";

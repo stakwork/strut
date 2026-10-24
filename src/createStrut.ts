@@ -119,7 +119,7 @@ import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { ACP_PRESETS } from "./steps/lib/acp/prompt.js";
-import { jobWorktree } from "./job-worktree.js";
+import { jobWorktree, withPath } from "./job-worktree.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -3677,6 +3677,7 @@ export async function createStrut<TServices = unknown>(
           throw new Error(`agent_unknown: "${named}" is not a coding agent this strut offers (${offered.join(", ")})`);
         }
         if (command) input = { ...input, agent: command };
+        else if (hostJob?.path) input = { ...input, agent: withPath(hostJob.path, ACP_PRESETS[named]!) };
       }
       if (input["folder"] !== undefined) {
         const name = String(input["folder"]);

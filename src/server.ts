@@ -42,8 +42,8 @@ let strutInstance: Strut | null = null;
  *  seeding the workflows without the host's tools. */
 /** `job.folders` (name → absolute path) and `job.agents` (name → command
  *  line): a desktop host's folders and coding agents (job/start { agent, folder }). */
-function localAgentsFromConfig(delta: Record<string, unknown>, file: string): { folders?: Record<string, string>; agents?: Record<string, string> } {
-  const out: { folders?: Record<string, string>; agents?: Record<string, string> } = {};
+function localAgentsFromConfig(delta: Record<string, unknown>, file: string): { folders?: Record<string, string>; agents?: Record<string, string>; path?: string } {
+  const out: { folders?: Record<string, string>; agents?: Record<string, string>; path?: string } = {};
   for (const name of ["folders", "agents"] as const) {
     const value = delta[name];
     if (value === undefined) continue;
@@ -53,6 +53,13 @@ function localAgentsFromConfig(delta: Record<string, unknown>, file: string): { 
       throw new Error(`STRUT_HOST_CONFIG: ${file}: "job.${name}" must be { <name>: ${name === "folders" ? "an absolute path" : "a command line"} }`);
     }
     out[name] = Object.fromEntries(entries as [string, string][]);
+  }
+  const path = delta["path"];
+  if (path !== undefined) {
+    if (typeof path !== "string" || !path.split(":").every((p) => p.startsWith("/"))) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "job.path" must be a PATH of absolute folders`);
+    }
+    out.path = path;
   }
   return out;
 }
