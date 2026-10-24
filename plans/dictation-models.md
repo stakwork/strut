@@ -36,9 +36,10 @@ every edit; the model only answers how likely something is.
 2. **Recall** (`recall`, pure): 1–3-word spans of the transcript, never
    across punctuation, matched against every entry's `heard` values and
    `written` forms (not an entry turned off): an exact past mishearing beats
-   the same letters or sounds, which beats a near spelling; where one word's
-   spans overlap, the better match, then the shortest. At most 8. It finds;
-   it never decides.
+   the same letters or sounds, which beats a near spelling or a code a digit
+   off ("PH" or "P H" for a term P8; a letter for a digit only, so "API" is
+   not "KPI"); where one word's spans overlap, the better match, then the
+   shortest. At most 8. It finds; it never decides.
 3. **Fix** (`rewrite`, with the selected fixer):
    - Each candidate: the log-likelihood of the sentence with the vocabulary
      form against the sentence as heard, after the line "Dictated by someone
@@ -46,7 +47,10 @@ every edit; the model only answers how likely something is.
      "Peel the oranges" is no evidence for Peel), and a sound-alike is also
      read in its own title case (so "tory" in lower case is no evidence for
      Tauri). Kept when the vocabulary reading is likelier; of two claiming
-     one span, the likelier.
+     one span, the likelier. When the heard text is an everyday word that
+     sounds just like the vocabulary form (lower case, spelled otherwise,
+     the same sound key: "stadium" for Stadeum, "tory" for Tauri), it must
+     be likelier by `SAME_SOUND_MARGIN` (5 nats): see "Real words as names".
    - Fillers and a word said twice in a row: removed by rule, with an
      exception list ("that that", "had had", "very very", …). A removal
      that began a sentence capitalises the word now beginning it ("team?
@@ -78,11 +82,22 @@ every edit; the model only answers how likely something is.
    one by 1.6 to 8 nats, and a full name already in the graph ("Kathryn
    O'Brien", nothing learned) is recalled and chosen the same way. A first
    name alone ("Katherine said yes") is not matched to a graph's full name,
-   and a different name ("Kate O'Brien") is not recalled for it. Each remaining change is asked yes/no with the
-   sentence and what the vocabulary knows of the words ("Bitcoin, BTC (same
+   and a different name ("Kate O'Brien") is not recalled for it. Each remaining change is asked yes/no on its
+   own, in its own sentence (and the one before it, or after it, when it has
+   under four words): the typed sentence and the same with only that change
+   made. With the edit's other changes in it, "Catherine" → "Kathryn" read as
+   part of a rewrite and was turned down; and a long dictation stays a short
+   prompt, so a voice dump of several hundred words stays inside the 4k
+   context at the same speed (two fixes far apart in 407 words: 199 ms). Also
+   asked: what the vocabulary knows of the words ("Bitcoin, BTC (same
    thing)", "(turned off for dictation)"); P(yes) and P(no) come from one
    forward pass, and it is learned when yes outweighs no by the model's
-   margin (0 for the 1.7B, 1 nat for the 0.6B, which leans yes). The write
+   margin (0 for the 1.7B, 1 nat for the 0.6B, which leans yes). A
+   same-sounding change the judge turns down is asked once more (`named`):
+   learned when the user's word is a name in the edited sentence and
+   dictation's is clearly an everyday word in the typed one, or is a code a
+   digit off (see "Real words as names"). A change from a code of its own
+   ("PH" → "P8") is learned as a term: the word, with no mapping. The write
    path is #301's: undone pairs, words with dictation off, and a change from
    a form already in the vocabulary (two forms of one thing, or "PH" that is
    a word of its own) are never written, whatever the model says, and only
@@ -139,16 +154,82 @@ every edit; the model only answers how likely something is.
   one a client offers first. Models are never bundled with a client.
 - **iOS / other clients** call the same steps and endpoints over the network.
 
+Not watched yet (later): a fix to an earlier dictation in the same field
+after a new one has started, and a fix made after the edit has settled and
+been sent. The client sends one settled edit of one dictation; v1 learns
+every fix in it.
+
+## Real words as names
+
+A product or name can share its sound with a real word: Stadeum (a play on
+stadium), Peel, Hive. Dictation always writes the real word, and until
+2026-10-24 nothing was learned when the user put it right: the judge read
+"stadium" → "Stadeum" as a different word. Its prompt said no when
+"dictation's text is itself something real the user could have meant", but
+that sentence was not what decided it: without it the 1.7B still said no
+(−3.6 and −7.6 nats on the two Stadeum cases), a sentence saying it is a
+mishearing moved it no further, and a shot of one ("lift" → "Lyft",
+"slack" → "Slack") made it say yes to Mark → Mike. So the veto sentence is
+gone, the prompt is otherwise as it was, and the case has a question of its
+own:
+
+- **Learn.** A change the judge turns down that is the same spoken word
+  (the same sound key, a casing change not at a sentence's start, or a code
+  a digit off) is asked two more things. Of the user's word in its sentence
+  (the typed text with that change alone): "is this word a name, product,
+  brand, code or technical term here, or an ordinary word?" (`named`,
+  `NAME_SYSTEM`). Of dictation's word alone and in lower case: "is it an
+  everyday dictionary word, or only a name?" (`everyday`, `WORD_SYSTEM`),
+  four shots each. Learned when the first is yes and the second yes by 2
+  nats or more ("stadium", "peel", "hive" by 17 to 22; "jon", "michael",
+  "catherine" read as names by 7 to 16, so "jon" → "Jen" is not learned), or
+  without the second when either side is a code ("PH" → "P8", "p eight" →
+  "P8"). Dictation's word was first asked in its sentence, but there its
+  casing decided: "a product called Stadium" read as a name (1.8) and so was
+  refused, and lower-cased in the sentence a real name lost it ("email
+  michael about it" −9.2, so Michael → Michelle was learned). Only those
+  changes pay for it, on the scoring sequence, so the judge's prompt stays
+  cached: learn p95 351 ms (the two prompts take turns there).
+- **What is kept.** A mapping, as before ("stadium" heard for Stadeum),
+  except when dictation's text is a code of its own: "PH" → "P8" keeps P8 as
+  a term with no mapping (`term`), and recall offers it for "PH", "P H",
+  "p eight" and "P 8". A real pH is then never rewritten by rule.
+- **Applying.** The rewrite decides each sentence, but the scoring line
+  names the vocabulary word, which favours it: with Stadeum learned (a
+  Lingo word), "we watched the game at the stadium" read 3.9 nats likelier
+  as Stadeum and "the stadium was full" 1.8, so both were rewritten. "open it
+  in stadium", "the stadium workspace" and "deploy to stadium" read 5.8 to
+  7.5 likelier. For an everyday word that sounds just like the form, the
+  vocabulary reading must win by 5 nats (`SAME_SOUND_MARGIN`); that also
+  fixed "the tory party" (0.8). It does not apply to a name dictation
+  capitalised (Katherine → Kathryn, 1.6) or to a sound-alike that is not the
+  same sound ("fix" for Sphinx, 1.5 and 2.5, which the margin would lose). As
+  an Organization the Stadeum margins are similar; as a Project "the stadium
+  workspace" reads only 2.5, so it would be left as heard. A term P8: "send
+  PH now" 6.6, "we ship PH by Friday" 6.1; "the pH of the water is high"
+  −2.9 and "test the PH of the soil" −1.7 stay; "check the PH level" reads
+  4.3 as P8 and would be rewritten for someone who uses P8.
+- **Still open.** A casing alone (peel → Peel) is learned but not applied:
+  "ship it in peel tonight" reads 0.8 nats likelier in lower case after
+  "often mentions Peel", as "the peel build" did before.
+
 ## Eval (src/audio/dictation-eval)
 
-`cases.jsonl` (synthetic, committed): 54 learn cases (typed, edited, lexicon
-→ expected pairs) and 40 fix cases (transcript, lexicon → expected text),
+`cases.jsonl` (synthetic, committed): 64 learn cases (typed, edited, lexicon
+→ expected pairs) and 55 fix cases (transcript, lexicon → expected text),
 with the hard ones: stack work→Stakwork, stackwork→Stakwork, p eight→P8, P8
 typed as PH and put back, their→there (nothing), i→I (nothing), Jon→Jen
 (nothing), a sentence rewrite (nothing), "fix" vs Sphinx in and out of
 context, tory vs Tauri, stutters, "Tuesday, no, Wednesday", name spellings
 (Katherine → Kathryn learned and applied; Kathryn O'Brien from the graph;
-Kate O'Brien left alone).
+Kate O'Brien left alone), and real words as names (stadium → Stadeum
+learned and applied in a product's context, left in "we watched the game at
+the stadium", "the stadium was full", "a football stadium"; peel → Peel and
+hive → Hive learned; "Stadium" and a sentence's "Peel" not; three changes
+in one edit, Stackworth, Stadium and Catherine, each learned, "Stadium"
+capitalised by dictation too; two fixes far apart in a 407-word dump; PH → P8 learned
+as a term, then P8 for "PH", "P H", "p eight", "P 8" in context and pH left
+in chemistry).
 `npm run eval:dictation` (opt-in, not in `npm test`) runs them through the
 real pipeline and `DictationFixer` (the model in its worker, the 1.5 s
 fallback live) against the GGUFs in `./.models/gguf` (gitignored).
@@ -157,19 +238,26 @@ On an M-series Mac, 2026-10-23, warm (load measured separately):
 
 | fixer | task | precision | recall | exact | p50 ms | p95 ms | load s |
 |---|---|---|---|---|---|---|---|
-| qwen3-1.7b-q4 | learn | 0.93 | 0.96 | 0.94 | 76 | 89 | 1.3 |
-| qwen3-1.7b-q4 | fix | 0.97 | 0.97 | 0.95 | 75 | 200 | 1.3 |
+| qwen3-1.7b-q4 | learn | 0.95 | 0.97 | 0.95 | 65 | 351 | 1.4 |
+| qwen3-1.7b-q4 | fix | 1.00 | 0.95 | 0.96 | 77 | 162 | 1.4 |
 | qwen3-0.6b-q4 | learn | 0.82 | 0.96 | 0.88 | 37 | 81 | 6.5 |
 | qwen3-0.6b-q4 | fix | 1.00 | 0.84 | 0.88 | 78 | 349 | 6.5 |
 | none | learn | – | 0.00 | 0.54 | 0 | 0 | – |
 | none | fix | 1.00 | 0.60 | 0.71 | 0 | 0 | – |
 
-The 1.7B rows are from 2026-10-24 on the 94 cases (the 0.6B and none rows
+The 1.7B rows are from 2026-10-24 on the 119 cases (the 0.6B and none rows
 are from 2026-10-23 on the earlier 84; the 0.6B GGUF was not at hand to
-rerun). Before the name-spelling line in the judge's prompt the 1.7B learned
-0.92 / 0.82 / 0.87 on the same cases, missing every respelled name. No case fell back on time. The 1.7B misses: "bee see"→BTC not learned,
-there→their and "the Stakwork"→"Stakwork's" learned, "the tory party"
-rewritten to Tauri, "the peel build" left as is. The 0.6B learns more
+rerun, so its name questions and margins are unmeasured). Before the
+real-word changes the 1.7B scored learn 0.93 / 0.82 / 0.87 and fix 0.92 /
+0.87 / 0.85 on the first 115 of them (0.93 / 0.96 / 0.94 and 0.97 / 0.97 /
+0.95 on the 94 before them); with them but each change still judged in the
+whole edit and dictation's word asked in its sentence, learn was 0.95 /
+0.90 / 0.92 on the 119, learning only Stakwork of three changes in one edit
+(Stadium → Stadeum and Catherine → Kathryn missed); before the name-spelling line in the judge's prompt it
+learned 0.92 / 0.82 / 0.87 on those 94, missing every respelled name. No
+case fell back on time. The 1.7B misses: "bee see"→BTC not learned,
+there→their and "the Stakwork"→"Stakwork's" learned, "the peel build" and
+"ship it in peel tonight" left as is. The 0.6B learns more
 wrongly (PH→P8, BTC→Bitcoin, apple→Apple) and misses the take-backs. With
 no fixer, fillers and doubled words still go and only learned mishearings of
 two or more words apply; a one-word one ("fix" for Sphinx) is left as heard,

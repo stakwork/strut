@@ -6,6 +6,8 @@
  *
  * - `judge(questions)`: for each change of an edit, log P(yes) − log P(no)
  *   that it is a mishearing, from one forward pass after a few-shot prompt.
+ * - `named(questions)`, `everyday(words)`: the same for "is this word a name
+ *   here?" and "is this word, alone, an everyday word?".
  * - `score(sentences)`: the log-likelihood of each sentence after "Dictated
  *   by someone who often mentions X (a <type>)".
  * - `retract(text)`: the words a speaker took back and the cue that took
@@ -112,6 +114,8 @@ export class DictationFixer {
       id: m.id,
       learnMargin: findFixer(m.id)?.learnMargin ?? 0,
       judge: (qs) => call("judge", [qs]),
+      named: (qs) => call("named", [qs]),
+      everyday: (ws) => call("everyday", [ws]),
       score: (ss) => call("score", [ss]),
       retract: (text) => call("retract", [text]),
       ready: () => call("ready", []),

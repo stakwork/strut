@@ -31,6 +31,8 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
   const fake: LoadedFixer = {
     id: "fake", learnMargin: 0, ready: async () => {},
     judge: async (qs) => qs.map((q) => (judged.push(`${q.from}→${q.to}`), /[\p{Lu}\p{N}]/u.test(q.to) ? 5 : -5)),
+    named: async (qs) => qs.map(() => -5),
+    everyday: async (ws) => ws.map(() => -5),
     score: async (ss) => ss.map((s) => (s.text.includes(s.name) ? 0 : -10)),
     retract: async () => [],
   };
@@ -228,6 +230,14 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     });
     assert.equal(((await res.json()) as { status: string }).status, "error");
     assert.ok((await step("memory/lexicon", {})).entities.some((e: any) => e.name === "Acme"));
+  });
+
+  it("a code dictation wrote of its own is learned as a term, with no mapping, and found by its near spellings", async () => {
+    const out = await correct("check QH today", "check Q8 today");
+    assert.deepEqual(out.learned.map((l) => [l.heard, l.written, l.undo.length]), [["QH", "Q8", 1]]);
+    const q8 = (await step("memory/lexicon", {})).entities.find((e: any) => e.name === "Q8");
+    assert.deepEqual([q8.type, q8.heard], ["Lingo", []]);
+    assert.equal((await transcribe("check QH today")).text, "check Q8 today");
   });
 
   it("memory/lexicon names the lingo type and the mishearing predicate", async () => {
