@@ -8,14 +8,14 @@
  * worker is handed fixer/index.js, and the part of it this file calls is
  * typed here (`LlamaLib`), held to the real package by fixer/check.ts.
  */
-import type { JudgeQuestion, Retraction, ScoreSentence } from "./lingo.js";
+import type { JudgeQuestion, NameQuestion, Retraction, ScoreSentence } from "./lingo.js";
 
 // ── Prompts ─────────────────────────────────────────────────────────────────
 
 type Shot = [user: string, assistant: string];
 
-export const JUDGE_SYSTEM = `You review one change a user made to text typed by dictation (speech to text). Answer "yes" if it is a MISHEARING: the user said a name, product, brand, acronym, code or technical term, and dictation wrote what it SOUNDS like ("dev ops" → "DevOps", "e c two" → "EC2", "jason" → "JSON", "Stokwork" → "Stakwork").
-Answer "no" for anything else: a different word or name the user chose instead (Mark → Mike, Paris → London, 3 → 4); an ordinary spelling or grammar fix (your → you're, their → there, tense, plural, possessive); capitalising an ordinary word or the letter i; punctuation; numbers as digits; a rewrite; two forms of the same known word ("same thing"); a word turned off for dictation; or dictation's text is itself something real the user could have meant, like an acronym ("PH" → "P8").
+export const JUDGE_SYSTEM = `You review one change a user made to text typed by dictation (speech to text). Answer "yes" if it is a MISHEARING: the user said a name, product, brand, acronym, code or technical term, and dictation wrote what it SOUNDS like ("dev ops" → "DevOps", "e c two" → "EC2", "jason" → "JSON", "Stokwork" → "Stakwork"), or a person's name, said the same but spelled another way (Katherine → Kathryn, Jon → John, Steven → Stephen).
+Answer "no" for anything else: a different word or name the user chose instead (Mark → Mike, Jon → Jen, Paris → London, 3 → 4); an ordinary spelling or grammar fix (your → you're, their → there, tense, plural, possessive); capitalising an ordinary word or the letter i; punctuation; numbers as digits; a rewrite; two forms of the same known word ("same thing"); or a word turned off for dictation.
 Answer only yes or no.`;
 
 const JUDGE_EXAMPLES: [typed: string, edited: string, from: string, to: string, known: string, answer: "yes" | "no"][] = [
@@ -34,6 +34,32 @@ export function judgeUser(q: Pick<JudgeQuestion, "typed" | "edited" | "from" | "
   return `Typed: ${q.typed}\nEdited: ${q.edited}\nChange: "${q.from}" → "${q.to}"${q.known ? `\nKnown: ${q.known}` : ""}`;
 }
 const JUDGE_SHOTS: Shot[] = JUDGE_EXAMPLES.map(([typed, edited, from, to, known, a]) => [judgeUser({ typed, edited, from, to, known }), a]);
+
+/** Whether one word of a sentence is a name. Asked only of a same-sounding
+ *  change the judge turned down (lingo.ts `mishearings`): the judge, asked
+ *  "mishearing?", says no to a name that shares its sound with a real word
+ *  ("stadium" → "Stadeum"), and adding that case to its prompt or shots
+ *  moved its other answers (plans/dictation-models.md). */
+export const NAME_SYSTEM = `In a sentence the user wrote, is the given word a name, product, brand, code or technical term (yes), or an ordinary word used in its ordinary sense (no)? Answer only yes or no.`;
+
+export function nameUser(q: NameQuestion): string {
+  return `Sentence: ${q.text}\nWord: "${q.word}"`;
+}
+const NAME_SHOTS: Shot[] = ([
+  ["book a Lyft home", "Lyft", "yes"],
+  ["the river was calm", "river", "no"],
+  ["The Window is open", "Window", "no"],
+  ["deploy it on Vercel", "Vercel", "yes"],
+] as const).map(([text, word, a]) => [nameUser({ text, word }), a]);
+
+/** Whether a word, alone and in lower case, is an everyday word: dictation's
+ *  side of the same check. In its sentence the name question reads
+ *  dictation's casing ("a product called Stadium" is a name) or, lower-cased,
+ *  loses a real name ("email michael about it" reads as ordinary). */
+export const WORD_SYSTEM = `Is the given word an everyday English word found in a dictionary (yes), or only a name (no)? Answer only yes or no.`;
+
+export const wordUser = (word: string) => `Word: "${word}"`;
+const WORD_SHOTS: Shot[] = [["river", "yes"], ["emma", "no"], ["window", "yes"], ["oliver", "no"]].map(([w, a]) => [wordUser(w!), a!]);
 
 export const RETRACT_SYSTEM = `Text from dictation may contain words the speaker took back and said again differently ("Friday, sorry, Saturday"). For each, answer the words taken back ("wrong") and the words that took them back ("cue"), exactly as in the text. Answer ONLY a JSON array [{"wrong": "...", "cue": "..."}], or [] when nothing was taken back ("no problem", "I mean it", "sorry for the delay" take nothing back).`;
 const RETRACT_SHOTS: Shot[] = [
@@ -61,6 +87,8 @@ function chatml(system: string, shots: Shot[]): { head: string; tail: string } {
 }
 const JUDGE_PROMPT = chatml(JUDGE_SYSTEM, JUDGE_SHOTS);
 const RETRACT_PROMPT = chatml(RETRACT_SYSTEM, RETRACT_SHOTS);
+const NAME_PROMPT = chatml(NAME_SYSTEM, NAME_SHOTS);
+const WORD_PROMPT = chatml(WORD_SYSTEM, WORD_SHOTS);
 
 /** The `{ wrong, cue }` items of a reply; [] when it holds no JSON array. */
 export function parseRetractions(reply: string): Retraction[] {
@@ -80,6 +108,8 @@ export function parseRetractions(reply: string): Retraction[] {
 /** What the worker's object answers (`ModelWorker.call`). */
 export interface FixerEngine {
   judge(questions: JudgeQuestion[]): Promise<number[]>;
+  named(questions: NameQuestion[]): Promise<number[]>;
+  everyday(words: string[]): Promise<number[]>;
   score(sentences: ScoreSentence[]): Promise<number[]>;
   retract(text: string): Promise<Retraction[]>;
   /** Resolves once the model is loaded (it is, by the time the worker answers anything). */
@@ -173,17 +203,23 @@ export async function loadLlamaFixer(o: { path: string; llama: string }): Promis
     return p;
   };
 
+  /** log P(yes) − log P(no) after each user turn, one forward pass each. */
+  const yesOrNo = (seq: LlamaSequence, p: { head: string; tail: string }, users: string[]) => serial(async () => {
+    const out: number[] = [];
+    for (const user of users) {
+      const toks = prompt(p, user) as number[];
+      const r = await evaluate(seq, toks, toks.length - 1, (i) => (i === toks.length - 1 ? yesNo : null));
+      const next = r.out.at(-1).next;
+      out.push(logp(next, yesNo[0]!) - logp(next, yesNo[1]!));
+    }
+    return out;
+  });
+
   return {
-    judge: (qs) => serial(async () => {
-      const out: number[] = [];
-      for (const q of qs) {
-        const toks = prompt(JUDGE_PROMPT, judgeUser(q)) as number[];
-        const r = await evaluate(judging, toks, toks.length - 1, (i) => (i === toks.length - 1 ? yesNo : null));
-        const next = r.out.at(-1).next;
-        out.push(logp(next, yesNo[0]!) - logp(next, yesNo[1]!));
-      }
-      return out;
-    }),
+    judge: (qs) => yesOrNo(judging, JUDGE_PROMPT, qs.map(judgeUser)),
+    // On the scoring sequence: its own prefix is a line long, so the judge's keeps its cache.
+    named: (qs) => yesOrNo(scoring, NAME_PROMPT, qs.map(nameUser)),
+    everyday: (ws) => yesOrNo(scoring, WORD_PROMPT, ws.map(wordUser)),
     score: (ss) => serial(async () => {
       const out: number[] = [];
       for (const s of ss) {

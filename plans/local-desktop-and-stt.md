@@ -144,11 +144,14 @@ be a real file anyway, so there is nothing to gain from bundling yet (§2.4).
   `/opt/homebrew`, `/usr/local` or `/opt/local`. Beside the addon go the
   two extensions the graph backend REQUIRES (`plans/ladybug-backend.md`
   ruling 4), `libvector` + `libfts.lbug_extension`, versioned with the
-  Ladybug CORE (`0.21.0` for `@ladybugdb/core` 0.21.2): the packager asks
-  Ladybug itself (`SHOW_LOADED_EXTENSIONS()` after an `INSTALL`) for the
-  version and the build machine's platform dir, copies the target's from
-  `~/.lbdb` when it is this platform's, else downloads them from
-  `extension.ladybugdb.com`. `desktop.json` records what was staged, and
+  Ladybug CORE (`0.21.0` for `@ladybugdb/core` 0.21.2): the packager takes
+  strut's PINNED copies (`src/graph/ladybug/extensions.ts`, sha256 per
+  platform for the installed core — never Ladybug's `INSTALL`, whose files
+  extension.ladybugdb.com rebuilds under the same version), refuses a core
+  with no pins, checks that every `lbug::` symbol each file imports is one
+  the staged addon exports (`nm`, either arch, so a cross-stage gets it
+  too), and, on the build machine's own platform, loads both into the
+  staged addon before `desktop.json` names them. `desktop.json` records what was staged, and
   `desktop.js` boots on the **Ladybug workspace** (`STRUT_WORKSPACE_BACKEND=
   ladybug`, `STRUT_LADYBUG_EXTENSION_DIR=native/`, `STRUT_GRAPH_EMBEDDINGS=
   off` without the embeddings stack) when the addon and both extensions are

@@ -79,7 +79,7 @@ export function loadCases(): Case[] {
 
 // ── Scoring ─────────────────────────────────────────────────────────────────
 
-const pairKey = (p: Mishearing) => `${letters(p.heard) && p.heard.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").trim()}→${p.written.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")}`;
+const pairKey = (p: Mishearing) => `${letters(p.heard) && p.heard.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").trim()}→${p.written.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")}${p.term ? " (term)" : ""}`;
 /** Fix is scored on word changes, punctuation aside: the expected text's changes from the transcript against the output's. */
 const changeKey = (h: Hunk) => `${h.a[0]}-${h.a[1]}:${h.to}`;
 
@@ -136,7 +136,9 @@ async function runOne(model: string | null, a: Args) {
     await f.ready();
     loadMs = performance.now() - t0;
     // Warm each task once: first-call allocations, and each prompt's cached prefix.
-    await f.judge([{ typed: "hi", edited: "Hi", from: "hi", to: "Hi", known: "" }]);
+    await f.judge([{ typed: "hi", edited: "Hi", from: "hi", to: "Hi", at: 0, known: "" }]);
+    await f.named([{ text: "Hi there", word: "Hi" }]);
+    await f.everyday(["hi"]);
     await f.score([{ name: "Strut", type: "Project", text: "Hi there" }]);
     await f.retract("hi, no, hello");
     fixer = f;
