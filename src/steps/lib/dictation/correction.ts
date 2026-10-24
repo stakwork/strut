@@ -2,8 +2,9 @@ import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { FIX_TIMEOUT_MS, within } from "../../../audio/fixer.js";
-import { mishearings } from "../../../audio/lingo.js";
+import { assess } from "../../../audio/lingo.js";
 import { Learned, learn, readLexicon, type LearnedT } from "./_shared.js";
+import { clearPending, recordPending } from "./_pending.js";
 
 /** How long a cold fixer may take to load before an edit is let go: the
  *  client sends it once, so it waits for the model rather than lose it. */
@@ -20,7 +21,9 @@ export default defineStep({
     "so the next transcription puts it right. The user's fixer model (dictation/use) judges each short change that " +
     "sounds alike, and a name that sounds like a real word (stadium → Stadeum) is learned too; a change from a code of " +
     "its own (PH → P8) keeps only the new word, with no mapping. Everyday swaps, rewrites, casing of everyday words, two names for one thing, words turned off for " +
-    "dictation and pairs the user undid teach nothing. With no fixer active (dictation/models: none picked, or the pick " +
+    "dictation and pairs the user undid teach nothing. A fix the model turns down that is said the same, vowels included " +
+    "(Etoy → Itoi; never Mark → Mike), is kept as a pair and a count, and learned when the user makes the same fix again " +
+    "within 30 days. With no fixer active (dictation/models: none picked, or the pick " +
     "not installed yet) nothing is learned and `learned` is empty, so a client need not send edits then; nor when the " +
     "fixer is too slow. " +
     "Only the pair is stored, never the sentence. Send an edit once it settles. Undo with dictation/undo.",
@@ -35,9 +38,15 @@ export default defineStep({
     const fixer = await (ctx.services as StrutCapabilities | undefined)?.stt?.fixer?.current();
     if (!fixer || !(await within(fixer.ready().then(() => true), LOAD_MS))) return { learned: [] };
     const lexicon = await readLexicon(ctx);
-    const pairs = (await within(mishearings(cfg.typed, cfg.edited, lexicon, fixer), FIX_TIMEOUT_MS)) ?? [];
+    const out = await within(assess(cfg.typed, cfg.edited, lexicon, fixer), FIX_TIMEOUT_MS);
+    if (!out) return { learned: [] };
+    // A turned-down fix made a second time is learned: the user saying so
+    // again outweighs the model's doubt, for pairs said the same only.
+    const dataDir = (ctx.services as { dataDir?: string } | undefined)?.dataDir;
+    const pairs = [...out.learned, ...(dataDir ? recordPending(dataDir, out.pending) : [])];
     const learned: LearnedT[] = [];
     for (const p of pairs) learned.push(await learn(p.heard, p.written, lexicon, ctx, p.term));
+    if (dataDir) clearPending(dataDir, pairs);
     return { learned };
   },
 });

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  fillers, heardOnly, learnInput, lexiconFrom, mishearings, questions, recall, retraction, rewrite, soundsAlike, undoIds,
+  assess, fillers, heardOnly, learnInput, lexiconFrom, mishearings, questions, recall, retraction, rewrite, saidAlike, soundsAlike, undoIds,
   type Fixer, type JudgeQuestion, type Lexicon, type NameQuestion, type Retraction, type ScoreSentence,
 } from "./lingo.js";
 
@@ -241,13 +241,13 @@ describe("lingo: learning from an edit", () => {
   });
 
   it("learns what the fixer says yes to, by more than its margin", async () => {
-    const { fixer } = fake({ judge: { "stack work→Stakwork": 3, "k p i→KPI": 0.5 } });
-    assert.deepEqual(await mishearings("ask the stack work team about the k p i", "ask the Stakwork team about the KPI", lexicon, fixer), [
-      { heard: "stack work", written: "Stakwork" }, { heard: "k p i", written: "KPI" },
+    const { fixer } = fake({ judge: { "Stockwork→Stakwork": 3, "k p i→KPI": 0.5 } });
+    assert.deepEqual(await mishearings("ask the Stockwork team about the k p i", "ask the Stakwork team about the KPI", lexicon, fixer), [
+      { heard: "Stockwork", written: "Stakwork" }, { heard: "k p i", written: "KPI" },
     ]);
-    const { fixer: wary } = fake({ judge: { "stack work→Stakwork": 3, "k p i→KPI": 0.5 }, learnMargin: 1 });
-    assert.deepEqual(await mishearings("ask the stack work team about the k p i", "ask the Stakwork team about the KPI", lexicon, wary), [
-      { heard: "stack work", written: "Stakwork" },
+    const { fixer: wary } = fake({ judge: { "Stockwork→Stakwork": 3, "k p i→KPI": 0.5 }, learnMargin: 1 });
+    assert.deepEqual(await mishearings("ask the Stockwork team about the k p i", "ask the Stakwork team about the KPI", lexicon, wary), [
+      { heard: "Stockwork", written: "Stakwork" },
     ]);
   });
 
@@ -267,11 +267,13 @@ describe("lingo: learning from an edit", () => {
     const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
     const { fixer, asked } = fake({ named: { "Stadeum@a product called Stadeum": 6 }, everyday: { stadium: 20 } });
     assert.deepEqual(await mishearings("a product called Stadium", "a product called Stadeum", empty, fixer), [{ heard: "Stadium", written: "Stadeum" }]);
-    // The user's word in its sentence; dictation's alone and in lower case, so its casing does not make it a name.
-    assert.deepEqual([asked.named, asked.everyday], [[{ text: "a product called Stadeum", word: "Stadeum" }], ["stadium"]]);
-    // Dictation's word is a name too: a different person.
-    const { fixer: jen } = fake({ named: { "Jen@ask Jen now": 6 }, everyday: { jon: -8 } });
+    // The user's word in its sentence; said the same, vowels included, so dictation's word is not asked about.
+    assert.deepEqual([asked.named, asked.everyday], [[{ text: "a product called Stadeum", word: "Stadeum" }], []]);
+    // Only the consonants alike: dictation's word is asked alone and in lower case, so its casing does not make it a
+    // name; it is a name too, so a different person.
+    const { fixer: jen, asked: aj } = fake({ named: { "Jen@ask Jen now": 6 }, everyday: { jon: -8 } });
     assert.deepEqual(await mishearings("ask jon now", "ask Jen now", empty, jen), []);
+    assert.deepEqual(aj.everyday, ["jon"]);
     // The user's word is an everyday word: capitalised, not a name.
     const { fixer: cap } = fake({ named: { "Stadium@at the Stadium": -9 }, everyday: { stadium: 20 } });
     assert.deepEqual(await mishearings("at the stadium", "at the Stadium", empty, cap), []);
@@ -280,11 +282,49 @@ describe("lingo: learning from an edit", () => {
     assert.deepEqual(await mishearings("send PH now", "send P8 now", empty, code), [{ heard: "PH", written: "P8", term: true }]);
     assert.deepEqual(a3.everyday, []);
     // A sentence's first letter, a different sound, or a judge's yes: not asked.
-    const { fixer: none, asked: a2 } = fake({ judge: { "stack work→Stakwork": 3 } });
+    const { fixer: none, asked: a2 } = fake({ judge: { "Stockwork→Stakwork": 3 } });
     await mishearings("peel the oranges", "Peel the oranges", empty, none);
     await mishearings("tell Mark the deck is ready", "tell Mike the deck is ready", empty, none);
-    await mishearings("ask the stack work team", "ask the Stakwork team", empty, none);
+    await mishearings("ask the Stockwork team", "ask the Stakwork team", empty, none);
     assert.deepEqual(a2.named, []);
+  });
+
+  it("a change said the same, vowels included, is learned when the user's word is a name; a different name never is", async () => {
+    const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
+    const { fixer, asked } = fake({ named: { "Itoi@His name is Paul Itoi.": 3 } });
+    assert.deepEqual(await mishearings("His name is Paul Etoy.", "His name is Paul Itoi.", empty, fixer), [{ heard: "Etoy", written: "Itoi" }]);
+    // Said the same: dictation's word is not asked about.
+    assert.deepEqual(asked.everyday, []);
+    // Turned down by both: kept as pending, so the same fix again learns it.
+    const { fixer: no } = fake();
+    assert.deepEqual(await assess("His name is Paul Etoy.", "His name is Paul Itoi.", empty, no), { learned: [], pending: [{ heard: "Etoy", written: "Itoi" }] });
+    // A different name, or an ordinary word the user did not capitalise, is never pending.
+    for (const [typed, edited] of [["tell Mark the deck is ready", "tell Mike the deck is ready"], ["ask jon now", "ask Jen now"], ["email Michael about it", "email Michelle about it"], ["I want to", "I want too"]]) {
+      assert.deepEqual((await assess(typed!, edited!, empty, no)).pending, [], typed);
+    }
+    // Undone or turned off: not pending either.
+    const undone: Lexicon = { ...empty, undone: [{ value: "Etoy", written: "Itoi" }] };
+    assert.deepEqual(await assess("His name is Paul Etoy.", "His name is Paul Itoi.", undone, no), { learned: [], pending: [] });
+  });
+
+  it("the same sounds split another way are asked only whether the user's words are a name", async () => {
+    const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
+    const typed = "My boss is called Paula Toy and his wife is Nicky.", edited = "My boss is called Paul Itoi and his wife is Nikki.";
+    const { fixer, asked } = fake({ judge: { "Nicky→Nikki": 4, "Paula Toy→Paul Itoi": 9 }, named: { "Paul Itoi@My boss is called Paul Itoi and his wife is Nicky.": 12 } });
+    assert.deepEqual(await mishearings(typed, edited, empty, fixer), [{ heard: "Paula Toy", written: "Paul Itoi" }, { heard: "Nicky", written: "Nikki" }]);
+    assert.deepEqual(asked.judge.map((q) => q.from), ["Nicky"]);
+    // An ordinary word: not learned, whatever the judge would say.
+    const { fixer: yes } = fake({ judge: { "a cross→across": 9 }, named: { "across@we walked across the bridge": -19 } });
+    assert.deepEqual(await mishearings("we walked a cross the bridge", "we walked across the bridge", empty, yes), []);
+  });
+
+  it("said the same, vowels included, is strict: the same name respelled, never a different one", () => {
+    for (const [a, b] of [["Etoy", "Itoi"], ["Paula Toy", "Paul Itoi"], ["Katherine", "Kathryn"], ["Catherine", "Kathryn"], ["Sarah", "Sara"], ["Stackworth", "Stakwork"], ["Jon", "John"], ["Brian", "Bryan"], ["Nicky", "Nikki"]]) {
+      assert.equal(saidAlike(a!, b!), true, `${a} / ${b}`);
+    }
+    for (const [a, b] of [["Mark", "Mike"], ["Jon", "Jen"], ["Tom", "Tim"], ["Michael", "Michelle"], ["Mike", "Mick"], ["Robert", "Roberta"], ["Christina", "Christine"], ["Louis", "Louise"], ["Dan", "Don"], ["their", "there"]]) {
+      assert.equal(saidAlike(a!, b!), false, `${a} / ${b}`);
+    }
   });
 
   it("asks each change alone: the typed text with only that change made", async () => {
@@ -313,8 +353,8 @@ describe("lingo: learning from an edit", () => {
     assert.deepEqual(asked.judge, []);
   });
 
-  it("sounding alike is lenient: split, run together, spelled out, misspelt; not a different word", () => {
-    for (const [a, b] of [["stack work", "Stakwork"], ["p eight", "P8"], ["k p i", "KPI"], ["Stockwork", "Stakwork"], ["cooper netties", "Kubernetes"]]) {
+  it("sounding alike is lenient: split, run together, spelled out, misspelt, another first vowel; not a different word", () => {
+    for (const [a, b] of [["stack work", "Stakwork"], ["p eight", "P8"], ["k p i", "KPI"], ["Stockwork", "Stakwork"], ["cooper netties", "Kubernetes"], ["Etoy", "Itoi"], ["Ellen", "Allen"], ["Ian", "Ean"]]) {
       assert.equal(soundsAlike(a!, b!), true, `${a} / ${b}`);
     }
     for (const [a, b] of [["meeting", "Stakwork"], ["stadium", "Stakwork"]]) assert.equal(soundsAlike(a!, b!), false, `${a} / ${b}`);
