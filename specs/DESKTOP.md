@@ -58,7 +58,9 @@ Three more things for the chain:
   section reaches new conversations only.
 - **A model.** The local orchestrator calls one. Put a provider key in the
   local strut's secret store (`PUT /secrets/ANTHROPIC_API_KEY { "value":
-  "…" }`), or pass it in the child's environment. Billing local turns
+  "…" }`), or pass it in the child's environment. An organization-wide
+  Anthropic key also needs its workspace (`ANTHROPIC_WORKSPACE_ID`, a
+  `wrkspc_…` id), sent as `anthropic-workspace-id`. Billing local turns
   to an org instead is a product decision that has not been made yet
   (`plans/chained-orchestrators.md` §4).
 - **Optionally, what this machine holds.** `STRUT_SELF` (or `PUT /self`) with
