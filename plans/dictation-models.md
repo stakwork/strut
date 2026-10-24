@@ -6,7 +6,9 @@
 > The hand rules of #301 (`lingo.ts`'s `lessons` and `Words`, the 51k-word
 > `words-en.ts`, `common-words.ts`) are gone; a small local model scores
 > edits and the vocabulary in context. Phase 4 (Peel) is next. The client
-> contract is `plans/native-dictation-client.md` §7a.
+> contract is `plans/native-dictation-client.md` §7a. 2026-10-24: names
+> respelled with another first vowel, re-split into a name, or fixed again
+> are learned ("Names respelled, re-split, or fixed again").
 
 ## Why
 
@@ -74,7 +76,8 @@ every edit; the model only answers how likely something is.
    diffed word by word in code. A change with more than 4 words on a side,
    or a cut or an addition, or one that fails a lenient sound-alike gate
    (`soundsAlike`: letters, a consonant sound key, or the spelled-out sounds
-   within 40%), is not asked. A person's name respelled the way the user
+   within 40%, a different first vowel counting for nothing: Etoy / Itoi),
+   is not asked. A person's name respelled the way the user
    spells it (Katherine → Kathryn, Jon → John, Steven → Stephen) is the same
    spoken name and is learned; a different name (Mark → Mike, Jon → Jen) is
    not. The rewrite needs nothing special for such a name: after "often
@@ -97,7 +100,12 @@ every edit; the model only answers how likely something is.
    learned when the user's word is a name in the edited sentence and
    dictation's is clearly an everyday word in the typed one, or is a code a
    digit off (see "Real words as names"). A change from a code of its own
-   ("PH" → "P8") is learned as a term: the word, with no mapping. The write
+   ("PH" → "P8") is learned as a term: the word, with no mapping. A name
+   respelled with the same sounds, vowels included (Etoy → Itoi), or the same
+   sounds split into words another way (Paula Toy → Paul Itoi), is learned
+   when the model reads the user's words as a name; a fix the model turns
+   down that is said the same is learned when the user makes it again (see
+   "Names respelled, re-split, or fixed again"). The write
    path is #301's: undone pairs, words with dictation off, and a change from
    a form already in the vocabulary (two forms of one thing, or "PH" that is
    a word of its own) are never written, whatever the model says, and only
@@ -213,9 +221,116 @@ own:
   "ship it in peel tonight" reads 0.8 nats likelier in lower case after
   "often mentions Peel", as "the peel build" did before.
 
+## Names respelled, re-split, or fixed again
+
+Found in Tom's live test, 2026-10-24 ("Paul Itoi" is his boss; nobody by that
+name is in his graph):
+
+1. "His name is Paul Etoy." → "Paul Itoi.": nothing was asked. The sound key
+   keeps a word's first letter and drops the later vowels, so "etoy" was
+   "et" and "itoi" "it", 1 of 2 apart, over the gate's 40%. The gate now also
+   compares the keys with any first vowel the same (Etoy / Itoi, Ellen /
+   Allen, Ian / Ean). It only gates what is asked; it decides nothing.
+2. "My boss is called Paula Toy" → "Paul Itoi": the judge said no (−8.7):
+   it reads Paula → Paul as two names, like Mark → Mike. It is the same
+   sounds split another way ("paulatoi" / "paulitoi").
+3. The same fix made three times (Etoy → Itoi) taught nothing.
+
+**Said the same, vowels included** (`saidKey`, `saidAlike`, lingo.ts). The
+sound key drops vowels, so Jon / Jen and Tom / Tim share one, and the gate
+is lenient on purpose: Mark / Mike pass it. What decides "the same name
+respelled" needs the vowels. `saidKey`, per word and then joined (spaces
+count for nothing): a silent final e goes (after a consonant other than s,
+in a word with two other vowel sounds: Katherine, not Mike, Anne, Louise); a
+final ee, ea, ey, ie or y is "i", ee is "i" anywhere; a leading e, i or y
+before a consonant is "i"; y is "i" but at a word's start or between vowels
+(so oy is oi); ph is f, ck and c are k (c before e, i, y is s), q is k, x ks,
+z s, gh silent; ch, sh, th are one sound each; an h after a vowel and not
+before one is silent; a doubled letter is one. `saidAlike`: the same form,
+or on a form of seven sounds or more, one edit apart with the same ending
+(both end in the same vowel, or both in a consonant: Robert / Roberta,
+Christina / Christine, Antonio / Antonia differ in a final vowel, which is
+what makes two names of one root).
+
+| pair | said as | the same |
+|---|---|---|
+| Etoy / Itoi | itoi / itoi | yes |
+| Paula Toy / Paul Itoi | paulatoi / paulitoi | yes |
+| Katherine / Kathryn | kaθerin / kaθrin | yes |
+| Catherine / Katherine | kaθerin / kaθerin | yes |
+| Sarah / Sara | sara / sara | yes |
+| Stackworth / Stakwork | stakworθ / stakwork | yes |
+| Jon / John | jon / jon | yes |
+| Philip / Phillip | filip / filip | yes |
+| Brian / Bryan | brian / brian | yes |
+| Carl / Karl | karl / karl | yes |
+| Lindsay / Lindsey | lindsai / lindsi | yes |
+| Kristin / Kristen | kristin / kristen | yes |
+| Nicky / Nikki | niki / niki | yes |
+| Mary / Marie | mari / mari | yes |
+| Caroline / Carolyn | karolin / karolin | yes |
+| Mark / Mike | mark / mike | no |
+| Jon / Jen | jon / jen | no |
+| Tom / Tim | tom / tim | no |
+| Michael / Michelle | miçael / miçel | no |
+| Mike / Mick | mike / mik | no |
+| Robert / Roberta | robert / roberta | no |
+| Christina / Christine | çristina / çristin | no |
+| Louis / Louise | louis / louise | no |
+| Dennis / Denise | denis / denise | no |
+| Aaron / Erin | aron / irin | no |
+| Dan / Don | dan / don | no |
+| Paul / Paula | paul / paula | no |
+| Steven / Stephen | steven / stefen | no (the judge learns it) |
+| Ellen / Allen | ilen / alen | no |
+| their / there | θeir / θere | no |
+
+Spelling is not sound, so some misses are kept on purpose (Steven /
+Stephen, Ann / Anne): a miss leaves a pair to the judge, while a false match
+could learn a different person. Stakwork's jarvis-backend matches names by
+sound with Metaphone 3, vowels encoded and exact (`api/helper/metaphone3.py`);
+that is an option for later. Measured here: with vowels encoded it writes
+every vowel as A, so Jon / Jen, Tom / Tim, Dan / Don and Mike / Mick come out
+the same, and it could not be this bar by itself.
+
+**Learn.**
+
+- *Said the same.* A change the judge turns down that `saidAlike` passes
+  (not a casing alone, not a code) is asked the name question of the user's
+  word in its sentence (`named`), and learned on a yes. Dictation's word is
+  not asked about: the everyday check exists because the consonant key
+  cannot tell Jon from Jen, and with the vowels kept a different name never
+  gets this far. Etoy → Itoi: judge −6.7, named 3.3, learned. Changes only
+  the consonant key matches go the old way, with the everyday check (Jon →
+  Jen: named 0.0, everyday −7.8, not learned).
+- *Re-split.* More than one word on a side, not one for one, and
+  `saidAlike` over the joined words ("Paula Toy" / "Paul Itoi", "a cross" /
+  "across"): not put to the judge, which reads it word by word and said yes
+  to "a cross" → "across" (5.0) and no to Paula Toy (−8.7). Code names the
+  change and the model decides: it is learned when the user's words are a
+  name in the edited sentence ("Paul Itoi" 12.9; "across" −19.1, "maybe"
+  −17.4). "a cross" → "across" is grammar, not a mishearing: learning it
+  would rewrite a real "a cross", so it is a negative case.
+- *Fixed again* (dictation/correction, `assess`'s `pending`,
+  src/steps/lib/dictation/_pending.ts). A change both questions turn down
+  that `saidAlike` passes, whose user's side has a capital not at a
+  sentence's start (a name the user capitalised, so "to" → "too" or "a
+  cross" → "across" made twice is never learned), is kept as the pair, a
+  count and the time, never the sentence. The same pair made in a second
+  edit within 30 days (dictation's side without case, the user's as
+  written) is learned as usual and comes back in `learned` with its `undo`,
+  so the HUD shows "Learned" with Undo; the reply's shape is unchanged. A
+  pair counts once an edit. Pairs older than 30 days are dropped on the next
+  write. Never kept: a pair outside `saidAlike` (Mark → Mike, Jon → Jen, at
+  any count), a pair the user undid, a word turned off for dictation, a
+  vocabulary word on dictation's side. The store is a file of the step's
+  own, `<dataDir>/audio/dictation-pending.json`, not memory: a pending pair
+  is no fact about the user's words (memory/lexicon would list it and recall
+  would find it), and it expires.
+
 ## Eval (src/audio/dictation-eval)
 
-`cases.jsonl` (synthetic, committed): 64 learn cases (typed, edited, lexicon
+`cases.jsonl` (synthetic, committed): 69 learn cases (typed, edited, lexicon
 → expected pairs) and 55 fix cases (transcript, lexicon → expected text),
 with the hard ones: stack work→Stakwork, stackwork→Stakwork, p eight→P8, P8
 typed as PH and put back, their→there (nothing), i→I (nothing), Jon→Jen
@@ -229,7 +344,9 @@ hive → Hive learned; "Stadium" and a sentence's "Peel" not; three changes
 in one edit, Stackworth, Stadium and Catherine, each learned, "Stadium"
 capitalised by dictation too; two fixes far apart in a 407-word dump; PH → P8 learned
 as a term, then P8 for "PH", "P H", "p eight", "P 8" in context and pH left
-in chemistry).
+in chemistry; Tom's Etoy → Itoi and Paula Toy → Paul Itoi with Nicky →
+Nikki, Ellen → Allen, and "a cross" → "across" and "may be" → "maybe" not
+learned).
 `npm run eval:dictation` (opt-in, not in `npm test`) runs them through the
 real pipeline and `DictationFixer` (the model in its worker, the 1.5 s
 fallback live) against the GGUFs in `./.models/gguf` (gitignored).
@@ -238,16 +355,19 @@ On an M-series Mac, 2026-10-23, warm (load measured separately):
 
 | fixer | task | precision | recall | exact | p50 ms | p95 ms | load s |
 |---|---|---|---|---|---|---|---|
-| qwen3-1.7b-q4 | learn | 0.95 | 0.97 | 0.95 | 65 | 351 | 1.4 |
-| qwen3-1.7b-q4 | fix | 1.00 | 0.95 | 0.96 | 77 | 162 | 1.4 |
+| qwen3-1.7b-q4 | learn | 0.95 | 0.95 | 0.94 | 66 | 322 | 2.6 |
+| qwen3-1.7b-q4 | fix | 1.00 | 0.95 | 0.96 | 79 | 158 | 2.6 |
 | qwen3-0.6b-q4 | learn | 0.82 | 0.96 | 0.88 | 37 | 81 | 6.5 |
 | qwen3-0.6b-q4 | fix | 1.00 | 0.84 | 0.88 | 78 | 349 | 6.5 |
 | none | learn | – | 0.00 | 0.54 | 0 | 0 | – |
 | none | fix | 1.00 | 0.60 | 0.71 | 0 | 0 | – |
 
-The 1.7B rows are from 2026-10-24 on the 119 cases (the 0.6B and none rows
-are from 2026-10-23 on the earlier 84; the 0.6B GGUF was not at hand to
-rerun, so its name questions and margins are unmeasured). Before the
+The 1.7B rows are from 2026-10-24 on the 124 cases (before the changes
+for respelled and re-split names, learn was 0.93 / 0.91 / 0.90 on them:
+Etoy → Itoi and Paula Toy → Paul Itoi missed, "a cross" → "across" learned;
+on the 119 before those five, 0.95 / 0.97 / 0.95, and the same cases still
+fail there). The 0.6B and none rows are from 2026-10-23 on the earlier 84; the 0.6B GGUF was not at hand to
+rerun, so its name questions and margins are unmeasured. Before the
 real-word changes the 1.7B scored learn 0.93 / 0.82 / 0.87 and fix 0.92 /
 0.87 / 0.85 on the first 115 of them (0.93 / 0.96 / 0.94 and 0.97 / 0.97 /
 0.95 on the 94 before them); with them but each change still judged in the
@@ -255,7 +375,8 @@ whole edit and dictation's word asked in its sentence, learn was 0.95 /
 0.90 / 0.92 on the 119, learning only Stakwork of three changes in one edit
 (Stadium → Stadeum and Catherine → Kathryn missed); before the name-spelling line in the judge's prompt it
 learned 0.92 / 0.82 / 0.87 on those 94, missing every respelled name. No
-case fell back on time. The 1.7B misses: "bee see"→BTC not learned,
+case fell back on time. The 1.7B misses: "bee see"→BTC and Ellen → Allen (judge −2.3; not said
+the same, so not even on a repeat) not learned,
 there→their and "the Stakwork"→"Stakwork's" learned, "the peel build" and
 "ship it in peel tonight" left as is. The 0.6B learns more
 wrongly (PH→P8, BTC→Bitcoin, apple→Apple) and misses the take-backs. With

@@ -327,7 +327,11 @@ was typed. With no fixer **active** (`dictation/models`: no fixer with
 learned and `learned` is always empty, so a client can skip sending edits
 then (Add still works). The call waits for a cold fixer to load, so it can
 take a few seconds the first time. Each text is at most 20,000 characters.
-Only the pair is stored, never the sentence.
+Only the pair is stored, never the sentence. A fix the model turns down that
+is said the same (a name respelled: Etoy → Itoi) is learned when the user
+makes it again within 30 days; it then comes back in `learned` like any
+other, with its `undo`. The reply's shape is unchanged, so a client does
+nothing new: it sends every settled edit, as before.
 
 **Undo.** `dictation/undo { undo: string[] } → { undone: string[] }` with the
 `undo` ids of a learn. The pair is then never learned again. Ids that

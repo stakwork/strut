@@ -206,35 +206,86 @@ function sentenceAround(text: string, at: number, end: number): [number, number]
  *  → "Bitcoin": two forms of one thing; "PH" → "P8": learning it would
  *  rewrite real uses of PH). */
 export async function mishearings(typed: string, edited: string, lexicon: Lexicon, fixer: Fixer): Promise<Mishearing[]> {
+  return (await assess(typed, edited, lexicon, fixer)).learned;
+}
+
+/** What an edit teaches now (`learned`, as `mishearings`), and the changes
+ *  the fixer turned down that are said the same, vowels included
+ *  (`saidAlike`: Etoy → Itoi, not Mark → Mike): `pending`, which
+ *  dictation/correction counts and learns when the user makes the same fix
+ *  again. Neither holds a pair the user undid, a word turned off for
+ *  dictation or a vocabulary word on dictation's side. */
+export async function assess(typed: string, edited: string, lexicon: Lexicon, fixer: Fixer): Promise<{ learned: Mishearing[]; pending: Mishearing[] }> {
   const qs = questions(typed, edited, lexicon);
-  if (!qs.length) return [];
-  const d = await fixer.judge(qs);
-  const yes = qs.map((_, i) => (d[i] ?? -Infinity) > fixer.learnMargin);
-  // What the judge turns down although it is the same spoken word: a name,
-  // product or term spelled its own way where dictation wrote a real word
-  // ("stadium" → "Stadeum", "peel" → "Peel") or a code a digit off ("PH" →
-  // "P8"). Learned when the user's word is a name in the edited sentence and,
-  // unless a code is involved, dictation's is an everyday word: asked of the word alone
-  // and in lower case, so dictation's casing ("a product called Stadium") does
-  // not make it a name, and "jon" → "Jen", a different person, is not
-  // learned. The rewrite still decides each sentence.
-  const alike = qs.flatMap((q, i) => (!yes[i] && sameWord(q) ? [i] : []));
-  if (alike.length) {
-    // A code on either side ("PH" → "P8", "p eight" → "P8") is no person renamed: only the user's word is asked.
+  if (!qs.length) return { learned: [], pending: [] };
+  // The same sounds split into words another way ("Paula Toy" → "Paul Itoi",
+  // "a cross" → "across") is not put to the judge, which reads it word by
+  // word as one name swapped for another (Paula → Paul) and says yes to
+  // "a cross" → "across". It is asked only whether the user's words are a
+  // name in the edited sentence, so "across", an ordinary word, is not learned.
+  const split = qs.map(resplit);
+  const judged = qs.flatMap((_, i) => (split[i] ? [] : [i]));
+  const d = judged.length ? await fixer.judge(judged.map((i) => qs[i]!)) : [];
+  const yes = qs.map(() => false);
+  judged.forEach((i, k) => (yes[i] = (d[k] ?? -Infinity) > fixer.learnMargin));
+  // What the judge turns down although it is the same spoken word is asked
+  // whether the user's word is a name in the edited sentence:
+  // - said the same, vowels included (`saidAlike`, not a casing alone, no
+  //   code): a person's name or product respelled ("Etoy" → "Itoi",
+  //   "stadium" → "Stadeum"). With the vowels kept, a different name
+  //   (Mark → Mike, Jon → Jen, Michael → Michelle) never gets here;
+  // - else the same consonant key, a casing change not at a sentence's start,
+  //   or a code a digit off (`sameWord`): learned when, too, dictation's word
+  //   is an everyday word, asked of the word alone and in lower case, so
+  //   dictation's casing ("a product called Stadium") does not make it a
+  //   name and "jon" → "Jen", a different person, is not learned. A code on
+  //   either side ("PH" → "P8") is no person renamed: only the user's word
+  //   is asked.
+  // The rewrite still decides each sentence.
+  const said = qs.flatMap((q, i) => (split[i] || (!yes[i] && saidName(q)) ? [i] : []));
+  const alike = qs.flatMap((q, i) => (!yes[i] && !said.includes(i) && sameWord(q) ? [i] : []));
+  const named = [...said, ...alike];
+  if (named.length) {
     const words = alike.filter((i) => !isCode(qs[i]!.from) && !isCode(qs[i]!.to));
     const [n, e] = await Promise.all([
-      fixer.named(alike.map((i) => ({ text: qs[i]!.edited, word: qs[i]!.to }))),
+      fixer.named(named.map((i) => ({ text: qs[i]!.edited, word: qs[i]!.to }))),
       words.length ? fixer.everyday(words.map((i) => qs[i]!.from.toLowerCase())) : Promise.resolve([]),
     ]);
-    alike.forEach((i, k) => {
+    named.forEach((i, k) => {
       const j = words.indexOf(i);
       yes[i] = (n[k] ?? -Infinity) > 0 && (j < 0 || (e[j] ?? -Infinity) > EVERYDAY_MARGIN);
     });
   }
-  return qs
-    .filter((_, i) => yes[i])
-    .map((q): Mishearing => ({ heard: q.from, written: q.to, ...(isCode(q.from) ? { term: true as const } : {}) }))
-    .filter((p) => !wasUndone(lexicon, p.heard, p.written) && !entryWriting(lexicon, p.written)?.dictationOff && !entryWriting(lexicon, p.heard));
+  const pair = (q: JudgeQuestion): Mishearing => ({ heard: q.from, written: q.to, ...(isCode(q.from) ? { term: true as const } : {}) });
+  const writable = (p: Mishearing) => !wasUndone(lexicon, p.heard, p.written) && !entryWriting(lexicon, p.written)?.dictationOff && !entryWriting(lexicon, p.heard);
+  return {
+    learned: qs.filter((_, i) => yes[i]).map(pair).filter(writable),
+    // A name the user capitalised: so "to" → "too" or "a cross" → "across",
+    // made twice, is never learned this way.
+    pending: qs.filter((q, i) => !yes[i] && saidName(q) && UPPER.test(q.to) && !atSentenceStart(q)).map(pair).filter(writable),
+  };
+}
+
+/** Said the same, vowels included, spelled otherwise (not a casing alone), and no code. */
+function saidName(q: JudgeQuestion): boolean {
+  return letters(q.from) !== letters(q.to) && !isCode(q.from) && !isCode(q.to) && saidAlike(q.from, q.to);
+}
+
+/** Whether the change begins its sentence, where a capital says nothing. */
+function atSentenceStart(q: JudgeQuestion): boolean {
+  return SENTENCE_START.test(q.edited.slice(0, q.at));
+}
+
+/** The same sounds, vowels included, in words split another way: more than
+ *  one word on a side, the words not one for one ("Paula Toy" / "Paul
+ *  Itoi": "paulatoi" and "paulitoi"; "a cross" / "across"). Code only names
+ *  the change; whether it is a name is the model's. */
+function resplit(q: JudgeQuestion): boolean {
+  if (isCode(q.from) || isCode(q.to)) return false;
+  const a = q.from.split(" "), b = q.to.split(" ");
+  if (a.length < 2 && b.length < 2) return false;
+  if (a.length === b.length && a.every((w, i) => saidKey(w) === saidKey(b[i]!))) return false;
+  return saidAlike(q.from, q.to);
 }
 
 /** How surely (in nats) dictation's word must read as an everyday word for a
@@ -562,13 +613,57 @@ export function soundKey(text: string): string {
 }
 
 /** Whether two spellings could be one sound: their letters, sound keys or
- *  spelled-out sounds within 40% of each other. Lenient: it gates what the
- *  fixer is asked; it decides nothing. */
+ *  spelled-out sounds within 40% of each other. A different first vowel
+ *  counts for nothing ("Etoy" / "Itoi", "Ellen" / "Allen": the sound key
+ *  keeps a word's first letter, so on a short key that one letter was 50%).
+ *  Lenient: it gates what the fixer is asked; it decides nothing. */
 export function soundsAlike(a: string, b: string): boolean {
   const near = (x: string, y: string) => !!x && !!y && distance(x, y) <= 0.4 * Math.max(x.length, y.length);
-  const forms = (t: string) => [letters(t), soundKey(t), letters(spoken(t)), soundKey(spoken(t))];
+  const vowelLed = (k: string) => k.replace(/^[aeiouy]/, "a");
+  const forms = (t: string) => [letters(t), soundKey(t), vowelLed(soundKey(t)), letters(spoken(t)), soundKey(spoken(t))];
   const fa = forms(a), fb = forms(b);
   return fa.some((x) => fb.some((y) => near(x, y)));
+}
+
+/** How a word is said, vowels kept: the strict sound form behind `saidAlike`.
+ *  Per word, then joined (spaces count for nothing: "Paula Toy" and "Paul
+ *  Itoi" are one run of sounds):
+ *  - a silent final e goes (after a consonant other than s, in a word with
+ *    two other vowel sounds: Katherine, Michelle; not Mike, Anne, Louise);
+ *  - a final ee, ea, ey, ie or y is "i" (Lindsey, Zoey); ee is "i" anywhere;
+ *  - a leading e, i or y before a consonant is "i" (Etoy, Ellen, Yvonne);
+ *  - y is "i" but at a word's start or between vowels (Bryan, toy: so oy
+ *    is oi; not Yara, Maya);
+ *  - ph is f, ck and c (not before e, i, y) are k, c before e, i, y is s,
+ *    q is k, x is ks, z is s, gh is silent; ch, sh and th are a sound each;
+ *  - an h after a vowel and not before one is silent (Sarah, John);
+ *  - a doubled letter is one (Phillip, Allen). */
+export function saidKey(text: string): string {
+  return tokens(text).map((t) => {
+    let w = letters(t.core);
+    if (/[^aeiouys]e$/.test(w) && (w.slice(0, -1).match(/[aeiouy]+/g)?.length ?? 0) >= 2) w = w.slice(0, -1);
+    w = w.replace(/(?:ee|ea|ey|ie|y)$/, "i").replace(/ee/g, "i").replace(/^[eiy](?=[^aeiouy])/, "i").replace(/(?<=[^aeiou])y|y(?![aeiou])/g, "i");
+    w = w.replace(/ph/g, "f").replace(/ch/g, "ç").replace(/sh/g, "š").replace(/th/g, "θ").replace(/ck/g, "k").replace(/c(?=[eiy])/g, "s").replace(/c/g, "k")
+      .replace(/q/g, "k").replace(/x/g, "ks").replace(/z/g, "s").replace(/gh/g, "");
+    w = w.replace(/([aeiou])h(?![aeiou])/g, "$1");
+    return w.replace(/(.)\1+/g, "$1");
+  }).join("");
+}
+
+/** Said the same, vowels included: the same `saidKey`, or, on a long one
+ *  (seven sounds or more), one edit apart with the same ending (both end in
+ *  the same vowel, or both in a consonant: Robert / Roberta, Christina /
+ *  Christine and Antonio / Antonia differ in a final vowel, which is what
+ *  makes two names of one root). Strict: it is the bar for learning a
+ *  change the judge turned down because the user made it again
+ *  (dictation/correction), so Mark / Mike, Jon / Jen and Michael / Michelle
+ *  never meet it. */
+export function saidAlike(a: string, b: string): boolean {
+  const x = saidKey(a), y = saidKey(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const end = (k: string) => (/[aeiou]$/.test(k) ? k.at(-1) : "consonant");
+  return Math.max(x.length, y.length) >= 7 && distance(x, y) === 1 && end(x) === end(y);
 }
 
 /** Letters and digits only, lowercased. */
