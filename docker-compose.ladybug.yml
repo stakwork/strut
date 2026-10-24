@@ -1,0 +1,28 @@
+# Overlay: strut on a LadybugDB file instead of Neo4j — one container fewer,
+# the graph under the workspace volume (/data/workspace/graph/graph.lbug,
+# src/graph/wiring.ts), nothing fetched at boot: the image carries the two
+# extensions that backend requires (Dockerfile, STRUT_LADYBUG_EXTENSION_DIR).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ladybug.yml up -d
+#
+# (add -f docker-compose.build.yml for this checkout's code). An overlay
+# cannot drop a service from the base file, so neo4j goes behind a profile —
+# defined, never started unless `--profile neo4j` asks for it — strut's
+# dependency on it and its NEO4J_* / ontology-seed settings are reset, and
+# everything else (the browser, the ports, the volumes, ./.env) is the base
+# file's. Runs, chats, secrets and artifacts are under /data/workspace as
+# before; a filesystem workspace found there is imported into the file at the
+# first boot (src/graph/fs-import.ts).
+services:
+  neo4j:
+    profiles: [neo4j]
+
+  strut:
+    depends_on:
+      neo4j: !reset null
+    environment:
+      STRUT_WORKSPACE_BACKEND: ladybug
+      NEO4J_URI: !reset null
+      NEO4J_USER: !reset null
+      NEO4J_PASSWORD: !reset null
+      STRUT_GRAPH_SEED_ONTOLOGY: !reset null

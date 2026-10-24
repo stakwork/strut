@@ -518,7 +518,12 @@ skips and says so, never silently.
    into the graph as on swarms. No `LadybugRunStore` in this plan.
 4. **The extensions are required.** An open without `vector` + `fts` fails
    with the install hint; the packager bundles both in `native/`, dev
-   installs them once. One search path.
+   installs them once. One search path. The server image bundles them the
+   same way (Dockerfile, 2026-10-17: Ladybug INSTALLs its platform's at
+   build time, copied into `/usr/src/strut/native`, checked by the
+   backend's own open; `docker-compose.ladybug.yml` runs the published
+   image on a file, and `scripts/image-smoke.sh` boots it with no network
+   before every push).
 5. ~~The hot-column rule for jarvis types~~ — superseded by 6.
 6. **A clean break from the jarvis schemas: ten types, in code, nothing
    else.** The six Strut types the store and the projector need

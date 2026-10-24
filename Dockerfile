@@ -12,8 +12,11 @@
 #
 # A bare `docker run` defaults to the filesystem workspace backend (no Neo4j);
 # docker-compose.yml runs it on the graph backend beside a neo4j container
-# (STRUT_WORKSPACE_BACKEND=graph + NEO4J_URI). Runs, artifacts, secrets, and
-# models live under /data — mount volumes there.
+# (STRUT_WORKSPACE_BACKEND=graph + NEO4J_URI), and with the
+# docker-compose.ladybug.yml overlay on a LadybugDB file instead
+# (STRUT_WORKSPACE_BACKEND=ladybug: no Neo4j, nothing fetched at boot — the
+# two extensions that backend requires are baked in below). Runs, artifacts,
+# secrets, and models live under /data — mount volumes there.
 
 # One Node for every stage. Pinned to the patch so a security release is a
 # visible bump here, not whatever the floating tag held when the cache was made.
@@ -97,12 +100,58 @@ RUN yarn install --frozen-lockfile --ignore-scripts && yarn cache clean \
     && node node_modules/@ladybugdb/core/install.js \
     && node -e "require('@ladybugdb/core')"
 
+# Ladybug's `vector` + `fts` extensions, which the graph backend REQUIRES to
+# open a file (STRUT_WORKSPACE_BACKEND=ladybug; plans/ladybug-backend.md
+# ruling 4). With no folder to load them from, the handle `INSTALL`s them at
+# boot — a download from extension.ladybugdb.com into ~/.lbdb, which no
+# volume keeps: every recreated container fetched them again, and one with
+# no egress never booted. So they are fetched HERE, the way the desktop
+# packager stages them (scripts/package-desktop.mjs): Ladybug INSTALLs this
+# platform's into its cache — they are versioned with the Ladybug CORE, not
+# the npm package, so neither a version nor a URL is written down here —
+# SHOW_LOADED_EXTENSIONS() says where they landed, and the files are copied
+# into native/ (the desktop package's layout), the folder
+# STRUT_LADYBUG_EXTENSION_DIR names from here on. The cache is removed: at
+# runtime nothing loads from anywhere else. Checked below, once build/ exists.
+ENV STRUT_LADYBUG_EXTENSION_DIR=/usr/src/strut/native
+RUN node --input-type=module <<'EOF'
+import { copyFileSync, mkdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+const lbug = (await import("@ladybugdb/core")).default;
+const db = new lbug.Database(":memory:");
+const conn = new lbug.Connection(db);
+const dir = process.env.STRUT_LADYBUG_EXTENSION_DIR;
+const names = ["vector", "fts"];
+for (const name of names) {
+  await conn.query(`INSTALL ${name}`);
+  await conn.query(`LOAD EXTENSION ${name}`);
+}
+const loaded = await (await conn.query("CALL SHOW_LOADED_EXTENSIONS() RETURN *")).getAll();
+mkdirSync(dir, { recursive: true });
+for (const name of names) {
+  const from = loaded.find((r) => String(r["extension name"]).toLowerCase() === name)?.["extension path"];
+  if (!from) throw new Error(`${name} is not among the loaded extensions: ${JSON.stringify(loaded)}`);
+  copyFileSync(from, join(dir, `lib${name}.lbug_extension`));
+  console.log(`${from} -> ${dir}`);
+}
+await conn.close();
+await db.close();
+rmSync(join(homedir(), ".lbdb"), { recursive: true, force: true });
+EOF
+
 # Engine build: tsc plus the src/workflows copy (job.yaml, the `job` workflow
 # seeded at boot), via package.json's build:engine script (`build` would also
 # build the kit, which the `kit` stage did).
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build:engine
+
+# The graph backend's own open, from build/, with the extensions loaded from
+# native/ and the download cache gone — the boot's code path on a throwaway
+# file, so a missing or wrong extension fails the build, not a container.
+RUN node --input-type=module -e 'const { openLadybug } = await import("./build/graph/ladybug/db.js"); const h = await openLadybug("/tmp/ladybug-check/graph.lbug"); console.log("ladybug " + h.version + " opened with the extensions in " + process.env.STRUT_LADYBUG_EXTENSION_DIR); await h.close();' \
+    && rm -rf /tmp/ladybug-check
 
 COPY --from=web /usr/src/strut/web/dist ./web/dist
 

@@ -6,6 +6,9 @@ name: publish strut image
 # main. arm64 is for home servers (Apple Silicon, Raspberry Pi 4/5). Tags are
 # the moving `latest` and the short commit sha, which is what a deploy pins;
 # package.json's version is not bumped per change, so it is not a tag.
+# Before the push, the amd64 image is booted on the Ladybug backend with no
+# network (scripts/image-smoke.sh): the extensions that backend requires are
+# in the image, and nothing is downloaded at boot.
 
 on:
   push:
@@ -20,6 +23,7 @@ on:
       - "package.json"
       - "yarn.lock"
       - "tsconfig.json"
+      - "scripts/image-smoke.sh"
       - ".github/workflows/publish-image.yml"
   workflow_dispatch:
 
@@ -53,6 +57,25 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The runner's own platform first, loaded into its docker, so the boot
+      # smoke can run it; the push below reuses every one of its layers from
+      # the cache. The arm64 half is not booted (QEMU), but the Dockerfile's
+      # own check — the backend's open with the bundled extensions — runs in
+      # that build too.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: strut:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: Boot smoke (ladybug, no network)
+        run: scripts/image-smoke.sh strut:smoke
 
       # provenance/sbom off: a plain two-platform index with no attestation
       # manifests, like the browser image and stakgraph's images. The arm64
