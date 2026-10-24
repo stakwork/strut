@@ -46,7 +46,9 @@ import {
   flowFromYaml,
   renderWorkflowYaml,
   validateStepName,
+  validateWorkflowName,
   provenance,
+  upstreamFor,
   appListEntry,
   appRecord,
   newestVersion,
@@ -56,15 +58,16 @@ import {
   type AppMetadata,
   type AppRelease,
   type AppRecord,
-  type AppUpstream,
   type AppVersionInfo,
   type PublishAppOptions,
   type PublishByContentOptions,
   type PublishOptions,
   type VersionSource,
   type WorkflowContent,
+  type StepInfo,
   type StepListEntry,
   type StepVersionsResult,
+  type Upstream,
   type WorkflowListEntry,
   type WorkflowMetadata,
   type WorkspaceStore,
@@ -123,6 +126,8 @@ interface VersionRow {
   /** `WorkflowVersionInfo.source` — `source` is the YAML here. */
   version_source?: VersionSource;
   actor?: string;
+  /** JSON `Upstream`. */
+  upstream?: string;
 }
 
 interface StepRow {
@@ -143,6 +148,8 @@ interface StepVersionRow {
   date_added_to_graph?: number;
   source: string;
   publisher?: string;
+  /** JSON `Upstream`. */
+  upstream?: string;
 }
 
 interface AppRow {
@@ -172,7 +179,7 @@ interface AppVersionRow {
   publisher?: string;
   version_source?: VersionSource;
   actor?: string;
-  /** JSON `AppUpstream`. */
+  /** JSON `Upstream`. */
   upstream?: string;
 }
 
@@ -190,9 +197,9 @@ function parseJson<T>(text: string | undefined): T | undefined {
 }
 
 const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd"] as const;
-const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "date_added_to_graph"] as const;
+const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
-const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "created_at", "source", "publisher", "date_added_to_graph"] as const;
+const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "created_at", "source", "publisher", "upstream", "date_added_to_graph"] as const;
 
 const isoFromSeconds = (s: number | undefined): string =>
   new Date((s ?? 0) * 1000).toISOString();
@@ -340,12 +347,14 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const active = versions.find((v) => v.content_hash === w.active_version);
     const meta: WorkflowMetadata = { active: active?.version_label ?? "", versions: {} };
     for (const v of versions) {
+      const upstream = parseJson<Upstream>(v.upstream);
       meta.versions[v.version_label] = {
         createdAt: isoFromSeconds(v.created_at),
         ...(v.description !== undefined ? { description: v.description } : {}),
         hash: v.content_hash,
         ...(v.version_source ? { source: v.version_source } : {}),
         ...(v.actor ? { actor: v.actor } : {}),
+        ...(upstream ? { upstream } : {}),
       };
     }
     if (w.category) meta.category = w.category;
@@ -433,7 +442,8 @@ export class GraphWorkspaceStore implements WorkspaceStore {
 
   /** The one write path behind publish/publishByContent/setParam: ensure the
    *  version node exists (creating, restoring, or re-labeling it), then
-   *  point the workflow at it. */
+   *  point the workflow at it — unless `opts.activate` is false and the
+   *  workflow has an active version to keep. */
   private async writeVersion(
     name: string,
     label: string,
@@ -441,12 +451,16 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     description: string | undefined,
     category: string | undefined,
     publisher: string | undefined,
-    opts?: PublishOptions,
+    opts?: PublishByContentOptions,
   ): Promise<VersionRow> {
+    validateWorkflowName(name);
     const { source: version_source, actor } = provenance(opts);
     const hash = contentHash(yamlStr);
     const { nodes } = this.backend;
-    const existing = (await this.versionRows(name)).find((v) => v.content_hash === hash);
+    const w = await this.workflowRow(name);
+    const versions = await this.versionRows(name);
+    const upstream = upstreamFor(opts, parseJson<Upstream>(versions.find((v) => v.content_hash === w?.active_version)?.upstream));
+    const existing = versions.find((v) => v.content_hash === hash);
     let versionRef: string;
     if (existing) {
       // Content-addressed: same content under a new label re-labels.
@@ -455,6 +469,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         ...(description !== undefined ? { description } : {}),
         ...(version_source ? { version_source } : {}),
         ...(actor ? { actor } : {}),
+        upstream: upstream ? JSON.stringify(upstream) : undefined,
       });
       if (patch) await nodes.update(existing.ref_id, patch);
       versionRef = existing.ref_id;
@@ -473,22 +488,26 @@ export class GraphWorkspaceStore implements WorkspaceStore {
           publisher,
           version_source,
           actor,
+          upstream: upstream ? JSON.stringify(upstream) : undefined,
         }),
       });
       versionRef = r.ref_id;
     }
-    await this.activate(name, { ref_id: versionRef, hash, description }, category, publisher);
+    await this.activate(name, { ref_id: versionRef, hash, description }, category, publisher, !w || opts?.activate !== false);
     await this.linkVersionDeps(versionRef, yamlStr);
     return (await this.versionRows(name)).find((v) => v.ref_id === versionRef)!;
   }
 
   /** Point the workflow node (creating it if needed) at a version: mirror the
-   *  version's description onto the workflow, swap the ACTIVE_VERSION edge. */
+   *  version's description onto the workflow, swap the ACTIVE_VERSION edge.
+   *  With `move` false the version only joins the workflow (VERSION_OF), and
+   *  the pointer and description stay. */
   private async activate(
     name: string,
     version: { ref_id: string; hash: string; description: string | undefined },
     category?: string,
     publisher?: string,
+    move = true,
   ): Promise<void> {
     const { nodes, edges } = this.backend;
     const w = await this.workflowRow(name);
@@ -501,13 +520,14 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       wfRef = r.ref_id;
     } else {
       wfRef = w.ref_id;
-      const desired: Record<string, unknown> = { active_version: version.hash, description: version.description };
+      const desired: Record<string, unknown> = move ? { active_version: version.hash, description: version.description } : {};
       if (category !== undefined) desired["category"] = category;
       if (publisher !== undefined) desired["publisher"] = publisher;
       const patch = patchFor(w as unknown as Record<string, unknown>, desired);
       if (patch) await nodes.update(wfRef, patch);
     }
     await edges.write({ edge: "VERSION_OF", source_ref_id: version.ref_id, target_ref_id: wfRef });
+    if (w && !move) return;
     const d = this.d;
     await this.backend.query(
       `MATCH ${d.node("w", "StrutWorkflow", { ref_id: "$w" })}-[r:ACTIVE_VERSION]->${d.node("v", "StrutWorkflowVersion")} WHERE v.ref_id <> $v DELETE r`,
@@ -566,7 +586,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       }
       const match = (await this.versionRows(name)).find((v) => v.content_hash === hash);
       if (match) {
-        if (w.active_version === hash || opts?.reactivateKnown === false) {
+        if (w.active_version === hash || opts?.reactivateKnown === false || opts?.activate === false) {
           return { version: match.version_label, changed: false };
         }
         await this.setActiveVersion(name, match.version_label);
@@ -743,6 +763,24 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     };
   }
 
+  async getStepMetadata(name: string): Promise<StepInfo | null> {
+    validateStepName(name);
+    const s = await this.stepRow(name);
+    if (!s) return null;
+    const out: StepInfo = { active: "", versions: {}, ...(s.publisher ? { publisher: s.publisher } : {}) };
+    for (const v of await this.stepVersionRows(name)) {
+      const upstream = parseJson<Upstream>(v.upstream);
+      out.versions[v.version_label] = {
+        createdAt: isoFromSeconds(v.created_at),
+        ...(v.description !== undefined ? { description: v.description } : {}),
+        hash: v.content_hash,
+        ...(upstream ? { upstream } : {}),
+      };
+      if (v.content_hash === s.active_version) out.active = v.version_label;
+    }
+    return out;
+  }
+
   async getStepVersionSource(name: string, version: string): Promise<string> {
     validateStepName(name);
     const v = (await this.stepVersionRows(name)).find((x) => x.version_label === version);
@@ -789,7 +827,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       if (match) {
         let changed = false;
         const desired: Record<string, unknown> = {};
-        if (existing.active_version !== hash && opts?.reactivateKnown !== false) {
+        if (existing.active_version !== hash && opts?.reactivateKnown !== false && opts?.activate !== false) {
           desired["active_version"] = hash;
           desired["description"] = match.description;
           changed = true;
@@ -803,6 +841,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     }
 
     const vid = nextVersionLabel(versions.map((v) => v.version_label));
+    const upstream = upstreamFor(opts, parseJson<Upstream>(versions.find((v) => v.content_hash === existing?.active_version)?.upstream));
     const v = await nodes.write({
       type: "StrutStepVersion",
       data: compact({
@@ -813,8 +852,10 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         created_at: new Date().toISOString(),
         source: code,
         publisher: publisher ?? existing?.publisher,
+        upstream: upstream ? JSON.stringify(upstream) : undefined,
       }),
     });
+    const move = !existing || opts?.activate !== false;
     let stepRef: string;
     if (!existing) {
       const s = await nodes.write({
@@ -824,13 +865,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       stepRef = s.ref_id;
     } else {
       stepRef = existing.ref_id;
-      const desired: Record<string, unknown> = { active_version: hash, description };
+      const desired: Record<string, unknown> = move ? { active_version: hash, description } : {};
       if (publisher !== undefined) desired["publisher"] = publisher;
       const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
       if (patch) await nodes.update(stepRef, patch);
     }
     await this.backend.edges.write({ edge: "VERSION_OF", source_ref_id: v.ref_id, target_ref_id: stepRef });
-    await this.swapActiveStepEdge(stepRef, v.ref_id);
+    if (move) await this.swapActiveStepEdge(stepRef, v.ref_id);
     return { version: vid, changed: true };
   }
 
@@ -908,7 +949,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     for (const v of versions) {
       const manifest = parseJson<AppManifest>(v.manifest);
       if (!manifest || !v.version_label) continue;
-      const upstream = parseJson<AppUpstream>(v.upstream);
+      const upstream = parseJson<Upstream>(v.upstream);
       const info: AppVersionInfo = {
         createdAt: isoFromSeconds(v.created_at),
         hash: v.content_hash,
@@ -969,7 +1010,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       if (match) {
         let changed = false;
         const desired: Record<string, unknown> = {};
-        if (existing.active_version !== hash && opts?.reactivateKnown !== false && !existing.live) {
+        if (existing.active_version !== hash && opts?.reactivateKnown !== false && opts?.activate !== false && !existing.live) {
           const m = parseJson<AppManifest>(match.manifest);
           Object.assign(desired, { active_version: hash, title: m?.title, description: m?.description });
           changed = true;
@@ -983,8 +1024,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       }
     }
 
-    const inherited = parseJson<AppUpstream>(versions.find((v) => v.content_hash === existing?.active_version)?.upstream);
-    const upstream = opts?.upstream === null ? undefined : (opts?.upstream ?? inherited);
+    const upstream = upstreamFor(opts, parseJson<Upstream>(versions.find((v) => v.content_hash === existing?.active_version)?.upstream));
     const vid = nextVersionLabel(versions.map((v) => v.version_label));
     const publisher = opts?.publisher ?? existing?.publisher;
     const v = await nodes.write({
@@ -1011,15 +1051,15 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       appRef = a.ref_id;
     } else {
       appRef = existing.ref_id;
-      // Held, the new version is a draft: the live release keeps `active`.
-      const desired: Record<string, unknown> = existing.live ? {} : { active_version: hash, title: manifest.title, description: manifest.description };
+      // Held (or `activate: false`), the new version is a draft: `active` stays.
+      const desired: Record<string, unknown> = existing.live || opts?.activate === false ? {} : { active_version: hash, title: manifest.title, description: manifest.description };
       if (publisher !== undefined) desired["publisher"] = publisher;
       if (!existing.owner && owner) desired["owner"] = owner;
       const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
       if (patch) await nodes.update(appRef, patch);
     }
     await this.backend.edges.write({ edge: "VERSION_OF", source_ref_id: v.ref_id, target_ref_id: appRef });
-    if (!existing?.live) await this.swapActiveAppEdge(appRef, v.ref_id);
+    if (!existing || (!existing.live && opts?.activate !== false)) await this.swapActiveAppEdge(appRef, v.ref_id);
     // USES_WORKFLOW → every workflow the grants name that the graph holds.
     const names = [...new Set(manifest.grants.workflows)];
     if (names.length) {

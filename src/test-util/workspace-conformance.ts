@@ -452,7 +452,7 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await ws.getApp("kept"))?.owner, "bob", "the owner is not re-stamped");
 
       // Upstream (marketplace.md §3) rides on a version and is carried forward over the name.
-      const upstream = { package: "acme/hvac", version: "1.2.0", digest: "abc" };
+      const upstream = { package: "acme/hvac", version: "1.2.0", digest: "abc", source: { ref: "file:/tmp/acme-hvac" }, secrets: [] };
       const installed = await ws.publishApp("kept", "u1", APP("Installed"), { upstream, source: "seed" });
       assert.deepEqual((await ws.getApp("kept"))?.upstream, upstream);
       assert.equal((await ws.getApp("kept"))?.versions[installed.version]?.source, "seed");
@@ -464,6 +464,120 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       await ws.publishApp("kept", "u3", APP("Cut loose"), { upstream: null });
       assert.equal((await ws.getApp("kept"))?.upstream, undefined, "null clears it");
       assert.equal((await ws.getApp("kept", first.version))?.upstream, undefined, "an older version keeps its own (none)");
+    });
+
+    it("upstream on workflow and step versions (marketplace.md §3): recorded, carried forward over the name, cleared by null", async () => {
+      const upstream = { package: "acme/linear", version: "1.4.0", digest: "d1", source: { ref: "file:/tmp/acme-linear" }, secrets: ["LINEAR_API_KEY"] };
+      // Workflows: every publish over the name carries the active version's forward — an edit, a promote.
+      await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "one" } }, undefined, undefined, undefined, { upstream, source: "install" });
+      let meta = (await ws.getWorkflowMetadata("wf"))!;
+      assert.deepEqual(meta.versions["v1"]?.upstream, upstream);
+      assert.equal(meta.versions["v1"]?.source, "install");
+      const src = await ws.getWorkflowSource("wf", "v1");
+      const edit = await ws.publishWorkflowByContent("wf", src.replace("one", "two"), undefined, undefined, undefined, { source: "ui" });
+      const promoted = await ws.setParam("wf", "greeting", "three");
+      meta = (await ws.getWorkflowMetadata("wf"))!;
+      assert.deepEqual(meta.versions[edit.version]?.upstream, upstream, "an edit of an installed workflow is a fork that still knows its base");
+      assert.deepEqual(meta.versions[promoted.version]?.upstream, upstream, "so is a promote");
+      const cut = await ws.publishWorkflowByContent("wf", src.replace("one", "four"), undefined, undefined, undefined, { upstream: null });
+      meta = (await ws.getWorkflowMetadata("wf"))!;
+      assert.equal(meta.versions[cut.version]?.upstream, undefined, "null clears it");
+      assert.deepEqual(meta.versions["v1"]?.upstream, upstream, "an older version keeps its own");
+      await ws.publishWorkflow("plain", "v1", { steps });
+      assert.equal((await ws.getWorkflowMetadata("plain"))!.versions["v1"]?.upstream, undefined, "a name nothing installed records none");
+
+      // Steps: the same, read back through getStepMetadata.
+      const type = "acme/linear/fetch";
+      const s1 = await ws.publishStep(type, STEP_SRC(type, "one"), "one", undefined, { upstream, source: "install" });
+      const s2 = await ws.publishStep(type, STEP_SRC(type, "two"), "two");
+      let info = (await ws.getStepMetadata(type))!;
+      assert.equal(info.active, s2.version);
+      assert.deepEqual(Object.keys(info.versions), [s1.version, s2.version]);
+      assert.deepEqual(info.versions[s1.version]?.upstream, upstream);
+      assert.deepEqual(info.versions[s2.version]?.upstream, upstream, "carried forward");
+      assert.equal(info.versions[s2.version]?.hash, contentHash(STEP_SRC(type, "two")));
+      const s3 = await ws.publishStep(type, STEP_SRC(type, "three"), "three", undefined, { upstream: null });
+      info = (await ws.getStepMetadata(type))!;
+      assert.equal(info.versions[s3.version]?.upstream, undefined, "null clears it");
+      assert.equal(await ws.getStepMetadata("nope"), null);
+    });
+
+    it("activate: false records the version and leaves the active pointer where it was", async () => {
+      // Workflows.
+      await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "local" } }, "local");
+      const src = await ws.getWorkflowSource("wf", "v1");
+      const update = await ws.publishWorkflowByContent("wf", src.replace("local", "upstream"), "upstream", undefined, undefined, { activate: false, source: "install" });
+      assert.deepEqual(update, { version: "v2", changed: true });
+      const meta = (await ws.getWorkflowMetadata("wf"))!;
+      assert.equal(meta.active, "v1");
+      assert.deepEqual(Object.keys(meta.versions), ["v1", "v2"]);
+      assert.equal(meta.versions["v2"]?.source, "install");
+      assert.equal((await ws.getWorkflow("wf")).params?.["greeting"], "local");
+      assert.equal((await ws.listWorkflows()).find((w) => w.name === "wf")?.description, "local", "the listing shows the active version");
+      assert.ok((await ws.getWorkflowSource("wf", "v2")).includes("upstream"));
+      assert.deepEqual(
+        await ws.publishWorkflowByContent("wf", src.replace("local", "upstream"), undefined, undefined, undefined, { activate: false }),
+        { version: "v2", changed: false },
+        "known content is a no-op",
+      );
+      assert.deepEqual(await ws.publishWorkflowByContent("wf", src, undefined, undefined, undefined, { activate: false }), { version: "v1", changed: false });
+      assert.equal((await ws.getWorkflowMetadata("wf"))?.active, "v1");
+      await ws.setActiveVersion("wf", "v2");
+      assert.equal((await ws.getWorkflow("wf")).params?.["greeting"], "upstream", "activating it later is a rollback");
+      await ws.publishWorkflowByContent("fresh", src.replace("name: wf", "name: fresh"), undefined, undefined, undefined, { activate: false });
+      assert.equal((await ws.getWorkflowMetadata("fresh"))?.active, "v1", "a new name has nothing to keep: its first version is active");
+
+      // Steps.
+      const local = await ws.publishStep("kept", STEP_SRC("kept", "local"), "local");
+      const next = await ws.publishStep("kept", STEP_SRC("kept", "upstream"), "upstream", undefined, { activate: false });
+      assert.equal(next.changed, true);
+      assert.deepEqual(await ws.listStepVersions("kept"), { active: local.version, versions: [local.version, next.version] });
+      assert.ok((await ws.getStepSource("kept"))?.code.includes('"local"'), "the loadable source is still the active one");
+      assert.ok((await ws.getStepVersionSource("kept", next.version)).includes('"upstream"'));
+      assert.equal((await ws.listSteps()).find((s) => s.type === "kept")?.description, "local");
+      assert.deepEqual(await ws.publishStep("kept", STEP_SRC("kept", "upstream"), undefined, undefined, { activate: false }), { version: next.version, changed: false });
+      const fresh = await ws.publishStep("fresh", STEP_SRC("fresh", "x"), "x", undefined, { activate: false });
+      assert.equal((await ws.listStepVersions("fresh")).active, fresh.version);
+
+      // Apps: a draft, as when held.
+      await ws.publishApp("app", "h1", APP("One"));
+      assert.deepEqual(await ws.publishApp("app", "h2", APP("Two"), { activate: false }), { version: "v2", changed: true });
+      assert.equal((await ws.getApp("app"))?.version, "v1");
+      assert.equal((await ws.listApps()).find((a) => a.name === "app")?.title, "One");
+      assert.deepEqual(await ws.publishApp("app", "h2", APP("Two"), { activate: false }), { version: "v2", changed: false });
+      assert.equal((await ws.getApp("app"))?.version, "v1");
+    });
+
+    it("workflow names carry slashes: a workflow beside its namespace, created and deleted apart, and the rule for slashed names", async () => {
+      await ws.publishWorkflow("acme", "v1", { steps }, "the root");
+      await ws.publishWorkflow("acme/linear/sync", "v1", { steps, params: { x: 1 } }, "installed");
+      await ws.publishWorkflow("acme/linear/push", "v1", { steps, params: { x: 2 } });
+      assert.deepEqual(
+        (await ws.listWorkflows()).map((w) => [w.name, w.activeVersion, w.description]),
+        [["acme", "v1", "the root"], ["acme/linear/push", "v1", undefined], ["acme/linear/sync", "v1", "installed"]],
+      );
+      assert.ok((await ws.getWorkflowSource("acme/linear/sync", "v1")).includes("x: 1"));
+      assert.equal((await ws.getWorkflow("acme/linear/sync")).name, "acme/linear/sync");
+      assert.notEqual(await ws.getWorkflowHash("acme/linear/sync"), await ws.getWorkflowHash("acme/linear/push"));
+      // A namespace is not a workflow: `acme/linear` is free until it has a version.
+      assert.equal((await ws.createWorkflow("acme/linear", { steps })).name, "acme/linear");
+      assert.equal((await ws.createWorkflow("acme/linear", { steps })).name, "acme/linear-2");
+      // Deleting `acme` takes its own versions, never the names under it.
+      assert.equal(await ws.deleteWorkflow("acme"), true);
+      assert.equal(await ws.getWorkflowMetadata("acme"), null);
+      assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["acme/linear", "acme/linear-2", "acme/linear/push", "acme/linear/sync"]);
+      assert.ok((await ws.getWorkflowSource("acme/linear/sync", "v1")).includes("x: 1"));
+      assert.equal(await ws.deleteWorkflow("acme/linear/sync"), true);
+      assert.equal(await ws.deleteWorkflow("acme/linear"), true);
+      assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["acme/linear-2", "acme/linear/push"]);
+      // The rule, for a name with a slash: no empty, `.` or `..` segment, no `\`, no `runs`.
+      for (const bad of ["acme/runs", "acme/runs/x", "acme//x", "acme/./x", "acme/../x", "/acme", "acme/", "acme\\x/y"]) {
+        await assert.rejects(() => ws.publishWorkflow(bad, "v1", { steps }), /Invalid workflow name/, bad);
+        await assert.rejects(() => ws.createWorkflow(bad, { steps }), /Invalid workflow name/, bad);
+      }
+      // A one-segment name is as free as it was.
+      await ws.publishWorkflow("runs", "v1", { steps });
+      assert.ok((await ws.listWorkflows()).some((w) => w.name === "runs"));
     });
 
     it("app names carry a package prefix: slashes are segments, and names that differ in punctuation are different apps", async () => {

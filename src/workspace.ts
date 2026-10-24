@@ -211,19 +211,44 @@ export interface WorkflowVersionInfo {
   source?: VersionSource;
   /** Who published it, when the door knew (an opaque actor string). */
   actor?: string;
+  /** The package this version came from, or derives from (see `Upstream`). */
+  upstream?: Upstream;
 }
 
 /** Where a workflow version came from — recorded at publish, never inferred:
  *  `seed` a host's boot-time seeder (the committed template), `ui` the web
  *  UI, `api` any other HTTP caller, `builder` the chat builder's tools,
- *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param.
+ *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param,
+ *  `install` a package install (marketplace.md §3).
  *  So "is the active version still the seed?" is one lookup. */
-export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote";
+export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install";
+
+/** Where an installed version came from (marketplace.md §3): which package
+ *  at which version, its tree digest, the source it was fetched from, and the
+ *  secrets the package declares. Recorded on workflow, step and app versions;
+ *  a publish over the name carries the active version's forward unless it
+ *  sets (or, with `null`, clears) its own — so an edit of an installed item is
+ *  a fork that still knows its base. */
+export interface Upstream {
+  package: string;
+  version: string;
+  digest: string;
+  source: { ref: string };
+  secrets: string[];
+}
 
 /** Provenance a publish records on the version it writes. */
 export interface PublishOptions {
   source?: VersionSource;
   actor?: string;
+  /** This version's upstream; `null` clears what would be carried forward. */
+  upstream?: Upstream | null;
+}
+
+/** The upstream a new version records: the publish's own, none when it
+ *  passes `null`, else the active version's (carried forward). */
+export function upstreamFor(opts: PublishOptions | undefined, active: Upstream | undefined): Upstream | undefined {
+  return opts?.upstream === null ? undefined : (opts?.upstream ?? active);
 }
 
 /** The set fields of `opts`, to spread onto a version record. */
@@ -268,6 +293,8 @@ export interface StepVersionInfo {
   description?: string;
   /** Content hash of this version's source — internal dedup key. */
   hash?: string;
+  /** The package this version came from, or derives from (see `Upstream`). */
+  upstream?: Upstream;
 }
 
 export interface StepInfo {
@@ -301,19 +328,6 @@ export interface FileWorkspaceSnapshot {
 
 // ── Apps (plans/apps.md §1.3) ───────────────────────────────────────────────
 
-/** Where an installed app came from (`marketplace.md` §3): which package,
- *  which content, how to fetch it again. Carried forward by every publish
- *  over the name unless the publish sets (or clears) its own. */
-export interface AppUpstream {
-  package: string;
-  version?: string;
-  digest?: string;
-  source?: Record<string, unknown>;
-  secrets?: string[];
-  /** Edited since it was installed (a fork). */
-  edited?: boolean;
-}
-
 /** One app version: its tree hash (`treeHash`, src/version.ts) and the
  *  manifest as published — the pointer; the files are the directory
  *  `materializeAppVersion` names. */
@@ -322,7 +336,7 @@ export interface AppVersionInfo extends Pick<WorkflowVersionInfo, "source" | "ac
   hash: string;
   manifest: AppManifest;
   publisher?: string;
-  upstream?: AppUpstream;
+  upstream?: Upstream;
 }
 
 export type AppVersionSummary = Omit<AppVersionInfo, "manifest">;
@@ -399,7 +413,7 @@ export interface AppRecord {
   hash: string;
   manifest: AppManifest;
   createdAt: string;
-  upstream?: AppUpstream;
+  upstream?: Upstream;
   active: string;
   versions: Record<string, AppVersionSummary>;
   publisher?: string;
@@ -415,8 +429,6 @@ export interface PublishAppOptions extends PublishByContentOptions {
   /** The owner to record when the app has none yet (the import carries one
    *  over); `actor` serves the same way. */
   owner?: string;
-  /** This version's upstream; `null` clears what would be carried forward. */
-  upstream?: AppUpstream | null;
 }
 
 /** `v1, v2, …, v10` in numeric order; anything else after, alphabetically. */
@@ -435,6 +447,10 @@ export interface PublishByContentOptions extends PublishOptions {
    *  that wants an edit made since to stay live (a never-seen hash still
    *  publishes the next `vN` and activates it). */
   reactivateKnown?: boolean;
+  /** `false` writes the version without moving the active pointer — a
+   *  package update beside a local fork (marketplace.md §4). Known content is
+   *  then a no-op. A name with no versions yet activates its first anyway. */
+  activate?: boolean;
 }
 
 export interface StepVersionsResult {
@@ -561,6 +577,10 @@ export interface WorkspaceStore extends SubflowResolver {
     opts?: PublishByContentOptions,
   ): Promise<{ version: string; changed: boolean }>;
   listStepVersions(name: string): Promise<StepVersionsResult>;
+  /** The step's record — active version, every version's info (hash,
+   *  description, `upstream`), publisher — or null when no version is on
+   *  record. The twin of `getWorkflowMetadata`. */
+  getStepMetadata(name: string): Promise<StepInfo | null>;
   /** Content hash of every custom step's ACTIVE version, keyed by step
    *  type — the sibling of `getWorkflowHash`. A workflow version does not
    *  pin its steps (the registry loads whatever is active), so a launch
@@ -636,17 +656,14 @@ export class FileWorkspaceStore implements WorkspaceStore {
   // ── Workflows ──────────────────────────────────────────────────────────
 
   async listWorkflows(): Promise<WorkflowListEntry[]> {
-    const workflowsDir = join(this.root, "workflows");
-    const entries = await safeReaddir(workflowsDir);
     const results: WorkflowListEntry[] = [];
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const meta = await this.readWorkflowMetadata(entry.name);
+    for (const name of await this.workflowNames()) {
+      const meta = await this.readWorkflowMetadata(name);
       if (meta) {
         const activeDesc = meta.versions[meta.active]?.description;
         results.push({
-          name: entry.name,
+          name,
           activeVersion: meta.active,
           versions: Object.keys(meta.versions),
           description: activeDesc,
@@ -682,8 +699,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
   /** Get the raw YAML source for a workflow version. */
   async getWorkflowSource(name: string, version: string): Promise<string> {
-    const dir = join(this.root, "workflows", name);
-    return readFile(join(dir, `${version}.yaml`), "utf-8");
+    return readFile(join(this.workflowDir(name), `${version}.yaml`), "utf-8");
   }
 
   /** Content hash of a workflow version's source (active version when
@@ -705,15 +721,16 @@ export class FileWorkspaceStore implements WorkspaceStore {
   }
 
   private async loadFlowYaml(name: string, version: string): Promise<Flow> {
-    const dir = join(this.root, "workflows", name);
-    const raw = await readFile(join(dir, `${version}.yaml`), "utf-8");
+    const raw = await this.getWorkflowSource(name, version);
     return flowFromYaml(name, version, raw);
   }
 
   /**
-   * Create a brand-new workflow at v1. If `<workspace>/workflows/<name>/`
-   * already exists, a numeric suffix is appended (`<name>-2`, `<name>-3`, ...)
-   * until a free slot is found. Returns the actual name written.
+   * Create a brand-new workflow at v1. If a workflow `<name>` already exists,
+   * a numeric suffix is appended (`<name>-2`, `<name>-3`, ...) until a free
+   * slot is found. Returns the actual name written. Taken means a
+   * `_metadata.json`, not a directory: `workflows/acme/` may be only the
+   * namespace of `acme/linear/sync`.
    *
    * Use this for "create" intents (UI's Create Workflow dialog, AI's
    * `create_workflow` tool). For adding a new version to an existing workflow,
@@ -727,10 +744,9 @@ export class FileWorkspaceStore implements WorkspaceStore {
     publisher?: string,
     opts?: PublishOptions,
   ): Promise<{ name: string; version: string }> {
-    const workflowsDir = join(this.root, "workflows");
     let finalName = name;
     let n = 2;
-    while (await pathExists(join(workflowsDir, finalName))) {
+    while (await this.readWorkflowMetadata(finalName)) {
       finalName = `${name}-${n++}`;
     }
 
@@ -761,29 +777,41 @@ export class FileWorkspaceStore implements WorkspaceStore {
     publisher?: string,
     opts?: PublishOptions,
   ): Promise<void> {
-    // Validate BEFORE touching disk: a refused publish must leave nothing
-    // behind — an empty directory would make the next `createWorkflow` of
-    // that name think it is taken and rename it.
+    // Validate BEFORE touching disk: a refused publish leaves nothing behind.
     const yamlStr = renderWorkflowYaml(name, content);
     assertValidWorkflowYaml(yamlStr);
+    await this.writeWorkflowVersion(name, version, yamlStr, description, category, publisher, opts);
+  }
 
-    const dir = join(this.root, "workflows", name);
+  /** Write one version file and its metadata entry; the active pointer
+   *  moves to it unless `opts.activate` is false (and the workflow has an
+   *  active version to keep). The version's `upstream` is the publish's own,
+   *  else the active version's carried forward. */
+  private async writeWorkflowVersion(
+    name: string,
+    version: string,
+    yamlStr: string,
+    description: string | undefined,
+    category: string | undefined,
+    publisher: string | undefined,
+    opts?: PublishByContentOptions,
+  ): Promise<void> {
+    const dir = this.workflowDir(name);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${version}.yaml`), yamlStr, "utf-8");
 
-    // Update metadata
-    const meta = (await this.readWorkflowMetadata(name)) ?? {
-      active: version,
-      versions: {},
-    };
+    const prior = await this.readWorkflowMetadata(name);
+    const meta = prior ?? { active: version, versions: {} };
+    const upstream = upstreamFor(opts, prior?.versions[prior.active]?.upstream);
 
     meta.versions[version] = {
       createdAt: new Date().toISOString(),
       description,
       hash: contentHash(yamlStr),
       ...provenance(opts),
+      ...(upstream ? { upstream } : {}),
     };
-    meta.active = version;
+    if (!prior || opts?.activate !== false) meta.active = version;
     if (category !== undefined) meta.category = category;
     if (publisher !== undefined) meta.publisher = publisher;
 
@@ -804,7 +832,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     if (category) meta.category = category;
     else delete meta.category;
     await writeFile(
-      join(this.root, "workflows", name, "_metadata.json"),
+      join(this.workflowDir(name), "_metadata.json"),
       JSON.stringify(meta, null, 2),
       "utf-8",
     );
@@ -818,14 +846,25 @@ export class FileWorkspaceStore implements WorkspaceStore {
   }
 
   async deleteWorkflow(name: string): Promise<boolean> {
-    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
-      throw new Error(`Invalid workflow name "${name}"`);
-    }
+    const dir = this.workflowDir(name);
     if (!(await this.readWorkflowMetadata(name))) return false;
-    // The whole directory. On a file-backed deployment the run store keeps
-    // this workflow's runs under it (`runs/`) and they go with it — the same
-    // records `RunStore.deleteRuns` removes.
-    await rm(join(this.root, "workflows", name), { recursive: true, force: true });
+    // Its own files — `_metadata.json` and the version YAMLs — and `runs/`:
+    // on a file-backed deployment the run store keeps this workflow's runs
+    // there, the same records `RunStore.deleteRuns` removes. Never another
+    // directory: `acme/` also holds the names under it (`acme/linear/sync`).
+    for (const entry of await safeReaddir(dir)) {
+      if (entry.isFile()) await rm(join(dir, entry.name), { force: true });
+    }
+    await rm(join(dir, "runs"), { recursive: true, force: true });
+    // Then the folders left empty, up to `workflows/`.
+    const root = join(this.root, "workflows");
+    for (let d = dir; d !== root && d.startsWith(root); d = dirname(d)) {
+      try {
+        await rmdir(d);
+      } catch {
+        break;
+      }
+    }
     return true;
   }
 
@@ -842,7 +881,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     if (!meta) throw new Error(`Workflow "${name}" not found`);
     patch(meta);
     await writeFile(
-      join(this.root, "workflows", name, "_metadata.json"),
+      join(this.workflowDir(name), "_metadata.json"),
       JSON.stringify(meta, null, 2),
       "utf-8",
     );
@@ -855,7 +894,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     if (automations.length > 0) meta.automations = automations;
     else delete meta.automations;
     await writeFile(
-      join(this.root, "workflows", name, "_metadata.json"),
+      join(this.workflowDir(name), "_metadata.json"),
       JSON.stringify(meta, null, 2),
       "utf-8",
     );
@@ -873,9 +912,8 @@ export class FileWorkspaceStore implements WorkspaceStore {
     }
 
     meta.active = version;
-    const dir = join(this.root, "workflows", name);
     await writeFile(
-      join(dir, "_metadata.json"),
+      join(this.workflowDir(name), "_metadata.json"),
       JSON.stringify(meta, null, 2),
       "utf-8",
     );
@@ -950,7 +988,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       );
       if (match) {
         const [vid] = match;
-        if (meta.active === vid || opts?.reactivateKnown === false) {
+        if (meta.active === vid || opts?.reactivateKnown === false || opts?.activate === false) {
           return { version: vid, changed: false };
         }
         await this.setActiveVersion(name, vid);
@@ -963,7 +1001,8 @@ export class FileWorkspaceStore implements WorkspaceStore {
     // never reconciled on the identical-content no-op path above, so
     // republishing a workflow's existing content verbatim cannot re-stamp
     // (and thereby claim) a workflow someone else published.
-    await this.publishWorkflow(name, next, yamlStr, description, category, publisher, opts);
+    assertValidWorkflowYaml(yamlStr);
+    await this.writeWorkflowVersion(name, next, yamlStr, description, category, publisher, opts);
     return { version: next, changed: true };
   }
 
@@ -1047,7 +1086,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       if (match) {
         const [vid] = match;
         let changed = false;
-        if (existing.active !== vid && opts?.reactivateKnown !== false) {
+        if (existing.active !== vid && opts?.reactivateKnown !== false && opts?.activate !== false) {
           const archived = await readFile(this.stepVersionPath(name, vid), "utf-8");
           await mkdir(dirname(filePath), { recursive: true });
           await writeFile(filePath, archived, "utf-8");
@@ -1064,23 +1103,29 @@ export class FileWorkspaceStore implements WorkspaceStore {
       }
     }
 
-    // New content → next sequential version. Materialize active source for the
-    // registry loader + archive it.
+    // New content → next sequential version. Archive it, and materialize it
+    // as the active source for the registry loader unless `activate: false`
+    // keeps the active one.
     const vid = nextVersionLabel(existing ? Object.keys(existing.versions) : []);
-    await mkdir(dirname(filePath), { recursive: true });
-    await writeFile(filePath, code, "utf-8");
+    const activate = !existing || opts?.activate !== false;
+    if (activate) {
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, code, "utf-8");
+    }
     const archivePath = this.stepVersionPath(name, vid);
     await mkdir(dirname(archivePath), { recursive: true });
     await writeFile(archivePath, code, "utf-8");
+    const upstream = upstreamFor(opts, existing?.versions[existing.active]?.upstream);
 
     meta.steps[name] = {
-      active: vid,
+      active: activate ? vid : existing!.active,
       versions: {
         ...(existing?.versions ?? {}),
         [vid]: {
           createdAt: new Date().toISOString(),
           hash,
           ...(description !== undefined ? { description } : {}),
+          ...(upstream ? { upstream } : {}),
         },
       },
       ...(publisher !== undefined
@@ -1174,7 +1219,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
         const [vid] = match;
         let changed = false;
         let dirty = false;
-        if (meta.active !== vid && opts?.reactivateKnown !== false && !meta.live) {
+        if (meta.active !== vid && opts?.reactivateKnown !== false && opts?.activate !== false && !meta.live) {
           meta.active = vid;
           changed = dirty = true;
         }
@@ -1191,14 +1236,13 @@ export class FileWorkspaceStore implements WorkspaceStore {
         return { version: vid, changed };
       }
     }
-    const inherited = meta?.versions[meta.active]?.upstream;
-    const upstream = opts?.upstream === null ? undefined : (opts?.upstream ?? inherited);
+    const upstream = upstreamFor(opts, meta?.versions[meta.active]?.upstream);
     const vid = nextVersionLabel(Object.keys(meta?.versions ?? {}));
     const publisher = opts?.publisher ?? meta?.publisher;
     const owner = meta?.owner ?? opts?.owner ?? opts?.actor;
     await this.writeAppMetadata(name, {
-      // Held, the new version is a draft: the live release keeps `active`.
-      active: meta?.live ? meta.active : vid,
+      // Held (or `activate: false`), the new version is a draft: `active` stays.
+      active: meta && (meta.live || opts?.activate === false) ? meta.active : vid,
       versions: {
         ...(meta?.versions ?? {}),
         [vid]: {
@@ -1308,6 +1352,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
     const info = meta?.steps[name];
     if (!info) throw new Error(`Step "${name}" not found`);
     return { active: info.active, versions: Object.keys(info.versions) };
+  }
+
+  async getStepMetadata(name: string): Promise<StepInfo | null> {
+    validateStepName(name);
+    return (await this.readStepMetadata(this.customStepsDir()))?.steps[name] ?? null;
   }
 
   async getActiveStepHashes(): Promise<Record<string, string>> {
@@ -1468,15 +1517,14 @@ export class FileWorkspaceStore implements WorkspaceStore {
    *  is one version, `v1`. */
   async snapshot(): Promise<FileWorkspaceSnapshot | null> {
     const out: FileWorkspaceSnapshot = { workflows: [], steps: [], apps: [] };
-    for (const entry of await safeReaddir(join(this.root, "workflows"))) {
-      if (!entry.isDirectory()) continue;
-      const meta = await this.readWorkflowMetadata(entry.name);
+    for (const name of await this.workflowNames()) {
+      const meta = await this.readWorkflowMetadata(name);
       if (!meta) continue;
       const versions = [];
       for (const label of Object.keys(meta.versions).sort(versionLabelOrder)) {
-        versions.push({ label, yaml: await this.getWorkflowSource(entry.name, label), info: meta.versions[label]! });
+        versions.push({ label, yaml: await this.getWorkflowSource(name, label), info: meta.versions[label]! });
       }
-      out.workflows.push({ name: entry.name, meta, versions });
+      out.workflows.push({ name, meta, versions });
     }
     const customDir = this.customStepsDir();
     const meta = await this.readStepMetadata(customDir);
@@ -1509,12 +1557,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
    *  graph store's `steps/_graph`. After this the root reads as an empty
    *  workspace. */
   async moveAside(to: string): Promise<void> {
-    for (const entry of await safeReaddir(join(this.root, "workflows"))) {
-      if (!entry.isDirectory()) continue;
-      const from = join(this.root, "workflows", entry.name);
+    for (const name of await this.workflowNames()) {
+      const from = this.workflowDir(name);
       const files = (await safeReaddir(from)).filter((f) => f.isFile() && (f.name === "_metadata.json" || f.name.endsWith(".yaml")));
       if (!files.length) continue;
-      const dest = join(to, "workflows", entry.name);
+      const dest = join(to, "workflows", ...name.split("/"));
       await mkdir(dest, { recursive: true });
       for (const f of files) await rename(join(from, f.name), join(dest, f.name));
     }
@@ -1539,12 +1586,38 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
   // ── Private helpers ────────────────────────────────────────────────────
 
+  /** A workflow's directory: `workflows/<name>`, a slashed name nested
+   *  (`workflows/acme/linear/sync`). Throws on a name the rule refuses. */
+  private workflowDir(name: string): string {
+    validateWorkflowName(name);
+    return join(this.root, "workflows", ...name.split("/"));
+  }
+
+  /** Every workflow on disk, sorted: each directory under `workflows/` that
+   *  holds a `_metadata.json`, at any depth. The walk keeps descending past
+   *  one — `acme` and `acme/linear/sync` share `workflows/acme/` — and skips
+   *  a workflow's `runs/` (its run records; `runs` is never a segment of a
+   *  slashed name). */
+  private async workflowNames(): Promise<string[]> {
+    const out: string[] = [];
+    const walk = async (dir: string, prefix: string): Promise<void> => {
+      const entries = await safeReaddir(dir);
+      if (prefix && entries.some((e) => e.isFile() && e.name === "_metadata.json")) out.push(prefix);
+      for (const e of entries) {
+        if (!e.isDirectory() || (prefix && e.name === "runs")) continue;
+        await walk(join(dir, e.name), prefix ? `${prefix}/${e.name}` : e.name);
+      }
+    };
+    await walk(join(this.root, "workflows"), "");
+    return out.sort();
+  }
+
   private async readWorkflowMetadata(
     name: string,
   ): Promise<WorkflowMetadata | null> {
     try {
       const raw = await readFile(
-        join(this.root, "workflows", name, "_metadata.json"),
+        join(this.workflowDir(name), "_metadata.json"),
         "utf-8",
       );
       return JSON.parse(raw) as WorkflowMetadata;
@@ -1632,12 +1705,28 @@ export function appRecord(name: string, meta: AppMetadata, version: string, info
   };
 }
 
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
+/**
+ * Validate a workflow name (marketplace.md "Step order" 1). A name with a
+ * `/` is a path of segments (`acme/linear/sync`) that the file store nests,
+ * so: no empty, `.` or `..` segment, no `\`, and no segment named `runs` — a
+ * workflow's directory holds its run records in `runs/`, so `acme/runs`
+ * would land in `acme`'s. A one-segment name is only refused when empty,
+ * `.` or `..`: no store checked one before, and a tighter rule could refuse
+ * the republish of a name someone already has.
+ */
+export function validateWorkflowName(name: string): void {
+  if (!name.includes("/")) {
+    if (!name || name === "." || name === "..") throw new Error(`Invalid workflow name "${name}"`);
+    return;
+  }
+  if (name.includes("\\")) throw new Error(`Invalid workflow name "${name}": "\\" is not allowed`);
+  for (const seg of name.split("/")) {
+    if (!seg || seg === "." || seg === "..") {
+      throw new Error(`Invalid workflow name "${name}": a segment may not be empty, "." or ".."`);
+    }
+    if (seg === "runs") {
+      throw new Error(`Invalid workflow name "${name}": "runs" is reserved (a workflow's run records live in runs/)`);
+    }
   }
 }
 

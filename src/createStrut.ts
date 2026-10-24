@@ -81,7 +81,7 @@ import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
-import type { AppRelease, AppUpstream } from "./workspace.js";
+import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -2524,7 +2524,7 @@ export async function createStrut<TServices = unknown>(
         source: "api",
         ...(typeof body.publisher === "string" ? { publisher: body.publisher } : {}),
         ...(actor ? { actor } : {}),
-        ...(body.upstream === null || (body.upstream && typeof body.upstream === "object") ? { upstream: body.upstream as AppUpstream | null } : {}),
+        ...(body.upstream === null || (body.upstream && typeof body.upstream === "object") ? { upstream: body.upstream as Upstream | null } : {}),
         ...(typeof body.reactivateKnown === "boolean" ? { reactivateKnown: body.reactivateKnown } : {}),
       });
     } catch (err) {

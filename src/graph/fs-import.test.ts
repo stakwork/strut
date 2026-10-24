@@ -63,7 +63,7 @@ async function seedFileWorkspace(dataDir: string): Promise<FileWorkspaceStore> {
   await writeFile(join(dataDir, "apps", "acme", "ui", "v1", "dist", "index.html"), "<!doctype html>");
   return fs;
 }
-const APP_UPSTREAM = { package: "acme/kit", version: "1.0.0", digest: "d1" };
+const APP_UPSTREAM = { package: "acme/kit", version: "1.0.0", digest: "d1", source: { ref: "file:/tmp/acme-kit" }, secrets: [] };
 const HELD_LOCK = { workflows: { alpha: { version: "v1", hash: "wh" } }, steps: { "tools/greet": { version: "v1", hash: "sh" } }, floating: ["one thing"] };
 
 describe("versionLabelOrder", () => {
@@ -205,6 +205,31 @@ for (const tb of testBackends()) {
       assert.match(r.skipped[0]!, /^delta v2: /);
       assert.deepEqual((await ws.listWorkflows()).map((w) => [w.name, w.activeVersion, w.versions]), [["delta", "v1", ["v1"]]]);
       assert.equal(await readFile(join(r.movedTo!, "workflows", "delta", "v2.yaml"), "utf-8"), "steps: [\n", "kept in the aside folder");
+    });
+
+    it("a workflow beside its namespace, and the upstream on workflow and step versions, are imported as recorded", async () => {
+      const fs = new FileWorkspaceStore(dir);
+      const up = { package: "acme/linear", version: "1.4.0", digest: "d2", source: { ref: "file:/tmp/acme-linear" }, secrets: ["LINEAR_API_KEY"] };
+      await fs.publishWorkflow("acme", "v1", WF("root"), "the root");
+      await fs.publishWorkflow("acme/linear/sync", "v1", WF("sync"), "installed", undefined, undefined, { source: "install", upstream: up });
+      await fs.publishWorkflow("acme/linear/sync", "v2", WF("fork"), "forked", undefined, undefined, { source: "ui" });
+      await fs.publishStep("acme/linear/fetch", STEP("fetch"), "fetches", undefined, { upstream: up });
+      await mkdir(join(dir, "workflows", "acme", "runs", "1700000000001"), { recursive: true });
+      await mkdir(join(dir, "workflows", "acme", "linear", "sync", "runs", "1700000000002"), { recursive: true });
+
+      const r = await importFileWorkspace(dir, ws);
+      assert.equal(r.status, "imported", r.error);
+      assert.deepEqual([r.workflows, r.workflowVersions, r.steps, r.stepVersions], [2, 3, 1, 1]);
+      assert.deepEqual((await ws.listWorkflows()).map((w) => [w.name, w.activeVersion]), [["acme", "v1"], ["acme/linear/sync", "v2"]]);
+      const meta = (await ws.getWorkflowMetadata("acme/linear/sync"))!;
+      assert.deepEqual([meta.versions["v1"]?.upstream, meta.versions["v1"]?.source, meta.versions["v2"]?.upstream], [up, "install", up]);
+      assert.deepEqual((await ws.getStepMetadata("acme/linear/fetch"))?.versions["v1"]?.upstream, up);
+      // Aside, nested as they were; the run records stay.
+      assert.ok(existsSync(join(r.movedTo!, "workflows", "acme", "linear", "sync", "v2.yaml")));
+      assert.ok(existsSync(join(r.movedTo!, "workflows", "acme", "_metadata.json")));
+      assert.ok(existsSync(join(dir, "workflows", "acme", "runs", "1700000000001")));
+      assert.ok(existsSync(join(dir, "workflows", "acme", "linear", "sync", "runs", "1700000000002")));
+      assert.deepEqual(await new FileWorkspaceStore(dir).listWorkflows(), []);
     });
 
     if (tb.kind === "ladybug") {

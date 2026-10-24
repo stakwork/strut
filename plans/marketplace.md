@@ -1271,6 +1271,26 @@ discovery, which is the adoption signal the choice rests on.
    - **Where names do change** is §12's lab renames, with the distro's
      `renames` map — not this step. Strut's own seeds (`job`,
      `orchestrator`, `builder`) keep their names.
+   - **Built 2026-10-24.** `Upstream` (`src/workspace.ts`) on workflow,
+     step and app versions with `upstreamFor`'s carry-forward,
+     `getStepMetadata` (steps had no read of a version's record),
+     `activate: false` on all three content-hash publishers, and
+     `validateWorkflowName`; conformance cases on the file store, Ladybug
+     and Neo4j 5.19.
+   - **Found while building it, not in this step: a run's workflow from its
+     event path.** A step's `ctx.path` begins with the run's root workflow
+     (`acme/linear/sync/fetch`), and `StepContext` carries no workflow, so
+     eight places read it as `path.split("/")[0]` — `acme` for a slashed
+     name: a proposal's `by.workflow` (`src/proposals.ts:291`), the
+     Mothership's billing dimension (`src/llm.ts:208`), the agent's
+     `created_by` stamp and a session turn's `workflow`
+     (`src/steps/core/agent.ts:821`, `:1903`), `meta/add-evidence`'s asker
+     (`src/steps/lib/meta/add-evidence.ts:25`), a job thread with no agent
+     (`src/job-threads.ts:319`), the run graph's root
+     (`src/apps/views/…/RunGraph.tsx:752`), and the flyout a run event
+     opens (`web/src/app.tsx:898`, `split("/")[1]`). The fix is the run's
+     workflow on `StepContext`, set by the runner, read at each — needed
+     before step 2 installs a slashed name.
 2. **Format + install from `file:`.** The tree digest (`treeHash`, shared
    with `apps.md` §1.3), `buildPackage`,
    `installPackage` (verify, the prefix rule, `requires.packages`
