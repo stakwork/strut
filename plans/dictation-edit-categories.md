@@ -154,6 +154,27 @@ changed.
 - **Nothing else.** No sentence is ever kept, only the pair or the style
   value.
 
+## Telling a mishearing from a slip: "said the same"
+
+Most of this plan rests on one question: did the user say what they
+corrected to, and dictation misheard it (Etoy → Itoi), or did they say
+something else and change it (Mark → Mike)? A fix the user repeats is
+strong evidence of a mishearing, but only if the two sound the same:
+correcting a slip of the tongue twice must never teach it. These are the
+ways to answer "said the same", cheapest first.
+
+| Option | How | Catches | Cost | Status |
+|---|---|---|---|---|
+| 1. Vowel-aware spelling rules | Normalise spellings that sound alike (oy/oi, ph/f, c/k, a leading e/i, doubled letters), keep the vowels, compare | Etoy/Itoi, Paula Toy/Paul Itoi, Sarah/Sara, Stackworth/Stakwork; keeps Mark/Mike, Jon/Jen, Tom/Tim apart | None; code only | **Now**: the repeat path and the sound gate |
+| 2. Metaphone 3 with vowels | The phonetic algorithm Stakwork's Jarvis already uses for names (`jarvis-backend`, `api/helper/metaphone3.py`: `SetEncodeVowels`, `SetEncodeExact`, `ResultRanking`) | Much of English spelling's irregularity in names, tuned over years | A port or library into strut; check its licence and size | Later, if rules miss too much |
+| 3. Pronunciation dictionary plus spelling-to-sound | Look words up in a pronunciation dictionary (CMU's has about 134k words, many names). A small model predicts sounds for unknown words. Compare sounds | Real words and names, including ones spelled nothing like they sound | A few MB of data plus a tiny model, local | Later |
+| 4. Check the recording | Keep the recording until the edit watch ends. Ask the speech model whether the corrected text fits the audio as well as the transcript did | The only test of what the user actually said. A slip (said "Mark", wrote Mike) fails it however often it repeats | Keep the WAV about 60 s longer (local); needs a speech model that can score given text against audio | The end goal |
+| 5. A voice profile | The user reads a few sentences in Settings once (enrolment). Then either the speech model adapts to their voice and accent, or their own pronunciations of their names and terms are kept as sound examples | Fewer mishearings in the first place, especially names said the user's way | An enrolment flow; on-device adaptation or a per-user sound store; privacy of a voice print (local only, deletable) | Research |
+
+Options 4 and 5 move the question from spelling to sound, which is where
+the mistake happens. Option 1 ships now because it fixes the cases seen in
+use (Paul Itoi) without new dependencies.
+
 ## Wispr Flow, for comparison
 
 Wispr publishes little about how it works. From reviews and its
