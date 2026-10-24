@@ -1206,16 +1206,71 @@ discovery, which is the adoption signal the choice rests on.
 1. **Provenance + names.** `upstream` on version records (file store,
    graph schema, conformance case), carried forward by every publish;
    `VersionSource: "install"`; `activate: false` on the content-hash
-   publishers; workflow names with slashes — the file store's listing
-   walking nested directories for `_metadata.json`, the run store's
-   `workflows/<name>/runs/` under a nested name, and **the URL rule**: 25
-   routes take `/workflows/:name/…` as one segment, and `:name{.+}` would
-   swallow the `/:version` catch-all behind it, so a slashed workflow
-   name travels URL-ENCODED on the wire (`/workflows/acme%2Flinear%2Fsync/run`,
-   as GitLab encodes a project path; the router matches `%2F` as one
-   segment and `param()` decodes it), encoded by `web/src/api.ts`, the
-   embed deep links and the MCP doors' `ui` links. The step routes keep
-   `:type{.+}` as they are.
+   publishers; and workflow names with slashes. **Names need no data
+   migration** (2026-10-24, proposed; checked on `strut@3abcb97`): every
+   workflow today has a one-segment name, which is the base case of the
+   nested layout — the same folder, the same graph node, the same URL.
+   What changes is code, and it matters only once a name has a slash:
+   - **The stores.** The run store already nests a name on `/` (`runsDir`,
+     `src/store.ts:456`, written for the `step:<type>` buckets), and the
+     graph store keys a workflow by its name, slashes included. The file
+     store is the one to change: `listWorkflows` and `snapshot()` (what
+     the Ladybug import reads) walk nested directories for
+     `_metadata.json` instead of one flat `readdir` (`src/workspace.ts:639`,
+     `:1471`), and `deleteWorkflow` takes segments instead of refusing any
+     `/` (`src/workspace.ts:821`).
+   - **The name rule, for slashed names only.** Neither store checks a
+     workflow name at create today (`createWorkflow`,
+     `src/workspace.ts:722`, and its graph twin), so a rule tightened for
+     every name could refuse a republish of a name someone already has.
+     The rule applies only to a name with a `/`: no empty, `.` or `..`
+     segment, no `\`, and no segment named `runs`.
+   - **`runs` is reserved** because a workflow's directory on the file
+     store already holds its run records in `runs/`, beside
+     `_metadata.json` and the `vN.yaml` files; a workflow `acme/runs`
+     would land inside `acme`'s run records. The version files are files,
+     so `vN` needs no reservation.
+   - **A workflow beside its namespace.** A workflow `acme` and an
+     installed `acme/linear/sync` share `workflows/acme/` on the file
+     store: `acme`'s own files, and `linear/sync/` below them. So the walk
+     keeps descending after it finds a `_metadata.json` (skipping `runs/`);
+     `createWorkflow`'s taken-name check reads `_metadata.json`, not the
+     directory (`pathExists`, `src/workspace.ts:733` — a namespace folder
+     is not a workflow, and today it would rename a new `acme` to
+     `acme-2`); and deleting `acme` removes its own files and `runs/`,
+     never the names under it (today's `deleteWorkflow` is an `rm -rf` of
+     the directory, `src/workspace.ts:828`). The graph store has no such
+     case: names are keys, not paths.
+   - **The URL rule.** 25 routes take `/workflows/:name/…` as one segment,
+     and `:name{.+}` would swallow the `/:version` catch-all behind it, so
+     a slashed name travels URL-ENCODED on the wire
+     (`/workflows/acme%2Flinear%2Fsync/run`, as GitLab encodes a project
+     path). Checked on Hono 4.12.32: the router's `decodeURI` leaves `%2F`
+     alone, so `…/run`, `…/:version/run` and `…/flow` each match with
+     `param("name")` = `acme/linear/sync`, and a one-segment name routes as
+     before. An unencoded slashed name 404s in every case tried: a launch
+     matches no route, and `GET /workflows/acme/linear` asks `acme` for a
+     version named `linear`, which no workflow has (labels are `vN`). The
+     step routes keep `:type{.+}` as they are.
+   - **The clients.** Whoever builds the URL encodes the name. Strut's web
+     UI puts it in raw in 20 places in `web/src/api.ts` (5 encode) — fixed
+     in this step. Already encoded: the deep links (`?wf=`, query
+     parameters written through `URLSearchParams`), the MCP doors' `ui`
+     links (`src/ai/tools.ts:327`, `src/ai/assistant-tools.ts:147`), the
+     peer client (`src/peers.ts:312`, `:330`, `:566`), and hive's launch,
+     run-read and control paths (`src/services/strut-runs.ts:372`, `:534`,
+     `:694`, `strut-runs/job-turn.ts`, `strut-runs/orchestrator-turn.ts`,
+     `strut-runs/lab.ts`; `hive@3bc899bce`). Hive's legal-benchmarks route
+     and the mcp lab's smoke tests put fixed one-segment names in raw and
+     never meet a slashed one. A host that builds URLs raw keeps working
+     for every one-segment name.
+   - **A slashed name already on a graph.** The graph store accepts a slash
+     today, so a swarm may already hold one, unreachable over HTTP because
+     the slash splits the URL. This step makes it reachable; one query per
+     swarm says whether any exist (not checked).
+   - **Where names do change** is §12's lab renames, with the distro's
+     `renames` map — not this step. Strut's own seeds (`job`,
+     `orchestrator`, `builder`) keep their names.
 2. **Format + install from `file:`.** The tree digest (`treeHash`, shared
    with `apps.md` §1.3), `buildPackage`,
    `installPackage` (verify, the prefix rule, `requires.packages`
