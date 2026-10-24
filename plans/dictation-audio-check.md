@@ -1,7 +1,8 @@
 # Dictation: does a correction fit what was said? (spike)
 
-> Status (2026-10-24): spike, not built. The script is
-> `src/audio/dictation-eval/audio-score.ts` (opt-in, not in `npm test`). The
+> Status (2026-10-24): spike, not built. The scripts are
+> `src/audio/dictation-eval/audio-score.ts` (learning) and `audio-apply.ts`
+> (applying at transcription), both opt-in and not in `npm test`. The
 > numbers below come from macOS `say` voices, not real speakers. Read them as
 > evidence that the method works, not as tuned thresholds.
 
@@ -211,7 +212,7 @@ settle that.
 |---|---|---|
 | on disk | 661 MB (already downloaded with Parakeet) | 136 MB new |
 | load | ~1.0 s | ~0.5 s |
-| resident after load (onnxruntime) | +1.7 to 1.8 GB RSS; ~1.95 GB peak for the process on short clips | +0.45 to 0.55 GB RSS; ~0.68 GB peak |
+| resident after load (onnxruntime) | +1.25 GB RSS (first measured as 1.7 to 1.8 GB: the script read every model file into memory to size it; fixed) | +0.31 GB RSS |
 | encode, benchmark clips (1.5 s median, 7.3 s max) | p50 81 ms, p95 203 ms | p50 29 ms, p95 67 ms |
 | score one text after encoding | p50 3.5 ms, p95 20 ms | p50 3.0 ms, p95 17 ms |
 | 12.5 s clip: encode + one text | 591 + 143 ms | 189 + 126 ms |
@@ -284,7 +285,7 @@ is the brain):
    correction, and nothing else. Peel already watches the edit for about
    60 s, so strut holds each clip for the watch plus a margin (90 s) and drops
    it. Peel stores no audio.
-4. The scorer runs in a worker thread, like the recognizer: about 1.8 GB
+4. The scorer runs in a worker thread, like the recognizer: about 1.2 GB
    resident while loaded. It should load on the first correction that carries
    audio and unload when idle, like the fixer. It cannot share the sherpa
    recognizer's copy of Parakeet, even when Parakeet is the user's speech
@@ -346,3 +347,202 @@ held. Before switching it on:
 
 Do not adopt the CTC 110M or the TDT 110M as the scorer: the first does not
 separate, and the second is not reliable on close names and codes.
+
+## Applying at transcription
+
+**Question.** Tom's boss is "Paul Itoi". Dictation writes the name a new way
+almost every time ("Paulatoy", "Paula Toy", "Paul Latoy", "Call itoy",
+"Coolitoy", "Paul Italy"), so learning one misspelling at a time can't keep
+up. Given the user's vocabulary names, can the scorer decide at transcription
+time that a name fits the audio better than what the speech model typed, and
+rewrite any misspelling to it?
+
+**Method** (`src/audio/dictation-eval/audio-apply.ts`):
+
+1. **Real transcripts.** Each clip (`say`, five voices) is transcribed by
+   sherpa's Parakeet TDT 0.6B and by Kroko, as `/audio/transcribe` does it
+   (no hotwords). Every misspelling below is one the models really typed.
+2. **Candidates.** lingo.ts `recall` as it is, plus a looser match: any span,
+   of no more words than the name, that `soundsAlike` one of the name's
+   written forms and is 0.6 to 1.6 times its length. (A span with more words
+   than the name swallows a neighbour: "in peel" → "Peel".) The looser match
+   reaches "Call itoy", "Coolitoy", "Stack Whoop", "Tori" and "KP", and also
+   "Mark" → Mike and "John" → Jen.
+3. **Audio Δ** = fit(sentence with the name) − the better of fit(sentence as
+   typed) and fit(sentence with the span title-cased), on TDT 0.6B at λ = 1.
+   The clip is encoded once and every candidate is scored against that
+   encoding. Title-casing the span means a capital letter alone is no
+   evidence for the name.
+4. **Text Δ** is today's rewrite test on the same candidate: the 1.7B's
+   in-context score with the name minus without it, less
+   `SAME_SOUND_MARGIN` when the span is a lower-case word that sounds the
+   same. Today's fixer is `rewrite()` itself, run on the same transcript.
+5. **Scoring.** Only vocabulary names are counted. A written form the speaker
+   said and the transcript lacks is "needed". Gaining it is a true positive.
+   Gaining a written form the speaker did not say is a false positive.
+   *Exact* means a clip has no false positive and no false negative.
+
+**Test set.** The new set has 14 sentences. The vocabulary holds only names:
+Paul Itoi, Kathryn O'Brien, Stadeum, Supabase, Stakwork, P8 and Mike.
+
+- Positives: "My boss is called Paul Itoi", "Ask Paul Itoi about it", "Paul
+  Itoi will review the deck on Monday", "Kathryn O'Brien is my wife",
+  "Deploy it to Stadeum", "We use Supabase", "I work for Stakwork", "Ship
+  P8 by Friday".
+- Negatives: "I met Paul Etoy…", "I met Paula Toy…", "We watched the game
+  at the stadium", "The pH of the water is high", "I'll call Mark tomorrow",
+  "My son wants a toy for his birthday".
+
+The test also runs the 48 cases.jsonl fix cases that have a vocabulary word
+and a sensible audio version. The fillers, doubled words, self-corrections
+and `n-lsat-off` are left out. That makes 62 sentences × 5 voices = 310 clips
+per speech model.
+
+### Results (310 clips per speech model)
+
+| policy | Parakeet: P / R / exact | Kroko: P / R / exact |
+|---|---|---|
+| **text only: today's `rewrite`, 1.7B** | 0.86 / 0.72 / 0.82 | 0.87 / 0.68 / 0.77 |
+| audio only, rewrite when Δ ≥ −2 | 1.00 / 0.40 / 0.75 | 0.91 / 0.51 / 0.71 |
+| audio only, Δ ≥ 0 | 1.00 / 0.29 / 0.71 | 0.93 / 0.39 / 0.67 |
+| audio Δ ≥ −2, plus the text test on lower-case spans | 1.00 / 0.34 / 0.72 | 0.95 / 0.46 / 0.70 |
+| today's text test, audio veto at Δ < −12 | 0.91 / 0.64 / 0.81 | 0.94 / 0.65 / 0.79 |
+| today's text test, audio veto at Δ < −8 | 0.91 / 0.54 / 0.78 | 0.95 / 0.57 / 0.75 |
+| looser candidates, text test, no audio | 0.72 / 0.85 / 0.81 | 0.71 / 0.80 / 0.73 |
+| **looser candidates, text test, audio veto at Δ < −12** | **0.90 / 0.76 / 0.85** | **0.86 / 0.77 / 0.81** |
+| looser candidates, text test, audio veto at Δ < −8 | 0.93 / 0.63 / 0.82 | 0.91 / 0.67 / 0.78 |
+
+Split by set, for today's fixer → looser candidates + veto at −12 (exact):
+on the cases.jsonl fix cases, Parakeet goes 0.83 → 0.89 and Kroko 0.77 →
+0.81. On the 14 new sentences, Parakeet goes 0.79 → 0.73 and Kroko 0.80 →
+0.79.
+
+**Audio cannot be the trigger.** A vocabulary name almost never fits
+*better* than what the speech model typed. On Parakeet's own transcripts,
+the scorer is the model that chose that spelling. The best Δ for "Paul Itoi"
+over "Paulatoy" / "Paula Toy" / "Paul Latoy" runs from −16 to +5, with
+median −2 to −3. "Stackwork" → "Stakwork" runs −8 to −15, the encoder
+spelling bias already seen when learning. Kroko's transcripts are scored by
+a different model, and there the name does sometimes win (up to +21), but
+not reliably. At every threshold, audio as the trigger has about half of
+today's recall.
+
+**Today's text fixer already does most of the job.** With "Paul Itoi" in
+the vocabulary as a Person, `rewrite` turns "Paulatoy", "Paulitoy", "Paula
+Toy", "Paul Litoy", "Paulidoy", "Paul Itoy", "Paul Etoy" and "Paul A toy"
+into Paul Itoi on 10 of 10 clips of each of the first two sentences, on both
+speech models, with nothing learned. It misses only where `recall` does not
+offer the span ("Call itoy", "Call It Oy", "Coolitoy", "Paul Italy"). The
+premise is half right: learning can't keep up, but the in-context rewrite
+mostly doesn't need it to.
+
+**What the audio is good for: a veto.** A different-sounding word fits far
+worse:
+
+| should not rewrite | audio Δ | text Δ |
+|---|---|---|
+| pH → P8 | −14 to −24 | −3 to +0.3. Today rewrites Kroko's "PH" on 6 of its 10 clips |
+| Tory → Tauri ("the Tory party") | about −14 | +1 to +3. Today rewrites it on 9 of 10 |
+| strut ("strot") → Strut | about −14 | +7.5 |
+| Mark → Mike (looser match only) | −9.5 to −13.5 | +9.3: the text test **would** rewrite it |
+| John → Jen (looser match only) | −9 to −13 | −0.1 to +1.1 |
+
+The looser candidates find real misses ("Tori" → Tauri on 9 of 10 clips,
+"KP" → KPI, "BDC" → BTC, "B8" → P8, "Call itoy" → Paul Itoi). On their own,
+they let the text test rewrite Mark to Mike, and precision falls to 0.72.
+The audio veto takes most of that back. But the gap is not clean.
+
+**The veto threshold has no safe value.** The true "Stackwork" → "Stakwork"
+sits at −8 to −15. That is as low as Mark → Mike (−9.5 to −13.5) and Tory →
+Tauri (about −14). At −12, the veto still lets Mark → Mike through on 6
+clips and John → Jen on 5. It also blocks Stackwork → Stakwork on 14 clips
+where today's fixer gets it right. At −8, it blocks the close names but
+loses most of the Stakwork rewrites and recall drops to today's level or
+below. Compared clip by clip with today's fixer, looser candidates + veto
+at −12 fixes 53 clips and breaks 33.
+
+**What sound cannot tell.**
+
+- "Paula Toy" or "Paul Etoy" said as a different person. Audio Δ is −7 to +3
+  against the positives' −16 to +21, so audio cannot separate them. The text
+  test always prefers the known name (+20 or more). Neither can tell, and
+  both rewrite. That is arguably right when the user knows a Paul Itoi and no
+  Paula Toy, but it is a policy choice, not a measurement.
+- "Stadium" against Stadeum. `say` says "Stadeum" differently from
+  "stadium". So "the game at the stadium" scores −9 against the name while
+  "deploy it to Stadium" scores −5 to +3. A real speaker says both the same
+  way, so on a real voice this is a homophone and only the text test (with
+  its same-sound margin) can decide.
+- "a toy" against Itoi. Neither matcher offers the span, so it is never a
+  candidate.
+
+### Latency and memory (M2 Pro, CPU, 2 threads; clips 1.7 s median)
+
+| per transcription | p50 | p95 |
+|---|---|---|
+| sherpa Parakeet transcribe (today) | 87 ms | 119 ms |
+| ONNX encode (log-mel + encoder) | 93 ms | 129 ms |
+| ONNX greedy TDT decode from that encode | 3 ms | 5 ms |
+| audio score, all candidates (2 per clip median, 4 max) | 16 ms | 48 ms |
+| per candidate | 12 ms | 21 ms |
+| today's text `rewrite` on the 1.7B (already paid) | 66 ms | 107 ms |
+
+- **Reusing the encode.** Sherpa does not expose its encoder output, so with
+  sherpa transcribing, the scorer encodes the clip a second time. That adds
+  about 90 ms for a sentence, and 0.6 s for a 12.5 s clip. If Parakeet
+  transcription runs on the ONNX path instead, one encode serves both. The
+  stateful greedy decode added to `audio-score.ts` takes 3 ms after the
+  encode, and the audio check then adds only the 16 to 48 ms of scoring.
+  Scoring is O(T·U), so on long dictations each candidate has to be scored
+  on its sentence, cropped by the word timestamps. Uncropped, one text on a
+  21 s clip costs about 400 ms.
+- **Parity.** The ONNX greedy decode typed exactly what sherpa typed on 276
+  of 310 clips. Most differences are casing or punctuation ("Hive Mind" /
+  "Hive mind"). A few are words, in both directions ("Call itoy" / "Paul
+  Itoy", "Paul Itoi" / "Paul Atoy"). They likely come from the feature
+  front end (dither, padding). Closing that gap needs a parity pass before
+  the ONNX path could replace sherpa.
+- **Memory** (process RSS added, after four clips):
+
+  | | resident |
+  |---|---|
+  | sherpa Parakeet 0.6B (today) | +1.17 GB |
+  | onnxruntime Parakeet 0.6B, transcription only | +1.15 GB |
+  | onnxruntime Parakeet 0.6B, transcription + scoring | +1.17 to 1.29 GB (two runs) |
+  | sherpa + a separate scorer | about +2.3 GB |
+
+  Running Parakeet users' transcription through the ONNX path gives one copy
+  at today's footprint. The earlier 1.7 to 1.8 GB figure for the scorer was
+  inflated by the script reading every model file into memory. Kroko users
+  would need the 661 MB download and +1.2 GB for the scorer alone.
+
+### Recommendation
+
+**Don't build an audio-triggered rewrite.** Audio alone has about half the
+recall of today's fixer, because a name rarely fits better than the speech
+model's own spelling.
+
+**Don't build the audio veto yet either.** It is the one shape that beats
+today on the fix cases (exact 0.83 → 0.89 on Parakeet, 0.77 → 0.81 on Kroko).
+It pays off only together with looser candidates. And on `say` audio no
+threshold separates a respelt brand ("Stakwork", −8 to −15) from a close
+different name (Mark → Mike, −9.5 to −13.5). On real voices the gap was
+narrower still when learning. At about 1.2 GB for Kroko users, or a sherpa
+replacement for Parakeet users, it does not earn its cost yet.
+
+What to do instead, in order:
+
+1. **Loosen `recall` for multi-word Person names on the text path alone.**
+   Offer spans whose surname part sounds like the name's ("Call itoy",
+   "Coolitoy", "Paul Italy"), and keep the one-word looser matches out
+   (that is where Mark → Mike and John → Jen come from). That is where
+   today's "Paul Itoi" misses are, and it needs no audio.
+2. **Fix the text test's two known false rewrites,** "the Tory party" →
+   Tauri and Kroko's "PH" → P8. The audio rejects both by wide margins
+   (−14, −14 to −24), but a lower-case or capitalised everyday-word check
+   may be enough.
+3. **Revisit the veto only if Parakeet transcription moves onto the ONNX
+   path** for its own reasons (one model copy, word timestamps,
+   encoder access). Then the veto costs 16 to 48 ms and no memory, and can
+   run in shadow next to the text test at about −12. Refit it on real
+   recordings of Tom's names before it vetoes anything.

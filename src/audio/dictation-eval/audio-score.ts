@@ -29,7 +29,7 @@
  * (`--models`, default Peel's cache). WAVs are cached in .models/audio-score/wavs.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,7 +66,7 @@ export function readWav(path: string): Float32Array {
 }
 
 /** `say` in a voice, then afconvert to 16 kHz mono PCM16. Cached by voice and text. */
-async function synth(dir: string, voice: string, text: string): Promise<string> {
+export async function synth(dir: string, voice: string, text: string): Promise<string> {
   const key = `${voice}-${text.replace(/[^\w]+/g, "_").slice(0, 60)}-${createHash("sha1").update(text).digest("hex").slice(0, 10)}`;
   const wav = join(dir, `${key}.wav`);
   if (existsSync(wav)) return wav;
@@ -226,6 +226,8 @@ export interface Encoded {
   frames: number;
   encodeMs: number;
   greedy(): Promise<string>;
+  /** Transcription from this encoding (TDT only): greedy, stateful, as sherpa decodes. */
+  decode?(): Promise<string>;
   score(text: string): Promise<Fit>;
 }
 
@@ -236,7 +238,7 @@ export interface Scorer {
 }
 
 const opts: ort.InferenceSession.SessionOptions = { intraOpNumThreads: 2, graphOptimizationLevel: "all" };
-const size = (dir: string) => readdirSync(dir).filter((f) => f.endsWith(".onnx")).reduce((s, f) => s + readFileSync(join(dir, f)).length, 0);
+const size = (dir: string) => readdirSync(dir).filter((f) => f.endsWith(".onnx")).reduce((s, f) => s + statSync(join(dir, f)).size, 0);
 
 export async function ctcScorer(dir: string, priorClips: Float32Array[]): Promise<Scorer> {
   const vocab = new Vocab(join(dir, "tokens.txt"));
@@ -372,6 +374,44 @@ export async function tdtScorer(dir: string, id: string): Promise<Scorer> {
               z = await joint(gcol, 1);
             }
             t += tok === vocab.blank && DUR[d] === 0 ? 1 : DUR[d]!;
+          }
+          return vocab.decode(out);
+        },
+        async decode() {
+          // Greedy TDT with the prediction net's LSTM state carried, the joiner on one frame:
+          // one prediction step per token, one joiner call per step, as sherpa runs it.
+          const out: number[] = [];
+          const [sh, sc] = [dec!.outputNames[2]!, dec!.outputNames[3]!];
+          let states: ort.Tensor[] = stateIn.map((m) => new ort.Tensor("float32", new Float32Array(m.layers * G), [m.layers, 1, G]));
+          const step = async (tok: number) => {
+            const r = await dec!.run({
+              targets: new ort.Tensor("int32", Int32Array.from([tok]), [1, 1]),
+              target_length: new ort.Tensor("int32", Int32Array.from([1]), [1]),
+              [stateIn[0]!.name]: states[0]!, [stateIn[1]!.name]: states[1]!,
+            });
+            states = [r[sh]!, r[sc]!];
+            return r["outputs"]!.data as Float32Array;
+          };
+          const Ed = E.data as Float32Array, frame = new Float32Array(H);
+          let g = await step(vocab.blank), t = 0, perFrame = 0;
+          while (t < nT) {
+            for (let h = 0; h < H; h++) frame[h] = Ed[h * Tfull + t]!;
+            const z = (await join_!.run({
+              encoder_outputs: new ort.Tensor("float32", frame, [1, H, 1]),
+              decoder_outputs: new ort.Tensor("float32", g, [1, G, 1]),
+            }))["outputs"]!.data as Float32Array;
+            let tok = 0, d = 0;
+            for (let v = 1; v < V; v++) if (z[v]! > z[tok]!) tok = v;
+            for (let k = 1; k < DUR.length; k++) if (z[V + k]! > z[V + d]!) d = k;
+            if (tok !== vocab.blank) {
+              out.push(tok);
+              g = await step(tok);
+              perFrame++;
+            }
+            let skip = DUR[d]!;
+            if (skip === 0 && (tok === vocab.blank || perFrame >= 10)) skip = 1;
+            if (skip > 0) perFrame = 0;
+            t += skip;
           }
           return vocab.decode(out);
         },
