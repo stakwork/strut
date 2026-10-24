@@ -22,8 +22,9 @@
  * `relocateLadybug`), and the two extensions the graph backend REQUIRES to
  * open — libvector + libfts (`stageLadybugExtensions`: versioned with the
  * Ladybug CORE, not the npm package — 0.21.0 for @ladybugdb/core 0.21.2 —
- * always from extension.ladybugdb.com, never the build machine's ~/.lbdb,
- * and loaded into the staged addon before desktop.json names them);
+ * strut's pinned copies, by sha256 — src/graph/ladybug/extensions.ts — never
+ * Ladybug's INSTALL, symbol-checked against the staged addon and loaded into
+ * it before desktop.json names them);
  * elsewhere, or without a matching openssl@3,
  * Ladybug is left out with a warning. `desktop.json` beside desktop.js
  * records what was staged (`ladybug`, `embeddings`, `stt`), and desktop.js
@@ -694,58 +695,49 @@ async function relocateLadybug() {
 
 // The two extensions the graph backend requires (plans/ladybug-backend.md
 // ruling 4), beside the addon in native/ so one directory holds every binary
-// the host signs. They are versioned with the Ladybug CORE, not the npm
-// package (0.21.0 for @ladybugdb/core 0.21.2), and laid out per platform —
-// so the version is read from Ladybug itself: an in-memory database INSTALLs
-// + LOADs `vector` and SHOW_LOADED_EXTENSIONS() reports the path it put it at
-// (<HOME>/.lbdb/extension/<ver>/<plat>/vector/libvector.lbug_extension). That
-// probe runs with a throwaway HOME, and the target's files always come from
-// extension.ladybugdb.com at that version: never the build machine's
-// ~/.lbdb, which can hold an extension built against another core (an
-// "0.21.0" fts there needed a symbol 0.21.2's addon lacks, and the package it
-// went into could not open its workspace). Each must be a Mach-O of the
-// target's arch and, on the build machine's own platform, must load into the
-// staged addon (`smokeLadybug`) before the manifest names them; checkMachO
-// then verifies them with the rest of native/.
+// the host signs: strut's PINNED copies (src/graph/ladybug/extensions.ts),
+// the bytes recorded by sha256 for the installed core and the target's
+// platform, downloaded and verified into the model cache the server's own
+// loader uses — never Ladybug's INSTALL. extension.ladybugdb.com rewrites
+// the files under one extension version with every build of Ladybug's main:
+// on 2026-10-20 its "0.21.0" fts became one that needs
+// lbug::common::ValueVector::setAllNull(), which 0.21.2's addon lacks, and a
+// package built from it could not open its workspace. A core with no pins
+// stops the package. Each file must then be a Mach-O of the target's arch,
+// import no `lbug::` symbol the staged addon does not export (`nm`, which
+// reads either arch — the check a cross-stage gets), and, on the build
+// machine's own platform, load into the staged addon (`smokeLadybug`) before
+// the manifest names them; checkMachO then verifies them with the rest of
+// native/.
 const LADYBUG_PLATFORM_DIR = { "darwin-arm64": "osx_arm64", "darwin-x64": "osx_amd64" };
 const LADYBUG_EXTENSIONS = ["vector", "fts"];
+// The `lbug::` symbols a Mach-O imports (`nm -u`) or exports (`nm -gU`) for one arch.
+const lbugSymbols = (file, arch, flag) => {
+  const r = spawnSync("nm", [flag, "-arch", arch, file], { encoding: "utf-8", maxBuffer: 64 << 20 });
+  if (r.status !== 0) throw new Error(`nm ${flag} -arch ${arch} ${file} failed (${r.status}): ${r.stderr}`);
+  return new Set(r.stdout.split("\n").map((l) => l.trim().split(/\s+/).pop()).filter((sym) => sym?.includes("4lbug")));
+};
 async function stageLadybugExtensions() {
-  const probe = `
-const lbug = (await import("@ladybugdb/core")).default;
-const db = new lbug.Database(":memory:");
-const conn = new lbug.Connection(db);
-await conn.query("INSTALL vector");
-await conn.query("LOAD EXTENSION vector");
-const rows = await (await conn.query("CALL SHOW_LOADED_EXTENSIONS() RETURN *")).getAll();
-await conn.close(); await db.close();
-console.log(JSON.stringify(rows));
-`;
-  const home = await mkdtemp(join(tmpdir(), "strut-lbdb-"));
-  const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { cwd: ROOT, env: { ...process.env, HOME: home }, encoding: "utf-8" });
-  await rm(home, { recursive: true, force: true });
-  if (r.status !== 0) throw new Error(`Ladybug could not INSTALL + LOAD its vector extension (network to extension.ladybugdb.com needed):\n${r.stdout}${r.stderr}`);
-  const rows = JSON.parse(r.stdout.trim().split("\n").pop());
-  const loaded = rows.find((row) => String(row["extension name"]).toUpperCase() === "VECTOR")?.["extension path"];
-  const m = /\/extension\/([^/]+)\/[^/]+\/vector\/libvector\.lbug_extension$/.exec(String(loaded ?? ""));
-  if (!m) throw new Error(`cannot read the extension version from Ladybug's loaded path: ${loaded}`);
-  const [, version] = m;
   const targetDir = LADYBUG_PLATFORM_DIR[platform];
   if (!targetDir) throw new Error(`no Ladybug extension platform known for ${platform}`);
+  const { LADYBUG_EXTENSION_PINS: pins, pinnedExtensions } = await import(pathToFileURL(join(ROOT, "build", "graph", "ladybug", "extensions.js")).href);
+  const got = await pinnedExtensions(ladybugVersion, { platform: targetDir });
+  if (got.none) throw new Error(`${got.none}: pin the extensions for @ladybugdb/core@${ladybugVersion} (src/graph/ladybug/extensions.ts) before packaging it`);
   const arch = ortArch === "x64" ? "x86_64" : ortArch;
+  const exported = lbugSymbols(join(native, "lbugjs.node"), arch, "-gU");
   const from = [];
   for (const name of LADYBUG_EXTENSIONS) {
     const file = `lib${name}.lbug_extension`;
     const dest = join(native, file);
-    const url = `https://extension.ladybugdb.com/v${version}/${targetDir}/${name}/${file}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`downloading ${url}: ${res.status} ${res.statusText}`);
-    await writeFile(dest, Buffer.from(await res.arrayBuffer()));
-    from.push(`${file} ← ${url}`);
+    await copyFile(got.files[name], dest);
     await chmod(dest, 0o755);
+    from.push(`${file} ← ${got.files[name]} (sha256 ${pins.platforms[targetDir][name].sha256.slice(0, 16)}…)`);
     const archs = spawnSync("lipo", ["-archs", dest], { encoding: "utf-8" });
     if (archs.status !== 0 || !archs.stdout.trim().split(/\s+/).includes(arch)) {
       throw new Error(`${dest} is not a ${arch} Mach-O (lipo: ${archs.stdout.trim() || archs.stderr.trim()})`);
     }
+    const missing = [...lbugSymbols(dest, arch, "-u")].filter((sym) => !exported.has(sym));
+    if (missing.length) throw new Error(`${file} needs ${missing.length} symbol(s) the staged lbugjs.node does not export — built against another core: ${missing.slice(0, 5).join(", ")}`);
   }
   if (platform === hostPlatform) {
     const tmp = await mkdtemp(join(tmpdir(), "strut-lbug-check-"));
@@ -753,11 +745,11 @@ console.log(JSON.stringify(rows));
     await rm(tmp, { recursive: true, force: true });
     if (failures.length) throw new Error(`the staged Ladybug extensions do not load into the staged addon:\n  ${failures.join("\n  ")}`);
   } else {
-    warn(`Ladybug's extensions for ${platform} were not loaded here (a ${hostPlatform} host can't): only their arch was checked`);
+    log(`Ladybug's extensions for ${platform} were symbol-checked against its addon, not loaded (a ${hostPlatform} host can't)`);
   }
-  manifest.ladybugExtensions = version;
+  manifest.ladybugExtensions = pins.version;
   await writeManifest();
-  log(`staged Ladybug's ${LADYBUG_EXTENSIONS.join(" + ")} extensions (${version}, ${targetDir}) → native/:\n    ${from.join("\n    ")}`);
+  log(`staged Ladybug's ${LADYBUG_EXTENSIONS.join(" + ")} extensions (${pins.version}, ${targetDir}, pinned) → native/:\n    ${from.join("\n    ")}`);
 }
 
 // sharp's addon goes into native/ with libvips, the same way. The platform
