@@ -33,6 +33,7 @@ import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.j
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
+import type { AppMonitor, AppUsageBrief } from "./monitor.js";
 import { lockDrift, lockProblems, takeLock, type LockDrift } from "./releases.js";
 
 /** Strut's starter directories (`app/init { template }`): `src/apps/templates/<name>/`. */
@@ -64,7 +65,13 @@ export interface AppView extends Omit<AppRecord, "releases"> {
    *  `step:app/report-error` runs stamped with this app, newest first, at
    *  most `APP_ERRORS_MAX`. Absent when the capability has no run store. */
   errors?: AppError[];
+  /** What the app's pages cost the server (./monitor.ts): calls, failures,
+   *  data by step type, and the warnings — absent without a monitor. */
+  usage?: AppUsageBrief;
 }
+
+/** A listed app, with the live version's warning count (./monitor.ts) when it has any. */
+export type AppListing = AppListEntry & { warnings?: number };
 
 /** One client-side error an app's page reported (`app/report-error`). */
 export interface AppError {
@@ -140,7 +147,8 @@ export interface AppReleases {
 }
 
 export interface AppsCapability {
-  list(): Promise<AppListEntry[]>;
+  /** Every app, each with its live version's warning count when it has any. */
+  list(): Promise<AppListing[]>;
   get(name: string, version?: string): Promise<AppView | null>;
   /** A version's directory (the active one by default), or null. */
   versionDir(name: string, version?: string): Promise<{ path: string; version: string; hash: string } | null>;
@@ -196,6 +204,9 @@ export interface AppsDeps {
   /** The app's latest client-side errors, newest first (§8) — createStrut
    *  reads them off the run store (`appErrors`); absent, `get` carries none. */
   errors?: (app: string, max: number) => Promise<AppError[]>;
+  /** The monitor `step_run` counts into (./monitor.ts): `get` carries its
+   *  brief, `list` its warning count. Absent, neither. */
+  monitor?: Pick<AppMonitor, "brief" | "warningCount" | "forget">;
 }
 
 
@@ -365,7 +376,15 @@ export function createApps(deps: AppsDeps): AppsCapability {
   const errorsOf = async (app: string) => (deps.errors ? await deps.errors(app, APP_ERRORS_MAX).catch(() => []) : []);
 
   return {
-    list: () => workspace.listApps(),
+    async list() {
+      const listed = await workspace.listApps();
+      const monitor = deps.monitor;
+      if (!monitor) return listed;
+      return listed.map((a) => {
+        const warnings = monitor.warningCount(a.name, a.activeVersion);
+        return warnings ? { ...a, warnings } : a;
+      });
+    },
 
     async get(name, version) {
       const rec = await workspace.getApp(name, version);
@@ -388,6 +407,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         stale,
         inertGrants,
         ...(errors ? { errors } : {}),
+        ...(deps.monitor ? { usage: deps.monitor.brief(name) } : {}),
       };
     },
 
@@ -542,7 +562,11 @@ export function createApps(deps: AppsDeps): AppsCapability {
       await workspace.setAppPinned(name, pinned);
       return release ? { release } : {};
     },
-    delete: (name) => workspace.deleteApp(name),
+    async delete(name) {
+      const removed = await workspace.deleteApp(name);
+      if (removed) deps.monitor?.forget(name);
+      return removed;
+    },
 
     async templates() {
       const { readdir } = await import("node:fs/promises");

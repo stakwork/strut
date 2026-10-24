@@ -1801,6 +1801,9 @@ export interface AppListEntry {
   pinned?: boolean;
   /** The live release's id, only while the app is held (plans/app-releases.md). */
   live?: string;
+  /** The live version's warnings in the last day (src/apps/monitor.ts): its
+   *  pages cost the server too much. Absent when none. */
+  warnings?: number;
   /** The peer the app lives on, for one listed through the read-through
    *  (`listPeerApps`; never on the wire). */
   peer?: string;
@@ -1855,6 +1858,49 @@ export interface AppView {
   inertGrants: string[];
   errors?: AppError[];
 }
+
+// ── What an app's pages cost the server (src/apps/monitor.ts) ───────────────
+
+export interface AppUsageTotals {
+  calls: number;
+  errors: number;
+  bytes: number;
+  ms: number;
+}
+
+/** One pattern the monitor caught, on the version that caused it. */
+export interface AppWarning {
+  kind: "fanout" | "repeat" | "volume" | "bytes" | "failing";
+  version: string;
+  type?: string;
+  window: "10s" | "1m" | "1h";
+  peak: number;
+  distinct?: number;
+  times: number;
+  firstAt: string;
+  lastAt: string;
+  message: string;
+  fix: string;
+  example?: string;
+  error?: string;
+}
+
+/** `GET /apps/:name/usage`: the last day, kept on disk across restarts. */
+export interface AppUsage {
+  app: string;
+  /** The oldest minute the report holds; absent before the first call. */
+  since?: string;
+  lastCallAt?: string;
+  hour: AppUsageTotals;
+  day: AppUsageTotals;
+  minutes: Array<{ at: string; calls: number; errors: number; bytes: number }>;
+  types: Array<AppUsageTotals & { type: string }>;
+  warnings: AppWarning[];
+}
+
+/** An app's usage, here or (`peer`) where it runs, through the read-through. */
+export const getAppUsage = (name: string, peer?: string) =>
+  fetchJSON<AppUsage>(`${peer ? peerBase(peer) : ""}/apps/${encodeURIComponent(name)}/usage`);
 
 export const listApps = () => fetchJSON<{ apps: AppListEntry[] }>("/apps").then((r) => r.apps);
 

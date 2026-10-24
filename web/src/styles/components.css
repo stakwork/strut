@@ -4220,3 +4220,104 @@ body.is-resizing-flyout * {
   height: auto;
   min-height: 0;
 }
+
+/* ─── app usage (src/apps/monitor.ts) ────────────────────────── */
+
+/* The warning dot: an app whose live version costs the server too much —
+   on its sidebar row, on the Apps title, on the topbar's Usage button. */
+.usage-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex: none;
+}
+.list-item .usage-dot { margin-right: 2px; }
+.section-title .usage-dot { margin-left: 6px; }
+.btn .usage-dot { margin-left: 6px; vertical-align: 1px; }
+
+.usage .flyout-section-title { margin-top: var(--sp-4); }
+.usage-ok {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.usage-warning {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: var(--r-md);
+}
+.usage-warning.is-earlier {
+  background: var(--surface-2);
+  border-color: var(--border);
+  opacity: 0.75;
+}
+.usage-warning.is-earlier .usage-dot { background: var(--text-dim); }
+.usage-warning-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  font-size: 12px;
+}
+.usage-warning-kind { font-weight: 600; color: var(--text); }
+.usage-warning-when { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+.usage-warning-message { font-size: 12px; color: var(--text); line-height: 1.45; }
+.usage-warning-fix { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+.usage-warning-example {
+  display: block;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-bars { margin-top: var(--sp-2); }
+.usage-bars svg { display: block; width: 100%; height: 56px; }
+.usage-bars-readout { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.usage-bars-scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.usage-bars-hit { fill: transparent; }
+.usage-bars-bar { fill: var(--accent); opacity: 0.8; }
+.usage-bars-bar.is-hover { opacity: 1; }
+.usage-bars-axis { stroke: var(--border); stroke-width: 1; }
+
+.usage-types {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.usage-types th {
+  text-align: right;
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.usage-types td {
+  text-align: right;
+  padding: 4px 6px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.usage-types th:first-child, .usage-types td:first-child { text-align: left; padding-left: 0; }
+.usage-types .usage-type { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+.usage-types td.is-error { color: var(--danger); }

@@ -173,6 +173,13 @@ used to take up to ~240 browser round trips. The `strut/views` graph
 components read node by node, so they suit a small graph; a big one needs
 a step like this.
 
+Strut counts every call a page makes, and `app/get` returns it as `usage`:
+calls, failures and data by step type, and `warnings` — one call per item,
+the same call polled too fast, too many calls, too much data, a call
+failing in a loop — each on the version that caused it, with what to do
+instead. The person sees them as a warning dot on the app. Read them when
+an app is slow or the person asks about one; a fixed version starts clean.
+
 ## What the build refuses
 
 An import outside the kit and the installed apps; a relative import that
