@@ -76,9 +76,10 @@ import { stepStats } from "./step-stats.js";
 import { AI_PUBLISHER, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
+import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
-import { listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
+import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
 import type { AppRelease, AppUpstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
@@ -471,6 +472,9 @@ export interface Strut<TServices = unknown> {
   /** Apps (plans/apps.md): what the `/apps` routes and the `app/*` steps are
    *  thin over — `ctx.services.apps`. */
   apps: AppsCapability;
+  /** What every app's pages cost the server (src/apps/monitor.ts): each
+   *  `step_run` counted, `GET /apps/:name/usage` its report. */
+  appMonitor: AppMonitor;
 
   /** Current registry. Reads through the closure so callers always see
    *  the latest after `rebuildRegistry()`. */
@@ -968,7 +972,11 @@ export async function createStrut<TServices = unknown>(
   // Apps (plans/apps.md §1.3, §8): the one implementation the `/apps`
   // routes and the `app/*` steps share, over the workspace's pointers and
   // the version directories under dataDir. A host's own `apps` on the bag
-  // wins, as every other capability's does.
+  // wins, as every other capability's does. The monitor counts every call a
+  // page makes (`step_run`), for `GET /apps/:name/usage`, the UI's warning
+  // dot and `app/get`'s `usage` — kept in each app's `.usage/` under dataDir,
+  // so a restart loses only the last few seconds.
+  const appMonitor = createAppMonitor({ root: appsRoot(dataDir) });
   const apps: AppsCapability =
     ((services as Record<string, unknown>)["apps"] as AppsCapability | undefined) ??
     createApps({
@@ -978,6 +986,7 @@ export async function createStrut<TServices = unknown>(
       // An app's client-side errors are kept runs (plans/apps.md §8): read
       // off the run store, newest first, when `app/get` asks.
       errors: (name, max) => appErrors(store, name, max),
+      monitor: appMonitor,
     });
   (services as Record<string, unknown>)["apps"] = apps;
   let stepSources: StepSources = {};
@@ -2401,6 +2410,16 @@ export async function createStrut<TServices = unknown>(
     return c.json(view);
   });
 
+  // What the app's pages cost the server (src/apps/monitor.ts): calls,
+  // failures and data per minute for the last hour and by step type for the
+  // last day, and the warnings — kept in the app's `.usage/`, so across restarts.
+  app.get("/apps/:name/usage", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
+    return c.json(appMonitor.report(at.name));
+  });
+
   app.get("/apps/:name/versions", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
@@ -2952,9 +2971,10 @@ export async function createStrut<TServices = unknown>(
   // And a peer's APPS (plans/apps.md §7.4): its app list, an app version's
   // files and its document, read with the person token on file for the
   // peer, so a host here frames a page that lives there — the document's
-  // `ETag` and a host's `If-None-Match` pass through, so it caches. The
+  // `ETag` and a host's `If-None-Match` pass through, so it caches; and an
+  // app's usage (src/apps/monitor.ts), counted where its calls run. The
   // page's tools/call go the same way, `POST /peers/<id>/mcp` below.
-  const READ_THROUGH = /^(?:peers\/[^/]+\/)*(?:(?:jobs\/[^/]+\/files|artifacts\/[^/]+|apps\/[^/]+\/v\d+\/files)(?:\/.*)?|apps)$/;
+  const READ_THROUGH = /^(?:peers\/[^/]+\/)*(?:(?:jobs\/[^/]+\/files|artifacts\/[^/]+|apps\/[^/]+\/v\d+\/files)(?:\/.*)?|apps|apps\/[^/]+\/usage)$/;
   const peerFailure = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message }, message.startsWith("peer_unknown:") ? 404 : 502);
@@ -2967,7 +2987,7 @@ export async function createStrut<TServices = unknown>(
     // stream gets the 405 it reads as "none".
     if (rest === "mcp") return c.json({ error: "method not allowed: /peers/:id/mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
     if (!READ_THROUGH.test(rest)) {
-      return c.json({ error: "a peer's read-through serves its job files (jobs/<job>/files/…), run artifacts (artifacts/<runId>/…) and apps (apps, apps/<name>/<vN>/files/…) only" }, 404);
+      return c.json({ error: "a peer's read-through serves its job files (jobs/<job>/files/…), run artifacts (artifacts/<runId>/…) and apps (apps, apps/<name>/usage, apps/<name>/<vN>/files/…) only" }, 404);
     }
     url.searchParams.delete("key");
     const query = url.searchParams.toString();
@@ -2978,7 +2998,7 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return peerFailure(c, err);
     }
-    const listing = /(?:\/files|^(?:peers\/[^/]+\/)*artifacts\/[^/]+|^(?:peers\/[^/]+\/)*apps)\/?$/.test(rest);
+    const listing = /(?:\/files|^(?:peers\/[^/]+\/)*artifacts\/[^/]+|^(?:peers\/[^/]+\/)*apps(?:\/[^/]+\/usage)?)\/?$/.test(rest);
     const headers: Record<string, string> = (res.ok || res.status === 304) && !listing
       ? artifactHeaders(rest)
       : { "content-type": "application/json", "x-content-type-options": "nosniff", "content-security-policy": "sandbox" };
@@ -5251,6 +5271,7 @@ export async function createStrut<TServices = unknown>(
         services,
         ...(actor ? { actor } : {}),
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
+        monitor: appMonitor,
       });
       return { appTools, appMeta: APP_TOOL_META };
     };
@@ -5506,6 +5527,8 @@ export async function createStrut<TServices = unknown>(
     await ownStt?.close();
     // What the sink still holds goes out before the process does.
     await ownSink?.close();
+    // And the apps' usage counted since the last write.
+    await appMonitor.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     const s = httpServer;
@@ -5552,6 +5575,7 @@ export async function createStrut<TServices = unknown>(
     reconcileClaims,
     run,
     apps,
+    appMonitor,
     stt,
     upgrade,
     automations,

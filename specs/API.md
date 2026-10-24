@@ -629,7 +629,7 @@ kept encrypted; the token has no read route.
 | GET    | `/peers` | `{ peers: [{ id, baseUrl, label?, description?, repos? }] }` — never a token |
 | PUT    | `/peers/:id` | `{ baseUrl, token, label?, description?, repos? }` → `{ ok, id, baseUrl, label?, description?, repos? }` (`repos`: the workspace's repository URLs — what `strut/list-peers` shows an agent choosing a peer); replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
 | DELETE | `/peers/:id` | `{ ok, id }`; 404 |
-| GET    | `/peers/:id/jobs/:job/files[/<path>]`, `/peers/:id/artifacts/:runId[/<path>]`, `/peers/:id/apps`, `/peers/:id/apps/:name/:version/files[/<path>]` | READ-THROUGH: that peer's job files, run artifacts and apps (its app list, an app version's listing and files, the document among them — §14.3, "A peer's app"), fetched with THIS strut's token for it — the listing (JSON) or the file, the peer's status passed on; a host's `If-None-Match` goes along and the peer's `ETag` comes back, so a 304 passes through. Prefix `peers/<id>/` for one more hop: `/peers/acme/peers/billing/jobs/<job>/files/report.md` reads `billing`'s file through `acme`, each hop with its own token — how an entry tagged `{ peer, via, job }` opens (`CALLBACKS.md` §4). Those paths only (anything else 404); a peer not on file 404 (`peer_unknown:`), unreachable 502. Served under this strut's artifact headers (sandboxed, no scripts); this strut's `?key=` is never forwarded. A read like any other: a peer may call it |
+| GET    | `/peers/:id/jobs/:job/files[/<path>]`, `/peers/:id/artifacts/:runId[/<path>]`, `/peers/:id/apps`, `/peers/:id/apps/:name/usage`, `/peers/:id/apps/:name/:version/files[/<path>]` | READ-THROUGH: that peer's job files, run artifacts and apps (its app list, an app's usage — counted where its calls run, §14.6 — an app version's listing and files, the document among them — §14.3, "A peer's app"), fetched with THIS strut's token for it — the listing (JSON) or the file, the peer's status passed on; a host's `If-None-Match` goes along and the peer's `ETag` comes back, so a 304 passes through. Prefix `peers/<id>/` for one more hop: `/peers/acme/peers/billing/jobs/<job>/files/report.md` reads `billing`'s file through `acme`, each hop with its own token — how an entry tagged `{ peer, via, job }` opens (`CALLBACKS.md` §4). Those paths only (anything else 404); a peer not on file 404 (`peer_unknown:`), unreachable 502. Served under this strut's artifact headers (sandboxed, no scripts); this strut's `?key=` is never forwarded. A read like any other: a peer may call it |
 | POST   | `/peers/:id/mcp` | An app page's tools/call, relayed to that peer's `/mcp` with THIS strut's token for it (a person token: the peer answers with `step_run` alone, as that person — §14.3, "A peer's app"). The JSON-RPC body as it came, `accept`, `mcp-protocol-version` and `mcp-session-id`; the answer streams back with its own content type (JSON or an event stream). A peer of this strut is 403 (a POST); a peer not on file 404 |
 | POST   | `/peers/tokens` | `{ actor, days? }` → `{ token, actor, exp }` — a PERSON token for this strut (Auth): what a person's own strut puts in its peer record for this one. `days` defaults to 60 (at most 365); nothing is stored, and rotating the signing secret (`STRUT_API_KEY`, else `STRUT_SECRET_KEY`) revokes every one. The deployment's call only (a peer is 403); 400 for a missing actor, bad `days`, or no secret to sign with |
 | GET    | `/self` | `{ self: { id?, label?, description?, repos? } \| null }` — this strut's OWN workspace (never in `/peers`) |
@@ -926,8 +926,9 @@ components as an app other apps import (`import { RunTimeline } from
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release |
+| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `warnings` (§14.6) only when the active version has some from the last day |
 | GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
+| GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
@@ -943,7 +944,8 @@ loop (`plans/apps.md` §8): a directory, the editor, build, read the errors,
 publish. `app/publish` stamps `publisher: "ai"` and applies the meta
 surface's rules. `app/get` (and `GET /apps/:name`) also carries `errors`:
 the app's latest client-side errors, newest first, at most 50 — the kept
-`step:app/report-error` runs stamped with the app (§14.1).
+`step:app/report-error` runs stamped with the app (§14.1) — and `usage`:
+§14.6's report without its per-minute series.
 
 ### 14.1 The app door — `step_run` (plans/apps.md §5, §7.2, §9)
 
@@ -1119,6 +1121,54 @@ sentence for each thing the lock cannot hold (a subflow chosen by a
 template, an agent grant read at run time, a step that starts other runs).
 Runs the live release's page launches will run the locked versions; until
 that lands, a release holds the page and records the lock.
+
+### 14.6 Usage — what an app's pages cost the server (`src/apps/monitor.ts`)
+
+Every `step_run` of a known app (§14.1) — refused, failed or run — is
+counted where it runs, per minute, version and step type, and KEPT in the
+app's folder under the data directory, `apps/<name>/.usage/<YYYY-MM-DD>.jsonl`
+(one file per UTC day, 30 days kept): one line per minute and version,
+`{ "at": "2026-10-24T08:30:00.000Z", "version": "v3", "types": { "run/events": [calls, errors, bytes, ms] } }`
+(a minute may span a few lines; they are summed), and a `{ "warning": … }`
+line written the moment a warning fires. Counts are written every 15 s and
+when the server shuts down cleanly, and read back the first time an app is
+asked about after a restart, so a crash loses the last few seconds of
+counts — never a warning. Deleting the app deletes its usage.
+`GET /apps/:name/usage` reports the last day:
+
+```json
+{ "app": "dash", "since": "2026-10-23T09:00:00.000Z", "lastCallAt": "…",
+  "hour": { "calls": 1240, "errors": 3, "bytes": 5242880, "ms": 41000 },
+  "day":  { "calls": 9800, "errors": 12, "bytes": 40894464, "ms": 310000 },
+  "minutes": [{ "at": "…", "calls": 22, "errors": 0, "bytes": 81920 }],
+  "types": [{ "type": "run/events", "calls": 8200, "errors": 0, "bytes": 38000000, "ms": 250000 }],
+  "warnings": [{ "kind": "fanout", "version": "v3", "type": "run/events", "window": "10s",
+                 "peak": 214, "distinct": 214, "times": 6, "firstAt": "…", "lastAt": "…",
+                 "message": "run/events called 214 times in 10 s from one page, with 214 different configs — a loop that makes one call per item",
+                 "fix": "Gather what the view needs in one call: …", "example": "{\"workflow\":\"w\",\"runId\":\"…\"}" }] }
+```
+
+`since` is the oldest minute the report holds (absent before the first
+call). `minutes` is the last hour, one entry a minute, oldest first; `hour`
+sums it. `day` and `types` (busiest first) are the last 24 hours. `bytes` is the
+results' JSON length; `ms` the server's time, a `run/get { wait }` hold
+included. A warning is one of five patterns (`APP_MONITOR_LIMITS`), counted
+in tumbling windows and kept on the VERSION that caused it:
+
+| `kind` | Fires when |
+| ------ | ---------- |
+| `fanout` | one viewer calls one step type ≥ 50 times in 10 s with ≥ 25 different configs — a call per item |
+| `repeat` | one viewer makes the same call, config and all, ≥ 120 times in a minute (a kit hook's live poll is 30) |
+| `volume` | the version is called ≥ 600 times in a minute, or ≥ 5 000 in an hour, whoever calls |
+| `bytes` | the version's results pass 50 MB in a minute |
+| `failing` | one viewer's call of one step type fails (a refusal or the step's error) ≥ 20 times in a minute; `error` is the last one |
+
+`peak` is the most seen in one window (bytes for `bytes`), `times` how
+often it fired (once a window for each viewer it caught), `example` the last such call's config (cut
+to 300 chars). `message` and `fix` are written for whoever fixes the app.
+A version published and live starts clean: `GET /apps` counts the active
+version's warnings only, and the UI shows a dot on the app (its row, the
+Apps title, the Usage button) while there are any.
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

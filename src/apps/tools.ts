@@ -21,7 +21,9 @@
  * the app too. A write — a graph write, an error report — is KEPT under
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
  * not. Results are whole data, never trimmed for a model; past 5 MB they
- * are an error naming the cap.
+ * are an error naming the cap. Every call of a known app — refused, failed
+ * or run — is counted by the monitor (./monitor.ts): what an app costs the
+ * server, and the warnings when it costs too much.
  */
 import { z } from "zod";
 import { tool, type ToolSet } from "ai";
@@ -35,6 +37,7 @@ import { baseType } from "../step-ref.js";
 import { resolveStep } from "../steps/registry.js";
 import type { AppsCapability } from "./apps.js";
 import type { AppManifest } from "./manifest.js";
+import type { AppCallStatus, AppMonitor } from "./monitor.js";
 
 export const STEP_RUN_TOOL = "step_run";
 
@@ -234,6 +237,8 @@ export interface AppToolDeps {
   reader?: Pick<GraphReader, "getNode">;
   /** `runStep`'s deps: the real store (kept runs), the workspace, claims, the verify trigger. */
   runStepDeps: RunStepDeps;
+  /** Where every call is counted (./monitor.ts): what an app costs the server. */
+  monitor?: Pick<AppMonitor, "record">;
 }
 
 /** The app a call names, with its manifest — or why there is none. */
@@ -245,6 +250,53 @@ async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppMan
 /** `{ step_run }` — the app tool set a door spreads beside its own. */
 export function buildAppTools(deps: AppToolDeps): ToolSet {
   const reader = deps.reader ?? (deps.services as { graph?: { reader?: Pick<GraphReader, "getNode"> } } | undefined)?.graph?.reader;
+  /** One call past the identity check: the grant checks, then the step.
+   *  `status` and `bytes` are what the monitor counts. */
+  const dispatch = async (
+    app: AppRef,
+    manifest: AppManifest,
+    type: string,
+    config: unknown,
+    input: unknown,
+  ): Promise<{ out: { error: string } | { result: unknown }; status: AppCallStatus; bytes: number }> => {
+    const refuse = (error: string) => ({ out: { error }, status: "refused" as const, bytes: 0 });
+    const fail = (error: string) => ({ out: { error }, status: "error" as const, bytes: 0 });
+    const cfg = isRecord(config) ? config : {};
+    const base = baseType(type);
+    const refused = grantRefusal(base, cfg, manifest, deps.registry);
+    if (refused) return refuse(`step_run refused: ${refused}`);
+    if (GRAPH_WRITES.has(base)) {
+      const bad = await graphWriteRefusal(base, cfg, manifest, reader);
+      if (bad) return refuse(`step_run refused: ${bad}`);
+    }
+    if (!(await resolveStep(deps.registry, type).catch(() => null))) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
+    const result = await runStep(
+      type,
+      deps.registry,
+      deps.services,
+      {
+        config: cfg,
+        ...(input !== undefined ? { input } : {}),
+        ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
+        app: { name: app.name, version: app.version },
+        keep: keptFromApp(base),
+        ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
+      },
+      deps.runStepDeps,
+    );
+    if (result.status !== "success") {
+      return fail(result.error?.message ?? (result.status === "cancelled" ? `${type} was cancelled` : `${type} failed`));
+    }
+    const text = JSON.stringify(result.output ?? null) ?? "null";
+    if (text.length > STEP_RUN_RESULT_MAX_CHARS) {
+      return fail(`step_run: the result of ${type} is ${(text.length / 1024 / 1024).toFixed(1)} MB, over the ${STEP_RUN_RESULT_MAX_CHARS / 1024 / 1024} MB cap — ask for less (a limit, a skip, one file)`);
+    }
+    // Wrapped, so a step's own `error` field (a failed run's summary) is
+    // never mistaken for the tool's failure (`mcpToolsFrom` reads the
+    // raw output's `error`); `toModelOutput` unwraps it.
+    return { out: { result: JSON.parse(text) as unknown }, status: "ok", bytes: text.length };
+  };
+
   return {
     [STEP_RUN_TOOL]: tool({
       description:
@@ -262,41 +314,20 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         if (!app) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
         const found = await appOf(app, deps);
         if ("error" in found) return found;
-        const cfg = isRecord(config) ? config : {};
-        const base = baseType(type);
-        const refused = grantRefusal(base, cfg, found.manifest, deps.registry);
-        if (refused) return { error: `step_run refused: ${refused}` };
-        if (GRAPH_WRITES.has(base)) {
-          const bad = await graphWriteRefusal(base, cfg, found.manifest, reader);
-          if (bad) return { error: `step_run refused: ${bad}` };
-        }
-        if (!(await resolveStep(deps.registry, type).catch(() => null))) return { error: `step_run: step type "${type}" not found (${app.name}@${app.version})` };
-        const ref: AppRef = { name: app.name, version: app.version };
-        const result = await runStep(
-          type,
-          deps.registry,
-          deps.services,
-          {
-            config: cfg,
-            ...(input !== undefined ? { input } : {}),
-            ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
-            app: ref,
-            keep: keptFromApp(base),
-            ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
-          },
-          deps.runStepDeps,
-        );
-        if (result.status !== "success") {
-          return { error: result.error?.message ?? (result.status === "cancelled" ? `${type} was cancelled` : `${type} failed`) };
-        }
-        const text = JSON.stringify(result.output ?? null) ?? "null";
-        if (text.length > STEP_RUN_RESULT_MAX_CHARS) {
-          return { error: `step_run: the result of ${type} is ${(text.length / 1024 / 1024).toFixed(1)} MB, over the ${STEP_RUN_RESULT_MAX_CHARS / 1024 / 1024} MB cap — ask for less (a limit, a skip, one file)` };
-        }
-        // Wrapped, so a step's own `error` field (a failed run's summary) is
-        // never mistaken for the tool's failure (`mcpToolsFrom` reads the
-        // raw output's `error`); `toModelOutput` unwraps it.
-        return { result: JSON.parse(text) as unknown };
+        const started = Date.now();
+        const call = await dispatch(app, found.manifest, type, config, input);
+        deps.monitor?.record({
+          app: app.name,
+          version: app.version,
+          type: baseType(type),
+          config,
+          ...(deps.actor ? { viewer: deps.actor } : {}),
+          status: call.status,
+          ms: Date.now() - started,
+          bytes: call.bytes,
+          ...("error" in call.out ? { error: call.out.error } : {}),
+        });
+        return call.out;
       },
       toModelOutput: ({ output }) => {
         const o = output as { error?: string; result?: unknown };
