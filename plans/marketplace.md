@@ -1,6 +1,7 @@
 # Packages — sharing workflows, steps and Concepts between struts
 
-> **Status (2026-10-24): design only, nothing built.** Revised 2026-10-18
+> **Status (2026-10-24): the package BYTES layer is built** (`src/packages/`,
+> see "Step order"); nothing installs yet. Revised 2026-10-18
 > after a review against npm, Go modules, cargo, bundler, Homebrew taps and
 > OCI: the first draft's generated manifest, its first-installer name rule,
 > its vendored foreign items and its server-shaped index are gone (§10 says
@@ -1202,6 +1203,16 @@ DHT's size — only that iroh adopted the Pkarr format for its own
 discovery, which is the adoption signal the choice rests on.
 
 ## Step order
+
+**Built first, out of order (2026-10-24):** the bottom of steps 2 and 6,
+which needs nothing from step 1 — `readPackage` and the digest
+(`src/packages/format.ts`), the cache with the `file:` resolver
+(`cache.ts`), and the archive with `fetchArchive` (`archive.ts`), plus
+`GET /packages/:publisher/:name/archive?digest=`. The cache directory is
+`<dataDir>/packages/sha256-<hex>/`, not `<digest>/`: no `:` in a path a
+Windows desktop may hold. The route is behind the key like every route
+until step 6 opens what a catalog publishes; nothing fills the cache in
+production until install (step 2) calls the resolver.
 
 1. **Provenance + names.** `upstream` on version records (file store,
    graph schema, conformance case), carried forward by every publish;

@@ -7,7 +7,8 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import type { StepContext } from "../../../core.js";
 import { buildRegistry } from "../../registry.js";
 import { memoryDb } from "./_db.js";
-import { contentHash, untar, tar } from "./_snapshot.js";
+import { contentHash } from "./_snapshot.js";
+import { tar, untar } from "../../../tar.js";
 
 // memory/export → memory/import against real LadybugDB files in a temp folder
 // (with a space in its name, as macOS's Application Support has). Skips where

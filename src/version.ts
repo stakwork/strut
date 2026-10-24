@@ -70,8 +70,14 @@ export async function treeFiles(dir: string, excluded: (relPath: string, name: s
  * built document under `dist/` is derived, and `data.db` is the app's data.
  */
 export async function treeHash(dir: string): Promise<string> {
+  return hashTree(dir, await treeFiles(dir));
+}
+
+/** The tree hash over `files` (sorted `/`-joined paths under `dir`), for a
+ *  caller that lists them by its own rules — a package (packages/format.ts). */
+export async function hashTree(dir: string, files: string[]): Promise<string> {
   const h = createHash("sha256");
-  for (const rel of await treeFiles(dir)) {
+  for (const rel of files) {
     const file = createHash("sha256").update(await readFile(join(dir, rel))).digest("hex");
     h.update(`${rel}\0${file}\n`);
   }

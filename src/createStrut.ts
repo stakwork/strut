@@ -81,6 +81,9 @@ import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
+import { packArchive } from "./packages/archive.js";
+import { packageCache } from "./packages/cache.js";
+import { PACKAGE_DIGEST } from "./packages/format.js";
 import type { AppRelease, AppUpstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -2592,6 +2595,34 @@ export async function createStrut<TServices = unknown>(
     const removed = await apps.delete(at.name);
     if (!removed) return c.json({ error: `App "${at.name}" not found` }, 404);
     return c.json({ ok: true, name: at.name });
+  });
+
+  // ── Packages (plans/marketplace.md §5, §13) ─────────────────────────────
+  // A package's bytes BY DIGEST: the archive another strut fetches
+  // (`fetchArchive`, src/packages/archive.ts) — any package this strut's
+  // cache holds (`<dataDir>/packages/`), built here or resolved here, so a
+  // strut that installed one can serve it as a mirror. The digest names
+  // every byte, so the answer never changes: an ETag of the digest, kept a
+  // year. Behind the gate like every route; a package a catalog publishes
+  // is opened to anyone with the catalog (§13), a sold one by its token (§6).
+  const packages = packageCache(dataDir);
+  app.get("/packages/:publisher/:name/archive", async (c) => {
+    const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
+    const digest = c.req.query("digest") ?? "";
+    if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
+    const info = await packages.get(digest);
+    if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
+    const etag = `"${digest}"`;
+    const headers = {
+      "content-type": "application/gzip",
+      "content-disposition": `attachment; filename="${pkg.replace("/", "-")}-${digest.slice(7, 19)}.tar.gz"`,
+      "x-content-type-options": "nosniff",
+      "cache-control": "private, max-age=31536000, immutable",
+      etag,
+    };
+    if (c.req.header("if-none-match") === etag) return c.body(null, 304, headers);
+    const gz = await packArchive(info.dir, info.files);
+    return c.body(gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer, 200, headers);
   });
 
   // ── Jobs (plans/jobs.md §2.2, §6) ────────────────────────────────────────
