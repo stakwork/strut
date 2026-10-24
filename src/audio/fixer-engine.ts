@@ -52,6 +52,15 @@ const NAME_SHOTS: Shot[] = ([
   ["deploy it on Vercel", "Vercel", "yes"],
 ] as const).map(([text, word, a]) => [nameUser({ text, word }), a]);
 
+/** Whether a word, alone and in lower case, is an everyday word: dictation's
+ *  side of the same check. In its sentence the name question reads
+ *  dictation's casing ("a product called Stadium" is a name) or, lower-cased,
+ *  loses a real name ("email michael about it" reads as ordinary). */
+export const WORD_SYSTEM = `Is the given word an everyday English word found in a dictionary (yes), or only a name (no)? Answer only yes or no.`;
+
+export const wordUser = (word: string) => `Word: "${word}"`;
+const WORD_SHOTS: Shot[] = [["river", "yes"], ["emma", "no"], ["window", "yes"], ["oliver", "no"]].map(([w, a]) => [wordUser(w!), a!]);
+
 export const RETRACT_SYSTEM = `Text from dictation may contain words the speaker took back and said again differently ("Friday, sorry, Saturday"). For each, answer the words taken back ("wrong") and the words that took them back ("cue"), exactly as in the text. Answer ONLY a JSON array [{"wrong": "...", "cue": "..."}], or [] when nothing was taken back ("no problem", "I mean it", "sorry for the delay" take nothing back).`;
 const RETRACT_SHOTS: Shot[] = [
   ["call me Friday, sorry, Saturday", '[{"wrong":"Friday","cue":"sorry"}]'],
@@ -79,6 +88,7 @@ function chatml(system: string, shots: Shot[]): { head: string; tail: string } {
 const JUDGE_PROMPT = chatml(JUDGE_SYSTEM, JUDGE_SHOTS);
 const RETRACT_PROMPT = chatml(RETRACT_SYSTEM, RETRACT_SHOTS);
 const NAME_PROMPT = chatml(NAME_SYSTEM, NAME_SHOTS);
+const WORD_PROMPT = chatml(WORD_SYSTEM, WORD_SHOTS);
 
 /** The `{ wrong, cue }` items of a reply; [] when it holds no JSON array. */
 export function parseRetractions(reply: string): Retraction[] {
@@ -99,6 +109,7 @@ export function parseRetractions(reply: string): Retraction[] {
 export interface FixerEngine {
   judge(questions: JudgeQuestion[]): Promise<number[]>;
   named(questions: NameQuestion[]): Promise<number[]>;
+  everyday(words: string[]): Promise<number[]>;
   score(sentences: ScoreSentence[]): Promise<number[]>;
   retract(text: string): Promise<Retraction[]>;
   /** Resolves once the model is loaded (it is, by the time the worker answers anything). */
@@ -208,6 +219,7 @@ export async function loadLlamaFixer(o: { path: string; llama: string }): Promis
     judge: (qs) => yesOrNo(judging, JUDGE_PROMPT, qs.map(judgeUser)),
     // On the scoring sequence: its own prefix is a line long, so the judge's keeps its cache.
     named: (qs) => yesOrNo(scoring, NAME_PROMPT, qs.map(nameUser)),
+    everyday: (ws) => yesOrNo(scoring, WORD_PROMPT, ws.map(wordUser)),
     score: (ss) => serial(async () => {
       const out: number[] = [];
       for (const s of ss) {

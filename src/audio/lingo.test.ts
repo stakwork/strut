@@ -28,15 +28,16 @@ const lexicon: Lexicon = {
 };
 
 /** A fixer whose scores are given: `judge` by "from→to", `named` by
- *  "word@sentence" (unlisted: −5), `score` by sentence text (unlisted: −10),
- *  `retract` by text. Records what it was asked. */
-function fake(o: { judge?: Record<string, number>; named?: Record<string, number>; score?: Record<string, number>; retract?: Record<string, Retraction[]>; learnMargin?: number } = {}) {
-  const asked = { judge: [] as JudgeQuestion[], named: [] as NameQuestion[], score: [] as ScoreSentence[], retract: [] as string[] };
+ *  "word@sentence", `everyday` by word (unlisted: −5), `score` by sentence
+ *  text (unlisted: −10), `retract` by text. Records what it was asked. */
+function fake(o: { judge?: Record<string, number>; named?: Record<string, number>; everyday?: Record<string, number>; score?: Record<string, number>; retract?: Record<string, Retraction[]>; learnMargin?: number } = {}) {
+  const asked = { judge: [] as JudgeQuestion[], named: [] as NameQuestion[], everyday: [] as string[], score: [] as ScoreSentence[], retract: [] as string[] };
   const fixer: Fixer = {
     id: "fake",
     learnMargin: o.learnMargin ?? 0,
     judge: async (qs) => (asked.judge.push(...qs), qs.map((q) => o.judge?.[`${q.from}→${q.to}`] ?? -5)),
     named: async (qs) => (asked.named.push(...qs), qs.map((q) => o.named?.[`${q.word}@${q.text}`] ?? -5)),
+    everyday: async (ws) => (asked.everyday.push(...ws), ws.map((w) => o.everyday?.[w] ?? -5)),
     score: async (ss) => (asked.score.push(...ss), ss.map((s) => o.score?.[s.text] ?? -10)),
     retract: async (text) => (asked.retract.push(text), o.retract?.[text] ?? []),
   };
@@ -264,24 +265,46 @@ describe("lingo: learning from an edit", () => {
 
   it("a same-sounding change the judge turns down is learned when the user's word is a name and dictation's an everyday word", async () => {
     const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
-    const { fixer, asked } = fake({ named: { "Stadeum@Let's open it in Stadeum": 6, "stadium@Let's open it in stadium": -9 } });
-    assert.deepEqual(await mishearings("Let's open it in stadium", "Let's open it in Stadeum", empty, fixer), [{ heard: "stadium", written: "Stadeum" }]);
-    assert.deepEqual(asked.named, [{ text: "Let's open it in Stadeum", word: "Stadeum" }, { text: "Let's open it in stadium", word: "stadium" }]);
+    const { fixer, asked } = fake({ named: { "Stadeum@a product called Stadeum": 6 }, everyday: { stadium: 20 } });
+    assert.deepEqual(await mishearings("a product called Stadium", "a product called Stadeum", empty, fixer), [{ heard: "Stadium", written: "Stadeum" }]);
+    // The user's word in its sentence; dictation's alone and in lower case, so its casing does not make it a name.
+    assert.deepEqual([asked.named, asked.everyday], [[{ text: "a product called Stadeum", word: "Stadeum" }], ["stadium"]]);
     // Dictation's word is a name too: a different person.
-    const { fixer: jen } = fake({ named: { "Jen@ask Jen now": 6, "jon@ask jon now": 1 } });
+    const { fixer: jen } = fake({ named: { "Jen@ask Jen now": 6 }, everyday: { jon: -8 } });
     assert.deepEqual(await mishearings("ask jon now", "ask Jen now", empty, jen), []);
     // The user's word is an everyday word: capitalised, not a name.
-    const { fixer: cap } = fake({ named: { "Stadium@at the Stadium": -9, "stadium@at the stadium": -9 } });
+    const { fixer: cap } = fake({ named: { "Stadium@at the Stadium": -9 }, everyday: { stadium: 20 } });
     assert.deepEqual(await mishearings("at the stadium", "at the Stadium", empty, cap), []);
-    // A code a digit off: learned as a term, with no mapping; dictation's code need not be an everyday word.
-    const { fixer: code } = fake({ named: { "P8@send P8 now": 6, "PH@send PH now": 8 } });
+    // A code a digit off: learned as a term, with no mapping; dictation's code is not asked about.
+    const { fixer: code, asked: a3 } = fake({ named: { "P8@send P8 now": 6 } });
     assert.deepEqual(await mishearings("send PH now", "send P8 now", empty, code), [{ heard: "PH", written: "P8", term: true }]);
+    assert.deepEqual(a3.everyday, []);
     // A sentence's first letter, a different sound, or a judge's yes: not asked.
     const { fixer: none, asked: a2 } = fake({ judge: { "stack work→Stakwork": 3 } });
     await mishearings("peel the oranges", "Peel the oranges", empty, none);
     await mishearings("tell Mark the deck is ready", "tell Mike the deck is ready", empty, none);
     await mishearings("ask the stack work team", "ask the Stakwork team", empty, none);
     assert.deepEqual(a2.named, []);
+  });
+
+  it("asks each change alone: the typed text with only that change made", async () => {
+    const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
+    const { fixer, asked } = fake();
+    await mishearings("I work for Stackworth and my wife is Catherine.", "I work for Stakwork and my wife is Kathryn.", empty, fixer);
+    assert.deepEqual(asked.judge.map((q) => [q.from, q.to, q.edited, q.at]), [
+      ["Stackworth", "Stakwork", "I work for Stakwork and my wife is Catherine.", 11],
+      ["Catherine", "Kathryn", "I work for Stackworth and my wife is Kathryn.", 37],
+    ]);
+  });
+
+  it("asks each change in its own sentence, with a neighbour when that is under four words", () => {
+    const asked = (typed: string, edited: string) => questions(typed, edited, lexicon).map((q) => [q.typed, q.edited, q.at]);
+    assert.deepEqual(asked("Long day. I work for Stackworth now. My wife is Catherine.", "Long day. I work for Stakwork now. My wife is Kathryn."), [
+      ["I work for Stackworth now.", "I work for Stakwork now.", 11],
+      ["My wife is Catherine.", "My wife is Kathryn.", 11],
+    ]);
+    assert.deepEqual(asked("We met today. Use stadium!", "We met today. Use Stadeum!"), [["We met today. Use stadium!", "We met today. Use Stadeum!", 18]]);
+    assert.deepEqual(asked("Use stadium! We met today.", "Use Stadeum! We met today."), [["Use stadium! We met today.", "Use Stadeum! We met today.", 4]]);
   });
 
   it("an edit with nothing to ask asks nothing", async () => {

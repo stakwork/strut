@@ -32,6 +32,7 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     id: "fake", learnMargin: 0, ready: async () => {},
     judge: async (qs) => qs.map((q) => (judged.push(`${q.from}→${q.to}`), /[\p{Lu}\p{N}]/u.test(q.to) ? 5 : -5)),
     named: async (qs) => qs.map(() => -5),
+    everyday: async (ws) => ws.map(() => -5),
     score: async (ss) => ss.map((s) => (s.text.includes(s.name) ? 0 : -10)),
     retract: async () => [],
   };

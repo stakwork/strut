@@ -112,9 +112,13 @@ export function wasUndone(lexicon: Lexicon, value: string, written: string): boo
 /** One change of an edit, asked yes/no: is it a mishearing? */
 export interface JudgeQuestion {
   typed: string;
+  /** `typed` with this change alone made: the other changes of the edit
+   *  would make the sentence read as rewritten. */
   edited: string;
   from: string;
   to: string;
+  /** Where `from` is in `typed`. */
+  at: number;
   /** The vocabulary entries the change touches, as the prompt names them ("" for none). */
   known: string;
 }
@@ -148,6 +152,8 @@ export interface Fixer {
   judge(questions: JudgeQuestion[]): Promise<number[]>;
   /** log P(yes) − log P(no) that each word is a name in its sentence. */
   named(questions: NameQuestion[]): Promise<number[]>;
+  /** log P(yes) − log P(no) that each word, on its own, is an everyday dictionary word, not only a name. */
+  everyday(words: string[]): Promise<number[]>;
   /** The log-likelihood of each sentence. */
   score(sentences: ScoreSentence[]): Promise<number[]>;
   /** What the speaker took back in `text`; only asked when a cue word appears. */
@@ -161,11 +167,34 @@ const MAX_HUNK = 4;
 
 /** The changes of an edit the fixer is asked about: both sides present,
  *  at most four words a side, and sounding alike (a word that sounds nothing
- *  like it is a changed mind, not a mishearing). */
+ *  like it is a changed mind, not a mishearing). Each is asked alone, in its
+ *  own sentence: `typed` is that sentence (and a neighbour when it is under
+ *  four words), `edited` the same with only that change made. So a long
+ *  dictation stays a short prompt, and the edit's other changes do not make
+ *  it read as a rewrite. */
 export function questions(typed: string, edited: string, lexicon: Lexicon): JudgeQuestion[] {
+  const toks = tokens(typed);
   return hunks(typed, edited)
     .filter((h) => h.from && h.to && h.from.split(" ").length <= MAX_HUNK && h.to.split(" ").length <= MAX_HUNK && soundsAlike(h.from, h.to))
-    .map((h) => ({ typed, edited, from: h.from, to: h.to, known: knownFor(lexicon, h.from, h.to) }));
+    .map((h) => {
+      const at = toks[h.a[0]]!.start, end = toks[h.a[1] - 1]!.end;
+      const [s0, s1] = sentenceAround(typed, at, end);
+      const own = typed.slice(s0, s1);
+      return { typed: own, edited: own.slice(0, at - s0) + h.to + own.slice(end - s0), from: h.from, to: h.to, at: at - s0, known: knownFor(lexicon, h.from, h.to) };
+    });
+}
+
+/** Where the sentence holding `at`–`end` starts and ends in `text`, with the
+ *  sentence before it (else after it) when it has fewer than four words. */
+function sentenceAround(text: string, at: number, end: number): [number, number] {
+  const starts = [0, ...[...text.matchAll(/[.!?]+["'”’)\]]*\s+/gu)].map((m) => m.index! + m[0].length).filter((i) => i < text.length)];
+  let i = starts.filter((s) => s <= at).length - 1, j = starts.filter((s) => s < end).length;
+  const stop = () => starts[j] ?? text.length;
+  if (tokens(text.slice(starts[i]!, stop())).length < 4) {
+    if (i > 0) i--;
+    else if (j < starts.length) j++;
+  }
+  return [starts[i]!, text.slice(0, stop()).trimEnd().length];
 }
 
 /** What an edit teaches: each change the fixer judges a mishearing, as a
@@ -184,17 +213,22 @@ export async function mishearings(typed: string, edited: string, lexicon: Lexico
   // What the judge turns down although it is the same spoken word: a name,
   // product or term spelled its own way where dictation wrote a real word
   // ("stadium" → "Stadeum", "peel" → "Peel") or a code a digit off ("PH" →
-  // "P8"). Learned when the user's word is a name in the edited sentence and
-  // dictation's, unless a code, is clearly an ordinary word in the typed one
-  // (so "jon" → "Jen", a different person, is not). The rewrite still
-  // decides each sentence.
+  // "P8"). Learned when the user's word is a name in the edited sentence and,
+  // unless a code is involved, dictation's is an everyday word: asked of the word alone
+  // and in lower case, so dictation's casing ("a product called Stadium") does
+  // not make it a name, and "jon" → "Jen", a different person, is not
+  // learned. The rewrite still decides each sentence.
   const alike = qs.flatMap((q, i) => (!yes[i] && sameWord(q) ? [i] : []));
   if (alike.length) {
-    const asks = alike.flatMap((i) => [{ text: qs[i]!.edited, word: qs[i]!.to }, { text: qs[i]!.typed, word: qs[i]!.from }]);
-    const n = await fixer.named(asks);
+    // A code on either side ("PH" → "P8", "p eight" → "P8") is no person renamed: only the user's word is asked.
+    const words = alike.filter((i) => !isCode(qs[i]!.from) && !isCode(qs[i]!.to));
+    const [n, e] = await Promise.all([
+      fixer.named(alike.map((i) => ({ text: qs[i]!.edited, word: qs[i]!.to }))),
+      words.length ? fixer.everyday(words.map((i) => qs[i]!.from.toLowerCase())) : Promise.resolve([]),
+    ]);
     alike.forEach((i, k) => {
-      const q = qs[i]!;
-      yes[i] = (n[2 * k] ?? -Infinity) > 0 && (isCode(q.from) || (n[2 * k + 1] ?? Infinity) < -ORDINARY_MARGIN);
+      const j = words.indexOf(i);
+      yes[i] = (n[k] ?? -Infinity) > 0 && (j < 0 || (e[j] ?? -Infinity) > EVERYDAY_MARGIN);
     });
   }
   return qs
@@ -203,10 +237,11 @@ export async function mishearings(typed: string, edited: string, lexicon: Lexico
     .filter((p) => !wasUndone(lexicon, p.heard, p.written) && !entryWriting(lexicon, p.written)?.dictationOff && !entryWriting(lexicon, p.heard));
 }
 
-/** How surely (in nats) dictation's word must read as an ordinary word, not a
- *  name, for a same-sounding change to be learned: "jon" reads as a name by
- *  only 2, "stadium", "peel", "hive" as ordinary by 8 to 18 (the 1.7B). */
-const ORDINARY_MARGIN = 2;
+/** How surely (in nats) dictation's word must read as an everyday word for a
+ *  same-sounding change to be learned: on the 1.7B "stadium", "peel", "hive"
+ *  read so by 17 to 22, first names ("jon", "michael", "catherine") as names
+ *  by 7 to 16. */
+const EVERYDAY_MARGIN = 2;
 
 /** The same spoken word written another way: the same sound key (a casing
  *  change too, unless it begins a sentence), or a code a digit off. */
