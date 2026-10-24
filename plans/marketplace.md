@@ -45,7 +45,11 @@
 > stays active — and each re-point is classified by a schema diff before
 > the ask (§4). Selling is unchanged and still later (§6): the record and
 > the catalog are public, the bytes behind the archive route are what a
-> token gates.
+> token gates. Same day, §13 gained **the shipped defaults**: a Stakwork
+> relay as the default for struts with no swarm (Peel, a bare `docker run`),
+> the index key, a relay list and a plain HTTPS URL for the index catalog,
+> all built into strut and overridable, so a bare name resolves on first
+> boot with nothing configured.
 
 ## Problem
 
@@ -556,7 +560,10 @@ every resolve through the index follows it.
 A strut subscribes to indexes BY KEY — `STRUT_PACKAGE_INDEXES`, a JSON
 list of `{ id, key }` with Stakwork's public one as the default, and
 `PUT /packages/indexes/:id { key }`, the peers' paste door in the same
-shape. **`index.yaml` in a git repo** — a Homebrew tap, `{ package,
+shape. The index catalog is also served over plain HTTPS at the index
+strut's `GET /index/catalog` (`STRUT_PACKAGE_INDEX_URL`, §13's shipped
+defaults), verified against the key like any other fetch, so a strut with
+no relay reachable still reads the phone book. **`index.yaml` in a git repo** — a Homebrew tap, `{ package,
 version, digest, source, description }` per entry, listing by PR — stays
 as the shape for a deployment's PRIVATE index, subscribed by `git+` ref.
 Both are cached under `<dataDir>/packages/index/`, refreshed when a
@@ -1119,13 +1126,38 @@ points at bytes by hash.**
 | Layer | What it is | Who runs it |
 | --- | --- | --- |
 | The client | `@synonymdev/pkarr` (WASM, Node and browser) inside strut: sign and put a record, resolve one, verify. No native build, no UDP listener | Every strut — a swarm's and Peel's alike |
-| The relay | the Pkarr relay binary: `PUT /:key` verifies the signature and puts the packet into the DHT, `GET /:key` resolves and caches, and it re-puts for the keys it has served. One container, stateless but for its cache | One per swarm (a sphinx-swarm image), or one shared across a fleet; Synonym's public relays as fallback. Peel runs none — it points at its org's |
+| The relay | the Pkarr relay binary: `PUT /:key` verifies the signature and puts the packet into the DHT, `GET /:key` resolves and caches, and it re-puts for the keys it has served. One container, stateless but for its cache | One per swarm (a sphinx-swarm image), which talks to the public DHT like everyone else. **One run by Stakwork as the shipped default** (2026-10-24, below), so a strut with no swarm resolves out of the box. Synonym's public relays as fallback. Peel and a standalone docker strut run none — they read the default list |
 | The Mainline DHT | BitTorrent's; a record lives a few hours and anyone may re-put a still-valid signed packet | Nobody |
 
 The JS client is believed to speak only to relays (the WASM build has no
 DHT socket) — **to confirm before building**; if it reaches the DHT
 directly, the relay becomes a cache and an availability aid, not a
-dependency.
+dependency — and the defaults below stay as they are.
+
+**The shipped defaults** (2026-10-24, proposed). A strut with no swarm
+behind it — Peel, a bare `docker run`, a laptop checkout — only RESOLVES,
+and must be able to from the first boot with nothing configured. Three
+values are built into strut, each overridable:
+
+| Default | Env | What it is for |
+| --- | --- | --- |
+| The index key | `STRUT_PACKAGE_INDEXES`, Stakwork's `{ id: "stakwork", key }` as the one entry when unset (§7) | Which phone book a resolve of a bare name (`acme/linear`) consults |
+| The relay list | `STRUT_PKARR_RELAYS`, a JSON list of URLs; unset = Stakwork's relay first, then Synonym's public relays | Where the client PUTs (a swarm) and GETs (everyone) records. A GET asks the first that answers and reads a second when it can, since a relay can be stale; a swarm's own relay goes first in its list, by sphinx-swarm |
+| The index catalog URL | `STRUT_PACKAGE_INDEX_URL`; unset = the Stakwork strut's `GET /index/catalog` | The signed index catalog over plain HTTPS, verified against the index key — so the INDEX resolves with no relay and no DHT at all, and the DHT is only needed to follow PUBLISHER records, which is what it is for |
+
+Stakwork's relay is the same container a swarm runs, at one stable
+hostname, and it re-puts the index record with the rest of what it has
+served — keeping the index pointer alive is Stakwork's job whatever runs
+it. It is not a trust point: it verifies signatures and cannot forge a
+record; what it can do is be down or stale, and the fallback relays, the
+catalog URL and a publisher's own `url` list cover that. A deployment that
+wants nothing of Stakwork's sets all three to its own.
+
+**Peel's setting** is the default list, not its org's relay: a Peel user
+may have no org, and one with several orgs installs from all of them. An
+org's swarm relay is reachable only inside the swarm's network in any
+case; it serves the swarm's own PUTs, and its records reach Peel through
+the public DHT and the default relays like anyone's.
 
 **Publishing is a swarm's** (*ruled*). A record expires in hours and an
 archive must be served from somewhere that answers, so the publisher is
@@ -1208,10 +1240,16 @@ discovery, which is the adoption signal the choice rests on.
    /packages/:publisher/:name/archive?digest=` and `GET /packages/catalog`,
    the resolver (record → catalog → archive, every fetch verified by hash),
    the hourly re-put; the Pkarr relay image in sphinx-swarm.
-7. **The public index** (§7): the index key and its catalog on a Stakwork
-   strut, `PUT /index/:prefix`, `STRUT_PACKAGE_INDEXES` by key with the
-   public one as default, the paste door, `search_packages` over the
-   publishers' catalogs; `index.yaml` by `git+` for a private index.
+7. **The public index + the shipped defaults** (§7, §13): the index key
+   and its catalog on a Stakwork strut, `PUT /index/:prefix` and `GET
+   /index/catalog`, `STRUT_PACKAGE_INDEXES` by key with the public one as
+   default, the paste door, `search_packages` over the publishers'
+   catalogs; `index.yaml` by `git+` for a private index. **Stakwork's
+   relay** at a stable hostname (the step 6 container, deployed once) and
+   the defaults built into strut — `STRUT_PKARR_RELAYS` (Stakwork's, then
+   Synonym's), `STRUT_PACKAGE_INDEX_URL` — so a Peel or a bare `docker
+   run` resolves a bare name on first boot with nothing configured. The
+   env table in AGENTS.md gains the three names when this lands.
 8. **Selling:** the package token on the archive route,
    `entitlements.json`, the fetch presenting it.
 9. **Runtimes** (§11.1), independent of 1–8 and useful before any of
@@ -1259,6 +1297,12 @@ discovery, which is the adoption signal the choice rests on.
 - The index: a prefix re-pointed to a new key in the index catalog makes
   the next resolve of its name follow the new key, while a `pk:` ref to
   the old key still resolves the old record until it expires.
+- The defaults: a strut booted with none of `STRUT_PACKAGE_INDEXES`,
+  `STRUT_PKARR_RELAYS` or `STRUT_PACKAGE_INDEX_URL` set installs a package
+  by its bare index name through Stakwork's index and relay; with the
+  default relay unreachable it still reads the index catalog over HTTPS
+  and follows the publisher's record through the fallback relays; a
+  deployment that sets all three to its own never contacts Stakwork.
 - A runtime: with `STRUT_RUNTIMES` naming a container that shares the
   workspace volume, `exec { runtime }` runs a command there and the
   agent's `bash` does too, over the files its editor tool wrote on the
