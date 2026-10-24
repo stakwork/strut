@@ -63,6 +63,10 @@ export interface Change {
 export interface Mishearing {
   heard: string;
   written: string;
+  /** Learn `written` as a term with no mapping: dictation's text is a code
+   *  of its own ("PH" → "P8"), so recall finds the code by its near
+   *  spellings and each sentence decides. */
+  term?: true;
 }
 
 /** memory/lexicon's output → a Lexicon. */
@@ -115,6 +119,12 @@ export interface JudgeQuestion {
   known: string;
 }
 
+/** Whether `word` is a name, product, brand, code or term in `text`, or an ordinary word. */
+export interface NameQuestion {
+  text: string;
+  word: string;
+}
+
 /** A sentence to score, after a line saying the speaker often mentions `name` (a `type`). */
 export interface ScoreSentence {
   name: string;
@@ -136,6 +146,8 @@ export interface Fixer {
   learnMargin: number;
   /** log P(yes) − log P(no) for each question, from one forward pass each. */
   judge(questions: JudgeQuestion[]): Promise<number[]>;
+  /** log P(yes) − log P(no) that each word is a name in its sentence. */
+  named(questions: NameQuestion[]): Promise<number[]>;
   /** The log-likelihood of each sentence. */
   score(sentences: ScoreSentence[]): Promise<number[]>;
   /** What the speaker took back in `text`; only asked when a cue word appears. */
@@ -156,7 +168,10 @@ export function questions(typed: string, edited: string, lexicon: Lexicon): Judg
     .map((h) => ({ typed, edited, from: h.from, to: h.to, known: knownFor(lexicon, h.from, h.to) }));
 }
 
-/** What an edit teaches: each change the fixer judges a mishearing. Never,
+/** What an edit teaches: each change the fixer judges a mishearing, as a
+ *  mapping, or as a term alone when dictation's text is a code of its own
+ *  ("PH" → "P8": `term`). Either way the rewrite applies it only where the
+ *  sentence reads likelier with it. Never,
  *  whatever the fixer says: a pair the user undid, a word turned off for
  *  dictation, or dictation's text when it is already a vocabulary word ("BTC"
  *  → "Bitcoin": two forms of one thing; "PH" → "P8": learning it would
@@ -165,10 +180,42 @@ export async function mishearings(typed: string, edited: string, lexicon: Lexico
   const qs = questions(typed, edited, lexicon);
   if (!qs.length) return [];
   const d = await fixer.judge(qs);
+  const yes = qs.map((_, i) => (d[i] ?? -Infinity) > fixer.learnMargin);
+  // What the judge turns down although it is the same spoken word: a name,
+  // product or term spelled its own way where dictation wrote a real word
+  // ("stadium" → "Stadeum", "peel" → "Peel") or a code a digit off ("PH" →
+  // "P8"). Learned when the user's word is a name in the edited sentence and
+  // dictation's, unless a code, is clearly an ordinary word in the typed one
+  // (so "jon" → "Jen", a different person, is not). The rewrite still
+  // decides each sentence.
+  const alike = qs.flatMap((q, i) => (!yes[i] && sameWord(q) ? [i] : []));
+  if (alike.length) {
+    const asks = alike.flatMap((i) => [{ text: qs[i]!.edited, word: qs[i]!.to }, { text: qs[i]!.typed, word: qs[i]!.from }]);
+    const n = await fixer.named(asks);
+    alike.forEach((i, k) => {
+      const q = qs[i]!;
+      yes[i] = (n[2 * k] ?? -Infinity) > 0 && (isCode(q.from) || (n[2 * k + 1] ?? Infinity) < -ORDINARY_MARGIN);
+    });
+  }
   return qs
-    .filter((_, i) => (d[i] ?? -Infinity) > fixer.learnMargin)
-    .map((q) => ({ heard: q.from, written: q.to }))
+    .filter((_, i) => yes[i])
+    .map((q): Mishearing => ({ heard: q.from, written: q.to, ...(isCode(q.from) ? { term: true as const } : {}) }))
     .filter((p) => !wasUndone(lexicon, p.heard, p.written) && !entryWriting(lexicon, p.written)?.dictationOff && !entryWriting(lexicon, p.heard));
+}
+
+/** How surely (in nats) dictation's word must read as an ordinary word, not a
+ *  name, for a same-sounding change to be learned: "jon" reads as a name by
+ *  only 2, "stadium", "peel", "hive" as ordinary by 8 to 18 (the 1.7B). */
+const ORDINARY_MARGIN = 2;
+
+/** The same spoken word written another way: the same sound key (a casing
+ *  change too, unless it begins a sentence), or a code a digit off. */
+function sameWord(q: JudgeQuestion): boolean {
+  if (nearCode(q.from, letters(q.from), q.to, letters(q.to))) return true;
+  if (soundKey(q.from) !== soundKey(q.to)) return false;
+  if (letters(q.from) !== letters(q.to)) return true;
+  const at = find(q.edited, q.to);
+  return at > 0 && !SENTENCE_START.test(q.edited.slice(0, at));
 }
 
 /** The lexicon entries a change touches, as the judge's prompt names them:
@@ -212,7 +259,10 @@ export async function rewrite(text: string, lexicon: Lexicon, fixer: Fixer, marg
     const edit = { from: c.span, to: c.written, at: c.at };
     const heard = [text];
     if (letters(c.span) !== letters(c.written)) heard.push(applyEdits(text, [{ ...edit, to: titleCase(c.span) }]));
-    return { edit, sentences: [applyEdits(text, [edit]), ...heard].map((s) => ({ name: c.written, type: c.type, text: capitalised(s) })) };
+    return {
+      edit, sameSound: sameSound(c.span, c.written),
+      sentences: [applyEdits(text, [edit]), ...heard].map((s) => ({ name: c.written, type: c.type, text: capitalised(s) })),
+    };
   });
   const scores = readings.length ? await fixer.score(readings.flatMap((r) => r.sentences)) : [];
   let k = 0;
@@ -220,7 +270,7 @@ export async function rewrite(text: string, lexicon: Lexicon, fixer: Fixer, marg
   for (const r of readings) {
     const s = scores.slice(k, (k += r.sentences.length));
     const d = (s[0] ?? -Infinity) - Math.max(...s.slice(1));
-    if (d > margin) scored.push({ ...r.edit, d });
+    if (d > margin + (r.sameSound ? SAME_SOUND_MARGIN : 0)) scored.push({ ...r.edit, d });
   }
   // Where two words claim the same span, the likelier.
   const vocab: Edit[] = scored.filter((x) => !scored.some((y) => y !== x && overlap(x, y) && y.d > x.d)).map(({ d: _, ...e }) => e);
@@ -232,6 +282,20 @@ export async function rewrite(text: string, lexicon: Lexicon, fixer: Fixer, marg
     }
   }
   return finish(text, [...removals, ...vocab]);
+}
+
+/** How much likelier (in nats) a sentence must read with a vocabulary word
+ *  than as heard when the heard text is an ordinary word that sounds just
+ *  like it ("stadium" for Stadeum, "tory" for Tauri). The sound is then no
+ *  evidence either way and the scoring line, which names the word, favours
+ *  it: on the 1.7B "we watched the game at the stadium" reads 3.9 nats
+ *  likelier as Stadeum, "open it in stadium" 5.8 to 7.5. */
+export const SAME_SOUND_MARGIN = 5;
+
+/** Heard in lower case (an ordinary word, not a name dictation already
+ *  capitalised), spelled otherwise, with the same sound key. */
+function sameSound(span: string, written: string): boolean {
+  return !UPPER.test(span) && letters(span) !== letters(written) && soundKey(span) === soundKey(written);
 }
 
 /** With no fixer: fillers and doubled words by rule, and what the user
@@ -306,7 +370,7 @@ export function recall(text: string, lexicon: Lexicon): Candidate[] {
         const score =
           k.heard && lower === k.key ? 3
           : ls === lk || (sk.length >= 3 && sk === kk) || (said === k.said && said.includes(" ")) ? 2
-          : (long >= 6 && distance(ls, lk) * 4 <= long) || (sk.length >= 6 && distance(sk, kk) <= 1) ? 1
+          : (long >= 6 && distance(ls, lk) * 4 <= long) || (sk.length >= 6 && distance(sk, kk) <= 1) || (!k.heard && nearCode(span, ls, k.written, lk)) ? 1
           : 0;
         if (!score) continue;
         const at = toks[i]!.start;
@@ -321,6 +385,20 @@ export function recall(text: string, lexicon: Lexicon): Candidate[] {
     .filter((f) => !found.some((g) => g !== f && g.written === f.written && overlap(g, f) && better(g, f)))
     .slice(0, MAX_CANDIDATES)
     .map(({ score: _, ...c }) => c);
+}
+
+/** Two codes of the same length one character apart, a letter for a digit
+ *  ("PH" or "P H" for P8, "AC" for A6): dictation writes a digit's name as a
+ *  letter that sounds like it. Not two letters ("API" is not "KPI"). */
+function nearCode(span: string, ls: string, written: string, lk: string): boolean {
+  if (ls.length < 2 || ls.length > 5 || ls.length !== lk.length || !codeLike(span) || !codeLike(written)) return false;
+  const off = [...ls].flatMap((c, i) => (c === lk[i] ? [] : [[c, lk[i]!]]));
+  return off.length === 1 && NUMBER.test(off[0]![0]!) !== NUMBER.test(off[0]![1]!);
+}
+
+/** Each word a single character or holding a capital or a digit: "PH", "P H", "pH", "P8"; not "an". */
+function codeLike(text: string): boolean {
+  return tokens(text).every((t) => [...t.core].length === 1 || UPPER.test(t.core) || NUMBER.test(t.core));
 }
 
 // ── Removals: fillers, doubled words, a phrase taken back ──────────────────
@@ -422,11 +500,21 @@ const DIGIT_NAMES: Record<string, string> = { 0: "zero", 1: "one", 2: "two", 3: 
 /** How it is said: the letters and digits of a code by name ("P8" → "pee eight"), words as they are. */
 export function spoken(text: string): string {
   return tokens(text).flatMap((t) => {
-    const core = [...t.core];
-    const spell = core.length === 1 || core.some((c) => NUMBER.test(c)) || (core.length <= 5 && core.every((c) => UPPER.test(c) || NUMBER.test(c)));
-    if (!spell) return [t.core.toLowerCase()];
-    return core.map((c) => c.toLowerCase()).map((c) => DIGIT_NAMES[c] ?? LETTER_NAMES[c] ?? c);
+    if (!spelt(t.core)) return [t.core.toLowerCase()];
+    return [...t.core].map((c) => c.toLowerCase()).map((c) => DIGIT_NAMES[c] ?? LETTER_NAMES[c] ?? c);
   }).join(" ");
+}
+
+/** Said letter by letter: one character, anything with a digit, or up to five capitals. */
+function spelt(word: string): boolean {
+  const core = [...word];
+  return core.length === 1 || core.some((c) => NUMBER.test(c)) || (core.length <= 5 && core.every((c) => UPPER.test(c) || NUMBER.test(c)));
+}
+
+/** One word of two or more characters said letter by letter: a code ("PH", "P8"). */
+export function isCode(text: string): boolean {
+  const t = tokens(text);
+  return t.length === 1 && [...t[0]!.core].length >= 2 && spelt(t[0]!.core);
 }
 
 /** A crude sound key: the consonant skeleton after common spelling merges ("stack work", "Stakwork" → stkwrk). */
@@ -552,9 +640,16 @@ function contiguous(toks: Token[], i: number, n: number): boolean {
 
 /** memory/remember's input for one mishearing: `heard` is how dictation
  *  mishears `written`, on the entity that writes it, or on a new word of the
- *  lingo type when none does. Only the pair is said, never the sentence it was in. */
-export function learnInput(heard: string, written: string, lexicon: Lexicon): Record<string, unknown> {
+ *  lingo type when none does. Only the pair is said, never the sentence it
+ *  was in. A `term` learn writes only the new word, with no mapping; null
+ *  when the vocabulary already writes it. */
+export function learnInput(heard: string, written: string, lexicon: Lexicon, term = false): Record<string, unknown> | null {
   const entry = entryWriting(lexicon, written);
+  if (term) {
+    if (entry) return null;
+    if (!lexicon.lingoType) throw new Error("the memory has no entity type with role dictation for a new word");
+    return { episode: `Dictation: corrected “${heard}” to “${written}”.`, kind: "note", created_by: "dictation", mentions: [{ type: lexicon.lingoType, name: written }] };
+  }
   if (!lexicon.mishearing) throw new Error("the memory has no predicate with role mishearing");
   if (!entry && !lexicon.lingoType) throw new Error("the memory has no entity type with role dictation for a new word");
   const subject = entry ? { ref_id: entry.refId, type: entry.type, name: entry.name } : { type: lexicon.lingoType, name: written };

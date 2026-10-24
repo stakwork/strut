@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   fillers, heardOnly, learnInput, lexiconFrom, mishearings, questions, recall, retraction, rewrite, soundsAlike, undoIds,
-  type Fixer, type JudgeQuestion, type Lexicon, type Retraction, type ScoreSentence,
+  type Fixer, type JudgeQuestion, type Lexicon, type NameQuestion, type Retraction, type ScoreSentence,
 } from "./lingo.js";
 
 // Dictation's vocabulary pipeline with a fake fixer: the model's scores are
@@ -27,14 +27,16 @@ const lexicon: Lexicon = {
   ],
 };
 
-/** A fixer whose scores are given: `judge` by "from→to", `score` by sentence
- *  text (unlisted: −10), `retract` by text. Records what it was asked. */
-function fake(o: { judge?: Record<string, number>; score?: Record<string, number>; retract?: Record<string, Retraction[]>; learnMargin?: number } = {}) {
-  const asked = { judge: [] as JudgeQuestion[], score: [] as ScoreSentence[], retract: [] as string[] };
+/** A fixer whose scores are given: `judge` by "from→to", `named` by
+ *  "word@sentence" (unlisted: −5), `score` by sentence text (unlisted: −10),
+ *  `retract` by text. Records what it was asked. */
+function fake(o: { judge?: Record<string, number>; named?: Record<string, number>; score?: Record<string, number>; retract?: Record<string, Retraction[]>; learnMargin?: number } = {}) {
+  const asked = { judge: [] as JudgeQuestion[], named: [] as NameQuestion[], score: [] as ScoreSentence[], retract: [] as string[] };
   const fixer: Fixer = {
     id: "fake",
     learnMargin: o.learnMargin ?? 0,
     judge: async (qs) => (asked.judge.push(...qs), qs.map((q) => o.judge?.[`${q.from}→${q.to}`] ?? -5)),
+    named: async (qs) => (asked.named.push(...qs), qs.map((q) => o.named?.[`${q.word}@${q.text}`] ?? -5)),
     score: async (ss) => (asked.score.push(...ss), ss.map((s) => o.score?.[s.text] ?? -10)),
     retract: async (text) => (asked.retract.push(text), o.retract?.[text] ?? []),
   };
@@ -65,6 +67,19 @@ describe("lingo: recall", () => {
     assert.deepEqual(spans("Stakwork's team and the stakworks"), []);
   });
 
+  it("a term with no mishearing is found by its sounds, and a code by a letter for a digit", () => {
+    const p8: Lexicon = { undone: [], entries: [entry("p", "Lingo", "P8", ["P8"])] };
+    assert.deepEqual(spans("send PH now", p8), ["PH@5→P8"]);
+    assert.deepEqual(spans("ship P H by Friday", p8), ["P H@5→P8"]);
+    assert.deepEqual(spans("the pH of the water", p8), ["pH@4→P8"]);
+    assert.deepEqual(spans("send p eight now", p8), ["p eight@5→P8"]);
+    assert.deepEqual(spans("send P 8 now", p8), ["P 8@5→P8"]);
+    // Two letters apart, or an everyday word: not a candidate.
+    const kpi: Lexicon = { undone: [], entries: [entry("k", "Lingo", "KPI", ["KPI"])] };
+    assert.deepEqual(spans("The API is slow", kpi), []);
+    assert.deepEqual(spans("go to an office", { undone: [], entries: [entry("a", "Lingo", "A6", ["A6"])] }), []);
+  });
+
   it("a repeated word is a candidate at each place it occurs", () => {
     assert.deepEqual(spans("can you fix the fix integration"), ["fix@8→Sphinx!", "fix@16→Sphinx!"]);
   });
@@ -72,12 +87,23 @@ describe("lingo: recall", () => {
 
 describe("lingo: the rewrite, with the fixer", () => {
   it("keeps a candidate only when the sentence reads likelier with the word", async () => {
-    const { fixer } = fake({ score: { "Ask the Stakwork team.": -20, "Ask the stack work team.": -30, "Ask the Stack Work team.": -25 } });
+    const { fixer } = fake({ score: { "Ask the Stakwork team.": -20, "Ask the stack work team.": -30, "Ask the Stack Work team.": -28 } });
     assert.deepEqual(await rewrite("Ask the stack work team.", lexicon, fixer), {
       text: "Ask the Stakwork team.", changes: [{ heard: "stack work", written: "Stakwork", at: 8 }],
     });
     const { fixer: unsure } = fake({ score: { "Ask the Stakwork team.": -20, "Ask the stack work team.": -30, "Ask the Stack Work team.": -19 } });
     assert.deepEqual(await rewrite("Ask the stack work team.", lexicon, unsure), { text: "Ask the stack work team.", changes: [] });
+  });
+
+  it("an everyday word that sounds just like the word needs a margin: the scoring line names the word, and favours it", async () => {
+    const stadeum: Lexicon = { undone: [], entries: [entry("s", "Lingo", "Stadeum", ["Stadeum"], [["h", "stadium"]])] };
+    const reads = (vocab: number) => fake({ score: { "Open it in Stadeum": vocab, "Open it in stadium": -30, "Open it in Stadium": -31 } }).fixer;
+    assert.equal((await rewrite("open it in stadium", stadeum, reads(-24))).text, "open it in Stadeum");
+    assert.equal((await rewrite("open it in stadium", stadeum, reads(-26))).text, "open it in stadium");
+    // A name dictation capitalised is not an everyday word: no margin.
+    const kathryn: Lexicon = { undone: [], entries: [entry("k", "Person", "Kathryn", ["Kathryn"], [["h", "Katherine"]])] };
+    const { fixer } = fake({ score: { "Kathryn said yes": -20, "Katherine said yes": -21 } });
+    assert.equal((await rewrite("Katherine said yes", kathryn, fixer)).text, "Kathryn said yes");
   });
 
   it("scores both readings from a capital, and a sound-alike also in its own capitals, after the word's line", async () => {
@@ -236,6 +262,28 @@ describe("lingo: learning from an edit", () => {
     assert.deepEqual(await mishearings("send Peel now", "send P8 now", lexicon, fixer), []);
   });
 
+  it("a same-sounding change the judge turns down is learned when the user's word is a name and dictation's an everyday word", async () => {
+    const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
+    const { fixer, asked } = fake({ named: { "Stadeum@Let's open it in Stadeum": 6, "stadium@Let's open it in stadium": -9 } });
+    assert.deepEqual(await mishearings("Let's open it in stadium", "Let's open it in Stadeum", empty, fixer), [{ heard: "stadium", written: "Stadeum" }]);
+    assert.deepEqual(asked.named, [{ text: "Let's open it in Stadeum", word: "Stadeum" }, { text: "Let's open it in stadium", word: "stadium" }]);
+    // Dictation's word is a name too: a different person.
+    const { fixer: jen } = fake({ named: { "Jen@ask Jen now": 6, "jon@ask jon now": 1 } });
+    assert.deepEqual(await mishearings("ask jon now", "ask Jen now", empty, jen), []);
+    // The user's word is an everyday word: capitalised, not a name.
+    const { fixer: cap } = fake({ named: { "Stadium@at the Stadium": -9, "stadium@at the stadium": -9 } });
+    assert.deepEqual(await mishearings("at the stadium", "at the Stadium", empty, cap), []);
+    // A code a digit off: learned as a term, with no mapping; dictation's code need not be an everyday word.
+    const { fixer: code } = fake({ named: { "P8@send P8 now": 6, "PH@send PH now": 8 } });
+    assert.deepEqual(await mishearings("send PH now", "send P8 now", empty, code), [{ heard: "PH", written: "P8", term: true }]);
+    // A sentence's first letter, a different sound, or a judge's yes: not asked.
+    const { fixer: none, asked: a2 } = fake({ judge: { "stack work→Stakwork": 3 } });
+    await mishearings("peel the oranges", "Peel the oranges", empty, none);
+    await mishearings("tell Mark the deck is ready", "tell Mike the deck is ready", empty, none);
+    await mishearings("ask the stack work team", "ask the Stakwork team", empty, none);
+    assert.deepEqual(a2.named, []);
+  });
+
   it("an edit with nothing to ask asks nothing", async () => {
     const { fixer, asked } = fake();
     assert.deepEqual(await mishearings("same text", "same text", lexicon, fixer), []);
@@ -295,6 +343,13 @@ describe("lingo: strut's memory steps", () => {
     const made = learnInput("p eight", "P8", lexicon) as any;
     assert.deepEqual(made.facts[0].subject, { type: "Lingo", name: "P8" });
     assert.equal("form" in made.facts[0], false);
+  });
+
+  it("a term learn makes the new word alone, and nothing when the vocabulary writes it", () => {
+    assert.deepEqual(learnInput("PH", "P8", lexicon, true), {
+      episode: "Dictation: corrected “PH” to “P8”.", kind: "note", created_by: "dictation", mentions: [{ type: "Lingo", name: "P8" }],
+    });
+    assert.equal(learnInput("PH", "Peel", lexicon, true), null);
   });
 
   it("a learn says why it cannot be written when the memory lacks the roles", () => {

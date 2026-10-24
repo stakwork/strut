@@ -18,7 +18,8 @@ export default defineStep({
     "Learns from the user's edit of what dictation typed: each mishearing in it (dictation wrote `heard` where the user " +
     "writes `written`, a name or term that sounds like it) is remembered on the entity that writes it, or as a new word, " +
     "so the next transcription puts it right. The user's fixer model (dictation/use) judges each short change that " +
-    "sounds alike; everyday swaps, rewrites, casing of everyday words, two names for one thing, words turned off for " +
+    "sounds alike, and a name that sounds like a real word (stadium → Stadeum) is learned too; a change from a code of " +
+    "its own (PH → P8) keeps only the new word, with no mapping. Everyday swaps, rewrites, casing of everyday words, two names for one thing, words turned off for " +
     "dictation and pairs the user undid teach nothing. With no fixer active (dictation/models: none picked, or the pick " +
     "not installed yet) nothing is learned and `learned` is empty, so a client need not send edits then; nor when the " +
     "fixer is too slow. " +
@@ -36,7 +37,7 @@ export default defineStep({
     const lexicon = await readLexicon(ctx);
     const pairs = (await within(mishearings(cfg.typed, cfg.edited, lexicon, fixer), FIX_TIMEOUT_MS)) ?? [];
     const learned: LearnedT[] = [];
-    for (const p of pairs) learned.push(await learn(p.heard, p.written, lexicon, ctx));
+    for (const p of pairs) learned.push(await learn(p.heard, p.written, lexicon, ctx, p.term));
     return { learned };
   },
 });

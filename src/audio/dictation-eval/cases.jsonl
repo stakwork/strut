@@ -3,6 +3,10 @@
 {"kind":"lexicon","id":"names","entries":[{"name":"Kathryn","type":"Person","written":["Kathryn"],"heard":["Katherine"]},{"name":"Jen","type":"Person","written":["Jen"]}],"undone":[]}
 {"kind":"lexicon","id":"graph-names","entries":[{"name":"Kathryn O'Brien","type":"Person","written":["Kathryn O'Brien"]},{"name":"Jen","type":"Person","written":["Jen"]}],"undone":[]}
 {"kind":"lexicon","id":"graph-kate","entries":[{"name":"Kate O'Brien","type":"Person","written":["Kate O'Brien"]}],"undone":[]}
+{"kind":"lexicon","id":"learn-new","entries":[{"name":"Jen","type":"Person"}]}
+{"kind":"lexicon","id":"stadeum","entries":[{"name":"Stadeum","type":"Lingo","heard":["stadium"]}]}
+{"kind":"lexicon","id":"peel-heard","entries":[{"name":"Peel","type":"Project","heard":["peel"]}]}
+{"kind":"lexicon","id":"p8-term","entries":[{"name":"P8","type":"Lingo"}]}
 {"kind":"learn","id":"l-stack-work","lexicon":"learn","typed":"Ask the stack work team","edited":"Ask the Stakwork team","expect":[{"heard":"stack work","written":"Stakwork"}],"note":"a name broken up"}
 {"kind":"learn","id":"l-stackwork","lexicon":"learn","typed":"Hello I work for Stackwork","edited":"Hello I work for Stakwork","expect":[{"heard":"Stackwork","written":"Stakwork"}],"note":"a long name misspelt"}
 {"kind":"learn","id":"l-stockwork","lexicon":"learn","typed":"I work for stockwork","edited":"I work for Stakwork","expect":[{"heard":"stockwork","written":"Stakwork"}]}
@@ -26,7 +30,7 @@
 {"kind":"learn","id":"l-postgres","lexicon":"learn","typed":"the post gres database is full","edited":"the Postgres database is full","expect":[{"heard":"post gres","written":"Postgres"}]}
 {"kind":"learn","id":"l-mixed","lexicon":"learn","typed":"ask jon at stack work","edited":"ask Jen at Stakwork","expect":[{"heard":"stack work","written":"Stakwork"}],"note":"a mishearing beside a changed name"}
 {"kind":"learn","id":"l-kates","lexicon":"learn","typed":"restart the kates cluster","edited":"restart the k8s cluster","expect":[{"heard":"kates","written":"k8s"}]}
-{"kind":"learn","id":"n-ph","lexicon":"learn","typed":"send PH now","edited":"send P8 now","expect":[],"note":"PH is something you could mean"}
+{"kind":"learn","id":"l-ph-term","lexicon":"learn","typed":"send PH now","edited":"send P8 now","expect":[{"heard":"PH","written":"P8","term":true}],"note":"was n-ph: PH is a code of its own, so P8 is learned as a term with no mapping and each sentence decides"}
 {"kind":"learn","id":"n-their","lexicon":"learn","typed":"their team is here","edited":"there team is here","expect":[],"note":"everyday swap"}
 {"kind":"learn","id":"n-there","lexicon":"learn","typed":"is there car outside","edited":"is their car outside","expect":[],"note":"everyday swap"}
 {"kind":"learn","id":"n-btc-bitcoin","lexicon":"learn","typed":"send BTC now","edited":"send Bitcoin now","expect":[],"note":"two right ways to write one thing"}
@@ -57,6 +61,12 @@
 {"kind":"learn","id":"l-john","lexicon":"learn","typed":"I had lunch with Jon today","edited":"I had lunch with John today","expect":[{"heard":"Jon","written":"John"}],"note":"the same name, spelled the user's way"}
 {"kind":"learn","id":"l-stephen","lexicon":"learn","typed":"Steven will send the contract","edited":"Stephen will send the contract","expect":[{"heard":"Steven","written":"Stephen"}],"note":"the same name, spelled the user's way"}
 {"kind":"learn","id":"n-mark","lexicon":"learn","typed":"tell Mark the deck is ready","edited":"tell Mike the deck is ready","expect":[],"note":"a different person"}
+{"kind":"learn","id":"l-stadeum","lexicon":"learn-new","typed":"Let's open it in stadium","edited":"Let's open it in Stadeum","expect":[{"heard":"stadium","written":"Stadeum"}],"note":"a product named for a real word, spelled its way"}
+{"kind":"learn","id":"l-stadeum-deploy","lexicon":"learn-new","typed":"deploy it to stadium tonight","edited":"deploy it to Stadeum tonight","expect":[{"heard":"stadium","written":"Stadeum"}]}
+{"kind":"learn","id":"l-peel-product","lexicon":"learn-new","typed":"ship it in peel tonight","edited":"ship it in Peel tonight","expect":[{"heard":"peel","written":"Peel"}],"note":"a product named with a real word"}
+{"kind":"learn","id":"l-hive","lexicon":"learn-new","typed":"check the hive dashboard","edited":"check the Hive dashboard","expect":[{"heard":"hive","written":"Hive"}],"note":"a product named with a real word"}
+{"kind":"learn","id":"n-stadium-capital","lexicon":"learn-new","typed":"we watched the game at the stadium","edited":"we watched the game at the Stadium","expect":[],"note":"capitalising the everyday word"}
+{"kind":"learn","id":"n-peel-start","lexicon":"learn-new","typed":"peel the oranges first","edited":"Peel the oranges first","expect":[],"note":"a sentence's first letter"}
 {"kind":"fix","id":"f-stack-work","lexicon":"fix","transcript":"Ask the stack work team.","expect":"Ask the Stakwork team."}
 {"kind":"fix","id":"f-stackwork","lexicon":"fix","transcript":"I work for stackwork now","expect":"I work for Stakwork now","note":"a new spelling, found by fuzzy recall"}
 {"kind":"fix","id":"f-stockwork","lexicon":"fix","transcript":"Hello, I work for Stockwork.","expect":"Hello, I work for Stakwork."}
@@ -97,3 +107,18 @@
 {"kind":"fix","id":"f-kathryn-graph-2","lexicon":"graph-names","transcript":"I asked Katherine O'Brien to sign it.","expect":"I asked Kathryn O'Brien to sign it."}
 {"kind":"fix","id":"n-kathryn-first","lexicon":"graph-names","transcript":"Katherine said yes","expect":"Katherine said yes","note":"a first name alone is not the graph's full name"}
 {"kind":"fix","id":"n-kate","lexicon":"graph-kate","transcript":"My wife Katherine O'Brien is coming","expect":"My wife Katherine O'Brien is coming","note":"Kate is a different name, not a spelling"}
+{"kind":"fix","id":"f-stadeum-open","lexicon":"stadeum","transcript":"open it in stadium","expect":"open it in Stadeum","note":"learned stadium → Stadeum, in a product's context"}
+{"kind":"fix","id":"f-stadeum-workspace","lexicon":"stadeum","transcript":"the stadium workspace","expect":"the Stadeum workspace"}
+{"kind":"fix","id":"f-stadeum-deploy","lexicon":"stadeum","transcript":"deploy to stadium","expect":"deploy to Stadeum"}
+{"kind":"fix","id":"n-stadium-game","lexicon":"stadeum","transcript":"we watched the game at the stadium","expect":"we watched the game at the stadium","note":"the everyday stadium"}
+{"kind":"fix","id":"n-stadium-full","lexicon":"stadeum","transcript":"the stadium was full","expect":"the stadium was full"}
+{"kind":"fix","id":"n-stadium-football","lexicon":"stadeum","transcript":"a football stadium","expect":"a football stadium"}
+{"kind":"fix","id":"f-peel-heard","lexicon":"peel-heard","transcript":"ship it in peel tonight","expect":"ship it in Peel tonight","note":"learned peel → Peel"}
+{"kind":"fix","id":"n-peel-heard","lexicon":"peel-heard","transcript":"I need to peel the potatoes","expect":"I need to peel the potatoes","note":"the everyday peel"}
+{"kind":"fix","id":"f-p8-ph","lexicon":"p8-term","transcript":"send PH now","expect":"send P8 now","note":"P8 a term, no mapping: recall offers it for a code one letter off"}
+{"kind":"fix","id":"f-p8-ship","lexicon":"p8-term","transcript":"we ship PH by Friday","expect":"we ship P8 by Friday"}
+{"kind":"fix","id":"f-p8-spaced","lexicon":"p8-term","transcript":"we ship P H by Friday","expect":"we ship P8 by Friday"}
+{"kind":"fix","id":"f-p8-p-eight","lexicon":"p8-term","transcript":"send p eight now","expect":"send P8 now"}
+{"kind":"fix","id":"f-p8-p-8","lexicon":"p8-term","transcript":"send P 8 now","expect":"send P8 now"}
+{"kind":"fix","id":"n-ph-water","lexicon":"p8-term","transcript":"the pH of the water is high","expect":"the pH of the water is high","note":"pH in chemistry"}
+{"kind":"fix","id":"n-ph-soil","lexicon":"p8-term","transcript":"test the PH of the soil before planting","expect":"test the PH of the soil before planting","note":"pH in chemistry, as dictation writes it"}
