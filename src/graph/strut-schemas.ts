@@ -522,6 +522,23 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
 ];
 
+/**
+ * Edges FROM a jarvis-owned type TO a Strut type — jarvis's `SENT` is
+ * Person→Message/Email; these rows add `StrutAgentSession` as a target so
+ * "who sent an orchestrator turn" can be written
+ * (projector `writeSpeakerEdges`). The edge writer validates a non-Strut
+ * source against the graph's own edge schemas, so these are SEEDED
+ * (`seedStrutDomain`) rather than registry rows, and only when the source
+ * type exists in the graph. If jarvis does not have the type (or strut did
+ * not seed here, e.g. a jarvis-seeded graph strut cannot extend), the edge
+ * schema has to be added in jarvis-backend or by a graph proposal; until
+ * then the projector's write is refused and skipped.
+ */
+export const JARVIS_SOURCED_EDGES: readonly StrutEdgeDef[] = [
+  { edge: "SENT", source: "HiveWorkspaceMember", target: "StrutAgentSession", note: "jarvis type; seeded only when HiveWorkspaceMember exists" },
+  { edge: "SENT", source: "Person", target: "StrutAgentSession", note: "jarvis type; seeded only when Person exists" },
+];
+
 /** Edge types whose declared target is a wildcard (any node label). */
 export const WILDCARD_TARGET_EDGES = new Set(["ACCESSED"]);
 
