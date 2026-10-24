@@ -1,5 +1,8 @@
 {"kind":"lexicon","id":"learn","entries":[{"name":"Stakwork","type":"Organization","written":["Stakwork"],"heard":["stack work"]},{"name":"Bitcoin","type":"Lingo","written":["Bitcoin","BTC"],"heard":[{"value":"bee tee see","form":"BTC"}]},{"name":"Sphinx","type":"Project","written":["Sphinx"],"heard":["fix"]},{"name":"Peel","type":"Project","written":["Peel"]},{"name":"LSAT","type":"Lingo","written":["LSAT"],"heard":["el sat"],"off":true},{"name":"Jen","type":"Person","written":["Jen"]}],"undone":[{"value":"k p eye","written":"KPI"}]}
 {"kind":"lexicon","id":"fix","entries":[{"name":"Stakwork","type":"Organization","written":["Stakwork"],"heard":["stack work","stock work"]},{"name":"Bitcoin","type":"Lingo","written":["Bitcoin","BTC"],"heard":[{"value":"bee tee see","form":"BTC"}]},{"name":"Sphinx","type":"Project","written":["Sphinx"],"heard":["fix"]},{"name":"P8","type":"Lingo","written":["P8"],"heard":["p eight"]},{"name":"KPI","type":"Lingo","written":["KPI"],"heard":["k p i"]},{"name":"HiveMind","type":"Project","written":["HiveMind"],"heard":["hive mind"]},{"name":"Kubernetes","type":"Lingo","written":["Kubernetes"],"heard":["cooper netties"]},{"name":"Supabase","type":"Organization","written":["Supabase"],"heard":["super base"]},{"name":"Tauri","type":"Project","written":["Tauri"],"heard":["tory"]},{"name":"Strut","type":"Project","written":["Strut"]},{"name":"Peel","type":"Project","written":["Peel"]},{"name":"Jen","type":"Person","written":["Jen"]},{"name":"LSAT","type":"Lingo","written":["LSAT"],"heard":["el sat"],"off":true}],"undone":[]}
+{"kind":"lexicon","id":"names","entries":[{"name":"Kathryn","type":"Person","written":["Kathryn"],"heard":["Katherine"]},{"name":"Jen","type":"Person","written":["Jen"]}],"undone":[]}
+{"kind":"lexicon","id":"graph-names","entries":[{"name":"Kathryn O'Brien","type":"Person","written":["Kathryn O'Brien"]},{"name":"Jen","type":"Person","written":["Jen"]}],"undone":[]}
+{"kind":"lexicon","id":"graph-kate","entries":[{"name":"Kate O'Brien","type":"Person","written":["Kate O'Brien"]}],"undone":[]}
 {"kind":"learn","id":"l-stack-work","lexicon":"learn","typed":"Ask the stack work team","edited":"Ask the Stakwork team","expect":[{"heard":"stack work","written":"Stakwork"}],"note":"a name broken up"}
 {"kind":"learn","id":"l-stackwork","lexicon":"learn","typed":"Hello I work for Stackwork","edited":"Hello I work for Stakwork","expect":[{"heard":"Stackwork","written":"Stakwork"}],"note":"a long name misspelt"}
 {"kind":"learn","id":"l-stockwork","lexicon":"learn","typed":"I work for stockwork","edited":"I work for Stakwork","expect":[{"heard":"stockwork","written":"Stakwork"}]}
@@ -31,7 +34,7 @@
 {"kind":"learn","id":"n-i","lexicon":"learn","typed":"i think so","edited":"I think so","expect":[],"note":"capitalising a letter"}
 {"kind":"learn","id":"n-apple","lexicon":"learn","typed":"apple pie","edited":"Apple pie","expect":[],"note":"capitalising an everyday word"}
 {"kind":"learn","id":"n-jon","lexicon":"learn","typed":"ask jon now","edited":"ask Jen now","expect":[],"note":"a different person"}
-{"kind":"learn","id":"n-sarah","lexicon":"learn","typed":"ask sarah now","edited":"ask Sara now","expect":[],"note":"a different spelling of a name, chosen"}
+{"kind":"learn","id":"l-sara","lexicon":"learn","typed":"ask Sara about the venue","edited":"ask Sarah about the venue","expect":[{"heard":"Sara","written":"Sarah"}],"note":"the same name, spelled the user's way"}
 {"kind":"learn","id":"n-michael","lexicon":"learn","typed":"email Michael about it","edited":"email Michelle about it","expect":[],"note":"a different person"}
 {"kind":"learn","id":"n-lsat-off","lexicon":"learn","typed":"the el sat token","edited":"the LSAT token","expect":[],"note":"word turned off for dictation (filtered)"}
 {"kind":"learn","id":"n-undone","lexicon":"learn","typed":"the k p eye number","edited":"the KPI number","expect":[],"note":"pair the user undid (filtered)"}
@@ -50,6 +53,10 @@
 {"kind":"learn","id":"n-two","lexicon":"learn","typed":"send it two him","edited":"send it to him","expect":[],"note":"everyday homophone"}
 {"kind":"learn","id":"n-format","lexicon":"learn","typed":"growth was twenty five percent","edited":"growth was 25%","expect":[],"note":"number formatting"}
 {"kind":"learn","id":"n-possessive","lexicon":"learn","typed":"the Stakwork team","edited":"Stakwork's team","expect":[],"note":"grammar edit around a known word"}
+{"kind":"learn","id":"l-kathryn","lexicon":"learn","typed":"My wife is Katherine O'Brien.","edited":"My wife is Kathryn O'Brien.","expect":[{"heard":"Katherine","written":"Kathryn"}],"note":"the same name, spelled the user's way"}
+{"kind":"learn","id":"l-john","lexicon":"learn","typed":"I had lunch with Jon today","edited":"I had lunch with John today","expect":[{"heard":"Jon","written":"John"}],"note":"the same name, spelled the user's way"}
+{"kind":"learn","id":"l-stephen","lexicon":"learn","typed":"Steven will send the contract","edited":"Stephen will send the contract","expect":[{"heard":"Steven","written":"Stephen"}],"note":"the same name, spelled the user's way"}
+{"kind":"learn","id":"n-mark","lexicon":"learn","typed":"tell Mark the deck is ready","edited":"tell Mike the deck is ready","expect":[],"note":"a different person"}
 {"kind":"fix","id":"f-stack-work","lexicon":"fix","transcript":"Ask the stack work team.","expect":"Ask the Stakwork team."}
 {"kind":"fix","id":"f-stackwork","lexicon":"fix","transcript":"I work for stackwork now","expect":"I work for Stakwork now","note":"a new spelling, found by fuzzy recall"}
 {"kind":"fix","id":"f-stockwork","lexicon":"fix","transcript":"Hello, I work for Stockwork.","expect":"Hello, I work for Stakwork."}
@@ -84,3 +91,9 @@
 {"kind":"fix","id":"f-self-correct-time","lexicon":"fix","transcript":"the meeting is at three, I mean four","expect":"the meeting is at four","note":"self-correction"}
 {"kind":"fix","id":"f-two-vocab","lexicon":"fix","transcript":"send three bee tee see to the stack work wallet","expect":"send three BTC to the Stakwork wallet"}
 {"kind":"fix","id":"f-vocab-and-filler","lexicon":"fix","transcript":"we should, uh, move to cooper netties","expect":"we should move to Kubernetes"}
+{"kind":"fix","id":"f-kathryn","lexicon":"names","transcript":"My wife is Katherine O'Brien.","expect":"My wife is Kathryn O'Brien.","note":"a learned spelling of a name, over the commoner one"}
+{"kind":"fix","id":"f-kathryn-2","lexicon":"names","transcript":"Katherine said she would pick up the kids at five.","expect":"Kathryn said she would pick up the kids at five."}
+{"kind":"fix","id":"f-kathryn-graph","lexicon":"graph-names","transcript":"My wife Katherine O'Brien is coming","expect":"My wife Kathryn O'Brien is coming","note":"a full name in the graph, spelled its way, nothing learned"}
+{"kind":"fix","id":"f-kathryn-graph-2","lexicon":"graph-names","transcript":"I asked Katherine O'Brien to sign it.","expect":"I asked Kathryn O'Brien to sign it."}
+{"kind":"fix","id":"n-kathryn-first","lexicon":"graph-names","transcript":"Katherine said yes","expect":"Katherine said yes","note":"a first name alone is not the graph's full name"}
+{"kind":"fix","id":"n-kate","lexicon":"graph-kate","transcript":"My wife Katherine O'Brien is coming","expect":"My wife Katherine O'Brien is coming","note":"Kate is a different name, not a spelling"}

@@ -70,7 +70,15 @@ every edit; the model only answers how likely something is.
    diffed word by word in code. A change with more than 4 words on a side,
    or a cut or an addition, or one that fails a lenient sound-alike gate
    (`soundsAlike`: letters, a consonant sound key, or the spelled-out sounds
-   within 40%), is not asked. Each remaining change is asked yes/no with the
+   within 40%), is not asked. A person's name respelled the way the user
+   spells it (Katherine → Kathryn, Jon → John, Steven → Stephen) is the same
+   spoken name and is learned; a different name (Mark → Mike, Jon → Jen) is
+   not. The rewrite needs nothing special for such a name: after "often
+   mentions Kathryn (a person)" the learned spelling outscores the commoner
+   one by 1.6 to 8 nats, and a full name already in the graph ("Kathryn
+   O'Brien", nothing learned) is recalled and chosen the same way. A first
+   name alone ("Katherine said yes") is not matched to a graph's full name,
+   and a different name ("Kate O'Brien") is not recalled for it. Each remaining change is asked yes/no with the
    sentence and what the vocabulary knows of the words ("Bitcoin, BTC (same
    thing)", "(turned off for dictation)"); P(yes) and P(no) come from one
    forward pass, and it is learned when yes outweighs no by the model's
@@ -133,12 +141,14 @@ every edit; the model only answers how likely something is.
 
 ## Eval (src/audio/dictation-eval)
 
-`cases.jsonl` (synthetic, committed): 50 learn cases (typed, edited, lexicon
-→ expected pairs) and 34 fix cases (transcript, lexicon → expected text),
+`cases.jsonl` (synthetic, committed): 54 learn cases (typed, edited, lexicon
+→ expected pairs) and 40 fix cases (transcript, lexicon → expected text),
 with the hard ones: stack work→Stakwork, stackwork→Stakwork, p eight→P8, P8
 typed as PH and put back, their→there (nothing), i→I (nothing), Jon→Jen
 (nothing), a sentence rewrite (nothing), "fix" vs Sphinx in and out of
-context, tory vs Tauri, stutters, "Tuesday, no, Wednesday".
+context, tory vs Tauri, stutters, "Tuesday, no, Wednesday", name spellings
+(Katherine → Kathryn learned and applied; Kathryn O'Brien from the graph;
+Kate O'Brien left alone).
 `npm run eval:dictation` (opt-in, not in `npm test`) runs them through the
 real pipeline and `DictationFixer` (the model in its worker, the 1.5 s
 fallback live) against the GGUFs in `./.models/gguf` (gitignored).
@@ -147,14 +157,17 @@ On an M-series Mac, 2026-10-23, warm (load measured separately):
 
 | fixer | task | precision | recall | exact | p50 ms | p95 ms | load s |
 |---|---|---|---|---|---|---|---|
-| qwen3-1.7b-q4 | learn | 0.92 | 0.96 | 0.94 | 59 | 66 | 1.6 |
-| qwen3-1.7b-q4 | fix | 0.96 | 0.96 | 0.94 | 66 | 186 | 1.6 |
+| qwen3-1.7b-q4 | learn | 0.93 | 0.96 | 0.94 | 76 | 89 | 1.3 |
+| qwen3-1.7b-q4 | fix | 0.97 | 0.97 | 0.95 | 75 | 200 | 1.3 |
 | qwen3-0.6b-q4 | learn | 0.82 | 0.96 | 0.88 | 37 | 81 | 6.5 |
 | qwen3-0.6b-q4 | fix | 1.00 | 0.84 | 0.88 | 78 | 349 | 6.5 |
 | none | learn | – | 0.00 | 0.54 | 0 | 0 | – |
 | none | fix | 1.00 | 0.60 | 0.71 | 0 | 0 | – |
 
-No case fell back on time. The 1.7B misses: "bee see"→BTC not learned,
+The 1.7B rows are from 2026-10-24 on the 94 cases (the 0.6B and none rows
+are from 2026-10-23 on the earlier 84; the 0.6B GGUF was not at hand to
+rerun). Before the name-spelling line in the judge's prompt the 1.7B learned
+0.92 / 0.82 / 0.87 on the same cases, missing every respelled name. No case fell back on time. The 1.7B misses: "bee see"→BTC not learned,
 there→their and "the Stakwork"→"Stakwork's" learned, "the tory party"
 rewritten to Tauri, "the peel build" left as is. The 0.6B learns more
 wrongly (PH→P8, BTC→Bitcoin, apple→Apple) and misses the take-backs. With
