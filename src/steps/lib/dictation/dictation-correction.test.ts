@@ -120,12 +120,13 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
 
   it("with no fixer, or one too slow, only exact learned mishearings are applied", async () => {
     fixer = null;
+    let release = (_: number[]) => {};
     try {
       assert.deepEqual(pick(await transcribe("send p eight now")), { text: "send P8 now", fixer: null });
       // A new spelling needs the fixer.
       assert.deepEqual(pick(await transcribe("send p8 now")), { text: "send p8 now", fixer: null });
       let scored = 0;
-      fixer = { ...fake, score: () => (scored++, new Promise(() => {})) };
+      fixer = { ...fake, score: () => (scored++, new Promise((r) => (release = r))) };
       const started = Date.now();
       assert.deepEqual(pick(await transcribe("send p eight now")), { text: "send P8 now", fixer: null });
       assert.ok(Date.now() - started < 3000, "it waited for the fixer only so long");
@@ -135,6 +136,9 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
       assert.ok(Date.now() - again < 1000, "it did not wait again");
       assert.equal(scored, 1);
     } finally {
+      // The late rewrite ends, so the transcripts of the tests after this one get the fixer.
+      release([]);
+      await new Promise((r) => setImmediate(r));
       fixer = fake;
     }
   });
@@ -231,6 +235,22 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     });
     assert.equal(((await res.json()) as { status: string }).status, "error");
     assert.ok((await step("memory/lexicon", {})).entities.some((e: any) => e.name === "Acme"));
+  });
+
+  it("a fix inside a full name keeps the person, so the next misspelling of the whole name is put right; Undo forgets both", async () => {
+    const out = await correct("My boss is called Paul Itoy.", "My boss is called Paul Itoi.");
+    assert.deepEqual(out.learned.map((l) => [l.heard, l.written, l.undo.length]), [["Itoy", "Itoi", 1]]);
+    const paul = (await step("memory/lexicon", {})).entities.find((e: any) => e.name === "Paul Itoi");
+    assert.deepEqual([paul.type, paul.heard.map((h: any) => [h.value, h.form])], ["Person", [["Itoy", "Itoi"]]]);
+    assert.equal((await rows("MATCH (e:Entity) WHERE e.name = 'Itoi' RETURN e.ref_id AS id")).length, 0);
+    assert.equal((await transcribe("Ask Call itoy about it.")).text, "Ask Paul Itoi about it.");
+    // A second fix attaches to the same person.
+    const again = await correct("Paul Attoy is out today.", "Paul Itoi is out today.");
+    assert.deepEqual(again.learned.map((l) => [l.heard, l.written]), [["Attoy", "Itoi"]]);
+    assert.equal((await rows("MATCH (e:Entity) WHERE e.name = 'Paul Itoi' AND e.deleted_at IS NULL RETURN e.ref_id AS id")).length, 1);
+    await step("dictation/undo", { undo: [...again.learned[0]!.undo, ...out.learned[0]!.undo] });
+    assert.ok(!(await step("memory/lexicon", {})).entities.some((e: any) => e.name === "Paul Itoi"));
+    assert.equal((await transcribe("Ask Call itoy about it.")).text, "Ask Call itoy about it.");
   });
 
   it("a code dictation wrote of its own is learned as a term, with no mapping, and found by its near spellings", async () => {
