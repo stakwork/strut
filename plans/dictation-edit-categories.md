@@ -66,6 +66,30 @@ kept.
 | `grammar` | their → there, tense, plural, possessive |
 | `around` | text outside what dictation typed (Peel already sends only the dictated span) |
 
+## Learn the term, the mapping, or nothing: context decides each time
+
+What a fix teaches comes in three strengths, and none of them is applied
+blindly. Every change is scored in the whole sentence (the rewrite's
+likelihood comparison), so the same learned item gives different results
+in different sentences.
+
+1. **A term.** The user fixes PH → P8. What to keep is that P8 is one of
+   their terms (a Lingo written form), not that PH means P8. Each later
+   sentence then decides: "ship P8 by Friday" becomes P8, and "the pH of
+   the water" stays.
+2. **A mapping.** The user fixes stadium → Stadeum, their product. Keep
+   that "stadium" is how dictation hears it, and still apply it only where
+   the sentence is about the product: "open it in Stadeum", but not "a
+   football stadium".
+3. **A variant of a known term.** "Stackwork", "p eight" and "P 8" resolve
+   to the term at once. Close spellings of lingo the user already has are
+   the safest fixes.
+
+So when dictation's text is itself a real word or code the user could
+mean (PH, stadium), the edited form is learned as a term, and as a mapping
+too when it is a name or product. When dictation's text is not a word
+("Stackwork", "stack work"), the mapping is learned as today.
+
 ## The judge names the kind
 
 `dictation/correction` keeps its contract, `{ typed, edited }` →
