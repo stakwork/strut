@@ -14,8 +14,8 @@ import type { JudgeQuestion, Retraction, ScoreSentence } from "./lingo.js";
 
 type Shot = [user: string, assistant: string];
 
-export const JUDGE_SYSTEM = `You review one change a user made to text typed by dictation (speech to text). Answer "yes" if it is a MISHEARING: the user said a name, product, brand, acronym, code or technical term, and dictation wrote what it SOUNDS like ("dev ops" → "DevOps", "e c two" → "EC2", "jason" → "JSON", "Stokwork" → "Stakwork").
-Answer "no" for anything else: a different word or name the user chose instead (Mark → Mike, Paris → London, 3 → 4); an ordinary spelling or grammar fix (your → you're, their → there, tense, plural, possessive); capitalising an ordinary word or the letter i; punctuation; numbers as digits; a rewrite; two forms of the same known word ("same thing"); a word turned off for dictation; or dictation's text is itself something real the user could have meant, like an acronym ("PH" → "P8").
+export const JUDGE_SYSTEM = `You review one change a user made to text typed by dictation (speech to text). Answer "yes" if it is a MISHEARING: the user said a name, product, brand, acronym, code or technical term, and dictation wrote what it SOUNDS like ("dev ops" → "DevOps", "e c two" → "EC2", "jason" → "JSON", "Stokwork" → "Stakwork"), or a person's name, said the same but spelled another way (Katherine → Kathryn, Jon → John, Steven → Stephen).
+Answer "no" for anything else: a different word or name the user chose instead (Mark → Mike, Jon → Jen, Paris → London, 3 → 4); an ordinary spelling or grammar fix (your → you're, their → there, tense, plural, possessive); capitalising an ordinary word or the letter i; punctuation; numbers as digits; a rewrite; two forms of the same known word ("same thing"); a word turned off for dictation; or dictation's text is itself something real the user could have meant, like an acronym ("PH" → "P8").
 Answer only yes or no.`;
 
 const JUDGE_EXAMPLES: [typed: string, edited: string, from: string, to: string, known: string, answer: "yes" | "no"][] = [
