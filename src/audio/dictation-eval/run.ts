@@ -209,8 +209,11 @@ function parseArgs(argv: string[]): Args {
   };
 }
 
-const args = parseArgs(process.argv.slice(2));
-const results: Result[] = [];
-for (const m of args.models) results.push(await runOne(m === "none" ? null : m, args));
-console.log(table(results));
-for (const r of results) for (const task of ["learn", "fix"] as const) for (const w of r[task]?.wrong ?? []) console.log(`  ${r.model} ${task} ✗ ${w}`);
+// Run only as a script: audio-score.ts imports loadCases.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const args = parseArgs(process.argv.slice(2));
+  const results: Result[] = [];
+  for (const m of args.models) results.push(await runOne(m === "none" ? null : m, args));
+  console.log(table(results));
+  for (const r of results) for (const task of ["learn", "fix"] as const) for (const w of r[task]?.wrong ?? []) console.log(`  ${r.model} ${task} ✗ ${w}`);
+}
