@@ -1250,3 +1250,27 @@ for dictation, and a change whose `heard` side is already a vocabulary form
 the run's own events, returned to the caller and kept only as §7 says
 (`keep: true`, or claims on the step), so a caller that wants no record of it
 never passes `keep`.
+
+## 16. Packages — a package's bytes (`plans/marketplace.md` §1, §5)
+
+A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
+`version`, `description?`, `requires?`) and the folders `workflows/`,
+`steps/`, `concepts/` and `apps/`, each file an item named under the
+package's prefix (`steps/create-issue.ts` is the step
+`acme/linear/create-issue`). It is pinned by its DIGEST, `sha256:<hex>`
+over every file in it (`readPackage`, `src/packages/format.ts`). A strut
+keeps every package it resolved under `<dataDir>/packages/`, one directory
+per digest, and serves any of them by digest — whether it built the
+package or installed it, it can be a mirror. Installing one is a later
+work item; so are the `git+` and `pk:` sources and the catalog that lists
+archive URLs.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route |
+
+The archive is transport: a fetcher checks the unpacked TREE against the
+digest, never the archive's bytes, so any URL that serves the right tree
+is as good as the publisher's (`fetchArchive`, `src/packages/archive.ts`,
+which also refuses an entry that leaves the directory or that the digest
+never covers — a dotfile, an app's `dist/` or `data.db`).
