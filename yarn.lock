@@ -918,10 +918,10 @@ ai@^7.0.106:
     "@ai-sdk/provider" "4.0.17"
     "@ai-sdk/provider-utils" "5.0.45"
 
-aieo@^0.2.4:
-  version "0.2.4"
-  resolved "https://registry.yarnpkg.com/aieo/-/aieo-0.2.4.tgz#2ac7b65f23e08873d941890e8f2a2bc871c6cf31"
-  integrity sha512-JO3sZEReIpnfWohA8gd6/58dWX6QLtAYJIi3jj1pq541fn9YO7LLgh/YbooLDViEbJ0tvuKuzI57LSGzpHswvw==
+aieo@^0.2.5:
+  version "0.2.5"
+  resolved "https://registry.yarnpkg.com/aieo/-/aieo-0.2.5.tgz#914ec6579b23344163010e56f6b322a30013309f"
+  integrity sha512-nf+8GuOqkWSeC3Aivb0iHEQDgdE3fHlhqMZNC/SubGpY8AIAEdEg6AD2Uj0MzNZPSXmFmONF73N1yiv+oZwtCg==
   dependencies:
     "@ai-sdk/anthropic" "4.0.71"
     "@ai-sdk/google" "4.0.74"

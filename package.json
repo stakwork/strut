@@ -47,7 +47,7 @@
     "@huggingface/transformers": "^4.1.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@octokit/rest": "^22.0.1",
-    "aieo": "^0.2.4",
+    "aieo": "^0.2.5",
     "esbuild": "0.28.2",
     "gatekey": "^0.1.1",
     "hono": "^4.12.23",

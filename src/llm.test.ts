@@ -17,6 +17,8 @@ import llm from "./steps/core/llm.js";
 
 const ENV = [
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_WORKSPACE_ID",
   "OPENAI_API_KEY",
   "GOOGLE_API_KEY",
   "OPENROUTER_API_KEY",
@@ -223,6 +225,42 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const r = await resolveModel({ model: "gpt", secrets, llmAuth: async () => undefined, auth: { kind: "step", runId: "r1" } });
     assert.equal(r.apiKey, "from-store");
     assert.equal(r.routed, false);
+  });
+
+  it("an organization-wide Anthropic key names its workspace (ANTHROPIC_WORKSPACE_ID) on every request", async () => {
+    const { createServer } = await import("node:http");
+    const seen: (string | undefined)[] = [];
+    const server = createServer((req, res) => {
+      seen.push(req.headers["anthropic-workspace-id"] as string | undefined);
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+    try {
+      const { generateText } = await import("ai");
+      const call = async (entries: Record<string, string>) => {
+        const store = new MemorySecretStore();
+        for (const [k, v] of Object.entries({ ANTHROPIC_API_KEY: "k", ...entries })) await store.set(k, v);
+        const r = await resolveModel({ model: "sonnet", secrets: secretsCapability(store, { envFallback: {} }) });
+        await assert.rejects(() => generateText({ model: r.model, prompt: "hi", maxRetries: 0 }), /recorded/);
+      };
+      await call({ ANTHROPIC_WORKSPACE_ID: " wrkspc_01abc " });
+      await call({});
+      // A grant that re-keys the call brings its own workspace, if any.
+      const store = new MemorySecretStore();
+      await store.set("ANTHROPIC_WORKSPACE_ID", "wrkspc_01abc");
+      const granted = await resolveModel({
+        model: "sonnet",
+        secrets: secretsCapability(store, { envFallback: {} }),
+        llmAuth: async () => ({ apiKey: "vk-user" }),
+        auth: { kind: "step" },
+      });
+      await assert.rejects(() => generateText({ model: granted.model, prompt: "hi", maxRetries: 0 }), /recorded/);
+      assert.deepEqual(seen, ["wrkspc_01abc", undefined, undefined], "trimmed when set; a workspace key or a grant sends none");
+    } finally {
+      server.close();
+    }
   });
 
   it("no `auth` context → the hook is never consulted (a call site that opted out)", async () => {

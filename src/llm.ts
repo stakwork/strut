@@ -107,6 +107,10 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
     const provider = aieo.canonicalModelName(opts.model, opts.provider).provider;
     grant = await opts.llmAuth({ ...opts.auth, provider });
   }
+  // aieo looks up a key's companion settings where it looked up the key —
+  // an organization-wide Anthropic key's ANTHROPIC_WORKSPACE_ID, sent as
+  // `anthropic-workspace-id` (its KEY_HEADER_ENV) — and adds none to a
+  // grant's own key.
   const r = await aieo.resolveModel({
     model: opts.model,
     provider: opts.provider,
