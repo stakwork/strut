@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { accessedNodesOf, takeUsage, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
+import { accessedNodesOf, takeUsage, workflowOf, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
 import { withLock } from "./jobs.js";
 import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
@@ -288,7 +288,7 @@ export async function proposeCall(
     ...(rationale ? { rationale } : {}),
     title: titleOf(stepType, def.description),
     by: {
-      workflow: ctx.path.split("/")[0] ?? "",
+      workflow: workflowOf(ctx),
       runId: ctx.runId,
       path: ctx.path,
       ...(ctx.job ? { job: ctx.job } : {}),

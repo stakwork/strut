@@ -4,6 +4,7 @@
  */
 
 import { isLineageEdge } from "./lineage.js";
+import { segmentLabel } from "./project.js";
 import type { RunGraphCall, RunGraphEdge, RunGraphNode, RunGraphTrace } from "./types.js";
 
 const edgeKey = (edge: RunGraphEdge): string => `${edge.source}|${edge.edge_type}|${edge.target}`;
@@ -57,8 +58,8 @@ export function callLabel(segment: string): string {
  */
 export function buildRunGraphTree(calls: RunGraphCall[]): RunGraphTreeNode | null {
   if (calls.length === 0) return null;
-  const rootLabel = calls[0].path.split("/")[0];
-  const root: RunGraphTreeNode = { path: rootLabel, label: rootLabel, children: [], callIndex: null, callCount: 0 };
+  const rootPath = calls[0].path.split("/")[0];
+  const root: RunGraphTreeNode = { path: rootPath, label: segmentLabel(rootPath), children: [], callIndex: null, callCount: 0 };
   calls.forEach((call, index) => {
     const segments = call.path.split("/");
     let node = root;
@@ -67,7 +68,7 @@ export function buildRunGraphTree(calls: RunGraphCall[]): RunGraphTreeNode | nul
       const path = segments.slice(0, i + 1).join("/");
       let child = node.children.find((c) => c.path === path);
       if (!child) {
-        child = { path, label: segments[i], children: [], callIndex: null, callCount: 0 };
+        child = { path, label: segmentLabel(segments[i]), children: [], callIndex: null, callCount: 0 };
         node.children.push(child);
       }
       child.callCount++;

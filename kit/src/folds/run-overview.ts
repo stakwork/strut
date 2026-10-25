@@ -169,7 +169,9 @@ interface Acc {
 
 export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunOverview {
   const runStart = events.find((e) => e.type === "run.start");
-  const root = runStart?.path ?? events[0]?.path.split("/")[0] ?? "";
+  // The run's own path, the workflow's name — slashes included, so a run
+  // event's path, never a step path's first segment unless there is none.
+  const root = (runStart ?? events.find((e) => e.type.startsWith("run.")))?.path ?? events[0]?.path.split("/")[0] ?? "";
   const t0 = events.length ? Date.parse(events[0]!.ts) : now;
 
   let status: RunOverview["status"] = "running";

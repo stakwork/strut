@@ -44,6 +44,7 @@ import {
   runGraphLinks,
   scopeCalls,
   scopeOfBranch,
+  segmentLabel,
   useStrutClient,
   withChildCalls,
   withChildGraph,
@@ -835,13 +836,13 @@ export function RunGraph({
   const selected = selectedId ? nodeById.get(selectedId) : undefined;
   const last = calls.length - 1;
   const unreadReason = trace.unreadReason ? ` (${trace.unreadReason})` : "";
-  const scopeLabel = scope === null ? "" : scope.split("/").join(" / ");
+  const scopeLabel = scope === null ? "" : scope.split("/").map(segmentLabel).join(" / ");
   const crumbs =
     scope === null
       ? []
       : [
-          { label: trace.calls[0].path.split("/")[0], scope: null as string | null },
-          ...scope.split("/").map((label, i, segments) => ({ label, scope: segments.slice(0, i + 1).join("/") })),
+          { label: segmentLabel(trace.calls[0].path.split("/")[0]), scope: null as string | null },
+          ...scope.split("/").map((label, i, segments) => ({ label: segmentLabel(label), scope: segments.slice(0, i + 1).join("/") })),
         ];
 
   return (

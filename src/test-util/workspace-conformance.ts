@@ -570,8 +570,8 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(await ws.deleteWorkflow("acme/linear/sync"), true);
       assert.equal(await ws.deleteWorkflow("acme/linear"), true);
       assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["acme/linear-2", "acme/linear/push"]);
-      // The rule, for a name with a slash: no empty, `.` or `..` segment, no `\`, no `runs`.
-      for (const bad of ["acme/runs", "acme/runs/x", "acme//x", "acme/./x", "acme/../x", "/acme", "acme/", "acme\\x/y"]) {
+      // The rule, for a name with a slash: no empty, `.` or `..` segment, no `\` or `#`, no `runs`.
+      for (const bad of ["acme/runs", "acme/runs/x", "acme//x", "acme/./x", "acme/../x", "/acme", "acme/", "acme\\x/y", "acme/each#1"]) {
         await assert.rejects(() => ws.publishWorkflow(bad, "v1", { steps }), /Invalid workflow name/, bad);
         await assert.rejects(() => ws.createWorkflow(bad, { steps }), /Invalid workflow name/, bad);
       }

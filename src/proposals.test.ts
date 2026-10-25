@@ -98,6 +98,14 @@ describe("proposals", () => {
     assert.deepEqual(updates.map((u) => [u.job, u.update.kind, u.update.state, u.update.url]), [["j1", "proposal", "pending", `/proposals/${rec.id}`]]);
   });
 
+  it("records the run's workflow, slashes included — not the path's first segment", async () => {
+    const tool = gated(ctx({ runId: "r7", path: "acme/linear/sync/turn", workflow: "acme/linear/sync" }));
+    const out = (await tool.execute({ name: "x" }, { strutToolPath: "acme/linear/sync/turn/001-dev_write" })) as Record<string, unknown>;
+    const rec = (await readProposal(root(), out["proposal"] as string))!;
+    assert.equal(rec.by.workflow, "acme/linear/sync");
+    assert.equal(rec.by.path, "acme/linear/sync/turn/001-dev_write");
+  });
+
   it("a resumed turn making the same call gets the proposal it made; a bad input is refused before any record", async () => {
     const first = (await gated(ctx()).execute({ name: "x" }, { strutToolPath: "wf/turn/001-dev_write" })) as { proposal: string };
     const again = (await gated(ctx({ journal: { "wf/turn#001-dev_write": { proposal: first.proposal } } })).execute({ name: "x" }, { strutToolPath: "wf/turn/001-dev_write" })) as { proposal: string };

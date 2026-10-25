@@ -104,6 +104,14 @@ export interface RunAttachment {
 export interface StepContext<TServices = unknown> {
   runId: string;
   path: string;
+  /** The RUN's workflow: the flow it was launched with, whose name its
+   *  events are written under and every event path begins with — slashes
+   *  included, so `acme/linear/sync`'s step `fetch` runs at
+   *  `acme/linear/sync/fetch` and the first `/` of a path is not where the
+   *  workflow ends. A subflow's steps and an agent's tool calls see the
+   *  run's, never their own frame's. Set by the runner; read it with
+   *  `workflowOf(ctx)`, which also answers for a context built by hand. */
+  workflow?: string;
   scope: Record<string, unknown>;
   input: unknown;
   emit: (event: RunEvent) => Promise<void>;
@@ -778,6 +786,15 @@ export function defineStep<
   def: StepDef<TType, TInput, TOutput, TServices>,
 ): StepDef<TType, TInput, TOutput, TServices> {
   return def;
+}
+
+/** The run's workflow (`StepContext.workflow`). A context the runner did
+ *  not build — a test, a host running a step itself, a proposal's apply —
+ *  may not carry one: then its path's first segment, which is what every
+ *  caller read before the field existed, and the workflow for any name
+ *  without a `/`. A partial context with no path at all is `""`. */
+export function workflowOf(ctx: Partial<Pick<StepContext<unknown>, "path" | "workflow">>): string {
+  return ctx.workflow ?? (ctx.path ?? "").split("/")[0] ?? "";
 }
 
 /**

@@ -1708,9 +1708,10 @@ export function appRecord(name: string, meta: AppMetadata, version: string, info
 /**
  * Validate a workflow name (marketplace.md "Step order" 1). A name with a
  * `/` is a path of segments (`acme/linear/sync`) that the file store nests,
- * so: no empty, `.` or `..` segment, no `\`, and no segment named `runs` — a
- * workflow's directory holds its run records in `runs/`, so `acme/runs`
- * would land in `acme`'s. A one-segment name is only refused when empty,
+ * so: no empty, `.` or `..` segment, no `\` or `#` (an event path's
+ * iteration mark), and no segment named `runs` — a workflow's directory
+ * holds its run records in `runs/`, so `acme/runs` would land in `acme`'s.
+ * A one-segment name is only refused when empty,
  * `.` or `..`: no store checked one before, and a tighter rule could refuse
  * the republish of a name someone already has.
  */
@@ -1720,6 +1721,9 @@ export function validateWorkflowName(name: string): void {
     return;
   }
   if (name.includes("\\")) throw new Error(`Invalid workflow name "${name}": "\\" is not allowed`);
+  // An event path is the name, then its steps, a `#` marking an iteration
+  // (`acme/sync/each#2`): a name holding one would read as one.
+  if (name.includes("#")) throw new Error(`Invalid workflow name "${name}": "#" is not allowed`);
   for (const seg of name.split("/")) {
     if (!seg || seg === "." || seg === "..") {
       throw new Error(`Invalid workflow name "${name}": a segment may not be empty, "." or ".."`);

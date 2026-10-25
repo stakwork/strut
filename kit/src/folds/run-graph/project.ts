@@ -228,6 +228,37 @@ function repoFileOf(read: string, checkouts: Checkout[]): string | null {
   return null;
 }
 
+/**
+ * A run's root — its workflow's name, where its `run.*` events sit — as ONE
+ * path segment. The graph reads a call path's first segment as the run and
+ * the next as its step (the lanes, the tree, a scope), so a workflow named
+ * `acme/linear/sync` would read as a run `acme` whose every call is in a
+ * step `linear`. Its slashes are written `%2F`, the way a slashed name
+ * travels in a URL; `segmentLabel` reads it back. A name with no slash —
+ * every workflow before slashed names — is left as it is.
+ */
+export function rootSegment(root: string): string {
+  return root.includes("/") ? encodeURIComponent(root) : root;
+}
+
+/** A path segment as a person reads it: a `rootSegment` decoded, anything else as it is. */
+export function segmentLabel(segment: string): string {
+  if (!segment.includes("%2F")) return segment;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** The run's root, from its `run.*` events. */
+function runRoot(events: unknown[]): string | undefined {
+  for (const event of events) {
+    if (isRecord(event) && typeof event.type === "string" && event.type.startsWith("run.") && typeof event.path === "string") return event.path;
+  }
+  return undefined;
+}
+
 /** Every call that touched the graph, in the order the run finished them. */
 export function projectRunGraphCalls(events: unknown, options: ProjectOptions = {}): RunGraphCall[] {
   return projectWithLaunches(events, options).calls;
@@ -248,6 +279,8 @@ export function projectWithLaunches(
   const starts = new Map<string, { ts: string | null; input: unknown }>();
   const checkouts: Checkout[] = [];
   const calls: RunGraphCall[] = [];
+  const root = runRoot(events);
+  const rooted = root?.includes("/") ? { from: `${root}/`, to: `${rootSegment(root)}/` } : null;
   for (const event of events) {
     if (!isRecord(event) || typeof event.path !== "string") continue;
     if (event.type === "step.start") {
@@ -259,7 +292,8 @@ export function projectWithLaunches(
     const byAgent = stepType.startsWith(TOOL_PREFIX);
     const tool = byAgent ? stepType.slice(TOOL_PREFIX.length) : stepType;
     const start = starts.get(event.path);
-    const path = options.prefix ? `${options.prefix}/${event.path}` : event.path;
+    const own = rooted && event.path.startsWith(rooted.from) ? `${rooted.to}${event.path.slice(rooted.from.length)}` : event.path;
+    const path = options.prefix ? `${options.prefix}/${own}` : own;
     if (stepType === "git/checkout") {
       const checkout = checkoutOf(event.output);
       if (checkout) checkouts.push(checkout);

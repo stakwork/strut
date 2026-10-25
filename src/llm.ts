@@ -16,7 +16,7 @@
 
 import type { Provider } from "aieo";
 import type { SecretsCapability } from "./capabilities.js";
-import type { StepContext } from "./core.js";
+import { workflowOf, type StepContext } from "./core.js";
 import { bootEnv } from "./env.js";
 
 // ── The auth seam (plans/mothership-cost-control.md §1) ────────────────────
@@ -199,8 +199,8 @@ export async function resolveEvaluationModel(
 }
 
 /** The `llmAuth` + `auth` pair for a STEP's `resolveModel` call, from its
- *  context: the hook off the services bag, the run, the top-level workflow
- *  (the path's first segment) and the step path. `{}` without a hook. */
+ *  context: the hook off the services bag, the run, the run's workflow
+ *  (`workflowOf`) and the step path. `{}` without a hook. */
 export function stepAuth(ctx: StepContext<unknown> | undefined): Pick<ResolveModelOptions, "llmAuth" | "auth"> {
   const llmAuth = (ctx?.services as { llmAuth?: LlmAuth } | undefined)?.llmAuth;
   if (!llmAuth || !ctx) return {};
@@ -209,7 +209,7 @@ export function stepAuth(ctx: StepContext<unknown> | undefined): Pick<ResolveMod
     auth: {
       kind: "step",
       runId: ctx.runId,
-      workflow: ctx.path.split("/")[0],
+      workflow: workflowOf(ctx),
       stepPath: ctx.path,
       ...(ctx.actor ? { actor: ctx.actor } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),

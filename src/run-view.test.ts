@@ -84,6 +84,22 @@ describe("run-view: the fold", () => {
     assert.equal(each.children.get("#1")!.children.get("a")!.status, "error");
   });
 
+  it("reads a slashed workflow name as the run, not as steps: the root is the run event's path", () => {
+    const l = log();
+    l.ev("run.start", "acme/linear/sync");
+    l.start("acme/linear/sync/each", "foreach");
+    l.start("acme/linear/sync/each#0/a", "log").end("acme/linear/sync/each#0/a", "log", { output: 1 });
+    l.end("acme/linear/sync/each", "foreach");
+    l.ev("run.end", "acme/linear/sync");
+    const root = foldRun(l.events);
+    assert.equal(root.path, "acme/linear/sync");
+    assert.equal(root.status, "success");
+    assert.deepEqual([...root.children.keys()], ["each"]);
+    assert.equal(root.children.get("each")!.children.get("#0")!.children.get("a")!.path, "acme/linear/sync/each#0/a");
+    const v = buildRunView("acme/linear/sync", "r", l.events, summaryOf("success", { workflow: "acme/linear/sync" }), { path: "acme/linear/sync/each" }) as RunView;
+    assert.equal(v.focus?.path, "acme/linear/sync/each");
+  });
+
   it("counts retries, and a step whose onError fallback succeeded is recovered", () => {
     const l = log();
     l.ev("run.start", "wf");
