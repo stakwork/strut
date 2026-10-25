@@ -99,22 +99,25 @@ export interface ResolvedModel {
 export async function resolveModel(opts: ResolveModelOptions = {}): Promise<ResolvedModel> {
   const aieo = await import("aieo");
   const secrets = opts.secrets;
-  // The hook and the workspace below need the provider before the model is
-  // built (the gateway path is per provider), and aieo only resolves it
-  // inside resolveModel — so ask the keyless canonicalizer first. Same errors
-  // as the resolve below.
-  const provider = aieo.canonicalModelName(opts.model, opts.provider).provider;
+  // The hook needs the provider before the model is built (the gateway path
+  // is per provider), and aieo only resolves it inside resolveModel — so ask
+  // the keyless canonicalizer first. Same errors as the resolve below.
   let grant: LlmAuthResult | undefined;
-  if (opts.llmAuth && opts.auth) grant = await opts.llmAuth({ ...opts.auth, provider });
-  const workspace = provider === "anthropic" && !grant?.apiKey ? await anthropicWorkspace(secrets) : undefined;
-  const headers = workspace ? { "anthropic-workspace-id": workspace, ...grant?.headers } : grant?.headers;
+  if (opts.llmAuth && opts.auth) {
+    const provider = aieo.canonicalModelName(opts.model, opts.provider).provider;
+    grant = await opts.llmAuth({ ...opts.auth, provider });
+  }
+  // aieo looks up a key's companion settings where it looked up the key —
+  // an organization-wide Anthropic key's ANTHROPIC_WORKSPACE_ID, sent as
+  // `anthropic-workspace-id` (its KEY_HEADER_ENV) — and adds none to a
+  // grant's own key.
   const r = await aieo.resolveModel({
     model: opts.model,
     provider: opts.provider,
     getSecret: secrets ? (name) => secrets.get(name) : undefined,
     ...(grant?.apiKey ? { apiKey: grant.apiKey } : {}),
     ...(grant?.baseUrl ? { baseUrl: grant.baseUrl } : {}),
-    ...(headers ? { headers } : {}),
+    ...(grant?.headers ? { headers: grant.headers } : {}),
   });
   let model: any = r.model;
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
@@ -129,20 +132,6 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
     maxOutputTokens: strutOutputCap() ?? r.maxOutputTokens,
     routed: !!grant?.baseUrl,
   };
-}
-
-const ANTHROPIC_WORKSPACE_SECRET = "ANTHROPIC_WORKSPACE_ID";
-
-/** The workspace an Anthropic key made for the whole organization, not one
- *  workspace, calls in (secret store, then env): a `wrkspc_…` id, sent as
- *  `anthropic-workspace-id` on every request, or the API answers 400. A
- *  workspace's own key needs none. Read only with the deployment's own key:
- *  a grant that re-keys the call brings its own. Provider knowledge that
- *  belongs in aieo beside its key lookup (`API_KEY_ENV`); here until aieo has it. */
-async function anthropicWorkspace(secrets: SecretsCapability | undefined): Promise<string | undefined> {
-  return (
-    (await secrets?.get(ANTHROPIC_WORKSPACE_SECRET))?.trim() || bootEnv()[ANTHROPIC_WORKSPACE_SECRET]?.trim() || undefined
-  );
 }
 
 // ── evaluation models (for `experimental_evaluate`) ─────────────────────────
