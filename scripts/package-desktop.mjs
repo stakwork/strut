@@ -3,7 +3,7 @@
  * Stage a self-contained strut directory for embedding in a native desktop
  * app (plans/local-desktop-and-stt.md §2.3, "phase A").
  *
- *   npm run package:desktop -- [--platform darwin-arm64] [--out dist-desktop] [--smoke] [--tar] [--skip-build] [--embeddings] [--no-stt]
+ *   npm run package:desktop -- [--platform darwin-arm64] [--out dist-desktop] [--smoke] [--tar] [--skip-build] [--embeddings] [--no-stt] [--no-fixer]
  *
  * Output: <out>/strut/ containing package.json, build/ (server + steps as
  * loose files — the registry scans them), web/dist/, a production-only
@@ -22,8 +22,10 @@
  * `relocateLadybug`), and the two extensions the graph backend REQUIRES to
  * open — libvector + libfts (`stageLadybugExtensions`: versioned with the
  * Ladybug CORE, not the npm package — 0.21.0 for @ladybugdb/core 0.21.2 —
- * from the build machine's ~/.lbdb cache when it has the target's, else
- * extension.ladybugdb.com); elsewhere, or without a matching openssl@3,
+ * strut's pinned copies, by sha256 — src/graph/ladybug/extensions.ts — never
+ * Ladybug's INSTALL, symbol-checked against the staged addon and loaded into
+ * it before desktop.json names them);
+ * elsewhere, or without a matching openssl@3,
  * Ladybug is left out with a warning. `desktop.json` beside desktop.js
  * records what was staged (`ladybug`, `embeddings`, `stt`), and desktop.js
  * reads its defaults from it: with Ladybug staged the workspace backend is
@@ -63,13 +65,20 @@
  * On darwin targets sharp's addon + libvips (the browser screenshot's downscale)
  * move into native/ too (`relocateSharp`).
  *
- * Dictation's fixer (src/audio/fixer-engine.ts) runs node-llama-cpp; only
- * the target's prebuilt binary package (@node-llama-cpp/mac-arm64-metal on
- * darwin-arm64) comes along, its binaries moved into native/llama/<folder>
- * and found through that package's getBinsDir() (`relocateLlama`), and the
- * llama.cpp sources a build from source would start from are left out.
- * desktop.json's `fixer` says the binaries are staged; --smoke loads the
- * addon from the copy and reports whether it got Metal.
+ * Dictation's fixer (src/audio/fixer-engine.ts) runs node-llama-cpp, which
+ * is not one of strut's dependencies but fixer/'s own (fixer/yarn.lock), so
+ * no server install carries it: this package is the one place it ships. Its
+ * tree comes from fixer/node_modules (`yarn --cwd fixer install
+ * --frozen-lockfile --ignore-scripts` first), checked like the root's, and
+ * is staged at fixer/ as in the repo, where src/audio/fixer.ts looks
+ * (`stageFixer`). Only the target's prebuilt binary package
+ * (@node-llama-cpp/mac-arm64-metal on darwin-arm64) comes along, its
+ * binaries moved into native/llama/<folder> and found through that package's
+ * getBinsDir() (`relocateLlama`), and the llama.cpp sources a build from
+ * source would start from are left out. `--no-fixer` leaves it all out:
+ * dictation then offers no fixer. desktop.json's `fixer` says the binaries
+ * are staged; --smoke loads the addon from the copy and reports whether it
+ * got Metal.
  *
  * The app build (plans/apps.md §2) needs two more things, both staged: the
  * kit's vendor layer at kit/vendor + its base stylesheet (built by `npm run
@@ -81,7 +90,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -133,6 +142,25 @@ if (stt && !sherpaVersion) {
 
 const log = (m) => console.log(`[package-desktop] ${m}`);
 const warn = (m) => console.warn(`[package-desktop] WARNING: ${m}`);
+
+// Dictation's fixer: node-llama-cpp from fixer/'s own install, never the
+// root's (stageFixer). It ships its binaries as one package per platform and
+// GPU; the target's (Metal on Apple silicon, CPU elsewhere) moves into
+// native/llama (relocateLlama). None for win-ia32: the fixer is left out there.
+const FIXER = join(ROOT, "fixer");
+const LLAMA_FOLDERS = { "darwin-arm64": "mac-arm64-metal", "darwin-x64": "mac-x64", "linux-x64": "linux-x64", "linux-arm64": "linux-arm64", "win-x64": "win-x64" };
+const llamaFolder = LLAMA_FOLDERS[platform] ?? null;
+const llamaPkg = llamaFolder ? `@node-llama-cpp/${llamaFolder}` : null;
+let fixer = !args.includes("--no-fixer");
+if (fixer && !llamaPkg) {
+  warn(`no node-llama-cpp binaries for ${platform}: dictation's fixer is left out`);
+  fixer = false;
+}
+const llamaVersion = fixer ? await installedVersion(join(FIXER, "node_modules", "node-llama-cpp")) : null;
+if (fixer && !llamaVersion) {
+  console.error("node-llama-cpp isn't installed in fixer/ (fixer/node_modules/node-llama-cpp); run `yarn --cwd fixer install --frozen-lockfile --ignore-scripts`, or pass --no-fixer to leave dictation's fixer out");
+  process.exit(2);
+}
 // Captured output of a build tool (otool, lipo, install_name_tool, codesign).
 const tool = (cmd, cmdArgs) => {
   const r = spawnSync(cmd, cmdArgs, { encoding: "utf-8" });
@@ -261,12 +289,6 @@ const sharpPkgs = platform.startsWith("darwin-") ? [`@img/sharp-${platform}`, `@
 // esbuild (the app build) ships its binary as one package per platform; the
 // target's moves into native/ (relocateEsbuild).
 const esbuildPkg = `@esbuild/${platform.replace(/^win-/, "win32-")}`;
-// node-llama-cpp (dictation's fixer) ships its binaries as one package per
-// platform and GPU; the target's (Metal on Apple silicon, CPU elsewhere) moves
-// into native/llama (relocateLlama). None for win-ia32: the fixer is left out there.
-const LLAMA_FOLDERS = { "darwin-arm64": "mac-arm64-metal", "darwin-x64": "mac-x64", "linux-x64": "linux-x64", "linux-arm64": "linux-arm64", "win-x64": "win-x64" };
-const llamaFolder = LLAMA_FOLDERS[platform] ?? null;
-const llamaPkg = llamaFolder ? `@node-llama-cpp/${llamaFolder}` : null;
 // @reflink/reflink (an addon) is ipull's optional file-clone fast path, and
 // ipull is node-llama-cpp's model downloader, which strut never uses (the
 // catalog downloads its own GGUFs): left out, with a stub (ipull catches it).
@@ -279,24 +301,25 @@ const OTHER_PLATFORM_PKG = (name) =>
   (/^@esbuild\//.test(name) && name !== esbuildPkg) ||
   (sharpPkgs.length > 0 && /^@img\/sharp-(libvips-)?(darwin|linux|linuxmusl|win32|freebsd|webcontainers|wasm32)/.test(name) && !sharpPkgs.includes(name));
 
-async function resolveFrom(dir, name) {
-  for (let d = dir; d.startsWith(ROOT); d = dirname(d)) {
+// `top`: the install the closure stays inside (the root, or fixer/).
+async function resolveFrom(dir, name, top = ROOT) {
+  for (let d = dir; d.startsWith(top); d = dirname(d)) {
     const cand = join(d, "node_modules", name);
     if (await installedVersion(cand)) return cand;
-    if (d === ROOT) break;
+    if (d === top) break;
   }
   return null;
 }
 
-async function lockedClosure(roots) {
+async function lockedClosure(roots, top = ROOT) {
   const dirs = new Set();
-  const queue = roots.map((name) => [ROOT, name, true]);
+  const queue = roots.map((name) => [top, name, true]);
   while (queue.length) {
     const [from, name, required] = queue.shift();
     if (OTHER_PLATFORM_PKG(name)) continue;
-    const dir = await resolveFrom(from, name);
+    const dir = await resolveFrom(from, name, top);
     if (!dir) {
-      if (required) throw new Error(`${name}, needed by ${relative(ROOT, from) || "strut"}, isn't in the repo root's node_modules; run \`yarn install\``);
+      if (required) throw new Error(`${name}, needed by ${relative(ROOT, from) || "strut"}, isn't in ${top === ROOT ? "the repo root's node_modules; run \`yarn install\`" : `${relative(ROOT, top)}/node_modules; run \`yarn --cwd ${relative(ROOT, top)} install\``}`);
       continue;
     }
     if (dirs.has(dir)) continue;
@@ -313,8 +336,8 @@ async function lockedClosure(roots) {
 // packages have no dependencies; fetched into a scratch prefix, then moved in.
 // The version is the wrapper's from the root tree (sherpa 1.13.7 today, not
 // npm's newest), so wrapper and addon always match.
-async function fetchExact(name, version, hint = "") {
-  log(`${name} isn't in the root tree (another platform); fetching ${name}@${version}`);
+async function fetchExact(name, version, hint = "", nmRel = "node_modules") {
+  log(`${name} isn't in the installed tree (another platform); fetching ${name}@${version}`);
   const tmp = await mkdtemp(join(tmpdir(), "strut-pkg-"));
   try {
     try {
@@ -324,12 +347,12 @@ async function fetchExact(name, version, hint = "") {
     }
     const got = await installedVersion(join(tmp, "node_modules", name));
     if (got !== version) throw new Error(`fetched ${name} is ${got ?? "missing"}, expected ${version}`);
-    await mkdir(dirname(join(stage, "node_modules", name)), { recursive: true });
-    await cp(join(tmp, "node_modules", name), join(stage, "node_modules", name), { recursive: true });
+    await mkdir(dirname(join(stage, nmRel, name)), { recursive: true });
+    await cp(join(tmp, "node_modules", name), join(stage, nmRel, name), { recursive: true });
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
-  return `node_modules/${name}`;
+  return `${nmRel}/${name}`;
 }
 
 // A left-out optional dependency gets a stub that throws on import, so
@@ -379,33 +402,35 @@ async function verifyLocked(added) {
     }
   };
   await walk(join(stage, "node_modules"));
+  await walk(join(stage, "fixer", "node_modules"));
   if (bad.length) throw new Error(`staged packages that differ from the locked root tree:\n  ${bad.join("\n  ")}`);
   log(`verified ${n} staged packages against the installed tree (same version at the same path); ${added.length} deliberate additions: ${added.join(", ") || "none"}`);
 }
 
 // yarn v1 lockfile: `"a@^1", a@1.2.3:` headers, an indented `resolved "…"`.
-async function lockMatchesInstall() {
+async function lockMatchesInstall(base = ROOT) {
+  const at = base === ROOT ? "" : `${relative(ROOT, base)}/`;
   const lock = new Map();
   let patterns = null;
-  for (const line of (await readFile(join(ROOT, "yarn.lock"), "utf-8")).split("\n")) {
+  for (const line of (await readFile(join(base, "yarn.lock"), "utf-8")).split("\n")) {
     if (/^\S.*:$/.test(line) && !line.startsWith("#")) patterns = line.slice(0, -1).split(/,\s*/).map((p) => p.replace(/^"|"$/g, ""));
     const m = /^\s+resolved "(.+)"$/.exec(line);
     if (m && patterns) for (const p of patterns) lock.set(p, m[1]);
   }
   let installed;
   try {
-    installed = JSON.parse(await readFile(join(ROOT, "node_modules", ".yarn-integrity"), "utf-8")).lockfileEntries;
+    installed = JSON.parse(await readFile(join(base, "node_modules", ".yarn-integrity"), "utf-8")).lockfileEntries;
   } catch {
     installed = null;
   }
   const diff = [];
-  if (!installed) diff.push("no node_modules/.yarn-integrity");
+  if (!installed) diff.push(`no ${at}node_modules/.yarn-integrity`);
   else {
     for (const [p, r] of lock) if (installed[p] !== r) diff.push(`${p}: lock ${r}, installed ${installed[p] ?? "absent"}`);
     for (const p of Object.keys(installed)) if (!lock.has(p)) diff.push(`${p}: installed, not in yarn.lock`);
   }
-  if (diff.length) throw new Error(`node_modules does not match yarn.lock; run yarn install --frozen-lockfile\n  ${diff.slice(0, 10).join("\n  ")}`);
-  log(`node_modules matches yarn.lock (${lock.size} entries, .yarn-integrity)`);
+  if (diff.length) throw new Error(`${at}node_modules does not match ${at}yarn.lock; run yarn ${at ? `--cwd ${at.slice(0, -1)} ` : ""}install --frozen-lockfile\n  ${diff.slice(0, 10).join("\n  ")}`);
+  log(`${at}node_modules matches ${at}yarn.lock (${lock.size} entries, .yarn-integrity)`);
 }
 
 const stubs = [];
@@ -424,16 +449,7 @@ async function installDeps() {
   for (const n of roots) if (!targetAddons.includes(n) || (await installedVersion(join(ROOT, "node_modules", n)))) fromRoot.push(n);
   const dirs = await lockedClosure(fromRoot);
   log(`copying ${dirs.length} production packages from the installed tree; ${embeddings ? "with" : "without"} the embeddings stack, ${stt ? `sherpa ${sherpaVersion}` : "no sherpa (--no-stt)"}, ${ladybug ? `Ladybug ${ladybugVersion}` : "no Ladybug"}`);
-  for (const dir of dirs) {
-    const skip = join(dir, "node_modules");
-    const filter = async (src) => {
-      if (src === skip || src.startsWith(skip + "/")) return false;
-      // A link would point back into the checkout (or anywhere): never ship one.
-      if ((await lstat(src)).isSymbolicLink()) throw new Error(`symlink inside a package, refusing to stage it: ${src}`);
-      return true;
-    };
-    await cp(dir, join(stage, relative(ROOT, dir)), { recursive: true, filter });
-  }
+  for (const dir of dirs) await copyPackage(dir);
   const nm = join(stage, "node_modules");
   const added = [];
   for (const name of targetAddons) {
@@ -455,7 +471,7 @@ async function installDeps() {
   // sharp's wrapper pins both @img packages for each platform, esbuild its
   // @esbuild/<platform>; a cross-stage has the host's in the root tree, so the
   // target's come from npm at those versions.
-  for (const [wrapper, names, relocate] of [["sharp", sharpPkgs, "relocateSharp"], ["esbuild", [esbuildPkg], "relocateEsbuild"], ["node-llama-cpp", llamaPkg ? [llamaPkg] : [], "relocateLlama"]]) {
+  for (const [wrapper, names, relocate] of [["sharp", sharpPkgs, "relocateSharp"], ["esbuild", [esbuildPkg], "relocateEsbuild"]]) {
     const pins = JSON.parse(await readFile(join(nm, wrapper, "package.json"), "utf-8")).optionalDependencies ?? {};
     for (const name of names) {
       if (!pins[name]) throw new Error(`${wrapper} pins no ${name}; its platform packages changed — update ${relocate}`);
@@ -464,13 +480,14 @@ async function installDeps() {
       else if (got !== pins[name]) throw new Error(`${name} is ${got} in the root tree, ${wrapper} pins ${pins[name]}`);
     }
   }
+  if (fixer) added.push(...(await stageFixer()));
   if (!stt) stubs.push("sherpa-onnx-node");
   if (!ladybug) stubs.push("@ladybugdb/core");
   if (!embeddings) stubs.push("@huggingface/transformers");
   // The app build's fallback when esbuild's binary cannot run (src/apps/build.ts
   // loadEsbuild); this package carries the binary, so the fallback stops here.
   stubs.push("esbuild-wasm");
-  stubs.push("@reflink/reflink");
+  if (fixer) stubs.push("@reflink/reflink");
   const why = {
     "sherpa-onnx-node": "built with --no-stt",
     "@ladybugdb/core": ladybugSkip,
@@ -506,6 +523,44 @@ async function installDeps() {
   }
   await verifyLocked(added);
   await strip(nm);
+  if (fixer) await strip(join(stage, "fixer", "node_modules"));
+}
+
+// A package directory of an installed tree (the root's or fixer/'s), copied
+// to the same relative path in the stage, without its nested node_modules
+// (those are packages of their own in the closure).
+async function copyPackage(dir) {
+  const skip = join(dir, "node_modules");
+  const filter = async (src) => {
+    if (src === skip || src.startsWith(skip + "/")) return false;
+    // A link would point back into the checkout (or anywhere): never ship one.
+    if ((await lstat(src)).isSymbolicLink()) throw new Error(`symlink inside a package, refusing to stage it: ${src}`);
+    return true;
+  };
+  await cp(dir, join(stage, relative(ROOT, dir)), { recursive: true, filter });
+}
+
+// Dictation's fixer: node-llama-cpp is no dependency of strut's (a server
+// install never carries its CUDA and Vulkan builds, ~740 MB on Linux) but
+// fixer/'s own. Its production tree is copied out of fixer/node_modules,
+// checked against fixer/yarn.lock as the root's is against yarn.lock, to
+// fixer/ in the stage beside fixer/package.json and fixer/index.js: the
+// layout src/audio/fixer.ts looks for. Only the target's binary package
+// comes along (fetched at node-llama-cpp's pin for a cross-stage);
+// relocateLlama moves its binaries into native/llama.
+async function stageFixer() {
+  await lockMatchesInstall(FIXER);
+  const dirs = await lockedClosure(["node-llama-cpp"], FIXER);
+  log(`copying ${dirs.length} packages of dictation's fixer (node-llama-cpp ${llamaVersion}) from fixer/'s installed tree → fixer/`);
+  for (const dir of dirs) await copyPackage(dir);
+  for (const f of ["package.json", "index.js"]) await copyFile(join(FIXER, f), join(stage, "fixer", f));
+  const fnm = join(stage, "fixer", "node_modules");
+  const pins = JSON.parse(await readFile(join(fnm, "node-llama-cpp", "package.json"), "utf-8")).optionalDependencies ?? {};
+  if (!pins[llamaPkg]) throw new Error(`node-llama-cpp pins no ${llamaPkg}; its platform packages changed — update relocateLlama`);
+  const got = await installedVersion(join(fnm, llamaPkg));
+  if (!got) return [await fetchExact(llamaPkg, pins[llamaPkg], "", "fixer/node_modules")];
+  if (got !== pins[llamaPkg]) throw new Error(`${llamaPkg} is ${got} in fixer/, node-llama-cpp pins ${pins[llamaPkg]}`);
+  return [];
 }
 
 // The addon finds its shared libraries relative to its own location (on
@@ -640,62 +695,61 @@ async function relocateLadybug() {
 
 // The two extensions the graph backend requires (plans/ladybug-backend.md
 // ruling 4), beside the addon in native/ so one directory holds every binary
-// the host signs. They are versioned with the Ladybug CORE, not the npm
-// package (0.21.0 for @ladybugdb/core 0.21.2), and laid out per platform —
-// so the version and the build machine's platform name are read from
-// Ladybug itself: an in-memory database INSTALLs + LOADs `vector` and
-// SHOW_LOADED_EXTENSIONS() reports the path it put it at
-// (~/.lbdb/extension/<ver>/<plat>/vector/libvector.lbug_extension). The
-// target's files come from that cache when it is the target's platform, else
-// from extension.ladybugdb.com at the same version. Each must be a Mach-O of
-// the target's arch; checkMachO then verifies them with the rest of native/.
+// the host signs: strut's PINNED copies (src/graph/ladybug/extensions.ts),
+// the bytes recorded by sha256 for the installed core and the target's
+// platform, downloaded and verified into the model cache the server's own
+// loader uses — never Ladybug's INSTALL. extension.ladybugdb.com rewrites
+// the files under one extension version with every build of Ladybug's main:
+// on 2026-10-20 its "0.21.0" fts became one that needs
+// lbug::common::ValueVector::setAllNull(), which 0.21.2's addon lacks, and a
+// package built from it could not open its workspace. A core with no pins
+// stops the package. Each file must then be a Mach-O of the target's arch,
+// import no `lbug::` symbol the staged addon does not export (`nm`, which
+// reads either arch — the check a cross-stage gets), and, on the build
+// machine's own platform, load into the staged addon (`smokeLadybug`) before
+// the manifest names them; checkMachO then verifies them with the rest of
+// native/.
 const LADYBUG_PLATFORM_DIR = { "darwin-arm64": "osx_arm64", "darwin-x64": "osx_amd64" };
 const LADYBUG_EXTENSIONS = ["vector", "fts"];
+// The `lbug::` symbols a Mach-O imports (`nm -u`) or exports (`nm -gU`) for one arch.
+const lbugSymbols = (file, arch, flag) => {
+  const r = spawnSync("nm", [flag, "-arch", arch, file], { encoding: "utf-8", maxBuffer: 64 << 20 });
+  if (r.status !== 0) throw new Error(`nm ${flag} -arch ${arch} ${file} failed (${r.status}): ${r.stderr}`);
+  return new Set(r.stdout.split("\n").map((l) => l.trim().split(/\s+/).pop()).filter((sym) => sym?.includes("4lbug")));
+};
 async function stageLadybugExtensions() {
-  const probe = `
-const lbug = (await import("@ladybugdb/core")).default;
-const db = new lbug.Database(":memory:");
-const conn = new lbug.Connection(db);
-await conn.query("INSTALL vector");
-await conn.query("LOAD EXTENSION vector");
-const rows = await (await conn.query("CALL SHOW_LOADED_EXTENSIONS() RETURN *")).getAll();
-await conn.close(); await db.close();
-console.log(JSON.stringify(rows));
-`;
-  const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { cwd: ROOT, encoding: "utf-8" });
-  if (r.status !== 0) throw new Error(`Ladybug could not INSTALL + LOAD its vector extension on this machine (network to extension.ladybugdb.com needed once):\n${r.stdout}${r.stderr}`);
-  const rows = JSON.parse(r.stdout.trim().split("\n").pop());
-  const loaded = rows.find((row) => String(row["extension name"]).toUpperCase() === "VECTOR")?.["extension path"];
-  const m = /^(.*\/extension\/([^/]+)\/([^/]+))\/vector\/libvector\.lbug_extension$/.exec(String(loaded ?? ""));
-  if (!m) throw new Error(`cannot read the extension version and platform from Ladybug's loaded path: ${loaded}`);
-  const [, cacheRoot, version, hostDir] = m;
   const targetDir = LADYBUG_PLATFORM_DIR[platform];
   if (!targetDir) throw new Error(`no Ladybug extension platform known for ${platform}`);
+  const { LADYBUG_EXTENSION_PINS: pins, pinnedExtensions } = await import(pathToFileURL(join(ROOT, "build", "graph", "ladybug", "extensions.js")).href);
+  const got = await pinnedExtensions(ladybugVersion, { platform: targetDir });
+  if (got.none) throw new Error(`${got.none}: pin the extensions for @ladybugdb/core@${ladybugVersion} (src/graph/ladybug/extensions.ts) before packaging it`);
   const arch = ortArch === "x64" ? "x86_64" : ortArch;
+  const exported = lbugSymbols(join(native, "lbugjs.node"), arch, "-gU");
   const from = [];
   for (const name of LADYBUG_EXTENSIONS) {
     const file = `lib${name}.lbug_extension`;
     const dest = join(native, file);
-    const cached = join(cacheRoot, name, file);
-    if (targetDir === hostDir && (await stat(cached).catch(() => null))) {
-      await copyFile(cached, dest);
-      from.push(`${file} ← ${cached}`);
-    } else {
-      const url = `https://extension.ladybugdb.com/v${version}/${targetDir}/${name}/${file}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`downloading ${url}: ${res.status} ${res.statusText}`);
-      await writeFile(dest, Buffer.from(await res.arrayBuffer()));
-      from.push(`${file} ← ${url}`);
-    }
+    await copyFile(got.files[name], dest);
     await chmod(dest, 0o755);
+    from.push(`${file} ← ${got.files[name]} (sha256 ${pins.platforms[targetDir][name].sha256.slice(0, 16)}…)`);
     const archs = spawnSync("lipo", ["-archs", dest], { encoding: "utf-8" });
     if (archs.status !== 0 || !archs.stdout.trim().split(/\s+/).includes(arch)) {
       throw new Error(`${dest} is not a ${arch} Mach-O (lipo: ${archs.stdout.trim() || archs.stderr.trim()})`);
     }
+    const missing = [...lbugSymbols(dest, arch, "-u")].filter((sym) => !exported.has(sym));
+    if (missing.length) throw new Error(`${file} needs ${missing.length} symbol(s) the staged lbugjs.node does not export — built against another core: ${missing.slice(0, 5).join(", ")}`);
   }
-  manifest.ladybugExtensions = version;
+  if (platform === hostPlatform) {
+    const tmp = await mkdtemp(join(tmpdir(), "strut-lbug-check-"));
+    const failures = await smokeLadybug(stage, tmp);
+    await rm(tmp, { recursive: true, force: true });
+    if (failures.length) throw new Error(`the staged Ladybug extensions do not load into the staged addon:\n  ${failures.join("\n  ")}`);
+  } else {
+    log(`Ladybug's extensions for ${platform} were symbol-checked against its addon, not loaded (a ${hostPlatform} host can't)`);
+  }
+  manifest.ladybugExtensions = pins.version;
   await writeManifest();
-  log(`staged Ladybug's ${LADYBUG_EXTENSIONS.join(" + ")} extensions (${version}, ${targetDir}) → native/:\n    ${from.join("\n    ")}`);
+  log(`staged Ladybug's ${LADYBUG_EXTENSIONS.join(" + ")} extensions (${pins.version}, ${targetDir}, pinned) → native/:\n    ${from.join("\n    ")}`);
 }
 
 // sharp's addon goes into native/ with libvips, the same way. The platform
@@ -774,8 +828,8 @@ async function relocateEsbuild() {
 const LLAMA_BINS = 'const binsDir = path.join(__dirname, "..", "bins");';
 const LLAMA_SOURCES = ["gitRelease.bundle", "addon", "CMakeLists.txt", "cmake", "toolchains", "patches", "xpack", "profiles"];
 async function relocateLlama() {
-  if (!llamaPkg) return warn(`no node-llama-cpp binaries for ${platform}: dictation's fixer is left out`);
-  const nm = join(stage, "node_modules");
+  if (!fixer) return log("dictation's fixer is left out: no node-llama-cpp in the package");
+  const nm = join(stage, "fixer", "node_modules");
   const pkgDir = join(nm, llamaPkg);
   const index = join(pkgDir, "dist", "index.js");
   const src = await readFile(index, "utf-8");
@@ -790,7 +844,7 @@ async function relocateLlama() {
   await rm(join(pkgDir, "bins"), { recursive: true, force: true });
   await writeFile(
     index,
-    src.replace(LLAMA_BINS, `// strut's package-desktop.mjs (relocateLlama): the binaries live in <stage>/native/llama/${llamaFolder}.\nconst binsDir = path.join(__dirname, "..", "..", "..", "..", "native", "llama");`),
+    src.replace(LLAMA_BINS, `// strut's package-desktop.mjs (relocateLlama): the binaries live in <stage>/native/llama/${llamaFolder}.\nconst binsDir = path.join(__dirname, "..", "..", "..", "..", "..", "native", "llama");`),
   );
   const llamaDir = join(nm, "node-llama-cpp", "llama");
   for (const f of LLAMA_SOURCES) await rm(join(llamaDir, f), { recursive: true, force: true });
@@ -873,9 +927,10 @@ async function report() {
       for (const s of await readdir(join(nm, e))) rows.push([`${e}/${s}`, await sizeOf(join(nm, e, s))]);
     } else rows.push([e, await sizeOf(join(nm, e))]);
   }
+  if (fixer) rows.push(["fixer/ (node-llama-cpp, outside node_modules)", await sizeOf(join(stage, "fixer"))]);
   rows.push(["native/ (outside node_modules)", await sizeOf(native)]);
   rows.sort((a, b) => b[1] - a[1]);
-  log(`staged ${stage}: ${mb(total)} total, ${rows.length - 1} packages; largest:`);
+  log(`staged ${stage}: ${mb(total)} total, ${rows.length - (fixer ? 2 : 1)} packages; largest:`);
   for (const [name, size] of rows.slice(0, 8)) console.log(`    ${mb(size).padStart(7)}  ${name}`);
   // Everything the host must code-sign, in one place: the addons plus the
   // shared libraries they link (relocateNative, relocateLadybug, relocateSharp,
@@ -891,17 +946,18 @@ async function report() {
     for (const e of await readdir(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory()) await walk(p);
-      else if (isNative(e.name)) stray.push(p.slice(nm.length + 1));
+      else if (isNative(e.name)) stray.push(relative(stage, p));
     }
   };
   await walk(nm);
+  if (fixer) await walk(join(stage, "fixer", "node_modules"));
   log(`native binaries the host must code-sign (${inNative.length}, all in native/ and its folders):`);
   for (const f of inNative) console.log(`    native/${f}`);
   if (platform.startsWith("darwin-") && process.platform === "darwin") checkMachO(inNative);
   if (stray.length) {
     if (!embeddings) throw new Error(`binaries outside native/, which the host would not sign: ${stray.join(", ")}`);
     log(`plus ${stray.length} kept in node_modules by --embeddings (their loaders look there):`);
-    for (const a of stray) console.log(`    node_modules/${a}`);
+    for (const a of stray) console.log(`    ${a}`);
   }
 }
 
@@ -1077,7 +1133,7 @@ await db.close();
 console.log(JSON.stringify({ rows, loaded }));
 `;
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DYLD_") && !k.startsWith("STRUT_")));
-  log("smoke: Ladybug — open, load both extensions from native/, write and query a temp database from the copy (DYLD_* cleared)");
+  log("Ladybug — open, load both extensions from native/, write and query a temp database from the copy (DYLD_* cleared)");
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script, join(tmp, "smoke.lbug"), join(app, "native")], { cwd: app, env, encoding: "utf-8" });
   if (r.status !== 0) return [`Ladybug load/query failed (${r.status}):\n${r.stdout}${r.stderr}`];
   let res;
@@ -1093,7 +1149,7 @@ console.log(JSON.stringify({ rows, loaded }));
   for (const want of ["lbugjs.node", ...OPENSSL_LIBS, ...LADYBUG_EXTENSIONS.map((e) => `lib${e}.lbug_extension`)]) {
     if (!res.loaded.some((p) => p.endsWith(`/${want}`))) failures.push(`${want} not among the images Ladybug loaded: ${res.loaded.join(", ") || "none"}`);
   }
-  if (!failures.length) log(`smoke: Ladybug OK — query answered with both extensions loaded; the images loaded:\n    ${res.loaded.join("\n    ")}`);
+  if (!failures.length) log(`Ladybug OK — query answered with both extensions loaded; the images loaded:\n    ${res.loaded.join("\n    ")}`);
   return failures;
 }
 
@@ -1138,7 +1194,7 @@ console.log(JSON.stringify({ width: meta.width, loaded }));
 async function smokeLlama(app) {
   const script = `
 const before = new Set(process.report.getReport().sharedObjects);
-const { getLlama } = await import("node-llama-cpp");
+const { getLlama } = await import(${JSON.stringify(pathToFileURL(join(app, "fixer", "index.js")).href)});
 const llama = await getLlama({ build: "never", progressLogs: false });
 const out = { gpu: llama.gpu, buildType: llama.buildType, release: llama.llamaCppRelease.release, devices: await llama.getGpuDeviceNames() };
 out.loaded = process.report.getReport().sharedObjects.filter((p) => !before.has(p));

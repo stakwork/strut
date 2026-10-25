@@ -1,4 +1,4 @@
-import { fileScopeOf, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
+import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -31,8 +31,12 @@ export { isArtifactPath, fileScopeOf } from "@strut/kit/folds";
  *  wrote can read its own URL. `useArtifactUrl` fetches the token. When the
  *  server minted none (a strut with no secret to sign one, behind a host's
  *  gate that takes the key as `?key=`) the key rides as it used to, and the
- *  server serves such a page with no script. */
+ *  server serves such a page with no script. A PEER's file (`isPeerPath`)
+ *  gets the bare path: no token minted here opens the read-through, the
+ *  listing's is the peer's, and the key never rides there — the viewer
+ *  shows such a file from its bytes (`useFileBlob`). */
 export function artifactUrl(path: string, token = ""): string {
+  if (isPeerPath(path)) return `${BASE}${path}`;
   const key = token ? "" : getApiKey();
   const q = token ? `?t=${encodeURIComponent(token)}` : key ? `?key=${encodeURIComponent(key)}` : "";
   return `${BASE}${path}${q}`;
@@ -83,6 +87,28 @@ export async function fetchArtifactText(path: string): Promise<string> {
   const res = await apiFetch(path);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
+}
+
+/** An artifact's bytes, read with the UI's own credential — for a peer's
+ *  file (`isPeerPath`), which no `?t=` link opens. `type`, when given, is
+ *  the type they are kept as: a PDF a frame renders must be one. */
+export async function fetchArtifactBlob(path: string, type?: string): Promise<Blob> {
+  const res = await apiFetch(path);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const blob = await res.blob();
+  return type ? new Blob([blob], { type }) : blob;
+}
+
+/** Save an artifact: its bytes read with the UI's credential, handed to the
+ *  browser as a download named after the file. A peer's file opens no other
+ *  way from here. */
+export async function downloadArtifact(path: string): Promise<void> {
+  const url = URL.createObjectURL(await fetchArtifactBlob(path));
+  const a = document.createElement("a");
+  a.href = url;
+  try { a.download = decodeURIComponent(path.split("/").pop() || "file"); } catch { a.download = "file"; }
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 // ── API key ────────────────────────────────────────────────────────────────
@@ -814,9 +840,12 @@ export interface ArtifactRef {
   content?: unknown;
   error?: string;
   /** Another strut's deliverable (a run on a peer): `path` is relative to
-   *  `job`'s directory THERE, and a strut-relative `url` is the peer's —
-   *  this strut opens neither. */
+   *  `job`'s directory THERE — opened through the peer's read-through
+   *  (`peerArtifactPath`) — and a strut-relative `url` is the peer's, which
+   *  this strut does not open. */
   peer?: string;
+  /** With `peer`, two hops away: the strut that holds it, as `peer` names it. */
+  via?: string;
   job?: string;
   path?: string;
   /** An APP (`kind: "app"`): a workspace app by name and version (what
@@ -1772,6 +1801,9 @@ export interface AppListEntry {
   pinned?: boolean;
   /** The live release's id, only while the app is held (plans/app-releases.md). */
   live?: string;
+  /** The live version's warnings in the last day (src/apps/monitor.ts): its
+   *  pages cost the server too much. Absent when none. */
+  warnings?: number;
   /** The peer the app lives on, for one listed through the read-through
    *  (`listPeerApps`; never on the wire). */
   peer?: string;
@@ -1826,6 +1858,49 @@ export interface AppView {
   inertGrants: string[];
   errors?: AppError[];
 }
+
+// ── What an app's pages cost the server (src/apps/monitor.ts) ───────────────
+
+export interface AppUsageTotals {
+  calls: number;
+  errors: number;
+  bytes: number;
+  ms: number;
+}
+
+/** One pattern the monitor caught, on the version that caused it. */
+export interface AppWarning {
+  kind: "fanout" | "repeat" | "volume" | "bytes" | "failing";
+  version: string;
+  type?: string;
+  window: "10s" | "1m" | "1h";
+  peak: number;
+  distinct?: number;
+  times: number;
+  firstAt: string;
+  lastAt: string;
+  message: string;
+  fix: string;
+  example?: string;
+  error?: string;
+}
+
+/** `GET /apps/:name/usage`: the last day, kept on disk across restarts. */
+export interface AppUsage {
+  app: string;
+  /** The oldest minute the report holds; absent before the first call. */
+  since?: string;
+  lastCallAt?: string;
+  hour: AppUsageTotals;
+  day: AppUsageTotals;
+  minutes: Array<{ at: string; calls: number; errors: number; bytes: number }>;
+  types: Array<AppUsageTotals & { type: string }>;
+  warnings: AppWarning[];
+}
+
+/** An app's usage, here or (`peer`) where it runs, through the read-through. */
+export const getAppUsage = (name: string, peer?: string) =>
+  fetchJSON<AppUsage>(`${peer ? peerBase(peer) : ""}/apps/${encodeURIComponent(name)}/usage`);
 
 export const listApps = () => fetchJSON<{ apps: AppListEntry[] }>("/apps").then((r) => r.apps);
 

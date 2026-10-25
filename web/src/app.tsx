@@ -4,7 +4,7 @@ import type { CanvasData, CanvasNode, CanvasEdge } from "system-canvas";
 import type { AddNodeButtonRenderProps } from "system-canvas-react";
 import yaml from "js-yaml";
 import * as api from "./api";
-import { foldAccessedNodes } from "@strut/kit/folds";
+import { foldAccessedNodes, isServedFilePath } from "@strut/kit/folds";
 import { latestAttempt } from "./step-attempt";
 import { pushUrl, replaceUrl } from "./embed";
 import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";
@@ -39,6 +39,9 @@ import { JobTimeline, fmtTime } from "./components/JobTimeline";
 import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppHost } from "./components/AppHost";
+import { AppUsageFlyout } from "./components/AppUsageFlyout";
+import { SoloApp } from "./components/SoloApp";
+import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph } from "./icons";
 import { appKey, appMessage } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
@@ -89,6 +92,28 @@ function activeKey(runs: api.ActiveRun[]): string {
 }
 
 export function App() {
+  // `?solo=1`: one thing alone in the window, with none of strut's UI around
+  // it — what a native host (Peel) opens in a web view of its own. Rendered
+  // in place of the shell, so none of its loads and polls run behind it.
+  // Read once.
+  //  - beside `?app=`: the app's page, here or a peer's (plans/apps.md §7.4).
+  //  - beside `?artifact=<path>`: one served file — a job's file or a run's
+  //    artifact, here or a peer's through the read-through — for a
+  //    deliverable. Only a path of that shape (`isServedFilePath`).
+  const [solo] = useState(() => {
+    const p = new URLSearchParams(location.search);
+    return p.get("solo") === "1" ? { app: p.get("app"), artifact: p.get("artifact") } : null;
+  });
+  if (solo?.app) return <SoloApp app={solo.app} />;
+  if (solo?.artifact) {
+    return isServedFilePath(solo.artifact)
+      ? <ArtifactViewer path={solo.artifact} solo />
+      : <div class="app-solo"><div class="empty">Not a file strut serves: {solo.artifact}</div></div>;
+  }
+  return <Shell />;
+}
+
+function Shell() {
   // Deep-links: ?wf=<workflow>&run=<runId>&v=<version> select on load and are
   // kept in sync (replaceState) as the selection changes, so the address bar
   // is always a shareable link to what's on screen. (?chat is read below and
@@ -109,10 +134,6 @@ export function App() {
   // frame reloads when the builder publishes a new version of it.
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
   const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
-  // `?solo=1` beside `?app=`: the app's page alone, with none of strut's UI
-  // around it — what a native host (Peel) opens in a web view of its own,
-  // here or for a peer's app (plans/apps.md §7.4). Read once; the URL keeps it.
-  const [solo] = useState(() => initialUrl.get("solo") === "1");
   const [appQuery, setAppQuery] = useState("");
   const [appReload, setAppReload] = useState(0);
   // What the host hands the chat: a draft for its composer (Edit with the
@@ -196,8 +217,9 @@ export function App() {
   const [localInput, setLocalInput] = useState<api.FlowDef["input"] | null>(null);
   // Which workflow-level flyout is open — the Workflow flyout (params /
   // claims / automations as tabs) or Promote — so they exclude each other by
-  // construction. `wfTab` remembers the tab across open/close.
-  const [panel, setPanel] = useState<"workflow" | "promote" | null>(null);
+  // construction; or, with an app open, its Usage. `wfTab` remembers the tab
+  // across open/close.
+  const [panel, setPanel] = useState<"workflow" | "promote" | "usage" | null>(null);
   const [wfTab, setWfTab] = useState<WorkflowTab>("params");
   // The workflow's contract as last read — null until probed;
   // `enabled: false` (a filesystem workspace) hides the Claims tab.
@@ -522,6 +544,17 @@ export function App() {
   }, []);
 
   useEffect(() => { refreshWorkflows(); refreshStepTypes(); void refreshApps(); }, []);
+
+  // This strut's apps again every 30 s, for the warning dot (an app whose
+  // pages cost the server too much — src/apps/monitor.ts) to show up on its
+  // own. A peer's apps keep the answer of the last full refresh.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      api.listApps().then((local) => setApps((prev) => [...local, ...prev.filter((a) => a.peer)]), () => {});
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Runs executing right now, in any workflow — the sidebar's running dot.
   // Polled (the server answers from memory) so runs started anywhere — the
@@ -1180,17 +1213,16 @@ export function App() {
     setInfoStep((prev) => (prev?.type === entry.type ? null : entry));
   }, []);
 
-  // The selected app's page (plans/apps.md §7.3): in the canvas area, or
-  // alone (`solo`). A peer's page — and any page shown alone — gets no
-  // builder chat and no in-place link: there is nothing of strut's around it
-  // to open them in (plans/apps.md §7.4).
+  // The selected app's page (plans/apps.md §7.3), in the canvas area. A
+  // peer's page gets no builder chat and no in-place link: those are the
+  // peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is ./components/SoloApp.
   const appView = selectedApp
     ? appEntry
       ? <AppHost
           key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
           app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
           reload={appReload}
-          {...(appEntry.peer || solo ? {} : {
+          {...(appEntry.peer ? {} : {
             onMessage: (text: string) => {
               setShowChat(true);
               setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
@@ -1200,7 +1232,6 @@ export function App() {
         />
       : <div class="empty">{appsLoaded ? `No app "${selectedApp}"` : "Loading apps…"}</div>
     : null;
-  if (solo && appView) return <div class="app-solo">{appView}</div>;
 
   return (
     <div class="shell">
@@ -1446,6 +1477,9 @@ export function App() {
           <div class="section-title section-title-toggle" onClick={() => toggleBottom("apps")}>
             <span class={`cat-caret${appListOpen ? " is-open" : ""}`}>▸</span>
             <span>Apps</span>
+            {apps.some((a) => a.warnings) && (
+              <span class="usage-dot" title={`${apps.filter((a) => a.warnings).map((a) => a.title).join(", ")}: heavy backend use — open the app's Usage`} />
+            )}
             <span class="cat-count">
               {appQuery.trim() ? `${matchedApps.length} / ${apps.length}` : apps.length}
             </span>
@@ -1473,6 +1507,7 @@ export function App() {
                   onClick={() => selectApp(appKey(a))}>
                   <span class="app-icon" aria-hidden="true"><AppGlyph /></span>
                   <span class="list-item-name">{a.title}</span>
+                  {!!a.warnings && <span class="usage-dot" title={`${a.warnings} warning${a.warnings === 1 ? "" : "s"} on ${a.activeVersion}: its pages cost the server too much — open its Usage`} />}
                   {a.peer && <span class="badge" title={`Lives on the peer ${a.peer}: it runs there, as you`}>@{a.peer}</span>}
                   {a.pinned && <span class="badge app-tab-badge" title="Shown as a tab where this workspace's apps are listed">tab</span>}
                   <span class="badge badge-accent">{a.activeVersion}</span>
@@ -1662,6 +1697,15 @@ export function App() {
               title="Params, claims, schedules and versions"
               onClick={() => { setPanel((p) => (p === "workflow" ? null : "workflow")); setInfoStep(null); closeFlyout(); }}
             >Workflow{wfClaims?.enabled && <span class={`claims-dot claims-dot-${claimsTone(wfClaims)}`} />}</button>
+          )}
+          {appOpen && appEntry && (
+            <button
+              class={`btn${panel === "usage" ? " is-active" : ""}`}
+              title={appEntry.warnings
+                ? `${appEntry.warnings} warning${appEntry.warnings === 1 ? "" : "s"}: its pages cost the server too much`
+                : "What this app's pages cost the server: calls, failures, data"}
+              onClick={() => { setPanel((p) => (p === "usage" ? null : "usage")); closeFlyout(); }}
+            >Usage{!!appEntry.warnings && <span class="usage-dot" />}</button>
           )}
           {appOpen && selectedApp && !appEntry?.peer && (
             <button
@@ -1883,6 +1927,26 @@ export function App() {
           onActivateVersion={handleActivateVersion}
           dirty={isDirty}
           runs={runs}
+        />
+      )}
+
+      {/* An app's Usage: what its pages cost the server (src/apps/monitor.ts).
+          A warning handed to the builder is a draft, sent by the person. */}
+      {panel === "usage" && appOpen && appEntry && (
+        <AppUsageFlyout
+          key={appKey(appEntry)}
+          app={{ name: appEntry.name, title: appEntry.title, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
+          onClose={() => setPanel(null)}
+          {...(appEntry.peer ? {} : {
+            onFix: (w: api.AppWarning) => {
+              setPanel(null);
+              setShowChat(true);
+              setChatDraft({
+                text: `The app "${appEntry.name}" (${w.version}) is costing the server too much: ${w.message}.${w.example ? ` Last such call's config: ${w.example}.` : ""} ${w.fix} Fix the app and publish it.`,
+                id: Date.now(),
+              });
+            },
+          })}
         />
       )}
 

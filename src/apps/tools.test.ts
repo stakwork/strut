@@ -18,6 +18,7 @@ import type { KitLocation } from "./kit.js";
 import { buildTools } from "../ai/tools.js";
 import { APP_TOOL_META, STEP_RUN_TOOL, buildAppTools, grantRefusal, keptFromApp } from "./tools.js";
 import { parseManifest } from "./manifest.js";
+import type { AppUsage } from "./monitor.js";
 
 /**
  * The app door (plans/apps.md §5, §7.2, §9): `step_run` under an app's
@@ -387,6 +388,31 @@ describe("step_run — the app door", () => {
     const failed = await rpc("/mcp", "tools/call", { name: STEP_RUN_TOOL, arguments: { type: "run/get", config: { workflow: "score-wf", runId: "nope" }, app: identity } });
     assert.equal(failed.result.isError, true);
     assert.match(JSON.parse(failed.result.content[0].text).error, /not found/);
+  });
+
+  it("every call is counted per app: GET /apps/:name/usage, a warning on the version that caused it, its count on GET /apps, the brief on app/get", async () => {
+    // Through the door: counted by the server's monitor, as the viewer.
+    await rpc("/mcp", "tools/call", { name: STEP_RUN_TOOL, arguments: { type: "whoami", config: {}, app: appIdentity("strict", "v1") } });
+    const before = (await (await strut.app.request("/apps/strict/usage", { headers: auth })).json()) as AppUsage;
+    assert.equal(before.app, "strict");
+    const whoami = before.types.find((t) => t.type === "whoami");
+    assert.deepEqual([whoami?.calls, whoami?.errors, whoami?.bytes], [1, 1, 0], "a refusal counts as a failure");
+    assert.equal(before.minutes.length, 60);
+    // One page, one call per item: a fan-out warning on bench@v1 (110 calls,
+    // so a 10 s window boundary between them leaves one side over the rule).
+    const counted = buildAppTools({ apps: strut.apps, registry, services: strut.services, actor: "viewer", runStepDeps: { store, workspace: new FileWorkspaceStore(dataDir) }, monitor: strut.appMonitor });
+    for (let i = 0; i < 110; i++) await (counted[STEP_RUN_TOOL] as any).execute({ type: "whoami", config: { item: i }, app: identity }, { toolCallId: "t", messages: [] });
+    const usage = (await (await strut.app.request("/apps/bench/usage", { headers: auth })).json()) as AppUsage;
+    const fanout = usage.warnings.find((w) => w.kind === "fanout");
+    assert.ok(fanout, JSON.stringify(usage.warnings));
+    assert.deepEqual([fanout.version, fanout.type], ["v1", "whoami"]);
+    assert.ok(fanout.peak >= 55 && fanout.distinct! >= 25, JSON.stringify(fanout));
+    assert.ok(usage.types.find((t) => t.type === "whoami")!.bytes > 0);
+    const listed = ((await (await strut.app.request("/apps", { headers: auth })).json()) as { apps: Array<{ name: string; warnings?: number }> }).apps;
+    assert.equal(listed.find((a) => a.name === "bench")?.warnings, 1);
+    assert.equal(listed.find((a) => a.name === "strict")?.warnings, undefined);
+    assert.equal((await strut.apps.get("bench"))!.usage?.warnings[0]?.kind, "fanout", "the builder reads it through app/get");
+    assert.equal((await strut.app.request("/apps/ghost/usage", { headers: auth })).status, 404);
   });
 
   it("the builder gets the app/* steps as named tools and the editor, sandboxed to its data directory", async () => {

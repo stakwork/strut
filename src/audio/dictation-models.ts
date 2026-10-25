@@ -9,10 +9,15 @@
  * installed, and until then transcription keeps to the default. The picks
  * live in `<dataDir>/audio/dictation.json`; with none, speech is the default
  * model (Kroko) and there is no fixer.
+ *
+ * The fixers need node-llama-cpp, which only the desktop package carries
+ * (fixer.ts `fixerRuntime`): a strut without it lists none, refuses to pick
+ * one, and has no fixer whatever was picked.
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isInstalled, type DownloadProgress, type Installer, type ModelAsset } from "./download.js";
+import { NO_FIXER_RUNTIME } from "./fixer.js";
 import {
   DICTATION_MODELS,
   findFixer,
@@ -62,6 +67,8 @@ export interface DictationModelsOptions {
   defaultSpeech: string;
   /** Throws when a speech model cannot be downloaded here (no sherpa addon). */
   requireSpeechEngine?: () => Promise<void>;
+  /** Whether a fixer can run here (node-llama-cpp installed, or a test's fake). Default: yes. */
+  fixerAvailable?: () => boolean;
   log?: (msg: string) => void;
 }
 
@@ -97,11 +104,16 @@ export class DictationModels {
     return m.kind === "speech" ? sttModelPath(this.o.modelDir, id) : fixerModelPath(this.o.modelDir, id);
   }
 
+  private get fixers(): boolean {
+    return this.o.fixerAvailable?.() ?? true;
+  }
+
   async list(): Promise<DictationModelStatus[]> {
     const picks = await this.picks();
     const active = await this.active();
+    const shown = this.fixers ? DICTATION_MODELS : DICTATION_MODELS.filter((m) => m.kind !== "fixer");
     return Promise.all(
-      DICTATION_MODELS.map(async (m): Promise<DictationModelStatus> => {
+      shown.map(async (m): Promise<DictationModelStatus> => {
         const dl = this.downloads.get(m.id);
         const state: DictationModelState = dl ? "downloading" : (await isInstalled(this.dir(m.id))) ? "installed" : "available";
         const error = this.errors.get(m.id);
@@ -137,6 +149,7 @@ export class DictationModels {
   async use(pick: { speech?: string; fixer?: string | null }): Promise<DictationModelStatus[]> {
     if (pick.speech !== undefined) requireDictationModel(pick.speech, "speech");
     if (pick.fixer != null) requireDictationModel(pick.fixer, "fixer");
+    if (pick.fixer != null && !this.fixers) throw new Error(NO_FIXER_RUNTIME);
     if (pick.speech !== undefined && !(await isInstalled(this.dir(pick.speech)))) await this.o.requireSpeechEngine?.();
     await this.save((s) => ({
       ...s,
@@ -169,8 +182,10 @@ export class DictationModels {
     return (await isInstalled(this.dir(s.speech))) ? s.speech : null;
   }
 
-  /** The picked fixer's file when it is installed; null when none is picked or it is not on disk yet. */
+  /** The picked fixer's file when it is installed; null when none is picked, it is not on disk yet,
+   *  or no fixer can run here. */
   async fixerModel(): Promise<{ id: string; path: string } | null> {
+    if (!this.fixers) return null;
     const { fixer } = await this.picks();
     if (!fixer || !(await isInstalled(this.dir(fixer)))) return null;
     return { id: fixer, path: join(this.dir(fixer), findFixer(fixer)!.file) };

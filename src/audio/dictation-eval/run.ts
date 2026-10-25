@@ -11,7 +11,9 @@
  *
  * Opt-in and not part of `npm test`: it needs the GGUFs in ./.models/gguf
  * (gitignored; Qwen3-{0.6B,1.7B}-Q4_K_M.gguf, the files models.ts
- * FIXER_MODELS downloads), or `--dir` naming another folder that holds them.
+ * FIXER_MODELS downloads), or `--dir` naming another folder that holds them,
+ * and node-llama-cpp in fixer/ (`yarn --cwd fixer install --frozen-lockfile
+ * --ignore-scripts`; strut's own dependencies do not have it).
  * Node must load .ts in a worker thread: Node 22.18+ (or 22.6+ with
  * NODE_OPTIONS=--experimental-transform-types).
  */
@@ -65,6 +67,8 @@ export function loadCases(): Case[] {
           facts: (e.heard ?? []).length,
         })),
         undone: row.undone ?? [],
+        // As memory/lexicon gives it on the seed ontology: what the loose full-name recall matches.
+        personType: "Person",
       });
     } else {
       const lexicon = lexicons.get(row.lexicon);
@@ -77,7 +81,7 @@ export function loadCases(): Case[] {
 
 // ── Scoring ─────────────────────────────────────────────────────────────────
 
-const pairKey = (p: Mishearing) => `${letters(p.heard) && p.heard.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").trim()}→${p.written.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")}`;
+const pairKey = (p: Mishearing) => `${letters(p.heard) && p.heard.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").trim()}→${p.written.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")}${p.term ? " (term)" : ""}${p.name ? ` in ${p.name}` : ""}`;
 /** Fix is scored on word changes, punctuation aside: the expected text's changes from the transcript against the output's. */
 const changeKey = (h: Hunk) => `${h.a[0]}-${h.a[1]}:${h.to}`;
 
@@ -134,7 +138,9 @@ async function runOne(model: string | null, a: Args) {
     await f.ready();
     loadMs = performance.now() - t0;
     // Warm each task once: first-call allocations, and each prompt's cached prefix.
-    await f.judge([{ typed: "hi", edited: "Hi", from: "hi", to: "Hi", known: "" }]);
+    await f.judge([{ typed: "hi", edited: "Hi", from: "hi", to: "Hi", at: 0, known: "" }]);
+    await f.named([{ text: "Hi there", word: "Hi" }]);
+    await f.everyday(["hi"]);
     await f.score([{ name: "Strut", type: "Project", text: "Hi there" }]);
     await f.retract("hi, no, hello");
     fixer = f;

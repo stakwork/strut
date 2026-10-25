@@ -21,9 +21,13 @@ export const Learned = z.object({
 });
 export type LearnedT = z.infer<typeof Learned>;
 
-/** Writes that dictation writes `heard` for `written`: the pair alone, on the entity that writes it or a new word. */
-export async function learn(heard: string, written: string, lexicon: Lexicon, ctx: StepContext<unknown>): Promise<LearnedT> {
-  const out = await remember.run(remember.input.parse(learnInput(heard, written, lexicon)), ctx);
+/** Writes that dictation writes `heard` for `written`: the pair alone, on the
+ *  entity that writes it or a new word; with `term`, the new word alone; with
+ *  `name`, on the person of that full name (made when nothing writes it). */
+export async function learn(heard: string, written: string, lexicon: Lexicon, ctx: StepContext<unknown>, term = false, name?: string): Promise<LearnedT> {
+  const input = learnInput(heard, written, lexicon, term, name);
+  if (!input) return { heard, written, undo: [] };
+  const out = await remember.run(remember.input.parse(input), ctx);
   if (out?.error) throw new Error(`dictation: ${out.error}`);
   return { heard, written, undo: undoIds(out) };
 }

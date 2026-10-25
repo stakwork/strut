@@ -18,7 +18,8 @@ export default defineStep({
     "`facts` (current facts it is in), `updated_at` and `known_by_user` (a current fact of the user's points at it). " +
     "`undone` lists the mishearings forgotten with reason \"undone\", so they are not learned again. " +
     "`lingo_type` is the type a new word is made as (role dictation; its entities are taught to dictation) and `mishearing` " +
-    "the predicate with role mishearing. " +
+    "the predicate with role mishearing, `person_type` the type a person is (the user type's parent), which a full name " +
+    "dictation learns is made as. " +
     "A mishearing is written with memory/remember: { episode, kind: \"note\", created_by: \"dictation\", facts: [{ " +
     "subject: { ref_id?, type, name }, predicate: <the predicate with role mishearing>, text, value: <the wrong text>, " +
     "form?: <the written form> }] }, where a form left out is the subject name given (so naming the subject by an alias, " +
@@ -62,6 +63,8 @@ export default defineStep({
     for (const f of facts) byEntity.set(f.entity, [...(byEntity.get(f.entity) ?? []), f]);
     return {
       lingo_type: vocab.typeWithRole("dictation") ?? null,
+      // A subtype of the user type is not the user: its nearest ancestor that is not is what a person is.
+      person_type: (userType ? vocab.ancestors(userType).find((t) => vocab.role(t) !== "user") : undefined) ?? null,
       mishearing: heardAs[0] ?? null,
       entities: entities.map((e) => {
         const own = byEntity.get(e.ref_id) ?? [];

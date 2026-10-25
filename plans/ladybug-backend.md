@@ -283,8 +283,10 @@ space per open and `close()` never returns it: the eighth open in a process
 fails with "Mmap for size 8796093022208 failed"; a `COPY … TO` file write
 IS allowed in a read-only transaction, so `query.ts`'s keyword gate is what
 keeps the machine out of reach). On open: load `vector` and `fts` by path
-(`STRUT_LADYBUG_EXTENSION_DIR`; unset → `INSTALL vector` / `INSTALL fts`,
-the dev download) — an open without both FAILS with the hint (ruling 4);
+(`STRUT_LADYBUG_EXTENSION_DIR`; unset → strut's pinned copies, sha256 per
+platform, `src/graph/ladybug/extensions.ts` — `INSTALL vector` / `INSTALL
+fts` only where there is no pin, since extension.ladybugdb.com rebuilds
+the files under one version) — an open without both FAILS with the hint (ruling 4);
 then the DDL of §3.1, the indexes, the append-only `MIGRATIONS` list. An
 orphan `.wal` beside a missing file is removed before open (a stale WAL
 fails every query with "Database ID … does not match"). Rows come back
@@ -425,8 +427,8 @@ pass, `test-util`'s snapshot) stay live-only. A few asserts split on
 
 CI (`tests.yml`) installs with `--ignore-scripts`; the handle loads the
 platform package directly (§2), so Linux matches. The two extension files
-are fetched once by `INSTALL` into `~/.lbdb`; if CI cannot, the suite
-skips and says so, never silently.
+are strut's pinned copies, fetched once into the model cache; if CI cannot,
+the suite skips and says so, never silently.
 
 ## 6. Build order — four slices, each green
 

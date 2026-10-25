@@ -132,6 +132,12 @@ describe("a peer's app, hosted by a person's own strut (plans/apps.md §7.4)", (
     const me = stepRun(await rpc(acme, "/mcp", personToken, "tools/call", { name: "step_run", arguments: { type: "whoami", config: {}, app: identity } }));
     assert.equal(me.error, undefined, me.error);
     assert.deepEqual(me.result, { app: { name: "hello-peer", version: "v1" }, actor: "alice", principal: "alice" });
+    // Counted where it ran, and read through like the app list.
+    const usage = await mine.app.request("/peers/acme/apps/hello-peer/usage", { headers: keyed });
+    assert.equal(usage.status, 200);
+    const counted = (await usage.json()) as { app: string; types: Array<{ type: string; calls: number }> };
+    assert.equal(counted.app, "hello-peer");
+    assert.ok((counted.types.find((t) => t.type === "whoami")?.calls ?? 0) >= 1, JSON.stringify(counted.types));
 
     // The app's grants are the fence: a step it does not grant is refused.
     const log = stepRun(await rpc(acme, "/mcp", personToken, "tools/call", { name: "step_run", arguments: { type: "log", config: { message: "x" }, app: identity } }));
@@ -183,6 +189,12 @@ describe("a peer's app, hosted by a person's own strut (plans/apps.md §7.4)", (
     const me = stepRun(await rpc(mine, "/peers/acme/mcp", KEY, "tools/call", { name: "step_run", arguments: { type: "whoami", config: {}, app: meta } }));
     assert.equal(me.error, undefined, me.error);
     assert.deepEqual(me.result, { app: { name: "hello-peer", version: "v1" }, actor: "alice", principal: "alice" });
+    // Counted where it ran, and read through like the app list.
+    const usage = await mine.app.request("/peers/acme/apps/hello-peer/usage", { headers: keyed });
+    assert.equal(usage.status, 200);
+    const counted = (await usage.json()) as { app: string; types: Array<{ type: string; calls: number }> };
+    assert.equal(counted.app, "hello-peer");
+    assert.ok((counted.types.find((t) => t.type === "whoami")?.calls ?? 0) >= 1, JSON.stringify(counted.types));
 
     // A peer of the person's strut never relays through it; an app's other routes are not read through.
     assert.equal((await rpc(mine, "/peers/acme/mcp", PEER_KEY, "tools/list", {})).status, 403);

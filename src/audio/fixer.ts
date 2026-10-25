@@ -6,6 +6,8 @@
  *
  * - `judge(questions)`: for each change of an edit, log P(yes) − log P(no)
  *   that it is a mishearing, from one forward pass after a few-shot prompt.
+ * - `named(questions)`, `everyday(words)`: the same for "is this word a name
+ *   here?" and "is this word, alone, an everyday word?".
  * - `score(sentences)`: the log-likelihood of each sentence after "Dictated
  *   by someone who often mentions X (a <type>)".
  * - `retract(text)`: the words a speaker took back and the cue that took
@@ -15,8 +17,9 @@
  * loads on first use and unloads after five minutes idle; picking another
  * fixer swaps it on the next use.
  */
-import { extname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { extname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModelWorker, type ModelWorkerSpec } from "../model-worker.js";
 import type { FixerEngine } from "./fixer-engine.js";
 import type { Fixer } from "./lingo.js";
@@ -24,6 +27,33 @@ import { findFixer } from "./models.js";
 
 // Beside this file in `src/` (tsx) and in `build/` alike.
 const ENGINE = new URL(`./fixer-engine${extname(fileURLToPath(import.meta.url))}`, import.meta.url).href;
+// fixer/ at strut's root: two up from src/audio/ and build/audio/ alike.
+const FIXER_DIR = fileURLToPath(new URL("../../fixer/", import.meta.url));
+
+/**
+ * node-llama-cpp, which is not one of strut's dependencies: fixer/ installs
+ * it from its own lockfile, so a server install of strut never carries it
+ * (~740 MB of CUDA and Vulkan builds on Linux). Only the desktop package
+ * stages it, at fixer/ as here (scripts/package-desktop.mjs); in a checkout,
+ * `yarn --cwd fixer install --frozen-lockfile --ignore-scripts` (the eval).
+ * The URL of fixer/index.js, which re-exports it, for the worker to import;
+ * null when it is not installed, and then there is no fixer here.
+ */
+export function fixerRuntime(): string | null {
+  const ok = existsSync(join(FIXER_DIR, "index.js")) && existsSync(join(FIXER_DIR, "node_modules", "node-llama-cpp", "package.json"));
+  return ok ? pathToFileURL(join(FIXER_DIR, "index.js")).href : null;
+}
+
+export const NO_FIXER_RUNTIME =
+  "dictation's fixer needs node-llama-cpp, which this strut does not have: only the desktop package carries it " +
+  "(in a checkout: yarn --cwd fixer install --frozen-lockfile --ignore-scripts)";
+
+/** The worker a fixer model runs in: fixer-engine.ts over fixer/'s node-llama-cpp. */
+function llamaSpec(m: { path: string }): ModelWorkerSpec {
+  const llama = fixerRuntime();
+  if (!llama) throw new Error(NO_FIXER_RUNTIME);
+  return { module: ENGINE, factory: "loadLlamaFixer", options: { path: m.path, llama } };
+}
 
 // ── On the main thread: the picked fixer, loaded on use ────────────────────
 
@@ -59,7 +89,7 @@ export class DictationFixer {
       // Swapped with no await between the check and the new one: two calls
       // racing here share one worker, and none is left running unowned.
       const old = this.loaded;
-      const spec = this.o.spec?.(m) ?? { module: ENGINE, factory: "loadLlamaFixer", options: { path: m.path } };
+      const spec = this.o.spec?.(m) ?? llamaSpec(m);
       this.loaded = { ...m, worker: new ModelWorker(spec, `dictation fixer (${m.id})`), busy: 0 };
       await this.free(old);
     }
@@ -84,6 +114,8 @@ export class DictationFixer {
       id: m.id,
       learnMargin: findFixer(m.id)?.learnMargin ?? 0,
       judge: (qs) => call("judge", [qs]),
+      named: (qs) => call("named", [qs]),
+      everyday: (ws) => call("everyday", [ws]),
       score: (ss) => call("score", [ss]),
       retract: (text) => call("retract", [text]),
       ready: () => call("ready", []),
