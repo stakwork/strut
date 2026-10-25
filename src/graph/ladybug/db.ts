@@ -31,6 +31,7 @@ import { dirname, join, resolve } from "node:path";
 import type { GraphTx, Params, Row } from "../engine.js";
 import { EDGE_COLUMNS, LADYBUG_EDGE_TYPES, nodeColumns, type ColumnType } from "./registry.js";
 import { bootEnv } from "../../env.js";
+import { EXTENSION_NAMES, LADYBUG_EXTENSION_PINS, pinnedExtensions, type ExtensionName, type PinnedExtensions, type PinnedOptions } from "./extensions.js";
 
 export type Query = (cypher: string, params?: Params) => Promise<Row[]>;
 
@@ -72,12 +73,25 @@ export interface LadybugHandle {
 export interface OpenOptions {
   /** Folder holding `libvector.lbug_extension` + `libfts.lbug_extension`
    *  (flat, or in `vector/` + `fts/` as the ladybug cache lays them out).
-   *  Default `STRUT_LADYBUG_EXTENSION_DIR`; unset → `INSTALL` (the dev
-   *  download into `~/.lbdb`). */
+   *  Default `STRUT_LADYBUG_EXTENSION_DIR`; unset → strut's pinned copies,
+   *  downloaded and verified on first use (extensions.ts), and with no pin
+   *  for the loaded core or this platform, `INSTALL` (the download into
+   *  `~/.lbdb`). */
   extensionDir?: string;
+  /** Where the pinned copies come from and go (tests). */
+  pinned?: PinnedOptions;
 }
 
-export const REQUIRED_EXTENSIONS = ["vector", "fts"] as const;
+export const REQUIRED_EXTENSIONS = EXTENSION_NAMES;
+
+let warnedUnpinned = false;
+/** Once per process: INSTALL takes whatever extension.ladybugdb.com serves
+ *  under the extension version today, which may not load into this core. */
+function warnUnpinned(why: string): void {
+  if (warnedUnpinned) return;
+  warnedUnpinned = true;
+  console.warn(`[graph] ${why}: INSTALLing vector + fts from extension.ladybugdb.com, whose files change under the same version`);
+}
 
 /** The address space a `Database` reserves on open (the addon's `maxDBSize`),
  *  which `close()` never returns: the default 8 TB fits eight to ten opens in
@@ -288,14 +302,18 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
   };
 
   try {
-    // Extensions: by path from the given folder, else the ladybug download.
+    // Extensions: by path from the given folder, else strut's pinned copies
+    // (extensions.ts), else — no pin for this core or platform — the ladybug download.
     const dir = opts.extensionDir ?? bootEnv()["STRUT_LADYBUG_EXTENSION_DIR"];
-    const load = async (query: Query, name: string) => {
-      if (dir) await query(`LOAD EXTENSION '${extensionPath(dir, name).replace(/'/g, "''")}'`);
-      else {
-        await query(`INSTALL ${name}`);
-        await query(`LOAD EXTENSION ${name}`);
-      }
+    let pinned: PinnedExtensions | undefined;
+    const loadPath = (query: Query, path: string) => query(`LOAD EXTENSION '${path.replace(/'/g, "''")}'`);
+    const load = async (query: Query, name: ExtensionName) => {
+      if (dir) return loadPath(query, extensionPath(dir, name));
+      pinned ??= await pinnedExtensions(lbug.Database.getVersion(), opts.pinned);
+      if ("files" in pinned) return loadPath(query, pinned.files[name]);
+      warnUnpinned(pinned.none);
+      await query(`INSTALL ${name}`);
+      await query(`LOAD EXTENSION ${name}`);
     };
     for (const name of REQUIRED_EXTENSIONS) {
       try {
@@ -304,7 +322,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
         throw new Error(
           `the graph backend needs ladybug's ${name} extension and it did not load: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}. ` +
             `Set STRUT_LADYBUG_EXTENSION_DIR to a folder holding libvector.lbug_extension and libfts.lbug_extension for ladybug ${lbug.Database.getVersion()}, ` +
-            `or let strut INSTALL them (needs network access to extension.ladybugdb.com).`,
+            `or let strut download its pinned copies (needs network access to ${new URL(LADYBUG_EXTENSION_PINS.baseUrl).host}).`,
         );
       }
     }

@@ -26,7 +26,7 @@ export type Term = {
   parent: string;
   /** Entity types: how names are matched: "person", "organisation" or "plain"; "" inherits, then plain. */
   naming: string;
-  /** Entity types: "user" marks the one type that is the user. Predicates: "alias" marks a fact whose text is another name for its subject;
+  /** Entity types: "user" marks the one type that is the user, "dictation" the type dictation makes a new word as. Predicates: "alias" marks a fact whose text is another name for its subject;
    *  "mishearing" one whose value is how dictation mishears it (never an alias). */
   role: string;
 };
@@ -38,11 +38,13 @@ export const ONTOLOGY_DDL = `CREATE NODE TABLE IF NOT EXISTS Ontology(key STRING
 // Creates a missing row; on an existing one fills only behaviour columns
 // that are NULL (added by a migration after the row was written, or left
 // unset by a proposal). A value someone set, even "", is kept. A description
-// still reading as an earlier seed wrote it (`previous`) takes the new text.
+// or role still reading as an earlier seed wrote it (`previous`,
+// `previousRole`) takes the new one.
 const MERGE = `MERGE (o:Ontology {key: $key}) ON CREATE SET o.kind = $kind, o.name = $name, o.description = $description,
   o.status = $status, o.cardinality = $cardinality, o.subject_types = $subject_types, o.object_types = $object_types,
   o.aliases = $aliases, o.created_by = $by, o.created_at = $now, o.updated_at = $now
-  SET o.parent = coalesce(o.parent, $parent), o.naming = coalesce(o.naming, $naming), o.role = coalesce(o.role, $role),
+  SET o.parent = coalesce(o.parent, $parent), o.naming = coalesce(o.naming, $naming),
+      o.role = CASE WHEN o.role IS NULL OR o.role = $previousRole THEN $role ELSE o.role END,
       o.description = CASE WHEN o.description = $previous THEN $description ELSE o.description END`;
 
 /**
@@ -50,14 +52,14 @@ const MERGE = `MERGE (o:Ontology {key: $key}) ON CREATE SET o.kind = $kind, o.na
  * overwrites an edited one. The user role goes to one type only: a seed term
  * with role user, when another type already has it, is left without one.
  */
-export async function seed(query: Query, terms: (Term & { previous?: string })[]): Promise<void> {
+export async function seed(query: Query, terms: (Term & { previous?: string; previousRole?: string })[]): Promise<void> {
   const now = Date.now();
   invalidate(query);
   const user = (await vocabulary(query)).userType();
   for (const t of terms) {
     // NULL, not "": it stays unset, so the role comes back if the other type goes.
     const role = t.role === "user" && user && user !== t.name ? null : t.role;
-    await query(MERGE, { key: `${t.kind}:${t.name}`, ...t, role, previous: t.previous ?? null, by: "seed", now });
+    await query(MERGE, { key: `${t.kind}:${t.name}`, ...t, role, previous: t.previous ?? null, previousRole: t.previousRole ?? null, by: "seed", now });
   }
   invalidate(query);
   const users = (await vocabulary(query)).terms.filter((t) => t.kind === "entity_type" && t.role === "user");
@@ -84,10 +86,12 @@ export type Vocabulary = {
   ancestors(type: string): string[];
   /** How a type's names are matched, from the type or its nearest ancestor that sets it; "plain" by default. */
   naming(type: string): string;
-  /** The type's own role ("user" or ""). Not inherited: a subtype of the user type is not the user. */
+  /** The type's own role ("user", "dictation" or ""). Not inherited: a subtype of the user type is not the user. */
   role(type: string): string;
   /** The entity type with role "user", if any. */
   userType(): string | undefined;
+  /** The first entity type with this role, e.g. "dictation": the type dictation makes a new word as. */
+  typeWithRole(role: string): string | undefined;
   /** The predicates with this role, e.g. "alias": the fact's text gives its subject another name. */
   predicatesWithRole(role: string): string[];
 };
@@ -112,6 +116,7 @@ function vocabularyOf(terms: Term[]): Vocabulary {
     naming: (type) => [type, ...ancestors(type)].map((t) => types.get(t)?.naming).find(Boolean) ?? "plain",
     role: (type) => types.get(type)?.role ?? "",
     userType: () => terms.find((t) => t.kind === "entity_type" && t.role === "user")?.name,
+    typeWithRole: (role) => terms.find((t) => t.kind === "entity_type" && t.role === role)?.name,
     predicatesWithRole: (role) => terms.filter((t) => t.kind === "predicate" && t.role === role).map((t) => t.name),
   };
 }
@@ -178,7 +183,7 @@ export async function resolve(
   const term: Term = kind === "entity_type"
     ? { ...base, cardinality: "", subject_types: [], object_types: [] }
     : { ...base, cardinality: "many", subject_types: context.subject ? [context.subject] : [], object_types: context.object ? [context.object] : [] };
-  await query(MERGE, { key: `${kind}:${term.name}`, ...term, parent: null, naming: null, role: null, previous: null, by, now: Date.now() });
+  await query(MERGE, { key: `${kind}:${term.name}`, ...term, parent: null, naming: null, role: null, previous: null, previousRole: null, by, now: Date.now() });
   invalidate(query);
   return { term, given, proposed: true };
 }

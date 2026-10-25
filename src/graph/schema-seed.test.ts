@@ -55,7 +55,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(r1.mode, "standalone");
     assert.deepEqual(r1.createdSchemas.sort(), STRUT_SCHEMAS.map((s) => s.type).sort());
     // PUBLISHED_BY → Person is skipped (no Person schema in standalone).
-    assert.deepEqual(r1.skippedEdgeSchemas, ["StrutStepVersion-[PUBLISHED_BY]->Person"]);
+    assert.deepEqual(r1.skippedEdgeSchemas, ["StrutStepVersion-[PUBLISHED_BY]->Person", "HiveWorkspaceMember-[SENT]->StrutAgentSession", "Person-[SENT]->StrutAgentSession"]);
     assert.equal(r1.createdEdgeSchemas.length, STRUT_EDGES.length - 1);
 
     const snap1 = await graphSnapshot(bolt);
@@ -168,8 +168,9 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(r.createdSchemas.length, 9);
     assert.ok(!r.createdSchemas.includes("StrutRun"));
     assert.deepEqual(r.reconciled, { StrutRun: ["summary"] });
-    assert.deepEqual(r.skippedEdgeSchemas, []);
+    assert.deepEqual(r.skippedEdgeSchemas, ["HiveWorkspaceMember-[SENT]->StrutAgentSession"], "no member type in this jarvis");
     assert.ok(r.createdEdgeSchemas.includes("StrutStepVersion-[PUBLISHED_BY]->Person"));
+    assert.ok(r.createdEdgeSchemas.includes("Person-[SENT]->StrutAgentSession"));
 
     const after = await graphSnapshot(bolt);
     // jarvis-owned nodes are byte-identical.

@@ -15,6 +15,7 @@ import { defineStep, withAccessedNodes, type RunEvent, type RunSummary } from ".
 import { createRegistry } from "./steps/registry.js";
 import { z } from "zod";
 import listPeers from "./steps/lib/strut/list-peers.js";
+import runWorkflowStep from "./steps/lib/strut/run-workflow.js";
 import {
   launchOnPeer,
   listPeerWorkflows,
@@ -1095,5 +1096,20 @@ describe("a deliverable two hops away (plans/chained-orchestrators.md §5)", () 
     } finally {
       spy.close();
     }
+  });
+});
+
+describe("strut/run-workflow's input", () => {
+  // A model often sends an object field as its JSON text; the call (and a
+  // proposal of it, which a card reads) must hold the object.
+  it("is a JSON object, and JSON text of one is read as that object", () => {
+    const cfg = runWorkflowStep.input.parse({ peer: "hive", workflow: "orchestrator", input: '{"prompt":"hi","session":"s"}' });
+    assert.deepEqual(cfg.input, { prompt: "hi", session: "s" });
+    assert.deepEqual(runWorkflowStep.input.parse({ peer: "hive", workflow: "orchestrator", input: { prompt: "hi" } }).input, { prompt: "hi" });
+    for (const input of ["not json", "[1]", '"text"']) {
+      assert.throws(() => runWorkflowStep.input.parse({ peer: "hive", workflow: "orchestrator", input }), `${input}`);
+    }
+    const tool = z.toJSONSchema(runWorkflowStep.input, { io: "input" }) as { properties: { input: { type?: string } } };
+    assert.equal(tool.properties.input.type, "object");
   });
 });

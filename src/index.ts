@@ -294,7 +294,7 @@ export {
   type AttachOptions as AudioAttachOptions,
   type AudioUpgradeHandler,
 } from "./audio/ws.js";
-export { STT_MODELS, DEFAULT_MODEL as DEFAULT_STT_MODEL, type SttModel } from "./audio/models.js";
+export { STT_MODELS, DEFAULT_MODEL as DEFAULT_STT_MODEL, DICTATION_MODELS, FIXER_MODELS, type SttModel, type DictationModel, type FixerModel } from "./audio/models.js";
 export { parseHotwords, formatHotwords, HotwordsStore, type Hotword } from "./audio/hotwords.js";
 
 // Agent sessions — the threads an `agent` step with `session` set continues
@@ -475,6 +475,7 @@ export {
 export {
   STRUT_SCHEMAS,
   STRUT_EDGES,
+  JARVIS_SOURCED_EDGES,
   STRUT_DOMAIN,
   STRUT_DOMAIN_LABEL,
   getStrutSchema,

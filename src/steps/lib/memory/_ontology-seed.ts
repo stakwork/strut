@@ -6,11 +6,11 @@ import type { Term } from "./_ontology.js";
 
 type Base = Pick<Term, "name" | "description" | "aliases"> & Partial<Term>;
 
-// `previous`: the description an earlier seed wrote, replaced on open when a
-// database still has it unedited.
-type Seeded = Term & { previous?: string };
+// `previous` / `previousRole`: the description or role an earlier seed wrote,
+// replaced on open when a database still has it unedited.
+type Seeded = Term & { previous?: string; previousRole?: string };
 
-export const entityType = (t: Base & { previous?: string }): Seeded => ({
+export const entityType = (t: Base & { previous?: string; previousRole?: string }): Seeded => ({
   kind: "entity_type", status: "active", cardinality: "", subject_types: [], object_types: [],
   parent: "", naming: "", role: "", ...t,
 });
@@ -43,6 +43,8 @@ export const SEED: Seeded[] = [
     name: "Lingo",
     description: "A word or phrase the user uses that is not a person, place, organisation, project or topic: jargon, an acronym, a product or code word.",
     aliases: ["term", "jargon", "acronym", "word", "vocabulary"],
+    // The type dictation makes a new word as; its words are taught to dictation (memory/lexicon's lingo_type).
+    role: "dictation", previousRole: "",
   }),
 
   predicate({ name: "name", description: "What someone or something is called.", cardinality: "one", subject_types: ANY, aliases: ["full_name", "called", "named", "is_called"], role: "alias" }),

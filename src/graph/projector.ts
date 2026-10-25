@@ -148,6 +148,29 @@ export interface RunProjection {
   stepHashes?: Record<string, string>;
   /** The job the run was launched under (`run.start.job`), if any. */
   job?: string;
+  /** WHO SENT the orchestrator turn: the hive user id taken from the run's
+   *  actor (`run.start.actor`, else the summary's) — never from a prompt.
+   *  Set only for the `orchestrator` workflow's person launches; `session`
+   *  is the ref path of the turn's `StrutAgentSession`. */
+  speaker?: { userId: string; actor: string; sessionPath: string };
+}
+
+/** The workflow and agent step that is one orchestrator TURN
+ *  (`src/orchestrator-seed.ts`, step `turn`). */
+export const ORCHESTRATOR_WORKFLOW_NAME = "orchestrator";
+export const ORCHESTRATOR_TURN_PATH = "orchestrator/turn";
+/** A hive user id is a cuid: `c` + 20–31 lowercase alphanumerics. */
+const USER_ID = /^c[a-z0-9]{20,31}$/;
+
+/** The hive user id in an actor of the form `<github_username>-<user_id>`
+ *  (the part after the LAST hyphen), or the whole value when it is a bare id.
+ *  Anything else — no actor, a non-person principal, an empty id, a bare
+ *  handle — names nobody: undefined. */
+export function speakerUserId(actor: string | undefined): string | undefined {
+  const a = actor?.trim();
+  if (!a) return undefined;
+  const id = a.slice(a.lastIndexOf("-") + 1);
+  return USER_ID.test(id) ? id : undefined;
 }
 
 /** Pure: the nodes one run contributes (no graph access). */
@@ -280,7 +303,19 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     });
   }
 
-  return { run, sessions, toolCalls, workflowHash: start?.workflowHash, stepHashes: start?.stepHashes, job };
+  // The speaker of an orchestrator turn: a PERSON's launch only (a peer's
+  // run without a person credential, a schedule's fire and a verify pass
+  // are not someone speaking).
+  let speaker: RunProjection["speaker"];
+  const origin = start?.origin ?? summary?.origin;
+  const actor = start?.actor ?? summary?.actor;
+  const personLaunch = origin === undefined || origin === "app" || (origin === "peer" && start?.peerPerson === true);
+  const userId = speakerUserId(actor);
+  if (workflow === ORCHESTRATOR_WORKFLOW_NAME && personLaunch && userId && actor && sessionPaths.includes(ORCHESTRATOR_TURN_PATH)) {
+    speaker = { userId, actor, sessionPath: ORCHESTRATOR_TURN_PATH };
+  }
+
+  return { run, sessions, toolCalls, workflowHash: start?.workflowHash, stepHashes: start?.stepHashes, job, speaker };
 }
 
 /** The job's node (plans/job-index.md §6), from the index's view: the
@@ -445,7 +480,43 @@ export async function projectRun(
     await backend.edges.writeMany(edges);
     report.edges += edges.length;
   }
+  // WHO SENT the turn — optional, and never allowed to fail the projection.
+  if (p.speaker && sessionRef.has(p.speaker.sessionPath)) {
+    try {
+      report.edges += await writeSpeakerEdges(backend, p.speaker.userId, sessionRef.get(p.speaker.sessionPath)!);
+    } catch {
+      // The graph has no member type / no SENT edge schema yet: nothing written.
+    }
+  }
   return runRef;
+}
+
+/**
+ * `SENT`: the speaker's EXISTING `HiveWorkspaceMember` (matched on `user_id`;
+ * one per workspace they belong to, each its own node) → the turn's
+ * `StrutAgentSession`. Nothing is ever created: no member, no edge. The edge
+ * writer keeps one edge per (source, type, target), so projecting a run again
+ * adds none.
+ *
+ * ONTOLOGY LIMIT: `SENT` is jarvis's (Person→Message/Email). Strut declares
+ * and seeds `HiveWorkspaceMember/Person -SENT-> StrutAgentSession`
+ * (`STRUT_EDGES`) wherever the source type exists; against a jarvis graph
+ * whose ontology lacks that edge schema (and that strut did not seed) the
+ * write is refused and swallowed — the schema then has to come from
+ * jarvis-backend or a graph proposal. No `Person` fallback: `Person` has no
+ * github-handle or user-id field to match on exactly.
+ */
+async function writeSpeakerEdges(backend: GraphBackend, userId: string, sessionRef: string): Promise<number> {
+  if (!holds(backend, "HiveWorkspaceMember")) return 0;
+  const { namespace: ns, dialect: d } = backend;
+  const rows = await backend.query(
+    `MATCH ${d.node("m", "HiveWorkspaceMember", { namespace: "$ns", user_id: "$uid" })} WHERE ${d.live("m")} RETURN DISTINCT m.ref_id AS ref_id`,
+    { ns, uid: userId },
+  );
+  const refs = [...new Set(rows.map((r) => r["ref_id"]).filter((r): r is string => typeof r === "string" && r !== ""))];
+  if (!refs.length) return 0;
+  await backend.edges.writeMany(refs.map((ref) => ({ edge: "SENT", source_ref_id: ref, target_ref_id: sessionRef })));
+  return refs.length;
 }
 
 const projecting = new WeakMap<GraphBackend, Map<string, Promise<string | null>>>();

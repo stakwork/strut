@@ -629,7 +629,7 @@ kept encrypted; the token has no read route.
 | GET    | `/peers` | `{ peers: [{ id, baseUrl, label?, description?, repos? }] }` — never a token |
 | PUT    | `/peers/:id` | `{ baseUrl, token, label?, description?, repos? }` → `{ ok, id, baseUrl, label?, description?, repos? }` (`repos`: the workspace's repository URLs — what `strut/list-peers` shows an agent choosing a peer); replaces; 400 for a bad id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64), a non-http(s) URL or a missing token |
 | DELETE | `/peers/:id` | `{ ok, id }`; 404 |
-| GET    | `/peers/:id/jobs/:job/files[/<path>]`, `/peers/:id/artifacts/:runId[/<path>]`, `/peers/:id/apps`, `/peers/:id/apps/:name/:version/files[/<path>]` | READ-THROUGH: that peer's job files, run artifacts and apps (its app list, an app version's listing and files, the document among them — §14.3, "A peer's app"), fetched with THIS strut's token for it — the listing (JSON) or the file, the peer's status passed on; a host's `If-None-Match` goes along and the peer's `ETag` comes back, so a 304 passes through. Prefix `peers/<id>/` for one more hop: `/peers/acme/peers/billing/jobs/<job>/files/report.md` reads `billing`'s file through `acme`, each hop with its own token — how an entry tagged `{ peer, via, job }` opens (`CALLBACKS.md` §4). Those paths only (anything else 404); a peer not on file 404 (`peer_unknown:`), unreachable 502. Served under this strut's artifact headers (sandboxed, no scripts); this strut's `?key=` is never forwarded. A read like any other: a peer may call it |
+| GET    | `/peers/:id/jobs/:job/files[/<path>]`, `/peers/:id/artifacts/:runId[/<path>]`, `/peers/:id/apps`, `/peers/:id/apps/:name/usage`, `/peers/:id/apps/:name/:version/files[/<path>]` | READ-THROUGH: that peer's job files, run artifacts and apps (its app list, an app's usage — counted where its calls run, §14.6 — an app version's listing and files, the document among them — §14.3, "A peer's app"), fetched with THIS strut's token for it — the listing (JSON) or the file, the peer's status passed on; a host's `If-None-Match` goes along and the peer's `ETag` comes back, so a 304 passes through. Prefix `peers/<id>/` for one more hop: `/peers/acme/peers/billing/jobs/<job>/files/report.md` reads `billing`'s file through `acme`, each hop with its own token — how an entry tagged `{ peer, via, job }` opens (`CALLBACKS.md` §4). Those paths only (anything else 404); a peer not on file 404 (`peer_unknown:`), unreachable 502. Served under this strut's artifact headers (sandboxed, no scripts); this strut's `?key=` is never forwarded. A read like any other: a peer may call it |
 | POST   | `/peers/:id/mcp` | An app page's tools/call, relayed to that peer's `/mcp` with THIS strut's token for it (a person token: the peer answers with `step_run` alone, as that person — §14.3, "A peer's app"). The JSON-RPC body as it came, `accept`, `mcp-protocol-version` and `mcp-session-id`; the answer streams back with its own content type (JSON or an event stream). A peer of this strut is 403 (a POST); a peer not on file 404 |
 | POST   | `/peers/tokens` | `{ actor, days? }` → `{ token, actor, exp }` — a PERSON token for this strut (Auth): what a person's own strut puts in its peer record for this one. `days` defaults to 60 (at most 365); nothing is stored, and rotating the signing secret (`STRUT_API_KEY`, else `STRUT_SECRET_KEY`) revokes every one. The deployment's call only (a peer is 403); 400 for a missing actor, bad `days`, or no secret to sign with |
 | GET    | `/self` | `{ self: { id?, label?, description?, repos? } \| null }` — this strut's OWN workspace (never in `/peers`) |
@@ -887,9 +887,10 @@ scope, never more — and its `actor` is stamped on what it launches and
 publishes (`x-strut-actor` beside it is ignored). Two CSRF rules: a request
 that is not a `GET`/`HEAD` is honored only with the header `x-strut-ui: 1`
 (the UI sends it on every call; a cross-site form cannot), and a file read
-(`/artifacts/:runId…`, `/jobs/:id/files…`) never opens on the cookie alone —
-fetch the listing with the header, which mints the `?t=` token (§5), and
-read the files with that.
+(`/artifacts/:runId…`, `/jobs/:id/files…`, or a peer's through
+`/peers/<id>/…`) never opens on the cookie alone — fetch the listing with
+the header, which mints the `?t=` token (§5), and read the files with that;
+a peer's file, which no `?t=` opens here, is read with the header.
 
 ```bash
 curl -s -c jar.txt -X POST localhost:3000/auth/session \
@@ -925,8 +926,9 @@ components as an app other apps import (`import { RunTimeline } from
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release |
+| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `warnings` (§14.6) only when the active version has some from the last day |
 | GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
+| GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
@@ -942,7 +944,8 @@ loop (`plans/apps.md` §8): a directory, the editor, build, read the errors,
 publish. `app/publish` stamps `publisher: "ai"` and applies the meta
 surface's rules. `app/get` (and `GET /apps/:name`) also carries `errors`:
 the app's latest client-side errors, newest first, at most 50 — the kept
-`step:app/report-error` runs stamped with the app (§14.1).
+`step:app/report-error` runs stamped with the app (§14.1) — and `usage`:
+§14.6's report without its per-minute series.
 
 ### 14.1 The app door — `step_run` (plans/apps.md §5, §7.2, §9)
 
@@ -1053,6 +1056,36 @@ button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`.
+Alone, the page reads only the listing the app is in — `GET /apps`, or that
+one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
+workflows, step types or other peers (one that does not answer cannot hold
+it at "Loading apps…"), and no `GET /runs/active` poll while it shows.
+
+**One file alone.** The twin for a deliverable that is a file:
+`/?key=<the local strut's key>&artifact=<encodeURIComponent(path)>&solo=1`
+renders the artifact viewer alone, filling the window, and reads nothing
+but that file (and what it links to in its scope): like the app alone, none
+of the UI's other loads and no poll. `path` is a path
+on the local strut that serves the file: `/jobs/<job>/files/<file>`,
+`/artifacts/<runId>/<file>`, or either behind one or more `/peers/<id>`
+hops — `/peers/<org>/jobs/<job>/files/<file>` is an org's file through the
+read-through (§10), `/peers/<org>/peers/<via>/jobs/<job>/files/<file>` one
+more hop. Each id is one segment, percent-encoded (a job the peer keeps as
+`peer/j-1` is `peer%2Fj-1`); the file path keeps its own `/`, and a path
+that names a directory shows its listing. Anything else — another route,
+an app's files, a URL, a query, an empty or `.`/`..` segment, encoded or
+not — shows "Not a file strut serves" and reads nothing
+(`isServedFilePath`, `kit/src/folds/artifact-view.ts`). The viewer renders
+by extension: markdown (its relative links open in place, its images load,
+both inside the same scope), images, video, audio, PDF, text, a directory,
+a walkthrough, and HTML — a peer's as a static page in a frame that runs
+nothing, since the read-through never serves a peer's page with scripts. A
+peer's file is read with the UI's own credential and shown from its bytes
+(an object URL, or the page's text), because no file token this strut
+mints opens the read-through and the key never goes into an image's or a
+frame's URL; a peer's file nothing renders, and the head's link, download
+instead. `solo` is read once and stays in the URL; without it `artifact`
+is ignored.
 
 ### 14.4 A published app as a deliverable
 
@@ -1088,3 +1121,132 @@ sentence for each thing the lock cannot hold (a subflow chosen by a
 template, an agent grant read at run time, a step that starts other runs).
 Runs the live release's page launches will run the locked versions; until
 that lands, a release holds the page and records the lock.
+
+### 14.6 Usage — what an app's pages cost the server (`src/apps/monitor.ts`)
+
+Every `step_run` of a known app (§14.1) — refused, failed or run — is
+counted where it runs, per minute, version and step type, and KEPT in the
+app's folder under the data directory, `apps/<name>/.usage/<YYYY-MM-DD>.jsonl`
+(one file per UTC day, 30 days kept): one line per minute and version,
+`{ "at": "2026-10-24T08:30:00.000Z", "version": "v3", "types": { "run/events": [calls, errors, bytes, ms] } }`
+(a minute may span a few lines; they are summed), and a `{ "warning": … }`
+line written the moment a warning fires. Counts are written every 15 s and
+when the server shuts down cleanly, and read back the first time an app is
+asked about after a restart, so a crash loses the last few seconds of
+counts — never a warning. Deleting the app deletes its usage.
+`GET /apps/:name/usage` reports the last day:
+
+```json
+{ "app": "dash", "since": "2026-10-23T09:00:00.000Z", "lastCallAt": "…",
+  "hour": { "calls": 1240, "errors": 3, "bytes": 5242880, "ms": 41000 },
+  "day":  { "calls": 9800, "errors": 12, "bytes": 40894464, "ms": 310000 },
+  "minutes": [{ "at": "…", "calls": 22, "errors": 0, "bytes": 81920 }],
+  "types": [{ "type": "run/events", "calls": 8200, "errors": 0, "bytes": 38000000, "ms": 250000 }],
+  "warnings": [{ "kind": "fanout", "version": "v3", "type": "run/events", "window": "10s",
+                 "peak": 214, "distinct": 214, "times": 6, "firstAt": "…", "lastAt": "…",
+                 "message": "run/events called 214 times in 10 s from one page, with 214 different configs — a loop that makes one call per item",
+                 "fix": "Gather what the view needs in one call: …", "example": "{\"workflow\":\"w\",\"runId\":\"…\"}" }] }
+```
+
+`since` is the oldest minute the report holds (absent before the first
+call). `minutes` is the last hour, one entry a minute, oldest first; `hour`
+sums it. `day` and `types` (busiest first) are the last 24 hours. `bytes` is the
+results' JSON length; `ms` the server's time, a `run/get { wait }` hold
+included. A warning is one of five patterns (`APP_MONITOR_LIMITS`), counted
+in tumbling windows and kept on the VERSION that caused it:
+
+| `kind` | Fires when |
+| ------ | ---------- |
+| `fanout` | one viewer calls one step type ≥ 50 times in 10 s with ≥ 25 different configs — a call per item |
+| `repeat` | one viewer makes the same call, config and all, ≥ 120 times in a minute (a kit hook's live poll is 30) |
+| `volume` | the version is called ≥ 600 times in a minute, or ≥ 5 000 in an hour, whoever calls |
+| `bytes` | the version's results pass 50 MB in a minute |
+| `failing` | one viewer's call of one step type fails (a refusal or the step's error) ≥ 20 times in a minute; `error` is the last one |
+
+`peak` is the most seen in one window (bytes for `bytes`), `times` how
+often it fired (once a window for each viewer it caught), `example` the last such call's config (cut
+to 300 chars). `message` and `fix` are written for whoever fixes the app.
+A version published and live starts clean: `GET /apps` counts the active
+version's warnings only, and the UI shows a dot on the app (its row, the
+Apps title, the Usage button) while there are any.
+
+## 15. Dictation — speech to text, its models and the user's vocabulary
+
+Speech-to-text over sherpa-onnx (`src/audio/`, plans/local-desktop-and-stt.md
+§4; the client contract is plans/native-dictation-client.md, the vocabulary
+§7a; the design plans/dictation-models.md). 501 on a build without the sherpa
+addon.
+
+| Method | Path | Body / reply |
+| ------ | ---- | ------------ |
+| POST   | `/audio/transcribe[?model=&hotwords=&hotwordsScore=&session=&lingo=]` | a WAV body → `TranscribeResult` below. The model is `?model=`, else the user's speech pick once it is installed (`dictation/use`), else `STRUT_STT_MODEL` (Kroko); `model` names the one used. An offline model (Parakeet) decodes the clip in one pass: one segment |
+| GET    | `/audio/stream` | WebSocket: PCM in, partials and finals out (as heard: no vocabulary). Streaming models only — an offline model is refused |
+| GET    | `/audio/models` | `{ available, modelDir, models }` — every STT model with `installed` and `default` |
+| POST   | `/audio/models/:id/download` | SSE progress of one STT model's download |
+
+```ts
+{
+  text: string;            // what to type: the transcript with the vocabulary applied
+  segments: { text: string; words: SttWord[] }[];  // as heard
+  model: string;           // the speech model used
+  hotwords: string | null;
+  durationMs: number;
+  fixer: string | null;    // the fixer model that read it; null: none ran (none picked or installed, too slow, lingo=0)
+  heard?: string;          // the transcript as heard, only when `text` differs from it
+  changes?: { heard: string; written: string; at: number }[];  // each edit, in text order: `heard` at offset `at` of `heard` became `written` ("" for a removal)
+}
+```
+
+The vocabulary is memory/lexicon's, read on each call (src/audio/lingo.ts).
+With the user's fixer (a small local model, src/audio/fixer.ts), spans that
+may be a vocabulary word are found in code and each is kept when the model
+scores the sentence likelier with the word; fillers ("um", "uh") and a word
+said twice in a row are removed by rule ("that that", "had had" stay); a
+phrase the speaker took back ("Tuesday, no, Wednesday") is removed when the
+model names it and code finds it right before its cue. The model never
+writes text: every edit is a span code found. With no fixer, or when it has
+not answered within 1.5 s (a cold model loads meanwhile), only exact learned
+mishearings are applied and `fixer` is null. `lingo=0` returns the
+transcript as heard; so does a strut whose memory cannot be read (logged
+once, never the text). 400 for a body shorter than a WAV header, 501 without
+the speech addon.
+
+Everything else is steps (`POST /steps/<type>/run`, §7), the same for any
+client:
+
+| Step | Config | Output |
+| ---- | ------ | ------ |
+| `dictation/models` | `{}` | `{ models: [{ id, kind: "speech" \| "fixer", name, summary, recommended, bytes, description, state: "available" \| "downloading" \| "installed", progress?, downloaded?, selected, active, removable, error? }] }` — `name` / `summary` what a picker shows, `recommended` true for `qwen3-1.7b-q4` only; `progress` 0..1 and `downloaded` (bytes) while downloading; `selected` the user's pick for its kind, `active` what strut uses now (the installed speech pick, else the default speech model; the installed fixer pick — differs from `selected` while a pick downloads); `removable` false for an active model and the default speech model; `error` why the last download failed |
+| `dictation/use` | `{ speech?, fixer? }` — `fixer: null` is none | the same list. A pick that is not installed starts downloading in the background (sha256 checked, extracted into the model dir) and is used once installed; until then dictation keeps to what it had. A speech model is refused where sherpa cannot run |
+| `dictation/remove-model` | `{ id }` | the same list. Deletes the model's files. Refused for a model not `removable` (active, or the default speech model) and while it downloads; a pick removed before it was installed goes back to the default speech model, or to no fixer |
+| `dictation/correction` | `{ typed, edited }` (each ≤ 20,000 characters) | `{ learned: [{ heard, written, undo: string[] }] }` — what the user's edit of dictation's text teaches. Send it once the edit settles. With no fixer `active`, `learned` is always empty: a client need not send edits then |
+| `dictation/enable` | `{ ref_id, on: boolean }` | `{ ref_id, on }` — dictation off (`false`) or back on for one entity: off, its mishearings are not applied, its forms not looked for, nothing learned for it (`memory/lexicon`'s `dictation_off`). The entity stays. `ref_id` is the entity changed |
+| `dictation/add` | `{ written, heard }` | `{ heard, written, undo }` — the same write as a learn, by hand |
+| `dictation/undo` | `{ undo }` | `{ undone }` — takes back a learn; the pair is never learned again. Refused for ids dictation did not write |
+| `dictation/remove` | `{ ref_id }` | `{ forgotten }` — a mishearing, or a word of `lingo_type` with all its mishearings |
+
+Speech models: `zipformer-en-kroko` (streaming, the default) and
+`parakeet-tdt-en-0.6b-v2` (offline). Fixer models (GGUF Q4_K_M on
+node-llama-cpp, Metal on a Mac): `qwen3-1.7b-q4` (1.1 GB, the one to offer
+first) and `qwen3-0.6b-q4` (0.4 GB, faster, worse at telling a mishearing
+from a changed word). Only a strut that has node-llama-cpp offers them — the desktop
+package; a server install does not carry it — and elsewhere
+`dictation/models` lists none and `dictation/use { fixer }` is an error.
+The picks live in `<dataDir>/audio/dictation.json`;
+with none, Kroko and no fixer — a fixer is never downloaded unless picked.
+The fixer loads on first use and unloads after five minutes idle.
+
+`dictation/correction` diffs the two texts word by word; each change of at
+most four words a side that could sound like what was typed is asked of the
+fixer, yes or no, and learned when it says yes. Nothing is learned with no
+fixer installed (or one that, once loaded, takes longer than 1.5 s). Each
+pair is written with memory/remember (episode `Dictation: corrected “heard”
+to “written”.`, kind `note`, created_by `dictation`, on the entity that
+writes `written`, else a new word of memory/lexicon's `lingo_type`); `undo`
+is what `dictation/undo` takes back — the new entity, else the new fact,
+empty when memory already had the pair. Undone pairs, words turned off
+for dictation, and a change whose `heard` side is already a vocabulary form
+("BTC" → "Bitcoin", "PH" → "P8") are never written, whatever the fixer says. Only the pair is stored. The sentence is in
+the run's own events, returned to the caller and kept only as §7 says
+(`keep: true`, or claims on the step), so a caller that wants no record of it
+never passes `keep`.

@@ -35,6 +35,18 @@ export function appKey(app: { name: string; peer?: string }): string {
   return app.peer ? `@${app.peer}/${app.name}` : app.name;
 }
 
+/** `appKey` read back: which app a key names, and on which peer — what
+ *  the page alone (`?solo=1`) needs to read that one listing. A peer id has
+ *  no `/`, so the name is everything after the first one. Null for a key
+ *  that names nothing (`@acme`, `@/x`, ""). */
+export function parseAppKey(key: string): { name: string; peer?: string } | null {
+  if (!key.startsWith("@")) return key ? { name: key } : null;
+  const slash = key.indexOf("/");
+  const peer = key.slice(1, slash);
+  const name = key.slice(slash + 1);
+  return slash > 0 && peer && name ? { name, peer } : null;
+}
+
 /** What `ui/message` from an app becomes in the builder chat: the text,
  *  prefixed with which app it is about — the builder edits the directory. */
 export function appMessage(app: { name: string; version: string }, text: string): string {

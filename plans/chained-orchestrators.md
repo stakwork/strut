@@ -511,7 +511,14 @@ checkout as strut#261 did (a third for the spoke in item 5).
    and never holds central's credential in a browser; served under this
    strut's artifact headers, never with scripts; `?key=` stripped. Nodes
    keep their one-hop tag (no node read-through yet). The three-strut test
-   is in `src/peers.test.ts`.
+   is in `src/peers.test.ts`. The UI reads it (2026-10-23): the job
+   timeline and the run overview open a tagged entry `{ peer, via?, job,
+   path }` in the artifact viewer at `/peers/<peer>[/peers/<via>]/jobs/<job>/files/<path>`
+   (`peerArtifactPath`), and `/?artifact=<that path>&solo=1` shows one file
+   alone — what Peel opens for an org's deliverable. The viewer fetches a
+   peer's file with the UI's own credential and shows the bytes: no file
+   token this strut mints opens the read-through, and the key never goes
+   into an image's or a frame's URL.
    **Next-hop tags + read-through for files** (§5). `tagArtifacts`
    re-tags an entry that arrives tagged (`via`, the spoke's `job` kept); `GET /peers/:id/jobs/:job/files/…` and
    `/peers/:id/artifacts/:runId/…` proxied with the peer's token

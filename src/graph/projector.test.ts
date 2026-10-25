@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunEvent } from "../core.js";
+import type { RunEvent, RunSummary } from "../core.js";
+import type { NodeInput } from "./node-writer.js";
+import type { EdgeInput } from "./edge-writer.js";
+import { NEO4J_DIALECT } from "./neo4j-engine.js";
 import { MemoryRunStore } from "../store.js";
 import { MemoryChatStore } from "../chat-store.js";
 import type { GraphBackend } from "./backend.js";
@@ -629,5 +632,128 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
       await strut.close();
       await rm(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── Who sent an orchestrator turn: HiveWorkspaceMember -SENT-> StrutAgentSession ──
+
+describe("orchestrator speaker (SENT edge)", () => {
+  const UID = "cmdopiegj0000jo04u4kcc9q6";
+  const ACTOR = `pitoi-${UID}`;
+  const turnEvents = (start: Partial<RunEvent>, prompt = "hello"): RunEvent[] => [
+    ev(0, "run.start", "orchestrator", start),
+    ev(1, "step.start", "orchestrator/turn", { stepType: "agent", input: { prompt } }),
+    ev(2, "step.end", "orchestrator/turn", { stepType: "agent", output: "ok" }),
+    ev(3, "run.end", "orchestrator", {}),
+  ];
+
+  it("pure: speaker is the id after the last hyphen of the actor, for the orchestrator turn only", () => {
+    const p = projectRunEvents("orchestrator", "1", turnEvents({ actor: ACTOR }), null)!;
+    assert.deepEqual(p.speaker, { userId: UID, actor: ACTOR, sessionPath: "orchestrator/turn" });
+    // a hyphenated github handle still splits on the LAST hyphen
+    assert.equal(projectRunEvents("orchestrator", "1", turnEvents({ actor: `a-b-${UID}` }), null)!.speaker?.userId, UID);
+    // a bare id is accepted
+    assert.equal(projectRunEvents("orchestrator", "1", turnEvents({ actor: UID }), null)!.speaker?.userId, UID);
+    // the summary's actor is the fallback
+    const summary = { runId: "1", workflow: "orchestrator", startedAt: ts(0), finishedAt: ts(3), durationMs: 3, status: "success", input: {}, actor: ACTOR } as RunSummary;
+    assert.equal(projectRunEvents("orchestrator", "1", turnEvents({}), summary)!.speaker?.userId, UID);
+  });
+
+  it("pure: no actor, no hyphen/handle, empty id, non-person launches, other workflows → no speaker", () => {
+    for (const start of [{}, { actor: "pitoi" }, { actor: "pitoi-" }, { actor: "-" }, { actor: "   " }, { actor: ACTOR, origin: "schedule" as const }, { actor: ACTOR, origin: "verify" as const }, { actor: ACTOR, origin: "peer" as const }]) {
+      assert.equal(projectRunEvents("orchestrator", "1", turnEvents(start), null)!.speaker, undefined, JSON.stringify(start));
+    }
+    assert.equal(projectRunEvents("orchestrator", "1", turnEvents({ actor: ACTOR, origin: "peer", peerPerson: true }), null)!.speaker?.userId, UID);
+    assert.equal(projectRunEvents("some-workflow", "1", turnEvents({ actor: ACTOR }).map((e) => ({ ...e, path: e.path.replace("orchestrator", "some-workflow") })), null)!.speaker, undefined);
+    // an orchestrator run without a turn session has nobody to attach to
+    assert.equal(projectRunEvents("orchestrator", "1", [ev(0, "run.start", "orchestrator", { actor: ACTOR })], null)!.speaker, undefined);
+  });
+
+  it("pure: the prompt never names the speaker", () => {
+    const p = projectRunEvents("orchestrator", "1", turnEvents({}, `@someone-${UID} please`), null)!;
+    assert.equal(p.speaker, undefined);
+    const q = projectRunEvents("orchestrator", "1", turnEvents({ actor: ACTOR }, "@someone-cxxxxxxxxxxxxxxxxxxxxxxxx hi"), null)!;
+    assert.equal(q.speaker?.userId, UID);
+  });
+
+  // An in-memory backend: members by user_id, edges deduped per (src, type, tgt)
+  // like the real edge writer.
+  function fake(members: Array<{ ref_id: string; user_id: string }>, opts: { failEdge?: string } = {}) {
+    const nodes = new Map<string, NodeInput>();
+    const edges = new Map<string, EdgeInput>();
+    const memberQueries: unknown[] = [];
+    const backend = {
+      kind: "ladybug",
+      namespace: "default",
+      dialect: NEO4J_DIALECT,
+      schemaSource: { registry: undefined },
+      nodes: {
+        async writeMany(ns: NodeInput[]) {
+          return ns.map((n) => {
+            const key = `${n.type}:${n.data["unique_source_id"]}`;
+            nodes.set(key, n);
+            return { ref_id: `ref:${key}` };
+          });
+        },
+      },
+      edges: {
+        async writeMany(es: EdgeInput[]) {
+          if (opts.failEdge && es.some((e) => e.edge === opts.failEdge)) throw new Error("no edge schema");
+          for (const e of es) edges.set(`${e.source_ref_id}|${e.edge}|${e.target_ref_id}`, e);
+          return [];
+        },
+      },
+      async query(cypher: string, params: Record<string, unknown>) {
+        if (cypher.includes("HiveWorkspaceMember")) {
+          memberQueries.push(params);
+          return members.filter((m) => m.user_id === params["uid"]).map((m) => ({ ref_id: m.ref_id }));
+        }
+        return [];
+      },
+    } as unknown as GraphBackend;
+    return { backend, nodes, edges, memberQueries };
+  }
+  const sent = (edges: Map<string, EdgeInput>) => [...edges.values()].filter((e) => e.edge === "SENT");
+  const seedRun = async (events: RunEvent[]) => {
+    const store = new MemoryRunStore();
+    for (const e of events) await store.append("orchestrator", "1", e);
+    return store;
+  };
+
+  it("projectRun: SENT from the existing member to the turn's session; reprojecting adds none and creates no nodes", async () => {
+    const f = fake([{ ref_id: "member-1", user_id: UID }, { ref_id: "member-2", user_id: UID }, { ref_id: "other", user_id: "c99999999999999999999999999" }]);
+    const store = await seedRun(turnEvents({ actor: ACTOR }, "@someone"));
+    const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0 };
+    await projectRun(f.backend, store, "orchestrator", "1", report);
+    const session = "ref:StrutAgentSession:strutagentsession:1:orchestrator/turn";
+    assert.deepEqual(sent(f.edges).map((e) => [e.source_ref_id, e.target_ref_id]).sort(), [["member-1", session], ["member-2", session]]);
+    const nodesAfter = f.nodes.size;
+    await projectRun(f.backend, store, "orchestrator", "1");
+    assert.equal(sent(f.edges).length, 2, "no duplicate edge");
+    assert.equal(f.nodes.size, nodesAfter, "no node created (member or Person)");
+    assert.ok([...f.nodes.values()].every((n) => n.type.startsWith("Strut")));
+  });
+
+  it("projectRun: no member found, no actor, bare handle, other workflow → no SENT edge, no extra nodes", async () => {
+    for (const [members, start] of [[[], { actor: ACTOR }], [[{ ref_id: "m", user_id: UID }], {}], [[{ ref_id: "m", user_id: UID }], { actor: "pitoi" }]] as const) {
+      const f = fake([...members]);
+      await projectRun(f.backend, await seedRun(turnEvents(start)), "orchestrator", "1");
+      assert.equal(sent(f.edges).length, 0);
+      assert.deepEqual([...f.nodes.keys()].map((k) => k.split(":")[0]).sort(), ["StrutAgentSession", "StrutRun"]);
+    }
+    const f = fake([{ ref_id: "m", user_id: UID }]);
+    const events = turnEvents({ actor: ACTOR }).map((e) => ({ ...e, path: e.path.replace("orchestrator", "other") }));
+    const store = new MemoryRunStore();
+    for (const e of events) await store.append("other", "1", e);
+    await projectRun(f.backend, store, "other", "1");
+    assert.equal(sent(f.edges).length, 0);
+    assert.equal(f.memberQueries.length, 0);
+  });
+
+  it("projectRun: a graph that refuses the SENT edge never fails the projection", async () => {
+    const f = fake([{ ref_id: "m", user_id: UID }], { failEdge: "SENT" });
+    const ref = await projectRun(f.backend, await seedRun(turnEvents({ actor: ACTOR })), "orchestrator", "1");
+    assert.ok(ref);
+    assert.ok([...f.edges.values()].some((e) => e.edge === "IN_RUN"));
   });
 });
