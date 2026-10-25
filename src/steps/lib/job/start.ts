@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { JOB_WORKFLOWS } from "../../../jobs.js";
+import { ACP_PRESETS } from "../acp/prompt.js";
 import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
 
 /**
@@ -75,7 +76,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        "A LOCAL coding agent to do the job's turns instead of strut's own (Claude Code, Codex, goose …): one of the names this strut offers. It uses its own login and model. workflow: job only.",
+        `A LOCAL coding agent to do the job's turns instead of strut's own: ${Object.keys(ACP_PRESETS).join(", ")}. It uses its own login and model. workflow: job only.`,
       ),
     mode: z
       .enum(["plan", "edit", "auto"])

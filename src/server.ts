@@ -33,37 +33,25 @@ import type { BuilderReach } from "./reach.js";
 
 let strutInstance: Strut | null = null;
 
+/** `job.folders` (name → absolute path): the host's folders a local coding
+ *  agent's job may work in (job/start { agent, folder }). */
+function foldersFromConfig(delta: Record<string, unknown>, file: string): { folders?: Record<string, string> } {
+  const value = delta["folders"];
+  if (value === undefined) return {};
+  const entries = value && typeof value === "object" && !Array.isArray(value) ? Object.entries(value as Record<string, unknown>) : null;
+  if (!entries?.every(([k, v]) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(k) && typeof v === "string" && v.startsWith("/"))) {
+    throw new Error(`STRUT_HOST_CONFIG: ${file}: "job.folders" must be { <name>: an absolute path }`);
+  }
+  return { folders: Object.fromEntries(entries as [string, string][]) };
+}
+
 /** The host's delta for the shipped workflows, from the JSON file
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator?, builder? }`, each
  *  `{ tools?, approve?, system?, model? }` (and `peer: false` to close the
- *  builder to other struts — a file may only close one, never open one),
- *  and `automation?: { workflow, approve?, grants? }`. Nothing when unset.
- *  A file that cannot be read or parsed fails the boot, rather than
- *  seeding the workflows without the host's tools. */
-/** `job.folders` (name → absolute path) and `job.agents` (name → command
- *  line): a desktop host's folders and coding agents (job/start { agent, folder }). */
-function localAgentsFromConfig(delta: Record<string, unknown>, file: string): { folders?: Record<string, string>; agents?: Record<string, string>; path?: string } {
-  const out: { folders?: Record<string, string>; agents?: Record<string, string>; path?: string } = {};
-  for (const name of ["folders", "agents"] as const) {
-    const value = delta[name];
-    if (value === undefined) continue;
-    const entries = value && typeof value === "object" && !Array.isArray(value) ? Object.entries(value as Record<string, unknown>) : null;
-    const ok = entries?.every(([k, v]) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(k) && typeof v === "string" && v.length > 0 && (name !== "folders" || v.startsWith("/")));
-    if (!entries || !ok) {
-      throw new Error(`STRUT_HOST_CONFIG: ${file}: "job.${name}" must be { <name>: ${name === "folders" ? "an absolute path" : "a command line"} }`);
-    }
-    out[name] = Object.fromEntries(entries as [string, string][]);
-  }
-  const path = delta["path"];
-  if (path !== undefined) {
-    if (typeof path !== "string" || !path.split(":").every((p) => p.startsWith("/"))) {
-      throw new Error(`STRUT_HOST_CONFIG: ${file}: "job.path" must be a PATH of absolute folders`);
-    }
-    out.path = path;
-  }
-  return out;
-}
-
+ *  builder to other struts — a file may only close one, never open one;
+ *  `folders` on `job`), and `automation?: { workflow, approve?, grants? }`.
+ *  Nothing when unset. A file that cannot be read or parsed fails the boot,
+ *  rather than seeding the workflows without the host's tools. */
 export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
@@ -88,7 +76,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
       throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }`);
     }
     const reach = key === "builder" ? reachFromConfig((delta ?? {}) as Record<string, unknown>, file) : undefined;
-    const local = key === "job" ? localAgentsFromConfig((delta ?? {}) as Record<string, unknown>, file) : {};
+    const local = key === "job" ? foldersFromConfig((delta ?? {}) as Record<string, unknown>, file) : {};
     out[key] = {
       ...(reach ? { reach } : {}),
       ...local,
