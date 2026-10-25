@@ -84,7 +84,7 @@ import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./app
 import { packArchive } from "./packages/archive.js";
 import { packageCache } from "./packages/cache.js";
 import { PACKAGE_DIGEST } from "./packages/format.js";
-import type { AppRelease, AppUpstream } from "./workspace.js";
+import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -2527,7 +2527,7 @@ export async function createStrut<TServices = unknown>(
         source: "api",
         ...(typeof body.publisher === "string" ? { publisher: body.publisher } : {}),
         ...(actor ? { actor } : {}),
-        ...(body.upstream === null || (body.upstream && typeof body.upstream === "object") ? { upstream: body.upstream as AppUpstream | null } : {}),
+        ...(body.upstream === null || (body.upstream && typeof body.upstream === "object") ? { upstream: body.upstream as Upstream | null } : {}),
         ...(typeof body.reactivateKnown === "boolean" ? { reactivateKnown: body.reactivateKnown } : {}),
       });
     } catch (err) {

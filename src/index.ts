@@ -148,7 +148,7 @@ export {
   type AppVersionSummary,
   type AppListEntry,
   type AppRecord,
-  type AppUpstream,
+  type Upstream,
   type PublishAppOptions,
 } from "./workspace.js";
 

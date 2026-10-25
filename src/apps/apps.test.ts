@@ -276,7 +276,7 @@ describe("the apps capability", () => {
     const { ws, apps } = setup();
     const src = fresh();
     await cp(FIXTURE, src, { recursive: true });
-    assert.ok((await apps.publish(src, "hello", { surface: "person", upstream: { package: "acme/hello", version: "1.0.0" } })).ok);
+    assert.ok((await apps.publish(src, "hello", { surface: "person", upstream: { package: "acme/hello", version: "1.0.0", digest: "d1", source: { ref: "file:/tmp/acme-hello" }, secrets: [] } })).ok);
     const to = fresh("co");
     const co = await apps.checkout("hello", to);
     assert.deepEqual([co.path, co.version], [to, "v1"]);

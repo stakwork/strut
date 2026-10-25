@@ -1,10 +1,11 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFile, rm, mkdir, stat } from "node:fs/promises";
+import { readFile, readdir, rm, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { WorkspaceManager, claimsBlockOf } from "./workspace.js";
+import { FileRunStore } from "./store.js";
 
 const SAMPLE_YAML = `name: deploy
 steps:
@@ -385,6 +386,47 @@ steps:
     it("skips directories without _metadata.json", async () => {
       await mkdir(join(tempDir, "workflows", "broken"), { recursive: true });
       assert.equal((await ws.listWorkflows()).length, 0);
+    });
+  });
+
+  // ── Slashed names on disk ─────────────────────────────────────────────
+
+  describe("a slashed workflow name nests", () => {
+    const runOf = async (store: FileRunStore, workflow: string, runId: string) => {
+      await store.append(workflow, runId, { type: "run.start", runId, workflow, input: {}, ts: 1 } as never);
+    };
+
+    it("beside the workflow of its namespace's name: listed, read and deleted apart, runs included", async () => {
+      const runs = new FileRunStore(tempDir);
+      await ws.publishWorkflow("acme", "v1", { steps: SAMPLE_STEPS });
+      await ws.publishWorkflow("acme/linear/sync", "v1", { steps: SAMPLE_STEPS }, "installed");
+      await runOf(runs, "acme", "1700000000001");
+      await runOf(runs, "acme/linear/sync", "1700000000002");
+      assert.ok((await stat(join(tempDir, "workflows", "acme", "linear", "sync", "_metadata.json"))).isFile());
+      assert.ok((await stat(join(tempDir, "workflows", "acme", "linear", "sync", "runs", "1700000000002"))).isDirectory());
+      // A stray metadata file inside run records is never a workflow.
+      await writeFile(join(tempDir, "workflows", "acme", "runs", "1700000000001", "_metadata.json"), "{}");
+      assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["acme", "acme/linear/sync"]);
+
+      assert.equal(await ws.deleteWorkflow("acme"), true);
+      assert.deepEqual(await readdir(join(tempDir, "workflows", "acme")), ["linear"], "acme's files and runs went; the names under it stayed");
+      assert.deepEqual(await runs.listRuns("acme/linear/sync"), ["1700000000002"]);
+      assert.deepEqual(await runs.listRuns("acme"), []);
+      assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["acme/linear/sync"]);
+
+      assert.equal(await ws.deleteWorkflow("acme/linear/sync"), true);
+      assert.deepEqual(await readdir(join(tempDir, "workflows")), [], "the folders it left empty go too");
+    });
+
+    it("snapshot and moveAside carry nested names", async () => {
+      await ws.publishWorkflow("acme", "v1", { steps: SAMPLE_STEPS });
+      await ws.publishWorkflow("acme/linear/sync", "v1", { steps: SAMPLE_STEPS });
+      assert.deepEqual((await ws.snapshot())?.workflows.map((w) => [w.name, w.versions.map((v) => v.label)]), [["acme", ["v1"]], ["acme/linear/sync", ["v1"]]]);
+      const aside = join(tempDir, "aside");
+      await ws.moveAside(aside);
+      assert.ok((await stat(join(aside, "workflows", "acme", "linear", "sync", "v1.yaml"))).isFile());
+      assert.ok((await stat(join(aside, "workflows", "acme", "_metadata.json"))).isFile());
+      assert.deepEqual(await ws.listWorkflows(), []);
     });
   });
 

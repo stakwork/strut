@@ -68,6 +68,11 @@ JWT with a `sub`).
   included. One or the other.
 - A create whose `name` is taken gets a suffixed name: `renamed: true`,
   `requested` is what you sent, `workflow` is what was stored.
+- A `name` may carry `/` — a package's prefix, `acme/linear/sync`: then no
+  segment may be empty, `.` or `..`, none may be `runs`, and no `\`. In a
+  URL the name is ONE segment, encoded: `/workflows/acme%2Flinear%2Fsync/run`.
+  Unencoded, the slash splits the path and the request matches nothing (404).
+  A one-segment name is unchanged.
 - `version` is your label (`v2`). A new version becomes active. Reusing a
   label **overwrites** that version's content; the same content under a new
   label is a second version with the same `hash`.
@@ -75,8 +80,9 @@ JWT with a `sub`).
   UI publishes and `"api"` for anything else over HTTP (no other value is
   accepted here), with the request's `actor`. The other doors stamp their
   own: `seed` (a host's boot-time seeder), `builder` (the chat builder),
-  `agent` (`meta/publish-workflow`), `promote` (a promoted param). Versions
-  published before this was recorded have none.
+  `agent` (`meta/publish-workflow`), `promote` (a promoted param), `install`
+  (a package install, plans/marketplace.md §3). Versions published before
+  this was recorded have none.
 - `peer: true` at the top of the YAML (or `peer: true` beside `steps`)
   opens the workflow to other struts: it is what a peer's launch needs
   (§3). `peer: person` opens it only to a person's credential (Auth). Content,
@@ -111,7 +117,7 @@ reads.
 | Method | Path                            | Response |
 | ------ | ------------------------------- | -------- |
 | GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, automations?, lastRunAt? }]` |
-| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`) |
+| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |

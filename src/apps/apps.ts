@@ -27,7 +27,7 @@ import { globToRegExp } from "../closure.js";
 import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
 import { treeHash } from "../version.js";
-import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type AppUpstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
+import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
 import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.js";
 import type { Kit, KitLocation } from "./kit.js";
@@ -114,7 +114,7 @@ export interface AppPublishOptions {
   publisher?: string;
   actor?: string;
   source?: VersionSource;
-  upstream?: AppUpstream | null;
+  upstream?: Upstream | null;
   reactivateKnown?: boolean;
 }
 

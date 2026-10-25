@@ -376,11 +376,15 @@ export interface WorkflowMeta {
 
 export const listWorkflows = () => fetchJSON<WorkflowEntry[]>("/workflows");
 
+/** `/workflows/<name>`, the name ENCODED: a slashed name (`acme/linear/sync`)
+ *  travels as one segment, `acme%2Flinear%2Fsync` (plans/marketplace.md). */
+const workflowPath = (name: string) => `/workflows/${encodeURIComponent(name)}`;
+
 export const getWorkflowMeta = (name: string) =>
-  fetchJSON<WorkflowMeta>(`/workflows/${name}`);
+  fetchJSON<WorkflowMeta>(workflowPath(name));
 
 export const getWorkflowCode = async (name: string, version: string) => {
-  const res = await apiFetch(`/workflows/${name}/${version}`);
+  const res = await apiFetch(`${workflowPath(name)}/${version}`);
   return res.text();
 };
 
@@ -414,7 +418,7 @@ export interface FlowDef {
  *  one when `version` is given (the version picker's data source). */
 export const getWorkflowFlow = (name: string, version?: string) =>
   fetchJSON<FlowDef>(
-    `/workflows/${name}/flow${version ? `?version=${encodeURIComponent(version)}` : ""}`,
+    `${workflowPath(name)}/flow${version ? `?version=${encodeURIComponent(version)}` : ""}`,
   );
 
 export interface CreateWorkflowResponse {
@@ -458,19 +462,19 @@ export interface WorkflowVersionStats {
 /** Every version, newest first, with its run counts (the Versions tab).
  *  `unattributed` = finished runs that recorded no version hash. */
 export const getWorkflowVersions = (name: string) =>
-  fetchJSON<{ active: string; versions: WorkflowVersionStats[]; unattributed: number }>(`/workflows/${name}/versions`);
+  fetchJSON<{ active: string; versions: WorkflowVersionStats[]; unattributed: number }>(`${workflowPath(name)}/versions`);
 
 /** Make a stored version the active one — what Run, schedules and the
  *  canvas use. A rollback publishes nothing. */
 export const setActiveWorkflowVersion = (name: string, version: string) =>
-  fetchJSON<{ ok: boolean }>(`/workflows/${name}/active`, {
+  fetchJSON<{ ok: boolean }>(`${workflowPath(name)}/active`, {
     method: "PUT",
     body: JSON.stringify({ version }),
   });
 
 /** Set or clear a workflow's sidebar category (metadata-only, no new version). */
 export const setWorkflowCategory = (name: string, category: string | null) =>
-  fetchJSON<{ ok: boolean }>(`/workflows/${name}/category`, {
+  fetchJSON<{ ok: boolean }>(`${workflowPath(name)}/category`, {
     method: "PUT",
     body: JSON.stringify({ category }),
   });
@@ -478,14 +482,14 @@ export const setWorkflowCategory = (name: string, category: string | null) =>
 /** Set or clear a workflow's per-run LLM spend cap (metadata-only, no new
  *  version). Enforced only where spend routes through the Mothership. */
 export const setWorkflowRunCap = (name: string, maxRunCostUsd: number | null) =>
-  fetchJSON<{ ok: boolean }>(`/workflows/${name}/run-cap`, {
+  fetchJSON<{ ok: boolean }>(`${workflowPath(name)}/run-cap`, {
     method: "PUT",
     body: JSON.stringify({ maxRunCostUsd }),
   });
 
 /** Every version, its metadata and its runs. 409 while a run is in flight. */
 export const deleteWorkflow = (name: string) =>
-  fetchJSON<{ ok: boolean; workflow: string }>(`/workflows/${encodeURIComponent(name)}`, { method: "DELETE" });
+  fetchJSON<{ ok: boolean; workflow: string }>(workflowPath(name), { method: "DELETE" });
 
 /** Claim ownerless workflows for whoever this request is from (all of them
  *  when `workflows` is omitted). Never takes one someone else owns. */
@@ -507,7 +511,7 @@ export const publishWorkflow = (
   steps: any[],
   description?: string,
 ) =>
-  fetchJSON<any>(`/workflows/${name}`, {
+  fetchJSON<any>(workflowPath(name), {
     method: "POST",
     body: JSON.stringify({ version, steps, description, source: "ui" }),
   });
@@ -519,14 +523,14 @@ export const publishWorkflowYaml = (
   yamlStr: string,
   description?: string,
 ) =>
-  fetchJSON<any>(`/workflows/${name}`, {
+  fetchJSON<any>(workflowPath(name), {
     method: "POST",
     body: JSON.stringify({ version, yaml: yamlStr, description, source: "ui" }),
   });
 
 /** One version's YAML as published (`GET /workflows/:name/:version`). */
 export const getWorkflowYaml = async (name: string, version: string) => {
-  const res = await apiFetch(`/workflows/${name}/${version}`);
+  const res = await apiFetch(`${workflowPath(name)}/${version}`);
   if (!res.ok) throw new Error(`Failed to load ${version}: ${res.status}`);
   return res.text();
 };
@@ -560,7 +564,7 @@ export async function launchWorkflow(
   input: unknown,
   params?: Record<string, unknown>,
 ): Promise<{ runId: string }> {
-  const res = await apiFetch(`/workflows/${name}/run`, {
+  const res = await apiFetch(`${workflowPath(name)}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -589,7 +593,7 @@ export async function streamRun(
   const { signal, skip } = opts;
   let res: Response;
   try {
-    res = await apiFetch(`/workflows/${name}/runs/${runId}/stream${skip ? `?skip=${skip}` : ""}`, { signal });
+    res = await apiFetch(`${workflowPath(name)}/runs/${runId}/stream${skip ? `?skip=${skip}` : ""}`, { signal });
   } catch (e) {
     if ((e as Error)?.name === "AbortError") return null;
     throw e;
@@ -801,12 +805,12 @@ export interface GraphNode {
 export const getGraphNode = (refId: string) => fetchJSON<GraphNode>(`/graph/nodes/${encodeURIComponent(refId)}`);
 
 export const listRuns = (workflow: string) =>
-  fetchJSON<RunSummary[]>(`/workflows/${workflow}/runs`);
+  fetchJSON<RunSummary[]>(`${workflowPath(workflow)}/runs`);
 
 /** The deliverables a finished run's output declared, resolved to links
  *  (404 until the run has a summary). */
 export const getRunArtifacts = (workflow: string, runId: string) =>
-  fetchJSON<{ artifacts: ArtifactRef[] }>(`/workflows/${encodeURIComponent(workflow)}/runs/${runId}/artifacts`);
+  fetchJSON<{ artifacts: ArtifactRef[] }>(`${workflowPath(workflow)}/runs/${runId}/artifacts`);
 
 /** A run executing right now in the server process (`GET /runs/active`). */
 export interface ActiveRun {
@@ -1013,10 +1017,10 @@ export interface StoredMessage {
 export const getTranscript = (link: string, signal?: AbortSignal) => fetchJSON<StoredMessage[]>(link, { signal });
 
 export const getRun = (workflow: string, runId: string) =>
-  fetchJSON<RunSummary>(`/workflows/${workflow}/runs/${runId}`);
+  fetchJSON<RunSummary>(`${workflowPath(workflow)}/runs/${runId}`);
 
 export const getRunEvents = (workflow: string, runId: string, signal?: AbortSignal) =>
-  fetchJSON<RunEvent[]>(`/workflows/${workflow}/runs/${runId}/events`, { signal });
+  fetchJSON<RunEvent[]>(`${workflowPath(workflow)}/runs/${runId}/events`, { signal });
 
 // ── Run control (RUN_CONTROL_SPEC) ─────────────────────────────────────────
 // Cancel/pause act on the live run tree (nested runs included). Resume is
@@ -1026,19 +1030,19 @@ export const getRunEvents = (workflow: string, runId: string, signal?: AbortSign
 
 export const cancelRun = (workflow: string, runId: string) =>
   fetchJSON<{ ok: boolean; state: string }>(
-    `/workflows/${workflow}/runs/${runId}/cancel`,
+    `${workflowPath(workflow)}/runs/${runId}/cancel`,
     { method: "POST" },
   );
 
 export const pauseRun = (workflow: string, runId: string) =>
   fetchJSON<{ ok: boolean; state: string; quiesced: boolean }>(
-    `/workflows/${workflow}/runs/${runId}/pause`,
+    `${workflowPath(workflow)}/runs/${runId}/pause`,
     { method: "POST" },
   );
 
 export const resumeRun = (workflow: string, runId: string, from?: string) =>
   fetchJSON<{ ok: boolean; resumed: string }>(
-    `/workflows/${workflow}/runs/${runId}/resume`,
+    `${workflowPath(workflow)}/runs/${runId}/resume`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1071,12 +1075,12 @@ export interface PromoteResult {
 
 /** Resolve a run's declared promotions (pure read — nothing is written). */
 export const getPromotions = (workflow: string, runId: string) =>
-  fetchJSON<Promotion[]>(`/workflows/${workflow}/runs/${runId}/promotions`);
+  fetchJSON<Promotion[]>(`${workflowPath(workflow)}/runs/${runId}/promotions`);
 
 /** Apply one promotion (human-approved): writes the target param + publishes
  *  a new version. `to` identifies which declared spec to apply. */
 export const promote = (workflow: string, runId: string, to: string) =>
-  fetchJSON<PromoteResult>(`/workflows/${workflow}/runs/${runId}/promote`, {
+  fetchJSON<PromoteResult>(`${workflowPath(workflow)}/runs/${runId}/promote`, {
     method: "POST",
     body: JSON.stringify({ to }),
   });
@@ -1646,7 +1650,7 @@ export interface RunEvidenceResponse {
 /** What the checks said about a workflow's runs. `limit` counts runs. */
 export const getRunEvidence = (workflow: string, opts: { runId?: string; before?: string; limit?: number } = {}) => {
   const q = new URLSearchParams(Object.entries(opts).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])));
-  return fetchJSON<RunEvidenceResponse>(`/workflows/${encodeURIComponent(workflow)}/evidence${q.size ? `?${q}` : ""}`);
+  return fetchJSON<RunEvidenceResponse>(`${workflowPath(workflow)}/evidence${q.size ? `?${q}` : ""}`);
 };
 
 // ── Automations (plans/automations.md) ─────────────────────────────────────
@@ -1702,7 +1706,7 @@ export interface AutomationSaved {
   next: string[];
 }
 
-const automationsPath = (workflow: string) => `/workflows/${encodeURIComponent(workflow)}/automations`;
+const automationsPath = (workflow: string) => `${workflowPath(workflow)}/automations`;
 
 export const listAutomations = (workflow?: string) =>
   fetchJSON<{ automations: AutomationView[] }>(`/automations${workflow ? `?workflow=${encodeURIComponent(workflow)}` : ""}`).then((r) => r.automations);
@@ -1744,7 +1748,7 @@ export interface Proposal extends Omit<ProposalBrief, "url" | "decidedAt"> {
 }
 
 export const getRunProposals = (workflow: string, runId: string) =>
-  fetchJSON<{ proposals: ProposalBrief[] }>(`/workflows/${encodeURIComponent(workflow)}/runs/${runId}/proposals`);
+  fetchJSON<{ proposals: ProposalBrief[] }>(`${workflowPath(workflow)}/runs/${runId}/proposals`);
 
 export const getProposals = (filter: { job?: string; session?: string; runId?: string; status?: ProposalStatus } = {}) => {
   const q = new URLSearchParams();

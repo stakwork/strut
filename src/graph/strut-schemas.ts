@@ -243,6 +243,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       /** Which door wrote the version (`WorkflowVersionInfo.source`). */
       version_source: "?string",
       actor: "?string",
+      /** `Upstream`, JSON-encoded (marketplace.md §3). */
+      upstream: "?string",
     },
   },
   {
@@ -283,6 +285,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       /** Full step source — deliberately NOT indexed. */
       source: "?string",
       publisher: "?string",
+      /** `Upstream`, JSON-encoded (marketplace.md §3). */
+      upstream: "?string",
     },
   },
   {
@@ -333,7 +337,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       publisher: "?string",
       version_source: "?string",
       actor: "?string",
-      /** `AppUpstream`, JSON-encoded (marketplace.md §3). */
+      /** `Upstream`, JSON-encoded (marketplace.md §3). */
       upstream: "?string",
     },
   },

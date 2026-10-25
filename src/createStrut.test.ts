@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -756,6 +757,49 @@ describe("createStrut", () => {
     // Drain to completion so the background writes settle before teardown.
     const drain = await strut.app.request(`/workflows/echo-flow/runs/${runId}/stream`);
     await drain.text();
+  });
+
+  it("routes a slashed workflow name URL-encoded — …/flow, …/run, …/:version/run — beside a one-segment name", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    const say = (message: string) => ({ steps: [{ id: "g", type: "log", config: { message } }] });
+    await ws.publishWorkflow("acme", "v1", say("root"));
+    await ws.publishWorkflow("acme/linear/sync", "v1", say("one"));
+    await ws.publishWorkflow("acme/linear/sync", "v2", say("two"));
+    const strut = await createStrut({ workspace: ws, store: new FileRunStore(tempDir), serveUi: false, enableChat: false });
+    const name = encodeURIComponent("acme/linear/sync");
+    assert.equal(name, "acme%2Flinear%2Fsync");
+
+    const messageOf = async (path: string) => {
+      const res = await strut.app.request(path);
+      assert.equal(res.status, 200, path);
+      const flow = (await res.json()) as { name: string; steps: Array<{ config: { message: string } }> };
+      return [flow.name, flow.steps[0]!.config.message];
+    };
+    assert.deepEqual(await messageOf(`/workflows/${name}/flow`), ["acme/linear/sync", "two"]);
+    assert.deepEqual(await messageOf(`/workflows/${name}/flow?version=v1`), ["acme/linear/sync", "one"]);
+    assert.deepEqual(await messageOf("/workflows/acme/flow"), ["acme", "root"], "a one-segment name routes as before");
+    assert.equal(((await (await strut.app.request(`/workflows/${name}`)).json()) as { active: string }).active, "v2");
+    assert.match(await (await strut.app.request(`/workflows/${name}/v1`)).text(), /message: one/);
+
+    const launch = async (path: string) => {
+      const res = await strut.app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: {} }) });
+      assert.equal(res.status, 202, `${path}: ${await res.clone().text()}`);
+      const { runId } = (await res.json()) as { runId: string };
+      assert.match(await (await strut.app.request(`/workflows/${name}/runs/${runId}/stream`)).text(), /event: done/);
+      return runId;
+    };
+    const latest = await launch(`/workflows/${name}/run`);
+    const pinned = await launch(`/workflows/${name}/v1/run`);
+    const eventsOf = async (runId: string) => JSON.stringify(await (await strut.app.request(`/workflows/${name}/runs/${runId}/events`)).json());
+    assert.match(await eventsOf(latest), /"two"/);
+    assert.match(await eventsOf(pinned), /"one"/);
+    assert.deepEqual(((await (await strut.app.request(`/workflows/${name}/runs`)).json()) as Array<{ runId: string }>).map((r) => r.runId).sort(), [latest, pinned].sort());
+    assert.ok(existsSync(join(tempDir, "workflows", "acme", "linear", "sync", "runs", latest)), "the run store nests the name");
+    assert.equal(((await (await strut.app.request("/workflows/acme/runs")).json()) as unknown[]).length, 0, "acme's runs are its own");
+
+    // Unencoded, the slash splits the path: nothing launches.
+    const raw = await strut.app.request("/workflows/acme/linear/sync/run", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    assert.equal(raw.status, 404);
   });
 
   it("reattaches to a run via SSE tail (history + final done)", async () => {
