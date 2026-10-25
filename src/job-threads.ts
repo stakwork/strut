@@ -316,7 +316,9 @@ export function foldJobThreads(runs: ThreadRun[], turnLines: SessionTurn[] = [],
     }
     if (turns.size === 0) {
       // No agent anywhere: the run itself is the turn.
-      const root = run.events[0]?.path.split("/")[0] ?? run.workflow;
+      // The run's own path: its first event, `run.start`, sits on the
+      // workflow's name, slashes included.
+      const root = run.events[0]?.path ?? run.workflow;
       const s = run.summary;
       turns.set(root, {
         runId: run.runId,

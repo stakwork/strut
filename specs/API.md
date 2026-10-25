@@ -69,10 +69,13 @@ JWT with a `sub`).
 - A create whose `name` is taken gets a suffixed name: `renamed: true`,
   `requested` is what you sent, `workflow` is what was stored.
 - A `name` may carry `/` — a package's prefix, `acme/linear/sync`: then no
-  segment may be empty, `.` or `..`, none may be `runs`, and no `\`. In a
+  segment may be empty, `.` or `..`, none may be `runs`, and no `\` or `#`. In a
   URL the name is ONE segment, encoded: `/workflows/acme%2Flinear%2Fsync/run`.
   Unencoded, the slash splits the path and the request matches nothing (404).
-  A one-segment name is unchanged.
+  Its runs' event paths begin with the whole name (`acme/linear/sync/fetch`),
+  so a reader takes the name from the run (`run.start`'s `path`, the
+  summary's `workflow`), never from a path's first `/`. A one-segment name
+  is unchanged.
 - `version` is your label (`v2`). A new version becomes active. Reusing a
   label **overwrites** that version's content; the same content under a new
   label is a second version with the same `hash`.
@@ -328,7 +331,7 @@ One object per line of the run's append-only log. Common fields:
 | ------------ | ----- |
 | `ts`         | ISO time |
 | `runId`      | the run |
-| `path`       | `<workflow>` for run events; `<workflow>/<stepId>` for a step, nesting through subflows (`wf/sub/child`), `#n` for a loop or foreach iteration (`wf/each#2/review`), `NNN-<tool>` for a tool an agent called (`wf/review/003-agent`) |
+| `path`       | `<workflow>` for run events — the whole name, slashes included; `<workflow>/<stepId>` for a step, nesting through subflows (`wf/sub/child`), `#n` for a loop or foreach iteration (`wf/each#2/review`), `NNN-<tool>` for a tool an agent called (`wf/review/003-agent`) |
 | `type`       | below |
 | `stepType`   | the step's type (`log`, `agent`, `tool:<name>` for an agent's tool call); bare even when the workflow pinned a version |
 | `input`      | on `run.start` the validated payload; on `step.start` the resolved config (a subflow's child input; a foreach's items) |

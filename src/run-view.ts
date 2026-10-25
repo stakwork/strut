@@ -87,13 +87,28 @@ function newNode(id: string, path: string, order: number, parent?: RunNode): Run
   return { id, path, parent, retries: 0, order, children: new Map() };
 }
 
+/** The run's own path — where its `run.*` events sit: the workflow's name,
+ *  which may hold slashes (`acme/linear/sync`), so never a path's first
+ *  segment unless the log has no run event. */
+function rootPath(events: RunEvent[]): string {
+  const run = events.find((e) => e.type.startsWith("run."));
+  return run?.path ?? (events[0] ? splitPath(events[0].path)[0]! : "");
+}
+
+/** `path`'s segments with the run's root as ONE segment. */
+function segmentsUnder(root: string, path: string): string[] {
+  if (path === root) return [root];
+  return path.startsWith(`${root}/`) ? [root, ...splitPath(path.slice(root.length + 1))] : splitPath(path);
+}
+
 /** Fold a log into its tree. The root is the run itself (its `run.*` events
  *  sit on the workflow name). */
 export function foldRun(events: RunEvent[]): RunNode {
-  const root = newNode(events[0] ? splitPath(events[0].path)[0]! : "", events[0] ? splitPath(events[0].path)[0]! : "", 0);
+  const rootAt = rootPath(events);
+  const root = newNode(rootAt, rootAt, 0);
   let order = 0;
   for (const e of events) {
-    const segs = splitPath(e.path);
+    const segs = segmentsUnder(rootAt, e.path);
     let node = root;
     let path = segs[0]!;
     for (let i = 1; i < segs.length; i++) {
@@ -178,7 +193,7 @@ function settle(node: RunNode, runEnded: boolean): void {
 }
 
 export function findNode(root: RunNode, path: string): RunNode | undefined {
-  const segs = splitPath(path);
+  const segs = segmentsUnder(root.path, path);
   if (segs[0] !== root.id) return undefined;
   let node: RunNode | undefined = root;
   for (let i = 1; i < segs.length && node; i++) node = node.children.get(segs[i]!);

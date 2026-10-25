@@ -18,6 +18,7 @@ export {
   flow,
   step,
   defineStep,
+  workflowOf,
   type Flow,
   type PromoteSpec,
   type Step,

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { flow, step, defineStep, withAccessedNodes, withMessages, withUsage, type Step, type StepRegistry, type RunEvent } from "./core.js";
+import { flow, step, defineStep, withAccessedNodes, withMessages, withUsage, workflowOf, type Step, type StepRegistry, type RunEvent } from "./core.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore } from "./store.js";
 import foreachStep from "./steps/core/foreach.js";
@@ -853,5 +853,53 @@ describe("ctx.onRunEnd", () => {
     });
     assert.equal(res.status, "success", JSON.stringify(res));
     assert.deepEqual(log, ["run:c", "dispose:c:parent"]);
+  });
+});
+
+describe("ctx.workflow — the run's workflow", () => {
+  /** A step that records what it was told about the run. */
+  function whoStep(seen: Array<{ path: string; workflow?: string; of: string }>) {
+    return defineStep({
+      type: "who",
+      input: z.any(),
+      output: z.any(),
+      async run(_cfg, ctx) {
+        seen.push({ path: ctx.path, workflow: ctx.workflow, of: workflowOf(ctx) });
+        return null;
+      },
+    });
+  }
+
+  it("is the whole name, slashes included, and a subflow's steps see the run's, not their own", async () => {
+    const seen: Array<{ path: string; workflow?: string; of: string }> = [];
+    const registry = { who: whoStep(seen) } as StepRegistry;
+    const child = mk("acme/linear/child", z.object({}), step("c", "who", {}));
+    const wf = mk("acme/linear/sync", z.object({}), step("a", "who", {}), step("sub", "subflow", { workflow: "acme/linear/child", input: {} }));
+    const store = new MemoryRunStore();
+    const res = await runWorkflow(wf, {}, registry, { store, workspace: { getWorkflow: async () => child } as never });
+    assert.equal(res.status, "success", JSON.stringify(res));
+    assert.deepEqual(seen, [
+      { path: "acme/linear/sync/a", workflow: "acme/linear/sync", of: "acme/linear/sync" },
+      { path: "acme/linear/sync/sub/c", workflow: "acme/linear/sync", of: "acme/linear/sync" },
+    ]);
+    // The event paths are unchanged in shape: the run's name, then its steps.
+    const paths = store.getEvents("acme/linear/sync", res.runId).map((e) => `${e.type} ${e.path}`);
+    assert.equal(paths[0], "run.start acme/linear/sync");
+    assert.equal(paths.at(-1), "run.end acme/linear/sync");
+  });
+
+  it("is, for a name with no slash, what the path's first segment always said", async () => {
+    const seen: Array<{ path: string; workflow?: string; of: string }> = [];
+    const res = await runWorkflow(mk("wf", z.object({}), step("a", "who", {})), {}, { who: whoStep(seen) } as StepRegistry);
+    assert.equal(res.status, "success");
+    assert.deepEqual(seen, [{ path: "wf/a", workflow: "wf", of: "wf" }]);
+    assert.equal(seen[0]!.workflow, seen[0]!.path.split("/")[0]);
+  });
+
+  it("workflowOf answers for a context the runner did not build: the path's first segment", () => {
+    assert.equal(workflowOf({ path: "wf/a" }), "wf");
+    assert.equal(workflowOf({ path: "proposals/p1" }), "proposals");
+    assert.equal(workflowOf({ path: "acme/sync/a", workflow: "acme/sync" }), "acme/sync");
+    assert.equal(workflowOf({}), "", "a partial context with no path, as a test or host may pass");
   });
 });

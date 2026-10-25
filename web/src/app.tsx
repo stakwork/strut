@@ -894,8 +894,10 @@ function Shell() {
   }, []);
   useEffect(() => {
     if (!pendingFlyout || !localSteps || loadedWf !== selectedWf || events.length === 0) return;
-    // `wf/work/004-agent` opens on `work`: the step the canvas has.
-    const id = pendingFlyout.split("/")[1];
+    // `wf/work/004-agent` opens on `work`: the step the canvas has. The run's
+    // path is the workflow's name, slashes included (`acme/sync/work/…`).
+    const prefix = `${selectedWf}/`;
+    const id = pendingFlyout.startsWith(prefix) ? pendingFlyout.slice(prefix.length).split("/")[0] : undefined;
     const idx = id ? localSteps.findIndex((s) => s.id === id) : -1;
     if (idx >= 0) { setFlyoutStepId(id!); setFlyoutStepIndex(idx); }
     setPendingFlyout(null);

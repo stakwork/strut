@@ -1398,6 +1398,33 @@ production until install (step 2) calls the resolver.
      opens (`web/src/app.tsx:898`, `split("/")[1]`). The fix is the run's
      workflow on `StepContext`, set by the runner, read at each — needed
      before step 2 installs a slashed name.
+   - **Built 2026-10-25: the run's workflow.** Event paths keep their shape
+     — the run's name, slashes included, then its steps — so every log on
+     disk, a host matching ``path.startsWith(`${workflow}/`)`` (hive's run
+     report) and every one-segment name read exactly as before; what changed
+     is the readers that took the first `/` as the end of the name.
+     `StepContext.workflow` (optional; the runner sets it in every frame, an
+     agent's tool calls inherit it) and `workflowOf(ctx)`, which falls back
+     to the path's first segment for a context the runner did not build — a
+     test, a host calling a step itself, a proposal's apply (its path is
+     `proposals/<id>`, so its billing dimension is what it was). The five
+     server reads above use it; a job thread's no-agent turn takes the
+     run's own path; `foldRun` (the builder's `get_run`) takes its root
+     from the run's `run.*` event; the kit's run overview the same; the
+     web flyout strips the selected workflow's name. The RUN GRAPH (kit
+     `project.ts`, hive's copy at `src/lib/strut-run-graph`) reads a path's
+     first segment as the run and the next as its step — lanes, tree,
+     scopes — so the projection writes a slashed root as one segment,
+     `%2F`-escaped as the name travels in a URL (`rootSegment`), and the
+     labels decode it (`segmentLabel`); a name with no slash projects as
+     before. And the name rule refuses `#` in a slashed name: an event path
+     marks an iteration with it. Not in strut: the mcp lab's pod steps bill
+     with `ctx.path.split("/")[0]` (`mcp/src/lab/pods/steps/_shared.ts`,
+     `llmGrant`) and hive's run-graph copy splits the same way — both right
+     for every name they run today (the lab's seeds, a job's `job` /
+     `builder`), both a one-line `workflowOf` / `rootSegment` port before a
+     slashed workflow runs through them; under hive's copy a slashed child
+     run only draws its name as nested branches.
 2. **Format + install from `file:`.** The tree digest (`treeHash`, shared
    with `apps.md` §1.3), `buildPackage`,
    `installPackage` (verify, the prefix rule, `requires.packages`

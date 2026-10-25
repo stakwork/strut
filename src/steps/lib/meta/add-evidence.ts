@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineStep } from "../../../core.js";
+import { defineStep, workflowOf } from "../../../core.js";
 import { requireAuthoring } from "./_shared.js";
 import { subjectSchema } from "../../../claims-schemas.js";
 
@@ -22,7 +22,7 @@ export default defineStep({
     return requireAuthoring(ctx.services).addEvidence(
       { claim: cfg.claim, name: cfg.name, runId: cfg.runId, job: cfg.job, supports: cfg.supports, content: cfg.content, subject: cfg.subject, slot: cfg.slot },
       // Who is asking: the run's top-level workflow, and whether a model chose to.
-      { workflow: ctx.path.split("/")[0], runId: ctx.runId, agentTool: ctx.agentTool === true },
+      { workflow: workflowOf(ctx), runId: ctx.runId, agentTool: ctx.agentTool === true },
     );
   },
 });

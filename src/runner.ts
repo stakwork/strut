@@ -223,6 +223,9 @@ async function aiAuthored(services: unknown, workflow: string): Promise<boolean>
 interface Exec {
   registry: StepRegistry;
   runId: string;
+  /** The run's workflow — the root flow's name, the same in every frame
+   *  (`StepContext.workflow`). */
+  workflow: string;
   emit: EmitFn;
   workspace: SubflowResolver | undefined;
   services: unknown;
@@ -398,6 +401,7 @@ export async function runWorkflow<TServices = unknown>(
   const exec: Exec = {
     registry,
     runId,
+    workflow: wfName,
     emit,
     workspace: opts?.workspace,
     services,
@@ -877,6 +881,7 @@ async function dispatchStep(
       const ctx: StepContext<unknown> = withinReach(step.type, validConfig, {
         runId: exec.runId,
         path,
+        workflow: exec.workflow,
         scope,
         input: scope["input"],
         emit: exec.emit,

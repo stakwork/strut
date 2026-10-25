@@ -29,7 +29,9 @@ import {
   isSearch,
   projectRunGraphCalls,
   projectWithLaunches,
+  segmentLabel,
 } from "./project.js";
+import { buildRunGraphTree, scopeCalls } from "./replay.js";
 
 const start = (path: string, stepType: string, input: unknown, ts = "2026-09-28T16:56:45.000Z") => ({
   ts,
@@ -416,5 +418,29 @@ describe("names (strut)", () => {
     ]);
     expect(calls[1]!.nodes).toEqual([{ ref_id: "r1", name: "Billing" }, { ref_id: "r2" }]);
     expect(distinctNodeRefs(calls)).toEqual([{ ref_id: "r1", node_type: "Concept", name: "Billing" }, { ref_id: "r2" }]);
+  });
+});
+
+describe("a slashed workflow name (strut)", () => {
+  const got = (path: string) => ({ type: "step.end", path, stepType: "graph/graph-get", ts: "2026-10-25T10:00:00.000Z", nodes: [{ ref_id: "r1" }] });
+
+  it("is ONE root segment, so its steps are the steps and the tree's root reads as the name", () => {
+    const calls = projectRunGraphCalls([
+      { type: "run.start", path: "acme/linear/sync" },
+      got("acme/linear/sync/fetch"),
+      got("acme/linear/sync/each#0/push"),
+    ]);
+    expect(calls.map((c) => c.path)).toEqual(["acme%2Flinear%2Fsync/fetch", "acme%2Flinear%2Fsync/each#0/push"]);
+    const tree = buildRunGraphTree(calls)!;
+    expect([tree.label, tree.children.map((c) => c.label)]).toEqual(["acme/linear/sync", ["fetch", "each#0"]]);
+    expect(scopeCalls(calls, "each#0").map((c) => c.path)).toEqual(["each#0/push"]);
+  });
+
+  it("is one segment under the launch that started it, and a name with no slash is as it was", () => {
+    const child = projectRunGraphCalls([{ type: "run.start", path: "acme/sync" }, got("acme/sync/get")], { prefix: "job/work/003-meta_run_workflow" });
+    expect(child.map((c) => c.path)).toEqual(["job/work/003-meta_run_workflow/acme%2Fsync/get"]);
+    expect(segmentLabel("acme%2Fsync")).toBe("acme/sync");
+    expect(projectRunGraphCalls([{ type: "run.start", path: "wf" }, got("wf/get")]).map((c) => c.path)).toEqual(["wf/get"]);
+    expect(segmentLabel("012-graph_graph_get")).toBe("012-graph_graph_get");
   });
 });

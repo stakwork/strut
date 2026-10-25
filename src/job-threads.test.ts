@@ -189,6 +189,20 @@ describe("job threads (plans/jobs-sidebar.md §1)", () => {
     assert.deepEqual([f!.turns[0]!.status, f!.turns[0]!.toolCalls], ["running", 1]);
   });
 
+  it("a run with no agent of a slashed workflow is one turn at the whole name", () => {
+    const run: ThreadRun = {
+      workflow: "acme/linear/sync", runId: "S1", at: ts(),
+      summary: summary("S1", "acme/linear/sync", "success"),
+      events: [
+        ev("S1", "run.start", "acme/linear/sync", { job: "J" }),
+        ev("S1", "step.end", "acme/linear/sync/get", { stepType: "graph/graph-get", output: {}, nodes: [{ ref_id: "n9" }] }),
+        ev("S1", "run.end", "acme/linear/sync"),
+      ],
+    };
+    const [t] = foldJobThreads([run])[0]!.turns;
+    assert.deepEqual([t!.path, t!.stepType, t!.label, t!.nodeCount], ["acme/linear/sync", "run", "acme/linear/sync", 1]);
+  });
+
   it("the run's deliverables ride on its last top-level turn", () => {
     assert.deepEqual(threads[0]!.turns[0]!.artifacts?.map((a) => a.id), ["plan"]);
     assert.equal(threads[0]!.turns[1]!.artifacts, undefined);

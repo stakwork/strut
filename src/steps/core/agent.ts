@@ -4,7 +4,7 @@ import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage } from "../../core.js";
+import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage, workflowOf } from "../../core.js";
 import { GATE_NOTE, gatedSchema, proposalResultLines, proposalsOf, proposeCall } from "../../proposals.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
@@ -818,7 +818,7 @@ function withoutMcp(ctx: StepContext): StepContext {
  *  top-level workflow, or "janitor" for one strut ships. "agent" outside a
  *  workflow. */
 function writerOf(ctx: StepContext | undefined): string {
-  const workflow = (ctx?.path ?? "").split("/")[0];
+  const workflow = ctx ? workflowOf(ctx) : "";
   if (!workflow) return "agent";
   return isSystemWorkflow(workflow) ? SYSTEM_WRITER : workflow;
 }
@@ -1900,7 +1900,7 @@ export default defineStep({
             system,
             messages: turn.slice(1),
             record: {
-              workflow: (ctx?.path ?? "").split("/")[0] ?? "",
+              workflow: ctx ? workflowOf(ctx) : "",
               runId: ctx?.runId ?? "",
               path: ctx?.path ?? "",
               ...(ctx?.actor ? { actor: ctx.actor } : {}),

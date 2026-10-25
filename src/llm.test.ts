@@ -434,5 +434,8 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     assert.deepEqual(a.auth, { kind: "step", runId: "r9", workflow: "digest", stepPath: "digest/loop#2/summarize", actor: "a", principal: "p" });
     assert.deepEqual(stepAuth({ ...ctx, services: {} } as any), {});
     assert.deepEqual(stepAuth(undefined), {});
+    // A slashed name: the run's workflow, never the path's first segment.
+    const slashed = { ...ctx, path: "acme/linear/sync/summarize", workflow: "acme/linear/sync" };
+    assert.equal(stepAuth(slashed as any).auth?.workflow, "acme/linear/sync");
   });
 });
