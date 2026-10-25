@@ -475,6 +475,7 @@ export {
 export {
   STRUT_SCHEMAS,
   STRUT_EDGES,
+  JARVIS_SOURCED_EDGES,
   STRUT_DOMAIN,
   STRUT_DOMAIN_LABEL,
   getStrutSchema,
