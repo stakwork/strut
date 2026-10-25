@@ -48,6 +48,8 @@ STRUT_WORKSPACE_BACKEND=fs      # keep workflows on disk, no Neo4j needed
 ANTHROPIC_API_KEY=sk-ant-...    # for llm/agent steps and the AI builder — or OPENAI_API_KEY,
                                 # GOOGLE_API_KEY, OPENROUTER_API_KEY, XAI_API_KEY; pick the model in
                                 # the AI chat. Keys can also be pasted under Secrets in the UI.
+# ANTHROPIC_WORKSPACE_ID=wrkspc_… # an organization-wide Anthropic key (not one workspace's) must name
+                                # the workspace its calls run in; a workspace key needs none.
 # STRUT_API_KEY=…               # shared secret every request must carry (Bearer, or ?key= — the UI
                                 # asks for it once). Unset, every endpoint is open: fine on your
                                 # laptop, set it before anyone else can reach the port.

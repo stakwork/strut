@@ -20,7 +20,9 @@ export default defineStep({
     "writes `written`, a name or term that sounds like it) is remembered on the entity that writes it, or as a new word, " +
     "so the next transcription puts it right. The user's fixer model (dictation/use) judges each short change that " +
     "sounds alike, and a name that sounds like a real word (stadium → Stadeum) is learned too; a change from a code of " +
-    "its own (PH → P8) keeps only the new word, with no mapping. Everyday swaps, rewrites, casing of everyday words, two names for one thing, words turned off for " +
+    "its own (PH → P8) keeps only the new word, with no mapping. A fix inside a capitalised full name (Etoy → Itoi in " +
+    "\"Paul Itoi\") is kept on that person, made when nothing writes the name, so the next misspelling of the whole name " +
+    "is put right. Everyday swaps, rewrites, casing of everyday words, two names for one thing, words turned off for " +
     "dictation and pairs the user undid teach nothing. A fix the model turns down that is said the same, vowels included " +
     "(Etoy → Itoi; never Mark → Mike), is kept as a pair and a count, and learned when the user makes the same fix again " +
     "within 30 days. With no fixer active (dictation/models: none picked, or the pick " +
@@ -45,7 +47,7 @@ export default defineStep({
     const dataDir = (ctx.services as { dataDir?: string } | undefined)?.dataDir;
     const pairs = [...out.learned, ...(dataDir ? recordPending(dataDir, out.pending) : [])];
     const learned: LearnedT[] = [];
-    for (const p of pairs) learned.push(await learn(p.heard, p.written, lexicon, ctx, p.term));
+    for (const p of pairs) learned.push(await learn(p.heard, p.written, lexicon, ctx, p.term, p.name));
     if (dataDir) clearPending(dataDir, pairs);
     return { learned };
   },

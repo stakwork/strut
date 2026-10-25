@@ -67,6 +67,8 @@ export function loadCases(): Case[] {
           facts: (e.heard ?? []).length,
         })),
         undone: row.undone ?? [],
+        // As memory/lexicon gives it on the seed ontology: what the loose full-name recall matches.
+        personType: "Person",
       });
     } else {
       const lexicon = lexicons.get(row.lexicon);
@@ -79,7 +81,7 @@ export function loadCases(): Case[] {
 
 // ── Scoring ─────────────────────────────────────────────────────────────────
 
-const pairKey = (p: Mishearing) => `${letters(p.heard) && p.heard.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").trim()}→${p.written.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")}${p.term ? " (term)" : ""}`;
+const pairKey = (p: Mishearing) => `${letters(p.heard) && p.heard.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").trim()}→${p.written.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")}${p.term ? " (term)" : ""}${p.name ? ` in ${p.name}` : ""}`;
 /** Fix is scored on word changes, punctuation aside: the expected text's changes from the transcript against the output's. */
 const changeKey = (h: Hunk) => `${h.a[0]}-${h.a[1]}:${h.to}`;
 

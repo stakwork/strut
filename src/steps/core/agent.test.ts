@@ -1126,9 +1126,11 @@ describe("mid-stream socket death is resumed, not lost", () => {
         { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: { secrets }, registry: {} } as any,
       ) as any;
       assert.equal(out.result, "done");
-      // Asked by the provider's env-var NAME, and the value reached the wire.
-      assert.deepEqual(asked, ["ANTHROPIC_API_KEY"]);
+      // Asked by the provider's env-var NAME, then for the key's workspace
+      // (none here, so no header), and the value reached the wire.
+      assert.deepEqual(asked, ["ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID"]);
       assert.equal(s.heads[0]?.["x-api-key"], "from-store");
+      assert.equal(s.heads[0]?.["anthropic-workspace-id"], undefined);
       // The alias resolved to the concrete id on the request.
       assert.ok((s.bodies[0] ?? "").includes('"model":"claude-sonnet-5-5"'), s.bodies[0]);
     } finally {

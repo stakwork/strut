@@ -81,6 +81,24 @@ describe("lingo: recall", () => {
     assert.deepEqual(spans("go to an office", { undone: [], entries: [entry("a", "Lingo", "A6", ["A6"])] }), []);
   });
 
+  it("a person's full name is offered when a span's whole sound is within a quarter of the name's, however it is split", () => {
+    const boss: Lexicon = { undone: [], personType: "Person", entries: [entry("p", "Person", "Paul Itoi", ["Paul Itoi"]), entry("m", "Person", "Mike", ["Mike"]), entry("a", "Person", "Paula", ["Paula"])] };
+    const to = (text: string) => recall(text, boss).filter((c) => c.written === "Paul Itoi").map((c) => c.span);
+    for (const [text, span] of [["My boss is called Paul Attoy.", "Paul Attoy"], ["Paul Latoy will review it", "Paul Latoy"], ["My boss is called Paula Toy.", "Paula Toy"],
+      ["My boss is called Call itoy.", "Call itoy"], ["ask Call It Oy", "Call It Oy"], ["Paul Italy is my boss.", "Paul Italy"]]) {
+      assert.deepEqual(to(text!), [span], text);
+    }
+    // Three sounds off of eight: Coolitoy, and Bill Itoi, a different person, are not offered.
+    for (const text of ["I'll call Mark tomorrow.", "I bought a toy for Paul.", "Paula said hi.", "Let's call it a day.", "My son wants a toy.", "Send it to Coolitoy.", "Ask Bill Itoi about it."]) {
+      assert.deepEqual(to(text), [], text);
+    }
+    // A one-word name stays strict: Mark is not offered for Mike.
+    assert.deepEqual(recall("I'll call Mark tomorrow.", boss), []);
+    // Only a person: the same name as a term is matched as before.
+    const term: Lexicon = { ...boss, entries: [entry("t", "Lingo", "Paul Itoi", ["Paul Itoi"])] };
+    assert.deepEqual(recall("My boss is called Call itoy.", term), []);
+  });
+
   it("a repeated word is a candidate at each place it occurs", () => {
     assert.deepEqual(spans("can you fix the fix integration"), ["fix@8→Sphinx!", "fix@16→Sphinx!"]);
   });
@@ -105,6 +123,14 @@ describe("lingo: the rewrite, with the fixer", () => {
     const kathryn: Lexicon = { undone: [], entries: [entry("k", "Person", "Kathryn", ["Kathryn"], [["h", "Katherine"]])] };
     const { fixer } = fake({ score: { "Kathryn said yes": -20, "Katherine said yes": -21 } });
     assert.equal((await rewrite("Katherine said yes", kathryn, fixer)).text, "Kathryn said yes");
+  });
+
+  it("a code dictation wrote a character off needs a margin: chemistry's PH reads a little likelier as P8", async () => {
+    const p8: Lexicon = { undone: [], entries: [entry("p", "Lingo", "P8", ["P8"])] };
+    assert.equal((await rewrite("The PH of the water is high.", p8, fake({ score: { "The P8 of the water is high.": -29.7, "The PH of the water is high.": -30 } }).fixer)).text, "The PH of the water is high.");
+    assert.equal((await rewrite("send PH now", p8, fake({ score: { "Send P8 now": -14, "Send PH now": -20 } }).fixer)).text, "send P8 now");
+    // Spelled out, it is no code of its own: no margin.
+    assert.equal((await rewrite("send P H now", p8, fake({ score: { "Send P8 now": -19.5, "Send P H now": -20 } }).fixer)).text, "send P8 now");
   });
 
   it("scores both readings from a capital, and a sound-alike also in its own capitals, after the word's line", async () => {
@@ -291,13 +317,18 @@ describe("lingo: learning from an edit", () => {
 
   it("a change said the same, vowels included, is learned when the user's word is a name; a different name never is", async () => {
     const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
-    const { fixer, asked } = fake({ named: { "Itoi@His name is Paul Itoi.": 3 } });
-    assert.deepEqual(await mishearings("His name is Paul Etoy.", "His name is Paul Itoi.", empty, fixer), [{ heard: "Etoy", written: "Itoi" }]);
-    // Said the same: dictation's word is not asked about.
-    assert.deepEqual(asked.everyday, []);
+    const { fixer, asked } = fake({ named: { "Paul Itoi@His name is Paul Itoi.": 3 } });
+    assert.deepEqual(await mishearings("His name is Paul Etoy.", "His name is Paul Itoi.", empty, fixer), [{ heard: "Etoy", written: "Itoi", name: "Paul Itoi" }]);
+    // A surname is asked as the full name it is part of; a word beginning the sentence is not part of it.
+    assert.deepEqual(asked.named.map((q) => q.word), ["Paul Itoi"]);
+    const { fixer: ask, asked: a2 } = fake();
+    await mishearings("Ask Paul Etoy now.", "Ask Paul Itoi now.", empty, ask);
+    assert.deepEqual(a2.named.map((q) => q.word), ["Paul Itoi"]);
+    // Said the same: dictation's word is not asked about (the full name's words are).
+    assert.deepEqual(asked.everyday, ["paul", "itoi"]);
     // Turned down by both: kept as pending, so the same fix again learns it.
     const { fixer: no } = fake();
-    assert.deepEqual(await assess("His name is Paul Etoy.", "His name is Paul Itoi.", empty, no), { learned: [], pending: [{ heard: "Etoy", written: "Itoi" }] });
+    assert.deepEqual(await assess("His name is Paul Etoy.", "His name is Paul Itoi.", empty, no), { learned: [], pending: [{ heard: "Etoy", written: "Itoi", name: "Paul Itoi" }] });
     // A different name, or an ordinary word the user did not capitalise, is never pending.
     for (const [typed, edited] of [["tell Mark the deck is ready", "tell Mike the deck is ready"], ["ask jon now", "ask Jen now"], ["email Michael about it", "email Michelle about it"], ["I want to", "I want too"]]) {
       assert.deepEqual((await assess(typed!, edited!, empty, no)).pending, [], typed);
@@ -311,11 +342,30 @@ describe("lingo: learning from an edit", () => {
     const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as" };
     const typed = "My boss is called Paula Toy and his wife is Nicky.", edited = "My boss is called Paul Itoi and his wife is Nikki.";
     const { fixer, asked } = fake({ judge: { "Nicky→Nikki": 4, "Paula Toy→Paul Itoi": 9 }, named: { "Paul Itoi@My boss is called Paul Itoi and his wife is Nicky.": 12 } });
-    assert.deepEqual(await mishearings(typed, edited, empty, fixer), [{ heard: "Paula Toy", written: "Paul Itoi" }, { heard: "Nicky", written: "Nikki" }]);
+    assert.deepEqual(await mishearings(typed, edited, empty, fixer), [{ heard: "Paula Toy", written: "Paul Itoi", name: "Paul Itoi" }, { heard: "Nicky", written: "Nikki" }]);
     assert.deepEqual(asked.judge.map((q) => q.from), ["Nicky"]);
     // An ordinary word: not learned, whatever the judge would say.
     const { fixer: yes } = fake({ judge: { "a cross→across": 9 }, named: { "across@we walked across the bridge": -19 } });
     assert.deepEqual(await mishearings("we walked a cross the bridge", "we walked across the bridge", empty, yes), []);
+  });
+
+  it("a change inside a capitalised full name keeps the name, when the model reads each word as only a name", async () => {
+    const empty: Lexicon = { undone: [], entries: [], lingoType: "Lingo", mishearing: "heard_as", personType: "Person" };
+    const yes = { judge: { "Etoy→Itoi": 4, "Stadium→Stadeum": 4 } };
+    const learn = async (typed: string, edited: string, everyday: Record<string, number> = {}, lex = empty) => mishearings(typed, edited, lex, fake({ ...yes, everyday }).fixer);
+    assert.deepEqual(await learn("My boss is called Paul Etoy.", "My boss is called Paul Itoi."), [{ heard: "Etoy", written: "Itoi", name: "Paul Itoi" }]);
+    // A word beginning the sentence is part of it only when it too reads as a name.
+    assert.deepEqual(await learn("Ask Paul Etoy about it.", "Ask Paul Itoi about it.", { ask: 20 }), [{ heard: "Etoy", written: "Itoi", name: "Paul Itoi" }]);
+    assert.deepEqual(await learn("I sent Paul Etoy the deck.", "I sent Paul Itoi the deck."), [{ heard: "Etoy", written: "Itoi", name: "Paul Itoi" }]);
+    // An everyday word beside it, punctuation between, or a word alone: no full name.
+    assert.deepEqual(await learn("Deploy Stadium Cloud now.", "Deploy Stadeum Cloud now.", { deploy: 20, cloud: 20 }), [{ heard: "Stadium", written: "Stadeum" }]);
+    assert.deepEqual(await learn("I met Paul, Etoy said.", "I met Paul, Itoi said."), [{ heard: "Etoy", written: "Itoi" }]);
+    assert.deepEqual(await learn("I met Etoy today.", "I met Itoi today."), [{ heard: "Etoy", written: "Itoi" }]);
+    // The user's own word must read as a name too.
+    assert.deepEqual(await learn("My boss is called Paul Etoy.", "My boss is called Paul Itoi.", { itoi: 3 }), [{ heard: "Etoy", written: "Itoi" }]);
+    // A name turned off for dictation keeps only the pair.
+    const off: Lexicon = { ...empty, entries: [entry("p", "Person", "Paul Itoi", ["Paul Itoi"], [], true)] };
+    assert.deepEqual(await learn("My boss is called Paul Etoy.", "My boss is called Paul Itoi.", {}, off), [{ heard: "Etoy", written: "Itoi" }]);
   });
 
   it("said the same, vowels included, is strict: the same name respelled, never a different one", () => {
@@ -388,6 +438,7 @@ describe("lingo: strut's memory steps", () => {
     assert.deepEqual(read.undone, [{ value: "el sat", written: "LSAT" }]);
     assert.equal(read.lingoType, "Lingo");
     assert.equal(read.mishearing, "heard_as");
+    assert.equal(lexiconFrom({ ...reply, person_type: "Person" }).personType, "Person");
     assert.equal(heardOnly("a bit coin", read).text, "a Bitcoin");
   });
 
@@ -406,6 +457,21 @@ describe("lingo: strut's memory steps", () => {
     const made = learnInput("p eight", "P8", lexicon) as any;
     assert.deepEqual(made.facts[0].subject, { type: "Lingo", name: "P8" });
     assert.equal("form" in made.facts[0], false);
+  });
+
+  it("a learn inside a full name is kept on that person: made when nothing writes the name, else on the entity that does", () => {
+    const people: Lexicon = { ...lexicon, personType: "Person" };
+    const made = learnInput("Etoy", "Itoi", people, false, "Paul Itoi") as any;
+    assert.equal(made.episode, "Dictation: corrected “Etoy” to “Itoi” in Paul Itoi.");
+    assert.deepEqual(made.facts, [{ subject: { type: "Person", name: "Paul Itoi" }, predicate: "heard_as", text: "Dictation hears Itoi as “Etoy”.", value: "Etoy", form: "Itoi" }]);
+    assert.equal("mentions" in made, false);
+    // The whole name respelled: the name itself, no form.
+    assert.equal("form" in (learnInput("Paula Toy", "Paul Itoi", people, false, "Paul Itoi") as any).facts[0], false);
+    // A person the memory knows by that name: attached, never a second one.
+    const known: Lexicon = { ...people, entries: [...people.entries, entry("p1", "Person", "Paul Itoi", ["Paul Itoi"])] };
+    assert.deepEqual((learnInput("Atoy", "Itoi", known, false, "Paul Itoi") as any).facts[0].subject, { ref_id: "p1", type: "Person", name: "Paul Itoi" });
+    // No person type: a word of dictation's own.
+    assert.deepEqual((learnInput("Etoy", "Itoi", lexicon, false, "Paul Itoi") as any).facts[0].subject, { type: "Lingo", name: "Paul Itoi" });
   });
 
   it("a term learn makes the new word alone, and nothing when the vocabulary writes it", () => {

@@ -25,6 +25,7 @@ import { promisify } from "node:util";
 import { gunzip, gzip } from "node:zlib";
 import { type Handle, MIGRATION_COUNT, type Query, ownerOnly } from "./_db.js";
 import { SEED } from "./_ontology-seed.js";
+import { tar, untar } from "../../../tar.js";
 
 export const FORMAT = 1;
 export const MB = 1024 * 1024;
@@ -146,49 +147,6 @@ export async function dropAll(query: Query): Promise<void> {
 export function literal(path: string): string {
   if (/['\\\n]/.test(path)) throw new Error(`memory snapshot: the path ${JSON.stringify(path)} cannot be quoted for Ladybug`);
   return `'${path}'`;
-}
-
-// A plain ustar archive of regular files: readable with `tar xzf`, and read
-// back here with nothing but files whose names the caller allows.
-export function tar(files: [string, Buffer][]): Buffer {
-  const blocks: Buffer[] = [];
-  for (const [name, bytes] of files) {
-    // ustar's name field: a longer one would be cut, and the content hash with it.
-    if (Buffer.byteLength(name) > 100) throw new Error(`memory snapshot: the file name ${JSON.stringify(name)} is longer than a tar header holds`);
-    const h = Buffer.alloc(512);
-    h.write(name, 0, 100, "utf8");
-    h.write("0000600\0", 100);
-    h.write("0000000\0", 108);
-    h.write("0000000\0", 116);
-    h.write(bytes.length.toString(8).padStart(11, "0") + "\0", 124);
-    h.write("00000000000\0", 136);
-    h.write("        ", 148);
-    h.write("0", 156);
-    h.write("ustar\0" + "00", 257);
-    let sum = 0;
-    for (const b of h) sum += b;
-    h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
-    blocks.push(h, bytes, Buffer.alloc((512 - (bytes.length % 512)) % 512));
-  }
-  blocks.push(Buffer.alloc(1024));
-  return Buffer.concat(blocks);
-}
-
-export function untar(buf: Buffer): Map<string, Buffer> {
-  const files = new Map<string, Buffer>();
-  const text = (from: number, len: number) => buf.subarray(from, from + len).toString("utf8").replace(/\0.*$/s, "");
-  for (let at = 0; at + 512 <= buf.length; ) {
-    if (buf.subarray(at, at + 512).every((b) => b === 0)) return files;
-    const name = text(at, 100);
-    const size = parseInt(text(at + 124, 12).trim() || "0", 8);
-    const type = text(at + 156, 1) || "0";
-    if (type !== "0" || !Number.isFinite(size) || at + 512 + size > buf.length) {
-      throw new Error(`bad_snapshot: the archive holds ${type !== "0" ? `a non-file entry (${name})` : "a truncated entry"}`);
-    }
-    files.set(name, buf.subarray(at + 512, at + 512 + size));
-    at += 512 + Math.ceil(size / 512) * 512;
-  }
-  throw new Error("bad_snapshot: the archive has no end");
 }
 
 const NAME = "`[A-Za-z_][A-Za-z0-9_]*`";
