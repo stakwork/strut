@@ -673,7 +673,7 @@ export {
 } from "./graph/projector.js";
 // The `job` workflow strut ships (plans/jobs.md §5): seeded at boot by
 // createStrut; a host's delta rides on `createStrut({ job })`.
-export { seedJobWorkflow, jobWorkflowYaml, JOB_WORKFLOW, JOB_CATEGORY, JOB_DESCRIPTION, type JobSeedOptions } from "./job-seed.js";
+export { seedJobWorkflow, jobWorkflowYaml, JOB_WORKFLOW, JOB_CATEGORY, JOB_DESCRIPTION, type JobSeedOptions, type JobOptions } from "./job-seed.js";
 export {
   seedConcepts,
   parseConceptFile,

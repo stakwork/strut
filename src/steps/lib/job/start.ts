@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { JOB_WORKFLOWS } from "../../../jobs.js";
+import { ACP_PRESETS } from "../acp/prompt.js";
 import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
 
 /**
@@ -71,12 +72,34 @@ export default defineStep({
       .describe(
         "The kind of work, by its name in the list of the kinds of work a job does here (\"Code Change\"), when the request is one of them: the job starts every turn from that kind's page. Leave it out when none fits. workflow: job only — a builder job reads its own page.",
       ),
+    agent: z
+      .string()
+      .optional()
+      .describe(
+        `A LOCAL coding agent to do the job's turns instead of strut's own: ${Object.keys(ACP_PRESETS).join(", ")}. It uses its own login and model, and works in a \`folder\`. workflow: job only.`,
+      ),
+    mode: z
+      .enum(["plan", "edit", "auto"])
+      .optional()
+      .describe("With `agent`: plan = look only (\"don't change anything\"); edit (the default) = edit files; auto = also run commands, only when the person said so."),
+    folder: z
+      .string()
+      .optional()
+      .describe(
+        "With `agent`, which needs one: the folder to work in, by the name this strut gives it (its folders are the person's code, e.g. their checkout of a repository). The job works in a worktree of it on a branch of its own, never in the checkout the person has open.",
+      ),
     attachments: attachmentsField,
   }),
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
   async run(cfg, ctx: StepContext) {
     const launch = requireJobLaunch(ctx.services);
     const workflow = cfg.workflow ?? "job";
+    if ((cfg.agent || cfg.mode || cfg.folder) && workflow === "builder") {
+      throw new Error(`agent: a builder job authors workflows through its own tools; a local coding agent does a code job (workflow: job)`);
+    }
+    if ((cfg.mode || cfg.folder) && !cfg.agent) {
+      throw new Error(`mode and folder go with agent: name the local coding agent that works in the folder`);
+    }
     if (cfg.peer && workflow !== "builder") {
       throw new Error(`peer: only a builder job runs on another strut (workflow: builder); a code job runs here, with its repositories — leave peer out, or start a builder job`);
     }
@@ -96,6 +119,8 @@ export default defineStep({
         ...(cfg.repos?.length ? { repos: cfg.repos } : {}),
         ...(cfg.peer ? { peer: cfg.peer } : {}),
         ...(cfg.kind ? { kind: cfg.kind } : {}),
+        ...(cfg.agent ? { agent: cfg.agent, mode: cfg.mode ?? "edit" } : {}),
+        ...(cfg.folder ? { folder: cfg.folder } : {}),
       },
       ...(attachments ? { attachments } : {}),
     });

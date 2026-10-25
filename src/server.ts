@@ -33,13 +33,25 @@ import type { BuilderReach } from "./reach.js";
 
 let strutInstance: Strut | null = null;
 
+/** `job.folders` (name → absolute path): the host's folders a local coding
+ *  agent's job may work in (job/start { agent, folder }). */
+function foldersFromConfig(delta: Record<string, unknown>, file: string): { folders?: Record<string, string> } {
+  const value = delta["folders"];
+  if (value === undefined) return {};
+  const entries = value && typeof value === "object" && !Array.isArray(value) ? Object.entries(value as Record<string, unknown>) : null;
+  if (!entries?.every(([k, v]) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(k) && typeof v === "string" && v.startsWith("/"))) {
+    throw new Error(`STRUT_HOST_CONFIG: ${file}: "job.folders" must be { <name>: an absolute path }`);
+  }
+  return { folders: Object.fromEntries(entries as [string, string][]) };
+}
+
 /** The host's delta for the shipped workflows, from the JSON file
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator?, builder? }`, each
  *  `{ tools?, approve?, system?, model? }` (and `peer: false` to close the
- *  builder to other struts — a file may only close one, never open one),
- *  and `automation?: { workflow, approve?, grants? }`. Nothing when unset.
- *  A file that cannot be read or parsed fails the boot, rather than
- *  seeding the workflows without the host's tools. */
+ *  builder to other struts — a file may only close one, never open one;
+ *  `folders` on `job`), and `automation?: { workflow, approve?, grants? }`.
+ *  Nothing when unset. A file that cannot be read or parsed fails the boot,
+ *  rather than seeding the workflows without the host's tools. */
 export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
@@ -64,8 +76,10 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
       throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }`);
     }
     const reach = key === "builder" ? reachFromConfig((delta ?? {}) as Record<string, unknown>, file) : undefined;
+    const local = key === "job" ? foldersFromConfig((delta ?? {}) as Record<string, unknown>, file) : {};
     out[key] = {
       ...(reach ? { reach } : {}),
+      ...local,
       ...(tools ? { tools: tools as string[] } : {}),
       ...(approve ? { approve: approve as string[] } : {}),
       ...(system !== undefined ? { system: system as string } : {}),

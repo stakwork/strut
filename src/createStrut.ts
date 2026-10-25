@@ -64,7 +64,7 @@ import { AUTOMATION_CALLBACKS_FILE } from "./automations.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
-import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
+import { seedJobWorkflow, type JobOptions } from "./job-seed.js";
 import { STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
@@ -120,6 +120,8 @@ import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
+import { ACP_PRESETS } from "./steps/lib/acp/prompt.js";
+import { jobWorktree } from "./job-worktree.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -325,8 +327,9 @@ export interface StrutOptions<TServices = unknown> {
    *  workspace-side edit active. `{ tools, system }` is the HOST's delta —
    *  grants appended to `params.tools` (the lab's `pod/*`), a section
    *  appended to the agent's system prompt after strut's — the twin of
-   *  `chatSystem`; the merged text is what is hashed. `false` seeds nothing. */
-  job?: false | JobSeedOptions;
+   *  `chatSystem`; the merged text is what is hashed. `false` seeds nothing.
+   *  `folders` (job/start's `folder`) is read by the job launcher, not seeded. */
+  job?: false | JobOptions;
   /** The Concept pages strut ships (src/concepts/; `src/concept-seed.ts`):
    *  `Workflow Builder`, which the builder's prompt reads, and `Job`, which
    *  the job workflow puts in its agent's prompt — seeded at boot on a graph, each
@@ -3676,11 +3679,34 @@ export async function createStrut<TServices = unknown>(
       // names its own, so the caller names only the job.
       const last = wanted ? undefined : turnOf((await readJobRecord(jobRoot(dataDir, job)))?.runs);
       const workflow = wanted ?? last?.workflow ?? "job";
-      const carried = (["peer", "kind"] as const).filter((k) => input[k] === undefined);
+      // A local coding agent (job/start { agent, folder }): one of
+      // acp/prompt's presets by name, never a command line a model wrote,
+      // in one of the folders the host named (`job.folders`) — so a strut
+      // with none runs no local coding agent.
+      const folders = opts.job === false ? undefined : opts.job?.folders;
+      const offered = Object.keys(folders ?? {}).join(", ") || "it has none";
+      const agent = input["agent"];
+      if (agent !== undefined && !(typeof agent === "string" && Object.hasOwn(ACP_PRESETS, agent))) {
+        throw new Error(`agent_unknown: "${String(agent)}" is not a coding agent this strut offers (${Object.keys(ACP_PRESETS).join(", ")})`);
+      }
+      if (agent !== undefined && input["folder"] === undefined) {
+        throw new Error(`folder_required: a local coding agent works in one of this strut's folders, named with \`folder\` (${offered})`);
+      }
+      // A local coding agent's job keeps its agent, mode and folder (as `cwd`).
+      const carried = (["peer", "kind", "agent", "mode", "cwd"] as const).filter((k) => input[k] === undefined);
       if (last && carried.length) {
         const start = (await store.getRunEvents(last.workflow, last.runId)).find((e) => e.type === "run.start") as { input?: unknown } | undefined;
         const was = start?.input as Record<string, unknown> | undefined;
         for (const k of carried) if (typeof was?.[k] === "string") input = { ...input, [k]: was[k] };
+      }
+      // The folder by the name the host gave it, as a worktree of its own.
+      if (input["folder"] !== undefined) {
+        const name = String(input["folder"]);
+        const { folder: _folder, ...rest } = input;
+        input = rest;
+        const root = folders && Object.hasOwn(folders, name) ? folders[name] : undefined;
+        if (!root) throw new Error(`folder_unknown: "${name}" is not one of this strut's folders (${offered})`);
+        input = { ...input, cwd: await jobWorktree(root, jobRoot(dataDir, job), job) };
       }
       // A builder job on a peer runs there (builder.yaml's `remote`
       // branch), and strut/run-workflow carries no files.

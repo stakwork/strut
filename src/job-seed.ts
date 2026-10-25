@@ -58,6 +58,17 @@ export interface JobSeedOptions {
   peer?: false;
 }
 
+/** `createStrut({ job })`: the seed's delta, and what the job launcher reads. */
+export interface JobOptions extends JobSeedOptions {
+  /** The host's folders a job may work in with a local coding agent
+   *  (`job/start { agent, folder }`): name → absolute path. A job names one;
+   *  it works in a git worktree of it (on a branch of its own) when the
+   *  folder is in a repository, else in the folder itself. Not part of the
+   *  seed. The agent runs with strut's own PATH: a desktop host starts strut
+   *  with its login shell's. */
+  folders?: Record<string, string>;
+}
+
 export const JOB_WORKFLOW = "job";
 export const JOB_CATEGORY = "job";
 
