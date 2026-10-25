@@ -106,6 +106,17 @@ describe("proposals", () => {
     assert.equal(rec.by.path, "acme/linear/sync/turn/001-dev_write");
   });
 
+  it("proposals made in one millisecond — an agent's parallel calls — list in the order they were made", async () => {
+    const made = await Promise.all(
+      Array.from({ length: 25 }, (_, i) =>
+        cap().propose({ step: "dev/write", input: { name: `n${i}`, n: 1 }, title: "Write a thing.", by: { workflow: "wf", runId: "r1", path: `wf/turn/${i}`, session: "s1" } }),
+      ),
+    );
+    const listed = await listProposals(root(), { session: "s1" });
+    assert.deepEqual(listed.map((p) => p.id), made.map((p) => p.id).reverse(), "newest first");
+    assert.ok(made.every((p, i) => i === 0 || p.createdAt > made[i - 1]!.createdAt), "each stamped after the one before");
+  });
+
   it("a resumed turn making the same call gets the proposal it made; a bad input is refused before any record", async () => {
     const first = (await gated(ctx()).execute({ name: "x" }, { strutToolPath: "wf/turn/001-dev_write" })) as { proposal: string };
     const again = (await gated(ctx({ journal: { "wf/turn#001-dev_write": { proposal: first.proposal } } })).execute({ name: "x" }, { strutToolPath: "wf/turn/001-dev_write" })) as { proposal: string };

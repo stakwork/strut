@@ -163,8 +163,15 @@ export async function listProposals(root: string, filter: ProposalFilter = {}): 
   return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
 }
 
+/** The last `createdAt` handed out, in ms. The lists order by it, and an
+ *  agent's parallel tool calls propose within one millisecond: each new
+ *  proposal is stamped at least 1 ms after the one before, so the order
+ *  is the order they were made, never `readdir`'s. */
+let lastCreatedMs = 0;
+
 export async function createProposal(root: string, p: NewProposal): Promise<Proposal> {
-  const rec: Proposal = { id: randomBytes(9).toString("base64url"), status: "pending", createdAt: new Date().toISOString(), ...p };
+  lastCreatedMs = Math.max(Date.now(), lastCreatedMs + 1);
+  const rec: Proposal = { id: randomBytes(9).toString("base64url"), status: "pending", createdAt: new Date(lastCreatedMs).toISOString(), ...p };
   await writeProposal(root, rec);
   return rec;
 }
