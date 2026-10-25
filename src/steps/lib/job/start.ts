@@ -76,7 +76,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        `A LOCAL coding agent to do the job's turns instead of strut's own: ${Object.keys(ACP_PRESETS).join(", ")}. It uses its own login and model. workflow: job only.`,
+        `A LOCAL coding agent to do the job's turns instead of strut's own: ${Object.keys(ACP_PRESETS).join(", ")}. It uses its own login and model, and works in a \`folder\`. workflow: job only.`,
       ),
     mode: z
       .enum(["plan", "edit", "auto"])
@@ -86,7 +86,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        "With `agent`: the folder to work in, by the name this strut gives it (its folders are the person's code, e.g. their checkout of a repository). The job works in a worktree of it on a branch of its own, never in the checkout the person has open.",
+        "With `agent`, which needs one: the folder to work in, by the name this strut gives it (its folders are the person's code, e.g. their checkout of a repository). The job works in a worktree of it on a branch of its own, never in the checkout the person has open.",
       ),
     attachments: attachmentsField,
   }),

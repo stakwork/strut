@@ -3680,10 +3680,17 @@ export async function createStrut<TServices = unknown>(
       const last = wanted ? undefined : turnOf((await readJobRecord(jobRoot(dataDir, job)))?.runs);
       const workflow = wanted ?? last?.workflow ?? "job";
       // A local coding agent (job/start { agent, folder }): one of
-      // acp/prompt's presets by name, never a command line a model wrote.
+      // acp/prompt's presets by name, never a command line a model wrote,
+      // in one of the folders the host named (`job.folders`) — so a strut
+      // with none runs no local coding agent.
+      const folders = opts.job === false ? undefined : opts.job?.folders;
+      const offered = Object.keys(folders ?? {}).join(", ") || "it has none";
       const agent = input["agent"];
       if (agent !== undefined && !(typeof agent === "string" && Object.hasOwn(ACP_PRESETS, agent))) {
         throw new Error(`agent_unknown: "${String(agent)}" is not a coding agent this strut offers (${Object.keys(ACP_PRESETS).join(", ")})`);
+      }
+      if (agent !== undefined && input["folder"] === undefined) {
+        throw new Error(`folder_required: a local coding agent works in one of this strut's folders, named with \`folder\` (${offered})`);
       }
       // A local coding agent's job keeps its agent, mode and folder (as `cwd`).
       const carried = (["peer", "kind", "agent", "mode", "cwd"] as const).filter((k) => input[k] === undefined);
@@ -3697,11 +3704,8 @@ export async function createStrut<TServices = unknown>(
         const name = String(input["folder"]);
         const { folder: _folder, ...rest } = input;
         input = rest;
-        const folders = opts.job === false ? undefined : opts.job?.folders;
         const root = folders && Object.hasOwn(folders, name) ? folders[name] : undefined;
-        if (!root) {
-          throw new Error(`folder_unknown: "${name}" is not one of this strut's folders (${Object.keys(folders ?? {}).join(", ") || "it has none"})`);
-        }
+        if (!root) throw new Error(`folder_unknown: "${name}" is not one of this strut's folders (${offered})`);
         input = { ...input, cwd: await jobWorktree(root, jobRoot(dataDir, job), job) };
       }
       // A builder job on a peer runs there (builder.yaml's `remote`
