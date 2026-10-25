@@ -232,9 +232,9 @@ describe("job/start and job/continue", () => {
       }
       throw new Error(`run ${runId} never settled`);
     };
-    const until = async <T>(find: () => T | undefined): Promise<T> => {
+    const until = async <T>(find: () => T | undefined | Promise<T | undefined>): Promise<T> => {
       for (let i = 0; i < 1500; i++) {
-        const v = find();
+        const v = await find();
         if (v !== undefined) return v;
         await new Promise((r) => setTimeout(r, 10));
       }
@@ -277,9 +277,15 @@ describe("job/start and job/continue", () => {
     // record, and on its run.end below — how a host hearing it on a
     // per-person channel finds the conversation.
     const startedBy = { workflow: "orch", runId: turn, session: "conv-1" };
+    // The job runs detached, and the runner writes its record just after its
+    // run.start (src/runner.ts): wait for the record, never read it once.
+    const recorded = await until(async () => {
+      const runs = (await jobs.get!(started.job, { threads: false }))?.runs;
+      return runs?.length ? runs : undefined;
+    });
+    assert.deepEqual(recorded.map((r) => r.startedBy), [startedBy]);
     const jobStart = (await store.getRunEvents("job", started.runId)).find((e) => e.type === "run.start")!;
     assert.deepEqual(jobStart.startedBy, startedBy);
-    assert.deepEqual((await jobs.get!(started.job, { threads: false }))?.runs.map((r) => r.startedBy), [startedBy]);
 
     // The turn's run.end, with its OWN artifacts resolved in its run's
     // directory — while the job is still working.
