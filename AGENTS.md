@@ -691,6 +691,45 @@ instead of baked into env at deploy time.
   (mcp) should own the OAuth dance and deposit/refresh tokens *into* this store;
   strut's `secrets` capability stays generic and provider-agnostic.
 
+## Moving a data folder
+
+A stopped strut's data folder can be copied to another host (Peel moving
+the brain to a home server and back; peel `docs/always-on.md`). The new
+host must get the same `STRUT_SECRET_KEY`: the encrypted files copy as
+they are. Whoever copies it leaves `moved.json` at the folder's root, and
+the default server's next boot (`src/server.ts`, before any store opens)
+applies it and removes it (`src/moved.ts`):
+
+```json
+{
+  "from": "/Users/tom/Library/Application Support/Peel/Strut/workspace",
+  "bridge": {
+    "from": { "url": "http://127.0.0.1:54321", "token": "<old token>" },
+    "to":   { "url": "http://127.0.0.1:8090",  "token": "<new token>" }
+  },
+  "secrets": { "PEEL_BRIDGE_PORT": "8090", "PEEL_BRIDGE_TOKEN": "<new token>" }
+}
+```
+
+Every field is optional. `from` (the folder's absolute path on the old
+host): the upload and run-attachment paths (`<from>/uploads/…`,
+`<from>/artifacts/…`) in `chats/*/messages.jsonl` and
+`sessions/*/messages.jsonl` move onto this folder's path; job records'
+`repos` and run history are left alone. `bridge`: every stored callback
+that starts with `from.url` — automations' run.end URLs
+(`automation-callbacks.json`), runs' `callback.json` / `job-callback.json`
+/ `mcp.json`, `jobs/.callbacks/` — moves onto `to.url`, with `from.token`
+in it becoming `to.token`; leave it out when the new host's bridge is not
+up yet and the host points them itself (Peel does at every bridge start).
+`secrets`: set (a string) or delete (`null`) deployment secrets through the
+secret store. Rebuilt or machine-bound parts are dropped (`DROP` in
+moved.ts: `steps/_graph*`, graph and memory snapshots and backups,
+`audio/tmp`, `audio/dictation.json`, `repos`, `worktrees`,
+`privacy/vault`, `acp/sessions`, temp and corrupt files,
+`fs-workspace.imported-*`). Every step is idempotent and the file goes only
+once all of it is done, so a boot cut short does the move again. A
+`moved.json` that does not parse fails the boot.
+
 ## Mothership cost control (opt-in)
 
 `plans/mothership-cost-control.md` is the design; `src/mothership.ts` the

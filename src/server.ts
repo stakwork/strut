@@ -29,6 +29,7 @@ import { FileChatStore } from "./chat-store.js";
 import { FileSecretStore } from "./secret-store.js";
 import { workspaceBackendFromEnv } from "./graph/wiring.js";
 import { bootEnv, scrubProcessEnv, scrubRequested } from "./env.js";
+import { applyMove } from "./moved.js";
 import type { BuilderReach } from "./reach.js";
 
 let strutInstance: Strut | null = null;
@@ -118,6 +119,9 @@ async function getDefault(): Promise<Strut> {
     // with a per-actor macaroon (src/mothership.ts); delegations arrive via
     // PUT /llm/delegations/:actor.
     const dataDir = bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
+    // A folder copied from another host: point it at this one before
+    // anything reads it (src/moved.ts).
+    await applyMove(dataDir);
     const mothership =
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
