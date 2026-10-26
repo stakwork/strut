@@ -1123,17 +1123,19 @@ describe("strut/run-workflow's input", () => {
 const openssl = spawnSync("openssl", ["version"]).status === 0;
 
 describe("a peer with a CA of its own", { skip: !openssl && "openssl is not installed" }, () => {
-  it("is trusted for that peer's requests only: without the CA the same server is refused", async () => {
+  it("is the only CA trusted for that peer, and `servername` names the certificate when the URL's host does not", async () => {
     const dir = join(tmpdir(), `strut-peer-ca-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     const run = (args: string[]) => {
       const r = spawnSync("openssl", args, { cwd: dir, encoding: "utf-8" });
       assert.equal(r.status, 0, r.stderr);
     };
-    // A CA, and a certificate for 127.0.0.1 it signs.
+    // A home CA, and a certificate it signs for the fixed name a home box's
+    // proxy uses, whatever address the box has; and another CA.
     run(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=test home CA"]);
-    run(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", "box.key", "-out", "box.csr", "-subj", "/CN=127.0.0.1"]);
-    await writeFile(join(dir, "ext.cnf"), "subjectAltName=IP:127.0.0.1\n");
+    run(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "other.key", "-out", "other.pem", "-days", "2", "-subj", "/CN=another CA"]);
+    run(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", "box.key", "-out", "box.csr", "-subj", "/CN=peel-home"]);
+    await writeFile(join(dir, "ext.cnf"), "subjectAltName=DNS:peel-home\n");
     run(["x509", "-req", "-in", "box.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "box.pem", "-days", "2", "-extfile", "ext.cnf"]);
     const server = https.createServer({ key: readFileSync(join(dir, "box.key")), cert: readFileSync(join(dir, "box.pem")) }, (req, res) => {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ auth: req.headers.authorization }));
@@ -1141,15 +1143,23 @@ describe("a peer with a CA of its own", { skip: !openssl && "openssl is not inst
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     try {
       const baseUrl = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const ca = readFileSync(join(dir, "ca.pem"), "utf-8");
       const store = peerStore(new MemorySecretStore());
-      await store.set(checkPeer({ id: "home", baseUrl, token: "person-token", ca: readFileSync(join(dir, "ca.pem"), "utf-8") }));
+      await store.set(checkPeer({ id: "home", baseUrl, token: "person-token", ca, servername: "peel-home" }));
+      await store.set(checkPeer({ id: "by-address", baseUrl, token: "person-token", ca }));
+      await store.set(checkPeer({ id: "other-ca", baseUrl, token: "person-token", ca: readFileSync(join(dir, "other.pem"), "utf-8"), servername: "peel-home" }));
       await store.set(checkPeer({ id: "bare", baseUrl, token: "person-token" }));
       const peers = peersCapability(store);
-      const res = await peers.fetch("home", "/health");
-      assert.deepEqual(await res.json(), { auth: "Bearer person-token" });
+      assert.deepEqual(await (await peers.fetch("home", "/health")).json(), { auth: "Bearer person-token" });
+      // Checked against the address, the certificate does not name it.
+      await assert.rejects(peers.fetch("by-address", "/health"), /fetch failed/);
+      // Another CA, or the system's, does not vouch for it.
+      await assert.rejects(peers.fetch("other-ca", "/health"), /fetch failed/);
       await assert.rejects(peers.fetch("bare", "/health"), /fetch failed/);
-      assert.deepEqual((await peers.list()).find((p) => p.id === "home"), { id: "home", baseUrl, ca: true }, "listed without the PEM");
+      assert.deepEqual((await peers.list()).find((p) => p.id === "home"), { id: "home", baseUrl, ca: true, servername: "peel-home" }, "listed without the PEM");
       assert.throws(() => checkPeer({ id: "x", baseUrl, token: "t", ca: "not a cert" }), /ca must be a PEM certificate/);
+      assert.throws(() => checkPeer({ id: "x", baseUrl, token: "t", servername: "peel-home" }), /servername needs ca/);
+      assert.throws(() => checkPeer({ id: "x", baseUrl, token: "t", ca, servername: "bad name!" }), /servername must be a host name/);
     } finally {
       server.close();
       await rm(dir, { recursive: true, force: true });

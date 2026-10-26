@@ -2,7 +2,7 @@
  * What a home box serves a strut that keeps a read copy of its memory
  * (src/home-sync.ts): dictation/changes-since and dictation/apply-changes
  * between two real memories, memory/export's hash short-circuit, and
- * home-pull / home-push open to a person token only.
+ * the /home/pull and /home/push routes, open to a person token only.
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -32,7 +32,7 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
   before(async () => {
     process.env["STRUT_API_KEY"] = KEY;
     process.env["STRUT_PEER_KEY"] = PEER_KEY;
-    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: true, ...NO_SEEDS });
+    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
     mac = await createStrut({ workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: join(dir, "mac"), ...NO_SEEDS });
   });
   after(async () => {
@@ -120,44 +120,47 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     assert.ok(changed.data, "the new export comes back");
   });
 
-  it("home-pull and home-push run for a person token, and are refused to the plain peer key", async () => {
-    const run = async (wf: string, input: unknown, token: string) => {
-      const res = await request(box, `/workflows/${wf}/run`, { input }, token);
-      return { status: res.status, body: (await res.json()) as any };
+  it("/home/pull and /home/push answer a person token, refuse the plain peer key, and keep nothing a later read could find", async () => {
+    const post = async (path: string, body: unknown, token: string) => {
+      const res = await request(box, path, body, token);
+      return { status: res.status, body: (await res.json()) as any, cache: res.headers.get("cache-control") };
     };
-    const settled = async (wf: string, runId: string): Promise<RunSummary> => {
-      for (let i = 0; i < 400; i++) {
-        const s = await box.store.getRunSummary(wf, runId);
-        if (s) return s;
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      throw new Error(`${wf}/${runId} did not settle`);
-    };
-    const refused = await run("home-pull", {}, PEER_KEY);
+    const refused = await post("/home/pull", {}, PEER_KEY);
     assert.equal(refused.status, 403);
-    assert.match(refused.body.error, /person's credential only/);
-    assert.equal((await run("home-push", {}, PEER_KEY)).status, 403);
+    assert.match(refused.body.error, /^forbidden/);
+    assert.equal((await post("/home/push", {}, PEER_KEY)).status, 403);
 
-    const person = personToken("tom")!.token;
-    const pulled = await run("home-pull", {}, person);
-    assert.equal(pulled.status, 202, JSON.stringify(pulled.body));
-    const first = await settled("home-pull", pulled.body.runId);
-    assert.equal(first.status, "success", JSON.stringify(first.error));
-    const hash = (first.output as any).content_hash;
-    assert.ok((first.output as any).data);
-    const again = await settled("home-pull", (await run("home-pull", { hash }, person)).body.runId);
-    assert.deepEqual(again.output, { unchanged: true, content_hash: hash });
+    const tom = personToken("tom")!.token;
+    const pulled = await post("/home/pull", {}, tom);
+    assert.equal(pulled.status, 200, JSON.stringify(pulled.body));
+    assert.equal(pulled.cache, "no-store");
+    assert.ok(pulled.body.data, "the whole memory");
+    const hash = pulled.body.content_hash;
+    assert.deepEqual((await post("/home/pull", { hash }, tom)).body, { unchanged: true, content_hash: hash });
 
-    const pushed = await settled("home-push", (await run("home-push", { dictation: [{ op: "learn", heard: "strut", written: "Strut", at: new Date().toISOString() }] }, person)).body.runId);
-    assert.equal(pushed.status, "success", JSON.stringify(pushed.error));
-    assert.deepEqual((pushed.output as any).dictation.applied.map((a: any) => a.result), ["learned"]);
-    // With nothing to push, the run is still a success.
-    const empty = await settled("home-push", (await run("home-push", {}, person)).body.runId);
-    assert.equal(empty.status, "success", JSON.stringify(empty.error));
-    assert.deepEqual((empty.output as any).dictation.applied, []);
+    const pushed = await post("/home/push", { dictation: [{ op: "learn", heard: "strut", written: "Strut", at: new Date().toISOString() }] }, tom);
+    assert.equal(pushed.status, 200, JSON.stringify(pushed.body));
+    assert.deepEqual(pushed.body.dictation.applied.map((a: any) => a.result), ["learned"]);
+    assert.deepEqual((await post("/home/push", {}, tom)).body, { dictation: { applied: [] } }, "nothing to push");
+    assert.equal((await post("/home/push", { dictation: [{ op: "nope" }] }, tom)).status, 400);
+
+    // Nothing was journaled: no run of any kind holds the export or the
+    // changes, so neither another token nor the same one later reads them.
+    for (const key of ["home-pull", "home-push", "step:memory/export", "step:dictation/apply-changes"]) {
+      assert.deepEqual(await box.store.listRuns(key), [], key);
+    }
+    const eve = personToken("eve")!.token;
+    for (const token of [tom, eve, PEER_KEY]) {
+      const runs = await box.app.request("/workflows/home-pull/runs", { headers: { authorization: `Bearer ${token}` } });
+      const body = (await runs.json()) as any;
+      const list = Array.isArray(body) ? body : body.runs;
+      assert.ok(runs.status === 404 || (Array.isArray(list) && list.length === 0), `${runs.status} ${JSON.stringify(body).slice(0, 200)}`);
+    }
   });
 
-  it("a strut that does not ask for them seeds neither", async () => {
-    for (const wf of ["home-pull", "home-push"]) assert.equal(await mac.workspace.getWorkflowMetadata(wf), null, wf);
+  it("the routes are off unless the host asks: a strut without homeSync has neither", async () => {
+    const res = await request(mac, "/home/pull", {}, personToken("tom")!.token);
+    assert.ok(res.status === 403 || res.status === 404, `${res.status}`);
   });
+
 });

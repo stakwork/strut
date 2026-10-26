@@ -40,15 +40,18 @@ export default defineStep({
     const applied: Array<z.infer<typeof Applied>> = [];
     const done = (c: ChangeT, result: z.infer<typeof Applied>["result"]) =>
       applied.push({ op: c.op, ...(c.heard !== undefined ? { heard: c.heard } : {}), written: c.written, result });
+    // Read again only after a change that wrote: a replay is mostly "known".
+    let lexicon: Lexicon | undefined;
     for (const c of cfg.changes) {
-      const lexicon = await readLexicon(ctx);
+      const current: Lexicon = (lexicon ??= await readLexicon(ctx));
       if (!c.term && !c.heard) throw new Error(`dictation/apply-changes: a ${c.op} of "${c.written}" needs heard, or term`);
       if (c.op === "learn") {
-        if (c.term ? entryWriting(lexicon, c.written) : find(lexicon, c)) {
+        if (c.term ? entryWriting(current, c.written) : find(current, c)) {
           done(c, "known");
           continue;
         }
         const out = await add.run(add.input.parse({ heard: c.heard ?? c.written, written: c.written, ...(c.name ? { name: c.name } : {}), ...(c.term ? { term: true } : {}) }), ctx);
+        if (out.undo.length) lexicon = undefined;
         done(c, out.undo.length ? "learned" : "known");
         continue;
       }
@@ -56,16 +59,16 @@ export default defineStep({
       // and this pair is all that is known of it; else the mishearing alone.
       let id: string | undefined;
       if (c.term) {
-        const word = lexicon.entries.find((e) => e.type === lexicon.lingoType && same(e.name, c.written) && e.facts === 0);
+        const word = current.entries.find((e) => e.type === current.lingoType && same(e.name, c.written) && e.facts === 0);
         id = word?.refId;
         if (!id) {
-          done(c, (await termUndone(ctx, lexicon, c.written)) ? "already undone" : "not found");
+          done(c, (await termUndone(ctx, current, c.written)) ? "already undone" : "not found");
           continue;
         }
       } else {
-        const hit = find(lexicon, c);
+        const hit = find(current, c);
         if (!hit) {
-          done(c, wasUndone(lexicon, c.heard!, c.written) ? "already undone" : "not found");
+          done(c, wasUndone(current, c.heard!, c.written) ? "already undone" : "not found");
           continue;
         }
         const [made] = await (await memoryDb(ctx))("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.created_by AS by", { id: hit.entry.refId });
@@ -73,6 +76,7 @@ export default defineStep({
       }
       try {
         await undo.run({ undo: [id] }, ctx);
+        lexicon = undefined;
         done(c, "undone");
       } catch (err) {
         if (!/not written by dictation/.test(err instanceof Error ? err.message : String(err))) throw err;

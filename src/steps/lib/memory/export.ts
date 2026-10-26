@@ -15,7 +15,7 @@ import { MAX_DATA_BYTES, MB, sha256, snapshotDirs, writeSnapshot } from "./_snap
 // `inline` is for another machine taking the memory over HTTP (a home server
 // handing it back): the snapshot comes back as base64 `data` and no file is
 // kept, so no `path`. Capped as memory/import's `data` is. `if_changed` is
-// for one that keeps a copy (home-pull): given the content_hash it holds,
+// for one that keeps a copy (POST /home/pull): given the content_hash it holds,
 // an unchanged graph returns `{ unchanged: true, content_hash }` and nothing
 // else.
 export default defineStep({

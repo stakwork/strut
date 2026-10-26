@@ -39,6 +39,8 @@ a peer record for syncing after the move (the sender asks, the receiver mints):
   serve --peer-url <url>       where peers reach this strut, {host} the address the move came in on
                                (STRUT_MOVE_PEER_URL; e.g. https://{host}:8443); signed with STRUT_API_KEY
         --peer-ca <file>       a PEM CA for their TLS (STRUT_MOVE_PEER_CA)
+        --peer-servername <n>  the name the certificate is issued for, when not the URL's host
+                               (STRUT_MOVE_PEER_SERVERNAME)
         --peer-days <n>        the token's life (default 365)`;
 
 class Usage extends Error {}
@@ -48,7 +50,7 @@ interface Parsed {
   flags: Map<string, string[]>;
 }
 
-const VALUED = new Set(["data", "host-config", "sidecar", "env", "sidecar-env", "state", "bridge", "set-secret", "listen", "host", "link", "name", "peer-actor", "peer-url", "peer-ca", "peer-days"]);
+const VALUED = new Set(["data", "host-config", "sidecar", "env", "sidecar-env", "state", "bridge", "set-secret", "listen", "host", "link", "name", "peer-actor", "peer-url", "peer-ca", "peer-servername", "peer-days"]);
 
 function parse(args: string[]): Parsed {
   const out: Parsed = { positional: [], flags: new Map() };
@@ -155,6 +157,7 @@ export async function main(args: string[]): Promise<number> {
         const name = p.flags.get("name")?.at(-1);
         const peerUrl = p.flags.get("peer-url")?.at(-1) ?? env["STRUT_MOVE_PEER_URL"];
         const peerCa = p.flags.get("peer-ca")?.at(-1) ?? env["STRUT_MOVE_PEER_CA"];
+        const peerName = p.flags.get("peer-servername")?.at(-1) ?? env["STRUT_MOVE_PEER_SERVERNAME"];
         const peerDays = Number(p.flags.get("peer-days")?.at(-1) ?? 365);
         if (!(peerDays > 0 && peerDays <= 3650)) throw new Usage("--peer-days takes a number of days, at most 3650");
         const result = await serve({
@@ -166,7 +169,7 @@ export async function main(args: string[]): Promise<number> {
           ...(name ? { name } : {}),
           ...(b ? { bridge: b } : {}),
           ...(Object.keys(secrets).length ? { secrets } : {}),
-          ...(peerUrl ? { peer: { url: peerUrl, ...(peerCa ? { ca: peerCa } : {}), days: peerDays } } : {}),
+          ...(peerUrl ? { peer: { url: peerUrl, ...(peerCa ? { ca: peerCa } : {}), ...(peerName ? { servername: peerName } : {}), days: peerDays } } : {}),
           sendBack: p.flags.has("send-back"),
           onReady: ({ link: l, code, port, mode }) => {
             out({ event: "ready", mode, link: l, code, port });

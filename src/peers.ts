@@ -35,7 +35,6 @@
  * lives.
  */
 
-import { rootCertificates } from "node:tls";
 import { Agent, fetch as undiciFetch } from "undici";
 import { coerceJsonArg, type RunEvent, type RunResult } from "./core.js";
 import type { SecretStore } from "./secret-store.js";
@@ -58,8 +57,13 @@ export interface Peer {
   repos?: string[];
   /** A CA certificate (PEM) the peer's TLS certificate chains to, for a
    *  peer behind a proxy with its own CA (a home box's `tls internal`):
-   *  trusted for this peer's requests only, beside the system's. */
+   *  for this peer's requests, the only CA trusted. */
   ca?: string;
+  /** The name the peer's certificate is issued for, when it is not the
+   *  URL's host (a home box's certificate names a fixed name, so it stays
+   *  valid while its address changes): checked in place of the host. Only
+   *  with `ca`. */
+  servername?: string;
 }
 
 /** A peer as anything may see it: never the token. */
@@ -123,6 +127,11 @@ export function checkPeer(raw: unknown): Peer {
   }
   const ca = p["ca"];
   if (ca !== undefined && !(typeof ca === "string" && /-----BEGIN CERTIFICATE-----/.test(ca))) throw new Error("ca must be a PEM certificate");
+  const servername = p["servername"];
+  if (servername !== undefined && !(typeof servername === "string" && /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(servername))) {
+    throw new Error("servername must be a host name");
+  }
+  if (servername && !ca) throw new Error("servername needs ca: it names the certificate that CA issued");
   return {
     id: p["id"] as string,
     baseUrl,
@@ -131,6 +140,7 @@ export function checkPeer(raw: unknown): Peer {
     ...(p["description"] ? { description: p["description"] } : {}),
     ...(repos?.length ? { repos: repos as string[] } : {}),
     ...(ca ? { ca: ca as string } : {}),
+    ...(servername ? { servername: servername as string } : {}),
   };
 }
 
@@ -264,13 +274,15 @@ export interface PeersCapability {
   fetch(id: string, path: string, init?: PeerFetchInit): Promise<Response>;
 }
 
-/** One agent per CA, trusting it beside the system's roots. */
+/** One agent per CA and name: the CA the only one trusted, the name (when
+ *  given) the one the certificate must be issued for. */
 const agents = new Map<string, Agent>();
-function agentFor(ca: string): Agent {
-  let agent = agents.get(ca);
+function agentFor(ca: string, servername?: string): Agent {
+  const key = `${servername ?? ""}\0${ca}`;
+  let agent = agents.get(key);
   if (!agent) {
-    agent = new Agent({ connect: { ca: [...rootCertificates, ca] } });
-    agents.set(ca, agent);
+    agent = new Agent({ connect: { ca, ...(servername ? { servername } : {}) } });
+    agents.set(key, agent);
   }
   return agent;
 }
@@ -290,7 +302,7 @@ export function peersCapability(store: PeerStore, fetchImpl: PeerFetch = (u, i) 
       const request = { ...init, headers: { ...(init?.headers ?? {}), authorization: `Bearer ${peer.token}` } };
       // A peer with a CA of its own goes through undici's fetch with an agent
       // that trusts it: Node's global fetch takes no CA per request.
-      if (peer.ca) return (await undiciFetch(`${peer.baseUrl}${path}`, { ...request, dispatcher: agentFor(peer.ca) })) as unknown as Response;
+      if (peer.ca) return (await undiciFetch(`${peer.baseUrl}${path}`, { ...request, dispatcher: agentFor(peer.ca, peer.servername) })) as unknown as Response;
       return fetchImpl(`${peer.baseUrl}${path}`, request);
     },
   };

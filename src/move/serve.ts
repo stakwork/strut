@@ -48,8 +48,10 @@ export interface ServeOptions extends MoveFolders {
    *  it asks (`send { peerActor }`): `url` is where peers reach this strut
    *  (`https://{host}:8443`: `{host}` is the address the move came in on),
    *  `ca` a PEM file their TLS should trust (read when the record is made;
-   *  left out when missing), `days` the person token's life (default 365). */
-  peer?: { url: string; ca?: string; days?: number };
+   *  left out when missing), `servername` the name its certificate is
+   *  issued for when that is not the URL's host, `days` the person token's
+   *  life (default 365). */
+  peer?: { url: string; ca?: string; servername?: string; days?: number };
   /** Overrides `moveVersion()` (tests). */
   version?: { strut: string; graph: string | null };
   /** Told once the link works. */
@@ -198,7 +200,10 @@ ${qrSvg(link)}<p class="muted" style="text-align:center">Code</p><div class="cod
           await unpack(openSealed(req, code), incoming);
           await install(incoming, { ...o, data }, { ...(o.bridge ? { bridge: o.bridge } : {}), ...(o.secrets ? { secrets: o.secrets } : {}) });
           const actor = req.headers["x-strut-move-peer"];
-          if (typeof actor === "string" && actor) peer = await peerRecord(o.peer, actor, req, join(incoming, "env.json"));
+          // The move is in place: a record that cannot be made says why, it never refuses the move.
+          if (typeof actor === "string" && actor) {
+            peer = await peerRecord(o.peer, actor, req, join(incoming, "env.json")).catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
+          }
         } catch (err) {
           req.resume();
           console.error(`[move] a move was refused: ${err instanceof Error ? err.message : err}`);
@@ -244,6 +249,8 @@ export interface MovePeer {
   actor: string;
   exp: number;
   ca?: string;
+  /** The name the box's certificate is issued for (`Peer.servername`). */
+  servername?: string;
 }
 
 /** A peer record for the strut that just arrived. Its person token must
@@ -260,7 +267,10 @@ async function peerRecord(cfg: ServeOptions["peer"], actor: string, req: Incomin
   if (!minted) return { error: "nothing to sign a person token with: give serve the strut's STRUT_API_KEY" };
   const host = new URL(`http://${req.headers.host ?? "localhost"}`).hostname;
   const ca = cfg.ca ? await readFile(cfg.ca, "utf-8").catch(() => undefined) : undefined;
-  return { baseUrl: cfg.url.replace("{host}", host).replace(/\/+$/, ""), token: minted.token, actor, exp: minted.exp, ...(ca ? { ca } : {}) };
+  return {
+    baseUrl: cfg.url.replace("{host}", host).replace(/\/+$/, ""), token: minted.token, actor, exp: minted.exp,
+    ...(ca ? { ca, ...(cfg.servername ? { servername: cfg.servername } : {}) } : {}),
+  };
 }
 
 /** The packed move, with `Range: bytes=a-[b]` so a download can resume. */

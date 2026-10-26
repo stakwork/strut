@@ -289,7 +289,7 @@ describe("a move between two hosts and back", () => {
       const other = join(root, "peered");
       await mkdir(other, { recursive: true });
       await writeFile(join(other, "ca.pem"), "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n");
-      const box5 = serving({ data: join(other, "workspace"), peer: { url: "https://{host}:8443/", ca: join(other, "ca.pem"), days: 30 } });
+      const box5 = serving({ data: join(other, "workspace"), peer: { url: "https://{host}:8443/", ca: join(other, "ca.pem"), servername: "peel-home", days: 30 } });
       const link = await box5.ready;
       const sent = await send(link, { data: macFolders.data }, { peerActor: "tom" });
       assert.equal(await box5.done, "received");
@@ -297,10 +297,11 @@ describe("a move between two hosts and back", () => {
       assert.equal(peer.baseUrl, "https://127.0.0.1:8443", "{host} is the address the move came in on");
       assert.equal(peer.actor, "tom");
       assert.equal(peer.ca, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n");
+      assert.equal(peer.servername, "peel-home", "the name the box's certificate is issued for");
       assert.deepEqual(verifyPersonToken(peer.token), { actor: "tom", exp: peer.exp }, "the strut that arrived verifies it");
       assert.ok(peer.exp > Date.now() + 29 * 86_400_000 && peer.exp < Date.now() + 31 * 86_400_000);
       // Put on file as a peer, it is a valid record.
-      assert.equal(checkPeer({ id: "home", baseUrl: peer.baseUrl, token: peer.token, ca: peer.ca }).ca, peer.ca);
+      assert.equal(checkPeer({ id: "home", baseUrl: peer.baseUrl, token: peer.token, ca: peer.ca, servername: peer.servername }).servername, "peel-home");
 
       // Not asked: no record. Asked of a host that gives none: why not.
       const box6 = serving({ data: join(other, "plain") });

@@ -16,7 +16,8 @@ function ms(at: string | number | undefined): number {
 // no outbox. A learn is a mishearing fact (or, for a term, an entity of the
 // dictation type with none) written with created_by "dictation"; an undo is
 // one forgotten with reason "undone". A learn later forgotten for another
-// reason (dictation/remove) is left out: replayed, it would come back.
+// reason (dictation/remove), or expired, is left out: replayed, it would
+// come back.
 export default defineStep({
   type: "dictation/changes-since",
   description:
@@ -44,7 +45,7 @@ export default defineStep({
 
     for (const r of await query(
       `MATCH (f:Fact)-[:SUBJECT]->(s:Entity)
-       WHERE f.predicate IN $heardAs AND f.created_by = 'dictation' AND f.value IS NOT NULL
+       WHERE f.predicate IN $heardAs AND f.created_by = 'dictation' AND f.value IS NOT NULL AND f.expired_at IS NULL
          AND f.created_at > $since AND f.created_at <= $until AND (f.deleted_at IS NULL OR f.deleted_reason = $undone)
        RETURN f.value AS value, f.form AS form, s.name AS name, f.created_at AS at`,
       range,
