@@ -702,7 +702,7 @@ Custom steps are versioned, the same way workflows are. `publishStep` is keyed b
 - Identical content of an older version → re-activates it (no new version). Pass `{ reactivateKnown: false }` to make this a no-op instead, for a caller that wants a workspace edit made through the UI/API to stay active. Strut's boot-time seeders never pass it: a seed always matches git, so every boot makes the committed template active again.
 - Changed content → publishes the next `vN` and activates it; prior versions are retained for rollback.
 
-The **active** version's source is materialized at `steps/custom/<name>.ts` (what the registry loads). Every version (including the active one) is archived under `steps/_history/<name>/<vid>.ts`.
+The **active** version's source is materialized at `steps/custom/<name>.ts` (what the registry loads). Every version (including the active one) is archived under `steps/_history/<name>/<vid>.ts`. A version a workflow PINS (`type: <name>@<vid>`) is imported from beside the active one, `steps/custom/<ns>/_<leaf>@<vid>.<hash>.ts`, so its relative imports resolve as the active version's do: a helper it imports is the helper's active version.
 
 **`_metadata.json`** for the `steps/custom/` directory, keyed by full slash-name:
 

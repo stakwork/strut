@@ -2,9 +2,10 @@
  * Step version pinning (src/step-ref.ts): `type: clip/shout@v1` runs THAT
  * version while every bare `clip/shout` follows the active pointer; the run
  * records the pinned version on `step.start.stepVersion`, and everything
- * keyed on a step type sees the bare type.
+ * keyed on a step type sees the bare type. A pinned version's relative
+ * imports resolve as the active version's do, on every store.
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,9 +18,13 @@ import { defineStep, type RunEvent } from "./core.js";
 import { baseType, formatStepRef, parseStepRef } from "./step-ref.js";
 import { createRegistry, resolveStep, withStepVersions } from "./steps/registry.js";
 import { MemoryRunStore } from "./store.js";
-import { WorkspaceManager, validateStepName } from "./workspace.js";
+import { WorkspaceManager, validateStepName, type WorkspaceStore } from "./workspace.js";
 import { validateWorkflowYaml } from "./validate.js";
 import { flowClosure } from "./closure.js";
+import { projectionsSettled } from "./graph/projector.js";
+import { seedStrutDomain } from "./graph/schema-seed.js";
+import { testBackends } from "./graph/test-util.js";
+import { GraphWorkspaceStore } from "./graph/workspace-store.js";
 
 const SHOUT = (suffix: string) => `import { z, defineStep } from "strut";
 export default defineStep({ type: "clip/shout", input: z.object({ text: z.string() }), output: z.string(), async run(cfg) { return cfg.text.toUpperCase() + ${JSON.stringify(suffix)}; } });`;
@@ -175,3 +180,122 @@ export default defineStep({ type: "clip/shout", input: z.object({ text: z.string
     assert.deepEqual([...closure.types], ["echo"]);
   });
 });
+
+// A step that imports a helper by the `_`-file convention: a pinned version
+// imports what the active one does (src/workspace.ts `materializePinnedStep`).
+const STORES: Array<{
+  name: string;
+  skip: string | false;
+  /** Per suite: a fresh empty store over a case's dir, and the teardowns. */
+  open(): Promise<{ make(dir: string): Promise<WorkspaceStore>; settle(): Promise<void>; close(): Promise<void> }>;
+}> = [
+  {
+    name: "a file workspace",
+    skip: false,
+    open: async () => ({ make: async (dir) => new WorkspaceManager(dir), settle: async () => {}, close: async () => {} }),
+  },
+  ...testBackends().map((tb) => ({
+    name: `a graph workspace on ${tb.name}`,
+    skip: tb.skip,
+    async open() {
+      const backend = await tb.open();
+      return {
+        async make(dir: string) {
+          await tb.wipe(backend);
+          await seedStrutDomain(backend);
+          return new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps", "_graph"), appsDir: join(dir, "apps") });
+        },
+        // Every run is projected into the graph after it ends, detached.
+        settle: () => projectionsSettled(backend),
+        close: () => tb.close(backend),
+      };
+    },
+  })),
+];
+
+const HELPED = (label: string) => `import { z, defineStep } from "strut";
+import { g } from "./_h.js";
+import { t } from "../_top.js";
+export default defineStep({ type: "a/b/s", input: z.object({}), output: z.string(), async run() { return ${JSON.stringify(label)} + ":" + g + ":" + t; } });`;
+
+for (const s of STORES) {
+  describe(`a pinned step that imports a helper, on ${s.name}`, { skip: s.skip }, () => {
+    let harness: Awaited<ReturnType<(typeof s)["open"]>>;
+    let dir: string;
+    let ws: WorkspaceStore;
+    before(async () => {
+      harness = await s.open();
+    });
+    after(() => harness?.close());
+    beforeEach(async () => {
+      dir = join(tmpdir(), `strut-pin-${randomUUID()}`);
+      await mkdir(dir, { recursive: true });
+      ws = await harness.make(dir);
+    });
+    afterEach(async () => {
+      await harness.settle();
+      await rm(dir, { recursive: true, force: true });
+    });
+    const boot = (store: MemoryRunStore) =>
+      createStrut({
+        workspace: ws,
+        store,
+        dataDir: dir,
+        serveUi: false,
+        enableChat: false,
+        stt: false,
+        scheduler: false,
+        claims: false,
+        job: false,
+        orchestrator: false,
+        builder: false,
+        concepts: false,
+        views: false,
+        systemWorkflows: false,
+        browserWorkflows: false,
+        privacyWorkflows: false,
+      });
+
+    it("loads beside the active steps: the pinned code over the helpers' ACTIVE versions, as the active step sees them", async () => {
+      await ws.publishStep("a/_top", `export const t = 7;`);
+      await ws.publishStep("a/b/_h", `export const g = 1;`);
+      const v1 = await ws.publishStep("a/b/s", HELPED("one"));
+      await ws.publishStep("a/b/s", HELPED("two"));
+      await ws.publishStep("a/b/_h", `export const g = 2;`);
+      await ws.publishWorkflow("w", "v1", {
+        steps: [
+          { id: "old", type: `a/b/s@${v1.version}`, config: {} },
+          { id: "now", type: "a/b/s", config: {}, depends: [] },
+        ],
+      });
+      const store = new MemoryRunStore();
+      const strut = await boot(store);
+      const res = await strut.run("w", {});
+      assert.equal(res.status, "success", res.error?.message);
+      const events = await store.getRunEvents("w", res.runId);
+      const end = (path: string) => events.find((e) => e.type === "step.end" && e.path === path)!;
+      assert.equal(end("w/old").output, "one:2:7", "v1's own code, and the helper the active step imports");
+      assert.equal(end("w/now").output, "two:2:7");
+      assert.deepEqual(events.find((e) => e.type === "step.start" && e.path === "w/old")!.stepVersion, {
+        version: v1.version,
+        hash: (await ws.materializeStepVersion("a/b/s", v1.version)).hash,
+      });
+      assert.deepEqual(Object.keys(strut.getRegistry()).filter((k) => k.startsWith("a/")), ["a/b/s"], "the pinned file is never discovered as a step");
+      await strut.close();
+    });
+
+    it("a label reused after a delete runs its own code, never the deleted version's", async () => {
+      await ws.publishStep("a/_top", `export const t = 7;`);
+      await ws.publishStep("a/b/_h", `export const g = 1;`);
+      await ws.publishStep("a/b/s", HELPED("old"));
+      await ws.publishWorkflow("w", "v1", { steps: [{ id: "x", type: "a/b/s@v1", config: {} }] });
+      const strut = await boot(new MemoryRunStore());
+      assert.equal((await strut.run("w", {})).output, "old:1:7");
+      await ws.deleteStep("a/b/s");
+      assert.equal((await ws.publishStep("a/b/s", HELPED("new"))).version, "v1", "labels start over");
+      await strut.rebuildRegistry();
+      assert.equal((await strut.run("w", {})).output, "new:1:7");
+      await strut.close();
+    });
+  });
+}

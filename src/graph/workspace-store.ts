@@ -34,7 +34,7 @@
  * or `DEPENDS_ON`, a claim's `ABOUT`) do not come back.
  */
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { ensureEsmScope } from "../workspace.js";
+import { ensureEsmScope, materializePinnedStep, pinnedStepFileOf } from "../workspace.js";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -788,22 +788,15 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     return v.source;
   }
 
-  /** Written once beside the active-step scratch dir (its own root, so the
-   *  active materialization's sweep never removes it); a version's source
-   *  never changes, so an existing file is the file. */
+  /** Written into the active-step scratch dir, beside the active steps it
+   *  imports (`materializePinnedStep`) — materialized first, so they are
+   *  there whoever calls. The sweep there keeps it while its step is live. */
   async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string }> {
     validateStepName(name);
     const v = (await this.stepVersionRows(name)).find((x) => x.version_label === version);
     if (!v) throw new Error(`Version "${version}" of step "${name}" not found`);
-    const dir = `${this.materializeDir}-versions`;
-    await ensureEsmScope(dir);
-    const path = join(dir, name, `${version}.ts`);
-    try {
-      await readFile(path, "utf-8");
-    } catch {
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, v.source, "utf-8");
-    }
+    const dir = await this.materializeCustomSteps();
+    const path = await materializePinnedStep(dir, name, version, v.content_hash, v.source);
     return { path, hash: v.content_hash };
   }
 
@@ -1181,7 +1174,8 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   /**
    * Write every active custom step (helpers included) to the scratch dir as
    * `<name>.ts`, skipping unchanged files and deleting files for steps that
-   * are no longer in the graph, so the loader never imports a stale step.
+   * are no longer in the graph, so the loader never imports a stale step —
+   * a pinned version's file (`materializeStepVersion`) goes with its step.
    * Cheap to call on every registry rebuild.
    */
   async materializeCustomSteps(): Promise<string> {
@@ -1189,7 +1183,9 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     await mkdir(dir, { recursive: true });
     await ensureEsmScope(dir);
     const wanted = new Map<string, string>();
+    const live = new Set<string>();
     for (const { step, active } of await this.stepsWithActive()) {
+      live.add(join(dir, `${step.step_type}.ts`));
       if (active) wanted.set(join(dir, `${step.step_type}.ts`), active.source);
     }
     for (const [file, code] of wanted) {
@@ -1205,7 +1201,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       }
     }
     for (const file of await walkTs(dir)) {
-      if (!wanted.has(file)) await rm(file, { force: true });
+      if (!wanted.has(file) && !live.has(pinnedStepFileOf(file) ?? "")) await rm(file, { force: true });
     }
     return dir;
   }

@@ -1326,7 +1326,10 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   The registry stays a flat record of active defs: `resolveStep(registry,
   ref)` loads a pin through the loader `buildRegistry(customDir, {
   loadVersion })` hangs on the registry (`WorkspaceStore.materializeStepVersion`
-  — the `_history` archive on files, a `-versions` scratch dir on the graph),
+  — the version written BESIDE the active steps, `<ns>/_<leaf>@<vN>.<hash>.ts`
+  in `steps/custom/` or the graph's scratch dir, `materializePinnedStep`, so
+  its relative imports resolve as the active version's: a pin holds the
+  step's own file, and a helper it imports is the helper's ACTIVE version),
   cached per registry (a version is immutable), and a pin the registry
   cannot honor THROWS before the step starts — never a silent fallback to
   active. Every lookup site goes through it (runner, `agentTools` grants,
