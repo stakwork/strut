@@ -1330,7 +1330,7 @@ describe("run control endpoints", () => {
       assert.equal((await waitForSummary(store, "closed", local.body.runId!)).status, "success");
 
       // As published: nothing that changes how it runs.
-      for (const extra of [{ params: { session: "x" } }, { paramOverrides: { child: { x: 1 } } }, { runId: "1700000000000" }]) {
+      for (const extra of [{ params: { session: "x" } }, { paramOverrides: { child: { x: 1 } } }, { runId: "1700000000000" }, { settings: { privacy: "off" } }]) {
         const refused = await post("/workflows/open/run", "peer-key", { input, ...extra });
         assert.equal(refused.status, 403, JSON.stringify(extra));
         assert.match(refused.body.error!, new RegExp(`drop ${Object.keys(extra)[0]}`));

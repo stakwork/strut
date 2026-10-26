@@ -41,7 +41,7 @@ let strutInstance: Strut | null = null;
  *  and `automation?: { workflow, approve?, grants? }`. Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -50,7 +50,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -74,6 +74,9 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
       ...(model !== undefined ? { model: model as string | null } : {}),
     };
   }
+  const settings = (raw as Record<string, unknown> | null)?.["settings"];
+  if (settings !== undefined && (!settings || typeof settings !== "object" || Array.isArray(settings))) throw new Error(`STRUT_HOST_CONFIG: ${file}: "settings" must be an object`);
+  if (settings) out.settings = settings as Record<string, unknown>;
   const automation = (raw as Record<string, unknown> | null)?.["automation"];
   if (automation !== undefined) {
     const { workflow, approve, grants } = (automation ?? {}) as { workflow?: unknown; approve?: unknown; grants?: unknown };

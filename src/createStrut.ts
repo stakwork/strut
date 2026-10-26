@@ -122,6 +122,7 @@ import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
+import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
@@ -403,6 +404,7 @@ export interface StrutOptions<TServices = unknown> {
    *  the provider directly with the secrets boundary's key, as always.
    *  Placed on the services bag as `llmAuth`. Omit and nothing changes. */
   llmAuth?: LlmAuth;
+  settings?: Record<string, unknown>;
 
   /** Who is making this request (§2) — an opaque string strut stores and
    *  forwards, never interprets: the workflow owner stamp, the run's `actor`,
@@ -852,6 +854,7 @@ export async function createStrut<TServices = unknown>(
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
+    ...(opts.settings ? { settings: opts.settings } : {}),
     ...((opts.services ?? {}) as Record<string, unknown>),
   } as TServices;
   // The browser the browser/* steps drive (src/browser/service.ts), unless
@@ -3467,6 +3470,7 @@ export async function createStrut<TServices = unknown>(
   interface RunBody {
     input?: unknown;
     params?: Record<string, unknown>;
+    settings?: Record<string, unknown>;
     paramOverrides?: Record<string, Record<string, unknown>>;
     runId?: string;
     /** Where to POST the result when the run settles (src/callback.ts), or
@@ -3588,6 +3592,7 @@ export async function createStrut<TServices = unknown>(
         workspace,
         services,
         params: body.params,
+        settings: body.settings,
         paramOverrides: body.paramOverrides,
         controller,
         ...(workflowHash ? { workflowHash } : {}),
@@ -3834,14 +3839,15 @@ export async function createStrut<TServices = unknown>(
   };
 
   /** A PEER's launch (plans/federation.md §3) runs the workflow as published:
-   *  `params`, `paramOverrides` and `runId` are refused — an override could
-   *  hand a workflow's agents tools its author never gave them — and its
+   *  `params`, `paramOverrides`, `runId` and `settings` are refused — an
+   *  override could hand a workflow's agents tools its author never gave
+   *  them, or turn off a setting the author turned on — and its
    *  `job` is kept under `PEER_NAMESPACE`, so a name a peer chooses never
    *  opens a local job's directory, files or holds. The body to launch, or
    *  why not. Which workflows a peer may launch is their YAML's `peer:`
    *  (`opensTo`, `notForPeers`). */
   const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
-    const set = (["params", "paramOverrides", "runId"] as const).filter((k) => body[k] != null);
+    const set = (["params", "paramOverrides", "runId", "settings"] as const).filter((k) => body[k] != null);
     if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
     return typeof body.job === "string" ? { ...body, job: `${PEER_NAMESPACE}${body.job}` } : body;
   };

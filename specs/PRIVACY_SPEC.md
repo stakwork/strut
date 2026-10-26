@@ -316,3 +316,103 @@ anonymize → echo → deanonymize round trip. It downloads the model on first r
   step surface changes. Until then `basic` / `strict` warn and behave as `off`.
 - **Remaining:** the full benchmark as a live suite, an independent held-out
   evaluation set, and runner-level redaction of sensitive steps (§2).
+
+## 10. The model wrapper — privacy for every hosted call, without touching a workflow
+
+Opt-in, off by default. With the `privacy` setting on, every model built through `resolveModel()`
+(`src/llm.ts`: the `agent` and `llm` steps, `graph/walk`'s evaluation model) is wrapped by an AI SDK
+language-model middleware (`src/privacy/middleware.ts`): what a hosted provider is sent is masked, what
+comes back is restored. Strut's own code, tools, run events and session files only ever see REAL text; the
+provider only sees pseudonyms. Nothing in a workflow, a tool or a step changes.
+
+**The setting.** `privacy: off | hosted | strict | { mode, mask?: string[], detect?: { llm: boolean } }`, a
+generic setting (`src/extensions.ts`) resolved per step into `ctx.settings`. Levels, highest wins per key and
+wins whole (no deep merge): step `options.settings.privacy` > run (`POST …/run { settings }`, the runner's
+`settings` option) > workflow YAML top-level `settings:` > deployment (the `settings` key of the
+`STRUT_HOST_CONFIG` file). Sub-agents inherit their agent's settings. A subflow inherits its caller's
+workflow level and the subflow step's own `options.settings`, which win per key over the child's YAML (as a
+subflow step's `params` win over the child's defaults); a `foreach` or `loop` step's `options.settings` reach
+its body. Both ride at the workflow level, so a run-level setting beats them. A run another run starts
+(`job/start`, `meta/run-workflow`, `run/launch`) does NOT inherit run-level settings: set the workflow or the
+deployment level for those. A peer's launch may not carry `settings` (it runs a workflow as published).
+`validate.ts` checks a workflow's `settings` against the registered schemas. A value that is neither a short
+form nor the object FAILS the call (`privacy_setting_invalid`); a bad setting never reads as "off".
+
+**Per-type policy.** The default `mask` is PERSON, NICKNAME, EMAIL, PHONE, ID, ADDRESS, POSTAL, HANDLE, ORG.
+DATE, TIME, URL and LOC (city level) stay visible: calendar and browsing agents need them. Two refiners keep
+a visible type from leaking: a URL keeps scheme, host and path but its userinfo, query values, emails,
+handles, ids, tokens and signed segments are masked (`refine/url.ts`); a DATE is masked only with a birth cue
+("born", "DOB", "date of birth", "birthday") nearby (`refine/date.ts`). A type the policy leaves visible is
+not swept. Changing the `mask` list mid-session starts a new transcript. Detection is NER-only by default
+(rules and deny list always); `detect: { llm: true }` adds the LLM pass.
+
+**Mask once, resend byte for byte.** The SDK resends the whole history on every call. Masking old messages
+again would not give the same bytes (restore accepts variants like `person_1`; NER may miss a name in the
+model's own words), which misses the provider's prompt cache and, on models with signed thinking (Anthropic),
+fails the call with a 400: the signature is tied to the exact earlier text. So:
+
+- each message part is masked ONE time; its masked form is stored with the session (`m:<sha256>`, a tool
+  result by its call id and output) and later calls send those stored bytes; only new messages are masked;
+- the model's output is stored RAW (text, reasoning with signatures and provider metadata, tool input as the
+  model wrote it) before anything is restored, under a stamp id; every returned part carries
+  `providerMetadata.strutPrivacy = { id, i }` (merged in; `anthropic`, `cacheControl` stay), which the SDK
+  returns as `providerOptions` on the next call's assistant part. The middleware swaps the stamped part for the
+  stored raw one, byte for byte, and strips the stamp before sending. A part without a stamp is found by the
+  hash of its restored text (tool calls: by `toolCallId`);
+- the transcript is memory by default (a TTL; `STRUT_PRIVACY_TRANSCRIPT_TTL_HOURS`, 24) or, with
+  `STRUT_PRIVACY_TRANSCRIPTS=file` and a vault key, `<dataDir>/privacy/transcripts/<session>.jsonl`: privacy's
+  own append-only record, apart from the agent session store, its token map in the encrypted file vault.
+  Entries are found by stamp id, so the lines of a turn that never committed are never referenced;
+- session key: the agent step's `session`, else `<run>/<step path>`: one transcript per step, so steps running
+  in parallel never share a token map. A step's transcript is dropped when its run ends; a session's is kept
+  (TTL) for its next turn.
+
+History edits: a compaction summary is a new message (masked once). Truncation keeps the remaining stored
+forms (one cache miss at most). A lost single copy: plain text is masked again; signed reasoning before the
+last user message is dropped (the provider allows it); inside the current tool loop it is
+`privacy_transcript_lost`. A restart with the memory store, or every copy lost, is a FRESH transcript: all
+history re-masked with a new map, old reasoning dropped, one cache miss (`strict` refuses instead when signed
+reasoning is in play). Signed reasoning is NEVER sent altered.
+
+**Restore** takes what a model does to a token: `[person_1]`, `[ Person 1 ]`, a bare upper-case `PERSON_1`. A
+bare lower-case `address_1` is never a token: it is a snake_case name in code or SQL, and stays as written.
+
+**Tool calls.** The model writes pseudonyms into tool-call inputs. They are restored (per JSON string value)
+in `wrapGenerate` and on the stream's final `tool-call` part BEFORE the SDK runs the tool, so every tool —
+device actions, memory, automations, MCP, http, web search, sub-agents, builder and jobs — gets real values
+with no per-tool code; the stored raw input (pseudonyms) is what goes back to the provider. A step def with
+`privacy: "keep"` keeps the pseudonyms. A registered tool wrapper (`tool-guard.ts`) refuses to run a tool whose
+input still holds a placeholder the session never issued (the model invented `[PERSON_7]`) when the tool acts
+(`tool-policy.ts`: `sphinx/send|post|approve`, `memory/remember|merge|forget`, `automation/create|update|delete`,
+`job/start`, `strut/run-workflow`, or a step def with `sideEffects: true` / `effect: "write"`); a read-only
+tool is only warned about. Provider-executed tools are not touched. Structured output is restored with JSON
+escaping. Streaming text goes through a hold-back restorer, so a pseudonym split across deltas is never emitted
+half restored.
+
+**Where it applies.** Local models (a loopback `baseUrl`, a `local` provider) are not wrapped; a call routed
+through a gateway is, even when the gateway is on loopback, since it forwards. Images and files cannot be
+masked: `hosted` passes them with a warning, `strict` refuses the call (`privacy_media_unsupported`). If
+detection fails (`ner_unavailable`) the call throws and nothing is sent. Each wrapped call emits a counts-only
+`privacy.masked` event (per type, `late_entities`, epoch; never a value).
+
+**Late entities (the trade-off).** A name first detected in a later message stays plain in the earlier stored
+messages: they were sent as they were. `hosted` counts and warns (`late_entities`). `strict` starts the
+transcript over with the larger map (re-masking all history, dropping old reasoning) and reports how many
+values had already gone out.
+
+**Limits.** Masked recall is 0.979 on the benchmark and 0.931 on the held-out set, without the LLM pass
+(the small live fixture of §8 measures 42/42 of the masked types, a regression guard, not a measurement). Contextual quasi-identifiers ("the only left-handed cardiologist
+in town") are not caught. A date plus a place plus an employer can re-identify a person even with every name
+masked. Run files record step inputs and outputs: they hold REAL text. This protects against the hosted
+model, not against someone reading Strut's own run files, events or session store. A run's `settings` are not
+recorded on `run.start`, so a durable resume of a run launched with a run-level `privacy` setting does not
+carry it; set it on the workflow or the deployment for runs that may resume. Keep the setting the same for an
+agent session's whole life: its stored reasoning is the restored text under a signature over the masked one,
+so a turn sent unwrapped (privacy turned off) fails with a 400 on a provider that checks the signature. A
+file transcript's token map expires with its vault entry, one TTL after it last grew, even in a session still
+in use; the session then starts a fresh transcript. The chat builder is not wrapped.
+
+Tests: `src/privacy/middleware.test.ts` (byte stability, cache-stable prefixes, a signature-checking mock,
+lost copies, restart, late entities), `tools.test.ts` (the real `agent` step against a stand-in Anthropic
+endpoint), `stream-restore.test.ts`, `policy.test.ts`, `settings.test.ts`, `boundary.test.ts`.
+

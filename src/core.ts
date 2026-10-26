@@ -122,6 +122,7 @@ export interface StepContext<TServices = unknown> {
    *  runner-handled container step. Optional: absent when a step is invoked
    *  outside the runner (e.g. unit tests). Read-only by convention. */
   registry?: StepRegistry;
+  settings?: Record<string, unknown>;
   /** Cooperative run control (RUN_CONTROL_SPEC §6). A step with a long
    *  internal loop should `await ctx.control?.checkpoint()` per iteration so
    *  pause/cancel take effect between iterations rather than only at the
@@ -211,6 +212,7 @@ export interface RunEndInfo {
 export interface StepOptions {
   retry?: { max: number; delayMs: number };
   onError?: Step;
+  settings?: Record<string, unknown>;
 }
 
 /** A step instance in a workflow. */
@@ -262,6 +264,7 @@ export interface Flow {
    *  `RunOptions.params`). Override precedence: run override > these
    *  defaults. Omit for workflows with no knobs. */
   params?: Record<string, unknown>;
+  settings?: Record<string, unknown>;
   /** The YAML `input:` block as written (`src/input-block.ts`) — what built
    *  `input` for a YAML flow, kept so the flow endpoint can return it and the
    *  Run form can be built from it. Absent when the workflow declares none. */

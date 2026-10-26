@@ -158,6 +158,7 @@ export function flowFromYaml(name: string, version: string, raw: string): Flow {
     // param) once at load, so a shared value can be factored into one knob.
     ...(data.params != null ? { params: resolveParamSelfReferences(data.params) } : {}),
     ...(Array.isArray(data.promotes) ? { promotes: data.promotes } : {}),
+    ...(data.settings != null ? { settings: data.settings } : {}),
     ...(data.sealed === true ? { sealed: true } : {}),
     ...(data.peer === true || data.peer === "person" ? { peer: data.peer as PeerOpen } : {}),
   };

@@ -1,0 +1,8 @@
+{"text": "Open https://shop.example.com/orders/view?token=Zx81kQ72mLpA93vT&page=2 and tell me the status.", "visible": ["https://shop.example.com/orders/view", "page="], "masked": ["Zx81kQ72mLpA93vT", "=2 "]}
+{"text": "Her profile is https://social.example.net/@amara.nwosu/posts and the card https://pay.example.com/r/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b.", "visible": ["https://social.example.net/", "/posts", "https://pay.example.com/r/"], "masked": ["amara.nwosu", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"]}
+{"text": "Download from https://user:hunter2pass@files.example.org/a/b/report.pdf?sig=abc&expires=17000 today.", "visible": ["https://", "files.example.org/a/b/report.pdf"], "masked": ["hunter2pass", "sig=abc", "expires=17000"]}
+{"text": "Confirm the booking for 2025-03-03 and the review on March 3rd, not Thursday.", "visible": ["2025-03-03", "March 3rd", "Thursday"], "masked": []}
+{"text": "Ahmed was born on 1984-05-17 in the city.", "visible": ["was born on"], "masked": ["1984-05-17"]}
+{"text": "Her date of birth: 03/14/1991. Appointment on 04/02/2025.", "visible": ["04/02/2025"], "masked": ["03/14/1991"]}
+{"text": "Ship it to 221 Maple Street, M5V 2T6 please.", "visible": ["Ship it to"], "masked": ["221 Maple Street", "M5V 2T6"]}
+{"text": "Visit Lisbon on Tuesday; the office is at 17 Oak Avenue.", "visible": ["Lisbon", "Tuesday"], "masked": ["17 Oak Avenue"]}

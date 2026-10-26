@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { WorkspaceStore } from "../workspace.js";
+import type { WorkspaceStore } from "./host.js";
 
 /** The workflow strut ships beside the privacy/* steps, seeded at boot like the browser ones. */
 export const PRIVACY_CATEGORY = "privacy";

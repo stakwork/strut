@@ -18,6 +18,7 @@ import type { Provider } from "aieo";
 import type { SecretsCapability } from "./capabilities.js";
 import { workflowOf, type StepContext } from "./core.js";
 import { bootEnv } from "./env.js";
+import { applyModelWrappers } from "./extensions.js";
 
 // ── The auth seam (plans/mothership-cost-control.md §1) ────────────────────
 //
@@ -67,6 +68,7 @@ export interface ResolveModelOptions {
   llmAuth?: LlmAuth;
   /** What the hook is told; the provider is filled in here. */
   auth?: Omit<LlmAuthContext, "provider">;
+  ctx?: StepContext<unknown>; session?: string;
 }
 
 export interface ResolvedModel {
@@ -122,6 +124,7 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   let model: any = r.model;
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
   if (grant?.explainError) model = await explaining(model, grant.explainError);
+  model = await applyModelWrappers(model, { provider: r.provider, modelId: r.modelId, baseUrl: grant?.baseUrl, routed: !!grant?.baseUrl, ctx: opts.ctx, session: opts.session });
   return {
     provider: r.provider,
     modelId: r.modelId,
@@ -193,6 +196,7 @@ export async function resolveEvaluationModel(
     secrets: opts.secrets,
     llmAuth: opts.llmAuth,
     auth: opts.auth,
+    ctx: opts.ctx,
   });
   const { Experimental_EvaluationLanguageModel } = await import("@ai-sdk/provider-utils/experimental-evaluation");
   return { name: r.name, model: new Experimental_EvaluationLanguageModel({ model: r.model, provider: `${r.provider}.evaluation` }) };
@@ -201,10 +205,11 @@ export async function resolveEvaluationModel(
 /** The `llmAuth` + `auth` pair for a STEP's `resolveModel` call, from its
  *  context: the hook off the services bag, the run, the run's workflow
  *  (`workflowOf`) and the step path. `{}` without a hook. */
-export function stepAuth(ctx: StepContext<unknown> | undefined): Pick<ResolveModelOptions, "llmAuth" | "auth"> {
+export function stepAuth(ctx: StepContext<unknown> | undefined, session?: string): Pick<ResolveModelOptions, "llmAuth" | "auth" | "ctx" | "session"> {
   const llmAuth = (ctx?.services as { llmAuth?: LlmAuth } | undefined)?.llmAuth;
-  if (!llmAuth || !ctx) return {};
+  if (!llmAuth || !ctx) return { ctx, session };
   return {
+    ctx, session,
     llmAuth,
     auth: {
       kind: "step",
