@@ -34,8 +34,11 @@ const MAX_CHANGES = 10_000;
 
 export function homeSyncRoutes(app: Hono, deps: { services: unknown; scopeOf: (c: Context) => Promise<Scope> }): void {
   const ctx = { services: deps.services } as unknown as StepContext;
+  // `peer:person` alone: not the peer key, not the deployment key, and not a
+  // request with no credential, which a strut with no STRUT_API_KEY lets
+  // through its gate as `full`.
   const refuse = async (c: Context) =>
-    (await deps.scopeOf(c)) === "peer" ? c.json({ error: "forbidden: home sync takes a person's credential (a person token), not a strut's peer key" }, 403) : null;
+    (await deps.scopeOf(c)) === "peer:person" ? null : c.json({ error: "forbidden: home sync takes a person's credential (a person token)" }, 403);
   const noStore = (c: Context) => c.header("cache-control", "no-store");
 
   app.post("/home/pull", async (c) => {

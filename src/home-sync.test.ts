@@ -13,6 +13,8 @@ import { createStrut, type Strut } from "./createStrut.js";
 import { MemoryRunStore, type RunSummary } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 import { personToken } from "./auth.js";
+import type { StepContext } from "./core.js";
+import { memoryWrite } from "./steps/lib/memory/_db.js";
 
 const hasLadybug = await import("@ladybugdb/core").then(
   () => true,
@@ -109,6 +111,31 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     assert.deepEqual((await step(box, "dictation/apply-changes", { changes: stray })).applied.map((a: any) => a.result), ["not found"]);
   });
 
+  it("changes-since waits for a write in flight: one that stamped its time and has not committed is in this read or the next", async () => {
+    await step(mac, "dictation/add", { heard: "type script", written: "TypeScript" });
+    const start = (await step(mac, "dictation/changes-since", {})).until;
+    // remember's transaction stamps created_at when it starts and commits
+    // later; this one stamps the fact again and holds the commit.
+    let commit!: () => void;
+    const held = new Promise<void>((resolve) => (commit = resolve));
+    const writing = memoryWrite({ services: mac.services } as unknown as StepContext, async (query) => {
+      await query("MATCH (f:Fact) WHERE f.value = 'type script' AND f.created_by = 'dictation' SET f.created_at = $now", { now: Date.now() });
+      await held;
+    });
+    const reading = step(mac, "dictation/changes-since", { since: start });
+    let state: unknown;
+    try {
+      state = await Promise.race([reading.then(() => "read"), new Promise((resolve) => setTimeout(resolve, 300, "waiting"))]);
+    } finally {
+      commit();
+    }
+    assert.equal(state, "waiting");
+    await writing;
+    const first = await reading;
+    const next = await step(mac, "dictation/changes-since", { since: first.until });
+    assert.deepEqual([...first.changes, ...next.changes].map((c: any) => `${c.op} ${c.heard}→${c.written}`), ["learn type script→TypeScript"]);
+  });
+
   it("memory/export with if_changed: the hash the caller holds short-circuits; any change makes a new one", async () => {
     const full = await step(box, "memory/export", { inline: true });
     assert.match(full.content_hash, /^[0-9a-f]{64}$/);
@@ -129,6 +156,7 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     assert.equal(refused.status, 403);
     assert.match(refused.body.error, /^forbidden/);
     assert.equal((await post("/home/push", {}, PEER_KEY)).status, 403);
+    assert.equal((await post("/home/pull", {}, KEY)).status, 403, "nor the deployment key");
 
     const tom = personToken("tom")!.token;
     const pulled = await post("/home/pull", {}, tom);
@@ -155,6 +183,25 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
       const body = (await runs.json()) as any;
       const list = Array.isArray(body) ? body : body.runs;
       assert.ok(runs.status === 404 || (Array.isArray(list) && list.length === 0), `${runs.status} ${JSON.stringify(body).slice(0, 200)}`);
+    }
+  });
+
+  it("a box with no STRUT_API_KEY, whose gate lets anything through, still answers a person token alone", async () => {
+    const saved = { api: process.env["STRUT_API_KEY"], secret: process.env["STRUT_SECRET_KEY"] };
+    delete process.env["STRUT_API_KEY"];
+    process.env["STRUT_SECRET_KEY"] = "the-box-secret-key"; // what signs a person token then
+    try {
+      const none = async (path: string) => (await box.app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status;
+      assert.equal(await none("/home/pull"), 403);
+      assert.equal(await none("/home/push"), 403);
+      const pulled = await request(box, "/home/pull", {}, personToken("tom")!.token);
+      assert.equal(pulled.status, 200);
+      assert.ok(((await pulled.json()) as any).data);
+    } finally {
+      for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_SECRET_KEY", saved.secret]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 

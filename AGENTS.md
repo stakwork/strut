@@ -856,7 +856,8 @@ strut that keeps a read copy of it (a Mac's, for dictation; peel
 `docs/always-on.md`). The copy pushes what it changed, then pulls, with a
 person token (`strut move` hands one over, above). The box runs with
 `STRUT_HOME_SYNC=box`, which opens two routes to a person's credential
-only (the plain peer key is refused):
+only: the plain peer key and the deployment key are refused, and so is a
+request with no credential on a box with no `STRUT_API_KEY`:
 
 | Route | Body | Reply |
 |---|---|---|
@@ -870,11 +871,13 @@ outlive the pull and reach other credentials. A route answers its caller
 
 - **`dictation/changes-since { since? }`** reads the changes from the graph
   itself, no outbox: mishearing facts `created_by: "dictation"` (and terms,
-  dictation-type entities with none) created after `since`, and those
-  forgotten with reason `undone` after it. Each is keyed by its pair
-  (`heard`, `written`, and `name` when `written` is another form of that
-  entity), never a ref_id. It returns `until`, the next call's `since`. A
-  learn later forgotten for another reason (`dictation/remove`) is left out.
+  dictation-type entities with none) created from `since` up to `until`,
+  and those forgotten with reason `undone` in that span. Each is keyed by
+  its pair (`heard`, `written`, and `name` when `written` is another form
+  of that entity), never a ref_id. It returns `until`, the next call's
+  `since`, and reads in the writes' queue: a write stamps its time before
+  it commits, so a read beside one would miss it for good. A learn later
+  forgotten for another reason (`dictation/remove`) is left out.
 - **`dictation/apply-changes { changes }`** replays them in order through
   `dictation/add` (which takes `name` and `term` for this) and
   `dictation/undo`, matching an undo by its pair (the entity, when
