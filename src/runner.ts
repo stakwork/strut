@@ -912,7 +912,9 @@ async function dispatchStep(
         exec.controller.beginUnit();
       }
       try {
-        return await def.run(validConfig, ctx);
+        const running = def.run(validConfig, ctx);
+        // A force-cancel stops waiting on a step that never returns.
+        return await (exec.controller ? exec.controller.raceForce(Promise.resolve(running)) : running);
       } finally {
         exec.controller?.endUnit();
       }

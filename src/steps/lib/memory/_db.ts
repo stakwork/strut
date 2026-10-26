@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type { StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
+import { ladybugMaxDbSize } from "../../../graph/ladybug/max-size.js";
 import { ONTOLOGY_DDL, invalidate, seed, wroteOntology } from "./_ontology.js";
 import { SEED } from "./_ontology-seed.js";
 
@@ -100,12 +101,6 @@ async function dbPath(ctx?: StepContext<StrutCapabilities>): Promise<string> {
 
 export type Handle = { path: string; read: Query; write: Query; queue: Promise<unknown>; ladybug: string };
 
-// The address space a Database reserves on open, which `close()` never
-// returns: the addon's default is 8 TB, and the kernel maps eight to ten of
-// those per process, so a test file with nine databases failed on the
-// ninth. 1 TB is no limit a memory graph reaches and fits a hundred times.
-export const MAX_DB_SIZE = 2 ** 40;
-
 async function open(path: string): Promise<Handle> {
   // Owner-only: whatever modes Ladybug gives its files, nobody else on
   // this machine can reach them through this folder. A folder that was
@@ -122,7 +117,8 @@ async function open(path: string): Promise<Handle> {
         `(${err instanceof Error ? err.message : String(err)}). Install it with: npm install @ladybugdb/core`,
     );
   });
-  const db = new lbug.Database(path, 0, true, false, MAX_DB_SIZE);
+  // The address space it reserves: the workspace graph's setting (max-size.ts).
+  const db = new lbug.Database(path, 0, true, false, ladybugMaxDbSize());
   const handle = {
     path,
     read: queryOn(new lbug.Connection(db)),

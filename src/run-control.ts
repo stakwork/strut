@@ -124,6 +124,50 @@ export class RunController implements RunControl {
     this.poke();
   }
 
+  /** FORCE cancel: `cancel()` plus abandoning every step body in flight in
+   *  the subtree. Cancel is cooperative, so a step that never returns (a hung
+   *  socket, a wedged subprocess) would hold the run `cancelling` forever;
+   *  `raceForce` lets the runner stop waiting on it. The abandoned body is
+   *  not killed — JS cannot — it is just no longer awaited. Idempotent. */
+  force(): void {
+    this.cancel();
+    this.forceSubtree();
+  }
+
+  /** True when this run or an ancestor was force-cancelled. */
+  get forced(): boolean {
+    for (let c: RunController | undefined = this; c; c = c.parent) if (c.ownForced) return true;
+    return false;
+  }
+
+  /** Await `work`, but reject with `CancelledError` the moment the run is
+   *  force-cancelled (at once if it already was). */
+  raceForce<T>(work: Promise<T>): Promise<T> {
+    if (this.forced) {
+      work.catch(() => {});
+      return Promise.reject(new CancelledError(this.runId));
+    }
+    return new Promise<T>((resolve, reject) => {
+      const onForce = () => {
+        work.catch(() => {});
+        reject(new CancelledError(this.runId));
+      };
+      this.forceListeners.add(onForce);
+      work.then(resolve, reject).finally(() => this.forceListeners.delete(onForce));
+    });
+  }
+
+  private ownForced = false;
+  private forceListeners = new Set<() => void>();
+
+  private forceSubtree(): void {
+    this.ownForced = true;
+    const fns = [...this.forceListeners];
+    this.forceListeners.clear();
+    for (const fn of fns) fn();
+    for (const child of this.children) child.forceSubtree();
+  }
+
   pause(): void {
     if (this.own === "running") this.own = "pausing";
     this.poke();

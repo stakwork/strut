@@ -480,6 +480,17 @@ is what the run is doing now (`pausing` → `paused` once every branch has
 reached a boundary, which `quiesced` reports). Cancel and pause apply to
 the whole tree: every nested run launched under this one.
 
+A step that never returns would hold a cooperative cancel forever. For that,
+`POST …/cancel` with body `{ "force": true }` also stops waiting on every step
+in flight in the tree: the run finalizes as `cancelled` at once. The stuck
+step's code is abandoned, not killed — whatever it holds (a subprocess, a
+socket) stays until it dies or the process restarts. An agent step's session
+is let go when the run ends, so the thread's next turn can start; the
+abandoned turn, should it ever finish, commits nothing. The same `force` is on
+the `run/cancel` step, the chat builder's `cancel_run` tool, `useCancel`'s
+`cancel(workflow, runId, force?)`, and the UI's **Force cancel** button, which
+replaces Cancel while a run sits in `cancelling`.
+
 ### 6.2 Durable: resume a dead, failed or cancelled run
 
 `POST /workflows/:name/runs/:runId/resume` with no live run replays the
@@ -1014,7 +1025,7 @@ as `agentTools: ["run/*"]`, and the §3 … §7 routes' layers one more way
 | `run/events` | `{ workflow, runId, skip? }` | the log as `GET …/events` serves it (transcripts as links, long fields replaced by their size), cut at 5 000 keeping the head and the last event |
 | `run/transcript` | `{ workflow, runId, path, full? }` | `{ path, messages, full?, truncated? }` — one agent's session by step path, the bare array `GET …/transcripts/<path>` serves (a page cannot follow that link); `full` = `?full=1`, a session turn's thread (`full: true` when stitched). Cut at 2 MB of JSON: long strings to head + tail (64k, 16k, then 4k chars), then messages left out after the system prompt and the task; `truncated: { chars, strings, stringMax, messages?: { at, count } }` says what went. No transcript at the path, or a session gone, is an error with the route's 404 message |
 | `run/launch` | `{ workflow, input?, params?, job?, title?, key? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }` |
-| `run/cancel` | `{ workflow, runId }` | `{ ok: true, runId, state }`; a run that is not live is an error |
+| `run/cancel` | `{ workflow, runId, force? }` | `{ ok: true, runId, state }`; a run that is not live is an error. `force: true` is `POST …/cancel { force: true }` (§6.1): it abandons a step that never returns |
 | `run/workflow` | `{ workflow }` | `{ name, description?, category?, activeVersion?, input? (the \`input:\` block), params?, peer? }` |
 | `run/files` | `{ workflow, runId, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
 

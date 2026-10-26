@@ -93,12 +93,26 @@ function runControlTool(controlRun: ControlRun, action: RunControlAction, descri
   });
 }
 
+function cancelRunTool(controlRun: ControlRun, description: string) {
+  return tool({
+    description,
+    inputSchema: z.object({
+      name: z.string().describe("Workflow name"),
+      runId: z.string().describe("Run id (from run_workflow's response or list_runs)"),
+      force: z
+        .boolean()
+        .optional()
+        .describe("Also abandon any step still executing — for a run stuck `cancelling` because a step never returns. The step's code is not killed. Default false."),
+    }),
+    execute: async ({ name, runId, force }) => controlRun(name, runId, "cancel", force === true),
+  });
+}
+
 function runControlTools(controlRun: ControlRun) {
   return {
-    cancel_run: runControlTool(
+    cancel_run: cancelRunTool(
       controlRun,
-      "cancel",
-      "Cancel a run that is LIVE in this process — e.g. a detached run_workflow you launched with the wrong input, or one you want to stop after seeing partial output in get_run. Cancellation is cooperative: the run stops at its next step boundary and finalizes as cancelled (a [run-notification] follows for chat-launched runs). A run that already finished reports its terminal status instead.",
+      "Cancel a run that is LIVE in this process — e.g. a detached run_workflow you launched with the wrong input, or one you want to stop after seeing partial output in get_run. Cancellation is cooperative: the run stops at its next step boundary and finalizes as cancelled (a [run-notification] follows for chat-launched runs). A run that already finished reports its terminal status instead. If a run stays `cancelling` because a step is stuck and never returns, call again with force: true to abandon that step and finalize the run now.",
     ),
     pause_run: runControlTool(
       controlRun,

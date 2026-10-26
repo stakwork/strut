@@ -260,13 +260,14 @@ export function useCancel(): UseCancel {
   const client = useStrutClient();
   const qc = useQueryClient();
   const m = useMutation({
-    mutationFn: (v: { workflow: string; runId: string }) => client.run(RUN_STEPS.cancel, { workflow: v.workflow, runId: v.runId }),
+    mutationFn: (v: { workflow: string; runId: string; force?: boolean }) =>
+      client.run(RUN_STEPS.cancel, { workflow: v.workflow, runId: v.runId, ...(v.force ? { force: true } : {}) }),
     onSuccess: (_r, v) => {
       void qc.invalidateQueries({ queryKey: runKeys.lists(v.workflow) });
       void qc.invalidateQueries({ queryKey: runKeys.run(v.workflow, v.runId) });
     },
   });
-  const cancel = useCallback((workflow: string, runId: string) => m.mutateAsync({ workflow, runId }), [m.mutateAsync]);
+  const cancel = useCallback((workflow: string, runId: string, force?: boolean) => m.mutateAsync({ workflow, runId, force }), [m.mutateAsync]);
   return { cancel, pending: m.isPending, error: m.error };
 }
 
