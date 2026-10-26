@@ -1028,10 +1028,12 @@ export const getRunEvents = (workflow: string, runId: string, signal?: AbortSign
 // ("stale"/error/cancelled) by replaying its journal — optionally forcing
 // re-execution from a step path (`from`, the "re-run from here" gesture).
 
-export const cancelRun = (workflow: string, runId: string) =>
+export const cancelRun = (workflow: string, runId: string, force = false) =>
   fetchJSON<{ ok: boolean; state: string }>(
     `${workflowPath(workflow)}/runs/${runId}/cancel`,
-    { method: "POST" },
+    force
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force: true }) }
+      : { method: "POST" },
   );
 
 export const pauseRun = (workflow: string, runId: string) =>

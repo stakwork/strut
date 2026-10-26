@@ -5,8 +5,12 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { defineStep, messagesOf, withStop } from "../../core.js";
+import { defineStep, flow, messagesOf, step, withStop } from "../../core.js";
+import { RunController } from "../../run-control.js";
+import { runWorkflow } from "../../runner.js";
 import { MemorySessionStore, sessionsCapability, type NewTurn, type SessionsCapability } from "../../session-store.js";
+import { MemoryRunStore } from "../../store.js";
+import { createRegistry } from "../registry.js";
 import agent from "./agent.js";
 
 // Agent sessions (plans/agent-sessions.md), OFFLINE: a stand-in Anthropic
@@ -279,6 +283,80 @@ describe("agent sessions", () => {
       letGo();
       assert.equal((await slow).result, "slow one");
       assert.equal((await run({ session: "abc" }, { runId: "r3" })).session.turn, 1);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("a turn a force-cancel abandoned lets go of the session when its run ends; the next turn starts", async () => {
+    let reached!: () => void;
+    const inTool = new Promise<void>((r) => (reached = r));
+    const hang = defineStep({
+      type: "dev/hang",
+      description: "Wait.",
+      input: z.object({}),
+      output: z.any(),
+      run: () => (reached(), new Promise(() => {})), // never returns
+    });
+    const s = await serve([call("toolu_1", "dev_hang", {}), answer("toolu_2", "after")]);
+    try {
+      const wf = flow("wf", {
+        input: z.any(),
+        steps: [
+          step("work", "agent", {
+            cwd, system: "sys", prompt: "look around", model: "claude-sonnet-4-5", finalAnswer: "Report.",
+            toolFilter: ["none"], agentTools: ["dev/hang"], reasoning: "provider-default", session: "abc",
+          }),
+        ],
+      });
+      const controller = new RunController("r1", "wf");
+      const running = runWorkflow(wf, {}, await createRegistry([hang]), {
+        runId: "r1", store: new MemoryRunStore(), controller, services: { sessions },
+      });
+      await inTool;
+      assert.deepEqual(sessions.holder("abc"), { runId: "r1", path: "wf/work" });
+      controller.force();
+      assert.equal((await running).status, "cancelled");
+      assert.equal(sessions.holder("abc"), undefined);
+      // The abandoned turn committed nothing: the next one is turn 0.
+      assert.equal((await run({ session: "abc", prompt: "two" }, { runId: "r2" })).session.turn, 0);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("an abandoned turn that wakes after its run let go of the session commits nothing", async () => {
+    let letGo!: () => void;
+    const gate = new Promise<void>((r) => (letGo = r));
+    let reached!: () => void;
+    const inTool = new Promise<void>((r) => (reached = r));
+    const wait = defineStep({
+      type: "dev/wait",
+      description: "Wait.",
+      input: z.object({}),
+      output: z.any(),
+      async run() {
+        reached();
+        await gate;
+        return { ok: true };
+      },
+    });
+    const s = await serve([call("toolu_1", "dev_wait", {}), answer("toolu_2", "after"), answer("toolu_3", "stale")]);
+    const disposers: Array<() => unknown> = [];
+    try {
+      const abandoned = run(
+        { session: "abc", toolFilter: ["none"], agentTools: ["dev/wait"] },
+        { runId: "r1", registry: { "dev/wait": wait }, onRunEnd: (fn: () => unknown) => void disposers.push(fn) },
+      );
+      await inTool;
+      // What the runner does once a force-cancel has finalized r1.
+      for (const dispose of disposers) await dispose();
+      assert.equal(sessions.holder("abc"), undefined);
+      assert.equal((await run({ session: "abc", prompt: "two" }, { runId: "r2" })).result, "after");
+
+      letGo();
+      await assert.rejects(abandoned, /session_released: session "abc" was let go when run r1 ended/);
+      assert.deepEqual((await store.load("abc"))!.turns.map((t) => t.runId), ["r2"]);
     } finally {
       s.close();
     }

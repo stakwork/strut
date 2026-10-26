@@ -6,6 +6,11 @@ name: publish strut image
 # main. arm64 is for home servers (Apple Silicon, Raspberry Pi 4/5). Tags are
 # the moving `latest` and the short commit sha, which is what a deploy pins;
 # package.json's version is not bumped per change, so it is not a tag.
+#
+# Each platform's build is also its smoke test: the Dockerfile opens a Ladybug
+# graph with `RUN --network=none` and fails unless the vector + fts extensions
+# it carries load (scripts/image-ladybug-extensions.mjs check), so neither
+# half is pushed if its graph would need the extension host.
 
 on:
   push:
@@ -15,6 +20,7 @@ on:
       - "web/**"
       - "kit/**"
       - "scripts/check-app-build.mjs"
+      - "scripts/image-ladybug-extensions.mjs"
       - "Dockerfile"
       - ".dockerignore"
       - "package.json"
@@ -66,6 +72,9 @@ jobs:
           tags: |
             ghcr.io/stakwork/strut:${{ steps.sha.outputs.short }}
             ghcr.io/stakwork/strut:latest
+          # What `strut move check` compares; the desktop package stamps the same.
+          build-args: |
+            STRUT_VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false

@@ -951,6 +951,11 @@ export async function openSession(
     throw new Error("agent: session requires the sessions capability (ctx.services.sessions)");
   }
   const session = await sessions.open(id, { runId: ctx?.runId ?? "", path: ctx?.path ?? "" });
+  // A turn the runner stopped waiting on (a force-cancel abandons a step that
+  // never returns, run-control.ts) never reaches the step's `finally`: let go
+  // when the run ends, or the thread's next turn is `session_busy:` until a
+  // restart. A no-op once the step released it itself.
+  ctx?.onRunEnd?.(() => session.release());
   const first = session.turns[0];
   const last = session.turns[session.turns.length - 1];
   let refusal = "";

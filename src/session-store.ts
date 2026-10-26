@@ -379,7 +379,15 @@ export function sessionsCapability(store: SessionStore): SessionsCapability {
           messages: s ? s.messages : [],
           turns: s ? s.turns : [],
           replayFrom: s ? s.replayFrom : 0,
-          commit: (turn) => store.appendTurn(id, turn),
+          // Only while held: a turn its run let go of (a force-cancel,
+          // run-control.ts) may still wake up, and must not write into a
+          // thread the next turn now holds.
+          commit: (turn) =>
+            held.get(id) === holder
+              ? store.appendTurn(id, turn)
+              : Promise.reject(
+                  new Error(`session_released: session "${id}" was let go when run ${holder.runId} ended; this turn is not kept`),
+                ),
           release,
         };
       } catch (err) {

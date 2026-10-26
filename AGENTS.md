@@ -425,8 +425,9 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_GRAPH_EMBEDDINGS` | (on)       | `off` disables the local MiniLM embedder and the embedding pass (vectors stay NULL; search is fulltext-only) |
 | `STRUT_GRAPH_SEED_ONTOLOGY` | (off)   | `1` seeds the bundled jarvis ontology (153 schemas + edge schemas + indexes, add-only) on first open, so a standalone Neo4j can host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis process. No-op on a jarvis-seeded DB. Also turns on the one-shot `Claim` schema upgrade (the standalone mirror of jarvis migration 124) — never run against a jarvis-hosted graph. |
 | `STRUT_MEMORY_DB` | `<dataDir>/memory/graph.lbug` | The `memory/*` steps' LadybugDB file (secret store → env). A folder they create is owner-only (0700); an existing one open to other users gets a warning. With neither this nor a dataDir, the steps fail. |
-| `STRUT_LADYBUG_EXTENSION_DIR` | (unset → the pinned copies) | Where the Ladybug graph backend finds the `vector` and `fts` extensions it REQUIRES to open (plans/ladybug-backend.md ruling 4): a folder holding `libvector.lbug_extension` + `libfts.lbug_extension`, flat or in `vector/` + `fts/`. Unset, strut downloads its PINNED copies — the bytes `src/graph/ladybug/extensions.ts` records by sha256 for the installed core and this platform, from the stakwork/strut release named there — into `<STRUT_MODEL_DIR>/ladybug/`, verified, once. Never Ladybug's `INSTALL` where there is a pin: extension.ladybugdb.com rebuilds the files under the same version (2026-10-20: 0.21.2 could no longer load its `0.21.0` ones, and the CDN's edges served old or new by machine). A core or platform without a pin falls back to `INSTALL`, with a warning. The desktop package carries the same pinned bytes in `native/` (versioned with the Ladybug CORE — `0.21.0` for `@ladybugdb/core` 0.21.2 — `scripts/package-desktop.mjs`) and `desktop.js` points this at it. |
+| `STRUT_LADYBUG_EXTENSION_DIR` | (unset → the pinned copies) | Where the Ladybug graph backend finds the `vector` and `fts` extensions it REQUIRES to open (plans/ladybug-backend.md ruling 4): a folder holding `libvector.lbug_extension` + `libfts.lbug_extension`, flat or in `vector/` + `fts/`. Unset, strut downloads its PINNED copies — the bytes `src/graph/ladybug/extensions.ts` records by sha256 for the installed core and this platform, from the stakwork/strut release named there — into `<STRUT_MODEL_DIR>/ladybug/`, verified, once. Never Ladybug's `INSTALL` where there is a pin: extension.ladybugdb.com rebuilds the files under the same version (2026-10-20: 0.21.2 could no longer load its `0.21.0` ones, and the CDN's edges served old or new by machine). A core or platform without a pin falls back to `INSTALL`, with a warning. The desktop package carries the same pinned bytes in `native/` (versioned with the Ladybug CORE — `0.21.0` for `@ladybugdb/core` 0.21.2 — `scripts/package-desktop.mjs`) and `desktop.js` points this at it; the Docker image carries them in `/usr/src/strut/native` and sets this to it (`scripts/image-ladybug-extensions.mjs`, checked at build with no network). |
 | `STRUT_LADYBUG_EXTENSION_URL` | (the release in `extensions.ts`) | A mirror of strut's pinned Ladybug extensions: a base URL serving `<platform>-lib<name>.lbug_extension` (`osx_arm64-libfts.lbug_extension`). The bytes are checked against the pins either way. |
+| `STRUT_LADYBUG_MAX_DB_SIZE` | `64G` | The address space each Ladybug graph (the workspace's and memory's) reserves when it opens, and the largest its file may grow to: bytes or a binary unit (`16G`, `512MiB`), a power of two of at least 8 MiB (`src/graph/ladybug/max-size.ts`). Reserved, not used, and kept until the process exits. It was 1 TiB, which an arm64 kernel with 39-bit addresses (Raspberry Pi OS: 512 GiB a process) cannot map. Not kept in the file: a graph opens under any size at least as big as the file, so one made on a Mac opens on a Pi. A bad value fails the open. |
 | `STRUT_MEMORY_LANG` | `en` | The `memory/*` steps' language data (`memory/_lang-<lang>.ts`): stop words today. English only; another value makes memory/recall fail and say so. |
 | `STRUT_VERIFY_BUDGET_USD` | `10` | Verify-pass spend cap PER VERIFIED RUN: once the pass's checks have reported this much, remaining checks presumed paid (an `agent`/`llm` step anywhere in the check closure, or an unresolvable one) are skipped (`lastVerify: { skipped: "budget" }`) and the claim stays `unknown` — never `supported`. Checks that report no cost never count. |
 | `STRUT_VERIFY_BUDGET_USD_PER_DAY` | `100` | The same cap PER SUBJECT PER (UTC) DAY, computed from the run store alone: the cost of today's runs under `check:<id>` tagged with that subject. A harness that verifies many candidates raises it, or sets its paid checks to `manual`. |
@@ -693,6 +694,144 @@ instead of baked into env at deploy time.
   engine. If interactive per-end-user OAuth is ever needed, the **host app**
   (mcp) should own the OAuth dance and deposit/refresh tokens *into* this store;
   strut's `secrets` capability stays generic and provider-agnostic.
+
+## Moving a data folder
+
+A stopped strut's data folder can be copied to another host (Peel moving
+the brain to a home server and back; peel `docs/always-on.md`). The new
+host must get the same `STRUT_SECRET_KEY`: the encrypted files copy as
+they are. Whoever copies it leaves `moved.json` at the folder's root, and
+the default server's next boot (`src/server.ts`, before any store opens)
+applies it and removes it (`src/moved.ts`):
+
+```json
+{
+  "from": "/Users/tom/Library/Application Support/Peel/Strut/workspace",
+  "bridge": {
+    "from": { "url": "http://127.0.0.1:54321", "token": "<old token>" },
+    "to":   { "url": "http://127.0.0.1:8090",  "token": "<new token>" }
+  },
+  "secrets": { "PEEL_BRIDGE_PORT": "8090", "PEEL_BRIDGE_TOKEN": "<new token>" }
+}
+```
+
+Every field is optional. `from` (the folder's absolute path on the old
+host): the upload and run-attachment paths (`<from>/uploads/…`,
+`<from>/artifacts/…`) in `chats/*/messages.jsonl` and
+`sessions/*/messages.jsonl` move onto this folder's path; run history is
+left alone. `bridge`: every stored callback
+that starts with `from.url` — automations' run.end URLs
+(`automation-callbacks.json`), runs' `callback.json` / `job-callback.json`
+/ `mcp.json`, `jobs/.callbacks/` — moves onto `to.url`, with `from.token`
+in it becoming `to.token`; leave it out when the new host's bridge is not
+up yet and the host points them itself (Peel does at every bridge start).
+`secrets`: set (a string) or delete (`null`) deployment secrets through the
+secret store. Rebuilt or machine-bound parts are dropped (`DROP` in
+moved.ts: `steps/_graph*`, graph and memory snapshots and backups,
+`audio/tmp`, `audio/dictation.json`, `repos`, `worktrees`,
+`privacy/vault`, `acp/sessions`, temp and corrupt files,
+`fs-workspace.imported-*`), and so are each job's checkouts — worktrees of
+the dropped `repos/`, found by the job record's `repos` — which the record
+then forgets; the job's own files (a plan, screenshots, deliverables)
+stay. Every step is idempotent and the file goes only
+once all of it is done, so a boot cut short does the move again. A
+`moved.json` that does not parse fails the boot.
+
+## Moving strut to another host
+
+`strut move` (`src/move/`) copies a STOPPED strut to another host and back:
+its data folder, its host config, named sidecars (opaque folders another
+program owns, e.g. Peel's bridge) and env values, sealed with a pairing
+code. The same code runs on both ends. A client stops its own processes
+and runs it beside the server, never inside it:
+
+| Where | How a client runs it |
+|---|---|
+| desktop package | `node desktop.js move …` (Peel; desktop.js's defaults apply, `--data` defaults to STRUT_WORKSPACE) |
+| image or checkout | `node build/move/cli.js …` (an empty box's setup service: `… serve`) |
+
+```
+strut move check <link>
+strut move send  <link> [folders] [--bridge <url>]
+strut move serve        [folders] [--bridge <url>] [--set-secret N=V]... [--send-back]
+                        [--listen [host:]port] [--host <h[:port]>] [--link <prefix>] [--name <n>]
+strut move fetch <link> [folders] [--bridge <url>] [--set-secret N=V]...
+
+folders: --data <dir> --host-config <file> --sidecar <name>=<path>... --env <file>
+         --sidecar-env <name>=<file>... --state <dir>
+```
+
+- **Folders** are read when packing and written when unpacking, so both
+  ends name theirs the same way. `--env` holds strut's own values
+  (`KEY=value`; when sending, `<name>.KEY` is a sidecar's); strut's host
+  settings (`STRUT_API_KEY`, ports, paths) never move. Received env files are
+  written as `KEY='value'` (a shell or Compose `env_file` reads them), last,
+  after the folders are in place. Not `--env-file`: node takes that flag
+  for itself even after the script name. A host's sidecars must be the
+  move's exactly, or the move is refused.
+- **`serve`** on an empty data folder shows a page (link, code, QR) and
+  takes one move, then exits 0 (`{"event":"received"}`); with `--send-back`
+  it packs this host's folders under a fresh code, serves them until the
+  other end confirms, sets them aside in `<data's parent>/sent-<time>/`
+  and exits (`"sent"`). With strut already here and no `--send-back` it
+  exits at once (`"already-here"`). The receive code is kept in `--state`
+  (default `<data's parent>/.move`) until a move lands.
+- **`moved.json` on arrival** (see "Moving a data folder"): `from` is the
+  manifest's data path, `bridge` is the manifest's callbacks → this host's
+  `--bridge` (its token in `STRUT_MOVE_BRIDGE_TOKEN`), `secrets` are the
+  `--set-secret` values with `{bridge.url}`, `{bridge.port}`,
+  `{bridge.token}` filled in. Peel: `--set-secret PEEL_BRIDGE_PORT={bridge.port}
+  --set-secret PEEL_BRIDGE_TOKEN={bridge.token}`. On the sending side a
+  `moved.json` not yet applied is applied before packing, and the
+  workspace graph's WAL is folded into its file (opened and closed with
+  this host's extensions): Ladybug logs each `LOAD EXTENSION` with its
+  absolute path in the WAL and replays it on open, so a graph that travels
+  with a WAL fails on any host without that path. `build/server.js` closes
+  the graph on SIGTERM for the same reason, as desktop.js does.
+- **Arrival is all or nothing**: the move is unpacked into `--state`,
+  checked, then put in place; a step that fails (a folder it cannot
+  write) takes back the ones before it, and `serve` keeps waiting. An
+  empty target folder is filled rather than replaced, so it may be a mount
+  point.
+- **`check`** refuses another move format, another strut (`STRUT_VERSION`:
+  the commit, which the image (`publish-image.yml`) and the desktop package
+  (`desktop.json`'s `strut`) both stamp; a plain checkout reports
+  package.json's version, so set it there to move to or from one) or
+  another Ladybug core, and a wrong code. `send` and `fetch` check first.
+- **The link**: plain `http://<host>/?code=<code>` (the page), or
+  `<prefix>?host=<host>&code=<code>` with `--link <prefix>`
+  (`STRUT_MOVE_LINK`; Peel: `peel://home-setup`). `--host` /
+  `STRUT_MOVE_HOST` is the address it names; else the request's, or the
+  first LAN address. `--listen` / `STRUT_MOVE_LISTEN` defaults to 8090.
+- **stdout** is one JSON line per result (`ready` with `link`, `code`,
+  `port`; `checked`; `sent`; `fetched`; `received`; `error`); words and the
+  QR go to stderr. Exit 0 done, 1 refused or failed, 2 usage.
+
+HTTP (plain, home network only, everything that matters sealed):
+
+| Request | Mode | |
+|---|---|---|
+| `GET /move/info` | both | `{ mode: "receive" \| "send-back", format: 1, strut, graph, ready? }` |
+| `POST /move/check` | both | `{ salt: <32 hex>, token: <64 hex> }`, token = HKDF(code, salt, `strut move v1 check`): 200, or 401 |
+| `PUT /move` | receive | the sealed move: 200 once in place; 401 wrong code; 400 not a move, bad archive, sidecars that don't match; 409 busy or already here |
+| `GET /move` | send-back | the sealed move (`Range: bytes=a-[b]` resumes) |
+| `POST /move/received` | send-back | `Authorization: Bearer <HKDF(code, the move's salt, "strut move v1 received")>`: 200 and this host's copy is set aside |
+
+**The format.** Sealed: `STRUTMOV`, version `0x01`, a 16-byte salt, the
+chunk size (u32 BE, 1 MiB written, 64 KiB–16 MiB read), then AES-256-GCM
+chunks under HKDF-SHA256(code, salt, `strut move v1`); chunk *i*'s
+nonce is `[final,0,0,0] ‖ i` (u64 BE), its AAD the header, written as
+ciphertext ‖ tag; the last chunk is final. The code is 20 Crockford base32
+characters (shown `XXXX-XXXX-…`, typed with dashes or not). The
+construction is peel's first draft's; the constants are strut's, and the
+test vector in `src/move/move.test.ts` is what a client's implementation
+checks itself against.
+Inside, a gzip-compressed ustar of regular files (`src/tar.ts`):
+`move.json` (`{ format: "strut-move", version: 1, strut, graph, created,
+from, hostConfig, sidecars, callbacks? }`), `env.json` (`{ strut, sidecars:
+{ <name>: {…} } }`), `host-config.json`, `data/…` (minus `leftBehindIn` in
+moved.ts: what arrival drops, temp files, jobs' checkouts) and
+`sidecars/<name>[/…]`. Empty folders do not move.
 
 ## Mothership cost control (opt-in)
 
@@ -1904,7 +2043,10 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   the session's in-process lock — a second turn fails `session_busy:`),
   sends the thread's system prompt and messages followed by this turn's
   prompt, and on success appends the turn; a failed or cancelled turn
-  appends nothing. The id is a flat, GLOBAL string the CALLER supplies
+  appends nothing. The lock is also let go when the run ends, so a turn a
+  force-cancel abandoned (run-control.ts `raceForce`) never holds the thread
+  past its run; should it wake later, its commit is refused
+  (`session_released:`). The id is a flat, GLOBAL string the CALLER supplies
   (usually `"{{ input.session }}"`, a uuid) — no run-level field, no chain
   of runs: any run of any workflow naming it joins, so the unit stays one
   run per turn. Which agents of a workflow remember is per step: several

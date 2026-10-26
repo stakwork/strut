@@ -4,7 +4,8 @@
 //      they drive core on purpose).
 //   2. Outside src/privacy/ and src/steps/lib/privacy/, only createStrut.ts (register.js, seed.js) and
 //      index.ts (index.js, seed.js) import from privacy/; the lib steps only privacy/index.js.
-//   3. No other core file mentions privacy in code (comments are fine).
+//   3. No other core file mentions privacy in code (comments are fine). moved.ts is exempt: it names
+//      the data folder's `privacy/vault` among what a move leaves behind, a path, not the module.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -67,7 +68,7 @@ const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(
 export function wordInCode(files: Record<string, string>): string[] {
   const free = (f: string) =>
     inside(PRIVACY, f) || inside(LIB_PRIVACY, f) || isTest(f) || inside(join(SRC, "graph", "fixtures"), f) ||
-    f === join(SRC, "createStrut.ts") || f === join(SRC, "index.ts");
+    f === join(SRC, "createStrut.ts") || f === join(SRC, "index.ts") || f === join(SRC, "moved.ts");
   return Object.entries(files).filter(([f, text]) => !free(f) && /privacy/.test(stripComments(text))).map(([f]) => relative(SRC, f));
 }
 

@@ -143,7 +143,7 @@ export interface RunsCapability {
   /** The log from `skip` on, transcripts as links, capped (`capEvents`). */
   events(q: { workflow: string; runId: string; skip?: number }): Promise<RunEvent[]>;
   launch(q: RunLaunchQuery, by: RunLaunchBy): Promise<RunLaunchResult>;
-  cancel(q: { workflow: string; runId: string }): Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
+  cancel(q: { workflow: string; runId: string; force?: boolean }): Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
   workflow(q: { workflow: string }): Promise<WorkflowInfo>;
   /** Null when the run or the file is not there. */
   files(q: { workflow: string; runId: string; path: string }): Promise<RunFile | null>;

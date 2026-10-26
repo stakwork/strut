@@ -29,6 +29,7 @@ import { FileChatStore } from "./chat-store.js";
 import { FileSecretStore } from "./secret-store.js";
 import { workspaceBackendFromEnv } from "./graph/wiring.js";
 import { bootEnv, scrubProcessEnv, scrubRequested } from "./env.js";
+import { applyMove } from "./moved.js";
 import type { BuilderReach } from "./reach.js";
 
 let strutInstance: Strut | null = null;
@@ -121,6 +122,9 @@ async function getDefault(): Promise<Strut> {
     // with a per-actor macaroon (src/mothership.ts); delegations arrive via
     // PUT /llm/delegations/:actor.
     const dataDir = bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
+    // A folder copied from another host: point it at this one before
+    // anything reads it (src/moved.ts).
+    await applyMove(dataDir);
     const mothership =
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
@@ -229,5 +233,19 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
+  // A stop (a container's SIGTERM) closes the Ladybug graph first: a process
+  // that exits with it open leaves a WAL, which names this host's extension
+  // paths (src/move/archive.ts `checkpointGraph`) and costs an FTS rebuild.
+  // desktop.js does the same for the desktop package.
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.once(sig, () => {
+      setTimeout(() => process.exit(0), 1500).unref();
+      // Lazy: the addon is loaded only on the ladybug backend.
+      void import("./graph/ladybug/db.js")
+        .then((m) => m.closeAllLadybug())
+        .catch((err: unknown) => console.error("[graph] closing the graph failed:", err))
+        .finally(() => process.exit(0));
+    });
+  }
   startServer();
 }
