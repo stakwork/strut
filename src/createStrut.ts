@@ -1929,6 +1929,7 @@ export async function createStrut<TServices = unknown>(
     runId: string,
     action: "cancel" | "pause" | "resume",
     peer = false,
+    force = false,
   ): Promise<
     | { ok: true; runId: string; state: string; quiesced?: boolean; status: 202 }
     | { ok: false; error: string; status: 403 | 404 | 409 }
@@ -1944,7 +1945,9 @@ export async function createStrut<TServices = unknown>(
       };
     }
     if (action === "cancel") {
-      controller.cancel();
+      // `force` also abandons a step body that never returns (run-control.ts).
+      if (force) controller.force();
+      else controller.cancel();
       // Marker: if the process dies before the run reaches its boundary and
       // finalizes as `run.cancelled`, boot-time auto-resume must know this
       // run was being cancelled, not cut off (§5.3).
@@ -1961,14 +1964,15 @@ export async function createStrut<TServices = unknown>(
     return { ok: true, runId, state: controller.state, status: 202 };
   };
   /** The chat-tool view of controlLiveRun: same result minus the HTTP code. */
-  const controlRunForChat = async (name: string, runId: string, action: "cancel" | "pause" | "resume") => {
-    const { status: _status, ...rest } = await controlLiveRun(name, runId, action);
+  const controlRunForChat = async (name: string, runId: string, action: "cancel" | "pause" | "resume", force = false) => {
+    const { status: _status, ...rest } = await controlLiveRun(name, runId, action, false, force);
     return rest;
   };
 
   app.post("/workflows/:name/runs/:runId/cancel", async (c) => {
     const { name, runId } = c.req.param();
-    const { status, ...body } = await controlLiveRun(name, runId, "cancel", await isPeer(c));
+    const opts = await c.req.json<{ force?: boolean }>().catch(() => ({}) as { force?: boolean });
+    const { status, ...body } = await controlLiveRun(name, runId, "cancel", await isPeer(c), opts.force === true);
     return c.json(body, status);
   });
 
@@ -3997,7 +4001,7 @@ export async function createStrut<TServices = unknown>(
     },
     async cancel(q) {
       await openFlow(q.workflow);
-      const r = await controlLiveRun(q.workflow, q.runId, "cancel");
+      const r = await controlLiveRun(q.workflow, q.runId, "cancel", false, q.force === true);
       return r.ok ? { ok: true, runId: r.runId, state: r.state } : { ok: false, error: r.error };
     },
     async workflow(q) {
