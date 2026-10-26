@@ -105,7 +105,11 @@ export async function importFileWorkspace(dataDir: string, target: GraphWorkspac
     }
     for (const step of snap.steps) {
       for (const v of step.versions) {
-        const r = await target.publishStep(step.name, v.code, v.info.description, step.publisher, { upstream: v.info.upstream ?? null });
+        const r = await target.publishStep(step.name, v.code, v.info.description, step.publisher, {
+          upstream: v.info.upstream ?? null,
+          ...(v.info.source ? { source: v.info.source } : {}),
+          ...(v.info.actor ? { actor: v.info.actor } : {}),
+        });
         if (r.version !== v.label) {
           throw new Error(`fs_import_conflict: step "${step.name}" ${v.label} landed as ${r.version} — the graph already holds other versions of it`);
         }

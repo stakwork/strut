@@ -83,7 +83,10 @@ import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } f
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { packageCache } from "./packages/cache.js";
+import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST } from "./packages/format.js";
+import { installPackage, uninstallPackage, type PackageDeps } from "./packages/install.js";
+import { listInstalledPackages } from "./packages/installed.js";
 import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -1005,9 +1008,13 @@ export async function createStrut<TServices = unknown>(
 
   // What the AI may publish, when the host says (src/reach.ts).
   const reach = opts.builder ? opts.builder.reach : undefined;
+  /** The workspace's registry: core, lib and its custom steps, a step a
+   *  package installed behind that package's fence (src/packages/fence.ts). */
+  const workspaceRegistry = async () =>
+    buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion, fences: await workspaceFences(workspace) });
   async function rebuildRegistry(): Promise<void> {
     if (registryWasInjected) return; // consumer owns the registry
-    const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
+    const bundle = await workspaceRegistry();
     registry = bundle.registry;
     stepSources = bundle.sources;
   }
@@ -2630,6 +2637,79 @@ export async function createStrut<TServices = unknown>(
     if (c.req.header("if-none-match") === etag) return c.body(null, 304, headers);
     const gz = await packArchive(info.dir, info.files);
     return c.body(gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer, 200, headers);
+  });
+
+  // What is INSTALLED — a fold over the workspace's version stamps and the
+  // graph's Concept stamps, never a store (src/packages/installed.ts) — and
+  // the two writes (src/packages/install.ts, §3). Installing is a person's
+  // act, putting someone's code in this process: behind the key at full
+  // scope (the gate 403s a peer's write) and never a meta/* twin. One write
+  // at a time: an install checks every name before its first write.
+  const packageDeps: PackageDeps = {
+    workspace,
+    cache: packages,
+    ...(graph ? { graph } : {}),
+    claims: claimsAuthoring,
+    ...(verifier ? { verifyPublish: (subject) => verifier.verifyPublish(subject) } : {}),
+    ...(secretsCap ? { secrets: secretsCap } : {}),
+    path: bootEnv()["PATH"] ?? "",
+    getRegistry: async () => {
+      await rebuildRegistry();
+      return registry;
+    },
+  };
+  let packageWrites: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = packageWrites.then(fn);
+    packageWrites = next.catch(() => undefined);
+    return next;
+  };
+  /** A refusal's code (`package_conflict: …`) → its status. */
+  const packageError = (c: Context, err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
+    const status = ["package_conflict", "package_update_not_built", "package_busy"].includes(code)
+      ? 409
+      : code === "package_not_installed"
+        ? 404
+        : code === "bad_package" || code.startsWith("package_")
+          ? 400
+          : 500;
+    return c.json({ error: message }, status);
+  };
+  app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
+  app.post("/packages/install", async (c) => {
+    if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
+    const body = await c.req.json<{ ref?: unknown; digest?: unknown }>().catch(() => ({}) as { ref?: unknown; digest?: unknown });
+    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: the package's directory, file:/path/to/package" }, 400);
+    if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
+      return c.json({ error: "digest is sha256:<64 hex>" }, 400);
+    }
+    const actor = await resolveActor(c);
+    try {
+      const result = await oneAtATime(() =>
+        installPackage(packageDeps, body.ref as string, { ...(body.digest ? { digest: body.digest as string } : {}), ...(actor ? { actor } : {}) }),
+      );
+      return c.json(result, 201);
+    } catch (err) {
+      return packageError(c, err);
+    }
+  });
+  app.delete("/packages/:publisher/:name", async (c) => {
+    const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
+    try {
+      const result = await oneAtATime(async () => {
+        const out = await uninstallPackage(packageDeps, pkg, {
+          busy: (workflow) => [...controllers.keys()].some((k) => k.startsWith(`${workflow}/`)),
+          forget: (workflow) => automations.forget(workflow),
+        });
+        await rebuildRegistry();
+        return out;
+      });
+      return c.json({ ok: true, ...result });
+    } catch (err) {
+      return packageError(c, err);
+    }
   });
 
   // ── Jobs (plans/jobs.md §2.2, §6) ────────────────────────────────────────
@@ -4281,7 +4361,7 @@ export async function createStrut<TServices = unknown>(
     publishingEnabled: !registryWasInjected,
     getRegistry: async () => {
       if (registryWasInjected) return registry;
-      const bundle = await buildRegistry(await workspace.materializeCustomSteps(), { loadVersion: loadStepVersion });
+      const bundle = await workspaceRegistry();
       registry = bundle.registry;
       stepSources = bundle.sources;
       return bundle.registry;

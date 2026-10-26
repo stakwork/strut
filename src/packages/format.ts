@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { validateAppName } from "../apps/files.js";
 import { hashTree } from "../version.js";
-import { validateStepName } from "../workspace.js";
+import { validateStepName, validateWorkflowName } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 
 export const MANIFEST_FILE = "strut.yaml";
@@ -110,12 +110,12 @@ async function packageFiles(dir: string): Promise<string[]> {
   return out.sort();
 }
 
-/** The workflow and step segment rule (`validateStepName`'s), with `runs`
- *  refused: a workflow's folder on the file store holds its runs there. */
+/** An item's name, held to the workspace's own rule for its kind: a
+ *  workflow's (`validateWorkflowName`: no `runs` or `#` segment) or a step's
+ *  (`validateStepName`: `[a-zA-Z_][a-zA-Z0-9_-]*` segments). */
 function itemName(pkg: string, kind: "workflow" | "step", path: string): string {
   const name = `${pkg}/${path}`;
-  validateStepName(name);
-  if (kind === "workflow" && path.split("/").includes("runs")) throw new Error(`"runs" is the folder a workflow's runs live in`);
+  (kind === "workflow" ? validateWorkflowName : validateStepName)(name);
   return name;
 }
 

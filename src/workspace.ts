@@ -294,6 +294,10 @@ export interface StepVersionInfo {
   description?: string;
   /** Content hash of this version's source — internal dedup key. */
   hash?: string;
+  /** Which door wrote this version, when it said (`install` for a package
+   *  install, marketplace.md §3), and who asked. */
+  source?: VersionSource;
+  actor?: string;
   /** The package this version came from, or derives from (see `Upstream`). */
   upstream?: Upstream;
 }
@@ -485,7 +489,42 @@ export interface StepListEntry {
   description?: string;
   createdAt?: string;
   publisher?: string;
+  /** The active version's upstream: the step came from a package, and reads
+   *  only the secrets that package declares (the fence, src/packages/fence.ts). */
+  upstream?: Upstream;
 }
+
+/** The package prefix a name sits under (`acme/linear` for
+ *  `acme/linear/sync`): an item of a package has three segments or more. */
+export function packagePrefixOf(name: string): string | undefined {
+  const segments = name.split("/");
+  return segments.length >= 3 ? `${segments[0]}/${segments[1]}` : undefined;
+}
+
+/** A publish of a NEW name under an INSTALLED package's prefix is refused
+ *  (marketplace.md §3, the name rule after install): only that package's
+ *  install — a publish carrying its `upstream` — adds a name there. Editing
+ *  one of its items is a fork; adding a sibling into someone else's
+ *  namespace is not. `installedUnder` says whether the store holds an item
+ *  of that package under it. */
+export async function refuseUnderInstalledPackage(
+  kind: "workflow" | "step",
+  name: string,
+  opts: PublishOptions | undefined,
+  installedUnder: (prefix: string) => Promise<boolean>,
+): Promise<void> {
+  const prefix = packagePrefixOf(name);
+  if (!prefix || opts?.upstream?.package === prefix) return;
+  if (!(await installedUnder(prefix))) return;
+  throw new Error(
+    `package_conflict: ${name} is under ${prefix}, an installed package — its prefix holds the package's own items. ` +
+      `Name the ${kind} outside ${prefix}/, or edit one of the package's items (an edit is a fork).`,
+  );
+}
+
+/** Does any of these version records come from `prefix`'s package? */
+export const fromPackage = (prefix: string, versions: Iterable<{ upstream?: Upstream | undefined }>): boolean =>
+  [...versions].some((v) => v.upstream?.package === prefix);
 
 // ── Workspace store boundary ───────────────────────────────────────────────
 
@@ -520,6 +559,8 @@ export interface WorkspaceStore extends SubflowResolver {
   /** The workflow's metadata record (active version, versions, category,
    *  publisher), or null when the workflow doesn't exist. */
   getWorkflowMetadata(name: string): Promise<WorkflowMetadata | null>;
+  /** The publishes (these three and `publishStep`) refuse a NEW name under
+   *  an installed package's prefix (`refuseUnderInstalledPackage`). */
   createWorkflow(
     name: string,
     content: WorkflowContent | string,
@@ -591,11 +632,12 @@ export interface WorkspaceStore extends SubflowResolver {
   getStepVersionSource(name: string, version: string): Promise<string>;
   /** One archived version as an importable file + its content hash — what
    *  a PINNED reference (`type@vN`, src/step-ref.ts) loads through
-   *  `resolveStep`. The file sits beside the ACTIVE custom steps
-   *  (`materializePinnedStep`), so its relative imports resolve as the
-   *  active version's do: a helper it imports is the helper's active
-   *  version. Throws when the step or version does not exist. */
-  materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string }>;
+   *  `resolveStep` — and its upstream, which fences it like an active one.
+   *  The file sits beside the ACTIVE custom steps (`materializePinnedStep`),
+   *  so its relative imports resolve as the active version's do: a helper
+   *  it imports is the helper's active version. Throws when the step or
+   *  version does not exist. */
+  materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string; upstream?: Upstream }>;
   setActiveStepVersion(name: string, version: string): Promise<void>;
   deleteStep(name: string): Promise<boolean>;
   deleteStepsByPublisher(publisher: string): Promise<string[]>;
@@ -801,10 +843,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
     opts?: PublishByContentOptions,
   ): Promise<void> {
     const dir = this.workflowDir(name);
+    const prior = await this.readWorkflowMetadata(name);
+    if (!prior) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix));
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${version}.yaml`), yamlStr, "utf-8");
 
-    const prior = await this.readWorkflowMetadata(name);
     const meta = prior ?? { active: version, versions: {} };
     const upstream = upstreamFor(opts, prior?.versions[prior.active]?.upstream);
 
@@ -852,14 +895,14 @@ export class FileWorkspaceStore implements WorkspaceStore {
   async deleteWorkflow(name: string): Promise<boolean> {
     const dir = this.workflowDir(name);
     if (!(await this.readWorkflowMetadata(name))) return false;
-    // Its own files — `_metadata.json` and the version YAMLs — and `runs/`:
-    // on a file-backed deployment the run store keeps this workflow's runs
-    // there, the same records `RunStore.deleteRuns` removes. Never another
-    // directory: `acme/` also holds the names under it (`acme/linear/sync`).
+    // Its own files — `_metadata.json` and the version YAMLs — and nothing
+    // else: `runs/` is the run store's (a file-backed deployment keeps a
+    // workflow's runs there; `RunStore.deleteRuns` removes them, and an
+    // uninstall keeps them, marketplace.md §3), and `acme/` also holds the
+    // names under it (`acme/linear/sync`).
     for (const entry of await safeReaddir(dir)) {
       if (entry.isFile()) await rm(join(dir, entry.name), { force: true });
     }
-    await rm(join(dir, "runs"), { recursive: true, force: true });
     // Then the folders left empty, up to `workflows/`.
     const root = join(this.root, "workflows");
     for (let d = dir; d !== root && d.startsWith(root); d = dirname(d)) {
@@ -1038,6 +1081,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
         description: activeVer?.description,
         createdAt: activeVer?.createdAt,
         publisher: info?.publisher,
+        ...(activeVer?.upstream ? { upstream: activeVer.upstream } : {}),
       });
     }
 
@@ -1080,6 +1124,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
     const meta = (await this.readStepMetadata(customDir)) ?? { steps: {} };
     const existing = meta.steps[name];
+    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix));
 
     // Content already known → no-op (if active) or re-activate that version
     // (unless the caller opted out of re-activation).
@@ -1129,6 +1174,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           createdAt: new Date().toISOString(),
           hash,
           ...(description !== undefined ? { description } : {}),
+          ...provenance(opts),
           ...(upstream ? { upstream } : {}),
         },
       },
@@ -1390,7 +1436,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
   /** Copied out of the archive (`steps/_history/<name>/<vid>.ts`, which has
    *  no helper beside it) into `steps/custom/`, beside the active steps. */
-  async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string }> {
+  async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string; upstream?: Upstream }> {
     validateStepName(name);
     const meta = await this.readStepMetadata(join(this.root, "steps", "custom"));
     const info = meta?.steps[name]?.versions[version];
@@ -1398,7 +1444,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
     const code = await readFile(this.stepVersionPath(name, version), "utf-8");
     const hash = info.hash ?? contentHash(code);
     const path = await materializePinnedStep(this.customStepsDir(), name, version, hash, code);
-    return { path, hash };
+    return { path, hash, ...(info.upstream ? { upstream: info.upstream } : {}) };
   }
 
   /**
@@ -1608,7 +1654,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
    *  one — `acme` and `acme/linear/sync` share `workflows/acme/` — and skips
    *  a workflow's `runs/` (its run records; `runs` is never a segment of a
    *  slashed name). */
-  private async workflowNames(): Promise<string[]> {
+  private async workflowNames(under = ""): Promise<string[]> {
     const out: string[] = [];
     const walk = async (dir: string, prefix: string): Promise<void> => {
       const entries = await safeReaddir(dir);
@@ -1618,8 +1664,23 @@ export class FileWorkspaceStore implements WorkspaceStore {
         await walk(join(dir, e.name), prefix ? `${prefix}/${e.name}` : e.name);
       }
     };
-    await walk(join(this.root, "workflows"), "");
+    await walk(join(this.root, "workflows", ...(under ? under.split("/") : [])), under);
     return out.sort();
+  }
+
+  /** Is an item of `prefix`'s package here — a step or a workflow under
+   *  `<prefix>/` with a version that came from it? */
+  private async installedUnder(prefix: string): Promise<boolean> {
+    const steps = (await this.readStepMetadata(this.customStepsDir()))?.steps ?? {};
+    for (const [name, info] of Object.entries(steps)) {
+      if (name.startsWith(`${prefix}/`) && fromPackage(prefix, Object.values(info.versions))) return true;
+    }
+    for (const name of await this.workflowNames(prefix)) {
+      if (name === prefix) continue; // `acme/linear` itself is beside the prefix, not under it
+      const meta = await this.readWorkflowMetadata(name);
+      if (meta && fromPackage(prefix, Object.values(meta.versions))) return true;
+    }
+    return false;
   }
 
   private async readWorkflowMetadata(
