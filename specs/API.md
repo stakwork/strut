@@ -1286,14 +1286,78 @@ package it resolved under `<dataDir>/packages/`, one directory per digest,
 and serves any of them by digest — whether it built the package or
 installed it, it can be a mirror. Only `file:` refs resolve today; `git+`
 and `pk:` are refused by name (`package_source_unsupported`), and an app in
-a package is not installed yet (`package_unsupported`).
+a package is neither built nor installed yet (`package_unsupported`).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
+| POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings }` (`src/packages/build.ts`): a package built from this workspace into the cache. A person's act like install: full scope, one at a time with install and uninstall |
 | POST   | `/packages/install` | `{ ref: "file:/path/to/package", digest?: "sha256:<hex>" }` → 201 `InstallResult` (`src/packages/install.ts`). A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route |
+
+**Build** writes a package from what this workspace holds and puts it in
+the cache by its digest, so the archive route serves it and an install
+takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
+
+```jsonc
+// BuildRequest
+{
+  "package": "acme/linear", "version": "1.4.0",   // required
+  "description": "Linear issues", "license": "Apache-2.0",
+  "workflows": ["acme/linear/sync"],   // each with everything it can execute
+  "steps": ["acme/linear/create-issue"],  // beyond what the workflows reach
+  "concepts": ["Linear"],              // each with the pages under it (PARENT_OF)
+  "requires": {                        // packages BUILT on this strut that this one needs
+    "packages": [{ "package": "acme/util", "digest": "sha256:…" }]  // the digest their build returned
+  }
+}
+// → 201
+{
+  "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
+  "files": ["concepts/Linear.md", "steps/_shared.ts", "steps/create-issue.claims.yaml", "steps/create-issue.ts", "strut.yaml", "workflows/sync.yaml"],
+  "requires": {                        // as written into strut.yaml
+    "secrets": ["LINEAR_API_KEY"], "binaries": ["sh"],
+    "packages": [{ "package": "acme/util", "digest": "sha256:…", "source": "file:/…/packages/sha256-…" }]
+  },
+  "warnings": []                       // a claim left out, a closure read only in part, a parent outside the package
+}
+```
+
+What goes in:
+
+- **The closure** of each named workflow (`flowClosure`: its subflows,
+  `agentTools` with globs expanded against the registry). A workflow or
+  custom step it reaches under the prefix is an item, and so is every `_`
+  helper under the prefix. Core and lib steps, and a seed's workflow or step
+  (`source: "seed"`, such as `job`), are recorded nowhere: the installing
+  strut must have them, and the install checks.
+- **Another package's item** the closure reaches is a `requires.packages`
+  pin: at the digest it was installed at (its `upstream`), or, for a
+  package built on this strut, at the digest the request names under
+  `requires.packages`. A sibling is checked: every item reached under its
+  prefix must be in its cached copy, byte for byte as it is here now. A
+  named sibling is pinned whether or not anything reaches it.
+- **The Concepts** named, with every page under each, as
+  `concepts/<Name>.md` (front matter `description`, `parent`; the body is
+  `docs`). A top page keeps its parent.
+- **Each step's claims**, as `steps/<name>.claims.yaml`. A claim with a
+  check that reaches outside the package and what it requires is left out,
+  with a warning.
+- **`requires`**, from what can be read: secret names in step configs
+  (`secretsEnv`, `tokenSecret` and the other secret-name fields, a step's
+  own `secrets` and schema defaults), literal `secrets.get("…")` calls in
+  step source, literal `exec` commands, literal `runtime:` fields.
+
+Building twice from the same workspace gives the same digest. Refusals are
+400 `{ error }`: `package_unsupported` for `apps`, else one
+`package_build_refused: …` naming every problem: a workflow or step outside
+the prefix that came from no package, one package reached at two digests, a
+version label (`type@vN`, a subflow's `version:`), an item in a sealed
+namespace, a step that does not load here as its own type, a Concept
+another seeder stamped, a closure that cannot be read whole (a templated
+subflow, a grant read only at run time) unless the request names more than
+that workflow, a sibling that is not in the cache or no longer matches.
 
 **Install** resolves the package, then every package its
 `requires.packages` pins that is not installed here at that digest (from

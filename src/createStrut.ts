@@ -82,6 +82,7 @@ import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
+import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST } from "./packages/format.js";
@@ -2701,6 +2702,30 @@ export async function createStrut<TServices = unknown>(
         installPackage(packageDeps, body.ref as string, { ...(body.digest ? { digest: body.digest as string } : {}), ...(actor ? { actor } : {}) }),
       );
       return c.json(result, 201);
+    } catch (err) {
+      return packageError(c, err);
+    }
+  });
+  // A package BUILT from this workspace (src/packages/build.ts, §2): what the
+  // named workflows can execute, the named steps and Concepts, written into
+  // the cache — so the archive route above serves it and an install takes it
+  // from `file:<dir>`. A person's act like install, one write at a time.
+  app.post("/packages/build", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const str = (k: string) => body[k] === undefined || typeof body[k] === "string";
+    const list = (k: string) => body[k] === undefined || (Array.isArray(body[k]) && (body[k] as unknown[]).every((v) => typeof v === "string"));
+    if (typeof body["package"] !== "string" || typeof body["version"] !== "string" || !str("description") || !str("license")) {
+      return c.json({ error: "package and version are required strings (publisher/name, 1.4.0); description and license are strings" }, 400);
+    }
+    if (!["workflows", "steps", "concepts", "apps"].every(list)) return c.json({ error: "workflows, steps, concepts and apps are lists of names" }, 400);
+    const requires = body["requires"] as { packages?: unknown } | undefined;
+    const pinsOk = (p: unknown) => Array.isArray(p) && p.every((r) => r && typeof r === "object" && typeof (r as { package?: unknown }).package === "string" && typeof (r as { digest?: unknown }).digest === "string");
+    if (requires !== undefined && (!requires || typeof requires !== "object" || (requires.packages !== undefined && !pinsOk(requires.packages)))) {
+      return c.json({ error: "requires is { packages: [{ package, digest }] }: packages built on this strut, by the digest their build returned" }, 400);
+    }
+    try {
+      const built = await oneAtATime(() => buildPackage(packageDeps, body as unknown as BuildRequest));
+      return c.json({ package: built.package, version: built.version, digest: built.digest, files: built.files, requires: built.manifest.requires ?? {}, warnings: built.warnings }, 201);
     } catch (err) {
       return packageError(c, err);
     }
