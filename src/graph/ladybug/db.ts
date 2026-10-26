@@ -13,7 +13,7 @@
  * Cypher: a connection of its own whose every statement runs inside
  * `BEGIN TRANSACTION READ ONLY`, which the engine refuses writes in. (Not a
  * second `Database` opened read-only, as first planned: one reserves
- * `MAX_DB_SIZE` of address space and `close()` never returns it — at the
+ * `ladybugMaxDbSize()` of address space (max-size.ts) and `close()` never returns it — at the
  * addon's default of 8 TB the ninth open in a process failed with "Mmap for
  * size 8796093022208 failed".) On open: the
  * `vector` and `fts` extensions (REQUIRED, ruling 4:
@@ -31,6 +31,7 @@ import { dirname, join, resolve } from "node:path";
 import type { GraphTx, Params, Row } from "../engine.js";
 import { EDGE_COLUMNS, LADYBUG_EDGE_TYPES, nodeColumns, type ColumnType } from "./registry.js";
 import { bootEnv } from "../../env.js";
+import { ladybugMaxDbSize } from "./max-size.js";
 import { EXTENSION_NAMES, LADYBUG_EXTENSION_PINS, pinnedExtensions, type ExtensionName, type PinnedExtensions, type PinnedOptions } from "./extensions.js";
 
 export type Query = (cypher: string, params?: Params) => Promise<Row[]>;
@@ -93,11 +94,6 @@ function warnUnpinned(why: string): void {
   console.warn(`[graph] ${why}: INSTALLing vector + fts from extension.ladybugdb.com, whose files change under the same version`);
 }
 
-/** The address space a `Database` reserves on open (the addon's `maxDBSize`),
- *  which `close()` never returns: the default 8 TB fits eight to ten opens in
- *  a process, and a test file opening nine failed on the ninth. 1 TB fits a
- *  hundred and caps no file strut keeps. */
-export const MAX_DB_SIZE = 2 ** 40;
 
 // ── DDL ─────────────────────────────────────────────────────────────────────
 
@@ -290,7 +286,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
   const unclean = existsSync(`${path}.wal`);
 
   const lbug = await loadLadybug();
-  const db = new lbug.Database(path, 0, true, false, MAX_DB_SIZE);
+  const db = new lbug.Database(path, 0, true, false, ladybugMaxDbSize());
   const readConn = new lbug.Connection(db);
   const writeConn = new lbug.Connection(db);
   const read = queryOn(readConn);
