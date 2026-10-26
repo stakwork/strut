@@ -1,5 +1,5 @@
 // What a strut that keeps a read copy of its home's memory remembers between
-// syncs (home/sync): the `until` of the last push (the next `since`) and the content_hash
+// syncs (home/sync): what the last sync read its changes up to (the next `since`) and the content_hash
 // of the copy it holds, in `<dataDir>/home-sync.json`. Leading underscore:
 // imported by the home/* steps, skipped by registry discovery.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -8,7 +8,8 @@ import type { StepContext } from "../../../core.js";
 import type { ChangeT } from "../dictation/_shared.js";
 
 export interface SyncState {
-  /** The last push's `until`: what was pushed up to. */
+  /** What the last sync read its changes up to: the push's `until`, or,
+   *  when it pulled, the `until` of its read inside the import's lock. */
   since?: string;
   /** The content_hash of the memory copy held. */
   hash?: string;

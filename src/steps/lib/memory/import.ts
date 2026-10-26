@@ -43,7 +43,7 @@ async function load(query: Query, work: string, graph: Map<string, Buffer>): Pro
 }
 
 /** Loads a checked snapshot into the memory `handle` is: the step's work,
- *  run by the caller inside memoryExclusive (home/load runs it there too).
+ *  run by the caller inside memoryExclusive (home/sync runs it there too).
  *  Returns the step's reply: `{ counts, replaced, backup? }` or `{ error }`. */
 export async function importSnapshot(
   handle: Handle,

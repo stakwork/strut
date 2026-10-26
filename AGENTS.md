@@ -893,7 +893,10 @@ outlive the pull and reach other credentials. A route answers its caller
   `<dataDir>/home-sync.json`), sends `dictation/changes-since`'s changes to
   `/home/push`, then asks `/home/pull` with its hash; a changed memory is
   loaded with `memory/import`'s replace (backed up, put back on failure).
-  Only then does it record `since` = the push's `until` and the new hash.
+  Only then does it record the new hash and `since`: the push's `until`,
+  or, when it pulled, the `until` of its read inside the import's lock
+  (below), so the home's copies of what it pushed, stamped when the home
+  applied them, are not pushed back by the next sync.
   A sync that fails (away from home, a push refused) records nothing; the
   next one pushes the same changes again (idempotent) and catches up. Run
   it on a timer, on wake, after a correction.

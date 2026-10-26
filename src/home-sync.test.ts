@@ -303,6 +303,9 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
     assert.equal((await synced()).pushed, 1);
     assert.deepEqual(await pairs(box), ["ee toy→Itoi", "stack work→Stakwork"]);
     assert.deepEqual(await pairs(mac), ["ee toy→Itoi", "stack work→Stakwork"], "the Mac's copy is the box's again, its learn in it");
+    // The box's copy of that learn, stamped when the box applied it, came
+    // back with the pull: the next sync does not push it again.
+    assert.equal((await synced()).pushed, 0);
 
     await step(box, "dictation/add", { heard: "lady bug", written: "Ladybug" });
     assert.equal((await synced()).pulled, true);
@@ -373,6 +376,7 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
   });
 
   it("what dictation learns on the Mac while a sync is in is kept, and pushed next time", async () => {
+    await step(box, "dictation/add", { heard: "from the box", written: "FromTheBox" }); // something to pull
     onPull = async () => {
       onPull = undefined;
       await step(mac, "dictation/add", { heard: "mid sync", written: "MidSync" });

@@ -5,7 +5,7 @@ import { readState } from "./_state.js";
 export default defineStep({
   type: "home/state",
   description:
-    "Where this strut's read copy of its home's memory stands (home/sync): `since`, what the last push covered up to, " +
+    "Where this strut's read copy of its home's memory stands (home/sync): `since`, what the last sync read its changes up to, " +
     "`hash`, the content_hash of the copy held, and `at`, when the last sync finished. Empty before the first sync.",
   effect: "read",
   input: z.object({}),

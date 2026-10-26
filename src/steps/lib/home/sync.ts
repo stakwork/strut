@@ -28,7 +28,8 @@ async function post(peers: PeersCapability, peer: string, path: string, body: un
 // What dictation changes here after the push read its changes is read from
 // the old graph inside the memory lock, before the replace, and replayed on
 // the new one, so the next push carries it. Both reads are in the writes'
-// queue over [since, until), as dictation/changes-since reads.
+// queue over [since, until), as dictation/changes-since reads, and the next
+// sync starts where the last read ended.
 export default defineStep({
   type: "home/sync",
   description:
@@ -85,9 +86,9 @@ async function sync(peer: string, ctx: StepContext<{ peers?: PeersCapability }>)
   await post(peers, peer, "/home/push", { dictation: changes }, "the push did not land; nothing was pulled, nothing is lost");
   const out = await post(peers, peer, "/home/pull", state.hash ? { hash: state.hash } : {}, "the pull did not land; the memory here is as it was");
   if (typeof out.content_hash !== "string") throw new Error("home-sync: the home's pull returned no content_hash");
-  const record = () => writeState(ctx, { since: new Date(until).toISOString(), hash: out.content_hash, at: new Date().toISOString() });
+  const record = (upTo: number) => writeState(ctx, { since: new Date(upTo).toISOString(), hash: out.content_hash, at: new Date().toISOString() });
   if (out.unchanged) {
-    record();
+    record(until);
     return { pushed: changes.length, pulled: false, hash: out.content_hash, kept: 0 };
   }
   if (typeof out.data !== "string") throw new Error("home-sync: the home's memory changed and its pull carried no data");
@@ -97,17 +98,22 @@ async function sync(peer: string, ctx: StepContext<{ peers?: PeersCapability }>)
   } catch (err) {
     throw new Error(`home-sync: ${message(err)}`);
   }
-  const { late, result } = await memoryExclusive(ctx, async (handle) => {
-    const late = (await dictationChanges(handle.read, until, Date.now())).changes;
+  const { late, lateUntil, result } = await memoryExclusive(ctx, async (handle) => {
+    const lateUntil = Date.now();
+    const late = (await dictationChanges(handle.read, until, lateUntil)).changes;
     // On disk before the graph they are in is replaced: a replay that fails
     // (or a crash) leaves them for the next sync, never nowhere.
     if (late.length) writeState(ctx, { ...state, pending: late });
     const result = await importSnapshot(handle, snapshot, true);
     if ("error" in result && late.length) writeState(ctx, state); // the old graph is back, and has them
-    return { late, result };
+    return { late, lateUntil, result };
   });
   if ("error" in result) throw new Error(`home-sync: ${result.error}`);
   if (late.length) await applyChanges.run(applyChanges.input.parse({ changes: late }), ctx);
-  record();
+  // Read up to `lateUntil`: every change here before it was pushed or is
+  // replayed now, stamped after it. The new graph's copies of what was
+  // pushed, stamped when the home applied them, are before it too, so the
+  // next sync does not push them back.
+  record(lateUntil);
   return { pushed: changes.length, pulled: true, hash: out.content_hash, counts: result.counts, ...(result.backup ? { backup: result.backup } : {}), kept: late.length };
 }
