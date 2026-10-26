@@ -1482,11 +1482,13 @@ production until install (step 2) calls the resolver.
        records no source ref anywhere — its pages carry a stamp, not an
        `upstream` — so `GET /packages` finds its digest and version in the
        cache, and §4's update (which re-resolves `upstream.source.ref`)
-       has nothing to re-resolve for it. And a PINNED version of a step
-       that imports a sibling helper (`./_shared.js`) does not load: the
-       version archive (`steps/_history/<name>/<vN>.ts`, the graph's
-       `-versions` dir) has no helper beside it. Pre-existing, but a
-       package ships helpers, so a pin of a package step meets it.
+       has nothing to re-resolve for it. A PINNED version of a step that
+       imports a sibling helper (`./_shared.js`) did not load either: the
+       version archive had no helper beside it. **Fixed (strut#341):** a
+       pinned version is imported from beside the active steps
+       (`materializePinnedStep`), so a helper it imports is the helper's
+       ACTIVE version — a pin of a package step holds the step's own
+       file, not the helpers it shipped with.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by

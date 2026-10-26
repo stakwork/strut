@@ -10,6 +10,10 @@
  * (`vN`), never a content hash. Events carry the bare type as `stepType`
  * (everything keyed on a step type — stats, claims, the UI's colors — is
  * blind to pins) and the executed version as `step.start.stepVersion`.
+ *
+ * A pin holds the step's own file. A helper it imports (`./_shared.js`) is
+ * the helper's active version, as for every other step — see
+ * `materializePinnedStep` (src/workspace.ts) for why.
  */
 export interface StepRef {
   type: string;

@@ -1,5 +1,5 @@
 import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm, rename } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
 import type { Automation } from "./automations.js";
@@ -633,7 +633,10 @@ export interface WorkspaceStore extends SubflowResolver {
   /** One archived version as an importable file + its content hash — what
    *  a PINNED reference (`type@vN`, src/step-ref.ts) loads through
    *  `resolveStep` — and its upstream, which fences it like an active one.
-   *  Throws when the step or version does not exist. */
+   *  The file sits beside the ACTIVE custom steps (`materializePinnedStep`),
+   *  so its relative imports resolve as the active version's do: a helper
+   *  it imports is the helper's active version. Throws when the step or
+   *  version does not exist. */
   materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string; upstream?: Upstream }>;
   setActiveStepVersion(name: string, version: string): Promise<void>;
   deleteStep(name: string): Promise<boolean>;
@@ -1431,16 +1434,16 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return readFile(this.stepVersionPath(name, version), "utf-8");
   }
 
-  /** The archive IS the importable file (`steps/_history/<name>/<vid>.ts`
-   *  sits under the ESM-scoped `steps/`). */
+  /** Copied out of the archive (`steps/_history/<name>/<vid>.ts`, which has
+   *  no helper beside it) into `steps/custom/`, beside the active steps. */
   async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string; upstream?: Upstream }> {
     validateStepName(name);
     const meta = await this.readStepMetadata(join(this.root, "steps", "custom"));
     const info = meta?.steps[name]?.versions[version];
     if (!info) throw new Error(`Version "${version}" of step "${name}" not found`);
-    const path = this.stepVersionPath(name, version);
-    await ensureEsmScope(join(this.root, "steps"));
-    const hash = info.hash ?? contentHash(await readFile(path, "utf-8"));
+    const code = await readFile(this.stepVersionPath(name, version), "utf-8");
+    const hash = info.hash ?? contentHash(code);
+    const path = await materializePinnedStep(this.customStepsDir(), name, version, hash, code);
     return { path, hash, ...(info.upstream ? { upstream: info.upstream } : {}) };
   }
 
@@ -1488,6 +1491,12 @@ export class FileWorkspaceStore implements WorkspaceStore {
       removed = true;
     } catch (err: any) {
       if (err?.code !== "ENOENT") throw err;
+    }
+
+    // Its pinned versions' files beside it (`materializePinnedStep`).
+    for (const e of await safeReaddir(dirname(filePath))) {
+      const file = join(dirname(filePath), e.name);
+      if (e.isFile() && pinnedStepFileOf(file) === filePath) await rm(file, { force: true });
     }
 
     // Remove the version archive dir for this step (best-effort).
@@ -1910,4 +1919,50 @@ export async function ensureEsmScope(dir: string): Promise<void> {
   } catch {
     await writeFile(pkg, JSON.stringify({ type: "module" }, null, 2) + "\n", "utf-8");
   }
+}
+
+/**
+ * Write a PINNED step version (`type@vN`, src/step-ref.ts) where
+ * `resolveStep` imports it: BESIDE the active custom steps in `dir` (the
+ * directory `materializeCustomSteps` returns), as
+ * `<ns>/_<leaf>@<vN>.<hash>.ts`, so a relative import (`./_shared.js`)
+ * resolves as the active version's does. A pin holds the step's own file;
+ * a helper it imports is the helper's ACTIVE version, the one every other
+ * step imports, so a helper changed after the pin changes the pinned step
+ * too. Not the helper that was active when the pinned version was
+ * published: nothing records that (the active pointer keeps no history, and
+ * timestamps do not survive a re-activation, `activate: false` or the
+ * fs → graph import), and a version's hash covers its own file alone
+ * (`step.start.stepVersion`, `run.start.stepHashes`, evidence), so a helper
+ * is an item with its own active pointer everywhere already.
+ *
+ * The `_` keeps registry discovery and the step listings off the file, the
+ * `@` keeps every step name off it (`validateStepName`), and the hash gives
+ * each content its own module URL: a label reused after a delete (labels
+ * start over at `v1`) never meets the old version in the module cache.
+ * Returns the file's path.
+ */
+export async function materializePinnedStep(dir: string, name: string, version: string, hash: string, code: string): Promise<string> {
+  await ensureEsmScope(dir);
+  const segments = name.split("/");
+  const leaf = segments.pop()!;
+  const path = join(dir, ...segments, `_${leaf}@${version}.${hash}.ts`);
+  let current: string | null = null;
+  try {
+    current = await readFile(path, "utf-8");
+  } catch {
+    // absent
+  }
+  if (current !== code) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, code, "utf-8");
+  }
+  return path;
+}
+
+/** The active step file a pinned version's file sits beside
+ *  (`materializePinnedStep`), or null when `file` is not one. */
+export function pinnedStepFileOf(file: string): string | null {
+  const m = /^_([^@]+)@.+\.ts$/.exec(basename(file));
+  return m ? join(dirname(file), `${m[1]}.ts`) : null;
 }

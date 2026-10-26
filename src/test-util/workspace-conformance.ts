@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import type { Automation } from "../automations.js";
 import type { WorkspaceStore } from "../workspace.js";
 import { contentHash } from "../version.js";
@@ -684,6 +685,31 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await ws.getStepSource("log"))?.origin, "core");
       assert.equal((await ws.getStepSource("github/fetch-pr"))?.origin, "lib");
       assert.equal(await ws.getStepSource("no/such/step"), null);
+    });
+
+    it("a pinned version is imported beside the active steps: its relative imports see the helpers' ACTIVE versions, and a reused label its own code", async () => {
+      const MOD = (expr: string) => `import { g } from "./_h.js";\nimport { t } from "../_top.js";\nexport default { run: () => ${expr} };\n`;
+      await ws.publishStep("pin/_top", `export const t = 10;\n`);
+      await ws.publishStep("pin/sub/_h", `export const g = 1;\n`);
+      const v1 = await ws.publishStep("pin/sub/s", MOD("g + t"));
+      await ws.publishStep("pin/sub/s", MOD("(g + t) * 100"));
+      await ws.publishStep("pin/sub/_h", `export const g = 2;\n`);
+      const load = async () => {
+        const { path, hash } = await ws.materializeStepVersion("pin/sub/s", v1.version);
+        return { path, hash, run: (await import(pathToFileURL(path).href)).default.run as () => number };
+      };
+      const pinned = await load();
+      assert.equal(pinned.run(), 12, "v1's own code over the helper's active version");
+      assert.equal(pinned.hash, contentHash(MOD("g + t")));
+      assert.deepEqual((await ws.listSteps()).map((s) => s.type), ["pin/sub/s"], "the file is never a step");
+      await ws.materializeCustomSteps();
+      assert.ok((await stat(pinned.path)).isFile(), "kept while its step is live");
+      // Labels start over after a delete: v1 is other code now, and a pin runs that code.
+      await ws.deleteStep("pin/sub/s");
+      await ws.materializeCustomSteps();
+      await assert.rejects(stat(pinned.path), "and gone with its step");
+      assert.equal((await ws.publishStep("pin/sub/s", MOD("-(g + t)"))).version, v1.version);
+      assert.equal((await load()).run(), -12);
     });
 
     it("materializeCustomSteps returns a directory holding every active custom step as a file", async () => {
