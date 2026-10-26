@@ -8,7 +8,9 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Readable } from "node:stream";
@@ -19,6 +21,9 @@ import { main } from "./cli.js";
 import { makeLink, parseLink } from "./link.js";
 import { hkdf, open, proof, seal, WrongCode } from "./seal.js";
 import { serve, type ServeOptions, type ServeResult } from "./serve.js";
+import { loadLadybug, openLadybug } from "../graph/ladybug/db.js";
+import { pinnedExtensions } from "../graph/ladybug/extensions.js";
+import { testBackends } from "../graph/test-util.js";
 
 const hex = (b: Buffer) => b.toString("hex");
 
@@ -132,8 +137,10 @@ describe("a move between two hosts and back", () => {
   before(async () => {
     await put(macFolders.data, {
       "secrets.json": '{"salt":"x","secrets":{}}',
-      "graph/graph.lbug": randomBytes(300_000),
-      "graph/graph.lbug.wal": randomBytes(1000),
+      // Opaque bytes: the memory graph moves as files (the workspace graph is
+      // checkpointed first, which needs a real one: below).
+      "memory/graph.lbug": randomBytes(300_000),
+      "memory/graph.lbug.wal": randomBytes(1000),
       "chats/c1/messages.jsonl": `{"role":"user","content":"saved at ${macFolders.data}/uploads/c1/a.txt"}\n`,
       "uploads/c1/a.txt": "hello",
       "jobs/j1.json": "{}",
@@ -156,7 +163,7 @@ describe("a move between two hosts and back", () => {
       "move.env": "STRUT_SECRET_KEY=s3cret key\nSTRUT_API_KEY=host-bound\n# a comment\nbridge.BROKER_URL=broker:1883\nbridge.RUNNER_ALIAS=It's me\n",
     });
     sourceData = new Map([...(await tree(macFolders.data))].filter(([rel]) => !rel.split("/").some((_, i, parts) => leftBehind(parts.slice(0, i + 1).join("/"), i < parts.length - 1))));
-    assert.ok(sourceData.has("graph/graph.lbug") && !sourceData.has("jobs/j1/repo/README") && !sourceData.has(MOVED_FILE) && sourceData.has("jobs/.callbacks/j1.json"));
+    assert.ok(sourceData.has("memory/graph.lbug") && !sourceData.has("jobs/j1/repo/README") && !sourceData.has(MOVED_FILE) && sourceData.has("jobs/.callbacks/j1.json"));
   });
 
   after(() => rm(root, { recursive: true, force: true }));
@@ -241,7 +248,7 @@ describe("a move between two hosts and back", () => {
     // Beside the data folder: <data's parent>/sent-<time>/.
     const sent = (await readdir(join(box, "strut"))).filter((n) => n.startsWith("sent-"));
     assert.equal(sent.length, 1);
-    assert.ok(existsSync(join(box, "strut", sent[0]!, "data", "graph", "graph.lbug")));
+    assert.ok(existsSync(join(box, "strut", sent[0]!, "data", "memory", "graph.lbug")));
     assert.ok(existsSync(join(box, "strut", sent[0]!, "sidecars", "bridge", "db.redb")));
 
     // strut's next boot applies it.
@@ -263,5 +270,106 @@ describe("a move between two hosts and back", () => {
   it("the CLI: usage is exit 2, a refusal exit 1", async () => {
     assert.equal(await main(["nope"]), 2);
     assert.equal(await main(["check", "http://127.0.0.1:1/?code=ABCD"]), 1);
+  });
+});
+
+/** A child that opens the workspace graph with the extensions in `dir` and
+ *  writes a node with search text and an embedding. With `die`, it exits
+ *  without closing the graph, as a killed strut (or a container stopped
+ *  without a handler) does: the WAL stays, and on a graph that already
+ *  existed it names `dir` (the session that creates a file logs no load). */
+function writeIn(file: string, dir: string, ref: string, die: boolean): void {
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "-e",
+      `import { openLadybug } from ${JSON.stringify(fileURLToPath(new URL("../graph/ladybug/db.js", import.meta.url)))};
+       const h = await openLadybug(${JSON.stringify(file)}, { extensionDir: ${JSON.stringify(dir)} });
+       const v = Array.from({ length: 384 }, (_, i) => (i % 11) / 11);
+       await h.withWrite((tx) => tx.run("CREATE (:Node {ref_id: $r, name: $r, Data_Bank: 'remember the lighthouse keeper', text_embeddings: $v})", { r: ${JSON.stringify(ref)}, v }));
+       ${die ? "process.exit(0);" : "await h.close();"}`,
+    ],
+    { env: process.env, encoding: "utf-8" },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  if (die) assert.ok(existsSync(`${file}.wal`), "the child left a WAL");
+}
+
+describe("a graph written on one host opens on another", { skip: testBackends().find((b) => b.kind === "ladybug")!.skip }, () => {
+  const root = join(tmpdir(), `strut-move-graph-${randomUUID()}`);
+  const ext = (name: string) => join(root, `ext-${name}`);
+  const mac = { data: join(root, "mac", "workspace") };
+  const box = { data: join(root, "box", "workspace") };
+  const back = { data: join(root, "back", "workspace") };
+  const graphOf = (f: { data: string }) => join(f.data, "graph", "graph.lbug");
+  const saved = process.env["STRUT_LADYBUG_EXTENSION_DIR"];
+
+  /** This host's extensions: strut's pinned files, copied into a folder of its own. */
+  async function extensions(name: string): Promise<string> {
+    const pinned = await pinnedExtensions((await loadLadybug()).Database.getVersion());
+    assert.ok("files" in pinned, "files" in pinned ? "" : pinned.none);
+    await mkdir(ext(name), { recursive: true });
+    for (const [n, path] of Object.entries(pinned.files)) await copyFile(path, join(ext(name), `lib${n}.lbug_extension`));
+    return ext(name);
+  }
+
+  /** The nodes `refs` are found by full text and by vector. */
+  async function searchable(file: string, dir: string, refs: string[]) {
+    const h = await openLadybug(file, { extensionDir: dir });
+    try {
+      const fts = await h.query("CALL QUERY_FTS_INDEX('Node', 'node_fts', 'lighthouse') RETURN node.ref_id AS r");
+      assert.deepEqual(fts.map((r) => r["r"]).sort(), [...refs].sort());
+      const v = Array.from({ length: 384 }, (_, i) => (i % 11) / 11);
+      const near = await h.query("CALL QUERY_VECTOR_INDEX('Node', 'node_vec', $v, 5) RETURN node.ref_id AS r", { v });
+      assert.deepEqual(near.map((r) => r["r"]).sort(), [...refs].sort());
+    } finally {
+      await h.close();
+    }
+  }
+
+  after(async () => {
+    if (saved === undefined) delete process.env["STRUT_LADYBUG_EXTENSION_DIR"];
+    else process.env["STRUT_LADYBUG_EXTENSION_DIR"] = saved;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("a graph copied with its WAL fails where the writer's extension path is missing", async () => {
+    const a = await extensions("raw");
+    const file = join(root, "raw", "graph.lbug");
+    writeIn(file, a, "r0", false);
+    writeIn(file, a, "r1", true);
+    await cp(join(root, "raw"), join(root, "raw-copy"), { recursive: true });
+    await rename(a, `${a}-gone`);
+    const b = await extensions("raw-b");
+    await assert.rejects(openLadybug(join(root, "raw-copy", "graph.lbug"), { extensionDir: b }), new RegExp(`Failed to load library: ${a}/`));
+  });
+
+  it("moves both ways: each sender folds the WAL in, so the graph opens with the next host's extensions", async () => {
+    // The Mac: extensions in A, a graph written, then left with its WAL.
+    const a = await extensions("A");
+    writeIn(graphOf(mac), a, "mac0", false);
+    writeIn(graphOf(mac), a, "mac", true);
+    const toBox = serving(box);
+    process.env["STRUT_LADYBUG_EXTENSION_DIR"] = a; // the sender's own
+    await send(await toBox.ready, mac);
+    assert.equal(await toBox.done, "received");
+    assert.ok(!existsSync(`${graphOf(box)}.wal`), "no WAL travels");
+    await rm(a, { recursive: true });
+
+    // The box: its own extensions in B; it writes too, and is stopped hard.
+    const b = await extensions("B");
+    writeIn(graphOf(box), b, "box", true);
+    const home = serving({ ...box, sendBack: true });
+    process.env["STRUT_LADYBUG_EXTENSION_DIR"] = b;
+    await fetchMove(await home.ready, back);
+    assert.equal(await home.done, "sent");
+    assert.ok(!existsSync(`${graphOf(back)}.wal`), "no WAL travels");
+    await rm(b, { recursive: true });
+
+    // Home again, with extensions in C: everything written on both hosts is searchable.
+    await searchable(graphOf(back), await extensions("C"), ["mac0", "mac", "box"]);
   });
 });

@@ -9,7 +9,7 @@
 //
 // Regular files only. Written and read as streams, so a large workspace
 // never has to fit in memory.
-import { createReadStream, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -234,12 +234,30 @@ export function pack(f: MoveFolders, manifest: Manifest, env: MoveEnv): AsyncIte
   return through(tarStream(f, manifest, env), createGzip());
 }
 
+/** Fold the workspace graph's WAL into its file before it moves. Ladybug
+ *  logs every `LOAD EXTENSION '<absolute path>'` in the WAL and replays it
+ *  at the next open, so a WAL left by a strut that did not close its graph
+ *  (killed, or a container stopped without a handler) makes the graph fail
+ *  to open on any host where that path does not exist. Opened and closed
+ *  here, with this host's extensions, it leaves no WAL. A strut still
+ *  running holds the file: the open fails, and so does the move. */
+async function checkpointGraph(data: string): Promise<void> {
+  const file = join(resolve(data), "graph", "graph.lbug");
+  if (!existsSync(`${file}.wal`)) return;
+  // Lazy: the Ladybug addon is an optional native dependency, and most
+  // folders reach here with no WAL.
+  const { openLadybug } = await import("../graph/ladybug/db.js");
+  await (await openLadybug(file)).close();
+  if (existsSync(`${file}.wal`)) throw new Error(`${file}.wal is still there after closing the graph: is strut still running?`);
+}
+
 /** Pack this host's stopped folders: the manifest, and the sealed-to-be
  *  plaintext. A `moved.json` strut has not applied yet (a folder moved here
  *  and sent on before strut booted) is applied first, so what is packed
  *  points at this host, as the manifest says. */
 export async function packFolders(f: MoveFolders, callbacks?: Endpoint): Promise<{ manifest: Manifest; plain: AsyncIterable<Buffer> }> {
   await applyMove(f.data);
+  await checkpointGraph(f.data);
   const manifest = manifestFor(f, callbacks);
   return { manifest, plain: pack(f, manifest, await readMoveEnv(f)) };
 }
