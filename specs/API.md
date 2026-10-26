@@ -484,7 +484,9 @@ A step that never returns would hold a cooperative cancel forever. For that,
 `POST …/cancel` with body `{ "force": true }` also stops waiting on every step
 in flight in the tree: the run finalizes as `cancelled` at once. The stuck
 step's code is abandoned, not killed — whatever it holds (a subprocess, a
-socket) stays until it dies or the process restarts. The same `force` is on
+socket) stays until it dies or the process restarts. An agent step's session
+is let go when the run ends, so the thread's next turn can start; the
+abandoned turn, should it ever finish, commits nothing. The same `force` is on
 the `run/cancel` step, the chat builder's `cancel_run` tool, `useCancel`'s
 `cancel(workflow, runId, force?)`, and the UI's **Force cancel** button, which
 replaces Cancel while a run sits in `cancelling`.

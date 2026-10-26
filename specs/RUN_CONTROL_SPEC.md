@@ -148,7 +148,10 @@ catches it as a distinct outcome (NOT the generic error path):
 run `cancelling` forever. `controller.force()` is `cancel()` plus abandoning
 every in-flight step body in the subtree (`raceForce`, run-control.ts): the
 runner stops awaiting it, throws `CancelledError`, and the run finalizes as
-`cancelled` as above. The step's code is not killed. Surfaces: `POST …/cancel
+`cancelled` as above. The step's code is not killed. An agent step lets go of
+its session when the run ends (`ctx.onRunEnd`), and a session let go of
+refuses the abandoned turn's commit (`session_released:`), so the thread's
+next turn starts and is not overwritten. Surfaces: `POST …/cancel
 { force: true }`, `run/cancel { force }`, chat `cancel_run { force }`, and the
 UI's "Force cancel" (shown while `cancelling`).
 

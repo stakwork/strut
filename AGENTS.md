@@ -1882,7 +1882,10 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   the session's in-process lock — a second turn fails `session_busy:`),
   sends the thread's system prompt and messages followed by this turn's
   prompt, and on success appends the turn; a failed or cancelled turn
-  appends nothing. The id is a flat, GLOBAL string the CALLER supplies
+  appends nothing. The lock is also let go when the run ends, so a turn a
+  force-cancel abandoned (run-control.ts `raceForce`) never holds the thread
+  past its run; should it wake later, its commit is refused
+  (`session_released:`). The id is a flat, GLOBAL string the CALLER supplies
   (usually `"{{ input.session }}"`, a uuid) — no run-level field, no chain
   of runs: any run of any workflow naming it joins, so the unit stays one
   run per turn. Which agents of a workflow remember is per step: several
