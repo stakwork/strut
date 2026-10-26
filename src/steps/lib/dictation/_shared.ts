@@ -41,6 +41,7 @@ export const Change = z.object({
   written: z.string().describe("How the user writes it: the form, else the entity's name."),
   name: z.string().optional().describe("The entity the pair is kept on, when `written` is another form of its name (BTC on Bitcoin, Itoi in Paul Itoi)."),
   term: z.boolean().optional().describe("A word learned with no mapping (P8)."),
+  undone: z.boolean().optional().describe("On a learn: undone later here (its undo follows). A box that undid the pair already skips it."),
   at: z.string().describe("When it was learned or undone (ISO)."),
 });
 export type ChangeT = z.infer<typeof Change>;

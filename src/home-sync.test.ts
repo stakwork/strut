@@ -6,7 +6,8 @@
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import http from "node:http";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStrut, type Strut } from "./createStrut.js";
@@ -111,6 +112,29 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     assert.deepEqual((await step(box, "dictation/apply-changes", { changes: stray })).applied.map((a: any) => a.result), ["not found"]);
   });
 
+  it("a learn the copy undid later, sent again, writes nothing on a box that undid it too; one not undone is learned again", async () => {
+    const since = (await step(mac, "dictation/changes-since", {})).until;
+    await step(mac, "dictation/add", { heard: "dock her", written: "Docker" });
+    await step(mac, "dictation/add", { heard: "kay eight", written: "K8", term: true });
+    const made = (await lexicon(mac)).entities;
+    for (const name of ["Docker", "K8"]) await step(mac, "dictation/undo", { undo: [made.find((e: any) => e.name === name).ref_id] });
+    const { changes } = await step(mac, "dictation/changes-since", { since });
+    assert.deepEqual(changes.map((c: any) => [c.op, c.written, c.undone]), [
+      ["learn", "Docker", true],
+      ["learn", "K8", true],
+      ["undo", "Docker", undefined],
+      ["undo", "K8", undefined],
+    ]);
+    assert.deepEqual((await step(box, "dictation/apply-changes", { changes })).applied.map((a: any) => a.result), ["learned", "learned", "undone", "undone"]);
+    const { content_hash } = await step(box, "memory/export", { inline: true });
+    const again = await step(box, "dictation/apply-changes", { changes });
+    assert.deepEqual(again.applied.map((a: any) => a.result), ["already undone", "already undone", "already undone", "already undone"]);
+    assert.deepEqual(await step(box, "memory/export", { inline: true, if_changed: content_hash }), { unchanged: true, content_hash }, "nothing written");
+    // Added again by hand on the copy, not undone: the box learns it again.
+    const readded = [{ op: "learn", heard: "dock her", written: "Docker", at: new Date().toISOString() }];
+    assert.deepEqual((await step(box, "dictation/apply-changes", { changes: readded })).applied.map((a: any) => a.result), ["learned"]);
+  });
+
   it("changes-since waits for a write in flight: one that stamped its time and has not committed is in this read or the next", async () => {
     await step(mac, "dictation/add", { heard: "type script", written: "TypeScript" });
     const start = (await step(mac, "dictation/changes-since", {})).until;
@@ -210,4 +234,182 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     assert.ok(res.status === 403 || res.status === 404, `${res.status}`);
   });
 
+});
+
+// ── both sides: a Mac's strut syncing its copy with its home box ──────────
+
+describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "strut-home-e2e-"));
+  const saved = process.env["STRUT_API_KEY"];
+  let box: Strut;
+  let mac: Strut;
+  let proxy: http.Server;
+  let boxUrl: string;
+  /** Runs when the box is asked for its memory, before it answers: the moment a sync is in. */
+  let onPull: (() => Promise<void>) | undefined;
+  /** Answers a push in the box's place, when set. */
+  let pushAnswer: number | undefined;
+  const NO_SEEDS = { serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false, job: false, orchestrator: false, builder: false } as const;
+
+  before(async () => {
+    process.env["STRUT_API_KEY"] = KEY;
+    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
+    boxUrl = `http://127.0.0.1:${await box.listen(0, "127.0.0.1")}`;
+    // The box's front door, where a test can step in.
+    proxy = http.createServer(async (req, res) => {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      if (req.url === "/home/push" && pushAnswer) return void res.writeHead(pushAnswer, { "content-type": "application/json" }).end(JSON.stringify({ error: "the box said no" }));
+      if (req.url === "/home/pull" && onPull) await onPull();
+      const out = await fetch(`${boxUrl}${req.url}`, { method: req.method, headers: { "content-type": "application/json", authorization: req.headers.authorization ?? "" }, ...(body ? { body } : {}) });
+      res.writeHead(out.status, { "content-type": "application/json" }).end(await out.text());
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    // The record `strut move` hands back: the box's address and a person token it signed.
+    mac = await createStrut({
+      workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: join(dir, "mac"), homeSync: "copy", ...NO_SEEDS,
+      peers: [{ id: "home", baseUrl: `http://127.0.0.1:${(proxy.address() as { port: number }).port}`, token: personToken("tom")!.token }],
+    });
+  });
+  after(async () => {
+    proxy.close();
+    await mac.close();
+    await box.close();
+    rmSync(dir, { recursive: true, force: true });
+    if (saved === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = saved;
+  });
+
+  const call = (strut: Strut, method: string, path: string, body?: unknown) =>
+    strut.app.request(path, { method, headers: { "content-type": "application/json", authorization: `Bearer ${KEY}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const step = async (strut: Strut, type: string, config: unknown) => {
+    const body = (await (await call(strut, "POST", `/steps/${type}/run`, { config })).json()) as { status: string; output?: any; error?: string };
+    assert.equal(body.status, "success", JSON.stringify(body.error ?? body).slice(0, 600));
+    return body.output;
+  };
+  const pairs = async (strut: Strut) =>
+    (await step(strut, "memory/lexicon", {})).entities.flatMap((e: any) => e.heard.map((h: any) => `${h.value}→${h.form ?? e.name}`)).sort();
+  const undone = async (strut: Strut) => (await step(strut, "memory/lexicon", {})).undone.map((u: any) => `${u.value}→${u.form ?? u.entity.name}`).sort();
+  const sync = async (): Promise<RunSummary> => {
+    const res = await call(mac, "POST", "/workflows/home-sync/run", { input: {} });
+    assert.equal(res.status, 202, await res.clone().text());
+    const { runId } = (await res.json()) as { runId: string };
+    for (let i = 0; i < 800; i++) {
+      const s = await mac.store.getRunSummary("home-sync", runId);
+      if (s) return s;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error("home-sync did not settle");
+  };
+  const synced = async () => {
+    const s = await sync();
+    assert.equal(s.status, "success", JSON.stringify(s.error));
+    return s.output as { pushed: number; pulled: boolean; hash: string; kept: number };
+  };
+
+  it("the first sync loads the box's memory into the Mac's empty one, and its run keeps only a summary", async () => {
+    await step(box, "dictation/add", { heard: "stack work", written: "Stakwork" });
+    const first = await synced();
+    assert.equal(first.pulled, true);
+    assert.deepEqual(await pairs(mac), ["stack work→Stakwork"]);
+    assert.equal((await step(mac, "home/state", {})).hash, first.hash);
+    const [runId] = await mac.store.listRuns("home-sync");
+    // A gzip stream in base64 starts "H4sI": no event holds the export, under any key.
+    const journal = JSON.stringify(await mac.store.getRunEvents("home-sync", runId!));
+    assert.ok(!journal.includes("H4sI") && journal.length < 20_000, "the memory never passes through the run");
+    // Nothing changed on either side: nothing is pulled.
+    assert.equal((await synced()).pulled, false);
+  });
+
+  it("learned on the Mac, it reaches the box; learned on the box, it reaches the Mac", async () => {
+    await step(mac, "dictation/add", { heard: "ee toy", written: "Itoi", name: "Paul Itoi" });
+    assert.equal((await synced()).pushed, 1);
+    assert.deepEqual(await pairs(box), ["ee toy→Itoi", "stack work→Stakwork"]);
+    assert.deepEqual(await pairs(mac), ["ee toy→Itoi", "stack work→Stakwork"], "the Mac's copy is the box's again, its learn in it");
+    // The box's copy of that learn, stamped when the box applied it, came
+    // back with the pull: the next sync does not push it again.
+    assert.equal((await synced()).pushed, 0);
+
+    await step(box, "dictation/add", { heard: "lady bug", written: "Ladybug" });
+    assert.equal((await synced()).pulled, true);
+    assert.deepEqual(await pairs(mac), ["ee toy→Itoi", "lady bug→Ladybug", "stack work→Stakwork"]);
+  });
+
+  it("an undo on the Mac is undone on the box, by its pair", async () => {
+    const word = (await step(mac, "memory/lexicon", {})).entities.find((e: any) => e.name === "Ladybug");
+    await step(mac, "dictation/undo", { undo: [word.heard[0].ref_id] });
+    await synced();
+    assert.deepEqual(await pairs(box), ["ee toy→Itoi", "stack work→Stakwork"]);
+    assert.deepEqual(await undone(box), ["lady bug→Ladybug"]);
+    assert.deepEqual(await undone(mac), ["lady bug→Ladybug"], "and the Mac's copy, pulled back, says so too");
+  });
+
+  it("away from home a sync fails and records nothing; the Mac keeps its learn, and the next sync catches up", async () => {
+    const before = await step(mac, "home/state", {});
+    const home = { baseUrl: `http://127.0.0.1:${(proxy.address() as { port: number }).port}`, token: personToken("tom")!.token };
+    assert.equal((await call(mac, "PUT", "/peers/home", { ...home, baseUrl: "http://127.0.0.1:1" })).status, 200);
+    await step(mac, "dictation/add", { heard: "pee eight", written: "P8", term: true });
+    await step(mac, "dictation/add", { heard: "strut", written: "Strut" });
+    assert.equal((await sync()).status, "error");
+    assert.deepEqual(await step(mac, "home/state", {}), before, "nothing recorded");
+    assert.ok((await pairs(mac)).includes("strut→Strut"), "the Mac's copy is untouched");
+
+    assert.equal((await call(mac, "PUT", "/peers/home", home)).status, 200);
+    await synced();
+    assert.deepEqual(await pairs(box), ["ee toy→Itoi", "stack work→Stakwork", "strut→Strut"]);
+    assert.ok((await step(box, "memory/lexicon", {})).entities.some((e: any) => e.name === "P8"));
+  });
+
+  it("a push the box refuses fails the sync before anything is pulled", async () => {
+    const before = await step(mac, "home/state", {});
+    await step(box, "dictation/add", { heard: "not yet", written: "NotYet" });
+    pushAnswer = 500;
+    try {
+      const failed = await sync();
+      assert.equal(failed.status, "error");
+      assert.match(failed.error!.message, /the push did not land; nothing was pulled, nothing is lost \(500: the box said no\)/);
+    } finally {
+      pushAnswer = undefined;
+    }
+    assert.deepEqual(await step(mac, "home/state", {}), before);
+    assert.ok(!(await pairs(mac)).includes("not yet→NotYet"), "the box's memory was not loaded");
+  });
+
+  it("changes a sync kept but could not replay are replayed and pushed by the next one; a since that does not read pushes everything again", async () => {
+    const statePath = join(dir, "mac", "home-sync.json");
+    const kept = JSON.parse(readFileSync(statePath, "utf-8"));
+    writeFileSync(statePath, JSON.stringify({ ...kept, pending: [{ op: "learn", heard: "left over", written: "LeftOver", at: new Date().toISOString() }] }));
+    await synced();
+    assert.ok((await pairs(box)).includes("left over→LeftOver"));
+    assert.equal(JSON.parse(readFileSync(statePath, "utf-8")).pending, undefined, "cleared once replayed");
+
+    writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, "utf-8")), since: "not a time" }));
+    await step(mac, "dictation/add", { heard: "after damage", written: "AfterDamage" });
+    const again = await synced();
+    assert.ok(again.pushed > 1, "everything, which the box skips as known");
+    assert.ok((await pairs(box)).includes("after damage→AfterDamage"));
+  });
+
+  it("two syncs at once both land, one after the other", async () => {
+    await step(mac, "dictation/add", { heard: "twice", written: "Twice" });
+    const [a, b] = await Promise.all([sync(), sync()]);
+    assert.equal(a.status, "success", JSON.stringify(a.error));
+    assert.equal(b.status, "success", JSON.stringify(b.error));
+    assert.ok((await pairs(box)).includes("twice→Twice"));
+  });
+
+  it("what dictation learns on the Mac while a sync is in is kept, and pushed next time", async () => {
+    await step(box, "dictation/add", { heard: "from the box", written: "FromTheBox" }); // something to pull
+    onPull = async () => {
+      onPull = undefined;
+      await step(mac, "dictation/add", { heard: "mid sync", written: "MidSync" });
+    };
+    const during = await synced();
+    assert.equal(during.pulled, true);
+    assert.equal(during.kept, 1);
+    assert.ok((await pairs(mac)).includes("mid sync→MidSync"), "on the new copy");
+    assert.ok(!(await pairs(box)).includes("mid sync→MidSync"), "not pushed yet: it came after the push");
+    await synced();
+    assert.ok((await pairs(box)).includes("mid sync→MidSync"), "pushed by the next sync");
+  });
 });

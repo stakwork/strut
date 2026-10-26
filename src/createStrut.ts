@@ -128,7 +128,7 @@ import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
-import { HOME_POSTS, homeSyncRole, homeSyncRoutes, type HomeSyncRole } from "./home-sync.js";
+import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -381,9 +381,10 @@ export interface StrutOptions<TServices = unknown> {
   privacyWorkflows?: false;
   /** Home sync (src/home-sync.ts, AGENTS.md "Home sync"): `"box"` serves
    *  `POST /home/pull` and `/home/push` to a person's credential, so a strut
-   *  that keeps a read copy of this memory can sync with it. Off unless set,
-   *  or STRUT_HOME_SYNC=box: on, it hands the whole memory to any person
-   *  token this strut minted. */
+   *  that keeps a read copy of this memory can sync with it (on, it hands
+   *  the whole memory to any person token this strut minted); `"copy"`
+   *  seeds the `home-sync` workflow that copy runs. Off unless set, or
+   *  STRUT_HOME_SYNC=box | copy. */
   homeSync?: HomeSyncRole;
 
   /** The strut graph backend, when the deployment has one. Default: the one
@@ -675,6 +676,8 @@ export async function createStrut<TServices = unknown>(
     opts.dataDir ??
     (fileBacked ? workspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
+  // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
+  const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
   const mcpRegistry = fileMcpRegistry(dataDir);
   // Controllers for runs currently executing **in this process** (keyed
   // `${workflow}/${runId}`) — RUN_CONTROL_SPEC §2.2. A controller's presence
@@ -1112,6 +1115,16 @@ export async function createStrut<TServices = unknown>(
     }
   }
 
+  // The workflow a strut that keeps a read copy of its home's memory runs.
+  if (homeRole === "copy") {
+    try {
+      const w = await seedHomeSyncWorkflow(workspace);
+      if (w.changed) console.log(`[home] seeded workflow: home-sync @ ${w.version}`);
+    } catch (err) {
+      console.warn(`[home] could not seed workflow "home-sync":`, err instanceof Error ? err.message : err);
+    }
+  }
+
   // The built-in automations strut ships (src/system-workflows.ts): each a
   // workflow of category "system" plus its automation, installed off. Before
   // the scheduler's first load, so a new one is scheduled once turned on.
@@ -1305,7 +1318,6 @@ export async function createStrut<TServices = unknown>(
   // (`homeSync: "box"`), home sync's `/home/pull` and `/home/push` too.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
-  const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
