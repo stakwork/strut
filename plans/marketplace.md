@@ -1583,11 +1583,12 @@ production until install (step 2) calls the resolver.
        (`materializePinnedStep`), so a helper it imports is the helper's
        ACTIVE version — a pin of a package step holds the step's own
        file, not the helpers it shipped with.
-   - **Not built: `license:`** (§1, proposed 2026-10-26). The manifest
-     schema is strict (`src/packages/format.ts`), so today a `strut.yaml`
-     with the line is `bad_package`. It must join the schema before any
-     package carries it, and a strut built before that refuses such a
-     package.
+   - **Built 2026-10-26: `license:`** (§1, proposed). An optional
+     non-empty string in the strict manifest schema
+     (`src/packages/format.ts`); its SPDX syntax is not checked, since
+     nothing enforces it. A strut built before this refuses a package that
+     carries the line (`bad_package`), which costs nothing while none is
+     published. Showing it in the install ask is step 5's.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by

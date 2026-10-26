@@ -128,6 +128,17 @@ describe("readPackage", () => {
     await assert.rejects(readPackage(await manifest("package: [\n")), /not valid YAML/);
   });
 
+  it("takes an optional license line, as written, and it is under the digest", async () => {
+    const manifest = (text: string) => pkgDir({ ...PACKAGE, "strut.yaml": text });
+    const without = await readPackage(await manifest("package: acme/linear\nversion: '1'\n"));
+    assert.equal(without.manifest.license, undefined);
+    const licensed = await readPackage(await manifest("package: acme/linear\nversion: '1'\nlicense: MIT OR Apache-2.0\n"));
+    assert.equal(licensed.manifest.license, "MIT OR Apache-2.0");
+    assert.notEqual(licensed.digest, without.digest);
+    await assert.rejects(readPackage(await manifest("package: acme/linear\nversion: '1'\nlicense: ''\n")), /strut\.yaml: license: a license is an SPDX expression/);
+    await assert.rejects(readPackage(await manifest("package: acme/linear\nversion: '1'\nlicense: 5\n")), /strut\.yaml: license: /);
+  });
+
   it("refuses a symlink", async () => {
     const dir = await pkgDir();
     await symlink("/etc/passwd", join(dir, "steps", "leak.ts"));

@@ -1275,7 +1275,8 @@ never passes `keep`.
 ## 16. Packages — sharing workflows, steps and Concepts (`plans/marketplace.md` §1–§5)
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
-`version`, `description?`, `requires?`) and the folders `workflows/`,
+`version`, `description?`, `license?` — an SPDX expression, never
+enforced — `requires?`) and the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow

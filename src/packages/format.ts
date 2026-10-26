@@ -46,6 +46,9 @@ const manifestSchema = z
     package: packageName,
     version: z.string().min(1),
     description: z.string().optional(),
+    // An SPDX expression (`Apache-2.0`, `MIT OR Apache-2.0`, `LicenseRef-…`):
+    // shown at install, never enforced, so its syntax is not checked here.
+    license: z.string().min(1, "a license is an SPDX expression, e.g. Apache-2.0").optional(),
     requires: z
       .object({
         secrets: names.optional(),
