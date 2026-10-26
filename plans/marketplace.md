@@ -71,6 +71,21 @@
 > later names another key is an ask on the next update, never followed
 > silently (§3, §4, §7); and no strut mints a publisher key while its
 > secret store runs on the dev default.
+>
+> **Extended 2026-10-26, after the Graph Protocol group draft** (the
+> 2026-10-24 thread, which takes this plan's Pkarr design as its "Option
+> D"). All proposed:
+> - The catalog's signature is defined: the catalog is a CARD, RFC 8785
+>   JSON sealed with Ed25519 over its fingerprint, with a `seq` no reader
+>   accepts going backward, and the index catalog is the same card (§13,
+>   §7).
+> - A release can be yanked (§13).
+> - The manifest takes an SPDX `license` (§1).
+> - The install ask says what can spend and what can act, read off the
+>   closure (§8).
+>
+> Receipts back to a publisher are left to a plan of their own (open
+> question 5).
 
 ## Problem
 
@@ -122,6 +137,7 @@ What exists, and what's missing:
 | Transport | **`file:`, `git+` and `pk:` in v1.** *Ruled (2026-10-24):* Pkarr is the protocol between struts, and the 2026-10-18 `peer:` source folds into it — a `pk:` ref resolves a publisher's signed record to a catalog to an archive, fetched by hash from any holder, so a peer's archive route is one URL among a catalog's. It revises federation §2.3's "no strut-to-strut copy" for packages (§9). OCI is not designed (§5, §13) |
 | Trust | ***Ruled:* in-process, with one fence.** An installed step runs like a `POST /steps` step today, and `requires.secrets` is ENFORCED: a step with an `upstream` reads only the names its package declared (§3) |
 | Price | **Not in the package.** The source gates the download: a private repo's ACL, or a token the seller mints for a strut's archive route (§6). The record and the catalog are public; the bytes are what is gated (§13). A release asset on a public repo is public, so a publisher on a laptop sells through a private repo or a strut that serves the archive |
+| The catalog | **A card** (proposed 2026-10-26): RFC 8785 JSON sealed with Ed25519 over its SHA-256 fingerprint under a domain prefix, with a `seq` no reader accepts going backward; the index catalog is the same card. A catalog no record names — the index over HTTPS, a lapsed publisher's — is checked by its seal alone. A release may be `yanked`, never deleted (§13) |
 | The index | **A key whose catalog lists publishers.** ***Ruled (2026-10-24, reversing 2026-10-19):* the public index ships now.** One more Pkarr key, operated by Stakwork, whose record points at a signed catalog of prefix → key rows with descriptions; it holds no content and no package list — the publishers' own catalogs do. `index.yaml` in a git repo stays as a deployment's private index (§7, §13) |
 | Who installs | **A person.** Installing is publishing third-party code onto the server: a keyed `full`-scope route, or a builder tool that asks first. No `meta/*` twin (§8) |
 | A fleet | ***Ruled:* an operator's packages roll out to its own struts automatically, by channel** (a branch of the distro repo); the merge is the accept. Every rule above holds for an item — a swarm's edit is never overwritten (§12) |
@@ -171,6 +187,7 @@ apps/issues/src/App.tsx           #   with its src/, public/ and db/ migrations 
 package: acme/linear          # publisher/name — the prefix every item here is named under
 version: 1.4.0                # the publisher's label; the digest is the truth
 description: Linear issues, comments and sync, tested against the live API
+license: Apache-2.0           # optional: an SPDX expression, shown at install, never enforced (below)
 requires:
   secrets: [LINEAR_API_KEY]   # the names its steps may read — enforced after install (§3)
   binaries: []                # what its steps call by name on PATH — checked, reported (§11)
@@ -253,6 +270,12 @@ requires:
   `<name>.claims.yaml`, in the same shape (`claimsArgSchema`), about that
   step. They are the package's promise, and §4 re-runs them on the buyer's
   strut after every change.
+- **A license is one line** (2026-10-26, proposed). `license:` is an SPDX
+  expression: `Apache-2.0`, `MIT OR Apache-2.0`, or `LicenseRef-<id>` for
+  terms of the publisher's own, stated where it chooses (its homepage in
+  the index, §7). It is optional. The install ask shows it, or says there
+  is none (§8), and the catalog repeats it on each release so a search
+  shows it before a fetch (§13). Nothing enforces it.
 - **Not in a package:** runs, evidence, secret values, automations,
   owners, run caps, params overrides, prices, signatures, an app's
   `data.db` and `dist/`, a kit version.
@@ -509,7 +532,7 @@ happens upstream — the left-pad rule). One interface,
 | --- | --- | --- |
 | `file:/path/to/pkg` | copy | dev, tests, packages a host ships in its image |
 | `git+https://host/org/repo@<ref>[#<path>]` | `git/checkout`'s bare cache under `<dataDir>/repos`, credential from a named secret (`tokenSecret`, default `GITHUB_TOKEN`) | GitHub, Forgejo, GitLab — anything git. The repo's ACL is the access control, so a private repo is a private package. The recorded ref is what an update re-resolves |
-| `pk:<z32 key>/<publisher>/<name>[@sha256:…]` | the publisher's Pkarr record (through the relay, §13) → its signed catalog, fetched by the hash the record names and checked against it and the key → the package's row: digest + archive URLs → the archive fetched by digest from the first URL that answers, verified | The protocol between struts (*ruled 2026-10-24*). A URL in the catalog is anything that serves the bytes: a strut's archive route — the publisher's, a mirror's — `GET /packages/:publisher/:name/archive?digest=sha256:…`, a tar of the directory, open for a public package and behind the seller's token when selling (§6); or a file the publisher uploaded, a GitHub release asset (§13). With no `@sha256` the ref floats to whatever the catalog says now; the install records the digest it took and the key it resolved (§3). An index name with no key (`acme/linear`) resolves through the index catalog's `acme → key` row first (§7) |
+| `pk:<z32 key>/<publisher>/<name>[@sha256:…]` | the publisher's Pkarr record (through the relay, §13) → its signed catalog, fetched by the hash the record names and checked against it and the key → the package's row: digest + archive URLs → the archive fetched by digest from the first URL that answers, verified | The protocol between struts (*ruled 2026-10-24*). A URL in the catalog is anything that serves the bytes: a strut's archive route — the publisher's, a mirror's — `GET /packages/:publisher/:name/archive?digest=sha256:…`, a tar of the directory, open for a public package and behind the seller's token when selling (§6); or a file the publisher uploaded, a GitHub release asset (§13). With no `@sha256` the ref floats to whatever the catalog says now, its newest release not yanked (§13); the install records the digest it took and the key it resolved (§3). An index name with no key (`acme/linear`) resolves through the index catalog's `acme → key` row first (§7) |
 
 OCI (`oci://…`, ORAS) as a TRANSPORT for packages is not designed: the
 digest model is OCI's already, so it would be a fourth resolver and
@@ -569,13 +592,21 @@ An index is **a list of PUBLISHERS, not of packages** (2026-10-24; the
 2026-10-19 draft listed packages in `index.yaml`). ***Ruled
 (2026-10-24):* the public index ships now**, reversing 2026-10-19's "no
 public index yet". It is one more Pkarr key (§13), operated by Stakwork:
-its record points at a signed **index catalog**,
+its record points at a signed **index catalog**, the same card as a
+publisher's (§13), sealed under the prefix `strut-index\n` (shown
+indented here; it is served in its RFC 8785 form):
 
-```yaml
-# the index catalog — fetched by the hash the index key's record names
-publishers:
-  acme: { key: <z32>, description: Linear, Notion and Slack tools, url: https://acme.example }
-  hive: { key: <z32>, description: Stakwork's distro }
+```json
+{
+  "v": 1,
+  "key": "<the index key, z32>",
+  "seq": 1792972800000000,
+  "publishers": {
+    "acme": { "key": "<z32>", "description": "Linear, Notion and Slack tools", "url": "https://acme.example" },
+    "hive": { "key": "<z32>", "description": "Stakwork's distro" }
+  },
+  "sig": "<128 hex>"
+}
 ```
 
 a row per prefix: the key that may publish under it, a description, a
@@ -598,8 +629,10 @@ list of `{ id, key }` with Stakwork's public one as the default, and
 `PUT /packages/indexes/:id { key }`, the peers' paste door in the same
 shape. The index catalog is also served over plain HTTPS at the index
 strut's `GET /index/catalog` (`STRUT_PACKAGE_INDEX_URL`, §13's shipped
-defaults), verified against the key like any other fetch, so a strut with
-no relay reachable still reads the phone book. **`index.yaml` in a git repo** — a Homebrew tap, `{ package,
+defaults), checked as a card against the subscribed key, so a strut with
+no relay reachable still reads the phone book. Fetched that way, no
+record names its digest, so the seal and the `seq` rule are the whole
+check (§13). **`index.yaml` in a git repo** — a Homebrew tap, `{ package,
 version, digest, source, description }` per entry, listing by PR — stays
 as the shape for a deployment's PRIVATE index, subscribed by `git+` ref.
 Both are cached under `<dataDir>/packages/index/`, refreshed when a
@@ -627,13 +660,28 @@ Builder tools (`src/ai/tools.ts`), each thin over the functions above:
   (`ask_user`, plans/elicitation.md) with the manifest summary: publisher
   (the prefix, the key that signed the catalog, and the index row that
   vouches for the pair, §13 — the key is pinned on accept, §3), digest,
-source, the items (which are code),
-  the required packages it
-  will install too, the secret names the code may read, the binaries
-  and runtimes it needs with which are missing here (§11.2).
+  source, the items (which are code), the required packages it will
+  install too, the secret names the code may read, the binaries and
+  runtimes it needs with which are missing here (§11.2), and the license
+  or that there is none (§1). A pin to a yanked release puts the yank's
+  reason first (§13). Two more lines are READ OFF THE CLOSURE, since a
+  package declares neither (2026-10-26, proposed):
+  - **What can spend:** each workflow with an `agent` or `llm` step
+    anywhere in its closure, or a closure that is not resolvable — the
+    verify pass's presumed-paid test (`PAID_STEP_TYPES`,
+    `src/verify.ts`). No budget is shipped: the run cap is the buyer's
+    to set (`maxRunCostUsd`).
+  - **What can act:** each step type in the closure that does not
+    declare `effect: "read"`. This follows the host convention that an
+    undeclared step counts as `write` (`StepDef.effect`, `src/core.ts`),
+    so `exec`, `http`, `agent`, a package step that says nothing and an
+    undeclared lib step all show. The control-flow steps, `llm`, `log`,
+    `pack` and `wait` are left out.
+
   It installs only on accept, then `request_secret` for each missing name.
 - `update_package({ package, ref? })`: §4, and it asks the same way
-  (*ruled*).
+  (*ruled*), with the same two lines for what changed, and a yank of the
+  installed release at its head.
 - `export_package({ package, workflows?, apps?, to })`: §2 + §5.
 
 **Installing is a person's act.** Installing a step is running someone
@@ -707,6 +755,7 @@ plan subsumes it:
 | A merge as what an update implies | Two versions side by side is the normal state of a fork; converging is asked for. Every registry with numbers pins and asks rather than auto-merging an approved copy — the MCP "rug pull" (`plans/p2p-distribution-research.md`) | §4's table had coexistence as the diverged row only |
 | A new DHT or transport (Hyperswarm's HyperDHT, iroh's QUIC) | Strut already speaks HTTP by hash and a desktop pulls; what was missing was the POINTER, which Pkarr gives on the Mainline DHT that already exists. iroh's blob layer is mid-rewrite; Hyperswarm is a second DHT and a second key format (research Option C) | Nothing — chosen 2026-10-24 |
 | A package list in the index | Every release would be an index edit; the index is a phone book of prefix → key, and each publisher's catalog is its own list (§7) | `index.yaml` with `{ package, version, digest }` rows as the public shape |
+| A signed YAML catalog | YAML has no one byte form, so a verifier that parses and re-dumps changes the bytes: strut's `loadYaml` (js-yaml's default schema) turns `2026-10-26T17:02:00Z` into a `Date` that dumps as `…00.000Z`, and `1.10` dumps as `1.1`. "Signed" without the bytes, the place and the encoding is no check, and the index over HTTPS has nothing else. The catalog is a card: RFC 8785 JSON sealed over its fingerprint (§13) | §13 on 2026-10-24: "a signed YAML file", its signature never defined |
 
 ## 11. Environments — what a package needs but never carries
 
@@ -1142,30 +1191,74 @@ points at bytes by hash.**
   record, `_strut.<key>`: `v=1 catalog=sha256:… url=https://… url=https://…`
   — the hash of the publisher's catalog and where to fetch it. Nothing else
   rides in the packet; a package name never does.
-- **The catalog** is a signed YAML file, content-addressed, served by the
-  publisher's byte host like any archive (`GET /packages/catalog?digest=…`
-  on a strut, an uploaded file elsewhere; the record's `url`s):
-  `publisher`, `key`, `signed_at`, and `packages:
-  { acme/linear: { version, digest, urls, description, requires? } … }` —
-  every package the strut BUILT (§2), newest digest first with the earlier
-  ones kept, so an installed digest stays fetchable after a new one is
-  published (the left-pad rule, publisher side). It is `GET /packages`'s
-  twin: that route folds what a strut INSTALLED (§3); the catalog lists
-  what it PUBLISHED. The index catalog (§7) is the same shape one level
-  up — `publishers:` where this has `packages:`.
-- **Resolve** (`pk:` in §5; an index name in §7): record → catalog hash +
-  URLs → catalog fetched from the first URL that answers, checked against
-  the hash and the key's signature → the package's row → archive fetched by
-  digest from its `urls` → `installPackage`. Every fetch is by hash, so any
-  URL that serves the bytes is as good as the publisher's: a mirror is a
-  strut that installed the package and lists its own archive route (§9).
+- **The catalog** is a signed JSON file — a CARD, defined below —
+  content-addressed, served by the publisher's byte host like any archive
+  (`GET /packages/catalog?digest=…` on a strut, an uploaded file
+  elsewhere; the record's `url`s): `v`, `key`, `seq`, `publisher`, and
+  `packages: { "acme/linear": { description, releases: [{ version,
+  digest, urls, license?, requires?, yanked? }, …] } … }` — every package
+  the strut BUILT (§2), each with its releases newest first and the
+  earlier ones kept, so an installed digest stays fetchable after a new one
+  is published (the left-pad rule, publisher side). It is `GET
+  /packages`'s twin: that route folds what a strut INSTALLED (§3); the
+  catalog lists what it PUBLISHED. The index catalog (§7) is the same card
+  one level up — `publishers:` where this has `packages:`.
+- **Resolve** (`pk:` in §5; an index name in §7): record → catalog digest
+  + URLs → catalog fetched from the first URL that answers and checked as
+  a card (below): its digest against the record's, its seal against the
+  key, its `seq` against the last catalog accepted from that key → the
+  package's newest release not yanked, or the one the ref pins → archive
+  fetched by digest from its `urls` → `installPackage`. Every fetch is by
+  hash, so any URL that serves the bytes is as good as the publisher's: a
+  mirror is a strut that installed the package and lists its own archive
+  route (§9).
 - **Publish** (`publish_package`, on any strut, a person's act like
   install): `buildPackage` → the archive under `<dataDir>/packages/<digest>/`
-  → the catalog rewritten and signed → both put where the byte host
-  serves them (nothing to do on a strut that serves its own archive route;
-  an upload otherwise) → the record re-signed with a new timestamp, naming
-  the catalog's URLs on the byte host, and PUT to the relays. One command,
-  every write outbound, nothing to run afterwards but the re-put.
+  → the catalog rewritten, its `seq` moved forward and sealed (below) →
+  both put where the byte host serves them (nothing to do on a strut that
+  serves its own archive route; an upload otherwise) → the record
+  re-signed with a new timestamp, naming the catalog's digest and its URLs
+  on the byte host, and PUT to the relays. One command, every write
+  outbound, nothing to run afterwards but the re-put.
+
+**The catalog is a card** (2026-10-26, proposed). The card form is the
+Graph Protocol group draft's (the 2026-10-24 thread): RFC 8785 JSON,
+SHA-256, Ed25519. The domain prefix is an addition of mine, not in the
+draft. §13's first draft called the catalog "a signed YAML file" and
+defined neither the bytes signed nor where the signature sits; YAML has
+no one byte form (§10).
+
+| Part | Rule |
+| --- | --- |
+| Bytes | A JSON object written in its RFC 8785 form (JCS: members sorted, no whitespace, ECMAScript number and string forms), `sig` included. That is the only byte form: a reader parses the file, writes it back the same way and refuses a file that differs (`catalog_noncanonical:`), so no host can serve two byte forms of one catalog |
+| Digest | `sha256:<hex>` over the served bytes, as an archive's (§1). It is what the record's `catalog=` names and what `GET /packages/catalog?digest=` serves by, so a byte host or a mirror checks a file without reading JSON |
+| Fingerprint | `sha256:<hex>` over the RFC 8785 form of the object WITHOUT its `sig` member. This, not the digest, is what is signed: a hash of bytes cannot be signed inside those bytes |
+| Seal | `sig`: the Ed25519 signature (RFC 8032), lowercase hex, by the publisher key over the UTF-8 bytes `strut-catalog\n` followed by the fingerprint as written (`sha256:` and 64 hex). The prefix keeps the signature from passing as anything else the key signs: its Pkarr record, an index catalog (`strut-index\n`), a later kind of card |
+| Key | Checked against the key the reader EXPECTED — the one a `pk:` ref names, the index row's, the subscription's for an index catalog (§7) — never taken from the file. A file whose `key` differs is refused before its seal is checked |
+| Version | `v: 1`. A member the reader does not know is ignored, and the seal still covers it; a change of meaning is a new `v`, which a reader refuses, naming both (`catalog_version:`) |
+| Order | `seq` is the signing time in microseconds since the epoch, the clock Pkarr uses for the record, so a key restored onto another machine needs no counter. A publish takes `max(now, previous seq + 1)` (the previous catalog is the base of the new one anyway). A reader keeps, per key, the last catalog it accepted (under `<dataDir>/packages/index/`, §7) and refuses a lower `seq` (`catalog_rollback:`, keeping the one it has) or a different digest at the same `seq` (`catalog_conflict:` — one key sealing two catalogs at once is a misused or stolen key; it is reported, never picked between) |
+
+**Which check guards which path.** On a `pk:` resolve, the record, signed
+by Pkarr itself, names the digest, so a catalog that matches it is already
+the key's word. The seal and `seq` are what hold when no record names the
+catalog. That covers the index catalog over plain HTTPS (§7, a shipped
+default that exists for a strut that reaches no relay), a catalog read
+from a mirror or a cache while its record has lapsed, and a host serving
+an older catalog it was once given. Every reader runs every check on every
+catalog, whichever way it came, so no path skips one.
+
+**Yanking** (2026-10-26, proposed; cargo's `yank`). `yanked: "<reason>"`
+on a release withdraws a digest without deleting it:
+- it stays fetchable (the left-pad rule);
+- a floating `pk:` ref and a new install by name take the newest release
+  not yanked;
+- an install pinned to a yanked digest still installs, with the reason
+  at the head of its ask (§8);
+- an installed copy's next update, or `GET /packages` once the catalog
+  is read again, says it is yanked and why.
+
+Un-yanking is a later catalog without the field. A yank is a publisher's
+word about its own release; an index has no field for it.
 
 **Topology.** Three layers, two of them someone runs:
 
@@ -1259,8 +1352,9 @@ under the org's prefix. What changed is that a person may also publish
 under a prefix of their own, from where they work.
 
 **"Latest" is the publisher's word.** The record's timestamp orders
-records; the catalog's `version` and digest per package are what "latest"
-means, and a `pk:` ref with no digest takes it. No quorum, no canonical
+records and the catalog's `seq` orders catalogs; a package's newest
+release not yanked is what "latest" means, and a `pk:` ref with no digest
+takes it. No quorum, no canonical
 branch: one key, one catalog. An org with several people publishing gives
 each a prefix and a key, or shares one swarm strut's key through the
 swarm's own access control. Radicle's threshold-of-delegates is the
@@ -1489,6 +1583,11 @@ production until install (step 2) calls the resolver.
        (`materializePinnedStep`), so a helper it imports is the helper's
        ACTIVE version — a pin of a package step holds the step's own
        file, not the helpers it shipped with.
+   - **Not built: `license:`** (§1, proposed 2026-10-26). The manifest
+     schema is strict (`src/packages/format.ts`), so today a `strut.yaml`
+     with the line is `bad_package`. It must join the schema before any
+     package carries it, and a strut built before that refuses such a
+     package.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by
@@ -1496,9 +1595,14 @@ production until install (step 2) calls the resolver.
    `update_package`'s merge on request — per file for an app.
 5. **Builder tools + UI:** an "installed from acme/linear 1.4.0 ·
    modified" line on a workflow's Versions tab and in a step's info
-   flyout; the install and update asks as elicitation forms.
+   flyout; the install and update asks as elicitation forms, with the
+   license and the spend and act lines (§8).
 6. **`pk:` source + the publisher key + the catalog** (§13): confirm the
-   JS client's transport (relay-only or direct) first; `publisher.json`
+   JS client's transport (relay-only or direct) first; the catalog CARD —
+   RFC 8785 form, digest, fingerprint, seal, `seq` and the rollback and
+   conflict refusals, `yanked` — with a TEST VECTOR (a fixed key, catalog,
+   fingerprint, seal and digest) in the tests for another implementation
+   to check itself against; `publisher.json`
    (minting refused on the dev secret key), `publish_package` (build →
    catalog → byte host → record) on any strut, `GET
    /packages/:publisher/:name/archive?digest=` and `GET /packages/catalog`
@@ -1509,8 +1613,8 @@ production until install (step 2) calls the resolver.
    key; the hourly re-put — a publisher's own, and every installer's for
    the publishers it installed from; the Pkarr relay image in sphinx-swarm.
 7. **The public index + the shipped defaults** (§7, §13): the index key
-   and its catalog on a Stakwork strut, `PUT /index/:prefix` and `GET
-   /index/catalog`, `STRUT_PACKAGE_INDEXES` by key with the public one as
+   and its catalog (step 6's card, prefix `strut-index`) on a Stakwork
+   strut, `PUT /index/:prefix` and `GET /index/catalog`, `STRUT_PACKAGE_INDEXES` by key with the public one as
    default, the paste door, `search_packages` over the publishers'
    catalogs; `index.yaml` by `git+` for a private index. **Stakwork's
    relay** at a stable hostname (the step 6 container, deployed once) and
@@ -1562,6 +1666,21 @@ production until install (step 2) calls the resolver.
   from the publisher's next re-put if the client proves relay-only); with
   selling on, an expired package token stops the next fetch and leaves the
   installed version running.
+- The catalog card:
+  - A catalog a host re-serialized (another member order, whitespace) is
+    refused as not canonical.
+  - One byte changed in `packages` fails the seal, and so does a catalog
+    sealed by a key other than the one the ref names.
+  - The index catalog fetched over HTTPS with every relay unreachable
+    verifies against the subscribed key.
+  - An older catalog served after a newer one was accepted is refused, and
+    the kept one is used; two catalogs at one `seq` are refused and
+    reported.
+  - `v: 2` is refused, naming both versions; a member v1 does not know is
+    ignored and still covered by the seal.
+  - The test vector verifies.
+  - A yanked release is skipped by a floating ref and by an install by
+    name, and a pin to it installs with the reason first in the ask.
 - Publishing from a laptop: a plain checkout (`npm run dev`, a real
   `STRUT_SECRET_KEY`, no public URL) with `host: github-release` publishes
   a package — the catalog and archive land as release assets, the record
@@ -1642,7 +1761,11 @@ production until install (step 2) calls the resolver.
 5. **The track record.** Read-through (federation §2.1) is not built;
    until it is, an index carries no evidence and the buyer's strut
    measures from zero. Whether a publisher may *report* numbers into an
-   index file, labelled as such, is open.
+   index file, labelled as such, is open. The other direction — a buyer's
+   strut telling the publisher what failed, opt-in and previewed (the
+   Graph Protocol draft's RECEIPT) — needs a channel to the publisher that
+   nothing here has, and a privacy pass of its own, so it is a plan of
+   its own rather than a step of this one.
 6. **An app's claims in a package.** `apps.md` §11 makes a workspace app a
    claim subject; a workflow's claims ride in its YAML and a step's in a
    sibling `.claims.yaml`. An app's could be a `claims:` block in
