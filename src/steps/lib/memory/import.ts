@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Query, ensureSchema, memoryExclusive, ownerOnly } from "./_db.js";
+import { type Handle, type Query, ensureSchema, memoryExclusive, ownerOnly } from "./_db.js";
 import { invalidate } from "./_ontology.js";
 import {
   MAX_DATA_BYTES,
@@ -40,6 +40,63 @@ async function load(query: Query, work: string, graph: Map<string, Buffer>): Pro
   await query(`IMPORT DATABASE ${literal(work)}`);
   await ensureSchema(query);
   await query("CHECKPOINT");
+}
+
+/** Loads a checked snapshot into the memory `handle` is: the step's work,
+ *  run by the caller inside memoryExclusive (home/load runs it there too).
+ *  Returns the step's reply: `{ counts, replaced, backup? }` or `{ error }`. */
+export async function importSnapshot(
+  handle: Handle,
+  snapshot: Awaited<ReturnType<typeof openSnapshot>>,
+  replace?: boolean,
+): Promise<{ counts: Record<string, number>; replaced: boolean; backup?: string } | { error: string }> {
+  const { Entity: entities = 0, Fact: facts = 0, Episode: episodes = 0 } = await countRows(handle.write);
+  const replaced = entities + facts + episodes > 0;
+  if (replaced && !replace) {
+    return {
+      error: `not_empty: memory already holds ${entities} entities, ${facts} facts and ${episodes} episodes; import loads into an empty memory only, or give replace`,
+    };
+  }
+  const backups = join(dirname(handle.path), "backups");
+  // What a restore needs: the backup's file name and its checked graph/ files.
+  let backup: { name: string; graph: Map<string, Buffer> } | undefined;
+  if (replaced) {
+    try {
+      const { gz, name } = await writeSnapshot(handle, snapshotDirs(handle.path, "backup").work);
+      // Checked as an incoming snapshot is: one that could not be loaded back refuses the replace.
+      const { graph } = await openSnapshot(gz);
+      // A random suffix after the time: two backups in one millisecond do not collide, and names still sort by time.
+      backup = { name: name.replace(/\.tar\.gz$/, `-${randomBytes(3).toString("hex")}.tar.gz`), graph };
+      ownerOnly(backups);
+      writeFileSync(join(backups, backup.name), gz, { mode: 0o600, flag: "wx" }); // never overwrites
+    } catch (err) {
+      return { error: `backup_failed: ${message(err)}; nothing was imported and the memory is as it was` };
+    }
+    // Keep the newest KEEP_BACKUPS, this one among them, whether or not the import lands.
+    const older = readdirSync(backups).filter((n) => n !== backup!.name && /^memory-.*\.tar\.gz$/.test(n)).sort().reverse();
+    for (const old of older.slice(KEEP_BACKUPS - 1)) rmSync(join(backups, old), { force: true });
+  }
+  const { work } = snapshotDirs(handle.path, "import");
+  try {
+    await load(handle.write, work, snapshot.graph);
+  } catch (err) {
+    try {
+      // The backup is this graph as it was; with none, it was empty.
+      if (backup) await load(handle.write, work, backup.graph);
+      else {
+        await dropAll(handle.write);
+        await ensureSchema(handle.write);
+      }
+    } catch (cleanup) {
+      const what = backup ? `restored from backups/${backup.name}` : "emptied";
+      return { error: `import_failed: ${message(err)}; and the memory could not be ${what} after: ${message(cleanup)}` };
+    }
+    return { error: `import_failed: ${message(err)}; ${backup ? "the memory is as it was" : "the memory is left empty"}` };
+  } finally {
+    invalidate(handle.read);
+    removeWork(work);
+  }
+  return { counts: await countRows(handle.write), replaced, ...(backup && { backup: backup.name }) };
 }
 
 export default defineStep({
@@ -81,54 +138,6 @@ export default defineStep({
       return { error: message(err) };
     }
 
-    return memoryExclusive(ctx, async (handle) => {
-      const { Entity: entities = 0, Fact: facts = 0, Episode: episodes = 0 } = await countRows(handle.write);
-      const replaced = entities + facts + episodes > 0;
-      if (replaced && !cfg.replace) {
-        return {
-          error: `not_empty: memory already holds ${entities} entities, ${facts} facts and ${episodes} episodes; import loads into an empty memory only, or give replace`,
-        };
-      }
-      const backups = join(dirname(handle.path), "backups");
-      // What a restore needs: the backup's file name and its checked graph/ files.
-      let backup: { name: string; graph: Map<string, Buffer> } | undefined;
-      if (replaced) {
-        try {
-          const { gz, name } = await writeSnapshot(handle, snapshotDirs(handle.path, "backup").work);
-          // Checked as an incoming snapshot is: one that could not be loaded back refuses the replace.
-          const { graph } = await openSnapshot(gz);
-          // A random suffix after the time: two backups in one millisecond do not collide, and names still sort by time.
-          backup = { name: name.replace(/\.tar\.gz$/, `-${randomBytes(3).toString("hex")}.tar.gz`), graph };
-          ownerOnly(backups);
-          writeFileSync(join(backups, backup.name), gz, { mode: 0o600, flag: "wx" }); // never overwrites
-        } catch (err) {
-          return { error: `backup_failed: ${message(err)}; nothing was imported and the memory is as it was` };
-        }
-        // Keep the newest KEEP_BACKUPS, this one among them, whether or not the import lands.
-        const older = readdirSync(backups).filter((n) => n !== backup!.name && /^memory-.*\.tar\.gz$/.test(n)).sort().reverse();
-        for (const old of older.slice(KEEP_BACKUPS - 1)) rmSync(join(backups, old), { force: true });
-      }
-      const { work } = snapshotDirs(handle.path, "import");
-      try {
-        await load(handle.write, work, snapshot.graph);
-      } catch (err) {
-        try {
-          // The backup is this graph as it was; with none, it was empty.
-          if (backup) await load(handle.write, work, backup.graph);
-          else {
-            await dropAll(handle.write);
-            await ensureSchema(handle.write);
-          }
-        } catch (cleanup) {
-          const what = backup ? `restored from backups/${backup.name}` : "emptied";
-          return { error: `import_failed: ${message(err)}; and the memory could not be ${what} after: ${message(cleanup)}` };
-        }
-        return { error: `import_failed: ${message(err)}; ${backup ? "the memory is as it was" : "the memory is left empty"}` };
-      } finally {
-        invalidate(handle.read);
-        removeWork(work);
-      }
-      return { counts: await countRows(handle.write), replaced, ...(backup && { backup: backup.name }) };
-    });
+    return memoryExclusive(ctx, (handle) => importSnapshot(handle, snapshot, cfg.replace));
   },
 });

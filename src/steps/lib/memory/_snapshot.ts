@@ -197,5 +197,16 @@ export async function openSnapshot(gz: Buffer): Promise<{ manifest: Manifest; gr
   const lines = graph.get("schema.cypher")!.toString("utf8").split("\n").filter((l) => l.trim());
   if (!lines.every((l) => TABLE_DDL.test(l))) throw new Error("bad_snapshot: schema.cypher holds more than table definitions");
   if (graph.get("index.cypher")?.toString("utf8").trim()) throw new Error("bad_snapshot: index.cypher is not empty");
+  // IMPORT DATABASE reads more of the folder than these two: a copy.cypher
+  // there it runs too. So nothing else gets in but the data files EXPORT
+  // writes, Parquet files named for a table schema.cypher declares
+  // (nodes_<Node table>, rels_ / indices_ / indptr_<rel table>) —
+  // what a home box's pull hands a copy to load (home/sync) is checked here.
+  const tables = lines.map((l) => /^CREATE (?:NODE|REL) TABLE `([A-Za-z_][A-Za-z0-9_]*)`/.exec(l)![1]!);
+  for (const name of graph.keys()) {
+    if (name === "schema.cypher" || name === "index.cypher") continue;
+    const table = /^(?:nodes|rels|indices|indptr)_([A-Za-z_][A-Za-z0-9_]*)\.parquet$/.exec(name)?.[1];
+    if (!table || !tables.includes(table)) throw new Error(`bad_snapshot: unexpected file graph/${name}`);
+  }
   return { manifest, graph };
 }

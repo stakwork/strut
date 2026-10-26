@@ -243,6 +243,11 @@ describe("memory/export and memory/import", { skip: !hasLadybug && "@ladybugdb/c
     assert.ok(!existsSync(join(dir, "pwned.csv")));
     const indexed = repack((f) => f.set("graph/index.cypher", Buffer.from("CALL CREATE_FTS_INDEX('Fact', 'x', ['text']);")));
     assert.match((await run("memory/import", { data: indexed }, E)).error, /^bad_snapshot: index.cypher/);
+    // IMPORT DATABASE reads a copy.cypher too: no file EXPORT does not write gets in.
+    for (const stray of ["graph/copy.cypher", "graph/macro.cypher", "graph/nodes_Nope.parquet", "graph/notes.txt"]) {
+      const sneaked = repack((f) => f.set(stray, Buffer.from("COPY (RETURN 1) TO '/tmp/x.csv';")));
+      assert.match((await run("memory/import", { data: sneaked }, E)).error, /^bad_snapshot: unexpected file/, stray);
+    }
     assert.match((await run("memory/import", { data: Buffer.from("not a snapshot").toString("base64") }, E)).error, /^bad_snapshot: not a memory snapshot/);
     assert.match((await run("memory/import", { data: "A".repeat(140 * 1024 * 1024) }, E)).error, /^too_large: .* at most 100 MB/);
     assert.match((await run("memory/import", {}, E)).error, /^invalid_input/);

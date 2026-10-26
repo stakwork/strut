@@ -1,0 +1,18 @@
+name: home-sync
+# Sync this strut's read copy of its home's memory (a Mac's strut, after its
+# home moved to a box): home/sync pushes what dictation changed here since
+# the last sync, then pulls the home's memory when it changed and loads it in
+# place of this one. The home is a peer on file (default "home", put there
+# from the record `strut move` hands back) whose credential is a person
+# token. Safe to run any time; a run that fails (away from home) records
+# nothing, and the next one catches up. Seeded where STRUT_HOME_SYNC=copy.
+#
+# Input:  { peer? }
+# Output: home/sync's { pushed, pulled, hash, counts?, backup?, kept }
+input:
+  peer: { type: string, default: home, description: "the home's peer id" }
+steps:
+  - id: sync
+    type: home/sync
+    config:
+      peer: "{{ input.peer }}"

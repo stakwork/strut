@@ -1,4 +1,4 @@
-// Home sync, the box's side (peel docs/always-on.md, "two normal struts"):
+// Home sync (peel docs/always-on.md, "two normal struts"). The box's side:
 // what a home box serves a strut that keeps a read copy of its memory (a
 // Mac's). Two routes, on only where the host asks (`createStrut({ homeSync:
 // "box" })`, STRUT_HOME_SYNC=box), for a person's credential only:
@@ -9,13 +9,18 @@
 //   POST /home/push { dictation? }  what the copy changed, replayed here
 //                                   (dictation/apply-changes); one key per kind
 //
+// The copy's side (STRUT_HOME_SYNC=copy) is the `home-sync` workflow, one
+// step, home/sync, which calls these two through its peer record.
+//
 // Routes, not workflows: a run's input and output are kept in the run store,
 // which every peer scope may read, so a whole-memory export there would
 // outlive the pull and reach other credentials. A route answers its caller
 // and keeps nothing.
+import { readFile } from "node:fs/promises";
 import type { Context, Hono } from "hono";
 import type { Scope } from "./auth.js";
 import type { StepContext } from "./core.js";
+import type { WorkspaceStore } from "./workspace.js";
 import exportStep from "./steps/lib/memory/export.js";
 import applyChanges from "./steps/lib/dictation/apply-changes.js";
 
@@ -66,4 +71,19 @@ export function homeSyncRoutes(app: Hono, deps: { services: unknown; scopeOf: (c
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
+}
+
+/** The copy's side (STRUT_HOME_SYNC=copy): the `home-sync` workflow, seeded
+ *  by content hash like strut's other shipped workflows. */
+export async function seedHomeSyncWorkflow(workspace: WorkspaceStore): Promise<{ version: string; changed: boolean }> {
+  const text = await readFile(new URL("./workflows/home-sync.yaml", import.meta.url), "utf-8");
+  return workspace.publishWorkflowByContent(
+    "home-sync",
+    text,
+    "Syncs this strut's read copy of its home's memory with the home (a peer, default \"home\"): pushes dictation's changes, " +
+      "pulls the memory when it changed and loads it, keeping what dictation changes meanwhile. Input { peer? }.",
+    "home",
+    undefined,
+    { source: "seed" },
+  );
 }

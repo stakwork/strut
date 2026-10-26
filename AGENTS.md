@@ -417,7 +417,7 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a job (`job/dir`, `git/checkout` with `workdir`) may sit unused before its REPOSITORIES are removed — its other files are kept, and a job with nothing left goes with its record. Swept by the next `job/dir` or kept checkout — no timer. `0` keeps them forever. |
 | `STRUT_PEERS` | (unset) | Peers to put on file at boot (plans/federation.md §3): a JSON array of `{ id, baseUrl, token, label?, description?, repos?, ca?, servername? }` (`ca`: a PEM CA, for that peer's requests the only one trusted, `GET /peers` shows `ca: true`; `servername`: with `ca`, the name its certificate is issued for when that is not the URL's host, checked in place of the host) — the paste door for a strut a host cannot push to (a desktop strut behind NAT). Each replaces the record of the same id; `PUT /peers/:id` is the same door over HTTP. A bad entry fails the boot. |
-| `STRUT_HOME_SYNC` | (unset) | `box`: serve `POST /home/pull` and `POST /home/push` to a person's credential (`src/home-sync.ts`; `createStrut({ homeSync: "box" })`), so a strut that keeps a read copy of this memory syncs with it: see "Home sync". Off by default: on, the whole memory goes to any person token this strut minted. |
+| `STRUT_HOME_SYNC` | (unset) | `box`: serve `POST /home/pull` and `POST /home/push` to a person's credential (`src/home-sync.ts`; `createStrut({ homeSync: "box" })`), so a strut that keeps a read copy of this memory syncs with it; `copy`: seed `home-sync`, the workflow that copy runs. See "Home sync". Off by default: on, the whole memory goes to any person token this strut minted. |
 | `STRUT_SELF` | (unset) | This strut's OWN workspace, a JSON object `{ id?, label?, description?, repos? }` (no baseUrl/token — nothing is dispatched to self), so agents know which repos are here; `strut/list-peers` and the builder's `list_peers` report it as `self`. `createStrut({ self })` wins over the env; `PUT /self` is the same door. Not a peer: stored under its own key in `peers.json`. A bad value fails the boot. |
 | `STRUT_EVENTS_SINK` | (unset) | One http(s) URL every run's events are POSTed to, batched, as `{ event: "run.events", events: [...] }` (`src/events-sink.ts`; `createStrut({ eventsSink: { url } })` is the same door for a host that embeds strut) — telemetry for a server that draws what strut is doing, set once for the deployment, whoever launches the run. Each event is the ENVELOPE only: `workflow`, `runId`, `path`, `type`, `stepType`, `durationMs`, `modelCalls` / `usage` / `cost`, the version fields, `actor` / `job` / `origin` / `parentRunId`, an error's `message` — never a step's `input`, `output`, transcript or params. Deliveries are retried briefly and then dropped; a listener that missed a batch backfills from `GET /workflows/:name/runs/:runId/events`. The URL is a credential: it is logged by origin only. Not http(s) fails the boot. |
 | `STRUT_AUTO_RESUME` | `1` (persistent run store) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): on whenever the run store outlives the process — anything but `MemoryRunStore`, whatever the workspace's kind, so the lab's graph workspace + `FileRunStore` counts — the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. The builder's CHATS the same way, gated on the chat store's kind: a chat left `live` by the dead process gets its turn finalized and a `[restart-notification]` wake-up turn (see "Chat is a detached background job"). `0` disables both. |
@@ -884,9 +884,31 @@ outlive the pull and reach other credentials. A route answers its caller
   dictation made it and the pair is all that is known of it). Idempotent:
   `known`, `already undone`, `not found` and `not dictation's` are reported,
   not errors.
+- **The copy's side: `home-sync { peer? }`**, seeded by
+  `STRUT_HOME_SYNC=copy`; one step, `home/sync`, so neither the changes nor
+  the memory pass through a run's journal (its output is a summary:
+  `{ pushed, pulled, hash, counts?, backup?, kept }`). The home is a peer
+  on file (default `home`) whose token is a person token. It reads the
+  last sync (`home/state`: `since`, `hash`, kept in
+  `<dataDir>/home-sync.json`), sends `dictation/changes-since`'s changes to
+  `/home/push`, then asks `/home/pull` with its hash; a changed memory is
+  loaded with `memory/import`'s replace (backed up, put back on failure).
+  Only then does it record `since` = the push's `until` and the new hash.
+  A sync that fails (away from home, a push refused) records nothing; the
+  next one pushes the same changes again (idempotent) and catches up. Run
+  it on a timer, on wake, after a correction.
+- **Dictation while it syncs**: `home/sync` reads the push's changes in
+  the writes' queue, as `dictation/changes-since` does. Then, inside the
+  memory lock (`memoryExclusive`, which `memory/import` holds too), it
+  reads what dictation changed from the push's `until` on from the old
+  graph (kept in `home-sync.json` as `pending` until replayed), replaces the graph,
+  and replays those changes onto the new one (`kept`), so the next push
+  carries them. A write that arrives meanwhile waits for the lock; a
+  transcription that reads the vocabulary mid-import gets no rewrite for
+  that utterance (audio/routes.ts falls back to the plain text).
 - **A new kind** (one that exists, not before): a `<kind>/changes-since`
-  and `<kind>/apply-changes` pair, and a key on `/home/push` (and a step
-  on the copy's side).
+  and `<kind>/apply-changes` pair, a key on `/home/push`, and its changes
+  read and sent in `home/sync`.
 
 ## Mothership cost control (opt-in)
 
