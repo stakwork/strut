@@ -3,6 +3,7 @@ import * as api from "../api";
 import { jobTotals } from "../api";
 import { displayActor } from "../actor";
 import { formatTokens } from "../context-meter";
+import { fmtDuration } from "../duration";
 import { statusTone } from "../helpers";
 import { isArtifactPath, peerArtifactPath } from "@strut/kit/folds";
 import { checkOutcomes, ledgerSignature, newestTurn, verifySummary } from "../claims-view";
@@ -390,14 +391,6 @@ export function peerArtifactNote(ref: { peer?: string; via?: string; job?: strin
 export function fmtCost(c: number): string {
   if (c === 0) return "$0";
   return c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`;
-}
-
-export function fmtDuration(ms: number): string {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
-  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
 }
 
 export function fmtTime(iso: string, seconds = false): string {

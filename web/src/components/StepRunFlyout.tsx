@@ -2,6 +2,7 @@ import { useState } from "preact/hooks";
 import * as api from "../api";
 import { StepData } from "../flow-to-canvas";
 import { errorMessage, formatJson, statusTone } from "../helpers";
+import { fmtDuration } from "../duration";
 import { CloseIcon } from "../icons";
 import { Markdown, hasMarkdownField } from "./Markdown";
 import { ValueFields } from "./ValueFields";
@@ -75,7 +76,7 @@ export function StepRunFlyout(props: {
             {disp.end?.durationMs != null && (
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Duration</span>
-                <span class="flyout-meta-value">{disp.end.durationMs}ms</span>
+                <span class="flyout-meta-value">{fmtDuration(disp.end.durationMs)}</span>
               </div>
             )}
             {typeof cost === "number" && (

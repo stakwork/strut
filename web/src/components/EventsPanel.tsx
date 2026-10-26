@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import * as api from "../api";
 import { eventTone, statusTone } from "../helpers";
+import { fmtDuration } from "../duration";
 import { ValueFields } from "./ValueFields";
 import { StepData } from "../flow-to-canvas";
 import { CloseIcon } from "../icons";
@@ -108,7 +109,7 @@ export function EventsPanel(props: {
                     ↗ {r.label ?? "open run"}
                   </button>
                 ))}
-                <span class="event-duration">{evt.durationMs != null ? `${evt.durationMs}ms` : ""}</span>
+                <span class="event-duration">{evt.durationMs != null ? fmtDuration(evt.durationMs) : ""}</span>
               </div>
               {isOpen && (
                 <div class="event-detail">

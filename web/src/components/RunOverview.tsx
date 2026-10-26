@@ -8,7 +8,8 @@ import { foldRunOverview, type OverviewRow, type RowKind } from "@strut/kit/fold
 import { AgentIcon, ExternalIcon, EyeIcon, FileIcon, ImageIcon, LoopIcon, RunLinkIcon, SparkIcon, StepIcon, SubflowIcon } from "../icons";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { ProposalList } from "./ProposalList";
-import { fmtCost, fmtDuration, fmtTime, linkOf, peerArtifactNote } from "./JobTimeline";
+import { fmtCost, fmtTime, linkOf, peerArtifactNote } from "./JobTimeline";
+import { fmtDuration } from "../duration";
 import { ValueFields } from "./ValueFields";
 import { PALETTE, paletteKey } from "../step-colors";
 
