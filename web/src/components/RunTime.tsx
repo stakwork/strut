@@ -1,4 +1,5 @@
 import { fmtTime } from "./JobTimeline";
+import { fmtDuration } from "../duration";
 
 /**
  * A run's time in a list row. The id (a millisecond timestamp) is never
@@ -15,7 +16,7 @@ export function RunTime({ runId, at, durationMs }: { runId: string; at?: string;
         try { void navigator.clipboard?.writeText(runId).catch(() => {}); } catch { /* no clipboard */ }
       }}>
       {when ? fmtTime(when, true) : "…"}
-      {durationMs != null && <span class="run-time-dur">{durationMs}ms</span>}
+      {durationMs != null && <span class="run-time-dur">{fmtDuration(durationMs)}</span>}
     </span>
   );
 }
