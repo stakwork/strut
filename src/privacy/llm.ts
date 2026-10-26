@@ -1,4 +1,4 @@
-import { ModelWorker } from "../model-worker.js";
+import { ModelWorker } from "./host.js";
 import { chunk } from "./chunk.js";
 import { escRe, STOP } from "./gazetteer.js";
 import { LLM_MODEL, privacyModelOptions, type PrivacyModelOptions } from "./models.js";

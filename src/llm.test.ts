@@ -432,8 +432,10 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const a = stepAuth(ctx as any);
     assert.equal(a.llmAuth, hook);
     assert.deepEqual(a.auth, { kind: "step", runId: "r9", workflow: "digest", stepPath: "digest/loop#2/summarize", actor: "a", principal: "p" });
-    assert.deepEqual(stepAuth({ ...ctx, services: {} } as any), {});
-    assert.deepEqual(stepAuth(undefined), {});
+    // No hook: no auth, but the context still rides along for the model wrappers (src/extensions.ts).
+    const bare = stepAuth({ ...ctx, services: {} } as any, "sess");
+    assert.deepEqual([bare.llmAuth, bare.auth, bare.session, bare.ctx?.runId], [undefined, undefined, "sess", "r9"]);
+    assert.equal(stepAuth(undefined).llmAuth, undefined);
     // A slashed name: the run's workflow, never the path's first segment.
     const slashed = { ...ctx, path: "acme/linear/sync/summarize", workflow: "acme/linear/sync" };
     assert.equal(stepAuth(slashed as any).auth?.workflow, "acme/linear/sync");

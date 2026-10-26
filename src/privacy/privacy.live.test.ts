@@ -15,7 +15,7 @@ import { runWorkflow } from "../runner.js";
 import { createRegistry } from "../steps/registry.js";
 import { MemoryRunStore } from "../store.js";
 import { flowFromYaml } from "../workspace.js";
-import { anonymizeTexts, deanonymizeText, type AnonymizeOptions } from "./index.js";
+import { anonymizeTexts, deanonymizeText, readPolicy, type AnonymizeOptions } from "./index.js";
 
 const enabled = process.env["STRUT_PRIVACY_LIVE"] === "1";
 const RECALL_FLOOR = 0.85;
@@ -54,6 +54,22 @@ describe("privacy live (STRUT_PRIVACY_LIVE=1)", { skip: !enabled }, () => {
     const recall = masked / planted;
     console.log(JSON.stringify({ planted, masked, recall: Number(recall.toFixed(3)), byType, missed }));
     assert.ok(recall >= RECALL_FLOOR, `recall ${recall.toFixed(3)} below ${RECALL_FLOOR}; missed: ${missed.join(", ")}`);
+  });
+
+  it("masked recall under the default policy: only the types the policy masks count (DATE, LOC and URL stay visible)", async () => {
+    const policy = readPolicy("hosted")!;
+    const results = await anonymizeTexts(rows.map((r) => r.text), { ...opts, policy }, ctx());
+    let planted = 0, masked = 0;
+    const missed: string[] = [];
+    for (const [i, r] of results.entries()) {
+      for (const p of rows[i]!.planted) {
+        if (!policy.mask.includes(p.type)) { assert.ok(r.text.includes(p.value), `${p.type} ${p.value} stays visible`); continue; }
+        planted++;
+        if (!r.text.includes(p.value)) masked++; else missed.push(`${p.type}:${p.value}`);
+      }
+    }
+    console.log(JSON.stringify({ policy: "hosted", planted, masked, recall: Number((masked / planted).toFixed(3)), missed }));
+    assert.ok(masked / planted >= RECALL_FLOOR, `masked recall ${(masked / planted).toFixed(3)} below ${RECALL_FLOOR}`);
   });
 
   it("private-ask with the default NER: the model sees no planted value, the answer is restored", async () => {

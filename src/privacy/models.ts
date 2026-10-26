@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import { bootEnv } from "../env.js";
-import { modelDirFromEnv } from "../model-dir.js";
+import { bootEnv } from "./host.js";
+import { modelDirFromEnv } from "./host.js";
 
 export interface PrivacyModel {
   id: string;

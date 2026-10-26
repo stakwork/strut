@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
 import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
+import { applyToolWrappers } from "../../extensions.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
@@ -1009,6 +1010,7 @@ export function wrapToolsWithMask(tools: Record<string, any>, secretValues: stri
 }
 
 export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext | undefined, counter: { n: number } = { n: 0 }): void {
+  applyToolWrappers(tools, ctx);
   if (!ctx?.emit || !ctx.path) return;
   const basePath = ctx.path;
   const emit = ctx.emit as unknown as (e: Record<string, unknown>) => Promise<void>;
@@ -1522,7 +1524,7 @@ export default defineStep({
       provider: providerHint,
       secrets: (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets,
       // Where to send the call and how to attribute it (plans/mothership-cost-control.md §1).
-      ...stepAuth(ctx),
+      ...stepAuth(ctx, cfg.session),
     });
     const model: any = resolved.model;
     const maxOutputTokens = resolved.maxOutputTokens;

@@ -12,6 +12,7 @@
  * values (a template's resolved type) is out of scope — template-valued
  * config fields are skipped when checking against the step's schema.
  */
+import { validateSettings } from "./extensions.js";
 import yaml from "js-yaml";
 import { walkSteps } from "./closure.js";
 import type { Step, StepRegistry } from "./core.js";
@@ -89,6 +90,7 @@ export function validateWorkflowYaml(source: string, opts: ValidateOptions): Val
   if (data.params != null && (typeof data.params !== "object" || Array.isArray(data.params))) {
     errors.push({ path: "params", message: "`params` must be a mapping of knob → default." });
   }
+  for (const message of validateSettings(data.settings)) errors.push({ path: "settings", message });
 
   const steps = data.steps as Step[];
   const ids = new Set<string>();

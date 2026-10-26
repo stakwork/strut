@@ -22,6 +22,7 @@ import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tally
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
+import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import { peerSessionId, type SessionsCapability } from "./session-store.js";
 
@@ -56,6 +57,7 @@ export interface RunOptions<TServices = unknown> {
    *  subflows use their own `params` defaults. Exposed to step configs via
    *  `{{ params.* }}`. */
   params?: Record<string, unknown>;
+  settings?: Record<string, unknown>;
   /** Per-run overrides keyed by workflow name, applied at EVERY level of the
    *  execution tree (entry flow + nested subflows), unlike `params` which only
    *  reaches the entry flow. Use this to tune a knob that lives in a subflow
@@ -230,6 +232,7 @@ interface Exec {
   workspace: SubflowResolver | undefined;
   services: unknown;
   paramOverrides?: Record<string, Record<string, unknown>>;
+  settings?: Record<string, unknown>;
   controller?: RunController;
   journal?: Record<string, unknown>;
   actor?: string;
@@ -406,6 +409,7 @@ export async function runWorkflow<TServices = unknown>(
     workspace: opts?.workspace,
     services,
     paramOverrides: opts?.paramOverrides,
+    settings: opts?.settings,
     controller: opts?.controller,
     journal: opts?.journal,
     actor: opts?.actor,
@@ -541,7 +545,7 @@ async function executeFlow(
   // `$job` is always a key — undefined on a plain run — so `session: "{{ $job }}"`
   // in a job workflow resolves to nothing (a cold agent) instead of throwing:
   // the same workflow works as a one-shot from the Run button (plans/jobs.md §2).
-  const scope: Record<string, unknown> = { input, params, $runId: exec.runId, $job: exec.job };
+  const scope: Record<string, unknown> = { input, params, $runId: exec.runId, $job: exec.job, $settings: workflow.settings };
   const steps = workflow.steps;
 
   if (steps.length === 0) return undefined;
@@ -887,6 +891,7 @@ async function dispatchStep(
         emit: exec.emit,
         services: exec.services,
         registry: exec.registry,
+        settings: resolveSettings({ deployment: (exec.services as any)?.settings, workflow: scope["$settings"], step: step.options?.settings, run: exec.settings }),
         // Unit-scoped control: a parked `ctx.control.checkpoint()` releases
         // this unit so the subtree can quiesce (§2.2 threading).
         ...(exec.controller ? { control: exec.controller.forUnit() } : {}),

@@ -1,4 +1,4 @@
-import { ModelWorker } from "../model-worker.js";
+import { ModelWorker } from "./host.js";
 import { chunk } from "./chunk.js";
 import { typeFix, type Stage } from "./detect.js";
 import { LEAD, NER_TYPE, WORDCH } from "./rules.js";

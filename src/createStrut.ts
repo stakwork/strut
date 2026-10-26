@@ -122,6 +122,7 @@ import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
+import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
@@ -403,6 +404,7 @@ export interface StrutOptions<TServices = unknown> {
    *  the provider directly with the secrets boundary's key, as always.
    *  Placed on the services bag as `llmAuth`. Omit and nothing changes. */
   llmAuth?: LlmAuth;
+  settings?: Record<string, unknown>;
 
   /** Who is making this request (§2) — an opaque string strut stores and
    *  forwards, never interprets: the workflow owner stamp, the run's `actor`,
@@ -852,6 +854,7 @@ export async function createStrut<TServices = unknown>(
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
+    ...(opts.settings ? { settings: opts.settings } : {}),
     ...((opts.services ?? {}) as Record<string, unknown>),
   } as TServices;
   // The browser the browser/* steps drive (src/browser/service.ts), unless
@@ -3463,6 +3466,7 @@ export async function createStrut<TServices = unknown>(
   interface RunBody {
     input?: unknown;
     params?: Record<string, unknown>;
+    settings?: Record<string, unknown>;
     paramOverrides?: Record<string, Record<string, unknown>>;
     runId?: string;
     /** Where to POST the result when the run settles (src/callback.ts), or
@@ -3584,6 +3588,7 @@ export async function createStrut<TServices = unknown>(
         workspace,
         services,
         params: body.params,
+        settings: body.settings,
         paramOverrides: body.paramOverrides,
         controller,
         ...(workflowHash ? { workflowHash } : {}),

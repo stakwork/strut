@@ -4,10 +4,11 @@ import { denyStage, detectAll, ruleStage, type Stage } from "./detect.js";
 import type { KeyCtx, KeyProvider } from "./keys.js";
 import { llmStage, workerLlm } from "./llm.js";
 import { nerStage, workerNer } from "./ner.js";
+import { makeRefine, type PrivacyPolicy } from "./policy.js";
 import { pseudonymize } from "./pseudonymize.js";
 import { restore } from "./restore.js";
 import { destroyVault, getVault, kindOf, putVault, type VaultDeps } from "./vault.js";
-import type { LlmEngine, NerEngine, VaultKind, Warning } from "./types.js";
+import type { LlmEngine, NerEngine, TokenMap, VaultKind, Warning } from "./types.js";
 
 export * from "./types.js";
 export { detectAll, resolve, typeFix, ruleSpans, denySpans, denyStage, ruleStage, type Stage, type DetectOpts } from "./detect.js";
@@ -17,6 +18,8 @@ export { putVault, getVault, destroyVault, kindOf, HANDLE_RE, type VaultDeps } f
 export { secretKeyProvider, VAULT_KEY_SECRET, type KeyProvider, type KeyCtx } from "./keys.js";
 export { transformersNer, workerNer, nerStage, nerPostprocess, groupAndAlign } from "./ner.js";
 export { transformersLlm, workerLlm, llmStage, llmPostprocess, parseLlmReply } from "./llm.js";
+export { DEFAULT_MASK, makeRefine, type PrivacyPolicy, type PrivacyMode } from "./policy.js";
+export { privacySchema, normalizePrivacy, readPolicy } from "./settings.js";
 export { PRIVACY_MODELS, NER_MODEL, LLM_MODEL, privacyModelOptions, type PrivacyModelOptions } from "./models.js";
 
 /** `ctx.services.privacy`: the injection seam (tests, a host with its own key provider or models). */
@@ -37,6 +40,8 @@ export interface AnonymizeOptions {
   llm: boolean;
   minScore: number;
   privacyLevel: "off" | "basic" | "strict";
+  /** Per-type policy: only `policy.mask` types are masked (URL and DATE spans are refined, not dropped). */
+  policy?: PrivacyPolicy;
 }
 
 export interface AnonymizeResult {
@@ -68,9 +73,8 @@ function mergeWarnings(ws: Warning[]): Warning[] {
   return [...by.values()];
 }
 
-/** Anonymize each text with its own vault entry (one handle per text). NER is fail-closed. */
-export async function anonymizeTexts(texts: string[], o: AnonymizeOptions, ctx: KeyCtx): Promise<AnonymizeResult[]> {
-  const { vault, services } = depsFrom(ctx);
+/** The detectors for a call. NER is fail-closed: a model that cannot load is an error, never silence. */
+export function stagesFor(o: { ner: boolean; llm: boolean }, services: PrivacyServices): Stage[] {
   const stages: Stage[] = [denyStage, ruleStage];
   if (o.ner) {
     const engine = services.ner ?? workerNer();
@@ -82,13 +86,33 @@ export async function anonymizeTexts(texts: string[], o: AnonymizeOptions, ctx: 
     }));
   }
   if (o.llm) stages.push(llmStage(services.llm ?? workerLlm()));
+  return stages;
+}
+
+/** Mask one text under a policy, reusing and extending `map` (a session's). */
+export async function maskText(
+  text: string,
+  o: { policy: PrivacyPolicy; map: TokenMap; minScore?: number },
+  ctx: KeyCtx,
+): Promise<{ out: string; counts: Record<string, number>; warnings: Warning[] }> {
+  const { services } = depsFrom(ctx);
+  const warnings: Warning[] = [];
+  const spans = await detectAll(text, stagesFor({ ner: true, llm: o.policy.detect.llm }, services), { deny: [], minScore: o.minScore ?? 0.6, warn: (w) => warnings.push(w) });
+  const { out, counts } = pseudonymize(text, spans, { allow: [], mask: o.policy.mask, refine: makeRefine(o.policy.mask), map: o.map });
+  return { out, counts, warnings };
+}
+
+/** Anonymize each text with its own vault entry (one handle per text). NER is fail-closed. */
+export async function anonymizeTexts(texts: string[], o: AnonymizeOptions, ctx: KeyCtx): Promise<AnonymizeResult[]> {
+  const { vault, services } = depsFrom(ctx);
+  const stages = stagesFor(o, services);
 
   const out: AnonymizeResult[] = [];
   for (const text of texts) {
     const warnings: Warning[] = [];
     if (o.privacyLevel !== "off") warnings.push({ code: "privacy_level_not_implemented", message: `privacy_level "${o.privacyLevel}" is reserved; behaving as "off"` });
     const spans = await detectAll(text, stages, { deny: o.deny, minScore: o.minScore, warn: (w) => warnings.push(w) });
-    const { out: masked, map, counts } = pseudonymize(text, spans, { allow: o.allow });
+    const { out: masked, map, counts } = pseudonymize(text, spans, { allow: o.allow, ...(o.policy ? { mask: o.policy.mask, refine: makeRefine(o.policy.mask) } : {}) });
     const handle = await putVault(o.vault, map, o.ttlMinutes, ctx, vault);
     out.push({
       text: masked,
