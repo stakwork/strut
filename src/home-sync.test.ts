@@ -112,6 +112,29 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     assert.deepEqual((await step(box, "dictation/apply-changes", { changes: stray })).applied.map((a: any) => a.result), ["not found"]);
   });
 
+  it("a learn the copy undid later, sent again, writes nothing on a box that undid it too; one not undone is learned again", async () => {
+    const since = (await step(mac, "dictation/changes-since", {})).until;
+    await step(mac, "dictation/add", { heard: "dock her", written: "Docker" });
+    await step(mac, "dictation/add", { heard: "kay eight", written: "K8", term: true });
+    const made = (await lexicon(mac)).entities;
+    for (const name of ["Docker", "K8"]) await step(mac, "dictation/undo", { undo: [made.find((e: any) => e.name === name).ref_id] });
+    const { changes } = await step(mac, "dictation/changes-since", { since });
+    assert.deepEqual(changes.map((c: any) => [c.op, c.written, c.undone]), [
+      ["learn", "Docker", true],
+      ["learn", "K8", true],
+      ["undo", "Docker", undefined],
+      ["undo", "K8", undefined],
+    ]);
+    assert.deepEqual((await step(box, "dictation/apply-changes", { changes })).applied.map((a: any) => a.result), ["learned", "learned", "undone", "undone"]);
+    const { content_hash } = await step(box, "memory/export", { inline: true });
+    const again = await step(box, "dictation/apply-changes", { changes });
+    assert.deepEqual(again.applied.map((a: any) => a.result), ["already undone", "already undone", "already undone", "already undone"]);
+    assert.deepEqual(await step(box, "memory/export", { inline: true, if_changed: content_hash }), { unchanged: true, content_hash }, "nothing written");
+    // Added again by hand on the copy, not undone: the box learns it again.
+    const readded = [{ op: "learn", heard: "dock her", written: "Docker", at: new Date().toISOString() }];
+    assert.deepEqual((await step(box, "dictation/apply-changes", { changes: readded })).applied.map((a: any) => a.result), ["learned"]);
+  });
+
   it("changes-since waits for a write in flight: one that stamped its time and has not committed is in this read or the next", async () => {
     await step(mac, "dictation/add", { heard: "type script", written: "TypeScript" });
     const start = (await step(mac, "dictation/changes-since", {})).until;

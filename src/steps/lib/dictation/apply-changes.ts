@@ -25,8 +25,8 @@ const Applied = z.object({
 // Replays another strut's dictation changes (dictation/changes-since there)
 // through dictation/add and dictation/undo here, in order. Safe to replay:
 // a pair this memory already keeps is "known", one already undone is
-// "already undone", and an undo is matched by its pair, since the two graphs
-// give it different ids.
+// "already undone" (a learn too, when it says it was undone later), and an
+// undo is matched by its pair, since the two graphs give it different ids.
 export default defineStep({
   type: "dictation/apply-changes",
   description:
@@ -48,6 +48,12 @@ export default defineStep({
       if (c.op === "learn") {
         if (c.term ? entryWriting(current, c.written) : find(current, c)) {
           done(c, "known");
+          continue;
+        }
+        // Undone later where it came from, and undone here already: learning
+        // it again would only undo it again, a write each time it is sent.
+        if (c.undone && (c.term ? await termUndone(ctx, current, c.written) : wasUndone(current, c.heard!, c.written))) {
+          done(c, "already undone");
           continue;
         }
         const out = await add.run(add.input.parse({ heard: c.heard ?? c.written, written: c.written, ...(c.name ? { name: c.name } : {}), ...(c.term ? { term: true } : {}) }), ctx);

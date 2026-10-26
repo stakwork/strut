@@ -31,9 +31,9 @@ export async function dictationChanges(query: Query, since: number, until: numbe
     `MATCH (f:Fact)-[:SUBJECT]->(s:Entity)
      WHERE f.predicate IN $heardAs AND f.created_by = 'dictation' AND f.value IS NOT NULL AND f.expired_at IS NULL
        AND f.created_at >= $since AND f.created_at < $until AND (f.deleted_at IS NULL OR f.deleted_reason = $undone)
-     RETURN f.value AS value, f.form AS form, s.name AS name, f.created_at AS at`,
+     RETURN f.value AS value, f.form AS form, s.name AS name, f.created_at AS at, f.deleted_reason AS reason`,
     range,
-  )) changes.push({ op: "learn", ...pair(r), at: iso(r["at"])!, ms: Number(r["at"]) });
+  )) changes.push({ op: "learn", ...pair(r), ...(r["reason"] === UNDONE ? { undone: true } : {}), at: iso(r["at"])!, ms: Number(r["at"]) });
 
   for (const r of await query(
     `MATCH (f:Fact)-[:SUBJECT]->(s:Entity)
@@ -58,7 +58,7 @@ export async function dictationChanges(query: Query, since: number, until: numbe
       const created = Number(w["created_at"]);
       const deleted = w["deleted_at"] == null ? null : Number(w["deleted_at"]);
       const undone = w["reason"] === UNDONE;
-      if (created >= since && created < until && (deleted === null || undone)) changes.push({ op: "learn", written: w["name"] as string, term: true, at: iso(created)!, ms: created });
+      if (created >= since && created < until && (deleted === null || undone)) changes.push({ op: "learn", written: w["name"] as string, term: true, ...(undone ? { undone: true } : {}), at: iso(created)!, ms: created });
       if (undone && deleted! >= since && deleted! < until) changes.push({ op: "undo", written: w["name"] as string, term: true, at: iso(deleted)!, ms: deleted! });
     }
   }

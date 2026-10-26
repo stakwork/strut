@@ -877,13 +877,17 @@ outlive the pull and reach other credentials. A route answers its caller
   of that entity), never a ref_id. It returns `until`, the next call's
   `since`, and reads in the writes' queue: a write stamps its time before
   it commits, so a read beside one would miss it for good. A learn later
-  forgotten for another reason (`dictation/remove`) is left out.
+  undone says so (`undone: true`); one later forgotten for another reason
+  (`dictation/remove`) is left out.
 - **`dictation/apply-changes { changes }`** replays them in order through
   `dictation/add` (which takes `name` and `term` for this) and
   `dictation/undo`, matching an undo by its pair (the entity, when
   dictation made it and the pair is all that is known of it). Idempotent:
   `known`, `already undone`, `not found` and `not dictation's` are reported,
-  not errors.
+  not errors. A learn marked `undone` of a pair already undone here is
+  `already undone` and writes nothing: learned again it would be undone
+  again, a new entity each time the batch is sent. One not marked (added
+  again by hand after an undo) is learned.
 - **The copy's side: `home-sync { peer? }`**, seeded by
   `STRUT_HOME_SYNC=copy`; one step, `home/sync`, so neither the changes nor
   the memory pass through a run's journal (its output is a summary:
