@@ -32,7 +32,14 @@ folders (each command reads or writes the same ones):
 
 this host's bridge, for moved.json (serve, fetch) and the callbacks a move names (send, serve --send-back):
   --bridge <url>               its token in STRUT_MOVE_BRIDGE_TOKEN
-  --set-secret <NAME>=<value>  a secret moved.json sets; {bridge.url} {bridge.port} {bridge.token} fill in; repeatable`;
+  --set-secret <NAME>=<value>  a secret moved.json sets; {bridge.url} {bridge.port} {bridge.token} fill in; repeatable
+
+a peer record for syncing after the move (the sender asks, the receiver mints):
+  send  --peer-actor <actor>   ask for one, a person token for <actor>; the "sent" line carries it as peer
+  serve --peer-url <url>       where peers reach this strut, {host} the address the move came in on
+                               (STRUT_MOVE_PEER_URL; e.g. https://{host}:8443); signed with STRUT_API_KEY
+        --peer-ca <file>       a PEM CA for their TLS (STRUT_MOVE_PEER_CA)
+        --peer-days <n>        the token's life (default 365)`;
 
 class Usage extends Error {}
 
@@ -41,7 +48,7 @@ interface Parsed {
   flags: Map<string, string[]>;
 }
 
-const VALUED = new Set(["data", "host-config", "sidecar", "env", "sidecar-env", "state", "bridge", "set-secret", "listen", "host", "link", "name"]);
+const VALUED = new Set(["data", "host-config", "sidecar", "env", "sidecar-env", "state", "bridge", "set-secret", "listen", "host", "link", "name", "peer-actor", "peer-url", "peer-ca", "peer-days"]);
 
 function parse(args: string[]): Parsed {
   const out: Parsed = { positional: [], flags: new Map() };
@@ -123,8 +130,9 @@ export async function main(args: string[]): Promise<number> {
       }
       case "send": {
         const b = bridge(p);
-        const m = await send(link(), folders(p), b ? { bridge: b } : {});
-        out({ event: "sent", from: m.from, sidecars: m.sidecars });
+        const actor = p.flags.get("peer-actor")?.at(-1);
+        const m = await send(link(), folders(p), { ...(b ? { bridge: b } : {}), ...(actor ? { peerActor: actor } : {}) });
+        out({ event: "sent", from: m.from, sidecars: m.sidecars, ...(m.peer ? { peer: m.peer } : {}) });
         return 0;
       }
       case "fetch": {
@@ -145,6 +153,10 @@ export async function main(args: string[]): Promise<number> {
         const publicHost = p.flags.get("host")?.at(-1) ?? env["STRUT_MOVE_HOST"];
         const linkPrefix = p.flags.get("link")?.at(-1) ?? env["STRUT_MOVE_LINK"];
         const name = p.flags.get("name")?.at(-1);
+        const peerUrl = p.flags.get("peer-url")?.at(-1) ?? env["STRUT_MOVE_PEER_URL"];
+        const peerCa = p.flags.get("peer-ca")?.at(-1) ?? env["STRUT_MOVE_PEER_CA"];
+        const peerDays = Number(p.flags.get("peer-days")?.at(-1) ?? 365);
+        if (!(peerDays > 0 && peerDays <= 3650)) throw new Usage("--peer-days takes a number of days, at most 3650");
         const result = await serve({
           ...folders(p),
           port: Number(m[2]),
@@ -154,6 +166,7 @@ export async function main(args: string[]): Promise<number> {
           ...(name ? { name } : {}),
           ...(b ? { bridge: b } : {}),
           ...(Object.keys(secrets).length ? { secrets } : {}),
+          ...(peerUrl ? { peer: { url: peerUrl, ...(peerCa ? { ca: peerCa } : {}), days: peerDays } } : {}),
           sendBack: p.flags.has("send-back"),
           onReady: ({ link: l, code, port, mode }) => {
             out({ event: "ready", mode, link: l, code, port });

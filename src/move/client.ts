@@ -8,7 +8,7 @@ import { Readable } from "node:stream";
 import { FORMAT_VERSION, install, moveVersion, packFolders, unpack, type Arrival, type Endpoint, type Manifest, type MoveFolders } from "./archive.js";
 import { parseLink } from "./link.js";
 import { open, proof, saltOf, seal } from "./seal.js";
-import { stateDir } from "./serve.js";
+import { stateDir, type MovePeer } from "./serve.js";
 
 export interface MoveInfo {
   mode: "receive" | "send-back";
@@ -57,20 +57,28 @@ export async function check(link: string, opts: { expect?: MoveInfo["mode"]; ver
 }
 
 /** Pack this host's folders (stopped), seal them with the link's code and
- *  upload them. `bridge`: the bridge their callbacks point at. */
-export async function send(link: string, f: MoveFolders, opts: { bridge?: Endpoint; version?: { strut: string; graph: string | null } } = {}): Promise<Manifest> {
+ *  upload them. `bridge`: the bridge their callbacks point at. `peerActor`
+ *  asks the other end for a peer record (`MovePeer`): its address and a
+ *  person token for that actor, so this host can sync with it after;
+ *  `peer` is it, or `{ error }` when the other end gives none. */
+export async function send(
+  link: string,
+  f: MoveFolders,
+  opts: { bridge?: Endpoint; peerActor?: string; version?: { strut: string; graph: string | null } } = {},
+): Promise<Manifest & { peer?: MovePeer | { error: string } }> {
   await check(link, { expect: "receive", ...(opts.version ? { version: opts.version } : {}) });
   const { base, code } = parseLink(link);
   const { manifest, plain } = await packFolders(f, opts.bridge);
   const sealed = seal(plain, code);
   const res = await call(`${base}/move`, {
     method: "PUT",
-    headers: { "content-type": "application/octet-stream" },
+    headers: { "content-type": "application/octet-stream", ...(opts.peerActor ? { "x-strut-move-peer": opts.peerActor } : {}) },
     body: Readable.toWeb(Readable.from(sealed)) as ReadableStream,
     duplex: "half",
   } as RequestInit);
   if (!res.ok) throw await refused(res, "the move was refused");
-  return manifest;
+  const { peer } = (await res.json().catch(() => ({}))) as { peer?: MovePeer | { error: string } };
+  return { ...manifest, ...(peer ? { peer } : {}) };
 }
 
 /** Download a sent-back move, put it in place here with `moved.json`

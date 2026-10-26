@@ -127,6 +127,7 @@ import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
+import { seedHomeWorkflows } from "./home-sync.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -377,6 +378,11 @@ export interface StrutOptions<TServices = unknown> {
   /** The `private-ask` workflow strut ships beside the privacy/* steps
    *  (src/privacy/seed.ts), seeded at boot by content hash. `false` seeds none. */
   privacyWorkflows?: false;
+  /** The workflows a home box serves to a strut that keeps a read copy of
+   *  its memory (src/home-sync.ts: home-pull, home-push, both `peer:
+   *  person`). Off unless `true` or STRUT_HOME_SYNC=1: open, they hand the
+   *  whole memory to any person token this strut minted. */
+  homeSync?: boolean;
 
   /** The strut graph backend, when the deployment has one. Default: the one
    *  behind a graph-backed workspace (`workspace.graph`), so the default
@@ -1101,6 +1107,13 @@ export async function createStrut<TServices = unknown>(
   if (opts.privacyWorkflows !== false) {
     for (const w of await seedPrivacyWorkflows(workspace)) {
       if (w.changed) console.log(`[privacy] seeded workflow: ${w.name} @ ${w.version}`);
+    }
+  }
+
+  // home-pull and home-push (src/home-sync.ts), on a host that asks for them.
+  if (opts.homeSync ?? bootEnv()["STRUT_HOME_SYNC"] === "1") {
+    for (const w of await seedHomeWorkflows(workspace)) {
+      if (w.changed) console.log(`[home] seeded workflow: ${w.name} @ ${w.version}`);
     }
   }
 

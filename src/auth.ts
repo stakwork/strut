@@ -348,8 +348,7 @@ function sign(kind: ClaimsKind, payload: string, secret: string): string {
 
 /** `base64url(json).hmac` over `claims` under the token secret, or
  *  undefined with no secret to sign it. */
-function signClaims(kind: ClaimsKind, claims: Record<string, unknown>): string | undefined {
-  const secret = tokenSecret();
+function signClaims(kind: ClaimsKind, claims: Record<string, unknown>, secret = tokenSecret()): string | undefined {
   if (!secret) return undefined;
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   return `${payload}.${sign(kind, payload, secret)}`;
@@ -477,10 +476,13 @@ export interface PersonToken {
 }
 
 /** A person token for `actor`, living `ttlMs` — or undefined with no
- *  secret to sign it (dev mode with no `STRUT_SECRET_KEY`). */
-export function personToken(actor: string, ttlMs = PERSON_TOKEN_DAYS * 86_400_000): { token: string; exp: number } | undefined {
+ *  secret to sign it (dev mode with no `STRUT_SECRET_KEY`). `secret` is for
+ *  a process that mints for a strut it is not (`strut move serve`, before the
+ *  strut it receives has started): that strut's `STRUT_API_KEY`, else its
+ *  `STRUT_SECRET_KEY`, as `tokenSecret` picks. */
+export function personToken(actor: string, ttlMs = PERSON_TOKEN_DAYS * 86_400_000, secret?: string): { token: string; exp: number } | undefined {
   const exp = Date.now() + ttlMs;
-  const signed = signClaims("person", { actor, exp });
+  const signed = signClaims("person", { actor, exp }, secret ?? tokenSecret());
   return signed ? { token: `${PERSON_PREFIX}${signed}`, exp } : undefined;
 }
 
