@@ -1,7 +1,8 @@
 # Packages — sharing workflows, steps and Concepts between struts
 
-> **Status (2026-10-24): the package BYTES layer is built** (`src/packages/`,
-> see "Step order"); nothing installs yet. Revised 2026-10-18
+> **Status (2026-10-26): the package BYTES layer, step 1 and the INSTALL
+> half of step 2 are built** (`src/packages/`, see "Step order"): a package
+> installs from `file:`, lists and uninstalls; nothing builds one yet. Revised 2026-10-18
 > after a review against npm, Go modules, cargo, bundler, Homebrew taps and
 > OCI: the first draft's generated manifest, its first-installer name rule,
 > its vendored foreign items and its server-shaped index are gone (§10 says
@@ -1435,6 +1436,57 @@ production until install (step 2) calls the resolver.
    `apps.md`'s work item 1 exists: grants in the closure, the build against
    the kit at install, migrations and graph types at the publish,
    `upstream` on app versions.
+   - **Built 2026-10-26: install from `file:`** (`src/packages/install.ts`,
+     `installed.ts`, `fence.ts`; `specs/API.md` §16). §3 as written, with
+     these choices of mine, proposed:
+     - **The fence wraps the step in the registry**, not the runner's
+       dispatch: `buildRegistry({ fences })` replaces each custom step whose
+       active version carries an `upstream` with a wrapper whose `run`
+       hands the real one a fenced `secrets`, and `resolveStep` does the
+       same for a pinned version — so a workflow, an agent's tool call,
+       `run_step`, a check and a proposal's apply are all fenced with no
+       change at each. `StepListEntry` carries the active version's
+       `upstream` for it; `materializeStepVersion` returns a pin's.
+     - **The rule after install lives in the stores**
+       (`refuseUnderInstalledPackage`, both backends, a conformance case):
+       a publish of a NEW workflow or step name under a prefix where an
+       item of that package lives is refused unless it carries that
+       package's `upstream`. Every door gets it, a future one too.
+       Concepts do not hold the prefix (a store never sees them).
+     - **Step versions record their door** (`source`, `actor`, as workflow
+       versions do; `version_source` + `actor` on `StrutStepVersion`):
+       the fold's installed version is the newest one `source: install`
+       wrote, so a fork's version — which carries the same `upstream` — is
+       never mistaken for it.
+     - **The file store's `deleteWorkflow` keeps `runs/`**: they are the run
+       store's, and an uninstall keeps history. `DELETE /workflows/:name`
+       still calls `RunStore.deleteRuns` first, so it removes them as before.
+     - **`keepEdited` also takes a deleted node** under a page's name
+       (whoever stamped it): the install checked every LIVE name first, and
+       a deleted page is nobody's — the seeder's silent skip would have
+       left the package without it.
+     - **Uninstall keeps the helpers while a forked step of the package
+       stays**: a fork may import them, and deleting one breaks the fork at
+       registry load, silently.
+     - **The checks before the first write** are the names (prefix,
+       sealed namespace, Concept stamps and parents), the workflow files
+       (YAML, `name:` = the path, every step type, literal grant and
+       subflow target here or in the set) and the claims files' shape. A
+       step's declared `type` and whether it loads can only be known by
+       loading it, so that check runs after the steps are written, and
+       takes back everything the install wrote when it fails.
+     - **Apps are refused** (`package_unsupported`), and **another digest
+       of an installed package** (`package_update_not_built`): the third
+       PR and step 4.
+     - **Open, found while building it:** a package of Concepts ALONE
+       records no source ref anywhere — its pages carry a stamp, not an
+       `upstream` — so `GET /packages` finds its digest and version in the
+       cache, and §4's update (which re-resolves `upstream.source.ref`)
+       has nothing to re-resolve for it. And a PINNED version of a step
+       that imports a sibling helper (`./_shared.js`) does not load: the
+       version archive (`steps/_history/<name>/<vN>.ts`, the graph's
+       `-versions` dir) has no helper beside it. Pre-existing, but a
+       package ships helpers, so a pin of a package step meets it.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by

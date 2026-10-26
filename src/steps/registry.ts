@@ -5,6 +5,7 @@ import { registerStrutResolver } from "../strut-resolver.js";
 import type { AnyStepDef, StepRegistry } from "../core.js";
 import { parseStepRef } from "../step-ref.js";
 import { formatStepLint, lintStepSource } from "../step-lint.js";
+import { fenceStep, type Fence } from "../packages/fence.js";
 
 /** Where a registered step type came from. */
 export type StepSource = "core" | "lib" | "custom";
@@ -19,9 +20,10 @@ export interface RegistryBundle {
   sources: StepSources;
 }
 
-/** Where a PINNED step version's importable source lives, and the content
- *  hash of that version — `WorkspaceStore.materializeStepVersion`. */
-export type StepVersionLoader = (name: string, version: string) => Promise<{ path: string; hash: string }>;
+/** Where a PINNED step version's importable source lives, the content hash
+ *  of that version, and the package it came from (whose fence it runs
+ *  behind) — `WorkspaceStore.materializeStepVersion`. */
+export type StepVersionLoader = (name: string, version: string) => Promise<{ path: string; hash: string; upstream?: Fence }>;
 
 export interface ResolvedStep {
   def: AnyStepDef;
@@ -62,9 +64,10 @@ export async function resolveStep(registry: StepRegistry, ref: string): Promise<
   let pending = pins.cache.get(ref);
   if (!pending) {
     pending = (async () => {
-      const { path, hash } = await pins.load(type, version);
+      const { path, hash, upstream } = await pins.load(type, version);
       await warnPastServices(path, ref);
-      const def = await importStepDef(path);
+      const imported = await importStepDef(path);
+      const def = upstream ? fenceStep(imported, upstream) : imported;
       // Also answer a plain `registry["type@vN"]` from now on (still hidden
       // from `Object.keys`): the sync lookups — validate, the agent's tool
       // building — see a pin that has been resolved once.
@@ -333,7 +336,15 @@ export async function stepLoadError(filePath: string): Promise<string | null> {
  * Returns both the registry and a parallel `sources` map so callers can
  * report which tier each step came from without guessing from the name.
  */
-export async function buildRegistry(customDir?: string, opts?: { loadVersion?: StepVersionLoader }): Promise<RegistryBundle> {
+export async function buildRegistry(
+  customDir?: string,
+  opts?: {
+    loadVersion?: StepVersionLoader;
+    /** Custom steps whose active version came from a package, by type: each
+     *  runs behind its package's fence (src/packages/fence.ts). */
+    fences?: Record<string, Fence>;
+  },
+): Promise<RegistryBundle> {
   // Custom steps `import "strut"`; make that resolve to this strut wherever the workspace lives.
   registerStrutResolver();
   const registry: StepRegistry = { ...CORE_STEPS };
@@ -347,6 +358,9 @@ export async function buildRegistry(customDir?: string, opts?: { loadVersion?: S
 
   if (customDir) {
     await loadStepsFrom(customDir, registry, sources, "custom");
+    for (const [name, fence] of Object.entries(opts?.fences ?? {})) {
+      if (sources[name] === "custom") registry[name] = fenceStep(registry[name]!, fence);
+    }
   }
 
   // `type@vN` references resolve through the workspace's version archive.

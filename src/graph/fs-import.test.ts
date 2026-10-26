@@ -213,7 +213,7 @@ for (const tb of testBackends()) {
       await fs.publishWorkflow("acme", "v1", WF("root"), "the root");
       await fs.publishWorkflow("acme/linear/sync", "v1", WF("sync"), "installed", undefined, undefined, { source: "install", upstream: up });
       await fs.publishWorkflow("acme/linear/sync", "v2", WF("fork"), "forked", undefined, undefined, { source: "ui" });
-      await fs.publishStep("acme/linear/fetch", STEP("fetch"), "fetches", undefined, { upstream: up });
+      await fs.publishStep("acme/linear/fetch", STEP("fetch"), "fetches", undefined, { upstream: up, source: "install", actor: "alice" });
       await mkdir(join(dir, "workflows", "acme", "runs", "1700000000001"), { recursive: true });
       await mkdir(join(dir, "workflows", "acme", "linear", "sync", "runs", "1700000000002"), { recursive: true });
 
@@ -223,7 +223,8 @@ for (const tb of testBackends()) {
       assert.deepEqual((await ws.listWorkflows()).map((w) => [w.name, w.activeVersion]), [["acme", "v1"], ["acme/linear/sync", "v2"]]);
       const meta = (await ws.getWorkflowMetadata("acme/linear/sync"))!;
       assert.deepEqual([meta.versions["v1"]?.upstream, meta.versions["v1"]?.source, meta.versions["v2"]?.upstream], [up, "install", up]);
-      assert.deepEqual((await ws.getStepMetadata("acme/linear/fetch"))?.versions["v1"]?.upstream, up);
+      const step = (await ws.getStepMetadata("acme/linear/fetch"))?.versions["v1"];
+      assert.deepEqual([step?.upstream, step?.source, step?.actor], [up, "install", "alice"]);
       // Aside, nested as they were; the run records stay.
       assert.ok(existsSync(join(r.movedTo!, "workflows", "acme", "linear", "sync", "v2.yaml")));
       assert.ok(existsSync(join(r.movedTo!, "workflows", "acme", "_metadata.json")));

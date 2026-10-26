@@ -488,18 +488,60 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
 
       // Steps: the same, read back through getStepMetadata.
       const type = "acme/linear/fetch";
-      const s1 = await ws.publishStep(type, STEP_SRC(type, "one"), "one", undefined, { upstream, source: "install" });
+      const s1 = await ws.publishStep(type, STEP_SRC(type, "one"), "one", undefined, { upstream, source: "install", actor: "alice" });
       const s2 = await ws.publishStep(type, STEP_SRC(type, "two"), "two");
       let info = (await ws.getStepMetadata(type))!;
       assert.equal(info.active, s2.version);
       assert.deepEqual(Object.keys(info.versions), [s1.version, s2.version]);
       assert.deepEqual(info.versions[s1.version]?.upstream, upstream);
+      assert.equal(info.versions[s1.version]?.source, "install", "a step version records its door, like a workflow version");
+      assert.equal(info.versions[s1.version]?.actor, "alice");
+      assert.equal(info.versions[s2.version]?.source, undefined, "a door that says nothing records nothing");
       assert.deepEqual(info.versions[s2.version]?.upstream, upstream, "carried forward");
       assert.equal(info.versions[s2.version]?.hash, contentHash(STEP_SRC(type, "two")));
+      assert.deepEqual((await ws.listSteps()).find((s) => s.type === type)?.upstream, upstream, "the listing carries the active version's");
+      assert.deepEqual((await ws.materializeStepVersion(type, s1.version)).upstream, upstream, "and so does a pinned version");
       const s3 = await ws.publishStep(type, STEP_SRC(type, "three"), "three", undefined, { upstream: null });
       info = (await ws.getStepMetadata(type))!;
       assert.equal(info.versions[s3.version]?.upstream, undefined, "null clears it");
+      assert.equal((await ws.listSteps()).find((s) => s.type === type)?.upstream, undefined);
+      assert.equal((await ws.materializeStepVersion(type, s3.version)).upstream, undefined);
       assert.equal(await ws.getStepMetadata("nope"), null);
+    });
+
+    it("a new name under an installed package's prefix is refused; the package's own install and an edit of its items are not", async () => {
+      const upstream = { package: "acme/linear", version: "1.4.0", digest: "d1", source: { ref: "file:/tmp/acme-linear" }, secrets: [] };
+      const yamlOf = (name: string) => `name: ${name}\nsteps:\n  - { id: a, type: log, config: { message: hi } }\n`;
+      // Nothing installed: a local name under the prefix is anyone's.
+      await ws.publishWorkflow("acme/linear/early", "v1", { steps });
+      await ws.deleteWorkflow("acme/linear/early");
+      // The install itself adds names, steps and workflows alike.
+      await ws.publishStep("acme/linear/fetch", STEP_SRC("acme/linear/fetch", "one"), undefined, undefined, { upstream, source: "install" });
+      await ws.publishWorkflowByContent("acme/linear/sync", yamlOf("acme/linear/sync"), undefined, undefined, undefined, { upstream, source: "install" });
+      await ws.publishWorkflowByContent("acme/linear/push", yamlOf("acme/linear/push"), undefined, undefined, undefined, { upstream, source: "install" });
+      // An edit of an installed item is a fork: allowed, over every door.
+      await ws.publishStep("acme/linear/fetch", STEP_SRC("acme/linear/fetch", "fork"));
+      await ws.publishWorkflow("acme/linear/sync", "v2", { steps, params: { forked: true } });
+      await ws.publishWorkflowByContent("acme/linear/push", yamlOf("acme/linear/push").replace("hi", "fork"));
+      // A new name beside them is not, whatever the door — and not under another package's upstream either.
+      const refused = /package_conflict: acme\/linear\/mine is under acme\/linear, an installed package/;
+      await assert.rejects(ws.publishStep("acme/linear/mine", STEP_SRC("acme/linear/mine", "x")), refused);
+      await assert.rejects(ws.publishStep("acme/linear/_mine", STEP_SRC("acme/linear/_mine", "x")), /package_conflict: acme\/linear\/_mine/);
+      await assert.rejects(ws.publishWorkflow("acme/linear/mine", "v1", { steps }), refused);
+      await assert.rejects(ws.publishWorkflowByContent("acme/linear/mine", yamlOf("acme/linear/mine")), refused);
+      await assert.rejects(ws.publishWorkflow("acme/linear/mine", "v1", { steps }, undefined, undefined, undefined, { upstream: { ...upstream, package: "acme/other" } }), refused);
+      await assert.rejects(ws.createWorkflow("acme/linear/sync", { steps }), /package_conflict: acme\/linear\/sync-2 is under acme\/linear/, "the renamed copy is a new name too");
+      assert.equal(await ws.getWorkflowMetadata("acme/linear/mine"), null, "a refused publish writes nothing");
+      assert.equal(await ws.getStepMetadata("acme/linear/mine"), null);
+      // Beside the prefix is not under it.
+      await ws.publishWorkflow("acme/linear", "v1", { steps });
+      await ws.publishWorkflow("acme/linearx/y", "v1", { steps });
+      await ws.publishStep("acme/other/z", STEP_SRC("acme/other/z", "z"));
+      // Once the package's items are gone, the prefix is free again.
+      for (const w of ["acme/linear/sync", "acme/linear/push"]) await ws.deleteWorkflow(w);
+      await ws.deleteStep("acme/linear/fetch");
+      await ws.publishWorkflow("acme/linear/mine", "v1", { steps });
+      await ws.publishStep("acme/linear/mine", STEP_SRC("acme/linear/mine", "x"));
     });
 
     it("activate: false records the version and leaves the active pointer where it was", async () => {

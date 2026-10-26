@@ -125,15 +125,20 @@ export interface ResolveOptions {
  */
 export async function resolvePackage(ref: string, opts: ResolveOptions): Promise<ResolvedPackage> {
   if (ref.startsWith("file:")) {
-    let path = ref.startsWith("file://") ? fileURLToPath(ref) : ref.slice("file:".length);
-    if (!isAbsolute(path)) {
-      if (!opts.base) throw new Error(`package_source_invalid: ${ref}: a file: ref is an absolute path`);
-      path = resolve(opts.base, path);
-    }
+    const path = fileRefPath(ref, opts.base);
     if (!(await isDir(path))) throw new Error(`package_source_invalid: ${ref}: no directory at ${path}`);
     return { ...(await opts.cache.putDir(path, opts.digest)), source: { ref } };
   }
   const scheme = /^(git\+|pk:)/.exec(ref)?.[1];
   if (scheme) throw new Error(`package_source_unsupported: ${ref}: ${scheme === "pk:" ? "pk:" : "git+"} sources are not built yet — file: is`);
   throw new Error(`package_source_invalid: ${ref}: a package ref starts with file:, git+ or pk:`);
+}
+
+/** The directory a `file:` ref names: an absolute path, or one relative to
+ *  `base` (the requiring package's own directory). */
+export function fileRefPath(ref: string, base?: string): string {
+  const path = ref.startsWith("file://") ? fileURLToPath(ref) : ref.slice("file:".length);
+  if (isAbsolute(path)) return path;
+  if (!base) throw new Error(`package_source_invalid: ${ref}: a file: ref is an absolute path`);
+  return resolve(base, path);
 }

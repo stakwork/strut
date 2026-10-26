@@ -100,7 +100,8 @@ describe("readPackage", () => {
     await bad(noManifest, /no strut\.yaml/);
     await bad({ ...PACKAGE, "prompts/a.txt": "x", "prompts/b.txt": "y", "hotwords/c.txt": "z" }, /hotwords\/ is not a folder this strut knows.*; prompts\/ is not/);
     await bad({ ...PACKAGE, "workflows/sync.json": "{}" }, /workflows\/sync\.json: a workflow is a \.yaml file/);
-    await bad({ ...PACKAGE, "workflows/runs/x.yaml": "steps: []" }, /"runs" is the folder/);
+    await bad({ ...PACKAGE, "workflows/runs/x.yaml": "steps: []" }, /Invalid workflow name "acme\/linear\/runs\/x": "runs" is reserved/);
+    await bad({ ...PACKAGE, "workflows/each#2.yaml": "steps: []" }, /Invalid workflow name "acme\/linear\/each#2": "#" is not allowed/);
     await bad({ ...PACKAGE, "steps/notes.md": "x" }, /steps\/notes\.md: a step is a \.ts file/);
     await bad({ ...PACKAGE, "steps/create.test.ts": "x" }, /Invalid step name "acme\/linear\/create\.test"/);
     await bad({ ...PACKAGE, "steps/orphan.claims.yaml": "[]", "steps/_shared.claims.yaml": "[]" }, /_shared\.claims\.yaml: a `_` file is a helper, not a step.*orphan\.claims\.yaml: claims belong beside the step they are about, steps\/orphan\.ts/);

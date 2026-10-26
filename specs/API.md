@@ -1272,23 +1272,105 @@ the run's own events, returned to the caller and kept only as §7 says
 (`keep: true`, or claims on the step), so a caller that wants no record of it
 never passes `keep`.
 
-## 16. Packages — a package's bytes (`plans/marketplace.md` §1, §5)
+## 16. Packages — sharing workflows, steps and Concepts (`plans/marketplace.md` §1–§5)
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
 `version`, `description?`, `requires?`) and the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
-`acme/linear/create-issue`). It is pinned by its DIGEST, `sha256:<hex>`
-over every file in it (`readPackage`, `src/packages/format.ts`). A strut
-keeps every package it resolved under `<dataDir>/packages/`, one directory
-per digest, and serves any of them by digest — whether it built the
-package or installed it, it can be a mirror. Installing one is a later
-work item; so are the `git+` and `pk:` sources and the catalog that lists
-archive URLs.
+`acme/linear/create-issue`, `workflows/sync.yaml` the workflow
+`acme/linear/sync`). It is pinned by its DIGEST, `sha256:<hex>` over every
+file in it (`readPackage`, `src/packages/format.ts`). A strut keeps every
+package it resolved under `<dataDir>/packages/`, one directory per digest,
+and serves any of them by digest — whether it built the package or
+installed it, it can be a mirror. Only `file:` refs resolve today; `git+`
+and `pk:` are refused by name (`package_source_unsupported`), and an app in
+a package is not installed yet (`package_unsupported`).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
+| GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
+| POST   | `/packages/install` | `{ ref: "file:/path/to/package", digest?: "sha256:<hex>" }` → 201 `InstallResult` (`src/packages/install.ts`). A person's act: behind the key at full scope (a peer is 403), one at a time |
+| DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route |
+
+**Install** resolves the package, then every package its
+`requires.packages` pins that is not installed here at that digest (from
+the cache when it holds the digest, else from the pin's `source`; a
+relative `file:` source is relative to the requiring package's directory),
+and installs them FIRST. It is all or nothing: every name and file of every
+package is checked before the first write, and a step that then fails to
+load takes back what the install wrote. Each step and workflow version it
+writes records `source: "install"`, the installing actor, and
+`upstream: { package, version, digest, source: { ref }, secrets }` (what
+`GET /workflows/:name` and the step version records show); a workflow's
+`owner` is the installing actor. A Concept is written stamped
+`pkg/<package>/<file>@<hash>` (skipped, with a warning, without a graph).
+A step's `<name>.claims.yaml` and a workflow's `claims:` block are recorded
+with the package as their speaker, and `publish` checks fire.
+
+```jsonc
+// InstallResult
+{
+  "package": "acme/linear",
+  "digest": "sha256:…",
+  "packages": [                       // requirements first, the package asked for last
+    {
+      "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
+      "source": { "ref": "file:/srv/packages/acme-linear" },
+      "status": "installed",          // or "present": everything was here already
+      "items": [                      // installed | present | modified (here and forked, left as it is)
+        { "kind": "step", "name": "acme/linear/create-issue", "status": "installed", "version": "v1" },
+        { "kind": "workflow", "name": "acme/linear/sync", "status": "installed", "version": "v1" },
+        { "kind": "concept", "name": "Linear", "status": "installed" }
+      ]
+    }
+  ],
+  "missing": { "secrets": ["LINEAR_API_KEY"], "binaries": [], "runtimes": [] },  // reported, never refused
+  "warnings": []                      // a step that reaches past ctx.services; claims that did not record
+}
+```
+
+The same package at the same digest installs again as what is missing (a
+deleted item comes back; a fork stays active). Refusals, as `{ error }`
+with a code first:
+
+| Status | Code | When |
+| ------ | ---- | ---- |
+| 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch`, `package_unsupported` | the ref does not resolve to that package, or holds an app |
+| 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path |
+| 409 | `package_conflict` | a local workflow or step under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
+| 409 | `package_update_not_built` | the package is installed here at another digest (updates are a later work item) |
+
+Once installed, a NEW workflow or step name under the prefix is refused at
+every door (`package_conflict`, `refuseUnderInstalledPackage`,
+`src/workspace.ts`): only the package's own install adds a name there. An
+edit of an installed item is a FORK — a new version that carries the
+`upstream` forward. And an installed step — a fork too — reads only the
+secrets its package declares: any other `secrets.get(NAME)` fails
+`secret_fenced: <step> came from the package <package>, which declares
+only …` (`src/packages/fence.ts`).
+
+```jsonc
+// InstalledPackage
+{
+  "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
+  "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
+  "items": [
+    { "kind": "workflow", "name": "acme/linear/sync", "installed": "v1", "active": "v2", "modified": true },
+    { "kind": "step", "name": "acme/linear/_shared", "helper": true, "installed": "v1", "active": "v1", "modified": false },
+    { "kind": "concept", "name": "Linear", "modified": false }  // its text against the file in the cache; absent when the cache lost it
+  ]
+}
+```
+
+**Uninstall** deletes every item still as the package installed it — the
+versions (soft on a graph), never the runs, evidence or jobs, so history
+keeps the name it ran under — and retires each untouched Concept. A fork,
+an edited page, and the helpers while a forked step of the package stays
+are kept and listed in `kept: [{ kind, name, reason }]`. 404
+`package_not_installed`; 409 `package_busy` while one of its workflows has
+a run in flight.
 
 The archive is transport: a fetcher checks the unpacked TREE against the
 digest, never the archive's bytes, so any URL that serves the right tree

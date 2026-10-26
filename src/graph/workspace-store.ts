@@ -49,6 +49,8 @@ import {
   validateWorkflowName,
   provenance,
   upstreamFor,
+  fromPackage,
+  refuseUnderInstalledPackage,
   appListEntry,
   appRecord,
   newestVersion,
@@ -148,6 +150,8 @@ interface StepVersionRow {
   date_added_to_graph?: number;
   source: string;
   publisher?: string;
+  version_source?: VersionSource;
+  actor?: string;
   /** JSON `Upstream`. */
   upstream?: string;
 }
@@ -199,7 +203,7 @@ function parseJson<T>(text: string | undefined): T | undefined {
 const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd"] as const;
 const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
-const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "created_at", "source", "publisher", "upstream", "date_added_to_graph"] as const;
+const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
 
 const isoFromSeconds = (s: number | undefined): string =>
   new Date((s ?? 0) * 1000).toISOString();
@@ -458,6 +462,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const hash = contentHash(yamlStr);
     const { nodes } = this.backend;
     const w = await this.workflowRow(name);
+    if (!w) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix));
     const versions = await this.versionRows(name);
     const upstream = upstreamFor(opts, parseJson<Upstream>(versions.find((v) => v.content_hash === w?.active_version)?.upstream));
     const existing = versions.find((v) => v.content_hash === hash);
@@ -728,11 +733,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     for (const { step, active } of await this.stepsWithActive()) {
       if (GraphWorkspaceStore.isHelper(step.step_type)) continue;
       if (filter?.publisher && step.publisher !== filter.publisher) continue;
+      const upstream = parseJson<Upstream>(active?.upstream);
       out.push({
         type: step.step_type,
         description: active?.description,
         createdAt: active ? isoFromSeconds(active.created_at) : undefined,
         publisher: step.publisher,
+        ...(upstream ? { upstream } : {}),
       });
     }
     return out;
@@ -774,6 +781,8 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         createdAt: isoFromSeconds(v.created_at),
         ...(v.description !== undefined ? { description: v.description } : {}),
         hash: v.content_hash,
+        ...(v.version_source ? { source: v.version_source } : {}),
+        ...(v.actor ? { actor: v.actor } : {}),
         ...(upstream ? { upstream } : {}),
       };
       if (v.content_hash === s.active_version) out.active = v.version_label;
@@ -791,7 +800,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   /** Written once beside the active-step scratch dir (its own root, so the
    *  active materialization's sweep never removes it); a version's source
    *  never changes, so an existing file is the file. */
-  async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string }> {
+  async materializeStepVersion(name: string, version: string): Promise<{ path: string; hash: string; upstream?: Upstream }> {
     validateStepName(name);
     const v = (await this.stepVersionRows(name)).find((x) => x.version_label === version);
     if (!v) throw new Error(`Version "${version}" of step "${name}" not found`);
@@ -804,7 +813,23 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, v.source, "utf-8");
     }
-    return { path, hash: v.content_hash };
+    const upstream = parseJson<Upstream>(v.upstream);
+    return { path, hash: v.content_hash, ...(upstream ? { upstream } : {}) };
+  }
+
+  /** Is an item of `prefix`'s package here — a live step or workflow
+   *  version under `<prefix>/` that came from it? */
+  private async installedUnder(prefix: string): Promise<boolean> {
+    const d = this.d;
+    for (const [type, field] of [["StrutWorkflowVersion", "name"], ["StrutStepVersion", "step_type"]] as const) {
+      const rows = await this.backend.query(
+        `MATCH ${d.node("v", type, { namespace: "$ns" })} WHERE ${d.live("v")} AND v.${field} STARTS WITH $under AND v.upstream IS NOT NULL
+         RETURN v.upstream AS upstream`,
+        { ns: this.ns, under: `${prefix}/` },
+      );
+      if (fromPackage(prefix, rows.map((r) => ({ upstream: parseJson<Upstream>(r["upstream"] as string | undefined) })))) return true;
+    }
+    return false;
   }
 
   // ── Writes: steps ──────────────────────────────────────────────────────
@@ -821,6 +846,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const { nodes } = this.backend;
     const existing = await this.stepRow(name);
     const versions = existing ? await this.stepVersionRows(name) : [];
+    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix));
 
     if (existing) {
       const match = versions.find((v) => v.content_hash === hash);
@@ -842,6 +868,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
 
     const vid = nextVersionLabel(versions.map((v) => v.version_label));
     const upstream = upstreamFor(opts, parseJson<Upstream>(versions.find((v) => v.content_hash === existing?.active_version)?.upstream));
+    const { source: version_source, actor } = provenance(opts);
     const v = await nodes.write({
       type: "StrutStepVersion",
       data: compact({
@@ -852,6 +879,8 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         created_at: new Date().toISOString(),
         source: code,
         publisher: publisher ?? existing?.publisher,
+        version_source,
+        actor,
         upstream: upstream ? JSON.stringify(upstream) : undefined,
       }),
     });
