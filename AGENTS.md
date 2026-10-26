@@ -416,7 +416,8 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a job (`job/dir`, `git/checkout` with `workdir`) may sit unused before its REPOSITORIES are removed — its other files are kept, and a job with nothing left goes with its record. Swept by the next `job/dir` or kept checkout — no timer. `0` keeps them forever. |
-| `STRUT_PEERS` | (unset) | Peers to put on file at boot (plans/federation.md §3): a JSON array of `{ id, baseUrl, token, label?, description?, repos? }` — the paste door for a strut a host cannot push to (a desktop strut behind NAT). Each replaces the record of the same id; `PUT /peers/:id` is the same door over HTTP. A bad entry fails the boot. |
+| `STRUT_PEERS` | (unset) | Peers to put on file at boot (plans/federation.md §3): a JSON array of `{ id, baseUrl, token, label?, description?, repos?, ca?, servername? }` (`ca`: a PEM CA, for that peer's requests the only one trusted, `GET /peers` shows `ca: true`; `servername`: with `ca`, the name its certificate is issued for when that is not the URL's host, checked in place of the host) — the paste door for a strut a host cannot push to (a desktop strut behind NAT). Each replaces the record of the same id; `PUT /peers/:id` is the same door over HTTP. A bad entry fails the boot. |
+| `STRUT_HOME_SYNC` | (unset) | `box`: serve `POST /home/pull` and `POST /home/push` to a person's credential (`src/home-sync.ts`; `createStrut({ homeSync: "box" })`), so a strut that keeps a read copy of this memory syncs with it: see "Home sync". Off by default: on, the whole memory goes to any person token this strut minted. |
 | `STRUT_SELF` | (unset) | This strut's OWN workspace, a JSON object `{ id?, label?, description?, repos? }` (no baseUrl/token — nothing is dispatched to self), so agents know which repos are here; `strut/list-peers` and the builder's `list_peers` report it as `self`. `createStrut({ self })` wins over the env; `PUT /self` is the same door. Not a peer: stored under its own key in `peers.json`. A bad value fails the boot. |
 | `STRUT_EVENTS_SINK` | (unset) | One http(s) URL every run's events are POSTed to, batched, as `{ event: "run.events", events: [...] }` (`src/events-sink.ts`; `createStrut({ eventsSink: { url } })` is the same door for a host that embeds strut) — telemetry for a server that draws what strut is doing, set once for the deployment, whoever launches the run. Each event is the ENVELOPE only: `workflow`, `runId`, `path`, `type`, `stepType`, `durationMs`, `modelCalls` / `usage` / `cost`, the version fields, `actor` / `job` / `origin` / `parentRunId`, an error's `message` — never a step's `input`, `output`, transcript or params. Deliveries are retried briefly and then dropped; a listener that missed a batch backfills from `GET /workflows/:name/runs/:runId/events`. The URL is a credential: it is logged by origin only. Not http(s) fails the boot. |
 | `STRUT_AUTO_RESUME` | `1` (persistent run store) | Boot-time auto-resume of runs cut off by a crash/restart (RUN_CONTROL_SPEC §5.3): on whenever the run store outlives the process — anything but `MemoryRunStore`, whatever the workspace's kind, so the lab's graph workspace + `FileRunStore` counts — the newest root run per workflow with a log but no summary, unless paused/cancelling, older than 7 days, or already resumed 5 times. The builder's CHATS the same way, gated on the chat store's kind: a chat left `live` by the dead process gets its turn finalized and a `[restart-notification]` wake-up turn (see "Chat is a detached background job"). `0` disables both. |
@@ -806,6 +807,21 @@ folders: --data <dir> --host-config <file> --sidecar <name>=<path>... --env <fil
 - **stdout** is one JSON line per result (`ready` with `link`, `code`,
   `port`; `checked`; `sent`; `fetched`; `received`; `error`); words and the
   QR go to stderr. Exit 0 done, 1 refused or failed, 2 usage.
+- **A peer record after the move**: `send --peer-actor <actor>` asks for
+  one (the upload's `x-strut-move-peer` header); a `serve` given
+  `--peer-url` (`STRUT_MOVE_PEER_URL`, e.g. `https://{host}:8443`, `{host}`
+  the address the move came in on) answers the upload with `peer: { baseUrl,
+  token, actor, exp, ca?, servername? }`, and the `sent` line carries it. The token is a
+  person token (see "Auth") for that actor, living `--peer-days` (365),
+  signed as the arriving strut signs: serve's `STRUT_API_KEY`, else its
+  `STRUT_SECRET_KEY`, else the secret key the move carried. So run serve
+  with the box strut's own `STRUT_API_KEY`. `ca` is `--peer-ca`'s PEM
+  (`STRUT_MOVE_PEER_CA`), left out when the file is missing; with it,
+  `servername` is `--peer-servername` (`STRUT_MOVE_PEER_SERVERNAME`), the
+  name the box's certificate is issued for (a fixed name, so it stays valid
+  when the box's address changes). The sender puts it on file with
+  `PUT /peers/<id> { baseUrl, token, ca, servername }`. A host with no
+  `--peer-url` answers `peer: { error }`.
 
 HTTP (plain, home network only, everything that matters sealed):
 
@@ -832,6 +848,45 @@ from, hostConfig, sidecars, callbacks? }`), `env.json` (`{ strut, sidecars:
 { <name>: {…} } }`), `host-config.json`, `data/…` (minus `leftBehindIn` in
 moved.ts: what arrival drops, temp files, jobs' checkouts) and
 `sidecars/<name>[/…]`. Empty folders do not move.
+
+## Home sync
+
+Two normal struts share one memory: a home box (the one writer) and a
+strut that keeps a read copy of it (a Mac's, for dictation; peel
+`docs/always-on.md`). The copy pushes what it changed, then pulls, with a
+person token (`strut move` hands one over, above). The box runs with
+`STRUT_HOME_SYNC=box`, which opens two routes to a person's credential
+only: the plain peer key and the deployment key are refused, and so is a
+request with no credential on a box with no `STRUT_API_KEY`:
+
+| Route | Body | Reply |
+|---|---|---|
+| `POST /home/push` | one key per kind of change; today `{ dictation? }`, `dictation/changes-since`'s `changes` (at most 10 000) | `{ dictation: { applied: [{ op, heard?, written, result }] } }` |
+| `POST /home/pull` | `{ hash? }`, the `content_hash` of the copy the caller holds | `{ unchanged: true, content_hash }`, else `memory/export`'s inline reply (`data`, `content_hash`, …) for `memory/import { replace: true }` |
+
+Routes, not workflows: a run's input and output stay in the run store,
+which every peer scope may read, so a whole-memory export there would
+outlive the pull and reach other credentials. A route answers its caller
+(`cache-control: no-store`) and keeps nothing.
+
+- **`dictation/changes-since { since? }`** reads the changes from the graph
+  itself, no outbox: mishearing facts `created_by: "dictation"` (and terms,
+  dictation-type entities with none) created from `since` up to `until`,
+  and those forgotten with reason `undone` in that span. Each is keyed by
+  its pair (`heard`, `written`, and `name` when `written` is another form
+  of that entity), never a ref_id. It returns `until`, the next call's
+  `since`, and reads in the writes' queue: a write stamps its time before
+  it commits, so a read beside one would miss it for good. A learn later
+  forgotten for another reason (`dictation/remove`) is left out.
+- **`dictation/apply-changes { changes }`** replays them in order through
+  `dictation/add` (which takes `name` and `term` for this) and
+  `dictation/undo`, matching an undo by its pair (the entity, when
+  dictation made it and the pair is all that is known of it). Idempotent:
+  `known`, `already undone`, `not found` and `not dictation's` are reported,
+  not errors.
+- **A new kind** (one that exists, not before): a `<kind>/changes-since`
+  and `<kind>/apply-changes` pair, and a key on `/home/push` (and a step
+  on the copy's side).
 
 ## Mothership cost control (opt-in)
 

@@ -127,6 +127,7 @@ import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
+import { HOME_POSTS, homeSyncRole, homeSyncRoutes, type HomeSyncRole } from "./home-sync.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -377,6 +378,12 @@ export interface StrutOptions<TServices = unknown> {
   /** The `private-ask` workflow strut ships beside the privacy/* steps
    *  (src/privacy/seed.ts), seeded at boot by content hash. `false` seeds none. */
   privacyWorkflows?: false;
+  /** Home sync (src/home-sync.ts, AGENTS.md "Home sync"): `"box"` serves
+   *  `POST /home/pull` and `/home/push` to a person's credential, so a strut
+   *  that keeps a read copy of this memory can sync with it. Off unless set,
+   *  or STRUT_HOME_SYNC=box: on, it hands the whole memory to any person
+   *  token this strut minted. */
+  homeSync?: HomeSyncRole;
 
   /** The strut graph backend, when the deployment has one. Default: the one
    *  behind a graph-backed workspace (`workspace.graph`), so the default
@@ -1293,9 +1300,11 @@ export async function createStrut<TServices = unknown>(
   // `/mcp`, where it gets an app's `step_run` and nothing else — how a
   // person's own strut hosts an app that lives here (plans/apps.md §7.4).
   // `step_run` holds every call to the app's grants and runs as the viewer,
-  // and a plain peer's actor is a header any strut sets.
+  // and a plain peer's actor is a header any strut sets. On a home box
+  // (`homeSync: "box"`), home sync's `/home/pull` and `/home/push` too.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
+  const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
@@ -1307,7 +1316,8 @@ export async function createStrut<TServices = unknown>(
     if (!read) {
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
-      if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || (path === "/mcp" && scope === "peer:person")))) {
+      const personPost = scope === "peer:person" && (path === "/mcp" || (homeRole === "box" && HOME_POSTS.has(path)));
+      if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || personPost))) {
         return c.json({ error: "forbidden: a peer may read, launch a run, and control a run a peer launched; a person's token may also call an app's step_run on /mcp" }, 403);
       }
     }
@@ -5510,6 +5520,7 @@ export async function createStrut<TServices = unknown>(
 
   // Dictation's vocabulary, from the memory graph the memory/* steps keep.
   if (stt) audioRoutes(app, stt, { lexicon: () => readLexicon({ services } as unknown as StepContext) });
+  if (homeRole === "box") homeSyncRoutes(app, { services, scopeOf });
 
   // ── Static files (web UI) ────────────────────────────────────────────────
 

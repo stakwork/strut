@@ -20,7 +20,9 @@ import { check, fetchMove, send } from "./client.js";
 import { main } from "./cli.js";
 import { makeLink, parseLink } from "./link.js";
 import { hkdf, open, proof, seal, WrongCode } from "./seal.js";
-import { serve, type ServeOptions, type ServeResult } from "./serve.js";
+import { serve, type MovePeer, type ServeOptions, type ServeResult } from "./serve.js";
+import { verifyPersonToken } from "../auth.js";
+import { checkPeer } from "../peers.js";
 import { loadLadybug, openLadybug } from "../graph/ladybug/db.js";
 import { pinnedExtensions } from "../graph/ladybug/extensions.js";
 import { testBackends } from "../graph/test-util.js";
@@ -278,6 +280,40 @@ describe("a move between two hosts and back", () => {
     assert.ok(!existsSync(join(other, "workspace", "secrets.json")));
     await send(link, { data: macFolders.data });
     assert.equal(await box3.done, "received");
+  });
+
+  it("asked for one, a landed move hands back a peer record: this strut's address, a person token it verifies, its CA", async () => {
+    const saved = process.env["STRUT_API_KEY"];
+    process.env["STRUT_API_KEY"] = "the-box-strut-key";
+    try {
+      const other = join(root, "peered");
+      await mkdir(other, { recursive: true });
+      await writeFile(join(other, "ca.pem"), "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n");
+      const box5 = serving({ data: join(other, "workspace"), peer: { url: "https://{host}:8443/", ca: join(other, "ca.pem"), servername: "peel-home", days: 30 } });
+      const link = await box5.ready;
+      const sent = await send(link, { data: macFolders.data }, { peerActor: "tom" });
+      assert.equal(await box5.done, "received");
+      const peer = sent.peer as MovePeer;
+      assert.equal(peer.baseUrl, "https://127.0.0.1:8443", "{host} is the address the move came in on");
+      assert.equal(peer.actor, "tom");
+      assert.equal(peer.ca, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n");
+      assert.equal(peer.servername, "peel-home", "the name the box's certificate is issued for");
+      assert.deepEqual(verifyPersonToken(peer.token), { actor: "tom", exp: peer.exp }, "the strut that arrived verifies it");
+      assert.ok(peer.exp > Date.now() + 29 * 86_400_000 && peer.exp < Date.now() + 31 * 86_400_000);
+      // Put on file as a peer, it is a valid record.
+      assert.equal(checkPeer({ id: "home", baseUrl: peer.baseUrl, token: peer.token, ca: peer.ca, servername: peer.servername }).servername, "peel-home");
+
+      // Not asked: no record. Asked of a host that gives none: why not.
+      const box6 = serving({ data: join(other, "plain") });
+      assert.equal((await send(await box6.ready, { data: macFolders.data })).peer, undefined);
+      await box6.done;
+      const box7 = serving({ data: join(other, "plain2") });
+      assert.match((await send(await box7.ready, { data: macFolders.data }, { peerActor: "tom" })).peer!.error!, /no peer record/);
+      await box7.done;
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_API_KEY"];
+      else process.env["STRUT_API_KEY"] = saved;
+    }
   });
 
   it("a move that fails while it is put in place leaves the host as it was", async () => {

@@ -31,3 +31,16 @@ export async function learn(heard: string, written: string, lexicon: Lexicon, ct
   if (out?.error) throw new Error(`dictation: ${out.error}`);
   return { heard, written, undo: undoIds(out) };
 }
+
+/** One thing dictation changed, as dictation/changes-since reports it and
+ *  dictation/apply-changes replays it on another strut. Keyed by the pair,
+ *  never a ref_id: the two graphs give the same pair different ids. */
+export const Change = z.object({
+  op: z.enum(["learn", "undo"]),
+  heard: z.string().optional().describe("What dictation writes; absent for a term."),
+  written: z.string().describe("How the user writes it: the form, else the entity's name."),
+  name: z.string().optional().describe("The entity the pair is kept on, when `written` is another form of its name (BTC on Bitcoin, Itoi in Paul Itoi)."),
+  term: z.boolean().optional().describe("A word learned with no mapping (P8)."),
+  at: z.string().describe("When it was learned or undone (ISO)."),
+});
+export type ChangeT = z.infer<typeof Change>;

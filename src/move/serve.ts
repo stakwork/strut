@@ -19,7 +19,9 @@ import { networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { FORMAT_VERSION, install, moveVersion, packFolders, unpack, type Endpoint, type MoveFolders } from "./archive.js";
+import { personToken } from "../auth.js";
+import { bootEnv } from "../env.js";
+import { FORMAT_VERSION, install, moveVersion, packFolders, unpack, type Endpoint, type MoveEnv, type MoveFolders } from "./archive.js";
 import { makeLink, qrSvg } from "./link.js";
 import { groupCode, HEADER_SIZE, newCode, open as openSealed, saltOf, seal, verifyProof, WrongCode } from "./seal.js";
 
@@ -42,6 +44,14 @@ export interface ServeOptions extends MoveFolders {
   /** Secrets for `moved.json` on receive (`Arrival.secrets`). */
   secrets?: Record<string, string>;
   sendBack?: boolean;
+  /** After a move lands, hand the sender a peer record for this strut, when
+   *  it asks (`send { peerActor }`): `url` is where peers reach this strut
+   *  (`https://{host}:8443`: `{host}` is the address the move came in on),
+   *  `ca` a PEM file their TLS should trust (read when the record is made;
+   *  left out when missing), `servername` the name its certificate is
+   *  issued for when that is not the URL's host, `days` the person token's
+   *  life (default 365). */
+  peer?: { url: string; ca?: string; servername?: string; days?: number };
   /** Overrides `moveVersion()` (tests). */
   version?: { strut: string; graph: string | null };
   /** Told once the link works. */
@@ -184,10 +194,16 @@ ${qrSvg(link)}<p class="muted" style="text-align:center">Code</p><div class="cod
         if (!(await isEmpty(data))) return fail(res, 409, `${name} is already on this host`);
         busy = true;
         const incoming = join(state, "incoming");
+        let peer: MovePeer | { error: string } | undefined;
         try {
           await rm(incoming, { recursive: true, force: true });
           await unpack(openSealed(req, code), incoming);
           await install(incoming, { ...o, data }, { ...(o.bridge ? { bridge: o.bridge } : {}), ...(o.secrets ? { secrets: o.secrets } : {}) });
+          const actor = req.headers["x-strut-move-peer"];
+          // The move is in place: a record that cannot be made says why, it never refuses the move.
+          if (typeof actor === "string" && actor) {
+            peer = await peerRecord(o.peer, actor, req, join(incoming, "env.json")).catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
+          }
         } catch (err) {
           req.resume();
           console.error(`[move] a move was refused: ${err instanceof Error ? err.message : err}`);
@@ -197,7 +213,7 @@ ${qrSvg(link)}<p class="muted" style="text-align:center">Code</p><div class="cod
           await rm(incoming, { recursive: true, force: true });
         }
         await rm(join(state, "receive.json"), { force: true });
-        json(res, 200, { ok: true });
+        json(res, 200, { ok: true, ...(peer ? { peer } : {}) });
         return finish("received");
       }
       if (!receiving && req.method === "GET" && path === "/move") return serveFile(req, res, outgoing);
@@ -222,6 +238,39 @@ ${qrSvg(link)}<p class="muted" style="text-align:center">Code</p><div class="cod
   await new Promise<void>((r) => server.close(() => r()));
   server.closeAllConnections();
   return result;
+}
+
+/** What a sender is handed after its move lands, to put on file as a peer
+ *  (`PUT /peers/:id { baseUrl, token, ca? }`) on its side. */
+export interface MovePeer {
+  baseUrl: string;
+  /** A person token for `actor` (auth.ts), the credential `peer: person` workflows take. */
+  token: string;
+  actor: string;
+  exp: number;
+  ca?: string;
+  /** The name the box's certificate is issued for (`Peer.servername`). */
+  servername?: string;
+}
+
+/** A peer record for the strut that just arrived. Its person token must
+ *  verify there, so it is signed as that strut signs: with its
+ *  STRUT_API_KEY, else its STRUT_SECRET_KEY — this process's, which the
+ *  host gives it, else the secret key the move carried. */
+async function peerRecord(cfg: ServeOptions["peer"], actor: string, req: IncomingMessage, envFile: string): Promise<MovePeer | { error: string }> {
+  if (!cfg) return { error: "this host hands out no peer record (serve --peer-url)" };
+  if (actor.length > 120 || /[\r\n]/.test(actor)) return { error: "the peer actor must be a short string" };
+  const env = bootEnv();
+  const moved = (JSON.parse(await readFile(envFile, "utf-8").catch(() => "{}")) as Partial<MoveEnv>).strut ?? {};
+  const secret = env["STRUT_API_KEY"] || env["STRUT_SECRET_KEY"] || moved["STRUT_SECRET_KEY"];
+  const minted = secret ? personToken(actor, (cfg.days ?? 365) * 86_400_000, secret) : undefined;
+  if (!minted) return { error: "nothing to sign a person token with: give serve the strut's STRUT_API_KEY" };
+  const host = new URL(`http://${req.headers.host ?? "localhost"}`).hostname;
+  const ca = cfg.ca ? await readFile(cfg.ca, "utf-8").catch(() => undefined) : undefined;
+  return {
+    baseUrl: cfg.url.replace("{host}", host).replace(/\/+$/, ""), token: minted.token, actor, exp: minted.exp,
+    ...(ca ? { ca, ...(cfg.servername ? { servername: cfg.servername } : {}) } : {}),
+  };
 }
 
 /** The packed move, with `Range: bytes=a-[b]` so a download can resume. */
