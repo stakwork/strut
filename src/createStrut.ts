@@ -1964,8 +1964,8 @@ export async function createStrut<TServices = unknown>(
     return { ok: true, runId, state: controller.state, status: 202 };
   };
   /** The chat-tool view of controlLiveRun: same result minus the HTTP code. */
-  const controlRunForChat = async (name: string, runId: string, action: "cancel" | "pause" | "resume") => {
-    const { status: _status, ...rest } = await controlLiveRun(name, runId, action);
+  const controlRunForChat = async (name: string, runId: string, action: "cancel" | "pause" | "resume", force = false) => {
+    const { status: _status, ...rest } = await controlLiveRun(name, runId, action, false, force);
     return rest;
   };
 
@@ -4001,7 +4001,7 @@ export async function createStrut<TServices = unknown>(
     },
     async cancel(q) {
       await openFlow(q.workflow);
-      const r = await controlLiveRun(q.workflow, q.runId, "cancel");
+      const r = await controlLiveRun(q.workflow, q.runId, "cancel", false, q.force === true);
       return r.ok ? { ok: true, runId: r.runId, state: r.state } : { ok: false, error: r.error };
     },
     async workflow(q) {

@@ -10,6 +10,7 @@ import { z } from "zod";
 import { flow, step, defineStep, type StepRegistry, type RunEvent } from "./core.js";
 import { runWorkflow } from "./runner.js";
 import { MemoryRunStore, FileRunStore, type RunStore } from "./store.js";
+import runCancelStep from "./steps/lib/run/cancel.js";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
@@ -1155,6 +1156,63 @@ describe("run control endpoints", () => {
         method: "POST",
       });
       assert.equal(again.status, 409);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("POST cancel { force: true } ends a run whose step never returns; run/cancel and the chat relay carry force", async () => {
+    const hang = defineStep({ type: "hang", input: z.any(), output: z.any(), run: () => new Promise(() => {}) });
+    const { strut, workspace, store, cleanup } = await makeServer({ hang, "run/cancel": runCancelStep });
+    try {
+      await workspace.publishWorkflowByContent(
+        "stuck",
+        ["name: stuck", "steps:", "  - id: a", "    type: hang", "    config: {}"].join("\n"),
+      );
+      const launch = async () => {
+        const r = await strut.app.request("/workflows/stuck/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: {} }),
+        });
+        return ((await r.json()) as { runId: string }).runId;
+      };
+      const cancel = (runId: string, body?: unknown) =>
+        strut.app.request(`/workflows/stuck/runs/${runId}/cancel`, {
+          method: "POST",
+          ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+        });
+
+      // HTTP: plain cancel leaves it cancelling; force finishes it.
+      const r1 = await launch();
+      await sleep(50);
+      assert.equal((await cancel(r1)).status, 202);
+      await sleep(100);
+      assert.equal(await store.getRunSummary("stuck", r1), null);
+      assert.equal((await cancel(r1, { force: true })).status, 202);
+      assert.equal((await waitForSummary(store, "stuck", r1)).status, "cancelled");
+
+      // The run/cancel step's service door, `force` passed through.
+      const r2 = await launch();
+      await sleep(50);
+      await workspace.publishWorkflowByContent(
+        "killer",
+        [
+          "name: killer",
+          "steps:",
+          "  - id: k",
+          "    type: run/cancel",
+          "    config: { workflow: stuck, runId: \"{{ input.runId }}\", force: true }",
+        ].join("\n"),
+      );
+      const k = await strut.app.request("/workflows/killer/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: { runId: r2 } }),
+      });
+      const killerId = ((await k.json()) as { runId: string }).runId;
+      assert.equal((await waitForSummary(store, "killer", killerId)).status, "success");
+      assert.equal((await waitForSummary(store, "stuck", r2)).status, "cancelled");
     } finally {
       await cleanup();
     }

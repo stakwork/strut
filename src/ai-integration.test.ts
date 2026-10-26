@@ -994,6 +994,17 @@ describe("run control tools", () => {
     assert.deepEqual(await tools.resume_run.execute({ name: "wf", runId: "r3" }), { ok: false, error: "Run already terminal (success)" });
     assert.deepEqual(calls, [["wf", "r1", "cancel"], ["wf", "r2", "pause"], ["wf", "r3", "resume"]]);
   });
+
+  it("cancel_run passes `force` through to controlRun", async () => {
+    const calls: unknown[] = [];
+    const controlRun = async (workflow: string, runId: string, action: "cancel" | "pause" | "resume", force?: boolean) => {
+      calls.push([workflow, runId, action, force]);
+      return { ok: true, runId, state: "cancelling" } as const;
+    };
+    const tools = buildTools({ ...baseDeps(), controlRun }) as any;
+    await tools.cancel_run.execute({ name: "wf", runId: "r1", force: true });
+    assert.deepEqual(calls, [["wf", "r1", "cancel", true]]);
+  });
 });
 
 // ── peers: list_peers + `peer` on list_workflows / get_workflow / run_workflow ──

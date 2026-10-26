@@ -924,10 +924,10 @@ function Shell() {
   const dismissRunError = useCallback(() => setRunFailure(null), []);
   useDismiss(runErrorRef, runControlError != null, dismissRunError);
 
-  const handleCancelRun = useCallback(async () => {
+  const handleCancelRun = useCallback(async (force = false) => {
     if (!selectedWf || !selectedRun) return;
     setRunFailure(null);
-    try { await api.cancelRun(selectedWf, selectedRun); } catch (e) { setRunFailure({ run: selectedRun, msg: `Cancel failed: ${errorMessage(e)}` }); }
+    try { await api.cancelRun(selectedWf, selectedRun, force); } catch (e) { setRunFailure({ run: selectedRun, msg: `Cancel failed: ${errorMessage(e)}` }); }
     await refreshRuns(selectedWf);
   }, [selectedWf, selectedRun, refreshRuns]);
 
@@ -1668,7 +1668,14 @@ function Shell() {
               {runIsLive && runControlStatus !== "cancelling" && (
                 <ConfirmButton popover label="Cancel"
                   note="Cancel this run? Any nested runs it launched are cancelled too — each stops before its next tool (the in-flight tool finishes and is journaled)."
-                  cancelLabel="Keep running" confirmLabel="Cancel run" onConfirm={handleCancelRun} />
+                  cancelLabel="Keep running" confirmLabel="Cancel run" onConfirm={() => handleCancelRun()} />
+              )}
+              {/* Cancel is cooperative: a step that never returns holds the run
+                  `cancelling`. Force abandons it (RUN_CONTROL_SPEC / API §6.1). */}
+              {runIsLive && runControlStatus === "cancelling" && (
+                <ConfirmButton popover label="Force cancel"
+                  note="This run is cancelling but a step has not finished. Force cancel stops waiting on it and ends the run now. The step's code is abandoned, not killed — anything it holds (a subprocess, a connection) stays until it dies."
+                  cancelLabel="Keep waiting" confirmLabel="Force cancel" onConfirm={() => handleCancelRun(true)} />
               )}
               {runControlStatus === "running" && (
                 <button class="btn" onClick={handlePauseRun}>Pause</button>
