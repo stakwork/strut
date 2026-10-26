@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerStrutResolver } from "../strut-resolver.js";
+import { hashedUrl } from "../strut-resolve-hook.js";
 import type { AnyStepDef, StepRegistry } from "../core.js";
 import { parseStepRef } from "../step-ref.js";
 import { formatStepLint, lintStepSource } from "../step-lint.js";
@@ -254,23 +255,15 @@ async function warnPastServices(filePath: string, name: string): Promise<void> {
 }
 
 /**
- * Dynamically import a step definition file.
+ * Dynamically import a step definition file under its hashed URL
+ * (strut-resolve-hook.ts), so that re-publishing a step or a helper it
+ * imports and rebuilding the registry actually re-imports the new source
+ * instead of serving the stale cached module. Unchanged files keep a stable
+ * URL (no churn).
  */
 async function loadStepFile(filePath: string): Promise<AnyStepDef | null> {
   try {
-    // Cache-bust the ESM module cache with the file's mtime so that
-    // re-publishing a step (overwriting `custom/<name>.ts`) and rebuilding
-    // the registry actually re-imports the new source instead of serving the
-    // stale cached module. Unchanged files keep a stable URL (no churn).
-    let suffix = "";
-    try {
-      const { mtimeMs } = await stat(filePath);
-      suffix = `?v=${mtimeMs}`;
-    } catch {
-      // stat failed — fall back to no cache-bust
-    }
-    const url = pathToFileURL(filePath).href + suffix;
-    const mod = await import(url);
+    const mod = await import(await hashedUrl(pathToFileURL(filePath)));
     const def = mod.default ?? mod;
     if (def && typeof def === "object" && "type" in def && "run" in def) {
       return def as AnyStepDef;
@@ -286,7 +279,7 @@ async function loadStepFile(filePath: string): Promise<AnyStepDef | null> {
  *  load error is the step's error (the discovery loader above stays quiet:
  *  a broken active step simply doesn't exist). */
 async function importStepDef(filePath: string): Promise<AnyStepDef> {
-  const mod = await import(pathToFileURL(filePath).href);
+  const mod = await import(await hashedUrl(pathToFileURL(filePath)));
   const def = mod.default ?? mod;
   if (def && typeof def === "object" && "type" in def && "run" in def) return def as AnyStepDef;
   throw new Error(`${filePath}: no valid default export — expected \`export default defineStep({ type, input, output, run })\``);
@@ -301,14 +294,7 @@ async function importStepDef(filePath: string): Promise<AnyStepDef> {
  */
 export async function stepLoadError(filePath: string): Promise<string | null> {
   try {
-    let suffix = "?strict";
-    try {
-      const { mtimeMs } = await stat(filePath);
-      suffix = `?v=${mtimeMs}-strict`;
-    } catch {
-      // stat failed — fall back to a static cache-bust
-    }
-    const mod = await import(pathToFileURL(filePath).href + suffix);
+    const mod = await import(`${await hashedUrl(pathToFileURL(filePath))}&strict`);
     const def = mod.default ?? mod;
     if (def && typeof def === "object" && "type" in def && "run" in def) {
       return null;

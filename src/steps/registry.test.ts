@@ -4,7 +4,7 @@ import { rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { buildRegistry, CORE_STEP_TYPES } from "./registry.js";
+import { buildRegistry, CORE_STEP_TYPES, stepLoadError } from "./registry.js";
 import { WorkspaceManager } from "../workspace.js";
 
 describe("buildRegistry", () => {
@@ -116,5 +116,31 @@ describe("buildRegistry", () => {
     const { registry, sources } = await buildRegistry(join(tempDir, "steps", "custom"));
     assert.equal(registry["gitree/_shared"], undefined);
     assert.equal(sources["gitree/_shared"], undefined);
+  });
+
+  // What a step imports by a relative path is hashed like the step
+  // (strut-resolve-hook.ts), helper or not.
+  const importing = (type: string, imports: string, value: string) =>
+    `import { z, defineStep } from "strut";\n${imports}\n` +
+    `export default defineStep({ type: ${JSON.stringify(type)}, input: z.object({}), output: z.any(), async run() { return ${value}; } });\n`;
+
+  it("a step that imports a sibling STEP loads, and follows the sibling's republish", async () => {
+    await ws.publishStep("n/a", `${importing("n/a", "", "A")}export const A = 1;\n`);
+    await ws.publishStep("n/b", importing("n/b", `import { A } from "./a.js";`, "A"));
+    const dir = await ws.materializeCustomSteps();
+    assert.equal(await (await buildRegistry(dir)).registry["n/b"]!.run({}, {} as never), 1);
+    await ws.publishStep("n/a", `${importing("n/a", "", "A")}export const A = 2;\n`);
+    assert.equal(await (await buildRegistry(dir)).registry["n/b"]!.run({}, {} as never), 2);
+  });
+
+  it("stepLoadError names a helper that is not there, and nothing once it is published", async () => {
+    await ws.publishStep("n/c", importing("n/c", `import { G } from "./_gone.js";`, "G"));
+    const dir = await ws.materializeCustomSteps();
+    assert.equal((await buildRegistry(dir)).registry["n/c"], undefined);
+    assert.match((await stepLoadError(join(dir, "n", "c.ts")))!, /_gone/);
+    await ws.publishStep("n/_gone", "export const G = 3;");
+    const { registry } = await buildRegistry(dir);
+    assert.equal(await registry["n/c"]!.run({}, {} as never), 3);
+    assert.equal(await stepLoadError(join(dir, "n", "c.ts")), null);
   });
 });

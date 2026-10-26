@@ -182,7 +182,9 @@ export default defineStep({ type: "clip/shout", input: z.object({ text: z.string
 });
 
 // A step that imports a helper by the `_`-file convention: a pinned version
-// imports what the active one does (src/workspace.ts `materializePinnedStep`).
+// imports what the active one does (src/workspace.ts `materializePinnedStep`),
+// and a helper republished while strut runs reaches both at the next registry
+// build (src/strut-resolve-hook.ts).
 const STORES: Array<{
   name: string;
   skip: string | false;
@@ -219,7 +221,7 @@ import { t } from "../_top.js";
 export default defineStep({ type: "a/b/s", input: z.object({}), output: z.string(), async run() { return ${JSON.stringify(label)} + ":" + g + ":" + t; } });`;
 
 for (const s of STORES) {
-  describe(`a pinned step that imports a helper, on ${s.name}`, { skip: s.skip }, () => {
+  describe(`a step that imports a helper, on ${s.name}`, { skip: s.skip }, () => {
     let harness: Awaited<ReturnType<(typeof s)["open"]>>;
     let dir: string;
     let ws: WorkspaceStore;
@@ -281,6 +283,49 @@ for (const s of STORES) {
         hash: (await ws.materializeStepVersion("a/b/s", v1.version)).hash,
       });
       assert.deepEqual(Object.keys(strut.getRegistry()).filter((k) => k.startsWith("a/")), ["a/b/s"], "the pinned file is never discovered as a step");
+      await strut.close();
+    });
+
+    it("a republished helper, or a helper it imports, reaches the active step and the pinned version at the next rebuild", async () => {
+      await ws.publishStep("a/_top", `export const t = 7;`);
+      await ws.publishStep("a/b/_h", `export const g = 1;`);
+      const v1 = await ws.publishStep("a/b/s", HELPED("one"));
+      await ws.publishStep("a/b/s", HELPED("two"));
+      await ws.publishWorkflow("w", "v1", {
+        steps: [
+          { id: "old", type: `a/b/s@${v1.version}`, config: {} },
+          { id: "now", type: "a/b/s", config: {}, depends: [] },
+        ],
+      });
+      const store = new MemoryRunStore();
+      const strut = await boot(store);
+      const outputs = async () => {
+        const res = await strut.run("w", {});
+        assert.equal(res.status, "success", res.error?.message);
+        // Before the next publish: on Ladybug, the run's projection and an
+        // active-version swap would both want the one write transaction.
+        await harness.settle();
+        const events = await store.getRunEvents("w", res.runId);
+        return ["w/old", "w/now"].map((path) => events.find((e) => e.type === "step.end" && e.path === path)!.output);
+      };
+      assert.deepEqual(await outputs(), ["one:1:7", "two:1:7"]);
+
+      await ws.publishStep("a/b/_h", `export const g = 2;`);
+      await strut.rebuildRegistry();
+      assert.deepEqual(await outputs(), ["one:2:7", "two:2:7"]);
+
+      // The steps and `_h` unchanged; the helper `_h` imports republished.
+      await ws.publishStep("a/b/_d", `export const d = 3;`);
+      await ws.publishStep("a/b/_h", `export { d as g } from "./_d.js";`);
+      await strut.rebuildRegistry();
+      assert.deepEqual(await outputs(), ["one:3:7", "two:3:7"]);
+      await ws.publishStep("a/b/_d", `export const d = 4;`);
+      await strut.rebuildRegistry();
+      assert.deepEqual(await outputs(), ["one:4:7", "two:4:7"]);
+
+      await ws.setActiveStepVersion("a/b/_h", "v1");
+      await strut.rebuildRegistry();
+      assert.deepEqual(await outputs(), ["one:1:7", "two:1:7"], "a rollback reaches them too");
       await strut.close();
     });
 

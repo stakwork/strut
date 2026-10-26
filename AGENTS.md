@@ -1351,7 +1351,12 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   `node build/index.js` can't import `.ts`. Hosts that serve
   filesystem custom steps in production must register a loader (mcp runs
   `node --import tsx build/index.js`). Consumers using only core/lib or an
-  in-code `createRegistry([...])` don't need this.
+  in-code `createRegistry([...])` don't need this. A step file is imported
+  under `?hash=` — of its source and of every file it reaches by relative
+  imports (`hashedUrl`, src/strut-resolve-hook.ts), the hash the resolve hook
+  also puts on each of those imports — so a republished step or helper
+  reaches every step that imports it at the next registry build, with no
+  restart, and an unchanged file keeps its module.
 
 - **Step registration is filesystem-based.** External services
   register steps by `POST /steps { name, code, description?, publisher? }`.
