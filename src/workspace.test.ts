@@ -396,7 +396,7 @@ steps:
       await store.append(workflow, runId, { type: "run.start", runId, workflow, input: {}, ts: 1 } as never);
     };
 
-    it("beside the workflow of its namespace's name: listed, read and deleted apart, runs included", async () => {
+    it("beside the workflow of its namespace's name: listed, read and deleted apart; the runs are the run store's", async () => {
       const runs = new FileRunStore(tempDir);
       await ws.publishWorkflow("acme", "v1", { steps: SAMPLE_STEPS });
       await ws.publishWorkflow("acme/linear/sync", "v1", { steps: SAMPLE_STEPS }, "installed");
@@ -409,11 +409,13 @@ steps:
       assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["acme", "acme/linear/sync"]);
 
       assert.equal(await ws.deleteWorkflow("acme"), true);
-      assert.deepEqual(await readdir(join(tempDir, "workflows", "acme")), ["linear"], "acme's files and runs went; the names under it stayed");
+      assert.deepEqual((await readdir(join(tempDir, "workflows", "acme"))).sort(), ["linear", "runs"], "acme's files went; its runs and the names under it stayed");
       assert.deepEqual(await runs.listRuns("acme/linear/sync"), ["1700000000002"]);
-      assert.deepEqual(await runs.listRuns("acme"), []);
+      assert.deepEqual(await runs.listRuns("acme"), ["1700000000001"], "a run record is the run store's (RunStore.deleteRuns), so an uninstall keeps its history");
       assert.deepEqual((await ws.listWorkflows()).map((w) => w.name), ["acme/linear/sync"]);
 
+      await runs.deleteRuns("acme");
+      await runs.deleteRuns("acme/linear/sync");
       assert.equal(await ws.deleteWorkflow("acme/linear/sync"), true);
       assert.deepEqual(await readdir(join(tempDir, "workflows")), [], "the folders it left empty go too");
     });

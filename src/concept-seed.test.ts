@@ -56,6 +56,13 @@ describe("concept files (pure)", () => {
     assert.equal(planConceptSeed({ ...node, description: "Edited." }, stamp, [], file), "update", "an edited description is put back");
     assert.equal(planConceptSeed({ ...node, description: "Added in the graph." }, stamp, [], { docs: file.docs }), "keep", "a field the file does not set is left as it is");
     assert.equal(planConceptSeed({ ref_id: "r", docs: "A person wrote this." }, stamp, [], file), "skip", "a person's page stays theirs");
+
+    // A package's set (`keepEdited`, plans/marketplace.md §3): an edit is kept,
+    // and a deleted node under the name is taken — the install checked every live one.
+    assert.equal(planConceptSeed({ ...node, docs: "Edited in the graph." }, stamp, [], file, true), "keep", "an edit made here stays");
+    assert.equal(planConceptSeed(node, stamp, [], file, true), "keep");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "other/Job.md@aaaaaaaaaaaa", deleted: true }, stamp, [], file, true), "update", "a deleted page is nobody's");
+    assert.equal(planConceptSeed({ ref_id: "r", docs: "A person wrote this." }, stamp, [], file, true), "skip", "a live page of someone else's is never written");
   });
 
   it("ships Workflow Builder and Job as roots and App under Workflow Builder: one tree per agent, workspace-general, the legacy lab stamps named, Workflow Build and Job App retired", async () => {

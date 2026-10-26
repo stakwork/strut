@@ -482,7 +482,7 @@ for (const tb of testBackends()) {
 
     it("ontology: listSchemas and getSchema mirror jarvis's shapes", { skip: neoOnly("the Schema meta-graph with Thing") }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.equal(schemas.length, 12, "the Strut domain, Thing, and the Concept the suite seeded");
+      assert.equal(schemas.length, 14, "the Strut domain, Thing, and the Concept the suite seeded");
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");
@@ -497,7 +497,7 @@ for (const tb of testBackends()) {
       assert.ok(edges.some((e) => e.edge_type === "ACCESSED" && e.target_type === "Thing"));
 
       const only = await reader.listSchemas({ domains: ["STRUT"] });
-      assert.equal(only.schemas.length, 10);
+      assert.equal(only.schemas.length, 12);
       assert.ok(only.edges.every((e) => e.source_type !== "Thing" && e.target_type !== "Thing"), "Thing is outside the domain and not a wildcard");
       assert.ok(!only.edges.some((e) => e.edge_type === "ACCESSED" || e.edge_type === "CHILD_OF"));
       assert.ok(only.edges.some((e) => e.edge_type === "IN_RUN"));

@@ -285,6 +285,9 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       /** Full step source — deliberately NOT indexed. */
       source: "?string",
       publisher: "?string",
+      /** Which door wrote the version (`StepVersionInfo.source`). */
+      version_source: "?string",
+      actor: "?string",
       /** `Upstream`, JSON-encoded (marketplace.md §3). */
       upstream: "?string",
     },

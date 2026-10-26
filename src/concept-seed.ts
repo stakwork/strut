@@ -72,6 +72,12 @@ export interface ConceptSet {
   legacyPrefixes?: string[];
   /** Files this set used to ship (`<Name>.md`): their nodes are retired. */
   retired?: string[];
+  /** A PACKAGE's set (plans/marketplace.md §3), where a boot seed's rules
+   *  bend two ways: a page of ours whose text was edited in the graph is
+   *  KEPT and reported (`edited` on its outcome) — the person's edit, never
+   *  overwritten — and a deleted node under a page's name is taken whoever
+   *  stamped it, since the install checked every live name first. */
+  keepEdited?: boolean;
 }
 
 export interface ConceptFile {
@@ -103,6 +109,8 @@ export interface ConceptSeedOutcome {
   action: SeedAction | "error";
   ref_id?: string;
   error?: string;
+  /** Kept although its text is not the file's (`keepEdited`). */
+  edited?: true;
 }
 
 /** The pages strut ships (`src/concepts/`). Before strut shipped them the
@@ -149,24 +157,32 @@ export function parseConceptFile(file: string, text: string, prefix: string): Co
   };
 }
 
+/** Is the node's text not the file's? (A field the file does not set is
+ *  not the file's to compare.) */
+export function conceptEdited(existing: Pick<ExistingConcept, "description" | "docs">, file: Pick<ConceptFile, "description" | "docs">): boolean {
+  const edited = (field: "description" | "docs") => file[field] !== undefined && existing[field] !== file[field];
+  return edited("description") || edited("docs");
+}
+
 /** Pure: the reconcile rule in the module comment. `legacy` are the file's
  *  earlier paths, `<prefix><file>@`; `file` is the file's text — when given,
- *  a page of ours whose text was edited in the graph is put back. */
+ *  a page of ours whose text was edited in the graph is put back, or with
+ *  `keepEdited` kept (see `ConceptSet.keepEdited`). */
 export function planConceptSeed(
   existing: ExistingConcept | null,
   stamp: string,
   legacy: readonly string[] = [],
   file?: Pick<ConceptFile, "description" | "docs">,
+  keepEdited = false,
 ): SeedAction {
   if (!existing) return "create";
   const usid = typeof existing.unique_source_id === "string" ? existing.unique_source_id : undefined;
   const at = stamp.lastIndexOf("@") + 1;
   const ours = usid !== undefined && [stamp.slice(0, at), ...legacy].some((path) => usid.startsWith(path));
-  if (existing.deleted) return ours ? "update" : "skip"; // an upsert restores a deleted node
+  if (existing.deleted) return ours || keepEdited ? "update" : "skip"; // an upsert restores a deleted node
   if (!ours) return "skip";
   if (usid!.slice(usid!.lastIndexOf("@") + 1) !== stamp.slice(at)) return "update";
-  const edited = (field: "description" | "docs") => file?.[field] !== undefined && existing[field] !== file[field];
-  return edited("description") || edited("docs") ? "update" : "keep";
+  return file && conceptEdited(existing, file) && !keepEdited ? "update" : "keep";
 }
 
 const pathsOf = (set: ConceptSet, file: string): string[] => [set.prefix, ...(set.legacyPrefixes ?? [])].map((p) => `${p}${file}@`);
@@ -200,11 +216,12 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
         name = c.name;
         parsed.push(c);
         const existing = await findConcept(graph, schema, c.name);
-        const action = planConceptSeed(existing, c.stamp, pathsOf(set, file).slice(1), c);
+        const action = planConceptSeed(existing, c.stamp, pathsOf(set, file).slice(1), c, set.keepEdited);
         if (action === "keep" || action === "skip") {
           if (!existing!.deleted) refs.set(c.name, existing!.ref_id); // a deleted node is nobody's parent
           if (action === "keep") owned.set(c.name, existing!.ref_id);
-          outcomes.push({ name: c.name, action, ref_id: existing!.ref_id });
+          const edited = action === "keep" && conceptEdited(existing!, c);
+          outcomes.push({ name: c.name, action, ref_id: existing!.ref_id, ...(edited ? { edited: true as const } : {}) });
           continue;
         }
         const data = {
@@ -225,22 +242,7 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
       }
     }
   }
-  for (const set of sets) {
-    for (const file of set.retired ?? []) {
-      const name = file.replace(/\.md$/i, "");
-      try {
-        const existing = await findConcept(graph, schema, name);
-        const usid = existing?.unique_source_id;
-        if (!existing || existing.deleted || typeof usid !== "string" || !pathsOf(set, file).some((p) => usid.startsWith(p))) continue;
-        // Guarded on the stamp: a node taken over since it was read is left alone.
-        if (await graph.nodeEngine.softDelete(existing.ref_id, graph.namespace, { type: schema.type, props: { unique_source_id: usid } })) {
-          console.log(`[concepts] retired Concept: ${name}`);
-        }
-      } catch (err) {
-        console.warn(`[concepts] could not retire Concept "${name}":`, err instanceof Error ? err.message : err);
-      }
-    }
-  }
+  for (const set of sets) await retireConcepts(graph, schema, set);
   const declared = new Set<string>(); // `<parent ref_id>><child ref_id>`, as the files have it
   for (const c of parsed) {
     if (!c.parent || !owned.has(c.name)) continue;
@@ -279,8 +281,31 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
   return outcomes;
 }
 
+/** Soft-delete the node of each of the set's `retired` files that still
+ *  carries that file's stamp (one taken over since — its stamp cleared or
+ *  replaced — is left alone). Returns the names retired. */
+export async function retireConcepts(graph: GraphBackend, schema: NodeSchema, set: ConceptSet): Promise<string[]> {
+  const out: string[] = [];
+  for (const file of set.retired ?? []) {
+    const name = file.replace(/\.md$/i, "");
+    try {
+      const existing = await findConcept(graph, schema, name);
+      const usid = existing?.unique_source_id;
+      if (!existing || existing.deleted || typeof usid !== "string" || !pathsOf(set, file).some((p) => usid.startsWith(p))) continue;
+      // Guarded on the stamp: a node taken over since it was read is left alone.
+      if (await graph.nodeEngine.softDelete(existing.ref_id, graph.namespace, { type: schema.type, props: { unique_source_id: usid } })) {
+        console.log(`[concepts] retired Concept: ${name}`);
+        out.push(name);
+      }
+    } catch (err) {
+      console.warn(`[concepts] could not retire Concept "${name}":`, err instanceof Error ? err.message : err);
+    }
+  }
+  return out;
+}
+
 /** The node under this name in the backend's namespace, deleted or not. */
-async function findConcept(graph: GraphBackend, schema: NodeSchema, name: string): Promise<ExistingConcept | null> {
+export async function findConcept(graph: GraphBackend, schema: NodeSchema, name: string): Promise<ExistingConcept | null> {
   const key = composeNodeKey(schema, { name });
   return graph.tx(async (tx) => {
     const ref = await graph.nodeEngine.refByKey(tx, schema.type, key, graph.namespace);
