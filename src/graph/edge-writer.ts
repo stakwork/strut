@@ -157,8 +157,8 @@ export class EdgeWriter {
     this.resolver = opts.resolver ?? new SchemaResolver(this.engine);
   }
 
-  async write(input: EdgeInput): Promise<EdgeWriteResult> {
-    const [r] = await this.writeMany([input]);
+  async write(input: EdgeInput, tx?: GraphTx): Promise<EdgeWriteResult> {
+    const [r] = await this.writeMany([input], tx);
     return r!;
   }
 
@@ -166,13 +166,14 @@ export class EdgeWriter {
    * Write many edges in one transaction — one UNWIND MERGE per edge type.
    * Results in input order. All-or-nothing: any validation failure
    * (unknown type, unregistered triple, unresolvable endpoint) writes
-   * nothing.
+   * nothing. With `tx`, on the caller's transaction (an engine's `tx()`
+   * does not nest), so the edges land with the caller's other statements.
    */
-  async writeMany(inputs: EdgeInput[]): Promise<EdgeWriteResult[]> {
+  async writeMany(inputs: EdgeInput[], tx?: GraphTx): Promise<EdgeWriteResult[]> {
     if (inputs.length === 0) return [];
     for (const i of inputs) validateEdgeShape(i);
     const results: EdgeWriteResult[] = new Array(inputs.length);
-    await this.engine.tx(async (tx) => {
+    const go = async (tx: GraphTx) => {
       const resolved = await this.validateEndpoints(tx, inputs);
       const byType = new Map<string, number[]>();
       inputs.forEach((i, idx) => byType.set(i.edge, [...(byType.get(i.edge) ?? []), idx]));
@@ -182,7 +183,8 @@ export class EdgeWriter {
           results[i] = out[k]!;
         });
       }
-    });
+    };
+    await (tx ? go(tx) : this.engine.tx(go));
     return results;
   }
 

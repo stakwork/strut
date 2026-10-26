@@ -533,12 +533,23 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     }
     await edges.write({ edge: "VERSION_OF", source_ref_id: version.ref_id, target_ref_id: wfRef });
     if (w && !move) return;
+    await this.swapActiveEdge("StrutWorkflow", wfRef, "StrutWorkflowVersion", version.ref_id);
+  }
+
+  /** Point a workflow, step or app at one version: its other ACTIVE_VERSION
+   *  edges deleted and this one written, in one write transaction. Through
+   *  `tx`, not `query`: on a LadybugDB file `query` is the read connection,
+   *  and a DELETE there fails while another write transaction is open — a
+   *  run's end projection, after every run. */
+  private async swapActiveEdge(sourceType: string, sourceRef: string, versionType: string, versionRef: string): Promise<void> {
     const d = this.d;
-    await this.backend.query(
-      `MATCH ${d.node("w", "StrutWorkflow", { ref_id: "$w" })}-[r:ACTIVE_VERSION]->${d.node("v", "StrutWorkflowVersion")} WHERE v.ref_id <> $v DELETE r`,
-      { w: wfRef, v: version.ref_id },
-    );
-    await edges.write({ edge: "ACTIVE_VERSION", source_ref_id: wfRef, target_ref_id: version.ref_id });
+    await this.backend.tx(async (tx) => {
+      await tx.run(
+        `MATCH ${d.node("s", sourceType, { ref_id: "$s" })}-[r:ACTIVE_VERSION]->${d.node("v", versionType)} WHERE v.ref_id <> $v DELETE r`,
+        { s: sourceRef, v: versionRef },
+      );
+      await this.backend.edges.write({ edge: "ACTIVE_VERSION", source_ref_id: sourceRef, target_ref_id: versionRef }, tx);
+    });
   }
 
   /** USES_STEP → every custom step the version references; DEPENDS_ON →
@@ -854,7 +865,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         if (publisher !== undefined && existing.publisher !== publisher) desired["publisher"] = publisher;
         const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
         if (patch) await nodes.update(existing.ref_id, patch);
-        if (changed) await this.swapActiveStepEdge(existing.ref_id, match.ref_id);
+        if (changed) await this.swapActiveEdge("StrutStep", existing.ref_id, "StrutStepVersion", match.ref_id);
         return { version: match.version_label, changed };
       }
     }
@@ -893,17 +904,8 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       if (patch) await nodes.update(stepRef, patch);
     }
     await this.backend.edges.write({ edge: "VERSION_OF", source_ref_id: v.ref_id, target_ref_id: stepRef });
-    if (move) await this.swapActiveStepEdge(stepRef, v.ref_id);
+    if (move) await this.swapActiveEdge("StrutStep", stepRef, "StrutStepVersion", v.ref_id);
     return { version: vid, changed: true };
-  }
-
-  private async swapActiveStepEdge(stepRef: string, versionRef: string): Promise<void> {
-    const d = this.d;
-    await this.backend.query(
-      `MATCH ${d.node("s", "StrutStep", { ref_id: "$s" })}-[r:ACTIVE_VERSION]->${d.node("v", "StrutStepVersion")} WHERE v.ref_id <> $v DELETE r`,
-      { s: stepRef, v: versionRef },
-    );
-    await this.backend.edges.write({ edge: "ACTIVE_VERSION", source_ref_id: stepRef, target_ref_id: versionRef });
   }
 
   async setActiveStepVersion(name: string, version: string): Promise<void> {
@@ -919,7 +921,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     }
     const patch = patchFor(s as unknown as Record<string, unknown>, { active_version: v.content_hash, description: v.description });
     if (patch) await this.backend.nodes.update(s.ref_id, patch);
-    await this.swapActiveStepEdge(s.ref_id, v.ref_id);
+    await this.swapActiveEdge("StrutStep", s.ref_id, "StrutStepVersion", v.ref_id);
   }
 
   async deleteStep(name: string): Promise<boolean> {
@@ -1041,7 +1043,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         if (!existing.owner && owner) desired["owner"] = owner;
         const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
         if (patch) await nodes.update(existing.ref_id, patch);
-        if (changed) await this.swapActiveAppEdge(existing.ref_id, match.ref_id);
+        if (changed) await this.swapActiveEdge("StrutApp", existing.ref_id, "StrutAppVersion", match.ref_id);
         return { version: match.version_label, changed };
       }
     }
@@ -1081,7 +1083,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       if (patch) await nodes.update(appRef, patch);
     }
     await this.backend.edges.write({ edge: "VERSION_OF", source_ref_id: v.ref_id, target_ref_id: appRef });
-    if (!existing || (!existing.live && opts?.activate !== false)) await this.swapActiveAppEdge(appRef, v.ref_id);
+    if (!existing || (!existing.live && opts?.activate !== false)) await this.swapActiveEdge("StrutApp", appRef, "StrutAppVersion", v.ref_id);
     // USES_WORKFLOW → every workflow the grants name that the graph holds.
     const names = [...new Set(manifest.grants.workflows)];
     if (names.length) {
@@ -1093,15 +1095,6 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       for (const r of rows) await this.backend.edges.write({ edge: "USES_WORKFLOW", source_ref_id: v.ref_id, target_ref_id: r["ref_id"] as string });
     }
     return { version: vid, changed: true };
-  }
-
-  private async swapActiveAppEdge(appRef: string, versionRef: string): Promise<void> {
-    const d = this.d;
-    await this.backend.query(
-      `MATCH ${d.node("a", "StrutApp", { ref_id: "$a" })}-[r:ACTIVE_VERSION]->${d.node("v", "StrutAppVersion")} WHERE v.ref_id <> $v DELETE r`,
-      { a: appRef, v: versionRef },
-    );
-    await this.backend.edges.write({ edge: "ACTIVE_VERSION", source_ref_id: appRef, target_ref_id: versionRef });
   }
 
   async setActiveAppVersion(name: string, version: string): Promise<void> {
@@ -1126,7 +1119,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       ...(releases ? { releases: JSON.stringify(releases) } : {}),
     });
     if (patch) await this.backend.nodes.update(a.ref_id, patch);
-    await this.swapActiveAppEdge(a.ref_id, v.ref_id);
+    await this.swapActiveEdge("StrutApp", a.ref_id, "StrutAppVersion", v.ref_id);
   }
 
   async addAppRelease(name: string, release: { version: string; lock: AppLock; createdAt?: string; by?: string }): Promise<AppRelease> {
