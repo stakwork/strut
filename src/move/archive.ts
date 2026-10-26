@@ -370,15 +370,10 @@ export function movedFor(manifest: Manifest, arrival: Arrival): Moved {
   };
 }
 
-/** Move `src` onto `target`: an empty folder there is replaced, anything
- *  else is set aside as `<target>.old-<stamp>`. */
-async function place(src: string, target: string, stamp: string): Promise<void> {
-  const there = await stat(target).catch(() => null);
-  if (there) {
-    if (there.isDirectory() && (await readdir(target)).length === 0) await rm(target, { recursive: true });
-    else await rename(target, `${target}.old-${stamp}`);
-  }
-  await mkdir(dirname(target), { recursive: true });
+type Undo = () => Promise<void>;
+
+/** `rename`, or a copy and a delete across filesystems. */
+async function move(src: string, target: string): Promise<void> {
   try {
     await rename(src, target);
   } catch (err) {
@@ -388,10 +383,56 @@ async function place(src: string, target: string, stamp: string): Promise<void> 
   }
 }
 
+/** Move `src` onto `target`, and return how to take it back. An empty
+ *  folder there is filled rather than replaced (it may be a mount point,
+ *  which cannot be removed); anything else there is set aside as
+ *  `<target>.old-<stamp>`. */
+async function place(src: string, target: string, stamp: string): Promise<Undo> {
+  const there = await stat(target).catch(() => null);
+  if (there?.isDirectory() && (await stat(src)).isDirectory() && (await readdir(target)).length === 0) {
+    const moved: string[] = [];
+    const back = async () => {
+      for (const n of moved.reverse()) await move(join(target, n), join(src, n));
+    };
+    try {
+      for (const n of await readdir(src)) {
+        await move(join(src, n), join(target, n));
+        moved.push(n);
+      }
+    } catch (err) {
+      await back();
+      throw err;
+    }
+    return back;
+  }
+  const aside = there ? `${target}.old-${stamp}` : null;
+  if (aside) await rename(target, aside);
+  try {
+    await mkdir(dirname(target), { recursive: true });
+    await move(src, target);
+  } catch (err) {
+    if (aside) await rename(aside, target);
+    throw err;
+  }
+  return async () => {
+    await move(target, src);
+    if (aside) await rename(aside, target);
+  };
+}
+
+/** Write an env file, and return how to put back what was there. */
+async function placeEnv(file: string, values: Record<string, string>): Promise<Undo> {
+  const before = await readFile(file).catch(() => null);
+  await writeEnvFile(file, values);
+  return () => (before === null ? rm(file, { force: true }) : writeFile(file, before, { mode: 0o600 }));
+}
+
 /** Put an unpacked move (`dir`) in place on this host: its parts where `f`
  *  says, `moved.json` in the data folder, then the env files — last, so a
- *  host that waits for them sees a move that is whole. The move's sidecars
- *  must be exactly `f`'s. Returns the manifest. */
+ *  host that waits for them sees a move that is whole. All or nothing:
+ *  everything is checked first, and a step that fails takes back the ones
+ *  before it, so the host is left as it was. The move's sidecars must be
+ *  exactly `f`'s. Returns the manifest. */
 export async function install(dir: string, f: MoveFolders, arrival: Arrival = {}): Promise<Manifest> {
   const manifest = await readManifest(dir);
   const want = Object.keys(f.sidecars ?? {}).sort();
@@ -408,22 +449,26 @@ export async function install(dir: string, f: MoveFolders, arrival: Arrival = {}
   const moved = movedFor(manifest, arrival);
   await mkdir(join(dir, "data"), { recursive: true, mode: 0o700 });
   await writeFile(join(dir, "data", MOVED_FILE), JSON.stringify(moved, null, 2), { mode: 0o600 });
+  // An empty sidecar folder packs to no entries.
+  for (const name of manifest.sidecars) await mkdir(join(dir, "sidecars", name), { recursive: true, mode: 0o700 }).catch(() => undefined);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  await place(join(dir, "data"), resolve(f.data), stamp);
-  if (manifest.hostConfig) await place(join(dir, "host-config.json"), resolve(f.hostConfig!), stamp);
-  for (const name of manifest.sidecars) {
-    // An empty sidecar folder packs to no entries.
-    const src = join(dir, "sidecars", name);
-    if (!(await stat(src).catch(() => null))) await mkdir(src, { recursive: true, mode: 0o700 });
-    await place(src, resolve(f.sidecars![name]!), stamp);
-  }
-
-  if (f.envFile) await writeEnvFile(f.envFile, env.strut ?? {});
-  for (const [name, values] of Object.entries(env.sidecars ?? {})) {
-    const file = f.sidecarEnv?.[name];
-    if (file) await writeEnvFile(file, values);
-    else console.warn(`[move] ${name}'s env values (${Object.keys(values).join(", ")}) have no place on this host (--sidecar-env ${name}=<file>)`);
+  const undo: Undo[] = [];
+  try {
+    undo.push(await place(join(dir, "data"), resolve(f.data), stamp));
+    if (manifest.hostConfig) undo.push(await place(join(dir, "host-config.json"), resolve(f.hostConfig!), stamp));
+    for (const name of manifest.sidecars) undo.push(await place(join(dir, "sidecars", name), resolve(f.sidecars![name]!), stamp));
+    if (f.envFile) undo.push(await placeEnv(f.envFile, env.strut ?? {}));
+    for (const [name, values] of Object.entries(env.sidecars ?? {})) {
+      const file = f.sidecarEnv?.[name];
+      if (file) undo.push(await placeEnv(file, values));
+      else console.warn(`[move] ${name}'s env values (${Object.keys(values).join(", ")}) have no place on this host (--sidecar-env ${name}=<file>)`);
+    }
+  } catch (err) {
+    for (const back of undo.reverse()) {
+      await back().catch((e: unknown) => console.error(`[move] taking back part of a failed move: ${e instanceof Error ? e.message : e}`));
+    }
+    throw err;
   }
   return manifest;
 }

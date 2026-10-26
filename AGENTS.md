@@ -775,7 +775,17 @@ folders: --data <dir> --host-config <file> --sidecar <name>=<path>... --env <fil
   `--set-secret` values with `{bridge.url}`, `{bridge.port}`,
   `{bridge.token}` filled in. Peel: `--set-secret PEEL_BRIDGE_PORT={bridge.port}
   --set-secret PEEL_BRIDGE_TOKEN={bridge.token}`. On the sending side a
-  `moved.json` not yet applied is applied before packing.
+  `moved.json` not yet applied is applied before packing, and the
+  workspace graph's WAL is folded into its file (opened and closed with
+  this host's extensions): Ladybug logs each `LOAD EXTENSION` with its
+  absolute path in the WAL and replays it on open, so a graph that travels
+  with a WAL fails on any host without that path. `build/server.js` closes
+  the graph on SIGTERM for the same reason, as desktop.js does.
+- **Arrival is all or nothing**: the move is unpacked into `--state`,
+  checked, then put in place; a step that fails (a folder it cannot
+  write) takes back the ones before it, and `serve` keeps waiting. An
+  empty target folder is filled rather than replaced, so it may be a mount
+  point.
 - **`check`** refuses another move format, another strut (`STRUT_VERSION`,
   which a packager sets to its build, else package.json's version) or
   another Ladybug core, and a wrong code. `send` and `fetch` check first.

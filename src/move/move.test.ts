@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Readable } from "node:stream";
@@ -265,6 +265,36 @@ describe("a move between two hosts and back", () => {
     assert.ok(!existsSync(join(other, "workspace", "secrets.json")));
     await send(link, { data: macFolders.data });
     assert.equal(await box3.done, "received");
+  });
+
+  it("a move that fails while it is put in place leaves the host as it was", async () => {
+    const other = join(root, "half");
+    const locked = join(other, "locked");
+    await mkdir(locked, { recursive: true });
+    await writeFile(join(other, "strut.env"), "BEFORE='1'\n");
+    const folders: MoveFolders = {
+      data: join(other, "workspace"),
+      hostConfig: join(other, "host-config.json"),
+      // The sidecar's place cannot be made: its parent is read-only.
+      sidecars: { bridge: join(locked, "bridge") },
+      envFile: join(other, "strut.env"),
+    };
+    await chmod(locked, 0o500);
+    const box4 = serving(folders);
+    try {
+      const link = await box4.ready;
+      await assert.rejects(send(link, macFolders), /the move was refused: EACCES/);
+      assert.ok(!existsSync(folders.data), "the workspace was taken back");
+      assert.ok(!existsSync(folders.hostConfig!), "the host config was taken back");
+      assert.equal(await readFile(folders.envFile!, "utf-8"), "BEFORE='1'\n");
+      // Still serving: once the place can be made, the same code works.
+      await chmod(locked, 0o700);
+      await send(link, macFolders);
+      assert.equal(await box4.done, "received");
+      assert.ok(existsSync(join(folders.data, "memory", "graph.lbug")) && existsSync(join(locked, "bridge", "db.redb")));
+    } finally {
+      await chmod(locked, 0o700);
+    }
   });
 
   it("the CLI: usage is exit 2, a refusal exit 1", async () => {
