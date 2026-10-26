@@ -39,6 +39,30 @@ describe("settings levels", () => {
     assert.deepEqual(s.privacy, { mode: "hosted", mask: ["PERSON"], detect: { llm: false } }, "the step wins, and whole: no deep merge");
   });
 
+  it("a subflow inherits its caller's settings, which win over its own; a container's options reach its body", async () => {
+    const all: any[] = [];
+    const rec = defineStep({ type: "t/rec", description: "r", input: z.object({}).passthrough(), output: z.any(), async run(_c, ctx) { all.push(ctx.settings?.["privacy"]); return {}; } } as any);
+    const reg = createRegistry([rec as any]);
+    const leaf = "  - id: r\n    type: t/rec\n    config: {}\n";
+    const flows: Record<string, string> = {
+      plain: `name: plain\nsteps:\n${leaf}`,
+      own: `name: own\nsettings:\n  privacy: hosted\nsteps:\n${leaf}`,
+    };
+    const workspace = { getWorkflow: async (n: string) => flowFromYaml(n, "v1", flows[n]!) } as any;
+    const go = async (yaml: string) => {
+      all.length = 0;
+      const r = await runWorkflow(flowFromYaml("wf", "v1", yaml), {}, await reg, { store: new MemoryRunStore(), workspace });
+      assert.equal(r.status, "success", r.error?.message);
+      return all.map((p) => p?.mode);
+    };
+    const sub = (wf: string, opts = "") => `  - id: s_${wf}\n    type: subflow\n    config: { workflow: ${wf} }\n${opts}`;
+    assert.deepEqual(await go(`name: wf\nsettings:\n  privacy: strict\nsteps:\n${sub("plain")}${sub("own")}`), ["strict", "strict"], "the caller's workflow level wins");
+    assert.deepEqual(await go(`name: wf\nsteps:\n${sub("own")}`), ["hosted"], "nothing set by the caller: the child's own");
+    assert.deepEqual(await go(`name: wf\nsteps:\n${sub("plain", "    options:\n      settings:\n        privacy: strict\n")}`), ["strict"], "a subflow step's options");
+    const each = `  - id: e\n    type: foreach\n    config:\n      items: [1, 2]\n      body: { id: r, type: t/rec, config: {} }\n    options:\n      settings:\n        privacy: hosted\n`;
+    assert.deepEqual(await go(`name: wf\nsteps:\n${each}`), ["hosted", "hosted"], "a foreach's options reach its body");
+  });
+
   it("validate.ts rejects a bad settings.privacy and an unknown setting in workflow YAML", async () => {
     const v = async (settings: string) => validateWorkflowYaml(yamlOf(settings), { registry: await registry });
     assert.equal((await v("settings:\n  privacy: strict")).ok, true);

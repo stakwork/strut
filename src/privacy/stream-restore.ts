@@ -2,9 +2,10 @@ import { restore } from "./restore.js";
 import type { TokenMap } from "./types.js";
 
 // What could still become a token if more text arrives: an open bracket, or a trailing word
-// that looks like the start of TYPE_N. Held back until the next delta (or the end).
+// that looks like the start of TYPE_N (upper case: restore.ts takes no bare lower-case token).
+// Held back until the next delta (or the end).
 const OPEN_BRACKET = /\[[^\]\n]{0,16}$/;
-const TRAILING_WORD = /(?<![A-Za-z0-9_])[A-Za-z]{1,10}_?\d{0,4}[a-z]?$/;
+const TRAILING_WORD = /(?<![A-Za-z0-9_])[A-Z]{1,10}_?\d{0,4}[a-z]?$/;
 
 /** Restore real values in a stream of text deltas: a pseudonym split across deltas is never
  *  emitted half restored. Concatenated, the output equals `restore(whole)`. */

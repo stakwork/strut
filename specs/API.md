@@ -136,7 +136,7 @@ returns everything.
 
 | Method | Path                            | Body | Response |
 | ------ | ------------------------------- | ---- | -------- |
-| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, runId?, callback?, job?, title?, jobCallback?, mcp?, attachments? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true, attachments?: true }` |
+| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, settings?, runId?, callback?, job?, title?, jobCallback?, mcp?, attachments? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true, attachments?: true }` |
 | POST   | `/workflows/:name/:version/run` | same | same |
 
 | Field            | Meaning |
@@ -144,6 +144,7 @@ returns everything.
 | `input`          | the run payload, validated against the workflow's `input:` block (unknown keys dropped); `{}` when omitted |
 | `params`         | shallow-merged over the workflow's `params:` defaults for this run only |
 | `paramOverrides` | `{ "<workflow name>": { … } }` — the same, per workflow, reaching subflows |
+| `settings`       | `{ "<setting>": value }` — this run's level of the registered settings (`privacy`: `PRIVACY_SPEC.md` §10): over the workflow's `settings:` and the deployment's, under a step's `options.settings`. Not validated at launch (a bad value fails the step that reads it), not recorded on `run.start` (a durable resume runs without it), not handed to runs this run starts |
 | `runId`          | your own id (unique within the workflow); default a millisecond timestamp, e.g. `"1790436489808"` |
 | `callback`       | `{ url }` (http/https) — the result is POSTed there when the run settles; see `CALLBACKS.md`. Any other scheme is a 400 and nothing launches. Or `{ room: true }`: delivered to the launching actor's ROOM, a socket the client holds open (`GET /rooms`, §10; `CALLBACKS.md` §8) — 400 for a request that names no actor or carries the shared peer key |
 | `job`            | the job to launch under (`plans/jobs.md`): an id you mint, the format of a session id (§9); a bad one is a 400 and nothing launches. Recorded on the run, handed to steps as `ctx.job` and to templates as `{{ $job }}`; `job/dir` gives the run the job's directory, and the callback resolves the output's `artifacts[]` into it (`CALLBACKS.md` §4). The run is also recorded on the job — `GET /jobs/:id` (§5) lists it |
@@ -155,7 +156,7 @@ returns everything.
 **A peer's launch** (the peer key, Auth) is narrower. The workflow — the
 version launched, for `/:version/run` — must say `peer: true` at the top
 of its YAML, else `403` (`workflow "x" is not open to peers`). It runs as
-published: `params`, `paramOverrides` or `runId` in the body is a `403`
+published: `params`, `paramOverrides`, `runId` or `settings` in the body is a `403`
 (`a peer launches a workflow as published — drop params`). And it runs in
 a namespace of its own: its `job` is kept as `peer/<job>` (what
 `run.start.job`, `ctx.job` and `GET /jobs/:id` say), and every agent

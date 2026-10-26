@@ -34,8 +34,21 @@ describe("stream restore", () => {
   it("nothing half restored is ever emitted", () => {
     const r = new StreamRestorer(map);
     assert.equal(r.push("Hello [PERS"), "Hello ");
-    assert.equal(r.push("ON_1] there"), `${FIX.person} `);
-    assert.equal(r.flush(), "there");
+    assert.equal(r.push("ON_1] and PERS"), `${FIX.person} and `);
+    assert.equal(r.push("ON_1"), "", "PERSON_1 could still become PERSON_1a");
+    assert.equal(r.push(" there"), `${FIX.person} there`, "a lower-case word is never held");
+    assert.equal(r.flush(), "");
+  });
+
+  it("a snake_case name in code or SQL is never a token, in text, a stream or a tool input", () => {
+    const m: TokenMap = { "[ADDRESS_1]": { type: "ADDRESS", value: "221 Maple Street" }, "[EMAIL_1]": { type: "EMAIL", value: FIX.email } };
+    const sql = "SELECT address_1, email_1 FROM contacts WHERE id = 1";
+    assert.equal(restore(sql, m).text, sql);
+    const r = new StreamRestorer(m);
+    assert.equal([...sql].map((c) => r.push(c)).join("") + r.flush(), sql);
+    const input = JSON.stringify({ command: "ALTER TABLE t ADD COLUMN address_1 text" });
+    assert.equal(restoreToolInput(input, m), input);
+    assert.equal(restore("ADDRESS_1 and [address_1]", m).text, "221 Maple Street and 221 Maple Street", "upper case bare, or any case in brackets");
   });
 
   it("JSON escaping of real values, in text and in tool input", () => {

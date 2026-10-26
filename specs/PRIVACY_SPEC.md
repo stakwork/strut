@@ -329,7 +329,12 @@ provider only sees pseudonyms. Nothing in a workflow, a tool or a step changes.
 generic setting (`src/extensions.ts`) resolved per step into `ctx.settings`. Levels, highest wins per key and
 wins whole (no deep merge): step `options.settings.privacy` > run (`POST …/run { settings }`, the runner's
 `settings` option) > workflow YAML top-level `settings:` > deployment (the `settings` key of the
-`STRUT_HOST_CONFIG` file). Nested steps, sub-agents and subflows inherit through the same merge.
+`STRUT_HOST_CONFIG` file). Sub-agents inherit their agent's settings. A subflow inherits its caller's
+workflow level and the subflow step's own `options.settings`, which win per key over the child's YAML (as a
+subflow step's `params` win over the child's defaults); a `foreach` or `loop` step's `options.settings` reach
+its body. Both ride at the workflow level, so a run-level setting beats them. A run another run starts
+(`job/start`, `meta/run-workflow`, `run/launch`) does NOT inherit run-level settings: set the workflow or the
+deployment level for those. A peer's launch may not carry `settings` (it runs a workflow as published).
 `validate.ts` checks a workflow's `settings` against the registered schemas. A value that is neither a short
 form nor the object FAILS the call (`privacy_setting_invalid`); a bad setting never reads as "off".
 
@@ -358,7 +363,9 @@ fails the call with a 400: the signature is tied to the exact earlier text. So:
   `STRUT_PRIVACY_TRANSCRIPTS=file` and a vault key, `<dataDir>/privacy/transcripts/<session>.jsonl`: privacy's
   own append-only record, apart from the agent session store, its token map in the encrypted file vault.
   Entries are found by stamp id, so the lines of a turn that never committed are never referenced;
-- session key: the agent step's `session`, else the run id; a nested agent has its own, `<run>/<path>`.
+- session key: the agent step's `session`, else `<run>/<step path>`: one transcript per step, so steps running
+  in parallel never share a token map. A step's transcript is dropped when its run ends; a session's is kept
+  (TTL) for its next turn.
 
 History edits: a compaction summary is a new message (masked once). Truncation keeps the remaining stored
 forms (one cache miss at most). A lost single copy: plain text is masked again; signed reasoning before the
@@ -366,6 +373,9 @@ last user message is dropped (the provider allows it); inside the current tool l
 `privacy_transcript_lost`. A restart with the memory store, or every copy lost, is a FRESH transcript: all
 history re-masked with a new map, old reasoning dropped, one cache miss (`strict` refuses instead when signed
 reasoning is in play). Signed reasoning is NEVER sent altered.
+
+**Restore** takes what a model does to a token: `[person_1]`, `[ Person 1 ]`, a bare upper-case `PERSON_1`. A
+bare lower-case `address_1` is never a token: it is a snake_case name in code or SQL, and stays as written.
 
 **Tool calls.** The model writes pseudonyms into tool-call inputs. They are restored (per JSON string value)
 in `wrapGenerate` and on the stream's final `tool-call` part BEFORE the SDK runs the tool, so every tool —
@@ -396,7 +406,11 @@ in town") are not caught. A date plus a place plus an employer can re-identify a
 masked. Run files record step inputs and outputs: they hold REAL text. This protects against the hosted
 model, not against someone reading Strut's own run files, events or session store. A run's `settings` are not
 recorded on `run.start`, so a durable resume of a run launched with a run-level `privacy` setting does not
-carry it; set it on the workflow or the deployment for runs that may resume. The chat builder is not wrapped.
+carry it; set it on the workflow or the deployment for runs that may resume. Keep the setting the same for an
+agent session's whole life: its stored reasoning is the restored text under a signature over the masked one,
+so a turn sent unwrapped (privacy turned off) fails with a 400 on a provider that checks the signature. A
+file transcript's token map expires with its vault entry, one TTL after it last grew, even in a session still
+in use; the session then starts a fresh transcript. The chat builder is not wrapped.
 
 Tests: `src/privacy/middleware.test.ts` (byte stability, cache-stable prefixes, a signature-checking mock,
 lost copies, restart, late entities), `tools.test.ts` (the real `agent` step against a stand-in Anthropic

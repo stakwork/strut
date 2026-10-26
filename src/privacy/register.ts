@@ -15,8 +15,13 @@ registerModelWrapper(async (model: any, info: ModelCallInfo) => {
   const { wrapLanguageModel } = await import("ai"); // lazy, like every SDK in the engine
   const { privacyMiddleware } = await import("./middleware.js");
   const ctx = info.ctx as StepContext;
-  const key = info.session ?? (ctx.agentTool ? `${ctx.runId}/${ctx.path}` : ctx.runId || `anon/${Math.random().toString(36).slice(2)}`);
-  return wrapLanguageModel({ model, middleware: privacyMiddleware({ policy, key, info, ctx, store: await transcriptStoreFor(ctx) }) as any });
+  // One transcript per agent session, else per step: two steps of a run never share a token map
+  // (in parallel they would each extend their own copy, and the last save would win).
+  const key = info.session ?? (ctx.runId ? `${ctx.runId}/${ctx.path}` : `anon/${Math.random().toString(36).slice(2)}`);
+  const store = await transcriptStoreFor(ctx);
+  // A step's transcript is no use once its run is over; a session's goes on to the next turn.
+  if (!info.session) ctx.onRunEnd?.(() => store.drop(key));
+  return wrapLanguageModel({ model, middleware: privacyMiddleware({ policy, key, info, ctx, store }) as any });
 });
 
 registerToolWrapper(guardTools);

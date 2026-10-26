@@ -528,6 +528,7 @@ async function executeFlow(
   exec: Exec,
   basePath: string,
   paramsOverride?: Record<string, unknown>,
+  inheritedSettings?: Record<string, unknown>,
 ): Promise<unknown> {
   // `params` = workflow defaults, shallow-merged with per-run overrides.
   // Exposed to step configs via `{{ params.* }}`. Distinct from `input`.
@@ -545,7 +546,11 @@ async function executeFlow(
   // `$job` is always a key — undefined on a plain run — so `session: "{{ $job }}"`
   // in a job workflow resolves to nothing (a cold agent) instead of throwing:
   // the same workflow works as a one-shot from the Run button (plans/jobs.md §2).
-  const scope: Record<string, unknown> = { input, params, $runId: exec.runId, $job: exec.job, $settings: workflow.settings };
+  // `$settings` = the workflow level of `ctx.settings` (src/extensions.ts). A
+  // subflow inherits its caller's, which win over the child's own per key, as
+  // a subflow step's `params` win over the child's defaults.
+  const settings = inheritedSettings ? { ...(workflow.settings ?? {}), ...inheritedSettings } : workflow.settings;
+  const scope: Record<string, unknown> = { input, params, $runId: exec.runId, $job: exec.job, $settings: settings };
   const steps = workflow.steps;
 
   if (steps.length === 0) return undefined;
@@ -859,16 +864,20 @@ async function dispatchStep(
   exec: Exec,
   path: string,
 ): Promise<unknown> {
+  // A container's own `options.settings` reach every step inside it.
+  const inner = step.options?.settings
+    ? { ...scope, $settings: { ...((scope["$settings"] as Record<string, unknown> | undefined) ?? {}), ...step.options.settings } }
+    : scope;
   // Handle core control flow steps specially
   switch (step.type) {
     case "loop":
-      return executeLoop(step, scope, exec, path);
+      return executeLoop(step, inner, exec, path);
 
     case "foreach":
-      return executeForeach(step, scope, exec, path);
+      return executeForeach(step, inner, exec, path);
 
     case "subflow":
-      return executeSubflow(step, scope, exec, path);
+      return executeSubflow(step, inner, exec, path);
 
     default: {
       // Look up in registry (a `type@vN` pin loads that version — src/step-ref.ts)
@@ -1244,7 +1253,7 @@ async function executeSubflow(
   const params = { ...(stepParams as Record<string, unknown> | undefined), ...exec.paramOverrides?.[childFlow.name] };
   // Once a frame is the AI's, everything under it is (src/reach.ts).
   const childExec = !exec.aiAuthored && (await aiAuthored(exec.services, childFlow.name)) ? { ...exec, aiAuthored: true } : exec;
-  return executeFlow(childFlow, validatedInput, childExec, path, params);
+  return executeFlow(childFlow, validatedInput, childExec, path, params, (scope["$settings"] as Record<string, unknown> | undefined) ?? {});
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────

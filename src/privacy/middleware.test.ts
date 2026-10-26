@@ -89,16 +89,16 @@ describe("signed reasoning", () => {
     }, /400/);
   });
 
-  it("variants: the model writes person_1 and misses a name; the next call still resends the raw form", async () => {
+  it("variants: the model writes [person_1] and misses a name; the next call still resends the raw form", async () => {
     const turns = [
-      [{ type: "reasoning", text: "ask about person_1", providerMetadata: sig("sigV") }, { type: "tool-call", toolCallId: "v1", toolName: "lookup", input: '{"name":"person_1"}' }],
+      [{ type: "reasoning", text: "ask about [person_1]", providerMetadata: sig("sigV") }, { type: "tool-call", toolCallId: "v1", toolName: "lookup", input: '{"name":"[person_1]"}' }],
       [{ type: "text", text: "Thanks [Person 1]. Also met Zed Quillfeather there." }],
     ];
     const s = setup({ turns });
     const r = await run(s);
     assert.equal((s.seen[0] as any).name, FIX.person, "variant restored for the tool");
-    assert.ok(s.model.calls[1]!.includes("ask about person_1"), "raw reasoning resent");
-    assert.ok(s.model.calls[1]!.includes('"name":"person_1"') || s.model.calls[1]!.includes('"name": "person_1"'));
+    assert.ok(s.model.calls[1]!.includes("ask about [person_1]"), "raw reasoning resent");
+    assert.ok(s.model.calls[1]!.includes('"name":"[person_1]"') || s.model.calls[1]!.includes('"name": "[person_1]"'));
     assert.ok(r.text.includes(`Thanks ${FIX.person}.`));
   });
 });
@@ -189,6 +189,22 @@ describe("history edits", () => {
   });
 });
 
+describe("strict, history lost", () => {
+  const history = (opts: Record<string, unknown>) => [
+    { role: "user" as const, content: "hello" },
+    { role: "assistant" as const, content: [{ type: "reasoning" as const, text: "thinking", providerOptions: opts }, { type: "text" as const, text: "hi" }] },
+    { role: "user" as const, content: "and now?" },
+  ];
+  const go = (opts: Record<string, unknown>) => {
+    const s = setup({ privacy: "strict", turns: [[{ type: "text", text: "ok" }]], ctxOver: { services: { privacy: { ner: fakeNer(NER), transcripts: new MemoryTranscriptStore(1000, Date.now, false) } } } });
+    return wrap(s.model, { ctx: s.ctx, session: s.session }).then((m) => generateText({ model: m, messages: history(opts) }));
+  };
+  it("refuses when the lost reasoning was signed, not when it carries only our stamp", async () => {
+    await assert.rejects(go({ strutPrivacy: { id: "gone", i: 0 }, ...sig("sigL") }), /privacy_transcript_lost/);
+    await go({ strutPrivacy: { id: "gone", i: 0 } });
+  });
+});
+
 describe("late entities", () => {
   const mk = (privacy: unknown) => {
     // NER only learns the name from the second message on
@@ -245,5 +261,51 @@ describe("where the wrapper applies", () => {
     const st = setup({ privacy: "strict", turns: [[{ type: "text", text: "ok" }]] });
     await assert.rejects(generateText({ model: await wrap(st.model, { ctx: st.ctx, session: st.session }), messages: msg }), /privacy_media_unsupported/);
     assert.equal(st.model.count, 0);
+  });
+});
+
+describe("transcript keys", () => {
+  it("two steps of one run in parallel keep their own token maps (file store): a tool gets the person its step meant", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { FileTranscriptStore } = await import("./transcript-file.js");
+    const { putVault, getVault, destroyVault } = await import("./vault.js");
+    const dir = await mkdtemp(join(tmpdir(), "strut-privacy-keys-"));
+    try {
+      const vdeps = { dir: join(dir, "vault"), keys: { get: async () => ({ kid: "k", material: new TextEncoder().encode("secret-key") }) } };
+      const store = new FileTranscriptStore(join(dir, "transcripts"), { put: (m) => putVault("file", m, 60, {}, vdeps), get: (h) => getVault(h, {}, vdeps), destroy: (h) => destroyVault(h, vdeps) });
+      const services = { privacy: { ner: fakeNer({ "Alice Zephyr": "PER", "Bob Quintana": "PER" }), transcripts: store } };
+      const runId = uid("run");
+      const ctxA = makeCtx({ privacy: "hosted", runId, path: "wf/each#0/agent", services });
+      const ctxB = makeCtx({ privacy: "hosted", runId, path: "wf/each#1/agent", services });
+      const sentTo: any[] = [];
+      const tools = { send: tool({ inputSchema: z.object({ to: z.string() }), execute: async (i: any) => { sentTo.push(i.to); return "sent"; } }) };
+      const a = mockModel({ turns: [[{ type: "text", text: "ok" }]] });
+      const b = mockModel({ turns: [[{ type: "text", text: "noted" }], [{ type: "tool-call", toolCallId: "c", toolName: "send", input: '{"to":"[PERSON_1]"}' }], [{ type: "text", text: "done" }]] });
+      const [, rb] = await Promise.all([
+        generateText({ model: await wrap(a, { ctx: ctxA }), prompt: "Write to Alice Zephyr" }),
+        generateText({ model: await wrap(b, { ctx: ctxB }), prompt: "Write to Bob Quintana" }),
+      ]);
+      await generateText({ model: await wrap(b, { ctx: ctxB }), messages: [{ role: "user", content: "Write to Bob Quintana" }, ...rb.response.messages, { role: "user", content: "send it" }], tools, stopWhen: stepCountIs(2) });
+      assert.deepEqual(sentTo, ["Bob Quintana"]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("a step's transcript is dropped when its run ends; a session's is kept", async () => {
+    const store = new MemoryTranscriptStore(60_000, Date.now, false);
+    const ends: Array<() => unknown> = [];
+    const ctx = makeCtx({ privacy: "hosted", services: { privacy: { ner: fakeNer(NER), transcripts: store } } });
+    (ctx as any).onRunEnd = (fn: () => unknown) => void ends.push(fn);
+    const model = mockModel({ turns: [[{ type: "text", text: "ok" }]] });
+    await generateText({ model: await wrap(model, { ctx }), prompt: `Hi ${FIX.person}` });
+    const session = uid("kept");
+    await generateText({ model: await wrap(model, { ctx, session }), prompt: `Hi ${FIX.person}` });
+    const key = `${ctx.runId}/${ctx.path}`;
+    assert.ok(await store.load(key));
+    assert.equal(ends.length, 1, "only the step's transcript asks to be dropped");
+    for (const fn of ends) await fn();
+    assert.equal(await store.load(key), undefined);
+    assert.ok(await store.load(session));
   });
 });

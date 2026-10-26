@@ -86,8 +86,9 @@ export function privacyMiddleware(d: MiddlewareDeps) {
     return { params: { ...params, prompt: out.prompt }, prompt: out.prompt, st, mapRef: st.map };
   }
 
+  // Signed = the provider put something on the part; our own stamp is not a signature.
   const hasSignedReasoning = (prompt: any[]) =>
-    prompt.some((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((p: any) => p.type === "reasoning" && JSON.stringify(p.providerOptions ?? {}).length > 2));
+    prompt.some((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((p: any) => p.type === "reasoning" && stripStamp(p.providerOptions) !== undefined));
 
   async function build(prompt: any[], st: SessionPrivacy, fresh: boolean) {
     const added: Record<string, StoredMasked> = {};
@@ -110,10 +111,6 @@ export function privacyMiddleware(d: MiddlewareDeps) {
         for (const [t, n] of Object.entries(r.counts)) counts[t] = (counts[t] ?? 0) + n;
         return r.out;
       });
-    const maskJson = async (v: unknown): Promise<unknown> =>
-      typeof v === "string" ? mask(v) :
-      Array.isArray(v) ? Promise.all(v.map(maskJson)) :
-      v && typeof v === "object" ? Object.fromEntries(await Promise.all(Object.entries(v).map(async ([k, y]) => [k, await maskJson(y)]))) : v;
     const onceJson = async (k: string, make: () => Promise<unknown>): Promise<any> => JSON.parse(await once(k, async () => JSON.stringify(await make())));
     const sequentialJson = async (v: unknown): Promise<unknown> => { // in order: tokens are numbered as the text reads
       if (typeof v === "string") return mask(v);
@@ -121,7 +118,6 @@ export function privacyMiddleware(d: MiddlewareDeps) {
       if (v && typeof v === "object") { const o: Record<string, unknown> = {}; for (const [k, y] of Object.entries(v)) o[k] = await sequentialJson(y); return o; }
       return v;
     };
-    void maskJson;
 
     const maskOutput = async (o: any): Promise<any> => {
       if (!o || typeof o !== "object") return o;

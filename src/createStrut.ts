@@ -3835,14 +3835,15 @@ export async function createStrut<TServices = unknown>(
   };
 
   /** A PEER's launch (plans/federation.md §3) runs the workflow as published:
-   *  `params`, `paramOverrides` and `runId` are refused — an override could
-   *  hand a workflow's agents tools its author never gave them — and its
+   *  `params`, `paramOverrides`, `runId` and `settings` are refused — an
+   *  override could hand a workflow's agents tools its author never gave
+   *  them, or turn off a setting the author turned on — and its
    *  `job` is kept under `PEER_NAMESPACE`, so a name a peer chooses never
    *  opens a local job's directory, files or holds. The body to launch, or
    *  why not. Which workflows a peer may launch is their YAML's `peer:`
    *  (`opensTo`, `notForPeers`). */
   const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
-    const set = (["params", "paramOverrides", "runId"] as const).filter((k) => body[k] != null);
+    const set = (["params", "paramOverrides", "runId", "settings"] as const).filter((k) => body[k] != null);
     if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
     return typeof body.job === "string" ? { ...body, job: `${PEER_NAMESPACE}${body.job}` } : body;
   };
