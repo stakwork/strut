@@ -1,5 +1,5 @@
 /**
- * `strut move`: the sealing (peel's test vector, byte for byte), and a move
+ * `strut move`: the sealing (the test vector a client checks itself against), and a move
  * between two data folders in both directions — send to a `serve` on an
  * empty host, then `serve --send-back` and `fetch` home again — with a
  * sidecar, env values, a wrong code and a version mismatch.
@@ -42,11 +42,11 @@ describe("move sealing", () => {
   const salt = Buffer.from([...Array(16).keys()]);
 
   it("matches the test vector", async () => {
-    assert.equal(hex(hkdf(code, salt, "peel home move v1")), "13e289b08266d671425a9a52bda8afb069d9f07bcd9f334f3a1772075cad5806");
+    assert.equal(hex(hkdf(code, salt, "strut move v1")), "f3a18e07fda9966e92eff467d835e7739f79b4ed26206d27ac0e3ea87327c04c");
     const sealed = await collect(seal(bytes(Buffer.from("hello")), code, { salt }));
-    assert.equal(hex(sealed), "5045454c4d4f564501000102030405060708090a0b0c0d0e0f00100000" + "79d992f92d83c0104c5a817ed89e3d24e6077d47d4");
-    assert.equal(hex(proof(code, salt, "check")), "c8a6db5727d4059357349a2e07740712748984c33a5f7610aa08d8310d8e56b5");
-    assert.equal(hex(proof(code, salt, "received")), "f46ee2a084e910283e7e5b08d4eee0ec168196603a094f63adb45738d2c5b3ce");
+    assert.equal(hex(sealed), "53545255544d4f5601000102030405060708090a0b0c0d0e0f00100000" + "38813acee60021f1c15a2f4664971ccc9b488b20e0");
+    assert.equal(hex(proof(code, salt, "check")), "634cebd16b58814fefba4143d35500ba578cfbcf42d008c4e4415ede58e0fdae");
+    assert.equal(hex(proof(code, salt, "received")), "e8efb462a00edda9dd6edaf9e5fa763abbacf244a30bde9e192fbe690662098d");
     assert.equal((await collect(open(bytes(sealed), code))).toString(), "hello");
   });
 

@@ -1,11 +1,12 @@
 // A move sealed with its pairing code (AGENTS.md, "Moving strut to another
 // host"): a 29-byte header, then AES-256-GCM chunks under a key derived from
-// the code by HKDF-SHA256. The construction, constants and test vector are
-// those of peel's first draft (home/README.md on its `home-bundle` branch),
-// kept byte for byte so Peel's CryptoKit can open what strut seals.
+// the code by HKDF-SHA256. The construction is peel's first draft's
+// (home/README.md on its `home-bundle` branch); the constants are strut's,
+// and the test vector in move.test.ts is what any client that seals or
+// opens a move (Peel's CryptoKit) checks itself against.
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const MAGIC = Buffer.from("PEELMOVE");
+export const MAGIC = Buffer.from("STRUTMOV");
 export const SEAL_VERSION = 1;
 export const SALT_SIZE = 16;
 export const HEADER_SIZE = MAGIC.length + 1 + SALT_SIZE + 4;
@@ -14,9 +15,9 @@ export const DEFAULT_CHUNK = 1 << 20;
 const MIN_CHUNK = 1 << 16;
 const MAX_CHUNK = 1 << 24;
 
-const INFO_KEY = "peel home move v1";
-const INFO_CHECK = "peel home move v1 check";
-const INFO_RECEIVED = "peel home move v1 received";
+const INFO_KEY = "strut move v1";
+const INFO_CHECK = "strut move v1 check";
+const INFO_RECEIVED = "strut move v1 received";
 
 /** The first chunk did not open: another code, or not a move. */
 export class WrongCode extends Error {

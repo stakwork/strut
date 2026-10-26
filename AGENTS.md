@@ -808,18 +808,20 @@ HTTP (plain, home network only, everything that matters sealed):
 | Request | Mode | |
 |---|---|---|
 | `GET /move/info` | both | `{ mode: "receive" \| "send-back", format: 1, strut, graph, ready? }` |
-| `POST /move/check` | both | `{ salt: <32 hex>, token: <64 hex> }`, token = HKDF(code, salt, `peel home move v1 check`): 200, or 401 |
+| `POST /move/check` | both | `{ salt: <32 hex>, token: <64 hex> }`, token = HKDF(code, salt, `strut move v1 check`): 200, or 401 |
 | `PUT /move` | receive | the sealed move: 200 once in place; 401 wrong code; 400 not a move, bad archive, sidecars that don't match; 409 busy or already here |
 | `GET /move` | send-back | the sealed move (`Range: bytes=a-[b]` resumes) |
-| `POST /move/received` | send-back | `Authorization: Bearer <HKDF(code, the move's salt, "peel home move v1 received")>`: 200 and this host's copy is set aside |
+| `POST /move/received` | send-back | `Authorization: Bearer <HKDF(code, the move's salt, "strut move v1 received")>`: 200 and this host's copy is set aside |
 
-**The format.** Sealed: `PEELMOVE`, version `0x01`, a 16-byte salt, the
+**The format.** Sealed: `STRUTMOV`, version `0x01`, a 16-byte salt, the
 chunk size (u32 BE, 1 MiB written, 64 KiB–16 MiB read), then AES-256-GCM
-chunks under HKDF-SHA256(code, salt, `peel home move v1`); chunk *i*'s
+chunks under HKDF-SHA256(code, salt, `strut move v1`); chunk *i*'s
 nonce is `[final,0,0,0] ‖ i` (u64 BE), its AAD the header, written as
 ciphertext ‖ tag; the last chunk is final. The code is 20 Crockford base32
-characters (shown `XXXX-XXXX-…`, typed with dashes or not). Constants and
-test vector are those of peel's first draft (`src/move/move.test.ts`).
+characters (shown `XXXX-XXXX-…`, typed with dashes or not). The
+construction is peel's first draft's; the constants are strut's, and the
+test vector in `src/move/move.test.ts` is what a client's implementation
+checks itself against.
 Inside, a gzip-compressed ustar of regular files (`src/tar.ts`):
 `move.json` (`{ format: "strut-move", version: 1, strut, graph, created,
 from, hostConfig, sidecars, callbacks? }`), `env.json` (`{ strut, sidecars:
