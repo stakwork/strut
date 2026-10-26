@@ -104,6 +104,17 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build:engine
 
+# Ladybug's vector + fts extensions, which the graph backend needs to open:
+# the pinned bytes for the installed core on the target arch (extensions.ts,
+# sha256-verified), in native/ as the desktop package carries them, so the
+# image never downloads them at start and needs no ~/.lbdb or model-cache
+# volume for them. The check opens a graph with no network: a load that
+# would reach for the extension host fails the build, amd64 and arm64 alike.
+COPY scripts/image-ladybug-extensions.mjs ./scripts/
+RUN node scripts/image-ladybug-extensions.mjs stage /usr/src/strut/native
+ENV STRUT_LADYBUG_EXTENSION_DIR=/usr/src/strut/native
+RUN --network=none node scripts/image-ladybug-extensions.mjs check
+
 COPY --from=web /usr/src/strut/web/dist ./web/dist
 
 # The kit as the app build reads it: the vendor layer + the base stylesheet,
