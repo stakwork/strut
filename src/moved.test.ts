@@ -18,7 +18,7 @@ import { WorkspaceManager } from "./workspace.js";
 import { stepRunKey, type FileRunStore } from "./store.js";
 import { FileSecretStore } from "./secret-store.js";
 import { attachmentParts, saveAttachments } from "./ai/attachments.js";
-import { jobRoot, setJobCallback } from "./jobs.js";
+import { jobRoot, setJobCallback, touchJob } from "./jobs.js";
 import { applyMove, MOVED_FILE, type Moved } from "./moved.js";
 
 const WF = "echo";
@@ -109,6 +109,14 @@ describe("a data folder moved to another host", () => {
     ]);
     await store.setRunCallback(stepRunKey("pack"), "2000", runEnd(macBridge));
     await setJobCallback(jobRoot(mac, "j1"), runEnd(macBridge));
+    // The job's own file, and a checkout: a worktree of a cache in repos/,
+    // which a plain copy brings along broken.
+    const job = jobRoot(mac, "j1");
+    const cache = join(mac, "repos", "acme", "repo.git");
+    await mkdir(join(job, "repo"), { recursive: true });
+    await writeFile(join(job, "plan.md"), "the job's own file");
+    await writeFile(join(job, "repo", ".git"), `gitdir: ${join(cache, "worktrees", "repo")}\n`);
+    await touchJob(job, "j1", { dir: join(job, "repo"), cache, ref: "main" });
     assert.equal((await call(strut, "PUT", "/secrets/PEEL_BRIDGE_PORT", { value: port(macBridge) })).status, 200);
     assert.equal((await call(strut, "PUT", "/secrets/PEEL_BRIDGE_TOKEN", { value: macBridge.token })).status, 200);
     assert.equal((await call(strut, "PUT", "/secrets/OTHER", { value: "kept" })).status, 200);
@@ -168,6 +176,11 @@ describe("a data folder moved to another host", () => {
       ]);
       const jobCallback = JSON.parse(await readFile(join(dir, "jobs", ".callbacks", "j1.json"), "utf-8")) as { url: string };
       assert.equal(jobCallback.url, runEnd(now));
+      // The job keeps its files; its checkout is gone, and so is its record of it.
+      const job = jobRoot(dir, "j1");
+      assert.equal(await readFile(join(job, "plan.md"), "utf-8"), "the job's own file");
+      assert.ok(!existsSync(join(job, "repo")), "the job's checkout is still there");
+      assert.deepEqual((JSON.parse(await readFile(`${job}.json`, "utf-8")) as { repos: object }).repos, {});
 
       const secrets = new FileSecretStore(dir);
       assert.equal(await secrets.get("PEEL_BRIDGE_PORT"), port(now));

@@ -20,8 +20,7 @@
  *   - `from`: the folder's absolute path on the old host. Paths strut saved
  *     into the conversations it replays — chat uploads (`uploads/`) and run
  *     attachments (`artifacts/`), in `chats/` and `sessions/` messages —
- *     are moved onto this folder's path. Job records' `repos` and run
- *     history are left as they are.
+ *     are moved onto this folder's path. Run history is left as it is.
  *   - `bridge`: a callback host the old strut posted to, and where it is
  *     now. Every stored callback that starts with `from.url` — automations'
  *     run.end URLs, runs' `callback.json` / `job-callback.json` / `mcp.json`,
@@ -32,9 +31,11 @@
  *   - `secrets`: deployment secrets to set (a string) or delete (`null`)
  *     through the secret store.
  *
- * Files rebuilt at boot or tied to the old machine (`DROP`) are removed.
- * Each step can run again with the same result, so a boot cut short does
- * the whole move again; the file goes only once all of it is done. A
+ * Files rebuilt at boot or tied to the old machine (`DROP`) are removed,
+ * and so are each job's checkouts (`jobCheckouts`), which its record then
+ * forgets; the job's own files stay. Each step can run again with the same
+ * result, so a boot cut short does the whole move again; the file goes only
+ * once all of it is done. A
  * `moved.json` that cannot be read or parsed fails the boot.
  */
 import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -59,8 +60,8 @@ export type Moved = z.infer<typeof movedSchema>;
 
 /** Under the data folder: rebuilt at boot, scratch, or tied to the old
  *  machine (peel docs/always-on.md, "What in strut's folder is tied to the
- *  Mac"). Jobs' working folders are not here: a job's files are its own, and
- *  the mover leaves the checkouts out. */
+ *  Mac"). A job's checkouts are too, but they sit among the job's own files:
+ *  `jobCheckouts`. */
 const DROP = [
   "steps/_graph",
   "steps/_graph-versions",
@@ -80,13 +81,48 @@ const DROP_TOP = /^(?:[^/]+\.json\.(?:corrupt-[^/]+|[0-9a-f-]{36}\.tmp)|fs-works
 
 /** Whether a path under the data folder (`/`-separated) is left out when
  *  strut packs the folder to move it (src/move/archive.ts): what a move
- *  drops on arrival, temp files anywhere, a `moved.json` not applied yet
- *  (the receiving side writes its own), and jobs' working folders — their
- *  checkouts are big and tied to this machine; the job records move. */
+ *  drops on arrival, temp files anywhere, and a `moved.json` not applied
+ *  yet (the receiving side writes its own). `leftBehindIn` adds the jobs'
+ *  checkouts. */
 export function leftBehind(rel: string, dir: boolean): boolean {
   if (DROP.includes(rel) || (!rel.includes("/") && DROP_TOP.test(rel)) || rel === MOVED_FILE) return true;
-  if (!dir && rel.endsWith(".tmp")) return true;
-  return dir && /^jobs\/[^./][^/]*$/.test(rel);
+  return !dir && rel.endsWith(".tmp");
+}
+
+/** `leftBehind` for the data folder at `root`, its jobs' checkouts included. */
+export async function leftBehindIn(root: string): Promise<(rel: string, dir: boolean) => boolean> {
+  const checkouts = new Set((await jobCheckouts(resolve(root))).flatMap((j) => j.checkouts));
+  return (rel, dir) => leftBehind(rel, dir) || (dir && checkouts.has(rel));
+}
+
+/** Each job's checkouts, as `/`-separated paths under the data folder. A
+ *  job's folder holds its own files (a plan, screenshots, deliverables) and
+ *  the repositories `git/checkout` put there, which its record lists in
+ *  `repos` by absolute path on the host that made them (src/jobs.ts). A
+ *  checkout is a worktree of a cache in `repos/`, which never moves, so the
+ *  job's files move and its checkouts stay behind. Each is found by what
+ *  follows its own job's folder in that path, whichever host wrote it. */
+async function jobCheckouts(root: string): Promise<Array<{ record: string; checkouts: string[] }>> {
+  const out: Array<{ record: string; checkouts: string[] }> = [];
+  for (const name of await list(join(root, "jobs"))) {
+    if (!name.endsWith(".json")) continue;
+    const job = name.slice(0, -".json".length);
+    let repos: Record<string, unknown> = {};
+    try {
+      repos = (JSON.parse(await readFile(join(root, "jobs", name), "utf-8")) as { repos?: Record<string, unknown> }).repos ?? {};
+    } catch {
+      continue; // not a record strut can read: nothing to leave out
+    }
+    const checkouts: string[] = [];
+    for (const dir of Object.keys(repos)) {
+      const path = dir.replaceAll("\\", "/").replace(/\/+$/, "");
+      const at = path.lastIndexOf(`/jobs/${job}/`);
+      const rest = at < 0 ? "" : path.slice(at + `/jobs/${job}/`.length);
+      if (rest && !rest.split("/").some((p) => !p || p === "." || p === "..")) checkouts.push(`jobs/${job}/${rest}`);
+    }
+    if (Object.keys(repos).length) out.push({ record: join(root, "jobs", name), checkouts });
+  }
+  return out;
 }
 
 /** Read `<dataDir>/moved.json` and apply it; nothing when there is none.
@@ -114,6 +150,14 @@ export async function applyMove(dataDir: string): Promise<{ applied: boolean; re
   for (const name of await list(join(root, "jobs"))) if (name.endsWith(".json.tmp")) dropped += await remove(join(root, "jobs", name));
 
   let rewritten = 0;
+  // A job's checkouts went with `repos/` above: a mover leaves them out, a
+  // plain copy brings them broken. The job's files stay; its record forgets
+  // them, and the job's next `git/checkout` makes them again.
+  for (const { record, checkouts } of await jobCheckouts(root)) {
+    for (const rel of checkouts) dropped += await remove(join(root, ...rel.split("/")));
+    rewritten += await rewriteText(record, (text) => JSON.stringify({ ...(JSON.parse(text) as object), repos: {} }, null, 2));
+  }
+
   const from = moved.from?.replace(/\/+$/, "");
   if (from && from !== root) {
     const paths = pathRewriter(from, root);

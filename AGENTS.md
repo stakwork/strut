@@ -714,8 +714,8 @@ applies it and removes it (`src/moved.ts`):
 Every field is optional. `from` (the folder's absolute path on the old
 host): the upload and run-attachment paths (`<from>/uploads/…`,
 `<from>/artifacts/…`) in `chats/*/messages.jsonl` and
-`sessions/*/messages.jsonl` move onto this folder's path; job records'
-`repos` and run history are left alone. `bridge`: every stored callback
+`sessions/*/messages.jsonl` move onto this folder's path; run history is
+left alone. `bridge`: every stored callback
 that starts with `from.url` — automations' run.end URLs
 (`automation-callbacks.json`), runs' `callback.json` / `job-callback.json`
 / `mcp.json`, `jobs/.callbacks/` — moves onto `to.url`, with `from.token`
@@ -726,7 +726,10 @@ secret store. Rebuilt or machine-bound parts are dropped (`DROP` in
 moved.ts: `steps/_graph*`, graph and memory snapshots and backups,
 `audio/tmp`, `audio/dictation.json`, `repos`, `worktrees`,
 `privacy/vault`, `acp/sessions`, temp and corrupt files,
-`fs-workspace.imported-*`). Every step is idempotent and the file goes only
+`fs-workspace.imported-*`), and so are each job's checkouts — worktrees of
+the dropped `repos/`, found by the job record's `repos` — which the record
+then forgets; the job's own files (a plan, screenshots, deliverables)
+stay. Every step is idempotent and the file goes only
 once all of it is done, so a boot cut short does the move again. A
 `moved.json` that does not parse fails the boot.
 
@@ -818,8 +821,8 @@ test vector are those of peel's first draft (`src/move/move.test.ts`).
 Inside, a gzip-compressed ustar of regular files (`src/tar.ts`):
 `move.json` (`{ format: "strut-move", version: 1, strut, graph, created,
 from, hostConfig, sidecars, callbacks? }`), `env.json` (`{ strut, sidecars:
-{ <name>: {…} } }`), `host-config.json`, `data/…` (minus `leftBehind` in
-moved.ts: what arrival drops, temp files, jobs' working folders) and
+{ <name>: {…} } }`), `host-config.json`, `data/…` (minus `leftBehindIn` in
+moved.ts: what arrival drops, temp files, jobs' checkouts) and
 `sidecars/<name>[/…]`. Empty folders do not move.
 
 ## Mothership cost control (opt-in)

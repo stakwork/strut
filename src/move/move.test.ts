@@ -14,8 +14,8 @@ import { chmod, copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeF
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Readable } from "node:stream";
-import { applyMove, leftBehind, MOVED_FILE } from "../moved.js";
-import { moveVersion, type MoveFolders } from "./archive.js";
+import { applyMove, leftBehindIn, MOVED_FILE } from "../moved.js";
+import { moveVersion, packFolders, unpack, type MoveFolders } from "./archive.js";
 import { check, fetchMove, send } from "./client.js";
 import { main } from "./cli.js";
 import { makeLink, parseLink } from "./link.js";
@@ -135,6 +135,11 @@ describe("a move between two hosts and back", () => {
   let sourceData: Map<string, string>;
 
   before(async () => {
+    const jobRecord = {
+      name: "j1",
+      usedAt: "2026-10-26T00:00:00.000Z",
+      repos: { [join(macFolders.data, "jobs", "j1", "repo")]: { cache: join(macFolders.data, "repos", "acme", "repo.git"), ref: "main" } },
+    };
     await put(macFolders.data, {
       "secrets.json": '{"salt":"x","secrets":{}}',
       // Opaque bytes: the memory graph moves as files (the workspace graph is
@@ -143,7 +148,9 @@ describe("a move between two hosts and back", () => {
       "memory/graph.lbug.wal": randomBytes(1000),
       "chats/c1/messages.jsonl": `{"role":"user","content":"saved at ${macFolders.data}/uploads/c1/a.txt"}\n`,
       "uploads/c1/a.txt": "hello",
-      "jobs/j1.json": "{}",
+      // A job: its record, its own file, and a checkout its record lists.
+      "jobs/j1.json": JSON.stringify(jobRecord, null, 2),
+      "jobs/j1/plan.md": "the job's own file",
       "jobs/.callbacks/j1.json": '{"url":"http://127.0.0.1:54321/x?token=mac-token"}',
       "empty.txt": "",
       // Left behind:
@@ -162,8 +169,13 @@ describe("a move between two hosts and back", () => {
       "Bridge/sub/notes": "opaque",
       "move.env": "STRUT_SECRET_KEY=s3cret key\nSTRUT_API_KEY=host-bound\n# a comment\nbridge.BROKER_URL=broker:1883\nbridge.RUNNER_ALIAS=It's me\n",
     });
-    sourceData = new Map([...(await tree(macFolders.data))].filter(([rel]) => !rel.split("/").some((_, i, parts) => leftBehind(parts.slice(0, i + 1).join("/"), i < parts.length - 1))));
-    assert.ok(sourceData.has("memory/graph.lbug") && !sourceData.has("jobs/j1/repo/README") && !sourceData.has(MOVED_FILE) && sourceData.has("jobs/.callbacks/j1.json"));
+    const left = await leftBehindIn(macFolders.data);
+    sourceData = new Map([...(await tree(macFolders.data))].filter(([rel]) => !rel.split("/").some((_, i, parts) => left(parts.slice(0, i + 1).join("/"), i < parts.length - 1))));
+    assert.ok(sourceData.has("memory/graph.lbug") && !sourceData.has(MOVED_FILE) && sourceData.has("jobs/.callbacks/j1.json"));
+    assert.ok(sourceData.has("jobs/j1/plan.md") && !sourceData.has("jobs/j1/repo/README"), "a job's files move, its checkouts do not");
+    // This folder has a moved.json of its own, applied before it packs: the
+    // job's record forgets the checkout there.
+    sourceData.set("jobs/j1.json", hex(Buffer.from(JSON.stringify({ ...jobRecord, repos: {} }, null, 2))));
   });
 
   after(() => rm(root, { recursive: true, force: true }));
@@ -234,6 +246,7 @@ describe("a move between two hosts and back", () => {
     const changed = [...got.keys()].filter((k) => got.get(k) !== sourceData.get(k)).sort();
     assert.deepEqual(changed, ["chats/c1/messages.jsonl", "jobs/.callbacks/j1.json", "secrets.json"]);
     assert.deepEqual([...got.keys()].sort(), [...sourceData.keys()].sort());
+    assert.deepEqual(JSON.parse(Buffer.from(got.get("jobs/j1.json")!, "hex").toString()).repos, {});
     assert.deepEqual(moved, {
       from: boxFolders.data,
       bridge: { from: boxBridge, to: backBridge },
@@ -300,6 +313,33 @@ describe("a move between two hosts and back", () => {
   it("the CLI: usage is exit 2, a refusal exit 1", async () => {
     assert.equal(await main(["nope"]), 2);
     assert.equal(await main(["check", "http://127.0.0.1:1/?code=ABCD"]), 1);
+  });
+});
+
+describe("a job moves with its files, never its checkouts", () => {
+  const root = join(tmpdir(), `strut-move-job-${randomUUID()}`);
+  after(() => rm(root, { recursive: true, force: true }));
+
+  it("packs the job's own files, leaves the checkout its record lists, and arrival forgets it", async () => {
+    const data = join(root, "mac", "workspace");
+    const checkout = join(data, "jobs", "j1", "repo");
+    const record = { name: "j1", usedAt: "2026-10-26T00:00:00.000Z", repos: { [checkout]: { cache: join(data, "repos", "acme", "repo.git"), ref: "main" } } };
+    await put(data, {
+      "jobs/j1.json": JSON.stringify(record, null, 2),
+      "jobs/j1/plan.md": "the job's own file",
+      "jobs/j1/shots/001.png": randomBytes(100),
+      "jobs/j1/repo/.git": "gitdir: elsewhere\n",
+      "jobs/j1/repo/README": "a checkout",
+    });
+    const into = join(root, "unpacked");
+    await unpack((await packFolders({ data })).plain, into);
+    assert.deepEqual([...(await tree(join(into, "data"))).keys()].sort(), ["jobs/j1.json", "jobs/j1/plan.md", "jobs/j1/shots/001.png"]);
+    assert.ok(existsSync(join(checkout, "README")), "the sender keeps its checkout");
+
+    // The record names the sender's path; arrival's moved.json forgets it.
+    await writeFile(join(into, "data", MOVED_FILE), JSON.stringify({ from: data }));
+    assert.equal((await applyMove(join(into, "data"))).applied, true);
+    assert.deepEqual(JSON.parse(await readFile(join(into, "data", "jobs", "j1.json"), "utf-8")), { ...record, repos: {} });
   });
 });
 

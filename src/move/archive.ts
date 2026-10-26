@@ -4,7 +4,7 @@
 //   move.json          the manifest (`Manifest`)
 //   env.json           { strut: {KEY: value}, sidecars: { <name>: {KEY: value} } }
 //   host-config.json   STRUT_HOST_CONFIG's file, when the move has one
-//   data/…             strut's data folder, minus what is left behind (moved.ts `leftBehind`)
+//   data/…             strut's data folder, minus what is left behind (moved.ts `leftBehindIn`)
 //   sidecars/<name>…   each sidecar: a folder (or one file), opaque
 //
 // Regular files only. Written and read as streams, so a large workspace
@@ -18,7 +18,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import { z } from "zod";
 import { bootEnv } from "../env.js";
-import { applyMove, leftBehind, MOVED_FILE, type Moved } from "../moved.js";
+import { applyMove, leftBehindIn, MOVED_FILE, type Moved } from "../moved.js";
 import { parseTarHeader, TAR_END, tarHeader, tarPadding } from "../tar.js";
 
 export const FORMAT = "strut-move";
@@ -212,7 +212,7 @@ async function* tarStream(f: MoveFolders, manifest: Manifest, env: MoveEnv): Asy
   yield* small("move.json", JSON.stringify(manifest, null, 2));
   yield* small("env.json", JSON.stringify(env));
   if (f.hostConfig) yield* fileEntry("host-config.json", f.hostConfig);
-  for (const rel of await filesUnder(f.data, leftBehind)) yield* fileEntry(`data/${rel}`, join(f.data, rel));
+  for (const rel of await filesUnder(f.data, await leftBehindIn(f.data))) yield* fileEntry(`data/${rel}`, join(f.data, rel));
   for (const name of manifest.sidecars) {
     const path = f.sidecars![name]!;
     if ((await stat(path)).isDirectory()) {
