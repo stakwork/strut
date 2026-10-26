@@ -41,8 +41,9 @@ if (Number(process.versions.node.split(".")[0]) < 22 || !process.features.typesc
   process.exit(1);
 }
 
-if (args.includes("--help") || args.includes("-h")) {
+if (args[0] !== "move" && (args.includes("--help") || args.includes("-h"))) {
   console.log(`usage: strut [--open]
+       strut move <check|send|serve|fetch> …   (strut move --help)
 
 Runs strut locally with desktop defaults. Prints a JSON ready line on stdout
 ({"event":"ready","port","host","key"}) and the UI URL on stderr.
@@ -112,6 +113,14 @@ dflt("STRUT_CACHE_DIR", cacheRoot); // models land at <cacheRoot>/strut/models
 dflt("STRUT_WEB_DIST", join(here, "web", "dist"));
 dflt("STRUT_API_KEY", randomBytes(24).toString("hex"));
 env["STRUT_READY_KEY"] = "1"; // put the key on the ready line for the host
+
+// `strut move …` (AGENTS.md, "Moving strut to another host"): over the
+// stopped strut's folders, with the defaults above (STRUT_WORKSPACE), and
+// no server.
+if (args[0] === "move") {
+  const { main } = await import("./build/move/cli.js");
+  process.exit(await main(args.slice(1)));
+}
 
 // Every way out closes the graph file first: a process that exits with it
 // open leaves a WAL Ladybug cannot recover its full-text index from.

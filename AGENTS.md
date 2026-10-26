@@ -730,6 +730,88 @@ moved.ts: `steps/_graph*`, graph and memory snapshots and backups,
 once all of it is done, so a boot cut short does the move again. A
 `moved.json` that does not parse fails the boot.
 
+## Moving strut to another host
+
+`strut move` (`src/move/`) copies a STOPPED strut to another host and back:
+its data folder, its host config, named sidecars (opaque folders another
+program owns, e.g. Peel's bridge) and env values, sealed with a pairing
+code. The same code runs on both ends. A client stops its own processes
+and runs it beside the server, never inside it:
+
+| Where | How a client runs it |
+|---|---|
+| desktop package | `node desktop.js move …` (Peel; desktop.js's defaults apply, `--data` defaults to STRUT_WORKSPACE) |
+| image or checkout | `node build/move/cli.js …` (an empty box's setup service: `… serve`) |
+
+```
+strut move check <link>
+strut move send  <link> [folders] [--bridge <url>]
+strut move serve        [folders] [--bridge <url>] [--set-secret N=V]... [--send-back]
+                        [--listen [host:]port] [--host <h[:port]>] [--link <prefix>] [--name <n>]
+strut move fetch <link> [folders] [--bridge <url>] [--set-secret N=V]...
+
+folders: --data <dir> --host-config <file> --sidecar <name>=<path>... --env <file>
+         --sidecar-env <name>=<file>... --state <dir>
+```
+
+- **Folders** are read when packing and written when unpacking, so both
+  ends name theirs the same way. `--env` holds strut's own values
+  (`KEY=value`; when sending, `<name>.KEY` is a sidecar's); strut's host
+  settings (`STRUT_API_KEY`, ports, paths) never move. Received env files are
+  written as `KEY='value'` (a shell or Compose `env_file` reads them), last,
+  after the folders are in place. Not `--env-file`: node takes that flag
+  for itself even after the script name. A host's sidecars must be the
+  move's exactly, or the move is refused.
+- **`serve`** on an empty data folder shows a page (link, code, QR) and
+  takes one move, then exits 0 (`{"event":"received"}`); with `--send-back`
+  it packs this host's folders under a fresh code, serves them until the
+  other end confirms, sets them aside in `<data's parent>/sent-<time>/`
+  and exits (`"sent"`). With strut already here and no `--send-back` it
+  exits at once (`"already-here"`). The receive code is kept in `--state`
+  (default `<data's parent>/.move`) until a move lands.
+- **`moved.json` on arrival** (see "Moving a data folder"): `from` is the
+  manifest's data path, `bridge` is the manifest's callbacks → this host's
+  `--bridge` (its token in `STRUT_MOVE_BRIDGE_TOKEN`), `secrets` are the
+  `--set-secret` values with `{bridge.url}`, `{bridge.port}`,
+  `{bridge.token}` filled in. Peel: `--set-secret PEEL_BRIDGE_PORT={bridge.port}
+  --set-secret PEEL_BRIDGE_TOKEN={bridge.token}`. On the sending side a
+  `moved.json` not yet applied is applied before packing.
+- **`check`** refuses another move format, another strut (`STRUT_VERSION`,
+  which a packager sets to its build, else package.json's version) or
+  another Ladybug core, and a wrong code. `send` and `fetch` check first.
+- **The link**: plain `http://<host>/?code=<code>` (the page), or
+  `<prefix>?host=<host>&code=<code>` with `--link <prefix>`
+  (`STRUT_MOVE_LINK`; Peel: `peel://home-setup`). `--host` /
+  `STRUT_MOVE_HOST` is the address it names; else the request's, or the
+  first LAN address. `--listen` / `STRUT_MOVE_LISTEN` defaults to 8090.
+- **stdout** is one JSON line per result (`ready` with `link`, `code`,
+  `port`; `checked`; `sent`; `fetched`; `received`; `error`); words and the
+  QR go to stderr. Exit 0 done, 1 refused or failed, 2 usage.
+
+HTTP (plain, home network only, everything that matters sealed):
+
+| Request | Mode | |
+|---|---|---|
+| `GET /move/info` | both | `{ mode: "receive" \| "send-back", format: 1, strut, graph, ready? }` |
+| `POST /move/check` | both | `{ salt: <32 hex>, token: <64 hex> }`, token = HKDF(code, salt, `peel home move v1 check`): 200, or 401 |
+| `PUT /move` | receive | the sealed move: 200 once in place; 401 wrong code; 400 not a move, bad archive, sidecars that don't match; 409 busy or already here |
+| `GET /move` | send-back | the sealed move (`Range: bytes=a-[b]` resumes) |
+| `POST /move/received` | send-back | `Authorization: Bearer <HKDF(code, the move's salt, "peel home move v1 received")>`: 200 and this host's copy is set aside |
+
+**The format.** Sealed: `PEELMOVE`, version `0x01`, a 16-byte salt, the
+chunk size (u32 BE, 1 MiB written, 64 KiB–16 MiB read), then AES-256-GCM
+chunks under HKDF-SHA256(code, salt, `peel home move v1`); chunk *i*'s
+nonce is `[final,0,0,0] ‖ i` (u64 BE), its AAD the header, written as
+ciphertext ‖ tag; the last chunk is final. The code is 20 Crockford base32
+characters (shown `XXXX-XXXX-…`, typed with dashes or not). Constants and
+test vector are those of peel's first draft (`src/move/move.test.ts`).
+Inside, a gzip-compressed ustar of regular files (`src/tar.ts`):
+`move.json` (`{ format: "strut-move", version: 1, strut, graph, created,
+from, hostConfig, sidecars, callbacks? }`), `env.json` (`{ strut, sidecars:
+{ <name>: {…} } }`), `host-config.json`, `data/…` (minus `leftBehind` in
+moved.ts: what arrival drops, temp files, jobs' working folders) and
+`sidecars/<name>[/…]`. Empty folders do not move.
+
 ## Mothership cost control (opt-in)
 
 `plans/mothership-cost-control.md` is the design; `src/mothership.ts` the

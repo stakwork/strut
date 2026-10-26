@@ -78,6 +78,17 @@ const DROP = [
  *  moved aside, the file workspace kept after its import. */
 const DROP_TOP = /^(?:[^/]+\.json\.(?:corrupt-[^/]+|[0-9a-f-]{36}\.tmp)|fs-workspace\.imported-.+)$/;
 
+/** Whether a path under the data folder (`/`-separated) is left out when
+ *  strut packs the folder to move it (src/move/archive.ts): what a move
+ *  drops on arrival, temp files anywhere, a `moved.json` not applied yet
+ *  (the receiving side writes its own), and jobs' working folders — their
+ *  checkouts are big and tied to this machine; the job records move. */
+export function leftBehind(rel: string, dir: boolean): boolean {
+  if (DROP.includes(rel) || (!rel.includes("/") && DROP_TOP.test(rel)) || rel === MOVED_FILE) return true;
+  if (!dir && rel.endsWith(".tmp")) return true;
+  return dir && /^jobs\/[^./][^/]*$/.test(rel);
+}
+
 /** Read `<dataDir>/moved.json` and apply it; nothing when there is none.
  *  Returns what it did, for the boot log and tests. */
 export async function applyMove(dataDir: string): Promise<{ applied: boolean; rewritten: number; dropped: number }> {
