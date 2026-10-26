@@ -112,6 +112,8 @@ dflt("STRUT_WORKSPACE", join(appSupport, "strut", "workspace"));
 dflt("STRUT_CACHE_DIR", cacheRoot); // models land at <cacheRoot>/strut/models
 dflt("STRUT_WEB_DIST", join(here, "web", "dist"));
 dflt("STRUT_API_KEY", randomBytes(24).toString("hex"));
+// The commit package-desktop.mjs staged: what `strut move check` compares.
+if (staged.strut) dflt("STRUT_VERSION", staged.strut);
 env["STRUT_READY_KEY"] = "1"; // put the key on the ready line for the host
 
 // `strut move …` (AGENTS.md, "Moving strut to another host"): over the

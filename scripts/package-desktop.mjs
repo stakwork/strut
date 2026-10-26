@@ -27,7 +27,8 @@
  * it before desktop.json names them);
  * elsewhere, or without a matching openssl@3,
  * Ladybug is left out with a warning. `desktop.json` beside desktop.js
- * records what was staged (`ladybug`, `embeddings`, `stt`), and desktop.js
+ * records what was staged (`ladybug`, `embeddings`, `stt`, the `strut`
+ * commit), and desktop.js
  * reads its defaults from it: with Ladybug staged the workspace backend is
  * `ladybug` and STRUT_LADYBUG_EXTENSION_DIR is native/
  * (plans/ladybug-backend.md §7.1). `--no-stt` leaves dictation out: no
@@ -261,7 +262,10 @@ async function stageFiles() {
 // node_modules): the workspace backend flips to ladybug only when the addon
 // AND both extensions are in native/; the graph's embedder is on only when
 // the embeddings stack came along. Rewritten as the relocations add to it.
-const manifest = { platform, stt, ladybug, ladybugVersion: ladybug ? ladybugVersion : null, ladybugExtensions: null, embeddings, fixer: false, llamaVersion: null };
+// `strut` is the commit staged, desktop.js's STRUT_VERSION: `strut move`
+// only moves between equal builds. Null outside a git checkout.
+const commit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf-8" });
+const manifest = { platform, strut: commit.status === 0 ? commit.stdout.trim() : null, stt, ladybug, ladybugVersion: ladybug ? ladybugVersion : null, ladybugExtensions: null, embeddings, fixer: false, llamaVersion: null };
 async function writeManifest() {
   await writeFile(join(stage, "desktop.json"), JSON.stringify(manifest, null, 2) + "\n");
 }

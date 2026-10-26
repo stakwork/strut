@@ -66,6 +66,9 @@ jobs:
           tags: |
             ghcr.io/stakwork/strut:${{ steps.sha.outputs.short }}
             ghcr.io/stakwork/strut:latest
+          # What `strut move check` compares; the desktop package stamps the same.
+          build-args: |
+            STRUT_VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false

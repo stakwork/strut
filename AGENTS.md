@@ -789,8 +789,10 @@ folders: --data <dir> --host-config <file> --sidecar <name>=<path>... --env <fil
   write) takes back the ones before it, and `serve` keeps waiting. An
   empty target folder is filled rather than replaced, so it may be a mount
   point.
-- **`check`** refuses another move format, another strut (`STRUT_VERSION`,
-  which a packager sets to its build, else package.json's version) or
+- **`check`** refuses another move format, another strut (`STRUT_VERSION`:
+  the commit, which the image (`publish-image.yml`) and the desktop package
+  (`desktop.json`'s `strut`) both stamp; a plain checkout reports
+  package.json's version, so set it there to move to or from one) or
   another Ladybug core, and a wrong code. `send` and `fetch` check first.
 - **The link**: plain `http://<host>/?code=<code>` (the page), or
   `<prefix>?host=<host>&code=<code>` with `--link <prefix>`
