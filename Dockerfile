@@ -131,6 +131,12 @@ ENV STRUT_WORKSPACE_BACKEND=fs \
     STRUT_MODEL_DIR=/data/models \
     NODE_ENV=production
 
+# The commit this image is built from (publish-image.yml passes it; unset,
+# package.json's version): `strut move` only moves between equal builds.
+# Last, so a new commit rebuilds no layer above.
+ARG STRUT_VERSION
+ENV STRUT_VERSION=${STRUT_VERSION}
+
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=6 \
   CMD wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1
