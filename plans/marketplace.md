@@ -87,6 +87,11 @@
 >
 > Receipts back to a publisher are left to a plan of their own (open
 > question 5).
+>
+> **2026-10-26, later:** BitTorrent for the bytes goes in §10's table,
+> proposed, and what it would have bought is named as a gap rather than
+> closed: an installer finds a mirror only if the publisher listed it
+> (§13, open question 10).
 
 ## Problem
 
@@ -758,6 +763,7 @@ plan subsumes it:
 | Plain HTTP with no pointer — the ref is the catalog's URL plus the key | The byte host becomes the pointer: it can serve an older, validly signed catalog that an installer cannot tell from current, and leaving it breaks every ref unless it forwards or the index row is edited. Putting the pointer on the index over HTTP fixes both, but leaves Stakwork as the one party that can withhold it. The Pkarr record keeps the pointer off the byte host and the index alike — the one thing it adds, and what a publisher with no address of its own needs (§13) | Nothing — weighed 2026-10-24 |
 | A merge as what an update implies | Two versions side by side is the normal state of a fork; converging is asked for. Every registry with numbers pins and asks rather than auto-merging an approved copy — the MCP "rug pull" (`plans/p2p-distribution-research.md`) | §4's table had coexistence as the diverged row only |
 | A new DHT or transport (Hyperswarm's HyperDHT, iroh's QUIC) | Strut already speaks HTTP by hash and a desktop pulls; what was missing was the POINTER, which Pkarr gives on the Mainline DHT that already exists. iroh's blob layer is mid-rewrite; Hyperswarm is a second DHT and a second key format (research Option C) | Nothing — chosen 2026-10-24 |
+| BitTorrent for the bytes — a magnet or infohash on each release, seeded by every strut that installed it | The Mainline DHT carries BEP 44 records here, never BEP 5's peer lookup. Archives are kilobytes to a few megabytes, and every byte host already serves them over HTTP by hash. A torrent cannot be gated, so it would carry public packages only (§6). The digest is a tree hash over the files, not the hash of any archive's bytes, so a release would carry an infohash beside it and the files would still be hashed again after the download. And every strut would run a UDP socket and a seeder that keeps running, on desktops behind NAT and swarms behind firewalls, which the WASM Pkarr client does not have (open question 7). What it would buy — asking who holds a digest once the publisher's host is gone — is the mirror gap (§13, open question 10), which has answers over HTTP | Nothing — the question came up 2026-10-26 |
 | A package list in the index | Every release would be an index edit; the index is a phone book of prefix → key, and each publisher's catalog is its own list (§7) | `index.yaml` with `{ package, version, digest }` rows as the public shape |
 | A signed YAML catalog | YAML has no one byte form, so a verifier that parses and re-dumps changes the bytes: strut's `loadYaml` (js-yaml's default schema) turns `2026-10-26T17:02:00Z` into a `Date` that dumps as `…00.000Z`, and `1.10` dumps as `1.1`. "Signed" without the bytes, the place and the encoding is no check, and the index over HTTPS has nothing else. The catalog is a card: RFC 8785 JSON sealed over its fingerprint (§13) | §13 on 2026-10-24: "a signed YAML file", its signature never defined |
 
@@ -1214,8 +1220,9 @@ points at bytes by hash.**
   package's newest release not yanked, or the one the ref pins → archive
   fetched by digest from its `urls` → `installPackage`. Every fetch is by
   hash, so any URL that serves the bytes is as good as the publisher's: a
-  mirror is a strut that installed the package and lists its own archive
-  route (§9).
+  mirror is a strut that installed the package and serves it on its own
+  archive route (§9) — reached once a release lists that route, which is
+  a gap (*Finding a mirror*, below).
 - **Publish** (`publish_package`, on any strut, a person's act like
   install): `buildPackage` → the archive under `<dataDir>/packages/<digest>/`
   → the catalog rewritten, its `seq` moved forward and sealed (below) →
@@ -1349,6 +1356,28 @@ keeps a pointer alive and can never change it. A package people use stays
 resolvable; one nobody installed lapses. A lapsed record breaks nothing
 installed — an install is local and pinned by digest; new installs and
 updates wait for the publisher's next re-put.
+
+**Finding a mirror — a gap** (2026-10-26, named, not designed). §9 lets
+any strut that installed a package serve it, and every fetch is by hash,
+so a mirror's archive route is as good as the publisher's. But an
+installer tries only the `urls` a release lists, and only the publisher's
+key seals that list; a strut's own catalog lists what it BUILT, never what
+it holds. So a mirror reaches installers only when the publisher adds its
+URL and publishes again, and nothing here tells the publisher a mirror
+exists. The pointer has readers keeping it alive (above); the bytes have
+no twin of that. When every URL on a release stops answering — a swarm
+torn down with its `host: self` route, a release repo deleted or made
+private — a new install of that digest waits on the publisher, though
+struts it has never heard of hold the bytes under `<dataDir>/packages/`.
+A copy already installed is unaffected. A laptop publishing to GitHub
+release assets is the least exposed; a swarm serving itself the most.
+Three shapes would close it, none chosen (open question 10):
+
+| Shape | What it takes | What it covers |
+| --- | --- | --- |
+| The publisher lists mirrors | A mirror asks — a request to the publisher's strut, or by hand — and the next publish adds its URL to the releases it holds | Mirrors the publisher knows of, added while the publisher is alive: not the case that fails |
+| The installer's own fallbacks | A list on the INSTALLING strut of archive routes to try for any digest after the catalog's `urls`: its org's swarm, its peers, a Stakwork strut that installs what the index lists | An org (a desktop falls back to its swarm) and whatever the fallback struts hold. No protocol and no change to the card: the digest check is what makes an unlisted URL safe |
+| Asking the DHT who holds a digest | BEP 5's peer lookup without its wire protocol: a strut that holds a digest announces itself under a 20-byte key derived from it (`announce_peer`), and a reader's `get_peers` returns addresses whose archive routes it tries | Any strut with a public address — swarms, never Peel. Needs a UDP socket on both sides (open question 7). The DHT returns an IP and port, not a hostname, so the fetch is plain HTTP to an address: safe for a public package, since the digest is checked, and nothing a seller's token should travel over |
 
 **An org's fork** still goes the earlier way when it should carry the
 org's name: a desktop hands it to the org's swarm, which publishes it
@@ -1857,4 +1886,10 @@ production until install (step 2) calls the resolver.
    nobody has installed yet may lapse while the laptop sleeps, and the
    first install waits for it to wake. Measure on the relay before step 6
    says more than that (§13).
+10. **Finding a mirror.** Which of §13's three shapes, if any, lets an
+    installer reach a digest that no URL on its release still serves. The
+    installer's own fallbacks need no protocol and no change to the card,
+    so they could follow step 6 at any time; asking the DHT waits on open
+    question 7. Until one is built, a package outlives its publisher's
+    host only on the struts that already installed it.
 
