@@ -1272,7 +1272,7 @@ the run's own events, returned to the caller and kept only as §7 says
 (`keep: true`, or claims on the step), so a caller that wants no record of it
 never passes `keep`.
 
-## 16. Packages — sharing workflows, steps and Concepts (`plans/marketplace.md` §1–§5)
+## 16. Packages — sharing workflows, steps, apps and Concepts (`plans/marketplace.md` §1–§5)
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
 `version`, `description?`, `license?` — an SPDX expression, never
@@ -1280,13 +1280,13 @@ enforced — `requires?`) and the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow
-`acme/linear/sync`). It is pinned by its DIGEST, `sha256:<hex>` over every
+`acme/linear/sync`, the folder `apps/issues/` the app
+`acme/linear/issues`). It is pinned by its DIGEST, `sha256:<hex>` over every
 file in it (`readPackage`, `src/packages/format.ts`). A strut keeps every
 package it resolved under `<dataDir>/packages/`, one directory per digest,
 and serves any of them by digest — whether it built the package or
 installed it, it can be a mirror. Only `file:` refs resolve today; `git+`
-and `pk:` are refused by name (`package_source_unsupported`), and an app in
-a package is neither built nor installed yet (`package_unsupported`).
+and `pk:` are refused by name (`package_source_unsupported`).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
@@ -1308,6 +1308,7 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
   "workflows": ["acme/linear/sync"],   // each with everything it can execute
   "steps": ["acme/linear/create-issue"],  // beyond what the workflows reach
   "concepts": ["Linear"],              // each with the pages under it (PARENT_OF)
+  "apps": ["acme/linear/issues"],      // each with what its grants execute and the apps it imports
   "requires": {                        // packages BUILT on this strut that this one needs
     "packages": [{ "package": "acme/util", "digest": "sha256:…" }]  // the digest their build returned
   }
@@ -1338,6 +1339,16 @@ What goes in:
   `requires.packages`. A sibling is checked: every item reached under its
   prefix must be in its cached copy, byte for byte as it is here now. A
   named sibling is pinned whether or not anything reaches it.
+- **Each named app** as its active version's sources, `apps/<name>/`:
+  the files its version hash covers (never `dist/` or `data.db`), checked
+  against that hash, so the app's tree hash in the package is its version
+  hash here. Its grants are walked like a workflow's closure: each workflow
+  in `grants.workflows` and `grants.automations`, each step in
+  `grants.steps` (globs expanded against the registry). So are the apps it
+  imports, read off its build (`dist/build.json`): one under the prefix is
+  an item, another package's a pin, a seed's (`strut/views`) recorded
+  nowhere. An app under the prefix has one name segment after it
+  (`apps/<name>/`).
 - **The Concepts** named, with every page under each, as
   `concepts/<Name>.md` (front matter `description`, `parent`; the body is
   `docs`). A top page keeps its parent.
@@ -1350,10 +1361,11 @@ What goes in:
   step source, literal `exec` commands, literal `runtime:` fields.
 
 Building twice from the same workspace gives the same digest. Refusals are
-400 `{ error }`: `package_unsupported` for `apps`, else one
-`package_build_refused: …` naming every problem: a workflow or step outside
-the prefix that came from no package, one package reached at two digests, a
-version label (`type@vN`, a subflow's `version:`), an item in a sealed
+400 `{ error }`, one `package_build_refused: …` naming every problem: a
+workflow, step or app outside the prefix that came from no package, one
+package reached at two digests, a version label (`type@vN`, a subflow's
+`version:`, an app import pinned as `name@vN`), an app whose directory is
+not its version or that has no build of its sources, an item in a sealed
 namespace, a step that does not load here as its own type, a Concept
 another seeder stamped, a closure that cannot be read whole (a templated
 subflow, a grant read only at run time) unless the request names more than
@@ -1365,11 +1377,16 @@ the cache when it holds the digest, else from the pin's `source`; a
 relative `file:` source is relative to the requiring package's directory),
 and installs them FIRST. It is all or nothing: every name and file of every
 package is checked before the first write, and a step that then fails to
-load takes back what the install wrote. Each step and workflow version it
+load takes back what the install wrote. Each app is copied out of the
+cache and BUILT against this strut's kit, with the packages' workflows and
+apps in reach, before anything is written — the kit is this strut's, so
+the build is the compatibility check — then published after the workflows
+through the apps capability (`POST /apps`'s publish), each after the apps
+of the set it imports. Each step, workflow and app version it
 writes records `source: "install"`, the installing actor, and
 `upstream: { package, version, digest, source: { ref }, secrets }` (what
-`GET /workflows/:name` and the step version records show); a workflow's
-`owner` is the installing actor. A Concept is written stamped
+`GET /workflows/:name`, the step version records and `GET /apps/:name`
+show); a workflow's and an app's `owner` is the installing actor. A Concept is written stamped
 `pkg/<package>/<file>@<hash>` (skipped, with a warning, without a graph).
 A step's `<name>.claims.yaml` and a workflow's `claims:` block are recorded
 with the package as their speaker, and `publish` checks fire.
@@ -1387,6 +1404,7 @@ with the package as their speaker, and `publish` checks fire.
       "items": [                      // installed | present | modified (here and forked, left as it is)
         { "kind": "step", "name": "acme/linear/create-issue", "status": "installed", "version": "v1" },
         { "kind": "workflow", "name": "acme/linear/sync", "status": "installed", "version": "v1" },
+        { "kind": "app", "name": "acme/linear/issues", "status": "installed", "version": "v1" },
         { "kind": "concept", "name": "Linear", "status": "installed" }
       ]
     }
@@ -1402,13 +1420,13 @@ with a code first:
 
 | Status | Code | When |
 | ------ | ---- | ---- |
-| 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch`, `package_unsupported` | the ref does not resolve to that package, or holds an app |
-| 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path |
-| 409 | `package_conflict` | a local workflow or step under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
+| 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch` | the ref does not resolve to that package |
+| 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path, an app whose `app.yaml` does not parse, that grants a step that is neither here nor in the packages, or that does not build on this strut's kit (an import the kit lacks, a granted workflow that is nowhere) |
+| 409 | `package_conflict` | a local workflow, step or app under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
 | 409 | `package_update_not_built` | the package is installed here at another digest (updates are a later work item) |
 
-Once installed, a NEW workflow or step name under the prefix is refused at
-every door (`package_conflict`, `refuseUnderInstalledPackage`,
+Once installed, a NEW workflow, step or app name under the prefix is
+refused at every door (`package_conflict`, `refuseUnderInstalledPackage`,
 `src/workspace.ts`): only the package's own install adds a name there. An
 edit of an installed item is a FORK — a new version that carries the
 `upstream` forward. And an installed step — a fork too — reads only the
@@ -1424,6 +1442,7 @@ only …` (`src/packages/fence.ts`).
   "items": [
     { "kind": "workflow", "name": "acme/linear/sync", "installed": "v1", "active": "v2", "modified": true },
     { "kind": "step", "name": "acme/linear/_shared", "helper": true, "installed": "v1", "active": "v1", "modified": false },
+    { "kind": "app", "name": "acme/linear/issues", "installed": "v1", "active": "v1", "modified": false },
     { "kind": "concept", "name": "Linear", "modified": false }  // its text against the file in the cache; absent when the cache lost it
   ]
 }

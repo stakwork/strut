@@ -2676,6 +2676,7 @@ export async function createStrut<TServices = unknown>(
     ...(verifier ? { verifyPublish: (subject) => verifier.verifyPublish(subject) } : {}),
     ...(secretsCap ? { secrets: secretsCap } : {}),
     path: bootEnv()["PATH"] ?? "",
+    apps,
     getRegistry: async () => {
       await rebuildRegistry();
       return registry;
@@ -2719,8 +2720,8 @@ export async function createStrut<TServices = unknown>(
     }
   });
   // A package BUILT from this workspace (src/packages/build.ts, §2): what the
-  // named workflows can execute, the named steps and Concepts, written into
-  // the cache — so the archive route above serves it and an install takes it
+  // named workflows and apps can execute, the named steps, apps and Concepts,
+  // written into the cache — so the archive route above serves it and an install takes it
   // from `file:<dir>`. A person's act like install, one write at a time.
   app.post("/packages/build", async (c) => {
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);

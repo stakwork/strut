@@ -508,7 +508,7 @@ export function packagePrefixOf(name: string): string | undefined {
  *  namespace is not. `installedUnder` says whether the store holds an item
  *  of that package under it. */
 export async function refuseUnderInstalledPackage(
-  kind: "workflow" | "step",
+  kind: "workflow" | "step" | "app",
   name: string,
   opts: PublishOptions | undefined,
   installedUnder: (prefix: string) => Promise<boolean>,
@@ -1263,6 +1263,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
   async publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
+    if (!meta) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix));
     if (meta) {
       const match = Object.entries(meta.versions).find(([, v]) => v.hash === hash);
       if (match) {
@@ -1668,12 +1669,16 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return out.sort();
   }
 
-  /** Is an item of `prefix`'s package here — a step or a workflow under
+  /** Is an item of `prefix`'s package here — a step, workflow or app under
    *  `<prefix>/` with a version that came from it? */
   private async installedUnder(prefix: string): Promise<boolean> {
     const steps = (await this.readStepMetadata(this.customStepsDir()))?.steps ?? {};
     for (const [name, info] of Object.entries(steps)) {
       if (name.startsWith(`${prefix}/`) && fromPackage(prefix, Object.values(info.versions))) return true;
+    }
+    for (const name of (await this.appNames()).filter((n) => n.startsWith(`${prefix}/`))) {
+      const meta = await this.readAppMetadata(name);
+      if (meta && fromPackage(prefix, Object.values(meta.versions))) return true;
     }
     for (const name of await this.workflowNames(prefix)) {
       if (name === prefix) continue; // `acme/linear` itself is beside the prefix, not under it

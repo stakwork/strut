@@ -1,7 +1,7 @@
 /**
  * What is INSTALLED (plans/marketplace.md §3): a FOLD over the workspace,
- * never a store. A workflow or step version that a package install wrote
- * carries `upstream` (and `source: "install"`); a Concept a package wrote
+ * never a store. A workflow, step or app version that a package install
+ * wrote carries `upstream` (and `source: "install"`); a Concept a package wrote
  * carries the stamp `pkg/<package>/<file>@<hash>`. Grouped by package, each
  * item says which version the install put there and whether the active one
  * is still it — `modified` is a fork, which an update never activates over
@@ -31,13 +31,13 @@ import { MANIFEST_FILE, PACKAGE_DIGEST } from "./format.js";
 export const conceptPrefix = (pkg: string): string => `pkg/${pkg}/`;
 
 export interface InstalledItem {
-  kind: "workflow" | "step" | "concept";
+  kind: "workflow" | "step" | "app" | "concept";
   name: string;
   /** A `_` step file: published with its namespace, never registered. */
   helper?: true;
-  /** The version the install published (a workflow's or step's). */
+  /** The version the install published (a workflow's, step's or app's). */
   installed?: string;
-  /** The active version (a workflow's or step's). */
+  /** The active version (a workflow's, step's or app's). */
   active?: string;
   /** The active version is not the installed one — a fork — or a Concept's
    *  text is no longer its file's. Absent when that cannot be told: a
@@ -84,7 +84,7 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     if (!p) packages.set(name, (p = { package: name, items: [] }));
     return p;
   };
-  const note = (kind: "workflow" | "step", name: string, versions: Record<string, VersionRecord>, active: string) => {
+  const note = (kind: "workflow" | "step" | "app", name: string, versions: Record<string, VersionRecord>, active: string) => {
     const installed = installedVersion(versions);
     const upstream = installed ? versions[installed]!.upstream : undefined;
     // An item is its package's only under its prefix.
@@ -106,6 +106,11 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     const meta = await deps.workspace.getStepMetadata(type);
     if (meta) note("step", type, meta.versions, meta.active);
   }
+  for (const a of await deps.workspace.listApps()) {
+    if (!packagePrefixOf(a.name)) continue;
+    const rec = await deps.workspace.getApp(a.name);
+    if (rec) note("app", a.name, rec.versions, rec.active);
+  }
   for (const c of await packageConcepts(deps.graph)) {
     const p = entry(c.package);
     if (!p.digest) await fromCache(deps.cache, p, c);
@@ -115,7 +120,7 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     p.items.push({ kind: "concept", name: c.name, ...(file ? { modified: conceptEdited(c, file) } : {}) });
   }
 
-  const kinds = ["workflow", "step", "concept"];
+  const kinds = ["workflow", "step", "app", "concept"];
   return [...packages.values()]
     .map((p) => ({ ...p, items: p.items.sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind) || a.name.localeCompare(b.name)) }))
     .sort((a, b) => a.package.localeCompare(b.package));

@@ -821,11 +821,11 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     return { path, hash: v.content_hash, ...(upstream ? { upstream } : {}) };
   }
 
-  /** Is an item of `prefix`'s package here — a live step or workflow
+  /** Is an item of `prefix`'s package here — a live step, workflow or app
    *  version under `<prefix>/` that came from it? */
   private async installedUnder(prefix: string): Promise<boolean> {
     const d = this.d;
-    for (const [type, field] of [["StrutWorkflowVersion", "name"], ["StrutStepVersion", "step_type"]] as const) {
+    for (const [type, field] of [["StrutWorkflowVersion", "name"], ["StrutStepVersion", "step_type"], ["StrutAppVersion", "name"]] as const) {
       const rows = await this.backend.query(
         `MATCH ${d.node("v", type, { namespace: "$ns" })} WHERE ${d.live("v")} AND v.${field} STARTS WITH $under AND v.upstream IS NOT NULL
          RETURN v.upstream AS upstream`,
@@ -1026,6 +1026,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     validateAppName(name);
     const { nodes } = this.backend;
     const existing = await this.appRow(name);
+    if (!existing) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix));
     const versions = existing ? await this.appVersionRows(name) : [];
     const owner = opts?.owner ?? opts?.actor;
 

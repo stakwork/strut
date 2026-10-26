@@ -1,23 +1,31 @@
 /**
  * INSTALL and UNINSTALL (plans/marketplace.md §3): a package — and every
- * package it requires — into this workspace as ordinary steps, workflows and
- * Concepts, each version stamped with its `upstream`. There is no package
- * store: what is installed is a fold over those stamps (installed.ts).
+ * package it requires — into this workspace as ordinary steps, workflows,
+ * apps and Concepts, each version stamped with its `upstream`. There is no
+ * package store: what is installed is a fold over those stamps (installed.ts).
  *
  * An install is ALL OR NOTHING. Every name and every file of every package
  * in the set is checked before the first write — the prefix rule, a local
  * item under the prefix, a Concept under someone else's stamp, the step
- * types a workflow names — and a write that still fails (a step that does
- * not load, a Concept the graph refuses) takes back what this install
- * wrote. Missing secrets, binaries and runtimes are REPORTED, not refused:
- * the deployment provides them.
+ * types a workflow names, and each app BUILT against this strut's kit (the
+ * kit is the installing strut's, so the build is the compatibility check)
+ * — and a write that still fails (a step that does not load, a Concept the
+ * graph refuses) takes back what this install wrote. An app is published
+ * through the apps capability, so an app's publish does at install what it
+ * does anywhere. Missing secrets, binaries and runtimes are REPORTED, not
+ * refused: the deployment provides them.
  *
  * A package already installed at the same digest installs again as what is
  * missing from it (a deleted item comes back; a fork stays as it is). At
  * another digest it is an UPDATE (§4), which is not built yet: refused.
  */
-import { access, constants, readFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { access, constants, readFile, rm } from "node:fs/promises";
 import { delimiter, join } from "node:path";
+import type { AppsCapability } from "../apps/apps.js";
+import { buildApp, type BuildDeps as AppBuildDeps } from "../apps/build.js";
+import { copyAppDir } from "../apps/files.js";
+import { readManifest } from "../apps/manifest.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { walkSteps } from "../closure.js";
 import { findConcept, parseConceptFile, retireConcepts, seedConcepts } from "../concept-seed.js";
@@ -29,6 +37,7 @@ import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { formatStepLint, lintStepSource } from "../step-lint.js";
 import { baseType } from "../step-ref.js";
 import { stepLoadError } from "../steps/registry.js";
+import { treeHash } from "../version.js";
 import { assertValidWorkflowYaml, readClaimsBlock, type Upstream } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
@@ -49,6 +58,8 @@ export interface PackageDeps extends InstalledDeps {
   path?: string;
   /** The sealed namespaces (`STRUT_SEALED` + the defaults). */
   sealed?: readonly string[];
+  /** Builds and publishes an app; without it a package with an app is refused. */
+  apps?: AppsCapability;
 }
 
 export type InstallItemStatus = "installed" | "present" | "modified";
@@ -98,7 +109,24 @@ export async function installPackage(
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
   const members = await resolveSet(deps, ref, opts.digest, before);
   const registry = await deps.getRegistry();
-  const checked = await checkSet(deps, members, registry, before);
+  // The apps are copied out of the cache to build: a build writes `dist/`.
+  const scratch = join(deps.cache.root, ".install", randomBytes(8).toString("hex"));
+  try {
+    return await installSet(deps, members, registry, before, scratch, opts);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+async function installSet(
+  deps: PackageDeps,
+  members: Member[],
+  registry: StepRegistry,
+  before: Map<string, InstalledPackage>,
+  scratch: string,
+  opts: { actor?: string },
+): Promise<InstallResult> {
+  const checked = await checkSet(deps, members, registry, before, scratch);
 
   const upstreamOf = (m: Member): Upstream => ({
     package: m.info.manifest.package,
@@ -109,7 +137,7 @@ export async function installPackage(
   });
   const publish = { source: "install" as const, ...(opts.actor ? { actor: opts.actor } : {}) };
   const reports = new Map(members.map((m) => [m.info.manifest.package, [] as PackageInstallReport["items"]]));
-  const wrote: Array<{ kind: "workflow" | "step"; name: string }> = [];
+  const wrote: Array<{ kind: "workflow" | "step" | "app"; name: string }> = [];
   const conceptsWritten = new Map<string, string[]>(); // package → the page files it wrote
   const { warnings } = checked;
 
@@ -160,6 +188,20 @@ export async function installPackage(
         reports.get(m.info.manifest.package)!.push({ kind: "workflow", name: item.name, status: "installed", version });
       }
     }
+    // Apps, an app after the apps of the set it imports: its build finds
+    // them published. A person's publish, as installing is a person's act.
+    for (const m of members) {
+      for (const item of m.info.items.filter((i) => i.kind === "app")) {
+        const here = checked.present.get(item.name);
+        if (here) reports.get(m.info.manifest.package)!.push({ kind: "app", name: item.name, status: here });
+      }
+    }
+    for (const app of checked.apps) {
+      const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", upstream: upstreamOf(app.member), ...publish });
+      if (!r.ok) throw new Error(`bad_package: the app ${app.name} — ${r.errors.join("; ")}`);
+      wrote.push({ kind: "app", name: app.name });
+      reports.get(app.member.info.manifest.package)!.push({ kind: "app", name: app.name, status: "installed", version: r.version });
+    }
     // Concepts, through the seeder: a set per package, stamped `pkg/<package>/`.
     if (checked.conceptsOn) {
       for (const m of members) {
@@ -201,6 +243,8 @@ export async function installPackage(
   }
 
   const root = members.at(-1)!;
+  const kinds = ["step", "workflow", "app", "concept"];
+  for (const items of reports.values()) items.sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind) || a.name.localeCompare(b.name));
   return {
     package: root.info.manifest.package,
     digest: root.info.digest,
@@ -259,6 +303,9 @@ interface Checked {
   present: Map<string, "present" | "modified">;
   conceptsOn: boolean;
   warnings: string[];
+  /** The apps to publish, built once in their staged directory, in the
+   *  order they can be published: each after the set's apps it imports. */
+  apps: Array<{ name: string; dir: string; member: Member }>;
 }
 
 interface MemberClaims {
@@ -273,8 +320,9 @@ async function checkSet(
   members: Member[],
   registry: StepRegistry,
   installed: Map<string, InstalledPackage>,
+  scratch: string,
 ): Promise<Checked & { members: Array<Member & { claims: MemberClaims[] }> }> {
-  const out: Checked = { present: new Map(), conceptsOn: false, warnings: [] };
+  const out: Checked = { present: new Map(), conceptsOn: false, warnings: [], apps: [] };
   const sealed = deps.sealed ?? sealedStepPatterns();
   const problems: string[] = [];
 
@@ -284,12 +332,13 @@ async function checkSet(
   const knownStep = (type: string) => !!registry[type] || setSteps.has(type);
   const workspaceWorkflows = new Set((await deps.workspace.listWorkflows()).map((w) => w.name));
   const workspaceSteps = Object.keys(await deps.workspace.getActiveStepHashes());
+  const workspaceApps = (await deps.workspace.listApps()).map((a) => a.name);
 
   const concepts = new Map<string, string>(); // page name → the package that ships it
   for (const m of members) {
     const pkg = m.info.manifest.package;
-    if (m.info.items.some((i) => i.kind === "app")) {
-      throw new Error(`package_unsupported: ${pkg} ships an app (apps/) — installing an app is not built yet`);
+    if (!deps.apps && m.info.items.some((i) => i.kind === "app")) {
+      throw new Error(`package_unsupported: ${pkg} ships an app (apps/), and this strut hosts no apps`);
     }
     const here = installed.get(pkg);
     if (here?.digest && here.digest !== m.info.digest) {
@@ -302,9 +351,10 @@ async function checkSet(
     const under = (name: string) => name.startsWith(`${pkg}/`);
     for (const name of [...workspaceWorkflows].filter(under)) if (!mine.has(name)) problems.push(`the workflow ${name} is a local one under ${pkg}/`);
     for (const name of workspaceSteps.filter(under)) if (!mine.has(name)) problems.push(`the step ${name} is a local one under ${pkg}/`);
+    for (const name of workspaceApps.filter(under)) if (!mine.has(name)) problems.push(`the app ${name} is a local one under ${pkg}/`);
 
     for (const item of m.info.items) {
-      if (item.kind === "step" || item.kind === "workflow") {
+      if (item.kind === "step" || item.kind === "workflow" || item.kind === "app") {
         const at = mine.get(item.name);
         if (at) out.present.set(item.name, at.modified ? "modified" : "present");
         if (item.kind === "step" && isSealedStep(item.name, undefined, sealed)) problems.push(`${item.name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
@@ -362,6 +412,56 @@ async function checkSet(
     withClaims.push({ ...m, claims });
   }
   if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
+
+  // Apps: each one not here yet BUILDS against this strut's kit, with the
+  // set's workflows and apps in reach, before anything is written.
+  const staged = new Map<string, { dir: string; hash: string; member: Member; path: string }>();
+  for (const m of members) {
+    for (const item of m.info.items.filter((i) => i.kind === "app" && !out.present.has(i.name))) {
+      const dir = join(scratch, ...item.name.split("/"));
+      await copyAppDir(join(m.info.dir, item.path), dir, { dist: false });
+      staged.set(item.name, { dir, hash: await treeHash(dir), member: m, path: item.path });
+    }
+  }
+  const imports = new Map<string, string[]>();
+  for (const [name, app] of staged) {
+    const read = await readManifest(app.dir);
+    if (!read.ok) {
+      bad.push(`${app.path}/app.yaml: ${read.errors.join("; ")}`);
+      continue;
+    }
+    for (const g of read.manifest.grants.steps) {
+      if (!g.includes("*") && !knownStep(baseType(g))) bad.push(`the app ${name} grants the step ${g}, which is neither on this strut nor in the packages`);
+    }
+    const base = deps.apps!.buildDeps(name);
+    const buildDeps: AppBuildDeps = {
+      ...base,
+      // An app of the set resolves to its staged directory; a pin of one is
+      // this strut's label, which it has none of yet.
+      resolveApp: async (n, v) => {
+        const s = staged.get(n);
+        if (s) return v ? null : { name: n, version: "install", dir: s.dir, hash: s.hash };
+        return base.resolveApp ? base.resolveApp(n, v) : null;
+      },
+      installedApps: async () => [...new Set([...((await base.installedApps?.()) ?? []), ...staged.keys()])].sort(),
+      workflowExists: async (wf) => setWorkflows.has(wf) || ((await base.workflowExists?.(wf)) ?? false),
+    };
+    const built = await buildApp(app.dir, buildDeps);
+    if (!built.ok) bad.push(`the app ${name} does not build on this strut — ${built.errors.join("; ")}`);
+    else imports.set(name, built.imports.map((i) => i.name).filter((n) => staged.has(n)));
+  }
+  if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
+  // Each after the apps of the set it imports (the build refuses a cycle).
+  const placed = new Set<string>();
+  for (let progress = true; progress; ) {
+    progress = false;
+    for (const [name, app] of staged) {
+      if (placed.has(name) || !(imports.get(name) ?? []).every((n) => placed.has(n))) continue;
+      placed.add(name);
+      out.apps.push({ name, dir: app.dir, member: app.member });
+      progress = true;
+    }
+  }
 
   // Concepts: a page's name may be taken only by this package; its parent must exist.
   if (concepts.size > 0) {
@@ -439,9 +539,11 @@ function checkTypes(claims: MemberClaims["claims"], knownStep: (type: string) =>
 /** Undo an install's writes: the names it published (they were free) and
  *  the Concepts it wrote, retired by their stamps, then the registry
  *  without them. */
-async function takeBack(deps: PackageDeps, wrote: Array<{ kind: "workflow" | "step"; name: string }>, concepts: Map<string, string[]>): Promise<void> {
+async function takeBack(deps: PackageDeps, wrote: Array<{ kind: "workflow" | "step" | "app"; name: string }>, concepts: Map<string, string[]>): Promise<void> {
   for (const w of [...wrote].reverse()) {
-    await (w.kind === "workflow" ? deps.workspace.deleteWorkflow(w.name) : deps.workspace.deleteStep(w.name)).catch((err) => {
+    const undo: Promise<unknown> =
+      w.kind === "workflow" ? deps.workspace.deleteWorkflow(w.name) : w.kind === "step" ? deps.workspace.deleteStep(w.name) : deps.apps ? deps.apps.delete(w.name) : deps.workspace.deleteApp(w.name);
+    await undo.catch((err) => {
       console.warn(`[packages] could not take back the ${w.kind} ${w.name}:`, err instanceof Error ? err.message : err);
     });
   }
@@ -518,7 +620,8 @@ export async function uninstallPackage(
     if (i.kind === "workflow") {
       await opts.forget?.(i.name);
       await deps.workspace.deleteWorkflow(i.name);
-    } else await deps.workspace.deleteStep(i.name);
+    } else if (i.kind === "app") await (deps.apps ? deps.apps.delete(i.name) : deps.workspace.deleteApp(i.name));
+    else await deps.workspace.deleteStep(i.name);
     result.removed.push({ kind: i.kind, name: i.name });
   }
   const pages = p.items.filter((i) => i.kind === "concept");

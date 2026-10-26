@@ -1530,7 +1530,11 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    tracker.
 8. **The package kind** — in `marketplace.md`'s step order, once its steps
    1–2 exist: `apps/<name>/` in `buildPackage` and `installPackage`,
-   `upstream` on app versions, the per-file merge.
+   `upstream` on app versions, the per-file merge. **Built 2026-10-26** but
+   the merge (`marketplace.md` step 4, with updates): an app is carried
+   with its grants and imports, built against the installing strut's kit
+   before anything is written, and published through the apps capability,
+   so items 3 and 4 reach an install through the publish.
 9. **Releases** — `app-releases.md` §5, its own two items: holds and
    releases, then runs under a lock.
 
