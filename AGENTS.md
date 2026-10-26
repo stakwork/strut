@@ -2627,6 +2627,14 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   restart), add a case to `src/test-util/workspace-conformance.ts`, and
   run `npm run test:graph`.
 
+- **A graph write goes through `tx()`, never `query()`.** On a LadybugDB
+  file `query` runs on the read connection, outside the writes' queue: a
+  write there passes alone and fails ("Only one write transaction at a
+  time") beside any open write transaction, such as a run's end
+  projection after every run (2026-10-26: the workspace store's
+  ACTIVE_VERSION swaps). Inside a `tx`, hand the transaction to the
+  writers (`edges.write(input, tx)`): `tx()` does not nest.
+
 - **Vanilla CSS** with custom properties. Two files only:
   `base.css` (palette + reset) and `components.css` (all
   component classes). No JS styles, no CSS-in-JS, no Tailwind.

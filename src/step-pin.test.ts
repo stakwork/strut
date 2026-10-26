@@ -302,9 +302,6 @@ for (const s of STORES) {
       const outputs = async () => {
         const res = await strut.run("w", {});
         assert.equal(res.status, "success", res.error?.message);
-        // Before the next publish: on Ladybug, the run's projection and an
-        // active-version swap would both want the one write transaction.
-        await harness.settle();
         const events = await store.getRunEvents("w", res.runId);
         return ["w/old", "w/now"].map((path) => events.find((e) => e.type === "step.end" && e.path === path)!.output);
       };

@@ -265,7 +265,10 @@ export interface GraphEngine {
   /** The namespace every node is written into (`cfg.namespace`). */
   readonly namespace: string;
   readonly dialect: Dialect;
-  /** One auto-commit statement in the engine's Cypher. */
+  /** One auto-commit statement in the engine's Cypher, for a read: on a
+   *  LadybugDB file it runs on the read connection, outside the writes'
+   *  queue, so a write there fails while any write transaction is open.
+   *  A write goes through `tx`. */
   query(cypher: string, params?: Params): Promise<Row[]>;
   /** One write transaction: all of `fn`'s statements land, or none. */
   tx<T>(fn: (tx: GraphTx) => Promise<T>): Promise<T>;

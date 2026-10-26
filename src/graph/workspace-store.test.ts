@@ -9,6 +9,7 @@ import { seedStrutDomain } from "./schema-seed.js";
 import { getStrutSchema } from "./strut-schemas.js";
 import { anyNode, edgeCount, nodeCount, rawWrite, testBackends, typeFrom } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
+import { manifestSchema } from "../apps/manifest.js";
 import { workspaceConformance } from "../test-util/workspace-conformance.js";
 
 /**
@@ -87,6 +88,60 @@ for (const tb of testBackends()) {
         assert.equal(active.length, 1);
         assert.equal(active[0]!["b"], key("StrutWorkflowVersion", { name: "wf", content_hash: await ws.getWorkflowHash("wf", "v1") }));
         assert.equal((await edgesOf("VERSION_OF")).length, 2);
+      });
+
+      it("publishes and activates while another write transaction is open — a run's end projection — waiting for it", async () => {
+        const wf = (message: string) => ({ steps: [{ id: "a", type: "log", config: { message } }] });
+        const app = (title: string) => manifestSchema.parse({ title, grants: { workflows: [] } });
+        for (const s of ["s", "t"]) {
+          await ws.publishStep(s, STEP(s));
+          await ws.publishStep(s, `${STEP(s)}\n// two`);
+        }
+        for (const w of ["w", "x"]) {
+          await ws.publishWorkflow(w, "v1", wf("1"));
+          await ws.publishWorkflow(w, "v2", wf("2"));
+        }
+        for (const a of ["a", "b"]) {
+          await ws.publishApp(a, `${a}1`, app("One"));
+          await ws.publishApp(a, `${a}2`, app("Two"));
+        }
+
+        // The one write transaction a LadybugDB file allows, held open as the
+        // projector holds it after every run.
+        let opened!: () => void;
+        let release!: () => void;
+        const open = new Promise<void>((r) => (opened = r));
+        const held = new Promise<void>((r) => (release = r));
+        const projection = backend.tx(async (tx) => {
+          await tx.run(`MATCH ${d().node("n", "StrutRun", { ref_id: "$r" })} SET n.run_status = $s`, { r: "no-such-run", s: "success" });
+          opened();
+          await held;
+        });
+        await open;
+        const writes = Promise.all([
+          ws.setActiveStepVersion("s", "v2"), // already active: the edge swap is its first write
+          ws.setActiveStepVersion("t", "v1"),
+          ws.publishStep("u", STEP("u")),
+          ws.setActiveAppVersion("a", "v2"),
+          ws.setActiveAppVersion("b", "v1"),
+          ws.publishApp("c", "c1", app("One")),
+          ws.setActiveVersion("w", "v1"),
+          ws.publishWorkflow("x", "v3", wf("3")),
+        ]);
+        setTimeout(release, 50);
+        await Promise.all([projection, writes]);
+
+        assert.deepEqual(
+          await Promise.all([...["s", "t", "u"].map(async (s) => (await ws.listStepVersions(s)).active), ...["a", "b", "c"].map(async (a) => (await ws.getApp(a))!.version)]),
+          ["v2", "v1", "v1", "v2", "v1", "v1"],
+        );
+        assert.deepEqual([(await ws.getWorkflowMetadata("w"))!.active, (await ws.getWorkflowMetadata("x"))!.active], ["v1", "v3"]);
+        const active = await backend.query(
+          `MATCH ${anyNode(backend, "s")}-[:ACTIVE_VERSION]->${anyNode(backend, "v")} RETURN s.ref_id AS s, s.active_version AS want, v.content_hash AS got`,
+        );
+        assert.equal(active.length, 8, "one ACTIVE_VERSION edge per step, app and workflow");
+        assert.equal(new Set(active.map((r) => r["s"])).size, 8);
+        for (const r of active) assert.equal(r["got"], r["want"], "each edge points at the version the node names active");
       });
 
       it("links a version to the custom steps it uses and the workflows it depends on", async () => {
