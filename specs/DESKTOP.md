@@ -78,16 +78,35 @@ token"). A strut's token is refused by the org's orchestrator and by its
 rooms.
 
 **Where the records come from.** Hive's pairing flow
-(`plans/chained-orchestrators.md` §4), which hive has not built yet: you
-show a short code and a QR of the same link, the person approves it in a
-browser signed in to hive, and you poll hive until it hands back one record
-per org the person belongs to, plus a device credential. Renew daily through
-hive with that credential, and `PUT` each record again (a `PUT` replaces the
-record). Keep the tokens yourself too, in the OS keychain: you need them for
-the rooms (§3).
+(`plans/chained-orchestrators.md` §4, built in hive as an OAuth device
+flow, stakwork/hive#5602):
 
-**Until pairing exists**, mint a person's token by hand and put the record
-on file the same way, or list the records in `STRUT_PEERS` at launch:
+1. **Start.** `POST <hive>/api/strut-devices/pair { name? }` answers
+   `{ deviceCode, userCode, verificationUri, verificationUriComplete,
+   expiresIn, interval }`. Show `userCode` and a QR of
+   `verificationUriComplete`. The person approves it in a browser signed in
+   to hive.
+2. **Poll.** `POST <hive>/api/strut-devices/pair/token { deviceCode }`
+   every `interval` seconds. A 400 `authorization_pending` means poll
+   again; `access_denied` or `expired_token` means start over. The 200
+   comes once: `{ credential, device, actor, peers, expiresAt, errors }`.
+   Each entry of `peers` is a `PUT /peers/:id` body, one per org the person
+   belongs to. `actor` is the person (§1's `person`). `credential`
+   (`hivedev_…`) is the device's own.
+3. **Renew daily.** `GET <hive>/api/strut-devices/peers` with
+   `Authorization: Bearer <credential>` answers `{ actor, peers, expiresAt,
+   errors }` for the orgs the person is in now, each with a fresh 7-day
+   token. `PUT` each record again (a `PUT` replaces it) and delete the ones
+   no longer listed. A 401 means the device was revoked: pair again.
+
+`errors` names an org whose token could not be minted this time. It is not
+in `peers`, so keep its record until a renewal brings it back. Keep the
+credential and the tokens in the OS keychain: you need the tokens for the
+rooms (§3).
+
+**Without hive** (a standalone strut, or a test), mint a person's token by
+hand and put the record on file the same way, or list the records in
+`STRUT_PEERS` at launch:
 
 - a hive swarm: `POST <mcp>/mint-token { "scope": "lab:peer", "sub": "<person>" }`
   with the swarm's `API_TOKEN` (60 days by default);
@@ -227,8 +246,8 @@ the key and render what comes back, as its `kind` (`CALLBACKS.md` §4) says.
 
 - **A token that expires** turns that org's calls and room into `401`s.
   Renew the record (§2) and reconnect.
-- **Revoking the device** in hive, once pairing exists, stops renewal, and
-  its tokens age out within a week.
+- **Revoking the device** in hive (Settings → Strut Devices) stops
+  renewal, and its tokens age out within a week.
 - **The chain goes down only.** Central never calls the laptop, and a spoke
   never calls central. Everything arrives on sockets you opened.
 - **Local jobs run as the person on this machine**: their agent has a shell
@@ -236,3 +255,73 @@ the key and render what comes back, as its `kind` (`CALLBACKS.md` §4) says.
 - **One person per local strut.** The local room and `GET /jobs?mine=1`
   key on the `x-strut-actor` you send, and the section in
   `STRUT_HOST_CONFIG` names one person.
+
+## A device with no strut of its own
+
+A phone cannot use §6's read-through: that runs on the laptop's strut, on
+loopback. It reads each org's strut directly instead, behind that strut's
+own gate. All of it works on routes that exist today. What the device must
+hold is the person's token for each org.
+
+**The token.** Pair the device as a device of its own, by the flow of §2:
+one record per org (its `baseUrl` and a person token) and a device
+credential that renews them. Keep them in the device's keychain. Revoking
+the device in hive cuts off that device alone.
+
+**Open it in the org's own UI.** Load a page of the org's UI in a web view,
+the page alone (`&solo=1`, `API.md` §14.3), at the org's `baseUrl` +:
+
+| To open | Path |
+| ------- | ---- |
+| an app | `/?app=<name>&solo=1` |
+| a file | `/?artifact=<encodeURIComponent(path)>&solo=1` |
+
+Hand the page the token twice, never in a URL:
+
+- **On the web view's first request**, as `Authorization: Bearer <person
+  token>`. On a hive swarm mcp's gate wants a credential for the page
+  itself, not only for its API calls.
+- **In the page's storage before its script runs**: a script injected at
+  document start sets `sessionStorage["strut/apiKey"]` to the token. The UI
+  sends what it finds there as `Authorization: Bearer` on every call, its
+  MCP client's included. A `?key=` would do the same, but a person token
+  lives for days and mcp's gate refuses it in a URL.
+
+An app then runs as it does on the laptop. The page reads the org's
+`GET /apps`, the app's listing (which mints the file token) and its
+document, and relays the page's calls to the org's `/mcp`. A person token
+gets `step_run` there and nothing else: the call runs as the person, under
+the app's grants, billed to them.
+
+A file's path is on the org. The entries are §6's without the local
+`/peers/<org>` hop:
+
+| Where you saw it | The entry | Path |
+| ---------------- | --------- | ---- |
+| a `run.end` the laptop's strut sent | `peer: <org>`, `job`, `path` | `/jobs/<job>/files/<path>` |
+| | `peer: <org>`, `via: <spoke>`, `job`, `path` | `/peers/<spoke>/jobs/<job>/files/<path>` |
+| | a strut-relative `url` | not reachable: the file is on the laptop |
+| a `run.end` org X sent | a strut-relative `url` | that `url`, on X |
+| | `peer: <spoke>`, `job`, `path` | `/peers/<spoke>/jobs/<job>/files/<path>`, on X |
+
+A file on the org's own strut opens by the token its listing mints, so an
+HTML page an agent built runs its scripts in its sandbox. One read through
+`/peers/<spoke>` is shown static, as in §6.
+
+A device that draws natively instead does the same with the same token:
+fetch a file with `Authorization: Bearer` and render it by `kind`, and host
+an app as `API.md` §14.3 says, against the org's `/mcp`.
+
+**No room.** The device learns of a deliverable from whatever tells the
+person, with the entries above. To catch up after being away, read `GET
+/jobs?mine=1` and `GET /jobs/:id` on each org with the same token.
+
+**What a link alone does not do.** A file token (`?t=`, from a listing)
+opens one job's or one run's files with no other credential, and mcp's gate
+lets it through on `/jobs/…/files` and `/artifacts/…`. It never expires,
+though: it changes only when the org's secret does. So it does not belong
+in a message that outlives the moment. And it opens no app: an app's page
+needs a host that relays its calls with a credential naming the person, and
+mcp's gate does not let `/apps/…/files` through on a token alone. A client
+with no person token, such as one of the official apps, has no way in yet.
+An expiring link a host could hand it is not built.
