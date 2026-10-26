@@ -1,8 +1,9 @@
 # Packages — sharing workflows, steps and Concepts between struts
 
-> **Status (2026-10-26): the package BYTES layer, step 1 and the INSTALL
-> half of step 2 are built** (`src/packages/`, see "Step order"): a package
-> installs from `file:`, lists and uninstalls; nothing builds one yet. Revised 2026-10-18
+> **Status (2026-10-26): the package BYTES layer, step 1 and step 2 but
+> apps are built** (`src/packages/`, see "Step order"): a package builds
+> from a strut's own workflows, steps and Concepts into its cache, installs
+> from `file:`, lists and uninstalls. Revised 2026-10-18
 > after a review against npm, Go modules, cargo, bundler, Homebrew taps and
 > OCI: the first draft's generated manifest, its first-installer name rule,
 > its vendored foreign items and its server-shaped index are gone (§10 says
@@ -296,7 +297,10 @@ steps?, apps?, concepts? })` writes the directory:
    prefix: with an `upstream`, its package and digest become a
    `requires.packages` pin (a second pin of the same package at another
    digest refuses the build); without one, the build is refused naming it
-   — package it under your prefix, or install it from its package. Core
+   — package it under your prefix, or install it from its package, or
+   (2026-10-26, proposed) build its package first and name that digest in
+   the request's `requires.packages`, the case of a publisher's own sibling
+   packages on one strut. Core
    and lib types are recorded nowhere, an app's `graph/*`, `run/*` and
    `sqlite/*` grants among them. **An app's IMPORTS of other apps** are
    walked the same way (`apps.md` §3.4): a kit under the prefix is an item,
@@ -1589,6 +1593,73 @@ production until install (step 2) calls the resolver.
      nothing enforces it. A strut built before this refuses a package that
      carries the line (`bad_package`), which costs nothing while none is
      published. Showing it in the install ask is step 5's.
+   - **Built 2026-10-26: `buildPackage`** (`src/packages/build.ts`;
+     `POST /packages/build`, `specs/API.md` §16). §2 as written, built into
+     the cache by `putDir` so the archive route serves it and an install
+     takes it from `file:<the cache directory>`. These choices are mine,
+     proposed:
+     - **A seed's item outside the prefix is recorded nowhere**, like a core
+       step: a workflow or step whose active version says `source: "seed"`
+       (strut's `job`, `private-ask`, a host's seeds). The installing strut
+       must have it, and the install already checks that it does.
+     - **Two packages built on one strut can depend on each other**
+       (found while building it; added at the owner's ask). As §2 reads, a
+       pin comes from an `upstream`, which only an install writes — so a
+       publisher's own `acme/util`, built and never installed here, could
+       not be required by its `acme/linear`, and "install it from its
+       package" does not work on the strut that holds the local items. The
+       build request takes `requires.packages: [{ package, digest }]`, the
+       digest an earlier build returned: the cache must hold that package,
+       every item the closure reaches under its prefix must be in it byte
+       for byte as it is here now (else "rebuild it and require its new
+       digest"), and it is pinned with `source: file:<its cache
+       directory>` — whether or not anything reaches it, since a closure
+       read only in part may. Building several packages in one call,
+       ordered by what each reaches, could sit on top of this later.
+     - **The closure stops at the prefix.** `flowClosure` walks a subflow
+       under the prefix and is handed an empty flow for one outside it: a
+       pin's closure is its own package's business, and a seed's is the
+       installing strut's.
+     - **A version label in the closure refuses the build** (`type@vN`, a
+       `subflow`'s `version:`): labels are per strut, and the installing
+       one numbers its versions from v1.
+     - **"Unless `workflows` / `steps` list what it reaches"** is read as:
+       a closure that cannot be read whole (a templated subflow target, a
+       grant read only when the run starts, a templated step type) is
+       refused, naming the step, unless the request names more than the
+       workflows it is the closure of — then it builds, with a warning that
+       the package holds what was listed. Nothing can check that the list
+       is complete. A workflow or step the request names outside the prefix
+       is classified like a reached one: a pin, a seed, or a refusal.
+     - **A named Concept keeps its parent** as front matter, the first by
+       name when it has several; a parent outside the package that is not a
+       page strut ships or one of a required package is a warning, since
+       the install refuses a page whose parent it cannot find. A page
+       another seeder stamped (strut's `Job`, a host's, another package's)
+       refuses the build: a package carries pages of its own.
+     - **A step's claims** are read through the claims reader
+       (`claimsFor` / `checksFor`), every check written out with its
+       stored `when`, `policy` and `name`, sorted so the same claims are
+       the same bytes. A claim is left out WHOLE when one of its checks
+       reaches outside the package and its requirements — a claim's checks
+       are its contract.
+     - **`requires`** also reads a package step's declared `secrets` (its
+       def's field), a step's schema defaults through `secretNamesIn` (a
+       `git/*` step names GITHUB_TOKEN), and the kept checks' configs (an
+       `exec` check's command is a binary). A command with a `/` is a
+       path, not a name on PATH, and is skipped; a templated secret or
+       runtime is a warning. Editing what was inferred waits for export
+       (step 3), where the directory is the author's.
+     - **Refusals** are one code, `package_build_refused: …`, naming every
+       problem at once; an app is `package_unsupported`. A step under the
+       prefix that does not load here as its own type refuses too, since
+       the install would.
+     - **The route** is `POST /packages/build`, a person's act at full
+       scope like install, one write at a time with install and uninstall.
+     - **Not covered:** a pin's `source` is the ref its install recorded,
+       or a sibling's cache directory, so a package that requires one
+       resolves only where that path exists (or from a cache that holds the
+       digest) until `git+` and `pk:` sources land.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by

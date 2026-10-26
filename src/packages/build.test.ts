@@ -1,0 +1,425 @@
+/**
+ * Building a package (plans/marketplace.md §2) — src/packages/build.ts — and
+ * the round trip the plan's "Validation" asks for: build on one strut,
+ * install on a fresh one, run it, and the fence holds. First on the
+ * filesystem workspace (the closure, the pins, the refusals, `requires`),
+ * then the Concepts and a step's claims on every graph backend, installed on
+ * a cleared graph and on a filesystem workspace.
+ */
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { createStrut, type Strut } from "../createStrut.js";
+import type { GraphBackend } from "../graph/backend.js";
+import { seedJarvisOntology } from "../graph/ontology-seed.js";
+import { seedStrutDomain } from "../graph/schema-seed.js";
+import { testBackends } from "../graph/test-util.js";
+import { GraphWorkspaceStore } from "../graph/workspace-store.js";
+import { MemoryRunStore } from "../store.js";
+import { WorkspaceManager, type WorkspaceStore } from "../workspace.js";
+import { loadYaml } from "../yaml.js";
+import { buildPackage, type BuildDeps, type BuildRequest, type BuildResult } from "./build.js";
+import { packageCache } from "./cache.js";
+import { readPackage } from "./format.js";
+import type { InstallResult } from "./install.js";
+
+/** Reads LINEAR_API_KEY by name, or the secret its config names; its
+ *  greeting comes from its namespace's helper. */
+const STEP = (type: string) => `import { z, defineStep } from "strut";
+import { greeting } from "./_shared.js";
+export default defineStep({
+  type: ${JSON.stringify(type)},
+  input: z.object({ secret: z.string().optional() }),
+  output: z.any(),
+  async run(cfg, ctx) {
+    const key = cfg.secret ? await ctx.services.secrets.get(cfg.secret) : await ctx.services.secrets.get("LINEAR_API_KEY");
+    return { greeting, key: key ?? null };
+  },
+});
+`;
+const HELPER = 'export const greeting = "hello";\n';
+const PLAIN = (type: string, out = "ok") =>
+  `import { z, defineStep } from "strut";\nexport default defineStep({ type: ${JSON.stringify(type)}, input: z.object({}).passthrough(), output: z.any(), async run() { return ${JSON.stringify(out)}; } });\n`;
+
+const SYNC = `name: acme/linear/sync
+description: Sync the issues
+steps:
+  - id: check
+    type: exec
+    config: { cmd: sh, args: ["-c", "true"], secretsEnv: [NOTION_KEY] }
+  - id: create
+    type: acme/linear/create-issue
+    config: { secret: "{{ input.secret }}" }
+`;
+const flow = (name: string, ...steps: string[]) => `name: ${name}\nsteps:\n${steps.map((s, i) => `  - { id: s${i}, ${s} }\n`).join("")}`;
+
+const boot = (workspace: WorkspaceStore, extra: Record<string, unknown> = {}) =>
+  createStrut({
+    workspace,
+    store: new MemoryRunStore(),
+    serveUi: false,
+    scheduler: false,
+    enableChat: false,
+    systemWorkflows: false,
+    browserWorkflows: false,
+    privacyWorkflows: false,
+    job: false,
+    orchestrator: false,
+    builder: false,
+    views: false,
+    concepts: false,
+    stt: false,
+    ...extra,
+  });
+
+const json = (body: unknown, method = "POST") => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+const depsOf = (strut: Strut): BuildDeps => ({
+  workspace: strut.workspace,
+  cache: packageCache(strut.dataDir),
+  ...(strut.workspace.graph ? { graph: strut.workspace.graph } : {}),
+  claims: strut.claims ? { reader: strut.claims } : null,
+  getRegistry: async () => {
+    await strut.rebuildRegistry();
+    return strut.getRegistry();
+  },
+});
+const build = (strut: Strut, req: Partial<BuildRequest>): Promise<BuildResult> => buildPackage(depsOf(strut), { package: "acme/linear", version: "1.4.0", ...req });
+const refusal = async (p: Promise<unknown>): Promise<string> => {
+  try {
+    await p;
+  } catch (err) {
+    return (err as Error).message;
+  }
+  assert.fail("the build was not refused");
+};
+
+async function install(strut: Strut, ref: string) {
+  const res = await strut.app.request("/packages/install", json({ ref }));
+  return { status: res.status, body: (await res.json()) as InstallResult & { error?: string } };
+}
+const putSecret = (strut: Strut, name: string, value: string) => strut.app.request(`/secrets/${name}`, json({ value }, "PUT"));
+
+/** The source strut's package: a workflow over a custom step that imports its helper. */
+async function publishLinear(ws: WorkspaceStore): Promise<void> {
+  await ws.publishStep("acme/linear/_shared", HELPER);
+  await ws.publishStep("acme/linear/create-issue", STEP("acme/linear/create-issue"));
+  await ws.publishWorkflow("acme/linear/sync", "v1", SYNC);
+}
+
+/** Install `dir` on `buyer`, run it, and hold it to its fence. */
+async function roundTrip(buyer: Strut, dir: string): Promise<InstallResult> {
+  await putSecret(buyer, "LINEAR_API_KEY", "lin_123");
+  await putSecret(buyer, "NOTION_KEY", "notion_1");
+  await putSecret(buyer, "GITHUB_TOKEN", "ghp_456");
+  const r = await install(buyer, `file:${dir}`);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const run = await buyer.run("acme/linear/sync", {});
+  assert.equal(run.status, "success", run.error?.message);
+  assert.deepEqual(run.output, { greeting: "hello", key: "lin_123" });
+  const fenced = await buyer.run("acme/linear/sync", { secret: "GITHUB_TOKEN" });
+  assert.equal(fenced.status, "error");
+  assert.match(fenced.error!.message, /secret_fenced: acme\/linear\/create-issue came from the package acme\/linear, which declares only LINEAR_API_KEY, NOTION_KEY — it may not read GITHUB_TOKEN/);
+  return r.body;
+}
+
+let root: string;
+let savedKey: string | undefined;
+before(() => {
+  savedKey = process.env["STRUT_API_KEY"];
+  delete process.env["STRUT_API_KEY"];
+});
+after(() => {
+  if (savedKey !== undefined) process.env["STRUT_API_KEY"] = savedKey;
+});
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "strut-build-"));
+});
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+async function writeTree(files: Record<string, string>, name: string): Promise<string> {
+  const dir = join(root, "src", name);
+  for (const [rel, text] of Object.entries(files)) {
+    await mkdir(dirname(join(dir, rel)), { recursive: true });
+    await writeFile(join(dir, rel), text);
+  }
+  return dir;
+}
+
+describe("building a package on a filesystem workspace", () => {
+  let src: Strut;
+  let ws: WorkspaceManager;
+  const struts: Strut[] = [];
+  const fresh = async (name: string) => {
+    const s = await boot(new WorkspaceManager(join(root, name)));
+    struts.push(s);
+    return s;
+  };
+  beforeEach(async () => {
+    ws = new WorkspaceManager(join(root, "source"));
+    src = await boot(ws);
+    struts.push(src);
+    await publishLinear(ws);
+  });
+  afterEach(async () => {
+    for (const s of struts.splice(0)) await s.close?.();
+  });
+
+  it("writes what the workflow can execute, with the manifest it needs, into the cache — and it installs, runs and is fenced", async () => {
+    const built = await build(src, { description: "Linear issues", license: "Apache-2.0", workflows: ["acme/linear/sync"] });
+    assert.deepEqual(built.files, ["steps/_shared.ts", "steps/create-issue.ts", "strut.yaml", "workflows/sync.yaml"]);
+    assert.deepEqual(built.warnings, []);
+    assert.deepEqual(loadYaml(await readFile(join(built.dir, "strut.yaml"), "utf-8")), {
+      package: "acme/linear",
+      version: "1.4.0",
+      description: "Linear issues",
+      license: "Apache-2.0",
+      requires: { secrets: ["LINEAR_API_KEY", "NOTION_KEY"], binaries: ["sh"] },
+    });
+    assert.equal(await readFile(join(built.dir, "workflows/sync.yaml"), "utf-8"), SYNC, "the YAML as published");
+    assert.equal(await readFile(join(built.dir, "steps/_shared.ts"), "utf-8"), HELPER);
+    assert.equal((await readPackage(built.dir)).digest, built.digest);
+    assert.equal(built.dir, packageCache(src.dataDir).dirOf(built.digest));
+    assert.equal((await build(src, { description: "Linear issues", license: "Apache-2.0", workflows: ["acme/linear/sync"] })).digest, built.digest, "the same workspace, the same digest");
+
+    const archive = await src.app.request(`/packages/acme/linear/archive?digest=${built.digest}`);
+    assert.equal(archive.status, 200, "the archive route serves what was built");
+
+    const r = await roundTrip(await fresh("buyer"), built.dir);
+    assert.deepEqual(r.packages[0]!.items.map((i) => [i.kind, i.name, i.status]), [
+      ["step", "acme/linear/_shared", "installed"],
+      ["step", "acme/linear/create-issue", "installed"],
+      ["workflow", "acme/linear/sync", "installed"],
+    ]);
+  });
+
+  it("pins a package it reaches at the digest it was installed at, and installs it first", async () => {
+    const util = await writeTree({ "strut.yaml": "package: bob/util\nversion: 2.1.0\n", "steps/fmt.ts": PLAIN("bob/util/fmt", "fmt") }, "util");
+    const { digest } = await readPackage(util);
+    assert.equal((await install(src, `file:${util}`)).status, 201);
+    await ws.publishWorkflow("acme/linear/fmt", "v1", flow("acme/linear/fmt", "type: bob/util/fmt"));
+    // A seed's workflow is strut's own (or the host's): recorded nowhere, like a core step.
+    await ws.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await ws.publishWorkflow("acme/linear/both", "v1", flow("acme/linear/both", "type: subflow, config: { workflow: acme/linear/fmt }", "type: subflow, config: { workflow: seeded }"));
+
+    const built = await build(src, { workflows: ["acme/linear/both"] });
+    assert.deepEqual(built.files, ["steps/_shared.ts", "strut.yaml", "workflows/both.yaml", "workflows/fmt.yaml"]);
+    assert.deepEqual(built.manifest.requires, { packages: [{ package: "bob/util", digest, source: `file:${util}` }] });
+
+    const buyer = await fresh("buyer");
+    await buyer.workspace.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    const r = await install(buyer, `file:${built.dir}`);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.deepEqual(r.body.packages.map((p) => p.package), ["bob/util", "acme/linear"]);
+    assert.equal((await buyer.run("acme/linear/fmt", {})).output, "fmt");
+  });
+
+  it("pins a sibling package built on this strut, through the route, by the digest its build returned", async () => {
+    type Built = { package: string; version: string; digest: string; files: string[]; requires: Record<string, unknown>; warnings: string[]; error?: string };
+    const post = async (body: unknown) => {
+      const res = await src.app.request("/packages/build", json(body));
+      return { status: res.status, body: (await res.json()) as Built };
+    };
+    await ws.publishStep("acme/util/fmt", PLAIN("acme/util/fmt", "fmt"));
+    await ws.publishWorkflow("acme/linear/fmt", "v1", flow("acme/linear/fmt", "type: acme/util/fmt"));
+    const linear = (requires?: unknown) => post({ package: "acme/linear", version: "1", workflows: ["acme/linear/fmt"], ...(requires ? { requires } : {}) });
+
+    let r = await linear();
+    assert.equal(r.status, 400);
+    assert.match(r.body.error!, /^package_build_refused: acme\/linear\/fmt reaches the step acme\/util\/fmt, which is outside acme\/linear\/ and came from no package — .*or build its package and require it \(requires\.packages\)/);
+
+    const util = await post({ package: "acme/util", version: "1", steps: ["acme/util/fmt"] });
+    assert.equal(util.status, 201, JSON.stringify(util.body));
+    assert.deepEqual(util.body, { package: "acme/util", version: "1", digest: util.body.digest, files: ["steps/fmt.ts", "strut.yaml"], requires: {}, warnings: [] });
+    r = await linear({ packages: [{ package: "acme/util", digest: util.body.digest }] });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.deepEqual(r.body.files, ["steps/_shared.ts", "strut.yaml", "workflows/fmt.yaml"]);
+    const cache = packageCache(src.dataDir);
+    assert.deepEqual(r.body.requires, { packages: [{ package: "acme/util", digest: util.body.digest, source: `file:${cache.dirOf(util.body.digest)}` }] });
+
+    // The buyer installs the sibling first, from the source it is pinned at.
+    const buyer = await fresh("buyer");
+    const installed = await install(buyer, `file:${cache.dirOf(r.body.digest)}`);
+    assert.equal(installed.status, 201, JSON.stringify(installed.body));
+    assert.deepEqual(installed.body.packages.map((p) => p.package), ["acme/util", "acme/linear"]);
+    assert.equal((await buyer.run("acme/linear/fmt", {})).output, "fmt");
+
+    // The sibling changed here since its build: rebuild it, and require the new digest.
+    await ws.publishStep("acme/util/fmt", PLAIN("acme/util/fmt", "fmt, edited"));
+    r = await linear({ packages: [{ package: "acme/util", digest: util.body.digest }] });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error!, new RegExp(`reaches the step acme/util/fmt, which acme/util at ${util.body.digest} holds as it was, not as it is here — rebuild acme/util and require its new digest`));
+    const other = `sha256:${"a".repeat(64)}`;
+    assert.match((await linear({ packages: [{ package: "acme/util", digest: other }] })).body.error!, new RegExp(`this strut's cache holds no acme/util at ${other} — build it first`));
+    assert.match((await linear({ packages: [{ package: "acme/linear", digest: other }] })).body.error!, /acme\/linear cannot require itself/);
+
+    // The shape, before anything is read.
+    assert.equal((await post({ package: "acme/linear" })).status, 400);
+    assert.equal((await post({ package: "acme/linear", version: "1", workflows: "acme/linear/fmt" })).status, 400);
+    assert.equal((await linear({ packages: "acme/util" })).status, 400);
+    assert.equal((await post({ package: "acme/linear", version: "1", workflows: ["acme/linear/sync"], apps: ["acme/linear/issues"] })).status, 400);
+  });
+
+  it("refuses what it cannot carry, naming each — a local item outside the prefix, a version label, two digests, a sealed namespace, an app", async () => {
+    await ws.publishStep("local/judge", PLAIN("local/judge"));
+    await ws.publishWorkflow("acme/linear/judged", "v1", flow("acme/linear/judged", "type: local/judge", "type: acme/linear/create-issue@v1"));
+    let msg = await refusal(build(src, { workflows: ["acme/linear/judged"] }));
+    assert.match(msg, /^package_build_refused: /);
+    assert.match(msg, /acme\/linear\/judged reaches the step local\/judge, which is outside acme\/linear\/ and came from no package — move it under acme\/linear\/, install it from its package, or build its package and require it/);
+    assert.match(msg, /acme\/linear\/judged pins acme\/linear\/create-issue@v1: a version label is this strut's own/);
+
+    // One package reached at two digests.
+    await install(src, `file:${await writeTree({ "strut.yaml": "package: bob/util\nversion: '2'\n", "steps/fmt.ts": PLAIN("bob/util/fmt") }, "util")}`);
+    const other = `sha256:${"a".repeat(64)}`;
+    await ws.publishStep("bob/util/other", PLAIN("bob/util/other"), undefined, undefined, { source: "install", upstream: { package: "bob/util", version: "1", digest: other, source: { ref: "file:/elsewhere" }, secrets: [] } });
+    await ws.publishWorkflow("acme/linear/two", "v1", flow("acme/linear/two", "type: bob/util/fmt", "type: bob/util/other"));
+    msg = await refusal(build(src, { workflows: ["acme/linear/two"] }));
+    assert.match(msg, new RegExp(`bob/util is reached at two digests, sha256:[0-9a-f]{64} \\(bob/util/fmt\\) and ${other} \\(bob/util/other\\)`));
+
+    // A sealed namespace is strut's.
+    await ws.publishStep("eval/kit/score", PLAIN("eval/kit/score"));
+    await ws.publishWorkflow("eval/kit/run", "v1", flow("eval/kit/run", "type: eval/kit/score"));
+    msg = await refusal(buildPackage(depsOf(src), { package: "eval/kit", version: "1", workflows: ["eval/kit/run"] }));
+    assert.match(msg, /eval\/kit\/run is in a sealed namespace/);
+    assert.match(msg, /eval\/kit\/score is in a sealed namespace/);
+
+    assert.match(await refusal(build(src, { workflows: ["acme/linear/sync"], apps: ["acme/linear/issues"] })), /^package_unsupported: /);
+    assert.match(await refusal(build(src, { workflows: ["acme/linear/missing"] })), /no workflow acme\/linear\/missing here/);
+    assert.match(await refusal(build(src, { steps: ["log"] })), /log is a step strut ships, not one a package carries/);
+    assert.match(await refusal(build(src, {})), /name at least one workflow, step or Concept/);
+    assert.match(await refusal(build(src, { package: "Acme", workflows: ["acme/linear/sync"] })), /publisher\/name/);
+    assert.match(await refusal(build(src, { concepts: ["Linear"] })), /there are no Concepts to package: this workspace has no graph/);
+  });
+
+  it("builds a closure it cannot read whole only when the request lists what it reaches", async () => {
+    await ws.publishWorkflow("acme/linear/dispatch", "v1", flow("acme/linear/dispatch", 'type: subflow, config: { workflow: "{{ input.target }}" }'));
+    const msg = await refusal(build(src, { workflows: ["acme/linear/dispatch"] }));
+    assert.match(msg, /the closure of acme\/linear\/dispatch cannot be read whole \(step s0 calls a workflow named by a template\) — list what it reaches in workflows \/ steps/);
+    const built = await build(src, { workflows: ["acme/linear/dispatch", "acme/linear/sync"] });
+    assert.deepEqual(built.files, ["steps/_shared.ts", "steps/create-issue.ts", "strut.yaml", "workflows/dispatch.yaml", "workflows/sync.yaml"]);
+    assert.match(built.warnings.join("\n"), /the closure of acme\/linear\/dispatch cannot be read whole .*: the package holds what the request lists/);
+  });
+
+  it("reads requires off the closure: secret names in configs and a step def's defaults, literal commands and runtimes", async () => {
+    await ws.publishWorkflow(
+      "acme/linear/tools",
+      "v1",
+      flow(
+        "acme/linear/tools",
+        "type: exec, config: { cmd: ffmpeg, runtime: media }",
+        'type: exec, config: { cmd: "{{ input.cmd }}" }',
+        "type: exec, config: { cmd: /usr/bin/env }",
+        "type: git/checkout, config: { repo: https://github.com/acme/x }",
+        'type: agent, config: { prompt: hi, secretsEnv: [OPENAI_KEY], agentTools: ["acme/linear/*"] }',
+      ),
+    );
+    const built = await build(src, { workflows: ["acme/linear/tools"] });
+    assert.deepEqual(built.files, ["steps/_shared.ts", "steps/create-issue.ts", "strut.yaml", "workflows/tools.yaml"], "a glob grant over the prefix carries what it matches");
+    assert.deepEqual(built.manifest.requires, {
+      secrets: ["GITHUB_TOKEN", "LINEAR_API_KEY", "OPENAI_KEY"],
+      binaries: ["ffmpeg"],
+      runtimes: [{ name: "media" }],
+    });
+  });
+
+  it("carries a step alone, with its helpers", async () => {
+    const built = await build(src, { steps: ["acme/linear/create-issue"] });
+    assert.deepEqual(built.files, ["steps/_shared.ts", "steps/create-issue.ts", "strut.yaml"]);
+    assert.deepEqual(built.manifest.requires, { secrets: ["LINEAR_API_KEY"] });
+  });
+});
+
+for (const tb of testBackends()) {
+  describe(`building a package with Concepts and step claims (${tb.name})`, { skip: tb.skip }, () => {
+    let backend: GraphBackend;
+    let scratch: string;
+    const struts: Strut[] = [];
+    before(async () => {
+      backend = await tb.open();
+      await tb.wipe(backend);
+      await seedJarvisOntology(backend);
+      await seedStrutDomain(backend);
+      backend.schemas.invalidate();
+    });
+    after(async () => {
+      await tb.close(backend);
+    });
+    beforeEach(async () => {
+      await tb.clear(backend);
+      scratch = await mkdtemp(join(tmpdir(), "strut-build-graph-"));
+    });
+    afterEach(async () => {
+      for (const s of struts.splice(0)) await s.close?.();
+      await rm(scratch, { recursive: true, force: true });
+    });
+    /** A strut on the graph with strut's own Concepts seeded (`Job`, …). */
+    const graphStrut = async (name: string) => {
+      const dir = join(scratch, name);
+      const s = await boot(new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps"), appsDir: join(dir, "apps") }), { dataDir: dir, concepts: undefined });
+      struts.push(s);
+      return s;
+    };
+    const conceptRef = async (name: string) =>
+      ((await backend.query(`MATCH ${backend.dialect.node("c", "Concept", { namespace: "$ns", name: "$name" })} WHERE ${backend.dialect.live("c")} RETURN c.ref_id AS r`, { ns: backend.namespace, name }))[0]?.["r"] as string | undefined);
+    const page = async (name: string, data: Record<string, string>, parent?: string) => {
+      const { ref_id } = await backend.nodes.write({ type: "Concept", data: { name, ...data } }, "create");
+      if (parent) await backend.edges.write({ edge: "PARENT_OF", source_ref_id: (await conceptRef(parent))!, target_ref_id: ref_id });
+    };
+
+    it("writes the pages under a Concept and the step's claims that stay inside, and installs on a cleared graph and on a filesystem", async () => {
+      const src = await graphStrut("source");
+      await publishLinear(src.workspace);
+      await src.workspace.publishStep("local/judge", PLAIN("local/judge"));
+      await src.rebuildRegistry();
+      await page("Linear", { description: "The tracker", docs: "How Linear works here." }, "Job");
+      await page("Issues", { description: "Its issues", docs: "---\nOne issue per bug." }, "Linear");
+      await page("Notes", { description: "A person's page" });
+      await page("Roadmap", { docs: "Where it goes." }, "Notes");
+      const claim = async (text: string, check: Record<string, unknown>) => {
+        const res = await src.app.request("/claims", json({ text, checks: [check], subjects: [{ kind: "step", name: "acme/linear/create-issue" }] }));
+        assert.equal(res.status, 200, await res.text());
+      };
+      await claim("it reads its key", { type: "exec", config: { cmd: "true" } });
+      await claim("a judge likes it", { type: "local/judge", config: {} });
+
+      const built = await build(src, { workflows: ["acme/linear/sync"], concepts: ["Linear"] });
+      assert.deepEqual(built.files, ["concepts/Issues.md", "concepts/Linear.md", "steps/_shared.ts", "steps/create-issue.claims.yaml", "steps/create-issue.ts", "strut.yaml", "workflows/sync.yaml"]);
+      assert.equal(await readFile(join(built.dir, "concepts/Linear.md"), "utf-8"), "---\ndescription: The tracker\nparent: Job\n---\nHow Linear works here.\n");
+      assert.equal(await readFile(join(built.dir, "concepts/Issues.md"), "utf-8"), "---\ndescription: Its issues\nparent: Linear\n---\n---\nOne issue per bug.\n");
+      assert.deepEqual(loadYaml(await readFile(join(built.dir, "steps/create-issue.claims.yaml"), "utf-8")), [
+        { text: "it reads its key", checks: [{ type: "exec", config: { cmd: "true" }, name: "exec", when: "run", policy: "always" }] },
+      ]);
+      assert.deepEqual(built.manifest.requires, { secrets: ["LINEAR_API_KEY", "NOTION_KEY"], binaries: ["sh", "true"] });
+      assert.match(built.warnings.join("\n"), /the claim "a judge likes it" of acme\/linear\/create-issue is left out: the check local\/judge: it runs local\/judge, outside the package/);
+
+      // A page another seeder stamped is not the package's; a top page under a person's page is said.
+      assert.match(await refusal(build(src, { concepts: ["Job"] })), /the Concept Job is strut\/concepts\/Job\.md's \(its stamp\): a package carries pages of its own/);
+      const notes = await build(src, { package: "acme/notes", concepts: ["Roadmap"] });
+      assert.deepEqual(notes.files, ["concepts/Roadmap.md", "strut.yaml"]);
+      assert.match(notes.warnings.join("\n"), /the Concept Roadmap hangs under Notes, which is not in the package: the strut that installs it must have a Concept Notes/);
+
+      // On a filesystem workspace: no Concepts, no claims, said.
+      const fsBuyer = await boot(new WorkspaceManager(join(scratch, "fs-buyer")));
+      struts.push(fsBuyer);
+      const onFs = await roundTrip(fsBuyer, built.dir);
+      assert.match(onFs.warnings.join("\n"), /the Concepts \(Issues, Linear\) were not installed: this workspace has no graph/);
+      assert.match(onFs.warnings.join("\n"), /the claims of acme\/linear\/create-issue were not recorded/);
+
+      // On a cleared graph, a fresh strut: the pages hang where they did, the claim is the package's.
+      for (const s of struts.splice(0)) await s.close?.();
+      await tb.clear(backend);
+      const buyer = await graphStrut("buyer");
+      const onGraph = await roundTrip(buyer, built.dir);
+      assert.deepEqual(onGraph.warnings, []);
+      const linear = await conceptRef("Linear");
+      const parents = await backend.tx((tx) => backend.edgeEngine.liveEdgesOf(tx, linear!, "PARENT_OF", false));
+      assert.deepEqual(parents?.edges.map((e) => e.other), [await conceptRef("Job")]);
+      const listed = (await (await buyer.app.request(`/claims?kind=step&name=${encodeURIComponent("acme/linear/create-issue")}`)).json()) as { claims: Array<{ text: string; speaker?: string }> };
+      assert.deepEqual(listed.claims.map((c) => [c.text, c.speaker]), [["it reads its key", "acme/linear"]]);
+    });
+  });
+}
