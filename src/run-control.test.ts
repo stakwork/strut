@@ -269,6 +269,41 @@ describe("cancel", () => {
     assert.equal(summary?.error, undefined);
   });
 
+  it("force-cancel finalizes a run whose step never returns", async () => {
+    const hang = defineStep({
+      type: "hang",
+      input: z.any(),
+      output: z.any(),
+      run: () => new Promise(() => {}), // never settles
+    });
+    const store = new MemoryRunStore();
+    const controller = new RunController("r1", "wf");
+    const wf = flow("wf", { input: z.any(), steps: [step("a", "hang", {})] });
+    let settled = false;
+    const run = runWorkflow(wf, {}, reg({ hang }), { runId: "r1", store, controller }).then((r) => {
+      settled = true;
+      return r;
+    });
+    await sleep(20);
+    controller.cancel(); // cooperative: the stuck step holds the run
+    await sleep(30);
+    assert.equal(settled, false);
+    controller.force();
+    const result = await run;
+    assert.equal(result.status, "cancelled");
+    assert.equal(store.getSummary("wf", "r1")?.status, "cancelled");
+    assert.ok(types(store, "wf", "r1").includes("run.cancelled"));
+  });
+
+  it("force on a parent abandons a stuck step in a child controller's run", async () => {
+    const parent = new RunController("p", "wf");
+    const child = new RunController("c", "wf", parent);
+    const work = child.raceForce(new Promise(() => {}));
+    parent.force();
+    await assert.rejects(work, (e) => isCancelledError(e));
+    await assert.rejects(child.raceForce(new Promise(() => {})), (e) => isCancelledError(e));
+  });
+
   it("fires the onRunEnd teardown hook on cancellation", async () => {
     const gate = createGateStep();
     const controller = new RunController("r1", "wf");

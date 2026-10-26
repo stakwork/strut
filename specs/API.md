@@ -480,6 +480,12 @@ is what the run is doing now (`pausing` → `paused` once every branch has
 reached a boundary, which `quiesced` reports). Cancel and pause apply to
 the whole tree: every nested run launched under this one.
 
+A step that never returns would hold a cooperative cancel forever. For that,
+`POST …/cancel` with body `{ "force": true }` also stops waiting on every step
+in flight in the tree: the run finalizes as `cancelled` at once. The stuck
+step's code is abandoned, not killed — whatever it holds (a subprocess, a
+socket) stays until it dies or the process restarts.
+
 ### 6.2 Durable: resume a dead, failed or cancelled run
 
 `POST /workflows/:name/runs/:runId/resume` with no live run replays the
