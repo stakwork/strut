@@ -13,6 +13,11 @@
  * grant anything, the `peer: true` precedent. Built by `createStrut` into
  * `ctx.services.apps`; an embedder builds one with `createApps`.
  *
+ * An app that declares graph types (`data.graph`) is checked against the
+ * graph at every build and registers them at publish, before the version is
+ * recorded (./graph-types.ts): on Neo4j only, so on a LadybugDB file or the
+ * filesystem workspace it does not build.
+ *
  * An app's own SQLite file (./sqlite.ts) is one per app, beside its
  * versions: a publish applies the directory's `db/*.sql` before the
  * version is recorded, and a failing migration publishes nothing.
@@ -32,8 +37,10 @@ import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
 import { treeHash } from "../version.js";
 import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
+import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
 import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.js";
+import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { AppDatabases, migrationFiles, type AppDatabase, type MigrationRecord } from "./sqlite.js";
@@ -142,6 +149,8 @@ export type AppPublishResult =
       liveVersion?: string;
       release?: string;
       note?: string;
+      /** The graph types and edges the publish registered (`data.graph`). */
+      graph?: RegisteredGraph;
       /** The `db/*.sql` this publish applied to the app's database. */
       migrations?: string[];
     }
@@ -225,6 +234,9 @@ export interface AppsDeps {
   /** The monitor `step_run` counts into (./monitor.ts): `get` carries its
    *  brief, `list` its warning count. Absent, neither. */
   monitor?: Pick<AppMonitor, "brief" | "warningCount" | "forget">;
+  /** The graph an app's declared types are checked against and registered
+   *  on (./graph-types.ts). Absent: an app that declares any does not build. */
+  graph?: GraphBackend;
   /** `<dataDir>/apps`, where each app's SQLite file is kept (./sqlite.ts).
    *  Absent: an app has no database, and a publish with migrations fails. */
   root?: string;
@@ -327,6 +339,13 @@ export function createApps(deps: AppsDeps): AppsCapability {
     workflowExists: async (wf) => !!(await workspace.getWorkflowMetadata(wf).catch(() => null)),
     ...(deps.now ? { now: deps.now } : {}),
   });
+
+  /** The graph check a build of `dir` runs (./graph-types.ts); nothing when
+   *  its manifest does not parse — the build reports that. */
+  const graphCheck = async (dir: string, name?: string) => {
+    const read = await readManifest(dir);
+    return read.ok ? checkAppGraph(read.manifest, deps.graph, name) : { errors: [], warnings: [] };
+  };
 
   /** What a model-written manifest may not grant (§5.1, §9). */
   const refusedGrants = async (manifest: AppManifest): Promise<string[]> => {
@@ -439,7 +458,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
     versionDir,
 
     async build(dir, opts) {
-      return buildApp(dir, buildDeps(opts?.name));
+      const graph = await graphCheck(dir, opts?.name);
+      if (graph.errors.length) return { ok: false, errors: graph.errors, warnings: graph.warnings };
+      const built = await buildApp(dir, buildDeps(opts?.name));
+      return graph.warnings.length ? { ...built, warnings: [...graph.warnings, ...built.warnings] } : built;
     },
 
     async getDir(dir) {
@@ -469,18 +491,24 @@ export function createApps(deps: AppsDeps): AppsCapability {
         const refused = await refusedGrants(read.manifest);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
+      const check = await checkAppGraph(read.manifest, deps.graph, name);
+      if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
-      if (!built.ok) return built;
-      // The migrations before the version: a version is never live on a
-      // schema it does not have. A failing one publishes nothing.
+      if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
+      const warnings = [...check.warnings, ...built.warnings];
+      // The migrations, then the types, before the version: a version is
+      // never live on a schema it does not have. A failing migration rolls
+      // back and publishes nothing; the types are add-only, so they come
+      // after it.
       let migrations: string[] = [];
       if (databases) {
         const migrated = await databases.migrate(name, dir);
-        if (!migrated.ok) return { ok: false, errors: migrated.errors, warnings: built.warnings };
+        if (!migrated.ok) return { ok: false, errors: migrated.errors, warnings };
         migrations = migrated.applied;
       } else if ((await migrationFiles(dir)).length) {
-        return { ok: false, errors: [`db/: this strut keeps no app databases, so an app with migrations does not publish here`], warnings: built.warnings };
+        return { ok: false, errors: [`db/: this strut keeps no app databases, so an app with migrations does not publish here`], warnings };
       }
+      const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
       const publisher = opts.publisher ?? (opts.surface === "ai" ? "ai" : undefined);
       const r = await workspace.publishApp(name, built.hash, built.manifest, {
         ...(publisher !== undefined ? { publisher } : {}),
@@ -508,8 +536,9 @@ export function createApps(deps: AppsDeps): AppsCapability {
         changed: r.changed,
         hash: built.hash,
         bytes: built.bytes,
-        warnings: built.warnings,
+        warnings,
         live: !held,
+        ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
         ...(migrations.length ? { migrations } : {}),
         ...(held
           ? {

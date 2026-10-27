@@ -954,7 +954,7 @@ components as an app other apps import (`import { RunTimeline } from
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
-| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, migrations? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. Then the directory's `db/*.sql` not yet applied go into the app's database (§14.8), named in `migrations`; one that fails is a `400` the same way, and nothing is published. A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
+| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, migrations?, graph? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. Then the directory's `db/*.sql` not yet applied go into the app's database (§14.8), named in `migrations`; one that fails is a `400` the same way, and nothing is published. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
 | DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
@@ -996,7 +996,7 @@ the call against that app's manifest, in every host:
 | any other type | only when `grants.steps` names it (globs as `agentTools` takes them) |
 | `llm`, `agent`, `exec`, `acp/prompt` | refused whatever the manifest says — the workflow is the unit of spend (§5.1): a paid or shell-shaped step runs inside a workflow the app launches |
 | a sealed step | refused |
-| a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare — the type from the config for a create, the node read first for an edit or delete by `ref_id`; every value checked must be a literal, an edge is located by its endpoints |
+| a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare, and on a type strut keeps whatever it declares — the type from the config for a create, the node read first for an edit or delete by `ref_id` (case-blind); every value checked must be a literal, an edge is located by its endpoints |
 | `job/get`, `job/read` | only when `grants.steps` names them |
 | `sqlite/query`, `sqlite/exec`, `sqlite/batch` | only with `grants.sqlite: true` (never through `grants.steps`), on the app's OWN database — an `app` argument is refused (§14.8); `exec` and `batch` are writes, kept |
 | `automation/*`, `job/start`, `job/continue` | "not available in this strut yet" (work item 7; a "continue this job" door, §12 of the plan) |
@@ -1193,6 +1193,44 @@ A version published and live starts clean: `GET /apps` counts the active
 version's warnings only, and the UI shows a dot on the app (its row, the
 Apps title, the Usage button) while there are any.
 
+### 14.7 Graph types — what an app declares (`src/apps/graph-types.ts`)
+
+```yaml
+data:
+  graph:
+    types:
+      Customer: { name: string, phone: string?, search: [name] }
+      Invoice: { number: string, amount: number, due: date, status: string, meta: json?, key: [number] }
+    edges:
+      - [Invoice, BILLED_TO, Customer]
+```
+
+An attribute is `string | number | boolean | date | json`, `?` for
+optional; on the graph `number` is a `float`, `date` an ISO string (it
+compares as text) and `json` JSON text (a Neo4j property holds no map).
+`key` names the attributes that identify a node, which become its
+`node_key` (default `[name]`; every type has `name`); `search` the ones the
+graph indexes (default the key). Every build checks the declaration
+against the graph, and a publish registers it (`createNodeSchema`, the
+shape of jarvis's `POST /v2/schema`, then each edge's schema) before the
+version is recorded. Registration is add-only: a type another app
+declared with the same attribute types, the same key and every attribute
+it requires is the same type, a new optional attribute is added to it,
+and nothing is removed — rolling back a version keeps what it registered.
+Neo4j only: a LadybugDB file's types are fixed in code, so there, and on a
+workspace with no graph, an app that declares types does not build.
+
+A page writes the declared types with the graph writes (§14.1) and reads a
+list with `graph/find`: `{ node_type, where?, orderBy?, desc?, limit?,
+cursor?, count?, namespace? }` → `{ node_type, nodes: [{ ref_id,
+node_type, name?, properties }], returned, cursor?, total? }`. `where` maps
+a field (an attribute of the type, `ref_id` or `date_added_to_graph`) to a
+value (equal; `null` = not set) or to operators that must all hold: `gt`,
+`gte`, `lt`, `lte`, `in`, `contains` (a string field, case-blind). The
+default order is newest first; `limit` is 1–500 (default 50); a `cursor`
+comes back while there are more. It works on both engines, over any type
+the graph holds.
+
 ### 14.8 The app's own database (`src/apps/sqlite.ts`)
 
 One SQLite file per app, `<dataDir>/apps/<name>/data.db`, shared by all its
@@ -1304,7 +1342,7 @@ the run's own events, returned to the caller and kept only as §7 says
 (`keep: true`, or claims on the step), so a caller that wants no record of it
 never passes `keep`.
 
-## 16. Packages — sharing workflows, steps and Concepts (`plans/marketplace.md` §1–§5)
+## 16. Packages — sharing workflows, steps, apps and Concepts (`plans/marketplace.md` §1–§5)
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
 `version`, `description?`, `license?` — an SPDX expression, never
@@ -1312,13 +1350,13 @@ enforced — `requires?`) and the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow
-`acme/linear/sync`). It is pinned by its DIGEST, `sha256:<hex>` over every
+`acme/linear/sync`, the folder `apps/issues/` the app
+`acme/linear/issues`). It is pinned by its DIGEST, `sha256:<hex>` over every
 file in it (`readPackage`, `src/packages/format.ts`). A strut keeps every
 package it resolved under `<dataDir>/packages/`, one directory per digest,
 and serves any of them by digest — whether it built the package or
 installed it, it can be a mirror. Only `file:` refs resolve today; `git+`
-and `pk:` are refused by name (`package_source_unsupported`), and an app in
-a package is neither built nor installed yet (`package_unsupported`).
+and `pk:` are refused by name (`package_source_unsupported`).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
@@ -1340,6 +1378,7 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
   "workflows": ["acme/linear/sync"],   // each with everything it can execute
   "steps": ["acme/linear/create-issue"],  // beyond what the workflows reach
   "concepts": ["Linear"],              // each with the pages under it (PARENT_OF)
+  "apps": ["acme/linear/issues"],      // each with what its grants execute and the apps it imports
   "requires": {                        // packages BUILT on this strut that this one needs
     "packages": [{ "package": "acme/util", "digest": "sha256:…" }]  // the digest their build returned
   }
@@ -1370,6 +1409,16 @@ What goes in:
   `requires.packages`. A sibling is checked: every item reached under its
   prefix must be in its cached copy, byte for byte as it is here now. A
   named sibling is pinned whether or not anything reaches it.
+- **Each named app** as its active version's sources, `apps/<name>/`:
+  the files its version hash covers (never `dist/` or `data.db`), checked
+  against that hash, so the app's tree hash in the package is its version
+  hash here. Its grants are walked like a workflow's closure: each workflow
+  in `grants.workflows` and `grants.automations`, each step in
+  `grants.steps` (globs expanded against the registry). So are the apps it
+  imports, read off its build (`dist/build.json`): one under the prefix is
+  an item, another package's a pin, a seed's (`strut/views`) recorded
+  nowhere. An app under the prefix has one name segment after it
+  (`apps/<name>/`).
 - **The Concepts** named, with every page under each, as
   `concepts/<Name>.md` (front matter `description`, `parent`; the body is
   `docs`). A top page keeps its parent.
@@ -1382,10 +1431,11 @@ What goes in:
   step source, literal `exec` commands, literal `runtime:` fields.
 
 Building twice from the same workspace gives the same digest. Refusals are
-400 `{ error }`: `package_unsupported` for `apps`, else one
-`package_build_refused: …` naming every problem: a workflow or step outside
-the prefix that came from no package, one package reached at two digests, a
-version label (`type@vN`, a subflow's `version:`), an item in a sealed
+400 `{ error }`, one `package_build_refused: …` naming every problem: a
+workflow, step or app outside the prefix that came from no package, one
+package reached at two digests, a version label (`type@vN`, a subflow's
+`version:`, an app import pinned as `name@vN`), an app whose directory is
+not its version or that has no build of its sources, an item in a sealed
 namespace, a step that does not load here as its own type, a Concept
 another seeder stamped, a closure that cannot be read whole (a templated
 subflow, a grant read only at run time) unless the request names more than
@@ -1397,11 +1447,16 @@ the cache when it holds the digest, else from the pin's `source`; a
 relative `file:` source is relative to the requiring package's directory),
 and installs them FIRST. It is all or nothing: every name and file of every
 package is checked before the first write, and a step that then fails to
-load takes back what the install wrote. Each step and workflow version it
+load takes back what the install wrote. Each app is copied out of the
+cache and BUILT against this strut's kit, with the packages' workflows and
+apps in reach, before anything is written — the kit is this strut's, so
+the build is the compatibility check — then published after the workflows
+through the apps capability (`POST /apps`'s publish), each after the apps
+of the set it imports. Each step, workflow and app version it
 writes records `source: "install"`, the installing actor, and
 `upstream: { package, version, digest, source: { ref }, secrets }` (what
-`GET /workflows/:name` and the step version records show); a workflow's
-`owner` is the installing actor. A Concept is written stamped
+`GET /workflows/:name`, the step version records and `GET /apps/:name`
+show); a workflow's and an app's `owner` is the installing actor. A Concept is written stamped
 `pkg/<package>/<file>@<hash>` (skipped, with a warning, without a graph).
 A step's `<name>.claims.yaml` and a workflow's `claims:` block are recorded
 with the package as their speaker, and `publish` checks fire.
@@ -1419,6 +1474,7 @@ with the package as their speaker, and `publish` checks fire.
       "items": [                      // installed | present | modified (here and forked, left as it is)
         { "kind": "step", "name": "acme/linear/create-issue", "status": "installed", "version": "v1" },
         { "kind": "workflow", "name": "acme/linear/sync", "status": "installed", "version": "v1" },
+        { "kind": "app", "name": "acme/linear/issues", "status": "installed", "version": "v1" },
         { "kind": "concept", "name": "Linear", "status": "installed" }
       ]
     }
@@ -1434,13 +1490,13 @@ with a code first:
 
 | Status | Code | When |
 | ------ | ---- | ---- |
-| 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch`, `package_unsupported` | the ref does not resolve to that package, or holds an app |
-| 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path |
-| 409 | `package_conflict` | a local workflow or step under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
+| 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch` | the ref does not resolve to that package |
+| 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path, an app whose `app.yaml` does not parse, that grants a step that is neither here nor in the packages, or that does not build on this strut's kit (an import the kit lacks, a granted workflow that is nowhere) |
+| 409 | `package_conflict` | a local workflow, step or app under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
 | 409 | `package_update_not_built` | the package is installed here at another digest (updates are a later work item) |
 
-Once installed, a NEW workflow or step name under the prefix is refused at
-every door (`package_conflict`, `refuseUnderInstalledPackage`,
+Once installed, a NEW workflow, step or app name under the prefix is
+refused at every door (`package_conflict`, `refuseUnderInstalledPackage`,
 `src/workspace.ts`): only the package's own install adds a name there. An
 edit of an installed item is a FORK — a new version that carries the
 `upstream` forward. And an installed step — a fork too — reads only the
@@ -1456,6 +1512,7 @@ only …` (`src/packages/fence.ts`).
   "items": [
     { "kind": "workflow", "name": "acme/linear/sync", "installed": "v1", "active": "v2", "modified": true },
     { "kind": "step", "name": "acme/linear/_shared", "helper": true, "installed": "v1", "active": "v1", "modified": false },
+    { "kind": "app", "name": "acme/linear/issues", "installed": "v1", "active": "v1", "modified": false },
     { "kind": "concept", "name": "Linear", "modified": false }  // its text against the file in the cache; absent when the cache lost it
   ]
 }

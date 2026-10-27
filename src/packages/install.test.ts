@@ -209,7 +209,7 @@ describe("installing a package on a filesystem workspace", () => {
       // Found only once the steps are written: the install takes them back.
       [{ ...PACKAGE, "steps/create-issue.ts": STEP("acme/linear/other") }, /the step acme\/linear\/create-issue — its defineStep says type "acme\/linear\/other"/],
       [{ ...PACKAGE, "steps/create-issue.ts": "export default {;" }, /bad_package: the step acme\/linear\/create-issue — /],
-      [{ ...PACKAGE, "apps/issues/app.yaml": "title: Issues\n" }, /package_unsupported: acme\/linear ships an app/],
+      [{ ...PACKAGE, "apps/issues/app.yaml": "title: Issues\n" }, /bad_package: the app acme\/linear\/issues does not build on this strut — entry: "src\/App\.tsx" is not a file/],
     ];
     for (const [files, re] of cases) {
       r = await api.install(`file:${await writeTree(files)}`);

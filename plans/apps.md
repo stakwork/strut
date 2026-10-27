@@ -90,6 +90,14 @@
 > planned in stakwork/strut#305 and BUILT in #307
 > (`src/apps/peer-host.test.ts` runs them across two struts).
 >
+> **Work item 4 is BUILT, on Neo4j only** (2026-10-26). The owner ruled
+> that apps need graph types on Neo4j alone, which settles open question
+> 2: a LadybugDB file keeps its closed registry (ladybug-backend.md
+> ruling 6 stands), and there an app that declares types does not build.
+> §4.3 is rewritten to what was built; the choices in it beyond that
+> ruling are mine and open (`key`, the `date` / `json` mapping, the
+> reserved types, the conflict rules, registration at publish only).
+>
 > **Work item 3 is BUILT** (2026-10-26): the app's own SQLite file,
 > migrations at publish, the `sqlite/*` steps, the export (§4.4, rewritten
 > to what was built). A job's app was retired before it landed, so the
@@ -100,8 +108,8 @@
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
 > is the tree hash shared with packages and the kit is out of it (§1.3);
-> `ctx.app` joins `ctx.job` (Decided, §5); §4.3 proposes per-type columns on
-> Ladybug (open question 2); §11 says how an app forks. The specifics of
+> `ctx.app` joins `ctx.job` (Decided, §5); §4.3 proposed per-type columns on
+> Ladybug (open question 2, dropped 2026-10-26: Neo4j only); §11 says how an app forks. The specifics of
 > each (the hash, `ctx.app`, the `run/*` steps, the per-file merge, the
 > columns) are mine and open; the three rulings are not.
 >
@@ -315,7 +323,8 @@ csp:
 - **The manifest is content.** It is shape-checked at every build, like a
   workflow's `input:` block (zod, `src/apps/manifest.ts`). Its `data.graph`
   attribute types are `string | number | boolean | date | json`, with `?`
-  marking an optional one; `search` names the fields the graph indexes.
+  marking an optional one; `search` names the fields the graph indexes and
+  `key` the ones that identify a node (§4.3).
 
 ### 1.2 Two homes
 
@@ -724,36 +733,61 @@ find it, it goes in the graph" is the rule of thumb.
 
 ### 4.3 The graph
 
-**The app declares its types** in `app.yaml` (`data.graph`, §1.1).
-Building or publishing registers them, add-only, on whichever engine the
-workspace has:
-- **Neo4j:** `createNodeSchema` (`schema-crud.ts`, jarvis's `POST /v2/schema`
-  shape), which adds a new type or extends an existing one. It also creates
-  the edge schemas.
-- **Ladybug:** today the registry is closed: ten types in code, and every
-  schema write refused (`ladybug-backend.md`, ruling 6). Apps open it for
-  **declared types only**. The file keeps a table of declared types and
-  edges. Each new attribute is an `ALTER ADD` column on the one `Node`
-  table, the same path a code attribute takes at restart. Each new edge
-  type is a `REL TABLE` from `Node` to `Node`. **App attributes get
-  per-type columns** (proposed, open question 2): `Invoice__amount`, not
-  `amount`, so the registry's one-type-per-attribute-name rule keeps
-  holding for the code types while two apps' `amount` never meet, and the
-  dialect's `project` maps the column back to its name. The cost is a
-  column per (type, attribute), which a SQL-shaped store pays anyway.
-  `Strut*` types and `Concept` stay code-only.
-- **The `fs` backend** has no graph. An app that declares graph types does
-  not build there, and the error says so.
+**The app declares its types** in `app.yaml` (`data.graph`, §1.1), on a
+**Neo4j graph only** (ruled 2026-10-26; `src/apps/graph-types.ts`):
+
+```yaml
+data:
+  graph:
+    types:
+      Customer: { name: string, phone: string?, search: [name] }
+      Invoice: { number: string, amount: number, due: date, status: string, meta: json?, key: [number] }
+    edges:
+      - [Invoice, BILLED_TO, Customer]
+```
+
+- **The grammar maps onto jarvis's.** `number` is `float`; `string` and
+  `boolean` are as they are; `date` is `string`, an ISO date that compares
+  as text (`graph/find`'s rule below); `json` is `string`, JSON text,
+  because a Neo4j property cannot hold a map. `x?` is jarvis's `?x`.
+  `key` (added here, mine) is the type's `node_key`: the attributes that
+  identify a node, default `[name]`, which every type inherits from
+  `Thing`. `search` is its `index`, default the key. A type with no
+  `name` takes the key's first attribute as its title.
+- **Every build checks it** against the graph (`checkAppGraph`), reads
+  only. Refused: a type strut keeps (`Strut*`, `Thing`, `Schema`,
+  `Concept` — the notes the builder and the job agent read as
+  instructions — and `Claim` / `Check` / `Evidence`, so a page cannot
+  forge evidence), an attribute the schema writer refuses (`ref_id`, …),
+  and on a type the graph already holds an attribute of another base
+  type, another key, or a required attribute the app leaves out (its
+  writes would be refused). A different `search` list is a warning: an
+  existing type keeps its index. With no graph, or on a LadybugDB file,
+  an app that declares types does not build, and the error says why.
+- **A publish registers it** (`registerAppGraph`) after the build and
+  before the version is recorded, so a version is never live without its
+  types: `createNodeSchema` (`schema-crud.ts`, jarvis's `POST /v2/schema`
+  shape) per type, a new one or an existing one extended add-only, then
+  each edge through the resolver's `createEdgeSchema`. The publish result
+  carries `graph: { types: [{ type, created, added }], edges }`. `app/build`
+  checks but registers nothing: a directory being written should not leave
+  types behind. Nothing is ever removed, so rolling a version back keeps
+  what it registered.
 
 A type an app declares is a type in the workspace's graph. Another app may
-declare the same type with the same attributes (add-only), and a
-conflicting declaration is a build error.
+declare the same type with the same attributes, adding optional ones, and
+a conflicting declaration is a build error naming what conflicts.
 
 **`graph/find`, a new step**, provides the read the graph lacks: `{
 node_type, where?, orderBy?, limit?, cursor?, count? }` returns nodes with
 their properties. `where` takes `{ field: value }` or `{ field: { gt | gte
 | lt | lte | in | contains } }`. It is written with the existing dialect
-helpers (`node`, `isType`, `live`, `project`). Property access and
+helpers (`node`, `isType`, `live`, `project`) and runs on both engines,
+over any type the graph holds (`src/graph/find.ts`, BUILT 2026-10-26: also
+`desc`, `count` and an opaque `cursor`; a field must be an attribute of the
+type, `ref_id` or `date_added_to_graph`, so no caller text reaches the
+statement; a muted node is hidden on Neo4j as every read hides it, a
+jarvis blocked `status` is not — an app's `status: failed` is its data). Property access and
 comparisons are the same text on both engines, and dates are ISO strings,
 which compare as text. It reports nothing through `withAccessedNodes`: a
 list is not what the caller named, which is the provenance rule. Today's
@@ -1534,11 +1568,16 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    first), the `sqlite/*` steps and their refusals (the file from
    `ctx.app`, or named when there is none), the export, writes kept as
    step runs, and the `engines` bump. Tests: `src/apps/sqlite.test.ts`.
-4. **Graph data.** Declared types on Neo4j (`createNodeSchema`) and on
-   Ladybug: the declared-types table, per-type columns by `ALTER ADD`, rel
-   tables, and the conflict rule. This reverses ruling 6 for app-declared
-   types only. Also `graph/find` on both engines (`testBackends()`) and the
-   write scope. By hand, build the invoice tracker.
+4. **Graph data.** **BUILT on Neo4j only** (2026-10-26; the Ladybug half
+   dropped by ruling, open question 2). Declared types checked at every
+   build and registered at publish (`createNodeSchema` + edge schemas),
+   the conflict rule, the reserved types (also in the write scope, so a
+   manifest published before this cannot write them), `graph/find` on both
+   engines (`testBackends()`). Tests: `src/apps/graph-types.test.ts` (the
+   declaration, the refusals, and live on Neo4j: a publish registering,
+   a conflict publishing nothing, a page writing an `Invoice` through
+   `step_run` and reading it back with `graph/find`),
+   `src/graph/find.test.ts`. Not yet: the invoice tracker built by hand.
 5. **MCP for models.** `toolsetServer` resources, the per-app `app_<name>`
    tools with their `_meta.ui.resourceUri`, so an MCP Apps host opens an
    app a model names (the app-only tool itself landed in item 1). By hand, have Claude render an app
@@ -1561,7 +1600,11 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    tracker.
 8. **The package kind** — in `marketplace.md`'s step order, once its steps
    1–2 exist: `apps/<name>/` in `buildPackage` and `installPackage`,
-   `upstream` on app versions, the per-file merge.
+   `upstream` on app versions, the per-file merge. **Built 2026-10-26** but
+   the merge (`marketplace.md` step 4, with updates): an app is carried
+   with its grants and imports, built against the installing strut's kit
+   before anything is written, and published through the apps capability,
+   so items 3 and 4 reach an install through the publish.
 9. **Releases** — `app-releases.md` §5, its own two items: holds and
    releases, then runs under a lock.
 
@@ -1637,12 +1680,11 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    others should see, and SQLite what only the app needs. Should an app be
    able to keep entities in SQLite and project some of them into the graph
    (a later step), or is that the job of a workflow?
-2. **Ladybug's closed registry.** Apps would open it for declared types,
-   which reverses ruling 6 for non-Strut types. Because the file keeps one
-   column per attribute name across all types, two apps' `amount` would
-   have to agree on a type. **Proposed answer (2026-10-20): per-type
-   columns** (`Invoice__amount`, §4.3), so app types never meet each other
-   or the code types. Open until ruled.
+2. **Ladybug's closed registry.** ~~Apps would open it for declared types,
+   which reverses ruling 6 for non-Strut types.~~ **Ruled 2026-10-26: apps
+   need graph types on Neo4j only.** The registry stays closed, and on a
+   LadybugDB file an app that declares types does not build. (The per-type
+   columns proposed on 2026-10-20 are not needed.)
 3. **Where a workspace version's files and document live on the graph
    backend.** Node properties (the workspace stays self-contained, at up to
    ~20 MB per version) or directories under `dataDir` with the node holding

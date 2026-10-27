@@ -8,8 +8,9 @@
  * `grants` is what the app may reach through `step_run` (§5): the
  * workflows it may read, launch and cancel (`run/*`), the step types it may
  * call, its own SQLite file, the schedules it may set. `data.graph` is the
- * node and edge types it declares (§4.3) — parsed and kept here, registered
- * on the graph by a later work item. `csp.resourceDomains` are the only
+ * node and edge types it declares (§4.3) — parsed and kept here, checked
+ * against the graph at every build and registered at publish
+ * (./graph-types.ts), and the only types a page may write. `csp.resourceDomains` are the only
  * places beyond `data:` and `blob:` the document may load an image, a font
  * or a media file from (§9). Nothing else is declared: an app has no
  * `connectDomains` — it talks to the world through a workflow.
@@ -26,20 +27,33 @@ export const MANIFEST_FILE = "app.yaml";
 const ATTR_RE = /^(string|number|boolean|date|json)\??$/;
 export const attributeType = z.string().regex(ATTR_RE, "an attribute is string | number | boolean | date | json, with ? for optional");
 
+/** The two keys of a type declaration that take a list of attribute names. */
+export const TYPE_LISTS = ["search", "key"] as const;
+
 /** One declared node type: its attributes, plus `search`, the fields the
- *  graph indexes (a list of attribute names). */
+ *  graph indexes, and `key`, the fields that identify a node — two nodes
+ *  with the same key values are one node (default `[name]`; `name` is every
+ *  type's, declared or not). */
 export const graphTypeSchema = z
   .record(z.string(), z.union([attributeType, z.array(z.string())]))
   .superRefine((spec, ctx) => {
     for (const [k, v] of Object.entries(spec)) {
-      if (Array.isArray(v) && k !== "search") {
-        ctx.addIssue({ code: "custom", path: [k], message: "only `search` takes a list (the attribute names the graph indexes)" });
+      if (Array.isArray(v) && !(TYPE_LISTS as readonly string[]).includes(k)) {
+        ctx.addIssue({ code: "custom", path: [k], message: "only `search` (the attributes the graph indexes) and `key` (the attributes that identify a node) take a list" });
+      }
+      if (!Array.isArray(v) && (TYPE_LISTS as readonly string[]).includes(k)) {
+        ctx.addIssue({ code: "custom", path: [k], message: `\`${k}\` is a list of attribute names, so it cannot be an attribute itself` });
       }
     }
-    const search = spec["search"];
-    if (Array.isArray(search)) {
-      for (const f of search) if (!(f in spec) || Array.isArray(spec[f])) ctx.addIssue({ code: "custom", path: ["search"], message: `search names "${f}", which is not an attribute of this type` });
+    for (const list of TYPE_LISTS) {
+      const names = spec[list];
+      if (!Array.isArray(names)) continue;
+      for (const f of names) {
+        if (list === "key" && f === "name") continue;
+        if (!(f in spec) || Array.isArray(spec[f])) ctx.addIssue({ code: "custom", path: [list], message: `${list} names "${f}", which is not an attribute of this type` });
+      }
     }
+    if (Array.isArray(spec["key"]) && spec["key"].length === 0) ctx.addIssue({ code: "custom", path: ["key"], message: "key needs at least one attribute (leave it out for [name])" });
   });
 
 export const grantsSchema = z

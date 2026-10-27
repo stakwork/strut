@@ -1,9 +1,11 @@
 # Packages — sharing workflows, steps and Concepts between struts
 
-> **Status (2026-10-26): the package BYTES layer, step 1 and step 2 but
-> apps are built** (`src/packages/`, see "Step order"): a package builds
-> from a strut's own workflows, steps and Concepts into its cache, installs
-> from `file:`, lists and uninstalls. Revised 2026-10-18
+> **Status (2026-10-26): the package BYTES layer, step 1 and step 2 are
+> built** (`src/packages/`, see "Step order"): a package builds from a
+> strut's own workflows, steps, apps and Concepts into its cache, installs
+> from `file:`, lists and uninstalls. An app's migrations and declared
+> graph types run at the install's publish since `apps.md` work items 3
+> and 4 landed (2026-10-26). Revised 2026-10-18
 > after a review against npm, Go modules, cargo, bundler, Homebrew taps and
 > OCI: the first draft's generated manifest, its first-installer name rule,
 > its vendored foreign items and its server-shaped index are gone (§10 says
@@ -1573,9 +1575,9 @@ production until install (step 2) calls the resolver.
        step's declared `type` and whether it loads can only be known by
        loading it, so that check runs after the steps are written, and
        takes back everything the install wrote when it fails.
-     - **Apps are refused** (`package_unsupported`), and **another digest
-       of an installed package** (`package_update_not_built`): the third
-       PR and step 4.
+     - **Apps were refused** (`package_unsupported`) until the third PR
+       (below), and **another digest of an installed package** is
+       (`package_update_not_built`): step 4.
      - **Open, found while building it:** a package of Concepts ALONE
        records no source ref anywhere — its pages carry a stamp, not an
        `upstream` — so `GET /packages` finds its digest and version in the
@@ -1651,7 +1653,8 @@ production until install (step 2) calls the resolver.
        runtime is a warning. Editing what was inferred waits for export
        (step 3), where the directory is the author's.
      - **Refusals** are one code, `package_build_refused: …`, naming every
-       problem at once; an app is `package_unsupported`. A step under the
+       problem at once (an app was `package_unsupported` until the next
+       PR). A step under the
        prefix that does not load here as its own type refuses too, since
        the install would.
      - **The route** is `POST /packages/build`, a person's act at full
@@ -1660,6 +1663,44 @@ production until install (step 2) calls the resolver.
        or a sibling's cache directory, so a package that requires one
        resolves only where that path exists (or from a cache that holds the
        digest) until `git+` and `pk:` sources land.
+   - **Built 2026-10-26: apps as a kind** (`src/packages/build.ts`,
+     `install.ts`, `installed.ts`; `specs/API.md` §16). §2's closure and
+     §3's build check as written. The install publishes an app through the
+     apps capability — the publish `POST /apps` makes — so an app's
+     `db/*.sql` migrations and its declared graph types (`apps.md` work
+     items 3 and 4, built 2026-10-26) run at that publish with no change
+     here, and a failing one fails the install (`bad_package:`). These choices are mine, proposed:
+     - **An app's imports are read off its build**, `dist/build.json`,
+       which its publish wrote from the sources the version hash covers. A
+       version with no build of those sources (a restore whose rebuild
+       failed) refuses the build: its imports cannot be read.
+     - **An import pinned to a version** (`acme/linear/ui@v3`) refuses the
+       build, as `type@vN` does: the installing strut numbers from v1.
+     - **An app under the prefix has one segment after it**
+       (`acme/linear/issues`): the format is `apps/<name>/`, so
+       `acme/linear/ui/kit` refuses the build, naming the rule.
+     - **A step an app grants directly** counts toward `requires` as the
+       step with no config: its schema's secret-name defaults (a `git/*`
+       step's `GITHUB_TOKEN`), since the page may call it with any config.
+     - **The build check runs on a copy** of each app outside the cache (a
+       build writes `dist/`), with the set's workflows and apps in reach —
+       an app of the set resolves to its copy. The publish then builds it
+       again against what was published, so its `dist/build.json` names
+       the versions it compiled in here. Apps are published after the
+       workflows, each after the set's apps it imports.
+     - **Apps hold the prefix** in both stores
+       (`refuseUnderInstalledPackage` takes an app; a conformance case): a
+       package of apps alone holds its prefix as one of steps does, and a
+       new app under an installed prefix is refused at every door. A local
+       app under the prefix refuses the install, as a local workflow does.
+     - **Uninstall deletes an app's pointer** (`apps.delete`, soft on a
+       graph; the version directories stay, as a workspace delete leaves
+       them). A forked app is kept, like any fork; one of the package's
+       apps it imports is not — the fork's built document still runs, and
+       its next build names the missing app.
+     - **An install is a person's publish** (`surface: "person"`), as
+       installing is a person's act: the meta surface's grant rules (no
+       `llm`, `agent`, `exec`, nothing sealed) do not apply to it.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by
@@ -1806,7 +1847,10 @@ production until install (step 2) calls the resolver.
   grants name; its item hash equals the app's version hash on the source
   strut. Install it on a strut whose kit builds it: the app is published,
   its migrations run, its graph types register, its granted workflows are
-  items. A kit lacking one import refuses the whole install naming it. Fork
+  items. (Built 2026-10-26: `src/packages/build.test.ts`, on the
+  filesystem and every graph backend; the migrations and graph types run
+  through the publish, tested in `src/apps/sqlite.test.ts` and
+  `src/apps/graph-types.test.ts`.) A kit lacking one import refuses the whole install naming it. Fork
   one component file, then update the package: the forked file is merged,
   an untouched one fast-forwards, a new `db/*.sql` is added and run,
   `data.db` is untouched, and a merge whose result does not build comes
