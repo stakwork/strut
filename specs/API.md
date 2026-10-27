@@ -1081,6 +1081,10 @@ Alone, the page reads only the listing the app is in — `GET /apps`, or that
 one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
 workflows, step types or other peers (one that does not answer cannot hold
 it at "Loading apps…"), and no `GET /runs/active` poll while it shows.
+A key ending in `@vN` shows that version rather than the live one
+(`?app=bench@v3&solo=1`, `?app=@acme/hive/ui@v2&solo=1`), the pin an app
+import takes — how `app/look` sees a held app's draft. A version the app
+does not have reads as no app.
 
 **One file alone.** The twin for a deliverable that is a file:
 `/?key=<the local strut's key>&artifact=<encodeURIComponent(path)>&solo=1`

@@ -35,6 +35,21 @@ manifest, files, build and its latest CLIENT ERRORS (`errors`: what the
 page's error boundary reported) — read them after a change the person says
 broke. `app/checkout { name, path }` copies a version out to edit it.
 
+**Look before you hand it over.** A build that passes can still draw
+nothing, show an error, or call a step its grants refuse. After every
+`app/publish`, `app/look { name, version }` with the version it returned
+(name it: a held app's new version is a draft, and without it you see the
+live one). It opens that version in strut's own host as you, waits for the
+page to draw and its first calls to answer, and returns the screenshot
+(you see it), the page's text, and what went wrong: `rendered: false` (it
+drew nothing), `hostError` (the host could not show it), `errors` (console,
+page and request errors) and `appErrors` (what its error boundary
+reported). Fix what it shows, publish, and look again; hand the app over
+only when the look shows what was asked for. `viewport` looks at it at
+another size, a phone's `{ width: 390, height: 844 }`; `wait` gives a slow
+page longer. A look runs the page as a person opening it would: its reads
+are real calls. Only a published version can be looked at.
+
 ## The manifest
 
 ```yaml
