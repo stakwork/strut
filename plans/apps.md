@@ -1457,10 +1457,82 @@ fourth never load; the rest of each Kit cell is the stack.
 
 ## 12. Left out of v1
 
-- **File uploads**: an `<input type=file>` in the frame, sent through
-  `files_upload` into the app's directory of files (a workspace app's
-  under `<dataDir>/apps/<name>/files/`, a job's app's in the job). The
-  invoice photo waits for this.
+- **File uploads**: one home, **the job** (plans/jobs.md: one folder and
+  one memory across many runs), never the app's version. A version is
+  code (hashed, built, packaged, rolled back), and an upload is data, as
+  `data.db` is (§4.4). An earlier draft put uploads in a folder of the
+  app's own (`files_upload` into `<dataDir>/apps/<name>/files/`); a job
+  does that and more: an app keeps as many as it needs, an agent on
+  `session: "{{ $job }}"` remembers a conversation about the files, and
+  the orchestrator, hive, the Jobs sidebar and `job/list` see the same
+  job the app does. The invoice photo waits for this.
+  - **The upload is a step**, since a page reaches strut only through
+    `step_run`: `job/upload { job, name, mediaType?, data }` writes the
+    file to `<dataDir>/jobs/<job>/uploads/<name>` (a taken name
+    numbered, as run attachments are, never overwritten) and returns
+    `{ path, name, mediaType, size }`, `path` relative to the job's
+    folder (`uploads/<name>`). It makes the job when there is none and
+    takes no hold, so a file may arrive while a run of the job is in
+    flight. It is never a kept run: its input is the bytes, and the file
+    is the record. `job/delete-upload { job, path }` removes one, under
+    `uploads/` only. Both are granted in `grants.steps`.
+  - **An app-wide library is a job the app names**, a fixed id such as
+    `library`, shared by every viewer and every version. A job per case,
+    per project or per person is the same thing with another id; the app
+    picks it.
+  - **The app's jobs are namespaced.** Under `ctx.app`, a job id the page
+    names is kept as `app/<name>/<id>`, as a peer's is kept as
+    `peer/<job>` (`peerLaunchBody`): in `job/upload`, `run/launch { job }`,
+    `run/list { job }` and `job/list` / `job/get` / `job/read`. So a
+    model-written page never launches under, or reads, a job it did not
+    start. Everything outside the app sees the whole id, and the
+    orchestrator may continue an app's job like any other. Today
+    `step_run` refuses `run/launch` with a `job` from a page
+    (`grantRefusal`, `src/apps/tools.ts`); inside the app's namespace it
+    is allowed, which is the "continue this job" door for the app's own
+    jobs. `job/start` and `job/continue` stay refused.
+  - **Reading the folder takes no hold.** A job is held by one run at a
+    time, taken by `job/dir` and by a kept checkout, not by launching
+    under the job (`holdJob`, `src/jobs.ts`), so a library with several
+    viewers asking at once would queue on `job_busy:`. `job/dir { hold:
+    false }` returns the folder without holding it, for a run that only
+    reads its uploads; a run that writes into the folder (an agent with
+    bash, a checkout) holds it as today. Nothing makes a run that does
+    not hold read-only: bash in a shared folder can change everyone's
+    files, so a library's routines read with tools that cannot write, or
+    hold the folder.
+  - **A run is told which file by its path.** The page passes
+    `job/upload`'s `path` as an ordinary string in `input`
+    (`{ file: "uploads/photo.jpg" }`), relative to the folder `job/dir`
+    returns, which is an agent's cwd there. No new input type.
+  - **The kit takes browser `File` objects.** `useUpload(job)` reads a
+    `File` into base64 in the page and calls `job/upload`, so a model
+    never writes `FileReader` code; pickers and drop zones are plain
+    shadcn.
+  - **A one-shot launch still takes files on the run**: `run/launch
+    { attachments }`, with the shape and caps of `POST …/run
+    { attachments }` (saved under the run's artifacts as
+    `attachments/<name>`, recorded on `run.start` without the bytes,
+    `ctx.attachments`, on each `agent` step's prompt), and `useLaunch`'s
+    `launch(input, { files })`. A launch-level field, never in `input`,
+    which is written on `run.start` for good. For "upload, run once,
+    done", with no job.
+  - **Limits.** The document may open no connection (`connect-src
+    'none'`, §9), so there is no upload route: the bytes ride `step_run`
+    as base64, a third larger, through the host to `/mcp` (or
+    `/peers/:id/mcp` for a peer's app, whose uploads land on the peer).
+    One file per `job/upload` call, at most 10 MB. A launch's
+    attachments: at most 10 files, 10 MB each, 5 MB an image, 15 MB
+    together, about 20 MB of JSON. Strut sets no request-size limit on
+    `/mcp`; the hosts' relays (hive, Peel) need checking before this
+    ships. Larger media is a URL the workflow fetches. `<input
+    type=file>` and drag and drop in `sandbox="allow-scripts"` should
+    work, since no sandbox flag gates them, and need checking in each
+    host.
+  - **Open:** a chunked `job/upload` past one call's size; what deleting
+    an app does to its `app/<name>/` jobs (they would stay, as nothing
+    removes them; `DELETE /jobs/:id` removes one); whether an upload is a
+    line on the job's record.
 - **Share links**: an app used by someone without strut access, such as an
   HVAC office's staff. This needs a credential that names an actor and a
   budget.
