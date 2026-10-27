@@ -88,6 +88,13 @@
 >
 > Receipts back to a publisher are left to a plan of their own (open
 > question 5).
+>
+> **Extended 2026-10-27: a fleet fed by its central strut** (§12.1,
+> proposed). Hive's org strut holds the workflows the org's agents run, and
+> every workspace strut in the org follows its releases. A child SUBSCRIBES
+> to the central strut's publisher key and reads its private catalog with a
+> token that opens nothing else; §4's update table applies with no ask. This
+> brings step 4 and the card half of step 6 forward ("Step order").
 
 ## Problem
 
@@ -143,6 +150,7 @@ What exists, and what's missing:
 | The index | **A key whose catalog lists publishers.** ***Ruled (2026-10-24, reversing 2026-10-19):* the public index ships now.** One more Pkarr key, operated by Stakwork, whose record points at a signed catalog of prefix → key rows with descriptions; it holds no content and no package list — the publishers' own catalogs do. `index.yaml` in a git repo stays as a deployment's private index (§7, §13) |
 | Who installs | **A person.** Installing is publishing third-party code onto the server: a keyed `full`-scope route, or a builder tool that asks first. No `meta/*` twin (§8) |
 | A fleet | ***Ruled:* an operator's packages roll out to its own struts automatically, by channel** (a branch of the distro repo); the merge is the accept. Every rule above holds for an item — a swarm's edit is never overwritten (§12) |
+| A fleet's source | **The central strut's own catalog, read by key** (proposed 2026-10-27, §12.1). A child installs what a card sealed by the key it subscribed to names, so no connection carries authority. The catalog is private: it is never put in the DHT, and a child reads it with a token worth that catalog's bytes and nothing else. The git distro repo stays for an operator who wants a merge to be the accept |
 | The lab's names | ***Ruled:* they move under package prefixes** (`pod/claim` → `hive/pod/claim`), with a `renames` map from the distro for what still says the old name (§12) |
 | An environment a package needs | **Declared in `requires`, provided by the deployment, never shipped.** A binary is `requires.binaries`, a network service is a URL and token in `requires.secrets`, a specialized container is a `requires.runtimes` entry naming a RUNTIME — a place `ctx.services.shell` spawns — pinned to an image digest the deployment builds from. No folder, no Dockerfile, no pull by strut (§11) |
 
@@ -704,7 +712,9 @@ the registry rebuilds, before any workflow calls it, this world's npm
   refuses.
 - The one door with no ask is a DISTRO's (§12, *ruled*): the operator's
   merge to the channel is the accept, and branch protection on the distro
-  repo is the gate. Still a person, still never an agent.
+  repo is the gate. On a fleet fed by its central strut, the accept is a
+  person's publish there (§12.1, proposed). Still a person, still never an
+  agent.
 
 ## 9. What this changes in `federation.md` §2.3
 
@@ -1170,6 +1180,175 @@ which works behind NAT and needs no route back, federation's reasoning
 for the tail); a staged percentage rollout inside one channel (two
 channels are the stage).
 
+### 12.1 A fleet fed by its central strut
+
+> *Proposed* 2026-10-27, not ruled. In hive, each org has a central strut
+> (the default workspace's swarm), and its agents run workflows on the
+> org's other workspace struts through `strut/run-workflow` (federation
+> §2.2). Today those workflows reach every swarm because each swarm's mcp
+> seeds them from the stakgraph repo, so a change ships as a stakgraph PR
+> and a deploy of every swarm. Here the central strut is the source: it
+> publishes, and every workspace strut follows. This is §12's rollout and
+> §13's card with the Pkarr record left out; only where the channel comes
+> from changes.
+
+**The child trusts a key, not a connection.** The central strut is a
+publisher (§13): it has a key (`publisher.json`) and a catalog card that
+lists its releases. A child SUBSCRIBES to that key. It installs what a
+card sealed by that key names, at the digests the card names, whatever
+served the bytes. So the connection carries no authority, and the child
+holds no credential that lets it do anything on the central strut. The
+pointer is the central strut's own catalog route. §13 needs a record so
+that neither the byte host nor Stakwork controls the pointer; on a fleet
+the publisher is the operator, so that concern does not arise. The seal
+and the `seq` rule are the whole check, as for the index catalog over
+HTTPS (§7).
+
+**A private catalog.** An org's workflows are not public, so this catalog
+is never put in the DHT, and its route stays behind the gate. A child
+reads it with a READ TOKEN: §6's package token, scoped to one catalog
+instead of one package. It is an HMAC over
+`catalog:<key>:<subscriber>:<exp>` under the central strut's secret, the
+way the file token is made (`src/auth.ts`). It opens `GET
+/packages/catalog` and the archive route for the digests that catalog
+names. It opens nothing else: no runs, no workflows, no launch. Leaked,
+it is worth the org's packages, which every child holds anyway. The child
+sends it only to the subscription's own origin, never to another URL a
+release lists.
+
+**The path of an update:**
+
+1. **Edit on the central strut.** The builder or a person changes
+   `hive/fleet/explore` there. That is a local version; nothing leaves.
+2. **Publish.** A person (the UI, or hive) calls `POST /packages/publish
+   { package, version, channel? }`. It runs `buildPackage`, adds the
+   release to the card (newest first, earlier ones kept), moves
+   `channels[channel]` to it when a channel is named, moves `seq` forward
+   and seals the card. This is §13's publish with `host: self`, and like
+   it, a person's act: the builder edits and never publishes (§8).
+3. **Tell the children.** The central strut POSTs
+   `/packages/subscriptions/<id>/sync` to each peer on file, best effort.
+   That route is open to `peer` scope because the ping carries nothing:
+   it makes the child read its own subscription's URL, which it would do
+   on its next poll anyway. One sync runs at a time per subscription; a
+   ping during one queues a single re-run.
+4. **The child applies.** On a ping, at boot, and every
+   `STRUT_DISTRO_POLL_MINUTES` (§12's setting, default 10), the child:
+   - fetches the card and runs every check of §13 against the subscribed
+     key;
+   - takes each package's digest from the channel (or, with no channel,
+     the newest release not yanked);
+   - fetches each archive with `fetchArchive` from the release's `urls`,
+     with the token;
+   - installs the whole set through `installPackage`, door `distro`, no
+     ask, all or nothing per `seq`.
+
+   Per item it follows §4's table:
+   - untouched → fast-forward;
+   - edited on the child → the new version lands beside it, the edit
+     stays active, and the item is reported;
+   - a package or item the channel no longer lists → retired if
+     untouched.
+
+   Then the registry rebuilds.
+5. **What it can't apply, it refuses whole** (§12 step 6): a step type
+   this strut lacks, a conflict, a step that does not load. The child
+   stays on the last `seq` it applied and says why.
+6. **Rollback is a later card.** Yank the bad release (the channel falls
+   back to the newest release not yanked) or move the channel back.
+   Either is a new `seq`, so the children apply it like any other.
+
+**Versions.** The digest is a release's identity, `version:` its label,
+and `seq` the order of the catalog's states. On a child, each item's
+`upstream` names the release it came from: `source.ref` is
+`subscription:<id>`, and `key` is the subscribed key (§3's pin). A
+child's `vN` labels are its own. `update_package` and `DELETE
+/packages/…` on such an item are refused, naming the subscription, as for
+a distro's item (§12).
+
+**`channels`** is a member of the card: `channels: { stable: {
+"hive/fleet": "sha256:…" }, canary: { … } }`, each naming a release the
+catalog lists. A subscription with no channel takes the newest release
+not yanked.
+
+**The subscription** is the operator's act: a full-scope write on the
+child, `PUT /packages/subscriptions/:id { key, url, channel?, token }`.
+It is kept in an encrypted file beside `peers.json`
+(`subscriptions.json`), since the token is a credential.
+`STRUT_PACKAGE_SUBSCRIPTIONS` is the paste door for a strut nobody pushes
+to. Hive's `strut-peers` cron already writes `/self` on every workspace
+swarm with that swarm's own key. The same pass would:
+- read the central strut's public key from `GET /publisher`;
+- mint a token there (`POST /publisher/tokens { subscriber, days? }`,
+  full scope, `POST /peers/tokens`'s twin, re-minted each pass as the
+  `lab:peer` tokens are);
+- write each child's subscription.
+
+The child never learns the key from a card or a peer. If the central
+strut mints a new key, a child follows it only once the operator writes
+it.
+
+**What the fleet sees.** `GET /packages/subscriptions` on a child shows,
+per subscription: the `seq` applied and when, each package's digest and
+version, every item `diverged`, and the last error. The central strut can
+read it over its peer record (a peer reads every GET). So its agent can
+check what a workspace runs before calling a workflow there, and hive
+can draw the fleet as one table (§12, "The fleet's view").
+
+**A child's edit stops that item following.** An edit of
+`hive/fleet/explore` on a child is a fork (§4): the next release lands
+beside it, and that workspace keeps running its own version until the
+builder merges. That is §12's rule. A fleet where the central strut must
+win everywhere wants a seed, which this is not.
+
+**What it reuses, and what is new.**
+- **Reused:** the card and its checks (§13), the update table (§4), the
+  distro door with no ask (§12), `fetchArchive` and the archive route
+  (both built), and the file token's HMAC (`src/auth.ts`).
+- **New in strut:**
+  - the publisher key and the card with `host: self` and no record
+    (step 6's first half);
+  - `channels`;
+  - `POST /packages/publish`;
+  - the read token (step 8's, narrowed to a catalog);
+  - subscriptions and the sync ping.
+- **New in mcp:** `labAuth` hands a `?t=` on `/packages/catalog` and
+  `/packages/*/archive` through to strut, as it already does for
+  `/artifacts` and `/jobs/:id/files` (`mcp/src/lab/mount.ts`).
+- **New in hive:** the subscription in the `strut-peers` pass.
+- **Later, with no change to a child:** a `pk:` record for the key, so
+  `url` becomes optional.
+
+**Considered: the central strut pushes.** It already holds a credential
+for every child (hive's `lab:peer` records), and a sealed card is safe to
+accept from any sender. So a child could take the card and the archives
+through an inbound door and hold nothing at all. Not chosen, for three
+reasons:
+- it adds a new inbound door on every strut;
+- the central strut would have to track its children on every release;
+- a strut it cannot reach, such as Peel behind NAT, would get nothing.
+
+A pull with the read token covers both cases, and it is what §12 already
+says ("each strut pulls").
+
+**Before the first release: the lab's steps must read as seeds.**
+`buildPackage` records a seed's item nowhere (step 2, "a seed's item
+outside the prefix"). But a lab step published before step versions
+recorded their door (strut#340) has no `source`. A seeder publishing the
+same content again changes nothing (`reactivateKnown: false`), so a fleet
+workflow that uses `jarvis/*` or `pod/*` is refused as if those steps
+were local. The fix is strut's: a publish of content equal to a version
+whose record names no door records the door this publish names. The next
+boot of every swarm then stamps the lab's steps.
+
+**Not designed here:**
+- the distro's `host:` delta and `renames` (§12) riding in the card;
+- revoking one subscriber before its token expires;
+- whether §12's git distro becomes one more kind of subscription, so a
+  strut has one list (`GET /distro` and `GET /packages/subscriptions`
+  today) and one sync route. A strut may hold several subscriptions
+  (Peel following two orgs), where §12 gives it one distro.
+
 ## 13. Pkarr — keys, records, catalogs
 
 *Ruled 2026-10-24:* the protocol, publishing (from a swarm, revised the
@@ -1387,8 +1566,10 @@ index are public by construction: anyone who knows a key can see which
 packages a publisher has, at which digests, served where. The bytes are
 what §6's token gates, at a strut's archive route; a release asset on a
 public repo is public whatever the catalog says. A package nobody should see
-is not published to a catalog; it travels by `file:` or a private `git+`
-repo as before.
+is not published to a public catalog. It travels by `file:` or a private
+`git+` repo as before, or in a PRIVATE catalog: the same card, never put
+in the DHT, served behind the gate to subscribers holding its read token
+(§12.1).
 
 **Scale.** A record is under 1000 bytes and a catalog a few kilobytes per
 hundred packages; archives are kilobytes to a few megabytes. At ten to ten
@@ -1399,6 +1580,19 @@ DHT's size — only that iroh adopted the Pkarr format for its own
 discovery, which is the adoption signal the choice rests on.
 
 ## Step order
+
+**After step 2, the fleet first (2026-10-27, proposed; §12.1).** In this
+order:
+1. The lab-seed stamp fix.
+2. Step 4's update table without the ask: the `distro` door.
+3. Step 6 without the record: the publisher key, the card with `host:
+   self` and `channels`, `POST /packages/publish`, `GET
+   /packages/catalog`, and the card's test vector.
+4. The read token, subscriptions, the poll, the sync ping and `GET
+   /packages/subscriptions`.
+5. Then mcp's `labAuth` line and hive's subscription pass.
+
+Steps 3, 5 and the rest of 6–8 follow as written.
 
 **Built first, out of order (2026-10-24):** the bottom of steps 2 and 6,
 which needs nothing from step 1 — `readPackage` and the digest
@@ -1854,6 +2048,24 @@ production until install (step 2) calls the resolver.
   an untouched one fast-forwards, a new `db/*.sql` is added and run,
   `data.db` is untouched, and a merge whose result does not build comes
   back to the builder as a conflict.
+- A fleet (§12.1):
+  - A central strut publishes `hive/fleet` 1.0 to `stable`, and two child
+    struts subscribed to its key install it within one ping.
+  - A 1.1 publish fast-forwards both. On a child where
+    `hive/fleet/explore` was edited, the edit stays active, 1.1 lands
+    beside it, and the item is reported diverged.
+  - A yank brings both children back to 1.0 at the next `seq`.
+- A fleet's checks:
+  - A card sealed by another key, or one with an older `seq`, is refused,
+    and the child stays where it was.
+  - The read token opens the catalog and its archives and nothing else
+    on the central strut: a launch or a run read with it is a 401.
+  - A sync ping from a peer reads only the subscribed URL.
+  - A release whose workflow names a step one child lacks is refused
+    whole on that child and applied on the other, and that child's `GET
+    /packages/subscriptions` names the step.
+- The lab seeds: on a swarm whose lab steps were seeded before strut#340,
+  a fleet workflow using `jarvis/*` builds after one boot.
 
 ## Open questions
 
