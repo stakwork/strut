@@ -9,8 +9,9 @@ import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
   RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, isInFlight,
-  useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useWorkflow,
+  useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useWorkflow,
 } from "./hooks.js";
+import { appLink } from "./links.js";
 
 useActEnvironment();
 
@@ -231,6 +232,24 @@ describe("the host hooks", () => {
     assert.deepEqual(sent, ["change the chart to a bar chart"]);
     assert.deepEqual(opened, ["https://example.com/run/1"]);
     await h.unmount();
+  });
+
+  it("appLink names the app and carries its input as one param; useAppLink is this app's", async () => {
+    assert.equal(appLink("bench"), "?app=bench");
+    assert.equal(appLink("bench", {}), "?app=bench", "no input, a plain open");
+    const link = appLink("acme/bench", { view: "/runs", run: 12, live: true, gone: undefined, none: null });
+    const q = new URLSearchParams(link.slice(1));
+    assert.equal(q.get("app"), "acme/bench");
+    assert.deepEqual(Object.fromEntries(new URLSearchParams(q.get("input")!)), { view: "/runs", run: "12", live: "true" });
+    assert.deepEqual([...q.keys()], ["app", "input"], "the input stays inside its one param");
+
+    const { client } = fakeClient();
+    const h = await renderHook(() => useAppLink(), { client: { ...client, app: { name: "bench", version: "v3" } } });
+    assert.equal(h.result()({ view: "/settings" }), appLink("bench", { view: "/settings" }), "the live app, never its version");
+    await h.unmount();
+    const bare = await renderHook(() => useAppLink(), { client });
+    assert.throws(() => bare.result()(), /no app identity/);
+    await bare.unmount();
   });
 });
 

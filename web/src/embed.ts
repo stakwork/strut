@@ -13,8 +13,9 @@ const ORIGIN_STORAGE = "strut/embedOrigin";
 /** The params that make up a deep link. Never `key` or `embed_origin`.
  *  `elicit` is the builder's open question (plans/elicitation.md) — the
  *  link a host shows for a secret; `job` a job's timeline
- *  (plans/jobs-sidebar.md); `app` an app's page (plans/apps.md §7.3). */
-export const DEEP_LINK_PARAMS = ["wf", "run", "v", "chat", "elicit", "job", "app"] as const;
+ *  (plans/jobs-sidebar.md); `app` an app's page (plans/apps.md §7.3) and
+ *  `input` what it is opened with, the app's own query (§7.1). */
+export const DEEP_LINK_PARAMS = ["wf", "run", "v", "chat", "elicit", "job", "app", "input"] as const;
 
 /** The message posted to the host after each change. */
 export interface LocationMessage {

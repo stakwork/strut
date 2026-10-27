@@ -43,7 +43,7 @@ import { AppUsageFlyout } from "./components/AppUsageFlyout";
 import { SoloApp } from "./components/SoloApp";
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph } from "./icons";
-import { appKey, appMessage } from "./app-links";
+import { appKey, appMessage, appToolInput } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
@@ -102,9 +102,9 @@ export function App() {
   //    deliverable. Only a path of that shape (`isServedFilePath`).
   const [solo] = useState(() => {
     const p = new URLSearchParams(location.search);
-    return p.get("solo") === "1" ? { app: p.get("app"), artifact: p.get("artifact") } : null;
+    return p.get("solo") === "1" ? { app: p.get("app"), input: p.get("input"), artifact: p.get("artifact") } : null;
   });
-  if (solo?.app) return <SoloApp app={solo.app} />;
+  if (solo?.app) return <SoloApp app={solo.app} input={solo.input} />;
   if (solo?.artifact) {
     return isServedFilePath(solo.artifact)
       ? <ArtifactViewer path={solo.artifact} solo />
@@ -130,10 +130,13 @@ function Shell() {
   // workflow stays underneath as the history panel's filter.
   const [selectedJob, setSelectedJob] = useState<string | null>(initialUrl.get("job"));
   // Apps (plans/apps.md §7.3): the selected app's page takes the canvas
-  // area, as the job timeline does; ?app=<name> deep-links into one. The
-  // frame reloads when the builder publishes a new version of it.
+  // area, as the job timeline does; ?app=<name> deep-links into one, and
+  // ?input=<the app's own query> is what it is opened with (its
+  // `tool-input`, §7.1). The frame reloads when the builder publishes a new
+  // version of it.
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
   const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
+  const [appInput, setAppInput] = useState<string | null>(initialUrl.get("input"));
   const [appQuery, setAppQuery] = useState("");
   const [appReload, setAppReload] = useState(0);
   // What the host hands the chat: a draft for its composer (Edit with the
@@ -292,6 +295,7 @@ function Shell() {
     put("v", viewVersion);
     put("job", selectedJob);
     put("app", selectedApp);
+    put("input", selectedApp ? appInput : null);
     put("secrets", showSecrets ? "1" : null);
     const qs = p.toString();
     const next = `${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`;
@@ -305,7 +309,7 @@ function Shell() {
     ) {
       replaceUrl(next, state);
     }
-  }, [selectedWf, selectedRun, viewVersion, selectedJob, selectedApp, showSecrets, trail]);
+  }, [selectedWf, selectedRun, viewVersion, selectedJob, selectedApp, appInput, showSecrets, trail]);
 
   // The back (or forward) button: show what that entry's URL says, with
   // the trail it had.
@@ -324,6 +328,7 @@ function Shell() {
       setSelectedRun(run);
       setSelectedJob(job);
       setSelectedApp(p.get("app"));
+      setAppInput(p.get("input"));
       setVersionPin({ wf: v ? wf : null, v });
     };
     window.addEventListener("popstate", onPop);
@@ -850,8 +855,9 @@ function Shell() {
     setSelectedRun(null);
     setEvents([]);
   }, []);
-  /** Open an app's page (plans/apps.md §7.3): the canvas area is its. */
-  const selectApp = useCallback((name: string | null) => {
+  /** Open an app's page (plans/apps.md §7.3): the canvas area is its.
+   *  `input` is what it is opened with (`?input=`); none, a plain open. */
+  const selectApp = useCallback((name: string | null, input?: string) => {
     liveStreamRef.current = false;
     setRunning(false);
     setFlyoutStepId(null);
@@ -863,10 +869,11 @@ function Shell() {
     setSelectedRun(null);
     setEvents([]);
     setSelectedApp(name);
+    setAppInput(input ?? null);
   }, []);
   /** A strut deep link the app's page asked to open (`ui/open-link`). */
   const navigateFromApp = useCallback((params: Record<string, string>) => {
-    if (params["app"]) return selectApp(params["app"]);
+    if (params["app"]) return selectApp(params["app"], params["input"]);
     if (params["job"]) return selectJob(params["job"]);
     if (params["wf"]) {
       setSelectedApp(null);
@@ -1215,21 +1222,25 @@ function Shell() {
     setInfoStep((prev) => (prev?.type === entry.type ? null : entry));
   }, []);
 
-  // The selected app's page (plans/apps.md §7.3), in the canvas area. A
-  // peer's page gets no builder chat and no in-place link: those are the
-  // peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is ./components/SoloApp.
+  // The selected app's page (plans/apps.md §7.3), in the canvas area,
+  // opened with `?input=`. A peer's page gets no builder chat, and of its
+  // links only one to an app on that peer opens in place (AppHost): the
+  // rest are the peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is
+  // ./components/SoloApp.
+  const appToolArgs = appToolInput(appInput);
   const appView = selectedApp
     ? appEntry
       ? <AppHost
           key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
           app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
           reload={appReload}
+          onNavigate={navigateFromApp}
+          {...(appToolArgs ? { toolInput: appToolArgs } : {})}
           {...(appEntry.peer ? {} : {
             onMessage: (text: string) => {
               setShowChat(true);
               setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
             },
-            onNavigate: navigateFromApp,
           })}
         />
       : <div class="empty">{appsLoaded ? `No app "${selectedApp}"` : "Loading apps…"}</div>

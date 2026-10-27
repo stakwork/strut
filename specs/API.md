@@ -1054,8 +1054,16 @@ is one the same way, with no strut change per host:
 3. **Answer the two requests a page makes of its host:** `ui/message` goes
    to the host's conversation (strut's UI: the builder chat, the text
    prefixed with which app it is about); `ui/open-link` opens a strut deep
-   link (`?wf=`, `?run=`, `?job=`, `?app=`) in place and anything else in a
-   new tab. A theme change is a `ui/notifications/host-context-changed`.
+   link (`?wf=`, `?run=`, `?job=`, `?app=` with its `input`) in place and
+   anything else in a new tab. A theme change is a `ui/notifications/host-context-changed`.
+4. **Open it where a link says.** A deep link to an app is
+   `?app=<name>&input=<the app's own query string>` (the kit's
+   `appLink(name, input)`): read `input` back as flat strings —
+   `input=view%3D%252Fruns%26run%3D12` is `{ view: "/runs", run: "12" }` —
+   and send it as `ui/notifications/tool-input` after the page's
+   `ui/notifications/initialized`; a later link to the same app sends the
+   new input in place. Carry it as one param of the host's own URL and
+   never read inside it: the keys are the app's.
 
 Nothing else a host says to strut changes: runs, jobs, chat and files stay
 on the HTTP API. A page's `tools/call` reaches strut in the shape it left
@@ -1073,10 +1081,14 @@ its YAML says about peers, as the app's run (`origin: "app"`), never a peer
 launch. Open to every app on the peer; a plain peer key gets none of it.
 Strut's UI lists each peer's apps beside its own as `?app=@<peer>/<name>`;
 for one, it leaves out the version select, the tab toggle and the builder
-button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
+button, answers no `ui/message`, and opens in place only a link to an app
+on that peer (`?app=<name>` from its page is `@<peer>/<name>`).
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
-opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`.
+opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`,
+with `&input=` for a deep link. A link the page opens to itself changes
+`input` in place, the URL following (replaced, as the full UI does); any
+other link opens in a new window.
 Alone, the page reads only the listing the app is in — `GET /apps`, or that
 one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
 workflows, step types or other peers (one that does not answer cannot hold

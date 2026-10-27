@@ -9,6 +9,10 @@ test("deepLinkParams keeps only the deep-link keys", () => {
   );
 });
 
+test("deepLinkParams carries an app and what it is opened with", () => {
+  assert.deepEqual(deepLinkParams("?app=bench&input=view%3D%252Fruns&solo=1"), { app: "bench", input: "view=%2Fruns" });
+});
+
 test("deepLinkParams carries the builder's open question", () => {
   assert.deepEqual(deepLinkParams("?chat=c1&elicit=e1"), { chat: "c1", elicit: "e1" });
 });
